@@ -1,92 +1,94 @@
-# First-chat onboarding — `REASON_ONBOARDING` off | test | on
+# First-chat onboarding — `REASON_ONBOARDING` on (default) | test | off
 
-Somebody new taps the site's Text Reason button (Messages opens with "hey" typed) and sends it. With
-the switch covering them, their first conversation is a short paced run of fixed bubbles instead of a
-prompt-led model turn (owner spec, 2026-10-30):
+Somebody new texts Reason for the first time. With the switch covering them, their first chat is a few
+beats and nothing more (owner-approved wording, 2026-11-06 — the 7-day review found new people left
+during the old 3–5 question interview). One question per message; nothing ever asks what they do.
 
-1. "hey" → ONE opener from `OPENERS` (random). A real question first → its one-line answer, then the opener.
-2. Their name → saved (`accounts.name`), then four bubbles a beat apart: "nice to meet you, <name>", what
-   Reason is, the contact-card line **on the same message as the vCard** (an outbox row with
-   `media.mediaUrl` → `Router.sendNow` → `sendMediaUrl`; Sendblue shows the words then the card; the same
-   `/reason-<sha8>.vcf` every card uses), then "so what do you do? student, engineer, something else?".
-   No card possible (`cardUrl`: no public URL, no line number, already sent, or a failed try inside
-   `RETRY_AFTER_MS`) → the line is not said either; a card that fails takes its line with it, never the
-   question after it (the card row branches off the chain: the next row waits on the bubble before it).
-3. What they do → remembered as a fact; 2–3 model-written ideas for that work (only from a fixed list
-   of things Reason really does), then `CLOSING` word for word.
-4. Their to-do list (a photo, or typed) → the normal turn, with `TODO_FRAME` in front: do what it can
-   now, reminders for the rest, say which is which, never "done" without a tool.
+1. "hey" → `OPENER`, TWO bubbles in this order (owner, 2026-11-07): `INTRO` "hey, i'm Reason. i will help
+   you with errands and complete your to do list for you", then `NAME_Q` "what's your name?" alone.
+   Both ride one outbox chain (the question's row `after_id` = the intro's), so the question never goes
+   first or alone. A real question first → its one-line answer, then the two opener bubbles. A name in
+   the first text skips the ask: `INTRO` alone, then step 2.
+2. Their name → saved (`accounts.name`, as my_name does), then the model's `name_line` from the same
+   read: what the name means / where it comes from, one quality from it as a short warm compliment
+   (Omar → long-lived/flourishing, Arabic, leadership). Unsure, awkward or negative meaning → no
+   meaning, just something warm; never an invented meaning. A nickname (Bubba, JJ, Lil Mike, Big T,
+   Boo, a gamer tag — the model judges it, no list) → no meaning or origin, just a short warm line
+   about loving the name ("love that name, bubba"), saved as given; the ask still follows. A short form
+   of a given name (Mike, Liz) is a given name (the full name's meaning only if sure); a nickname that
+   is also a name (Sunny) may go either way, nothing invented. No line from the model → `MET(name)`
+   ("nice to meet you, <name>"). Then exactly `CARD_NAME_ASK`: "what do you want to call me?" — alone.
+   No card possible (`cardCanGo`: no public URL, no line number, already sent, a failed try inside
+   `RETRY_AFTER_MS`) → nothing to name: `TRY_LINE` instead of the ask, and the flow is done.
+3. The name they pick → the contact card under THAT name, `CARD_SENT(name, true)` on the card's own
+   message ("Jarvis it is. here's my card, save it so you can always find me" — an invitation, never a
+   claim it is saved), then `TRY_LINE`; flow `complete`. "whatever" / "you pick" / no name → the card as
+   Reason (`CARD_SENT("Reason", false)`). The card's address is `/reason-<sha8>-<token>.vcf`: the token is
+   random per account (`accounts.contact_card_token`), the name is `accounts.contact_card_name`, and
+   `src/http.js assetRequest` draws `FN`/`N` from it (`ORG` stays Reason). An unknown token draws the
+   plain Reason card. Reason's own name never changes; the history carries a note (saving is theirs).
+4. `TRY_LINE` — ONE nudge, two things to try: a call Reason makes for them (a restaurant, a store, an
+   appointment, sorting something out while they get on with their day), or setting up and running an
+   event. Never a call to chat with them.
 
-Detours: a question/remark at any step → its one-line answer + one steer back to that step
-(`STEERS`); a second detour on the same step moves on instead of pushing. A declined name is never
-asked again (the prompt's no-name line changes: `accounts.ownerOf().nameAsked` → `whoLine` in
-`src/agent.js`). Something real (a task, a lookup, anything needing care, a picture before step 4) ends
-the flow and gets the normal turn. Quiet mid-flow → ONE nudge ever (`NUDGES`), on a timer labelled
-`onboarding:nudge` (hidden from `listTimers` / Ongoing / blurbs), moved to 10am if due 9pm–10am.
+Never in any bubble, read reply or prompt: "i'll save myself in your phone", "i'm in your contacts", or
+anything implying Reason controls their phone (pinned in `test/onboarding.test.js`).
 
-Who: only a person whose account their own first text just made — auto-admit (live) or a pre-approved
-`REASON_TEST_NUMBERS` number — and never the operator, Web, an invite claim, an event join or the
-master's yes. State is `accounts.onboarding` (NULL = exempt; `not_started` → `awaiting_name` →
-`awaiting_occupation` → `awaiting_todo` → `complete`), added by ALTER: the run that adds the column
-marks every existing account `complete`. `test` = only `REASON_ONBOARDING_NUMBERS`. A test number that
-already has an account is exempt — delete that account first to re-run it.
+A real request (a `task` read, a picture or document) at any step: the normal turn does it first, then
+`afterTask` sends the pending step (step 1 → `NAME_ASK`, two bubbles: `BY_THE_WAY` "by the way, i'm Reason…to do list for you", then
+`NAME_Q` "what's your name?"; a
+name already in the request → `BY_THE_WAY`, the name's line from `nameLine()` — its own side call — and
+the ask; a steer on later steps). Detours and requests share the one-steer limit per step; past it the
+flow moves on (the name passed on, the card as Reason). The turn's prompt while in the flow
+(`accounts.ownerOf().firstChat === "active"` → `whoLine`) says do the request, ask nothing about them;
+after a flow that ended without a name (`"done"`) it asks the name once, never an interview. The
+placeholder prompt for anybody the flow does not cover follows the same shape (name once, a real
+meaning or just warmth, no questions about their job or life, no phone-control wording, one offer of a
+call or an event). Quiet mid-flow → ONE timer nudge ever (`NUDGES`), timer `onboarding:nudge`, moved to
+10am if due 9pm–10am in their zone.
 
-A step is ONE transaction (`db.atomically`): its bubbles queued as an ordered outbox chain (`after_id`),
-its state, its history. The rows are then tried a beat apart; a failure stops the loop and the sweep
-finishes the chain in order — through a retry or a restart, nobody is steered back to a step they never
-saw. The harm screen (`Runtime.screen`) runs beside the read (an unscreened read is asked once more): not
-clear (or unscreened twice) → the flow ends
-and the normal, screened turn answers. A read that fails ends it too (never a second prompt-led
-welcome on top). Voice notes, contact cards and links are words by then; a picture or document is
-the to-do list on step 4 (`TODO_FRAME`), before that a real thing (no frame); a typed list before step 4
-gets `TODO_FRAME_UNASKED`. Both notes live in `src/onboardframes.js` and `harm.ownWords` drops them (exact
-lines only), so the screen reads their own words. Idle past `REASON_ONBOARDING_IDLE_DAYS` (7) → `complete` on the next text.
-The nudge's waking hour is THEIR zone (`zoneFor`).
+Who: a person whose account their own first text just made (auto-admit, or a pre-approved
+`REASON_TEST_NUMBERS` number); an invite's joiner (their code text, right after the inviter's
+"You're in, invited by …" line, is read by the flow → the opener); or an event joiner (`#claimEvent` →
+`startAfterEvent`, after the organizer's welcome: the name typed on the page → `INTRO`, its `nameLine`,
+the ask; no name → the opener). This REPLACES the old `EVENT_CARD_LINE` + "what do you do" follow-up;
+with the switch off an event joiner gets `EVENT_CARD_LINE` + `TRY_LINE`, no question. Never the operator,
+Web, or the master's yes. Every account made before the switch (NULL) or before the column (`complete`)
+is exempt. States: `not_started` → `awaiting_name` → `awaiting_card_name` → `complete`; the old flow's
+`awaiting_occupation`/`awaiting_todo` end on the next text. The startup card pass
+(`backfillContactCards`) skips anyone mid-flow.
 
-Meaning is the model's: one structured side call per text (`readText`, `src/onboarding.js:175`, through
-`askStructured` in `src/backends/side.js:110` — the CLI on claude-cli, the API on `REASON_BACKEND=api`,
-skipped when `sideAskAllowed()` says no; `REASON_ONBOARDING_CLI_MODEL` haiku, feature `onboarding` in
-`model_usage`), never a regex.
+A step is ONE transaction (`db.atomically`): bubbles as an ordered outbox chain (the card a branch off
+it, so a dead card takes nothing with it), state, history. The harm screen runs beside the read; not
+clear → flow ends, normal screened turn. A failed read ends it too. Meaning is the model's: one
+structured side call per text (`readText` through `askStructured` in `src/backends/side.js` — the CLI on claude-cli, skipped when `sideAskAllowed()` says no; `REASON_ONBOARDING_CLI_MODEL` haiku, feature `onboarding`; fields kind/name/card_name/
+reply/name_line), plus `nameLine` only for a name the read did not see (event page, inside a request).
 
-Source: `src/onboarding.js`; hooks in `src/channels/router.js` (`deliver`: `arrivedNow` → `begin`, the
-first-text card skipped while in it; `#drainHeld`: `onboarding.handle` before requests are opened,
-`onboardFrame` into the turn text), `src/runtime.js` (`_runTimer` → `fireNudge`), `src/db.js`
-(columns + migration, `setOnboarding`, `cancelOnboardingNudges`, `listTimers` filter), `src/config.js`,
-`src/accounts.js` (`nameAsked`), `src/agent.js` (`whoLine`), `src/itemtitle.js`.
+Source: `src/onboarding.js`; `src/channels/router.js` (`begin` on `arrivedNow`, invite claims included;
+`#drainHeld`: `handle` then `afterTask` after the turn; `#claimEvent` → `startAfterEvent`),
+`src/contact.js` (`cardName`, `contactCardUrl({ name, token })`, `contactPathParts`), `src/http.js` (the
+card route), `src/db.js` (`contact_card_name`, `contact_card_token`, `setContactCardName`,
+`contactCardNameByToken`), `src/accounts.js` (`firstChat`), `src/agent.js` (`whoLine`), `src/config.js`
+(default on).
 
 ## Prove it
 
-- Offline: `node --test test/onboarding.test.js test/onboarding-migration.test.js` (38 + 2; the PR #270
-  review added: screen beside the read (crisis, unscreened), failed read ends cleanly, name on the account,
-  card tried recently / card failing takes its line, order through a retry, a kill mid-step + sweep, the
-  commit is atomic, voice note as words, picture before step 4, list as the first text, 7-day idle,
-  nudge in their zone): opener +
-  rotation, question-first, name → 4 bubbles + card in order with 1–2 s gaps, decline, occupation →
-  ideas + exact closing, a detour at every step, second detour moves on, task ends it, read failure,
-  to-do photo/typed list → the frame, existing/finished/operator/flag-off never enter, `test` mode,
-  restart mid-flow (new router + runtime, same DB), the one nudge (hidden, waking hours, once, cancelled
-  on reply), and the migration on a live-shaped `accounts` table.
-- Real read (subscription, ~12 haiku calls): `REASON_LIVE_ONBOARDING=1 ANTHROPIC_API_KEY= node --import
-  ./test/paid-key-guard.js --test test/onboarding-live.test.js` (with `REASON_BACKEND=claude-cli`) — 16/16
-  on 2026-10-30, incl. three sensitive texts read as `task` and `harm.screen` calling "kofi, honestly been
-  wanting to end it" `crisis`.
-- Cage, end to end (subscription: 4 haiku reads + ONE full turn; fake Sendblue on loopback):
+- Offline: `node --test test/onboarding.test.js test/onboarding-migration.test.js test/event-web.test.js
+  test/contact-card-brand.test.js` — 42 flow tests (default on, the owner's opener, name → meaning line, nickname → warm line with no meaning
+  + the exact nickname ask, no line → plain hello, pick → card under that name served as FN:Jarvis +
+  the try line, skip → Reason, detours, request-first in three shapes, picture, read/screen failures,
+  existing/finished/operator/off/test, old states, two people's cards isolated, startup pass, restart,
+  nudge, invite joiner; pins: no "what do you do", no phone-control wording, the try line names a call
+  and an event, one question per bubble), the event joiner's flow + the switch-off path.
+- Cage, end to end (subscription: haiku reads + ONE full turn; fake Sendblue on loopback):
 
   ```bash
   REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-drive.sh evidence/<UTC>-onboarding
-  REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-drive.sh evidence/<UTC>-before before   # flag off, 3 turns
+  REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-drive.sh evidence/<UTC>-before before   # flag off
   ```
 
-  Starts its own `bin/fake-sendblue.mjs` and cage (claude-cli, `REASON_ONBOARDING=test` for one new
-  number) and tears both down; refuses unless the log says `model: the claude CLI` and Sendblue is the
-  fake. Use your own `REASON_VERIFY_RUN`/port: another session's cage may own the defaults. Writes
-  `transcript.txt` (both sides, gaps), `sends.jsonl`, `account.json`, `timers.json`, `serve.log`.
-  2026-10-30 (feat/first-chat-onboarding, again after the review fixes): 11/11 "all ok" — opener, the who-made-you detour answered +
-  "but wait, I didn't get your name", Kofi → 4 bubbles, the card on its line's own message, then the question
-  (gaps 1.1–1.7 s), three nursing-specific ideas + the closing line, the typed list → a drafted email,
-  a laundry reminder, the dentist named as still open; account `complete`, card sent once.
-  Before (flag off): the card went out with the first "hey", then three model turns.
-- Never on live. Turning it on there is the owner's call (`.env`), after the PR merges.
-
-Known and accepted (review of #270): step order across steps while a card retry is pending; a 10:30
-nudge in half-hour time zones; a card queued then failing later still reads `contact_card_sent_at`.
+  Two people: hey → who made you → kofi → jarvis, and a request first → bubba (a nickname: warm line,
+  no meaning) → whatever. 14 checks, including the served card's `FN:Jarvis`, the exact nickname ask, the try line after each card, and no
+  phone-control wording. Needs `claude` logged in on this Mac (on 2026-11-06 it said "OAuth session
+  expired", so the name-card PR was proved in-process: stated reads, real router/outbox/card route).
+- Never on live until deployed; `REASON_ONBOARDING=off` in `.env` turns it off.

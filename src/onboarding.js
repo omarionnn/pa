@@ -1,31 +1,40 @@
-// The first conversation somebody new has with Reason (owner spec, 2026-10-30). They arrive from a
-// button that opens Messages with "hey" in it; what comes back should feel like a friend picking up,
-// never a form.
+// The first conversation somebody new has with Reason. Owner spec 2026-10-30, cut down 2026-11-06:
+// a 7-day review found new people left during a 3–5 question interview, so the first chat is now
+// a few beats and nothing else — who Reason is and their name, what their name means, what they
+// want to call Reason, the contact card under THAT name for them to save, and one thing to try.
 //
-//   not_started          their first text → one opener asking their name (a question first gets a
-//                        one-line answer, then the opener)
-//   awaiting_name        name → saved; "nice to meet you", what Reason is, the contact card, what do you do
-//   awaiting_occupation  their work → saved; 2–3 ways Reason helps with THAT work, then CLOSING
-//   awaiting_todo        a picture of their to-do list → the real turn does what it can now and sets
-//                        reminders for the rest, and says which is which
-//   complete             done; nobody ever goes back in
+//   not_started         their first text → the opener: who Reason is, and their name (a question
+//                       first gets a one-line answer, then the opener; a name already in it skips the ask)
+//   awaiting_name       name → saved; what it means and one warm word about it (the model's own
+//                       knowledge, never invented), then "what do you want to call me?"
+//   awaiting_card_name  the name they pick → the contact card under it, inviting them to save it,
+//                       then ONE nudge: a call Reason can make for them, or an event; done.
+//                       Skipped, "whatever", "you pick" → the card as Reason.
+//   complete            done; nobody ever goes back in
+//
+// Reason never says it saves itself in their phone or is in their contacts: it cannot touch their
+// phone. The card is sent; saving it is theirs.
 //
 // Rules that are code's, not the model's:
 //   - Who is in it. Only a person whose account their own first text just made (auto-admit, or a
-//     pre-approved number), on REASON_ONBOARDING. Everybody who existed when the column landed is
-//     'complete' (src/db.js), every other way in (invites, events, the master's yes, Web) is exempt.
-//   - The fixed bubbles below, one message each, a beat apart, and the card right after its line.
+//     pre-approved number), or whose account an event join just made (src/channels/router.js
+//     #claimEvent — this replaces the event's old card + question follow-up), or whose account an
+//     invite claim just made (after the inviter's welcome line). Everybody who
+//     existed when the column landed is 'complete' (src/db.js), and every account made since starts
+//     NULL, which is exempt: an existing account never sees this. The owner's number never does.
+//   - The fixed bubbles below, one message each, a beat apart, and the card on its own line's message.
 //   - A detour gets its one-line answer and ONE steer back to the step still pending; a second one
 //     moves on rather than pushing. A declined name is never asked again (the prompt is told, too).
-//   - Something real — a task, a lookup, a photo before the to-do step — ends the flow and gets the
-//     normal turn, so the thing they asked for is done first.
+//   - A real request is never kept waiting: the normal turn does it first, and the pending step's
+//     question follows that reply (afterTask) — the same one-steer limit applies.
 //   - At most one nudge, ever, on the timer system, for somebody who went quiet mid-flow.
+//   - Reason's own name does not change: the name they pick is the card's, and the thread's note.
 //
 // What their text MEANS (a name? a question? a real ask? a no?) is the model's read, never a regex
-// (owner rule): one structured side call (src/backends/side.js askStructured): the subscription on claude-cli, the API key on api.
-// If that read fails — or the harm screen, run beside it, says anything but clear — the flow ends
-// there and the message gets the normal, screened turn (with the prompt told the name was asked, so
-// the old prompt-led welcome never runs the same steps a second time).
+// (owner rule): one structured side call (src/backends/side.js askStructured): the subscription on
+// claude-cli, the API key on api. If that read fails — or the harm screen, run beside it, says
+// anything but clear — the flow ends there and the message gets the normal, screened turn (with the
+// prompt told this is a first chat, so the model never starts an interview of its own).
 //
 // A step is one transaction: its bubbles queued in the outbox as one ordered chain (the card on the
 // same message as its line) AND the new state, together. A restart between the two cannot leave a
@@ -38,55 +47,48 @@ import * as outbox from "./outbox.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
 import { askStructured, sideAskAllowed } from "./backends/side.js";
 import { rulesNote } from "./rules.js";
-import { contactCardUrl, lineNumber, RETRY_AFTER_MS } from "./contact.js";
+import { contactCardUrl, lineNumber, RETRY_AFTER_MS, cardName, DEFAULT_CARD_NAME } from "./contact.js";
 import { zoneFor } from "./zone.js";
 
-export const STATES = ["not_started", "awaiting_name", "awaiting_occupation", "awaiting_todo", "complete"];
-const ACTIVE = new Set(["not_started", "awaiting_name", "awaiting_occupation", "awaiting_todo"]);
+export const STATES = ["not_started", "awaiting_name", "awaiting_card_name", "complete"];
+const ACTIVE = new Set(["not_started", "awaiting_name", "awaiting_card_name"]);
 
-/** The opener, one picked at random. One list; add a line here and it is in the rotation. */
-export const OPENERS = [
-  "oh I know that's right, what's up! I'm Reason, what's your name?",
-  "ayy I know that's right. what's good, I'm Reason. who's this?",
-  "okay I see you, what's up! I'm Reason, what do I call you?",
-  "ooh I know that's right. hey, I'm Reason, what's your name?",
-  "look at you texting me first. what's up, I'm Reason, what's your name?",
-];
+/** Who Reason is, in the owner's words (2026-11-06). */
+export const INTRO = "hey, i'm Reason. i will help you with errands and complete your to do list for you";
+/** The name question: alone in its own bubble, right after who Reason is (owner, 2026-11-07). */
+export const NAME_Q = "what's your name?";
+/** The opener: who Reason is, then their name, as two bubbles in that order. One question. */
+export const OPENER = [INTRO, NAME_Q];
+/** Who Reason is when it is not their first hello (after a request was handled), and the name ask then (two bubbles). */
+export const BY_THE_WAY = "by the way, i'm Reason. i will help you with errands and complete your to do list for you";
+export const NAME_ASK = [BY_THE_WAY, NAME_Q];
+/**
+ * Their name, met. The real line is the model's (`name_line`: what a given name means and one warm
+ * word about it, or for a nickname just a warm word about loving it); this is only what is said
+ * when that line could not be had, or they passed.
+ */
 export const MET = (name) => name ? `nice to meet you, ${name}` : "all good, nice to meet you anyway";
-export const WHAT_I_AM = "i'm basically a friend who handles stuff over text: reminders, plans, research, calls, directions, and remembering what matters to you";
-export const CARD_ASK = "quick thing before we keep going: save my contact card so my links open properly";
-export const OCCUPATION_ASK = "so what do you do? student, engineer, something else?";
-/** The last line of step 3, word for word, every time. */
-export const CLOSING = "or better yet, send me a picture of your to-do list and I'll knock them out right now.";
+/** The ask for the name on the card: exactly this, nothing else in the bubble (owner wording). */
+export const CARD_NAME_ASK = "what do you want to call me?";
+/** The line on the card's own message: the card is theirs to save. Never a claim it is saved. */
+export const CARD_SENT = (name, picked) => `${picked ? `${name} it is.` : `${DEFAULT_CARD_NAME} it is.`} here's my card, save it so you can always find me`;
+/** The one thing to try, right after the card (or after their name, when no card can go): a call, or an event. */
+export const TRY_LINE = "something to try: i can make a call for you, like booking a restaurant, checking a store, setting up an appointment or sorting something out while you get on with your day. or i can help you set up and run an event. want to try one?";
 /** The one steer back to whatever is still pending, after a detour's answer. */
 export const STEERS = {
-  awaiting_name: "but wait, I didn't get your name",
-  awaiting_occupation: "anyway, what do you do?",
-  awaiting_todo: "anyway, whenever you're ready, send me that to-do list and I'll knock out what I can",
+  awaiting_name: "but wait, i didn't get your name",
+  awaiting_card_name: "anyway, what do you want to call me?",
 };
 /** The one nudge, ever, for somebody who went quiet on that step. */
 export const NUDGES = {
-  awaiting_name: "hey, still here whenever. what should I call you?",
-  awaiting_occupation: "no rush, but I'm still curious what you do. helps me know what'd actually be useful",
-  awaiting_todo: "whenever you get a sec, send me a picture of your to-do list and I'll take what I can off it",
+  awaiting_name: "hey, still here whenever. what's your name?",
+  awaiting_card_name: "still here whenever. what do you want to call me?",
 };
-/** Said when they pass on the to-do list, or after the one steer has been used. */
-export const LATER = "all good. whenever something comes up, just text me";
-/** If the model gave no ideas for their work, these: true for anybody, and only what Reason does. */
-export const GENERAL_IDEAS = [
-  "I can keep track of deadlines and remind you at the right time, not just the day of",
-  "I can look stuff up and come back with an actual pick, or make a call for you so you don't have to",
-];
 
 /** A flow nobody has answered for this long is over: a late "ok" is not an answer to a step. */
 export const IDLE_MS = () => config.onboardingIdleDays * 24 * 3_600_000;
 /** Attachments that are words by the time the flow reads them (heard, read, or a link). */
 const WORDS = new Set(["voice", "contact", "link"]);
-
-// The notes the real turn gets with a to-do list live in their own import-free module, so the harm
-// screen (src/harm.js ownWords) can take them off without importing the flow.
-export { TODO_FRAME, TODO_FRAME_UNASKED } from "./onboardframes.js";
-import { TODO_FRAME, TODO_FRAME_UNASKED } from "./onboardframes.js";
 
 // ---------- who is in it ----------
 
@@ -98,7 +100,7 @@ export function coversAddress(address) {
   return !!a && config.onboardingNumbers.some(n => (normalizeNumber(n) || n) === a);
 }
 
-/** Start it for a person whose account their first text just made. Never the operator. */
+/** Start it for a person whose account was just made (their first text, or an event join). Never the operator. */
 export function begin(conversationId) {
   const row = db.getAccount(conversationId);
   if (!row || row.is_operator || row.onboarding != null) return false;
@@ -109,11 +111,14 @@ export function begin(conversationId) {
 
 /**
  * Is this person mid-flow, with the switch still covering them? A flow idle past IDLE_MS is ended
- * here (state 'complete'), so nothing after a week of silence is read as an answer to a step.
+ * here (state 'complete'), so nothing after a week of silence is read as an answer to a step. A
+ * state from the longer flow before 2026-11-06 is not this flow's, and ends too.
  */
 export function active(conversationId, now = clock.now()) {
   const row = db.getAccount(conversationId);
-  if (!row || row.is_operator || !ACTIVE.has(row.onboarding) || !coversAddress(row.address)) return false;
+  if (!row || row.is_operator || row.onboarding == null || row.onboarding === "complete") return false;
+  if (!ACTIVE.has(row.onboarding)) { finish(conversationId); return false; }
+  if (!coversAddress(row.address)) return false;
   if (row.onboarding_at && now - row.onboarding_at > IDLE_MS()) {
     finish(conversationId);
     return false;
@@ -131,46 +136,71 @@ export function finish(conversationId) {
 const SCHEMA = {
   type: "object",
   properties: {
-    kind: { type: "string", enum: ["greeting", "answer", "question", "decline", "task", "todo_list", "other"] },
+    kind: { type: "string", enum: ["greeting", "answer", "question", "decline", "task", "other"] },
     name: { type: "string" },
-    occupation: { type: "string" },
+    card_name: { type: "string" },
     reply: { type: "string" },
-    ideas: { type: "array", items: { type: "string" } },
+    name_line: { type: "string" },
   },
-  required: ["kind", "name", "occupation", "reply", "ideas"],
+  required: ["kind", "name", "card_name", "reply", "name_line"],
 };
 
 const PENDING = {
-  not_started: "Nothing yet — this is the very first text they have ever sent Reason. They came from a button that opens Messages with \"hey\" already typed.",
-  awaiting_name: "Reason asked their name.",
-  awaiting_occupation: "Reason asked what they do (student, engineer, something else).",
-  awaiting_todo: "Reason suggested they send a picture of their to-do list so it can knock items out.",
+  not_started: "Nothing yet — this is the very first text they have ever sent Reason.",
+  awaiting_name: "Reason introduced itself and asked their name.",
+  awaiting_card_name: "Reason asked what they want to call it — the name its contact card will carry (Reason, or anything they like).",
 };
 
-/** What Reason really does, for the ideas. Nothing outside this list may be offered. */
-const CAN = "set reminders and follow-ups at real times; keep track of deadlines and open to-dos; look things up and come back with an actual pick (restaurants, products, flights, places); research a question and write it up as a page; make phone calls for them (book, ask, sort something out); text people for them, with their ok; plan things with friends; walking directions; remember what matters about people and dates; draft messages and emails; read photos and documents they send";
+/** How the model meets a name: shared by the read and the stand-alone line (nameLine). */
+const NAME_RULE = `first judge, by its meaning, whether what they gave is their given name or a nickname they go by (a pet name like Bubba or Boo, initials like JJ, a Lil or Big name like Lil Mike or Big T, a gamer tag or handle). A short form of a given name (Mike, Liz) counts as a given name: the full name's meaning only if you are sure, else just warm. A nickname gets no meaning and no origin at all: just a few warm words about loving the name, using it, varied and natural (e.g. "love that name, bubba", "big t, i like that", "jj, great name"). A given name gets what the name means or where it comes from, then one quality from that meaning as a short, warm compliment to them (e.g. for Omar: it means long-lived or flourishing, it's Arabic, and it's tied to leadership — "suits someone who leads"). One or two short sentences, under 160 characters, all lowercase like a text from a friend (their name too), use their name, at most one exclamation mark. Only a meaning you really know: if you are not sure, or the meaning is awkward or negative, leave the meaning out and just say nice to meet you with their name, plus at most a few warm words about the name itself. Never invent a meaning, and never guess a language or origin. A name tied to a painful history gets nothing about the name at all, just nice to meet you with their name. No filler about the chat or their day (nothing like glad we're connecting, hope this is the start of something, hope your day is going well, looking forward to getting to know you). No question in it, no mention of Reason, the contact card or their phone.`;
 
 export function instructions(state) {
   return `You read one text from a person in their first ever chat with Reason, an assistant that lives in their iMessage. What Reason last asked: ${PENDING[state] ?? PENDING.not_started}
 
 Decide what the text is, by its meaning:
 - "greeting": just a hello, nothing else in it.
-- "answer": it answers what Reason asked. For their name, put the name they want to be called in "name" — only if they really told you one; a greeting word, slang or "me" is not a name. For what they do, put it in "occupation" in a few words (their words, e.g. "nursing student").
+- "answer": it answers what Reason asked. For their name, put the name they want to be called in "name", as they wrote it — only if they really told you one; a nickname, initials or a handle they go by is a name, but a greeting word, slang or "me" is not. For the contact's name, put the name they chose for Reason in "card_name", as they wrote it (e.g. "Jarvis", "my assistant", "Reason"). If they leave it to Reason ("whatever", "you pick", "idk", "doesn't matter"), kind is "decline" and "card_name" is "".
 - "question": a question or remark Reason can answer in one short line from what it knows (about Reason itself, small talk, general knowledge). Nothing that needs looking up, checking or doing.
-- "decline": they would rather not answer what was asked, or pass on it.
-- "task": they want something real done or looked up now (a reminder, a search, a plan, a call, the weather, anything needing a tool), or the message needs care (someone upset, in crisis, anything harmful or sensitive). When in doubt between question and task, it is a task.
-- "todo_list": a list of things they need to do, typed out.
+- "decline": they would rather not answer what was asked, or pass on it, or leave the choice to Reason.
+- "task": they want something real done or looked up now (a reminder, a search, a plan, a call, the weather, a to-do list, anything needing a tool), or the message needs care (someone upset, in crisis, anything harmful or sensitive). When in doubt between question and task, it is a task.
 - "other": anything else (an emoji, "lol", "ok").
 A text can answer AND ask: then kind is "question" with the answer's field filled too, unless the ask is a task.
 
-"reply": for "question" and "other", one short line that answers or responds naturally (under 160 characters). Empty for every other kind. Friendly, a bit playful, lowercase is fine. No markdown, no emoji spam, never corporate. Never quote words for them to say or type; say what you mean instead. Never claim to have done anything. The reply only answers: never ask them anything, never bring up their name, their job, a to-do list or saving a contact — Reason adds the way back to its question itself, right after your line. If they ask what Reason is: a friend who handles stuff over text (reminders, plans, research, calls, directions, remembering what matters). If they ask who built it: ${makerName()}.
+"name_line": only when "name" is filled: ${NAME_RULE}
 
-"ideas": only when Reason asked what they do and you can tell something about their work or life from the text (including a decline — then ideas for anybody): 2 or 3 short lines, each one concrete way Reason could help with THAT work, each under 140 characters, each starting with "I can" or similar. Only from what Reason really does: ${CAN}. Never anything else, never flattering or patronizing (no "that's amazing", no "must be tough"), no markdown, no bullets, no emoji, no quoting words for them to type. Otherwise an empty list.
+"reply": for "question" and "other", one short line that answers or responds naturally (under 160 characters). Empty for every other kind. Friendly, a bit playful, lowercase is fine. No markdown, no emoji spam, never corporate. Never quote words for them to say or type; say what you mean instead. Never claim to have done anything. Never say Reason saves itself in their phone, is in their contacts, or can touch their phone in any way: it cannot. The reply only answers: never ask them anything, never bring up their name or the contact card — Reason adds the way back to its question itself, right after your line. If they ask what Reason is: it helps with errands and gets their to do list done for them, over text (it can make calls for them, help set up and run an event, reminders, plans, research). If they ask who built it: ${makerName()}.
 
-Fields you have nothing for are "" (or [] for ideas).`;
+Fields you have nothing for are "".`;
 }
 
-const clean = (s, max) => String(s ?? "").replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim().slice(0, max);
+/**
+ * The model's line meeting a name it did not read itself (the name typed on an event page, or one
+ * given inside a request): what the name means and one warm word. Null when it cannot be had; the
+ * caller then says MET(name).
+ */
+export async function nameLine({ name, ask = askStructured }) {
+  if (!name) return null;
+  if (ask === askStructured && !sideAskAllowed()) return null;
+  const r = await ask({
+    prompt: `Their name: ${String(name).slice(0, 40)}`,
+    system: `Reason, an assistant that lives in someone's texts, is meeting a new person for the first time. Write one line meeting their name: ${NAME_RULE} A nickname or handle they go by is a name. If what they gave is not really a name (a joke, slang, "idk"), leave it out and just say nice to meet you.`,
+    schema: { type: "object", properties: { line: { type: "string" } }, required: ["line"] },
+    model: process.env.REASON_ONBOARDING_CLI_MODEL || "haiku",
+    timeoutMs: Number(process.env.REASON_ONBOARDING_CLI_TIMEOUT_MS || 25_000),
+    feature: "onboarding",
+  }).catch(() => null);
+  return clean(r?.value?.line, 240) || null;
+}
+
+// Markdown marks out; an underscore inside a word stays (a handle like Xx_Slayer_xX is their name).
+// A field the model filled with only quote marks or punctuation (the sealed CLI's haiku sent back the
+// two-character text `""` for "no name" on 2026-11-10) is empty. A name in quotes loses the quotes;
+// a line keeps its own.
+const clean = (s, max, { name = false } = {}) => {
+  let v = String(s ?? "").replace(/[*`#]|(?<!\w)_|_(?!\w)/g, "").replace(/\s+/g, " ").trim();
+  if (name) v = v.replace(/^["'“”‘’]+([^"“”]*?)["'“”‘’]+$/u, "$1").trim();
+  return /[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(v) ? v.slice(0, max) : "";
+};
 
 /** One read of their text for this step, or null when the read could not be had. */
 export async function readText({ state, text, ask = askStructured, conversationId = null }) {
@@ -189,10 +219,10 @@ export async function readText({ state, text, ask = askStructured, conversationI
   if (!v || !SCHEMA.properties.kind.enum.includes(v.kind)) return null;
   return {
     kind: v.kind,
-    name: clean(v.name, 40),
-    occupation: clean(v.occupation, 120),
+    name: clean(v.name, 40, { name: true }),
+    cardName: clean(v.card_name, 40, { name: true }),
     reply: clean(v.reply, 220),
-    ideas: (Array.isArray(v.ideas) ? v.ideas : []).map(i => clean(String(i).replace(/^\s*(?:[-•]|\d+[.)])\s*/, ""), 180)).filter(Boolean).slice(0, 3),
+    nameLine: clean(v.name_line, 240),
   };
 }
 
@@ -202,16 +232,23 @@ const pause = () => config.onboardingGapMs + Math.floor(Math.random() * 600);
 const realSleep = (ms) => new Promise(r => setTimeout(r, ms).unref?.());
 
 /**
- * The card's address when it can go on this step, or null. Not when it was already sent, not when
- * a try failed inside the retry window (contact.js RETRY_AFTER_MS), not without a public address or
- * a line number. Null means its line is not said either: it travels on the same message as the card.
+ * Can a card go to this account at all right now? Not when it was already sent, not when a try
+ * failed inside the retry window (contact.js RETRY_AFTER_MS), not without a public address or a
+ * line number. When it cannot, its name is not asked either: there would be nothing to name.
  */
-export function cardUrl(router, account, now = clock.now()) {
-  if (!account || account.contact_card_sent_at) return null;
-  if (account.contact_card_tried_at && now - account.contact_card_tried_at < RETRY_AFTER_MS) return null;
-  if (!account.channel || account.channel === "console") return null;
-  if (!lineNumber(router, account.channel)) return null;
-  return contactCardUrl({ router, channel: account.channel });
+export function cardCanGo(router, account, now = clock.now()) {
+  if (!account || account.contact_card_sent_at) return false;
+  if (account.contact_card_tried_at && now - account.contact_card_tried_at < RETRY_AFTER_MS) return false;
+  if (!account.channel || account.channel === "console") return false;
+  if (!lineNumber(router, account.channel)) return false;
+  return !!contactCardUrl({ router, channel: account.channel });
+}
+
+/** The card's address under the name they picked (a token is made for it), or null when none can go. */
+export function cardUrl(router, account, name = DEFAULT_CARD_NAME, now = clock.now()) {
+  if (!cardCanGo(router, account, now)) return null;
+  const { token } = db.setContactCardName(account.conversation_id, cardName(name));
+  return contactCardUrl({ router, channel: account.channel, name: cardName(name), token });
 }
 
 const live = (router, channel) => router?.get?.(channel)?.status?.().status === "live";
@@ -225,7 +262,8 @@ const live = (router, channel) => router?.get?.(channel)?.status?.().status === 
 async function commitStep({ router, conversationId, route, bubbles, key, write, historyLines, sleep, log }) {
   const rows = [];
   const canSend = live(router, route.channel);
-  if (!canSend) log({ onboarding_not_sent: conversationId, why: `${route.channel} is not connected` });
+  // Nothing can go: the step stays where it is, and nothing is written as said that was not.
+  if (!canSend) { log({ onboarding_not_sent: conversationId, why: `${route.channel} is not connected` }); return []; }
   const said = bubbles.map(b => typeof b === "string" ? b : b.text);
   db.atomically(() => {
     let previous = null;
@@ -237,9 +275,8 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
           afterId: previous, toOwner: true, maxAttempts: config.outboxMaxAttempts,
         });
         rows.push({ row, card: !!b?.mediaUrl });
-        // The card is a branch off the chain, not a link in it: what comes after it waits on the
-        // bubble before it, so a card that dies for good (markOutboundFailed fails everything
-        // chained behind a dead row) can never take the occupation question down with it.
+        // The card is a branch off the chain, not a link in it: a card that dies for good
+        // (markOutboundFailed fails everything chained behind a dead row) takes nothing with it.
         if (!b?.mediaUrl) previous = row.id;
       }
       if (rows.some(r => r.card)) db.markContactCardTried(conversationId);
@@ -254,7 +291,6 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
     const r = await outbox.attempt({ id: row.id, router, log });
     if (!r.ok) {
       log({ onboarding_send_held: conversationId, n: i + 1, why: r.error ?? "unknown", queued: !!r.queued, card });
-      // A card that did not go is its own loss (its line went nowhere with it); the rest goes on.
       if (!card) break;
     }
   }
@@ -268,7 +304,7 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
 export function scheduleNudge(conversationId, now = clock.now()) {
   db.cancelOnboardingNudges(conversationId);
   const row = db.getAccount(conversationId);
-  if (!row || row.onboarding_nudged_at || !ACTIVE.has(row.onboarding) || row.onboarding === "not_started") return null;
+  if (!row || row.onboarding_nudged_at || !NUDGES[row.onboarding]) return null;
   if (!(config.onboardingNudgeMin > 0)) return null;
   const fireAt = wakingHour(now + config.onboardingNudgeMin * 60_000, zoneFor(conversationId));
   return db.createTimer(conversationId, { fireAt, note: "first-chat nudge", label: db.ONBOARDING_NUDGE_LABEL });
@@ -303,14 +339,102 @@ export async function fireNudge({ timer, router, key, log = () => {} }) {
   return r;
 }
 
-// ---------- one message, at whatever step they are on ----------
+// ---------- the steps ----------
 
-const pick = (list) => list[Math.floor(Math.random() * list.length)];
+/**
+ * Their name is known (or passed on): the line meeting it (the model's `line`, else MET), then what
+ * they want to call Reason — or, when no card can go, nothing to name, so the one thing to try
+ * instead, and the flow is done. `intro` goes first when Reason has not said who it is yet. `met`
+ * false with no name leaves out "nice to meet you anyway" (after a request, where it would read oddly).
+ */
+function afterName(router, conversationId, who, { line = null, intro = null, met = true } = {}) {
+  const can = cardCanGo(router, db.getAccount(conversationId));
+  const meet = line || (who || met ? MET(who) : null);
+  return {
+    bubbles: [...(intro ? [intro] : []), ...(meet ? [meet] : []), can ? CARD_NAME_ASK : TRY_LINE],
+    next: can ? "awaiting_card_name" : "complete",
+  };
+}
+
+/** The card under the name they picked (or Reason when they passed), on its line's message, then the one thing to try; done. */
+function theCard(router, conversationId, picked) {
+  const chose = !!String(picked ?? "").trim();
+  const name = cardName(picked);
+  const url = cardUrl(router, db.getAccount(conversationId), name);
+  if (!url) return { bubbles: [TRY_LINE], next: "complete", name: null };
+  return { bubbles: [{ text: CARD_SENT(name, chose), mediaUrl: url }, TRY_LINE], next: "complete", name };
+}
+
+const cardNote = (name) => `[sent them Reason's contact card under the name they chose for it: ${name}. Saving it is up to them; Reason cannot touch their phone. You are still Reason]`;
+
+/** Commit a step: its bubbles, its state, and the history, keyed so the same step twice queues nothing twice. */
+async function runStep({ router, conversationId, route, row, bubbles, next, cardNamed = null, userLine = null, keyPart = "", sleep, log }) {
+  const state = row.onboarding;
+  const steered = row.onboarding_steers ?? 0;
+  const key = `onboard:${conversationId}:${state}:${steered}:${row.onboarding_at ?? 0}${keyPart}`;
+  const write = () => {
+    if (next === "complete") finish(conversationId);
+    else if (next !== state) db.setOnboarding(conversationId, { state: next, nameAsked: next === "awaiting_name" || state === "awaiting_name" });
+    else db.setOnboarding(conversationId, { steers: steered + 1 });
+  };
+  const cardAt = bubbles.findIndex(b => b?.mediaUrl);
+  const historyLines = (said) => [
+    ...(userLine ? [{ role: "user", content: userLine }] : []),
+    ...(said.length ? [{ role: "assistant", content: said.map((t, i) => cardNamed && i === cardAt ? `${t}\n${cardNote(cardNamed)}` : t).join("\n\n") }] : []),
+  ];
+  log({ onboarding: conversationId, from: state, to: next, bubbles: bubbles.length });
+  const said = await commitStep({ router, conversationId, route, bubbles, key, write, historyLines, sleep, log });
+  if (next !== "complete") scheduleNudge(conversationId);
+  return said;
+}
+
+/**
+ * An event join just made their account (router #claimEvent), right after the organizer's welcome:
+ * the same flow from there, in place of the old card + question follow-up. The name they typed on
+ * the event page is their name (Reason still says who it is, then meets the name); without one, the
+ * opener asks it. Returns what was said, or null when the flow does not cover them (the caller then
+ * sends what it always did).
+ */
+export async function startAfterEvent({ router, conversationId, route, ask = askStructured, sleep = realSleep, log = () => {} }) {
+  if (!begin(conversationId)) return null;
+  const row = db.getAccount(conversationId);
+  const step = row.name
+    ? afterName(router, conversationId, row.name, { intro: INTRO, line: await nameLine({ name: row.name, ask }) })
+    : { bubbles: [...OPENER], next: "awaiting_name" };
+  const said = await runStep({ router, conversationId, route, row, ...step, keyPart: ":event", sleep, log });
+  return { step: step.next, said };
+}
+
+/**
+ * The normal turn just answered a real request they made mid-flow (handle returned `after`): now the
+ * step still pending, so the request never waited on the welcome. One steer per step, as with a
+ * detour; past it the flow moves on (a name passed on, the card as Reason).
+ */
+export async function afterTask({ router, conversationId, route, ask = askStructured, sleep = realSleep, log = () => {} }) {
+  if (!active(conversationId)) return null;
+  const row = db.getAccount(conversationId);
+  const steered = row.onboarding_steers ?? 0;
+  let step;
+  if (row.onboarding === "not_started" || (row.onboarding === "awaiting_name" && row.name)) {
+    step = row.name
+      ? afterName(router, conversationId, row.name, { intro: row.onboarding === "not_started" ? BY_THE_WAY : null, line: await nameLine({ name: row.name, ask }) })
+      : { bubbles: [...NAME_ASK], next: "awaiting_name" };
+  } else if (row.onboarding === "awaiting_name") {
+    step = !steered ? { bubbles: [STEERS.awaiting_name], next: "awaiting_name" } : afterName(router, conversationId, "", { met: false });
+  } else if (row.onboarding === "awaiting_card_name") {
+    step = !steered ? { bubbles: [STEERS.awaiting_card_name], next: "awaiting_card_name" } : theCard(router, conversationId, "");
+  } else return null;
+  const said = await runStep({ router, conversationId, route, row, bubbles: step.bubbles, next: step.next, cardNamed: step.name ?? null, keyPart: ":after", sleep, log });
+  return { step: step.next, said };
+}
+
+// ---------- one message, at whatever step they are on ----------
 
 /**
  * One drained message (or burst) from somebody mid-flow. Returns `{ handled: true, step }` when the
- * flow answered it with its own bubbles, or `{ handled: false, frame? }` when the normal turn should
- * answer it (with `frame` put in front of their text for a to-do list).
+ * flow answered it with its own bubbles, or `{ handled: false, after? }` when the normal turn should
+ * answer it — `after: true` means it was a real request, and the caller runs afterTask once the
+ * turn's reply is out.
  *
  * `screen` is the harm screen (Runtime.screen), run beside the read: anything it does not call
  * clear ends the flow and goes to the normal turn, which screens it again and does what that
@@ -324,14 +448,11 @@ export async function handle({ router, conversationId, route, texts = [], attach
   const text = texts.filter(Boolean).join("\n").trim();
 
   // A voice note, a contact card or a link is words by now (heard / read upstream), so it is read
-  // like text. A picture or a document is something real: the to-do list on its step, before that
-  // whatever they sent it for.
+  // like text. A picture or a document is something real: the normal turn does it first.
   const real = attachments.filter(a => !WORDS.has(a?.kind));
   if (real.length) {
-    finish(conversationId);
-    const todo = state === "awaiting_todo";
-    log({ onboarding: conversationId, from: state, to: "complete", why: todo ? "todo_attachment" : "attachment" });
-    return { handled: false, ...(todo ? { frame: TODO_FRAME } : {}) };
+    log({ onboarding: conversationId, from: state, to: state, why: "attachment", after: true });
+    return { handled: false, after: true };
   }
 
   const [read, screened] = await Promise.all([
@@ -352,7 +473,7 @@ export async function handle({ router, conversationId, route, texts = [], attach
     log({ onboarding: conversationId, from: state, to: "complete", why: `screen_${verdict}`, ...(screenError ? { error: String(screenError).slice(0, 160) } : {}) });
     return { handled: false };
   }
-  // No read: the flow ends rather than leaving a step for the old prompt to run again.
+  // No read: the flow ends rather than leaving a step for anything else to run again.
   if (!read) {
     finish(conversationId);
     log({ onboarding_read_failed: conversationId, step: state, to: "complete" });
@@ -365,64 +486,45 @@ export async function handle({ router, conversationId, route, texts = [], attach
     db.setAccountName(conversationId, read.name);
     name = read.name;
   }
-  if (read.occupation && state === "awaiting_occupation") db.remember(conversationId, name || "me", `works as / does: ${read.occupation}`, { source: "user_stated" });
 
-  // Something real ends it, and the normal turn does the thing first.
-  if (read.kind === "task" || read.kind === "todo_list") {
-    finish(conversationId);
-    log({ onboarding: conversationId, from: state, to: "complete", why: read.kind });
-    return { handled: false, ...(read.kind === "todo_list" ? { frame: state === "awaiting_todo" ? TODO_FRAME : TODO_FRAME_UNASKED } : {}) };
+  // Something real: the normal turn does it now, and the pending step follows its reply.
+  if (read.kind === "task") {
+    log({ onboarding: conversationId, from: state, to: state, why: "task", after: true });
+    return { handled: false, after: true };
   }
 
   const detour = read.kind === "question" || read.kind === "other" || (read.kind === "greeting" && state !== "not_started");
   const replyLine = detour && read.reply ? [read.reply] : [];
   const steered = row.onboarding_steers ?? 0;
-  let bubbles = [];
-  let next = state;
-
-  const step2 = (who) => {
-    const url = cardUrl(router, db.getAccount(conversationId));
-    return [MET(who), WHAT_I_AM, ...(url ? [{ text: CARD_ASK, mediaUrl: url }] : []), OCCUPATION_ASK];
-  };
-  const step3 = (ideas) => [...(ideas.length >= 2 ? ideas : GENERAL_IDEAS), CLOSING];
+  let step = { bubbles: [], next: state };
 
   if (state === "not_started") {
-    // Their name already in the first text ("hey it's kofi"): never asked for again.
-    if (read.name) { bubbles = [...(read.kind === "question" ? replyLine : []), ...step2(read.name)]; next = "awaiting_occupation"; }
-    else { bubbles = [...(read.kind === "question" ? replyLine : []), pick(OPENERS)]; next = "awaiting_name"; }
+    const lead = read.kind === "question" ? replyLine : [];
+    // Their name already in the first text ("hey it's kofi"): never asked for again — who Reason
+    // is, then their name met.
+    if (read.name) { const s = afterName(router, conversationId, read.name, { intro: INTRO, line: read.nameLine }); step = { bubbles: [...lead, ...s.bubbles], next: s.next }; }
+    else step = { bubbles: [...lead, ...OPENER], next: "awaiting_name" };
     // They rang Reason's number before signing up (src/strangercalls.js): said first, once.
     const back = reconnectLine(conversationId);
-    if (back) bubbles = [back, ...bubbles];
+    if (back) step.bubbles = [back, ...step.bubbles];
   } else if (state === "awaiting_name") {
-    if (read.name) { bubbles = [...replyLine, ...step2(read.name)]; next = "awaiting_occupation"; }
-    else if (read.kind === "decline") { bubbles = step2(""); next = "awaiting_occupation"; }
-    // A name already on the account (the channel's display name, or saved some other way): not asked again.
-    else if (row.name) { bubbles = [...replyLine, ...step2(row.name)]; next = "awaiting_occupation"; }
-    else if (!steered) { bubbles = [...replyLine, STEERS.awaiting_name]; }
-    else { bubbles = [...replyLine, ...step2("")]; next = "awaiting_occupation"; }
-  } else if (state === "awaiting_occupation") {
-    if (read.kind === "answer" || read.kind === "decline" || read.occupation) { bubbles = [...replyLine, ...step3(read.ideas)]; next = "awaiting_todo"; }
-    else if (!steered) { bubbles = [...replyLine, STEERS.awaiting_occupation]; }
-    else { bubbles = [...replyLine, ...step3(read.ideas)]; next = "awaiting_todo"; }
-  } else if (state === "awaiting_todo") {
-    if (read.kind === "decline" || read.kind === "answer") { bubbles = [LATER]; next = "complete"; }
-    else if (!steered) { bubbles = [...replyLine, STEERS.awaiting_todo]; }
-    else { bubbles = replyLine.length ? replyLine : [LATER]; next = "complete"; }
+    // A name already on the account (the channel's display name, an event page) is not asked again.
+    const who = read.name || (read.kind === "decline" ? "" : row.name || null);
+    if (who !== null) { const s = afterName(router, conversationId, who, { line: read.name ? read.nameLine : null }); step = { bubbles: [...replyLine, ...s.bubbles], next: s.next }; }
+    else if (!steered) step = { bubbles: [...replyLine, STEERS.awaiting_name], next: state };
+    else { const s = afterName(router, conversationId, ""); step = { bubbles: [...replyLine, ...s.bubbles], next: s.next }; }
+  } else if (state === "awaiting_card_name") {
+    if (read.cardName || read.kind === "answer" || read.kind === "decline") {
+      const c = theCard(router, conversationId, read.kind === "decline" ? "" : read.cardName);
+      step = { ...c, bubbles: [...replyLine, ...c.bubbles] };
+    }
+    else if (!steered) step = { bubbles: [...replyLine, STEERS.awaiting_card_name], next: state };
+    else { const c = theCard(router, conversationId, ""); step = { ...c, bubbles: [...replyLine, ...c.bubbles] }; }
   }
 
-  // The step's key is fixed by where they were, so the same step run twice queues nothing twice.
-  const key = `onboard:${conversationId}:${state}:${steered}:${row.onboarding_at ?? 0}`;
-  const write = () => {
-    if (next === "complete") finish(conversationId);
-    else if (next !== state) db.setOnboarding(conversationId, { state: next, nameAsked: next === "awaiting_name" || state === "awaiting_name" });
-    else db.setOnboarding(conversationId, { steers: steered + 1 });
-  };
-  const historyLines = (said) => [
-    { role: "user", content: `[${stamp()}] ${name || "them"}: ${text}` },
-    ...(said.length ? [{ role: "assistant", content: said.map(t => t === CARD_ASK ? `${t}\n[sent them Reason's contact card with it]` : t).join("\n\n") }] : []),
-  ];
-  log({ onboarding: conversationId, from: state, to: next, bubbles: bubbles.length });
-  const said = await commitStep({ router, conversationId, route, bubbles, key, write, historyLines, sleep, log });
-  if (next !== "complete") scheduleNudge(conversationId);
-  return { handled: true, step: next, said };
+  const said = await runStep({
+    router, conversationId, route, row, bubbles: step.bubbles, next: step.next, cardNamed: step.name ?? null,
+    userLine: `[${stamp()}] ${name || "them"}: ${text}`, sleep, log,
+  });
+  return { handled: true, step: step.next, said };
 }
