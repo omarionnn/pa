@@ -1077,3 +1077,25 @@ test("a right code is not used up on a Start the Mac window blocks, and the outb
   const ok = await req(token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell });
   assert.equal(ok.status, 303, "the same code still works once the window is closed");
 });
+
+// ---------- the restart gate ----------
+// A deploy restart at 22:38:55 UTC on 2026-11-10 killed a live Notion sign-in mid-flow. The process
+// now says what it holds in data/busy.json, which verify-reason/bin/idle.sh reads before a restart.
+test("a sign-in in progress is on the busy file from the link to its end, with no token, number or name on it", async () => {
+  const busy = await import("../src/busy.js");
+  const { readFileSync } = await import("node:fs");
+  const p = join(dir, "busy.json");
+  busy.setBusyPath(p);
+  busy.resetBusy();
+  const read = () => JSON.parse(readFileSync(p, "utf8"));
+  assert.deepEqual(read().items, [], "a fresh process holds nothing");
+  assert.equal(read().pid, process.pid, "the file names the pid that wrote it, so a dead process's file says nothing");
+  const { token } = make();
+  assert.deepEqual(read().items.map(i => [i.kind, i.site]), [["signin_link", "amazon"]], "an unopened link is held: a restart would kill it too");
+  const { cookie } = await start(token);
+  assert.deepEqual(read().items.map(i => [i.kind, i.site]), [["signin", "amazon"]], "started: its browser is open");
+  const raw = readFileSync(p, "utf8");
+  assert.ok(!raw.includes(token) && !raw.includes(CONV) && !raw.includes(OWNER), "no token, conversation or number");
+  await req(token, "done", { method: "POST", cookie });
+  assert.deepEqual(read().items, [], "ended: released");
+});

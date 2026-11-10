@@ -222,6 +222,17 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    that is the net, not the plan: the cut-off line ("you were saying something as I hung up") is lost
    on a resume. Every builder waits.
 
+   **Idle also means no sign-in in progress and no checkout running.** On 2026-11-10 restarts at
+   22:38:55 and 22:45:33 UTC killed two live Notion sign-ins mid-flow: those sessions live only in the
+   process. The process now writes what it holds to `data/busy.json` (src/busy.js, its own pid; kind +
+   site + a one-way id, nothing personal), and idle.sh reads it — or, on code from before it, the
+   running pid's journal. A `shop_runs` row `running` touched in the last 30 minutes is busy too.
+   **Every deploy kit restarts through `/root/reason-restart.sh`** (scripts/safe-restart.sh; it runs
+   `/root/reason-idle.sh` = this idle.sh with `REASON_LIVE_SSH=local`, waits up to 20 min, restarts,
+   checks health). Never `systemctl restart reason` by hand in a deploy; `--force` is for a rollback
+   only, and the report says it was forced. When copying a new idle.sh, also copy it to
+   `/root/reason-idle.sh` (`chmod 700`).
+
    **Then restart in its own ssh command, and prove a NEW process started AFTER the copy.** On
    2026-10-24 `… && systemctl restart reason` at the end of a chained ssh line was silently skipped
    twice: the files were new, the old process kept running the old code, and only the start time

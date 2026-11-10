@@ -51,6 +51,7 @@ import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
 import { readSignedInState } from "./sites.js";
 import { profileDirFor, guardContext } from "./browser.js";
+import * as restartGate from "./busy.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
@@ -141,6 +142,8 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
   };
   sessions.set(token, s);
   byConversation.set(conversationId, token);
+  // A deploy restart must not cut this (src/busy.js; the gate is verify-reason/bin/idle.sh).
+  restartGate.hold(token, { kind: "signin_link", site: entry.site });
   // Unopened, it is good for linkTtl. Once started, the session clock replaces this one.
   s.timer = timers.set(() => { end(s, "link_expired").catch(() => {}); }, config.remoteSigninLinkTtlMs);
   s.timer?.unref?.();
@@ -171,6 +174,7 @@ function inTurn(s, fn) {
 async function end(s, how) {
   if (s.ended) return s.ended;
   s.ended = { how, state: null, why: "", at: clock.now() };
+  restartGate.release(s.token);
   s.timers.clear(s.timer);
   const { conversationId: c, entry } = s;
   let note;
@@ -559,6 +563,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         return { status: 500, headers: HTML(), body: await resultPage(s) };
       }
       s.log({ signin_remote: "started", site: s.entry.site, conversation: s.conversationId });
+      restartGate.hold(s.token, { kind: "signin", site: s.entry.site });
     }
     const secure = /^https:/i.test(config.publicUrl || "") ? "; Secure" : "";
     const session = `${name}=${s.secret}; Path=${PATH}/${s.token}; HttpOnly; SameSite=Strict; Max-Age=${Math.ceil(config.remoteSigninSessionMs / 1000)}${secure}`;
