@@ -1014,10 +1014,15 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
  * "" when there is no number to text, which is the honest answer: a button that opens Messages
  * with nobody in the To field is worse than the sentence it replaced.
  */
-export function backToReason({ text = "done, keep going", label = "Back to Reason" } = {}) {
+/** The sms: link Back to Reason opens (Messages, the reply typed), or "" when Reason has no number to text from. */
+export function backToReasonHref(text = "done, keep going") {
   const number = normalizeNumber(config.sendblueFrom || config.linqFrom);
-  if (!number) return "";
-  const href = `sms:${number}&body=${encodeURIComponent(text)}`;
+  return number ? `sms:${number}&body=${encodeURIComponent(text)}` : "";
+}
+
+export function backToReason({ text = "done, keep going", label = "Back to Reason" } = {}) {
+  const href = backToReasonHref(text);
+  if (!href) return "";
   return `<p class="b2r" style="margin:1.5rem 0 .4rem"><a href="${esc(href)}" `
     + `style="display:block;box-sizing:border-box;width:100%;max-width:22rem;padding:.95rem 1.2rem;`
     + `font:inherit;font-weight:600;text-align:center;text-decoration:none;`

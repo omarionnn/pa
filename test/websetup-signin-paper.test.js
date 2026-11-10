@@ -1,6 +1,7 @@
 // The web setup's Amazon sign-in, drawn on paper (src/pages/setupsignin.js): the intro, the wait while
 // Reason's browser opens, the live picture in the paper frame, signed in (back to the setup on its own),
-// and every way it can fail (same way back). A sign-in link from a text thread keeps its plain pages.
+// and every way it can fail (same way back). A sign-in link from a text thread gets the same paper pages,
+// with Back to Reason (Messages, the reply typed) as its way on and no auto-return.
 // No browser is started: a stand-in records what it is asked.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
@@ -19,6 +20,8 @@ process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_WEB_SETUP = "on";
 process.env.REASON_TOKEN_KEY = "45".repeat(32);
+// Reason's own number, so a text thread's result page can carry Back to Reason.
+process.env.SENDBLUE_FROM_NUMBER = "+1 (415) 555-0199";
 
 const ws = await import("../src/websetup.js");
 const store = await import("../src/websetupstore.js");
@@ -164,18 +167,94 @@ test("not signed in, cancelled, unreadable, launch failed, expired: paper, Nothi
   assert.match((await req(t2)).body, /This link has ended\./);
 });
 
-test("a sign-in link from a text thread keeps its plain pages", async () => {
+test("a sign-in link from a text thread: the same paper pages, Back to Reason as the way on, no auto-return", async () => {
   db.upsertAccount({ conversationId: "dm:fake:+14155550001", channel: "fake", address: "+14155550001", name: "Ama" });
   const s = seams();
   const out = remote.createRemoteSignin({ conversationId: "dm:fake:+14155550001", entry: sites.site("amazon"), ...s });
   const token = out.url.split("/").pop();
   const page = (await req(token)).body;
-  assert.match(page, /<h1>Sign in to Amazon<\/h1>/);
-  assert.match(page, /class="sheet"/);
-  assert.match(page, /<button class="go" type="submit" data-busy="Starting…">Start<\/button>/);
-  assert.doesNotMatch(page, /pf-hd|Just this once|ss-wait/);
-  await remote.endAllRemoteSignins("cancelled");
-  const ended = (await req(token)).body;
-  assert.match(ended, /This link has ended|Not signed in to Amazon<\/h1>/);
-  assert.doesNotMatch(ended, /pf-hd|Back to setup/);
+  assert.match(page, /class="pf-hd"/);
+  assert.match(page, /Sign in to Amazon\.<br><em>Just this once\.<\/em>/);
+  assert.match(page, /SEALED · YOUR AMAZON LOGIN/);
+  assert.match(page, /id="ss-wait"[^>]*hidden/);
+  assert.match(page, /Connect Amazon/, "the link preview card");
+  assert.doesNotMatch(page, /class="sheet"|<h1>Sign in to Amazon<\/h1>/, "the plain page is gone");
+  // Signed in: CONNECTED, Back to Reason into Messages, and the page stays put.
+  const r = await req(token, "start", { method: "POST", cookie: provedCookie("dm:fake:+14155550001") });
+  assert.equal(r.status, 303);
+  const cookie = String(r.headers["Set-Cookie"]).split(";")[0];
+  const live = await req(token, "", { cookie });
+  assert.match(live.body, /class="pf-hd"/);
+  assert.match(live.body, /SEALED · NOTHING YOU TYPE IS KEPT/);
+  await req(token, "done", { method: "POST", cookie });
+  const done = (await req(token)).body;
+  assert.match(done, /class="pf-stamp">CONNECTED</);
+  assert.match(done, /Reason will text you/);
+  assert.match(done, /href="sms:\+14155550199&amp;body=signed%20in%20to%20Amazon%2C%20keep%20going"[^>]*id="ss-back">Back to Reason /);
+  assert.doesNotMatch(done, /Back to setup|\/start\/connect|location\.href=a\.href/);
+  // Ended without signing in: Nothing was lost, Ask Reason for a fresh link, the reply says so.
+  const out2 = remote.createRemoteSignin({ conversationId: "dm:fake:+14155550001", entry: sites.site("amazon"), ...seams({ said: { ok: true, state: "signed_out", why: "sign-in page" } }) });
+  const t2 = out2.url.split("/").pop();
+  const r2 = await req(t2, "start", { method: "POST", cookie: provedCookie("dm:fake:+14155550001") });
+  const c2 = String(r2.headers["Set-Cookie"]).split(";")[0];
+  await req(t2, "cancel", { method: "POST", cookie: c2 });
+  const ended = (await req(t2)).body;
+  assert.match(ended, /Not signed in to Amazon\.<br><em>Nothing was lost\.<\/em>/);
+  assert.match(ended, /Ask Reason for a fresh link to try again/);
+  assert.match(ended, /body=Amazon%20didn&#39;t%20sign%20in"[^>]*id="ss-back">Back to Reason /);
+  assert.doesNotMatch(ended, /from your setup|Back to setup|location\.href=a\.href/);
+});
+
+/** A Reason Web sign-in proved for this conversation: the person's own browser, which starts a link with no code. */
+function provedCookie(conversationId) {
+  const t = `sess-${conversationId}-${Math.random().toString(36).slice(2)}`;
+  db.startPageSession(`wsign:${conversationId}`, t, { conversationId });
+  return `reason_page=${t}`;
+}
+
+test("the code page and the gone page are paper too, for a text thread and a setup alike", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  db.upsertAccount({ conversationId: "dm:fake:+14155550001", channel: "fake", address: "+14155550001", name: "Ama" });
+  const out = remote.createRemoteSignin({ conversationId: "dm:fake:+14155550001", entry: sites.site("amazon"), ...seams() });
+  const token = out.url.split("/").pop();
+  const told = [];
+  const asked = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "", tell: async (c, text) => { told.push(text); } });
+  assert.equal(asked.status, 401);
+  assert.match(asked.body, /class="pf-hd"/);
+  assert.match(asked.body, /Enter the code Reason texted you\./);
+  assert.match(asked.body, /data-code="6"/);
+  assert.match(asked.body, /autocomplete="one-time-code"/);
+  assert.match(asked.body, /name="send" value="1"/);
+  assert.match(asked.body, /TEXT ME A NEW CODE/);
+  assert.match(asked.body, /Connect Amazon/, "the card stays on every page");
+  assert.doesNotMatch(asked.body, /class="sheet"/);
+  await new Promise(r => setImmediate(r));
+  const wrong = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "code=000000", tell: async () => {} });
+  assert.equal(wrong.status, 401);
+  assert.match(wrong.body, /class="pf-note"[^>]*>That code is not right\. 4 tries left\./, "the error is a note the cells point at");
+  assert.match(wrong.body, /aria-invalid="true"/);
+  // An empty tap on Sign in costs none of the few tries: the same 4 are still left after it.
+  const empty = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "code=", tell: async () => {} });
+  assert.equal(empty.status, 401);
+  assert.match(empty.body, /Type the code Reason texted you first\./);
+  const wrong2 = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "code=000001", tell: async () => {} });
+  assert.match(wrong2.body, /3 tries left/, "the empty one was not counted");
+  // No way to text a code (no runtime): the own-browser notice, on paper.
+  const own = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "", tell: null });
+  assert.equal(own.status, 403);
+  assert.match(own.body, /Open this on your own browser\.<br><em>Nothing was lost\.<\/em>/);
+  assert.match(own.body, /signed in to Reason on/);
+  assert.doesNotMatch(own.body, /class="sheet"/);
+  // A setup's code page is the same page.
+  const s = await newSetup();
+  const t2 = link(s.conv);
+  const setupAsked = await remote.remoteRequest({ token: t2, action: "start", method: "POST", headers: {}, readBody: async () => "", tell: null });
+  assert.equal(setupAsked.status, 403, "a setup has no thread to text a code to");
+  // Gone: a token nobody has.
+  const gone = await req("A".repeat(32));
+  assert.equal(gone.status, 404);
+  assert.match(gone.body, /class="pf-hd"/);
+  assert.match(gone.body, /This link is no longer good\.<br><em>Nothing was lost\.<\/em>/);
+  assert.match(gone.body, /Secured by Reason/);
+  assert.doesNotMatch(gone.body, /class="sheet"|STORE ACCOUNT/);
 });

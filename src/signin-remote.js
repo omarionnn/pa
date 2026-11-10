@@ -53,11 +53,11 @@ import { profileDirFor } from "./browser.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
-import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
+import { backToReasonHref, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
-import { setupStartPage, setupLivePage, setupResultPage } from "./pages/setupsignin.js";
+import { setupStartPage, setupLivePage, setupResultPage, setupCodePage, setupGonePage, setupNoticePage } from "./pages/setupsignin.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -388,7 +388,7 @@ const gateFor = (s) => proofPage(s.conversationId, `${s.entry.label} sign-in`);
 /** Text the person a code to their own thread, at most MAX_CODES_SENT in the window, and ask for it. */
 function sendCode(s, tell) {
   if (typeof tell !== "function") {
-    return { status: 403, headers: HTML(), body: shell("Open this on your own browser", `<p class="lead">This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.</p>`, { card: cardKind(s.entry) }) };
+    return { status: 403, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Open this on your own browser.", why: "This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.", card: cardKind(s.entry) }) };
   }
   const page = gateFor(s);
   if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
@@ -421,7 +421,7 @@ function tryCode(s, typed, headers) {
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex", ...extra });
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
 const json = (status, body) => ({ status, headers: JSONH, body: JSON.stringify(body) });
-const gone = () => ({ status: 404, headers: HTML(), body: shell("This link is no longer good", `<p class="lead">Sign-in links work once and only for a few minutes. Ask Reason for a fresh one.</p>`) });
+const gone = () => ({ status: 404, headers: HTML(), body: setupGonePage() });
 
 /**
  * One request to a sign-in link. Pulled out of the server like `pageRequest`, so the whole thing
@@ -469,15 +469,17 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         if (s.secret || s.ended) return gone();
         const typed = form.get("code");
         if (typed === null || form.has("send")) return sendCode(s, tell);
+        // An empty tap on Sign in is not a guess: it costs none of the few tries (review, 2026-11-10).
+        if (!typed.trim()) return codePage(s, { status: 401, error: "Type the code Reason texted you first." });
         // Busy first, so a right code is not used up on a Start that cannot open anything.
         const busyNow = s.busy(s.conversationId);
-        if (busyNow) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(busyNow)}</p>`, { card: cardKind(s.entry) }) };
+        if (busyNow) return { status: 409, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Not right now.", why: busyNow, card: cardKind(s.entry) }) };
         const tried = tryCode(s, typed, headers);
         if (!tried.ok) return codePage(s, { status: tried.status, error: tried.error });
         remember = tried.cookie;
       }
       const blocked = s.busy(s.conversationId);
-      if (blocked) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(blocked)}</p>`, { card: cardKind(s.entry) }) };
+      if (blocked) return { status: 409, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Not right now.", why: blocked, card: cardKind(s.entry) }) };
       s.secret = newToken();
       s.startedAt = clock.now();
       s.timers.clear(s.timer);
@@ -490,8 +492,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       } catch (e) {
         s.log({ signin_remote: "launch_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] });
         await end(s, "launch_failed");
-        if (isSetup(s)) return { status: 500, headers: HTML(), body: await resultPage(s) };
-        return { status: 500, headers: HTML(), body: shell("That did not start", `<p class="lead">The browser would not open. Nothing was changed. Ask Reason for a fresh link in a minute.</p>`, { card: cardKind(s.entry) }) };
+        return { status: 500, headers: HTML(), body: await resultPage(s) };
       }
       s.log({ signin_remote: "started", site: s.entry.site, conversation: s.conversationId });
     }
@@ -683,9 +684,9 @@ header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}
 }
 
 /**
- * A web setup's sign-in (src/websetup.js, conversation `websetup:<id>`): no thread behind it, so its
- * pages are the paper store sign-in (src/pages/setupsignin.js) and the way on is back to the setup.
- * A sign-in link from a text thread keeps the pages below, unchanged.
+ * Every link's pages are the paper store sign-in (src/pages/setupsignin.js). A web setup's sign-in
+ * (src/websetup.js, conversation `websetup:<id>`) has no thread behind it, so its way on at the end
+ * is back to the setup; a text thread's is back to Reason.
  */
 export const isSetup = (s) => String(s?.conversationId ?? "").startsWith("websetup:");
 /** The setup's connect screen on the site it was made on (loaded late: websetup.js reaches back here through amazonconnect.js). */
@@ -694,66 +695,25 @@ async function setupBack(s) {
 }
 
 function startPage(s) {
-  if (isSetup(s)) return setupStartPage({ entry: s.entry, action: `${PATH}/${s.token}/start` });
-  const label = esc(s.entry.label);
-  return shell(`Sign in to ${s.entry.label}`, `
-<h1>Sign in to ${label}</h1>
-<p class="lead">This shows you Reason's own browser so you can sign in to ${label} yourself. Reason keeps the signed-in session, not your password.</p>
-<div class="card"><ul>
-<li>You will see ${label}'s real sign-in page. Tap a box and your keyboard comes up, the same as any site.</li>
-<li>Your saved ${label} login is filed under ${label}'s own address, not this one, so it will not come up by itself — tap <b>Passwords</b> above the keyboard and pick ${label}.</li>
-<li>What you type is passed straight to ${label}. It is not saved, logged, or shown to the assistant.</li>
-<li>A password or a code by text works. Face ID and passkeys do not, because the browser is not on this phone.</li>
-<li>This link works once, on this device, for a few minutes.</li>
-</ul></div>
-<form method="post" action="${PATH}/${s.token}/start"><button class="go" type="submit" data-busy="Starting…">Start</button></form>
-<p class="small">Did not ask Reason for this? Close the page. Nothing happens unless you tap Start.</p>`, { card: cardKind(s.entry) });
+  return setupStartPage({ entry: s.entry, action: `${PATH}/${s.token}/start` });
 }
 
 /** The code step, for a browser that is not the person's own proved one. The code went to their own thread. */
 function codePage(s, { status = 401, error = "" } = {}) {
-  const label = esc(s.entry.label);
-  return {
-    status, headers: HTML(),
-    body: shell(`Sign in to ${s.entry.label}`, `
-<h1>Enter the code Reason texted you</h1>
-<p class="lead">This browser isn't signed in to Reason yet, so Reason texted you a code first. That keeps a forwarded link from opening your ${label} sign-in. After this once, Reason remembers this browser and its links open straight away.</p>
-${error ? `<p class="lead"><b>${esc(error)}</b></p>` : ""}
-<form method="post" action="${PATH}/${s.token}/start">
-<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="6-digit code" aria-label="Code" required>
-<div class="row"><button class="go" type="submit" data-busy="Starting…">Start</button></div>
-</form>
-<form method="post" action="${PATH}/${s.token}/start"><input type="hidden" name="send" value="1"><button type="submit">Text me a new code</button></form>
-<p class="small">Didn't ask Reason for this? Close the page. Nothing happens without the code.</p>`, { card: cardKind(s.entry) }),
-  };
+  return { status, headers: HTML(), body: setupCodePage({ entry: s.entry, action: `${PATH}/${s.token}/start`, error, card: cardKind(s.entry) }) };
 }
 
 /**
- * How it ended, and the way back to the thread.
+ * How it ended, and the way on.
  *
- * `backToReason` rather than "you can close this page": closing a tab tells Reason nothing, and
- * the person who just signed in is the one whose task is waiting on it. "Reason will text you"
- * stays — both are true, and the tap is the faster of the two.
+ * A setup goes back to its connect screen. A text thread ends with `backToReasonHref` rather than
+ * "you can close this page": closing a tab tells Reason nothing, and the person who just signed in
+ * is the one whose task is waiting on it. "Reason will text you" stays — both are true, and the
+ * tap is the faster of the two.
  */
 async function resultPage(s) {
   if (isSetup(s)) return setupResultPage({ entry: s.entry, ended: s.ended, back: await setupBack(s), card: cardKind(s.entry) });
-  const label = esc(s.entry.label);
-  const name = s.entry.label;
-  const [body, back] = s.ended.state === "signed_in"
-    ? [`<h1>You're signed in to ${label}</h1><p class="lead">${label} confirmed it. Reason will text you.</p>`,
-      `signed in to ${name}, keep going`]
-    : s.ended.state === "signed_out"
-      ? [`<h1>Not signed in to ${label}</h1><p class="lead">${label} still shows its sign-in page, so nothing was saved. Ask Reason for a fresh link to try again.</p>`,
-        `${name} didn't sign in`]
-      : s.ended.state === "blocked"
-        ? [`<h1>${label} wouldn't let Reason's browser in</h1><p class="lead">${label} stopped the page with a bot check before you could sign in. That isn't something you did, and a fresh link would hit the same wall. Nothing was typed and nothing was saved. Reason will text you what works instead.</p>`,
-          `${name} blocked the sign-in`]
-      : s.ended.state
-        ? [`<h1>Could not tell</h1><p class="lead">The sign-in ended, but ${label}'s page could not be read to confirm it. Ask Reason to check.</p>`,
-          `${name} sign-in ended, not sure if it worked`]
-        : [`<h1>This link has ended</h1><p class="lead">Ask Reason for a fresh one.</p>`,
-          `the ${name} sign-in link ended`];
-  return shell(`${s.entry.label} sign-in`, `${body}${backToReason({ text: back })}`, { card: cardKind(s.entry) });
+  return setupResultPage({ entry: s.entry, ended: s.ended, thread: { reply: backToReasonHref }, card: cardKind(s.entry) });
 }
 
 /**
@@ -783,23 +743,7 @@ async function resultPage(s) {
  * appear on top of a box the site itself drew, they have no action, and they submit nowhere.
  */
 function livePage(s) {
-  if (isSetup(s)) return setupLivePage({ entry: s.entry, view: VIEW, script: liveScript(s), card: cardKind(s.entry) });
-  const label = esc(s.entry.label);
-  return shell(`Sign in to ${s.entry.label}`, `
-<header><h1>${label}</h1><button id="back">Back</button></header>
-<p class="small" id="tip">Tap the page and sign in the way you normally would.</p>
-<div id="stage">
-  <img id="v" alt="">
-  <form id="f" autocomplete="on" onsubmit="return false">
-    <input id="in-u" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <input id="in-p" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <input id="in-o" type="text" autocomplete="one-time-code" inputmode="numeric" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <input id="in-g" type="text" autocomplete="on">
-  </form>
-  <div id="veil"><span><span class="spin"></span>Opening ${label}…</span></div>
-</div>
-<p class="small" id="msg"></p>
-<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { card: cardKind(s.entry), script: `<script>${liveScript(s)}</script>` });
+  return setupLivePage({ entry: s.entry, view: VIEW, script: liveScript(s), card: cardKind(s.entry) });
 }
 
 /** The live page's script: the same for both frames, driving the ids both draw. */
