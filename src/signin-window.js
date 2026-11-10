@@ -75,7 +75,8 @@ export async function openSigninWindow({
     // button on the sign-in page for them, and the site's "signed in" afterwards records which
     // button it was. The CLI reads it from its environment so the argument list stays one site name.
     const env = provider ? { ...process.env, REASON_SIGNIN_PROVIDER: provider } : process.env;
-    child = spawnImpl(process.execPath, [CLI, entry.site], { env, stdio: "ignore" });
+    // A site known only by its address goes as its sign-in page, so the window opens there.
+    child = spawnImpl(process.execPath, [CLI, entry.generic ? entry.signin_url : entry.site], { env, stdio: "ignore" });
   } catch (e) {
     return { ok: false, error: `The sign-in window could not be opened: ${(e?.message ?? String(e)).split("\n")[0]}` };
   }

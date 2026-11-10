@@ -26,7 +26,9 @@ import { SITES, siteNames } from "./sites.js";
 // Both registries: the errand sites and the services whose subscriptions cancel on the web. The
 // window this command opens is the same window either way — the person signs in themselves and the
 // session lands in their own profile. See signin.entryFor.
-const findSite = (n) => signin.entryFor(n);
+// A registry name, or any other site by its web address (src/signin.js genericEntry): the window
+// is opened by the operator on their own Mac, or by signin_open where the social flag reaches them.
+const findSite = (n) => signin.anyEntryFor(n);
 const allNames = () => signin.signinNames();
 
 const LAUNCH = {

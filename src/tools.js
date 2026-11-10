@@ -409,6 +409,31 @@ export function socialToolVisible(name, conversationId) {
   return !SOCIAL_TOOLS.has(name) || social.socialAllowedFor(conversationId);
 }
 
+/**
+ * The site a sign-in tool was asked about: a registry name, or — where the social flag reaches this
+ * person — ANY site by its web address (src/signin.js genericEntry). A Google/Apple/Facebook/
+ * Microsoft login opens sites no list will ever hold; on 2026-11-10 the owner asked for his Notion
+ * notes and Reason said it could not get in, because only registry names resolved here.
+ */
+function signinSite(c, site) {
+  return social.socialAllowedFor(c) ? signin.anyEntryFor(site) : signin.entryFor(site);
+}
+function noSigninSite(c, site) {
+  const known = `Known by name: ${signin.signinNames().join(", ")}.`;
+  return social.socialAllowedFor(c)
+    ? { ok: false, error: `'${site}' is not a site name on the list, and not a web address. Any other site works by its address: call again with its sign-in page as \`site\` (for Notion, https://www.notion.so/login), or its domain. ${known}` }
+    : { ok: false, error: `No site called '${site}'. ${known}` };
+}
+/** A site known only by its address is opened only when that address is on the public internet. */
+async function genericSiteRefused(entry, ctx) {
+  if (!entry?.generic) return null;
+  for (const url of new Set([entry.signin_url, entry.signed_in.url])) {
+    const pub = await (ctx.publicUrl ?? publicUrl)(url, { httpsOnly: true });
+    if (!pub.ok) return { ok: false, refused: true, error: `Not opened: ${pub.why}.` };
+  }
+  return null;
+}
+
 // Reason's own plan (src/plan.js, REASON_PAYWALL): shown only where the paywall reaches this person and
 // Reason is not free for them. Off, nobody's model is told these exist.
 export const PLAN_TOOLS = new Set(["subscription_show", "subscription_cancel"]);
@@ -3018,13 +3043,19 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const signins = out.find(c => c.name === "saved_signins");
   if (signins) {
     signins.status = "live";
-    signins.what = route.can_sign_in
+    // Where the social flag reaches them, the secure link reaches ANY site by its address
+    // (src/signin.js genericEntry) — said first, because on 2026-11-10 this list read as "nothing
+    // signed in, Mac window only" and Reason told the owner it could not get into his Notion.
+    const anySite = social.socialAllowedFor(conversationId)
+      ? `sign in to ANY site for a real task, Notion and Airbnb included, not only a listed one: signin_link makes a private secure link that opens the site's own sign-in page (by its web address when it is not on signin_link's list), with their Google, Apple, Facebook or Microsoft button pressed when that is how they sign in; they sign in themselves and Reason keeps the session. Ask in one line first, per the sign-in rules. Also: `
+      : "";
+    signins.what = anySite + (route.can_sign_in
       ? `${who} signs in to a site themselves, once, in a window on the Mac (npm run signin -- <site>), and Reason keeps that session in their own browser profile for later errands.`
         + ` Signed in right now: ${saved.length ? saved.map(s => s.site).join(", ") : "nothing"}.`
         + ` Reason never takes a password — not in a message, not anywhere — and says so rather than storing one`
       : `this cannot be done from here. Signing in needs a browser window ${who} can see, and Reason's browser is on ${config.ownerName}'s Mac.`
         + ` There is no safe way to do it by text yet, and a password in a message is the one thing that is ruled out rather than missing.`
-        + ` Say that plainly and offer something that needs no account`;
+        + ` Say that plainly and offer something that needs no account`);
   }
 
   const errands = out.find(c => c.name === "site_errands");
@@ -5208,7 +5239,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        site: { type: "string", description: "One site name. Omit for all of them." },
+        site: { type: "string", description: "One site name, or a site's web address for one signed in through a link by its address. Omit for all of them." },
         recheck: { type: "boolean", description: "Ask the site now rather than reading the last check. Needs `site`." },
       },
     },
@@ -5219,7 +5250,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" },
+        site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango, or a subscription service cancel_route knows. Where your instructions carry the Google/Apple/Facebook/Microsoft sign-in rules: ANY other site too, by its web address — its sign-in page if you know it (https://www.notion.so/login), else its domain (airbnb.com)." },
         provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form." },
       },
       required: ["site"],
@@ -5233,7 +5264,7 @@ export const tools = [
       properties: {
         action: { type: "string", enum: ["ask_check", "declined", "infer", "unlocks"] },
         provider: { type: "string", enum: social.PROVIDERS },
-        site: { type: "string", description: "For infer: the site whose sign-in page to read." },
+        site: { type: "string", description: "For infer: the site whose sign-in page to read — a name signin_link knows, or any site's web address (https://www.notion.so/login)." },
         text: { type: "string", description: "For infer: words to read instead of a page — a welcome or receipt email's body." },
       },
       required: ["action"],
@@ -5245,7 +5276,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" },
+        site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango. Where your instructions carry the Google/Apple/Facebook/Microsoft sign-in rules: ANY other site too, by its web address — its sign-in page if you know it (https://www.notion.so/login), else its domain (airbnb.com)." },
         provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these; the window presses it for them. Omit for the site's own form." },
       },
       required: ["site"],
@@ -7236,14 +7267,14 @@ const S = {
   photo_look: z.object({ id: z.number().int().positive() }),
   account_list: z.object({}),
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
-  account_revoke: z.object({ name: z.string().min(1).max(40) }),
-  signin_status: z.object({ site: z.string().max(40).optional(), recheck: z.boolean().optional() }),
-  signin_open: z.object({ site: z.string().min(1).max(40), provider: z.enum(social.PROVIDERS).optional() }),
-  signin_link: z.object({ site: z.string().min(1).max(40), provider: z.enum(social.PROVIDERS).optional() }),
+  account_revoke: z.object({ name: z.string().min(1).max(300) }),
+  signin_status: z.object({ site: z.string().max(300).optional(), recheck: z.boolean().optional() }),
+  signin_open: z.object({ site: z.string().min(1).max(300), provider: z.enum(social.PROVIDERS).optional() }),
+  signin_link: z.object({ site: z.string().min(1).max(300), provider: z.enum(social.PROVIDERS).optional() }),
   signin_provider: z.object({
     action: z.enum(["ask_check", "declined", "infer", "unlocks"]),
     provider: z.enum(social.PROVIDERS).optional(),
-    site: z.string().max(40).optional(),
+    site: z.string().max(300).optional(),
     text: z.string().max(20_000).optional(),
   }),
   site_playbook: z.object({ site: z.string().max(40).optional() }),
@@ -14443,6 +14474,24 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "account_revoke": {
       const provider = trust.PROVIDERS[input.name];
+      // A site signed in to through a link by its web address (signinSite → src/signin.js
+      // genericEntry): same revoke as a registry site — its cookies and storage out of the profile,
+      // the row revoked, and the pages read there while signed in scrubbed by host.
+      const loose = !provider && social.socialAllowedFor(c) && !signin.entryFor(input.name) ? signin.genericEntry(input.name) : null;
+      if (loose) {
+        const offNet = await genericSiteRefused(loose, ctx);
+        if (offNet) return offNet;
+        const page = await (ctx.pageFor ?? browser.pageFor)(c);
+        const out = await signin.forgetSite(page.context(), c, loose.site);
+        if (!out.ok) return out;
+        const copies = db.scrubToolResults(c, { tools: BROWSER_READ_TOOLS, mentioning: loose.hosts });
+        return {
+          ok: true, status: "revoked", account: { name: loose.site }, ...out, copies_cleared: copies,
+          note: `${out.note ?? `The ${loose.label} sign-in is gone from Reason's browser.`}`
+            + (copies ? ` ${copies} page(s) Reason read on ${loose.label} are cleared out of this conversation too.` : "")
+            + ` What stays is the record of what Reason did there, which is on the ledger.`,
+        };
+      }
       if (!provider) return { ok: false, error: `No provider called '${input.name}'.` };
 
       // Spotify's credential is a token on this machine, so revoking means deleting it rather than
@@ -14491,8 +14540,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * the window's own check, after it closes, is what says whether the site is signed in.
      */
     case "signin_open": {
-      const entry = signin.entryFor(input.site);
-      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
+      const entry = signinSite(c, input.site);
+      if (!entry) return noSigninSite(c, input.site);
+      const offNet = await genericSiteRefused(entry, ctx);
+      if (offNet) return offNet;
       if (entry.signin_blocked) {
         const wall = await socialWallFor(c, entry, input.provider, ctx);
         if (!wall.in) return wall.answer;
@@ -14537,8 +14588,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Both registries: the ten errand sites and the services whose subscriptions cancel on the
       // web. Signing in is the same act either way — the person does it themselves on the site's
       // own page and the session lands in their own profile — so there is one door, not two.
-      const entry = signin.entryFor(input.site);
-      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
+      // Where the social flag reaches them, any site by its web address too (signinSite).
+      const entry = signinSite(c, input.site);
+      if (!entry) return noSigninSite(c, input.site);
+      const offNet = await genericSiteRefused(entry, ctx);
+      if (offNet) return offNet;
       // A site that bot-checks this browser off its sign-in page gets no link: the owner opened one
       // on 2026-10-15 and watched Uber's "Performing security verification" never clear. Saying so
       // is the whole answer; a link would only show that page again. With a provider, where the
@@ -14619,8 +14673,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const never = signin.refuseAPassword();
       if (input.recheck) {
         if (!input.site) return { ok: false, error: "recheck needs a site: it has to know which account page to open." };
-        const entry = signin.entryFor(input.site);
-        if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
+        const entry = signinSite(c, input.site);
+        if (!entry) return noSigninSite(c, input.site);
+        const offNet = await genericSiteRefused(entry, ctx);
+        if (offNet) return offNet;
         const reach = trust.SITE_REACHABLE[entry.site];
         // Which button the last live sign-in went through, read BEFORE the probe: a signed-out
         // reading revokes the row, and the provider on it is what a sign-in-again presses.
@@ -14661,8 +14717,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // deliberately still does — that list is what "what's signed in" has always meant — so a
       // cancel-route service is answered as one row built the same way rather than by widening it.
       if (input.site && !rows.length) {
-        const also = signin.entryFor(input.site);
-        if (!also) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
+        const also = signinSite(c, input.site);
+        if (!also) return noSigninSite(c, input.site);
         const last = db.lastSigninCheck(c, also.site);
         const live = !last?.revoked_at && last?.state === "signed_in";
         rows = [{
@@ -14737,8 +14793,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           const offered = social.providersOffered(input.text);
           return { ok: true, read: "the text you gave", providers_offered: offered, ...(offered.length ? { say: `Confirm in one line before using it: "looks like you sign in to that with ${social.loginWords(offered[0])} — want me to use it?"` } : { say: "Nothing in that text names a provider. Read the site's sign-in page (infer with site) or ask them." }) };
         }
-        const entry = signin.entryFor(input.site ?? "");
-        if (!entry) return { ok: false, error: `infer needs a site (or text). Known: ${signin.signinNames().join(", ")}.` };
+        const entry = input.site ? signinSite(c, input.site) : null;
+        if (!entry) return input.site ? noSigninSite(c, input.site) : { ok: false, error: `infer needs a site (or text). Known: ${signin.signinNames().join(", ")}.` };
+        const offNet = await genericSiteRefused(entry, ctx);
+        if (offNet) return offNet;
         if (entry.signin_blocked) return signinBlockedAnswer(entry);
         const read = ctx.readSigninPage ?? (async (e) => {
           const page = await browser.pageFor(c);

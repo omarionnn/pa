@@ -30,7 +30,7 @@ import { config, clock, stamp } from "./config.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { profileDirFor, settle as settleBrowser } from "./browser.js";
-import { SITES, site as findSite, readSignedInState, siteNames } from "./sites.js";
+import { SITES, site as findSite, siteFor, readSignedInState, siteNames } from "./sites.js";
 import * as cancelRoutes from "./cancel-routes.js";
 import * as airlines from "./airlines.js";
 
@@ -58,6 +58,75 @@ import * as airlines from "./airlines.js";
  */
 export function entryFor(name) {
   return findSite(name) ?? cancelRoutes.signinEntry(name) ?? airlines.signinEntry(name);
+}
+
+/**
+ * Any other site, by its web address: a sites-shaped entry for a site no registry knows (Notion,
+ * Airbnb, a gym's booking site…), so the person can sign in to it through the same secure link.
+ *
+ * Why this exists (2026-11-10): the owner asked for his notes in Notion, and Reason said it could
+ * not get in — a sign-in link only reached the registry sites, and the prompt told it to say so
+ * upfront. A Google/Apple/Facebook/Microsoft login opens far more sites than any list will hold,
+ * so the list cannot be the door. The site is named by its address, which the model knows.
+ *
+ * `raw` is a domain ("notion.so") or a URL ("https://www.notion.so/login"); a bare word, an IP, a
+ * port, credentials in the URL or anything but https gives null. The key is the domain without
+ * "www.", so the same site is one row however it was written. A path is kept as the sign-in page;
+ * without one the link opens the site's front page. Signed in is read from the front page no longer
+ * asking for a sign-in — inferred, and said so, because nobody has seen this site's signed-in page.
+ * Callers that navigate must still ask src/netguard.js publicUrl: a name that resolves to this
+ * machine's own network is never opened.
+ */
+const SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu", "ne", "or"]);
+export function genericEntry(raw) {
+  let s = String(raw ?? "").trim();
+  if (!s || s.length > 300 || /\s/.test(s)) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `https://${s}`;
+  let u;
+  try { u = new URL(s); } catch { return null; }
+  if (u.protocol !== "https:" || u.username || u.password || u.port) return null;
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  const labels = host.split(".");
+  if (labels.length < 2 || labels.some(l => !/^[a-z0-9-]+$/.test(l)) || /^\d+$/.test(labels.at(-1))) return null;
+  const bare = host.replace(/^www\./, "");
+  const parts = bare.split(".");
+  if (parts.length < 2) return null;
+  const word = parts.length > 2 && parts.at(-1).length === 2 && SECOND_LEVEL.has(parts.at(-2)) ? parts.at(-3) : parts.at(-2);
+  const label = word.charAt(0).toUpperCase() + word.slice(1);
+  const front = `https://${bare}/`;
+  const page = u.pathname && u.pathname !== "/" ? `${u.origin}${u.pathname}${u.search}` : front;
+  return {
+    site: bare,
+    label,
+    what: `do what they ask on ${label}`,
+    hosts: [bare],
+    entry: front,
+    signin_url: page,
+    urls_verified: false,
+    needs_signin: "always",
+    signed_in: {
+      url: front,
+      when_in: [],
+      when_out: ["log in", "sign in", "sign up", "create an account", "create account"],
+      when_out_url: "/login",
+    },
+    commit_labels: [],
+    limits: [`${label} is not one of the sites Reason has a playbook for: nobody has seen its signed-in pages here, so "signed in" is read from its front page no longer asking for a sign-in.`],
+    generic: true,
+  };
+}
+
+/**
+ * The entry for a name OR a web address: a registry name first, then a URL on a registry site (so
+ * "https://www.amazon.com/…" keeps Amazon's own entry and what is known about it), then any other
+ * site by its address. Where the generic door is allowed is the caller's decision, not this one's.
+ */
+export function anyEntryFor(name) {
+  const known = entryFor(name);
+  if (known) return known;
+  const g = genericEntry(name);
+  if (!g) return null;
+  return siteFor(g.signin_url) ?? g;
 }
 
 /** Every name `entryFor` will resolve, for an error message that is actually useful. */
@@ -143,7 +212,9 @@ export async function probeSignedIn(page, siteName, { entry: given = null } = {}
   // `given` is the registry entry already in hand, for the one caller that has one: the cancel rail
   // resolves a service through its own registry (which a test can stand a fixture in) and then asks
   // this to read the page. Everything else passes a name and this looks it up.
-  const entry = given ?? entryFor(siteName);
+  // A site with no registry entry is named by its domain (genericEntry), so the probe after a
+  // sign-in through the link resolves it the same way the link did.
+  const entry = given ?? anyEntryFor(siteName);
   if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${signinNames().join(", ")}.` };
   // Twice, because the page is shared and a page load can be cut off. There is one Chromium per
   // conversation, so this probe can start while the tab is still carrying a navigation that failed
@@ -240,7 +311,8 @@ export async function clearOriginInPage() {
  * profile (`npm run data:delete`) is still the only certain way.
  */
 export async function forgetSite(context, conversationId, siteName) {
-  const entry = entryFor(siteName);
+  // A site signed in to by its address (genericEntry) is forgotten the same way, by its domain.
+  const entry = anyEntryFor(siteName);
   if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${signinNames().join(", ")}.` };
 
   const cleared = { cookies: [], storage: [], indexeddb: [], failed: [] };
