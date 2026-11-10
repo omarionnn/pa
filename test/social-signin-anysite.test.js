@@ -284,3 +284,10 @@ test("a bare domain whose front page hides the buttons: its /login is tried, and
   assert.equal(made2[0].entry.signin_url, "https://example-shop.com/");
   assert.deepEqual(made2[0].offered, []);
 });
+
+test("the rendered page is read by its buttons' labels: Notion's bare 'Google', Airbnb's aria-only buttons", () => {
+  assert.deepEqual(social.providersOnPage(["Skip to content", "Continue", "Google", "ChatGPT", "Apple", "Microsoft", "Passkey", "SSO", "Sign up"]), ["google", "apple", "microsoft"]);
+  assert.deepEqual(social.providersOnPage(["Privacy Policy", "Continue", "Continue with Google", "Continue with Apple", "Log in"]), ["google", "apple"]);
+  assert.deepEqual(social.providersOnPage(["Get it on Google Play", "Download on the Apple App Store", "Log in"]), [], "app-store badges are not sign-in buttons");
+  assert.deepEqual(social.providersOnPage("Continue with Google"), ["google"]);
+});

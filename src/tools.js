@@ -415,12 +415,18 @@ export function socialToolVisible(name, conversationId) {
  * Microsoft login opens sites no list will ever hold; on 2026-11-10 the owner asked for his Notion
  * notes and Reason said it could not get in, because only registry names resolved here.
  */
-/** A site's sign-in page as a person sees it, rendered in this person's own guarded browser. */
+/**
+ * A site's sign-in page as a person sees it, rendered in this person's own guarded browser: the
+ * labels of its buttons and links (text, aria-label, title). Notion's buttons say only "Google",
+ * Airbnb's are not in the page's visible text at all (seen live 2026-11-10); the labels have both.
+ */
 async function renderedSigninText(c, entry) {
   const page = await browser.pageFor(c);
   await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 45_000 });
   if (page.waitForTimeout) await page.waitForTimeout(2500).catch(() => {});
-  return await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+  return await page.evaluate(() => [...document.querySelectorAll("button, a, [role=button], input[type=submit]")]
+    .map(e => [(e.innerText || e.value || "").trim(), e.getAttribute("aria-label") || "", e.getAttribute("title") || ""].filter(Boolean).join(" | "))
+    .filter(Boolean).slice(0, 200)).catch(() => []);
 }
 
 function signinSite(c, site) {
@@ -14657,14 +14663,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let live = liveWall?.providers_offered ?? [];
       const reader = ctx.readSigninPage ?? (process.env.NODE_TEST_CONTEXT ? null : (e) => renderedSigninText(c, e));
       if (social.socialAllowedFor(c) && !live.length && liveWall?.in !== false && reader) {
-        try { live = social.providersOffered(String(await reader(entry) ?? "")); } catch {}
+        try { live = social.providersOnPage(await reader(entry)); } catch {}
         // A site named by its bare domain opens on its front page, where the buttons often sit behind
         // a "Log in" modal (Airbnb). Its /login is tried once; when that page has them, the link
         // opens there instead.
         if (!live.length && entry.generic && entry.signin_url === entry.entry) {
           const atLogin = signin.genericEntry(`${entry.entry}login`);
           try {
-            const there = atLogin && !(await genericSiteRefused(atLogin, ctx)) ? social.providersOffered(String(await reader(atLogin) ?? "")) : [];
+            const there = atLogin && !(await genericSiteRefused(atLogin, ctx)) ? social.providersOnPage(await reader(atLogin)) : [];
             if (there.length) { live = there; entry = atLogin; }
           } catch {}
         }
@@ -14830,10 +14836,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (entry.signin_blocked) return signinBlockedAnswer(entry);
         const read = ctx.readSigninPage ?? ((e) => renderedSigninText(c, e));
         let text = "";
-        try { text = String(await read(entry) ?? ""); } catch (e) {
+        try { text = await read(entry) ?? ""; } catch (e) {
           return { ok: false, site: entry.site, error: `${entry.label}'s sign-in page could not be read: ${(e?.message ?? String(e)).split("\n")[0]}` };
         }
-        const offered = social.providersOffered(text);
+        const offered = social.providersOnPage(text);
         const known = social.providerOf(c, entry.site);
         return {
           ok: true, site: entry.site, read: entry.signin_url, providers_offered: offered,
