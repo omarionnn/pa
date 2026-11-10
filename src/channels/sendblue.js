@@ -1055,6 +1055,9 @@ export class SendblueChannel extends Channel {
         threadRoot: String(event.thread_originator?.message_handle ?? "").trim() || null,
         baseHandle: base,
         partIndex,
+        // A tapback that reached us as a message (seen live 2026-11-06, undocumented): Apple's own
+        // wording in `content`, no handle of its target. Read in src/threading.js.
+        isReaction: event.is_reaction === true,
         // Structured rather than only described, so an image can actually be fetched and looked at.
         attachments: attachment ? [attachment] : [],
         // Sendblue has no thread id for a one-to-one conversation — group_id is the only one it
@@ -1161,6 +1164,7 @@ export class SendblueChannel extends Channel {
         replyTo: String(m.reply_to?.message_handle ?? "").trim() || null,
         threadRoot: String(m.thread_originator?.message_handle ?? "").trim() || null,
         baseHandle: base,
+        isReaction: m.is_reaction === true,
         partIndex,
         attachments: attachment ? [attachment] : [],
         chatId: null,
