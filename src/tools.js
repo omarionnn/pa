@@ -14544,15 +14544,38 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // is the whole answer; a link would only show that page again. With a provider, where the
       // social flag reaches them, the site is asked live first (src/socialsignin.js signinWall): a
       // wall that has lifted lets the Google button be pressed; one still up is said plainly.
+      let liveWall = null;
       if (entry.signin_blocked) {
         const wall = await socialWallFor(c, entry, input.provider, ctx);
         if (!wall.in) return wall.answer;
+        liveWall = wall.wall ?? null;
       }
       if (!me.known && c !== config.ownerConversation) {
         return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
       }
       const by = signin.linkSignin();
       const reach = trust.SITE_REACHABLE[entry.site];
+      // Where the social flag reaches them, the site's sign-in page is asked live before a link is
+      // made (src/socialsignin.js signinWall, cached minutes): which "Continue with" buttons it has,
+      // for the link's own page to offer the same choices; and, for a site the probe found walled
+      // (DoorDash, Uber Eats…), whether it still is — then no link, one plain line, and what works.
+      // Under test only a handed-in probe runs: tests never touch the real network (src/netguard.js).
+      const probe = ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? null : social.signinWall);
+      if (social.socialAllowedFor(c) && !liveWall && probe) {
+        try { liveWall = await probe(entry); } catch (e) { liveWall = { in: false, why: (e?.message ?? String(e)).split("\n")[0], providers_offered: [] }; }
+        // Only a real wall refuses the link: a 403/503 or a challenge page. A 404, an outage or no
+        // answer at all is not "blocking", and the link's own page still reads the wall live.
+        const walledNow = liveWall && !liveWall.in && (liveWall.status === 403 || liveWall.status === 503 || /bot check/.test(liveWall.why ?? ""));
+        if (reach && !reach.loads && walledNow) {
+          const instead = social.wallInstead(entry);
+          return {
+            ok: false, blocked: true, site: entry.site, checked_live: true,
+            error: `${entry.label}'s sign-in page refuses Reason's browser from here right now, so no link is made: it would only show the wall. ${liveWall.why ?? ""}`,
+            say: `${entry.label} is blocking my browser from its sign-in page right now, so I can't sign you in there. That's ${entry.label}'s choice, not something you did.${instead.say ? ` ${instead.say}` : ""}`,
+            instead: instead.tool,
+          };
+        }
+      }
       // Which button their account signs in through (src/socialsignin.js): the page opens with it
       // pressed, and the saved login records it once the site says signed in. Dropped where the flag
       // does not reach this person.
@@ -14560,14 +14583,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (provider && social.refusedRecently(c, entry.site, provider)) {
         return { ok: false, refused: provider, ...social.refusalAnswer(entry, provider), error: `${social.LABELS[provider]} refused Reason's browser for ${entry.label} recently; no ${social.LABELS[provider]} link is made again.` };
       }
+      // The "Continue with" choices the link's page shows: their saved login's provider, the one
+      // asked for, then what the site's sign-in page names. Empty without the flag.
+      const recorded = social.socialAllowedFor(c) ? social.providerOf(c, entry.site) : "";
+      const offered = social.offeredFor(c, entry, { asked: provider, live: liveWall?.providers_offered ?? [] });
+      const choice = social.choiceLine(entry, offered, recorded);
       const out = (ctx.createRemoteSignin ?? signinRemote.createRemoteSignin)({
-        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider,
+        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider, offered,
         // Their profile is busy while the window on the Mac is open on it.
         busy: (conv) => (signinWindow.openWindowFor(conv) ? "A sign-in window is already open on the Mac for this account. Close it first, then tap Start again." : null),
       });
       trust.ledgerWrite({ conversationId: c, action: "signin_link", input, out: { ok: out.ok, site: entry.site, reachable_from_a_phone: out.reachable_from_a_phone, ...(provider ? { provider } : {}) }, target: `site:${entry.site}` });
       return {
         ok: true, site: entry.site, link: out.url, good_for_minutes: out.good_for_minutes,
+        ...(offered.length ? {
+          offered,
+          choice: `The page offers ${social.namesOf(offered)} buttons in Reason's look above the site's own email sign-in. Name the choice in ONE plain line with the link, no jargon, like: "${choice}"`,
+        } : {}),
         ...(provider ? {
           provider,
           expect: `Tell them what to expect in one line: "${social.expectLine(provider)}"`,

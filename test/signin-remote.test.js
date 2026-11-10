@@ -773,8 +773,8 @@ test("a bot check that never clears ends the session as blocked, and nobody is t
   assert.match(note, /uber_link/);
   assert.doesNotMatch(note, /still NOT signed in/);
   const page = await req(token, "", { cookie });
-  assert.match(page.body, /Uber wouldn(&#39;|')t let me in\./);
-  assert.match(page.body, /isn(&#39;|')t something you did, and a fresh link would hit the same wall\. Reason will text you what works instead/);
+  assert.match(page.body, /Uber is blocking my browser right now\./);
+  assert.match(page.body, /Uber(&#39;|')s choice, not something you did, and a fresh link would hit the same wall\. Reason will text you what works instead/);
   assert.doesNotMatch(page.body, /still shows its sign-in page/);
 });
 

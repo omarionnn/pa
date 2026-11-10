@@ -60,6 +60,11 @@ const DEMO_BUBBLE = (file, line) => file === "src/pages/preview.js" && /^\.(msg|
 // colours; navy is the travel seal). One line, the palette itself.
 const NAVY_WAX = (file, line) => file === "src/seal.js" && /^\s*navy: \{ base: "#1f2f4a", rim: "#0c1424", recess: "#18263d"/.test(line);
 
+// The sign-in providers' own marks on the paper sign-in page (owner, 2026-11-10: the site's "Continue with
+// Google/Apple/Facebook/Microsoft" in Reason's look). Their brand rules forbid recolouring the marks, so
+// these three SVG lines keep Google's, Facebook's and Microsoft's own blues; the buttons around them are Reason's.
+const PROVIDER_MARK = (file, line) => file === "src/pages/setupsignin.js" && /^\s*(google|facebook|microsoft): `<svg /.test(line);
+
 // A store's own mark on the Connect sign-in page (Walmart, Best Buy): the store's colour says whose
 // sign-in this is; Reason's own buttons and links on that page stay brand red.
 
@@ -69,7 +74,7 @@ test("no blue colour anywhere in src/ or the served icons, except the demo's iMe
   const stray = [];
   for (const f of files) {
     readFileSync(new URL(f, root), "utf8").split("\n").forEach((line, i) => {
-      if (DEMO_BUBBLE(f, line) || NAVY_WAX(f, line)) return;
+      if (DEMO_BUBBLE(f, line) || NAVY_WAX(f, line) || PROVIDER_MARK(f, line)) return;
       for (const c of blues(line)) stray.push(`${f}:${i + 1} ${c}`);
     });
   }
