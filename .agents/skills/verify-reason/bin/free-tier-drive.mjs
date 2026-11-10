@@ -57,9 +57,9 @@ const before = channel.sent.length;
 clock.skip(31 * MIN); await text("can you find me a dentist");
 const over = channel.sent.slice(before).filter(m => m.to === num).map(m => m.text);
 console.log(`     them: can you find me a dentist\n${over.map(t => `     reason: ${t}`).join("\n")}`);
-step("21st: no model turn, one line + the link", turns.length === 20 && over.length === 2 && /20 free conversations/.test(over[0]) && /^https:\/\/buy\.stripe\.test/.test(over[1]));
+step("21st: no model turn, the 3 approved bubbles (about them, reset date before price, the link alone)", turns.length === 20 && over.length === 3 && /^that's 20 conversations between us/.test(over[0]) && !/\$/.test(over[0]) && over[1].indexOf("come back") < over[1].indexOf("$24.99") && /^https:\/\/buy\.stripe\.test\S*$/.test(over[2]) && !/unlock|upgrade|trial/i.test(over.join(" ")));
 clock.skip(2 * MIN); await text("hello??");
-step("a 2nd text in that conversation: nothing", channel.sent.slice(before).filter(m => m.to === num).length === 2 && turns.length === 20);
+step("a 2nd text in that conversation: nothing", channel.sent.slice(before).filter(m => m.to === num).length === 3 && turns.length === 20);
 
 // ---- calls: 2 through, the 3rd one line + texted link
 const caller = "+13475550102", cc = `dm:fake:${caller}`;

@@ -146,3 +146,10 @@ conversation id in it; a connect callback from any browser but the asker's → `
   (`src/deliver.js` `whereTo`), and without one the code goes to the cage's console, not the fake.
 - The fake GitHub only exchanges `code=good-code`; any other code is `token_exchange_failed`.
 - `/health` on the cage still shows Reason's own line numbers (`channels[].number`); that is by design.
+
+## Phone numbers masked in every log line (#424, 2026-11-10)
+
+`src/logmask-install.js` is imported first by `src/serve.js`; every console.* line has each E.164 number
+(`+` and 10–15 digits) replaced by `+…1234~a1b2c3` (last four + a 6-hex HMAC keyed by `REASON_TOKEN_KEY`,
+stable across restarts) — `src/logmask.js`. Prove: `node --test test/log-mask-phones.test.js`; live:
+`journalctl -u reason --since "-10 min" | grep -cE "\+[0-9]{10,15}"` → 0 after the deploy.
