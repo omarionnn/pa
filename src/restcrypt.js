@@ -245,6 +245,51 @@ export function destroyKey(conversationId) {
   return true;
 }
 
+/**
+ * "Forget everything" without losing the rows that stay (call records, receipts): give the person a
+ * new key, re-seal what is left under it, then destroy the old one. Every backup taken before holds
+ * only old-key ciphertext, so what was deleted is unreadable there too. Crash-safe: the new key is
+ * made under a holding name first, and the old one goes only after every row is moved; a re-run
+ * finishes the job. Returns { resealed, shredded }.
+ */
+export function rotatePersonKey(rawPrepare, conversationId) {
+  if (!ks || !ik) return { resealed: 0, shredded: false };
+  const c = String(conversationId ?? "");
+  const old = ks.prepare("SELECT id FROM user_keys WHERE conversation_id = ?").get(c);
+  if (!old) return { resealed: 0, shredded: false };
+  const hold = c + "\u0000next";
+  let nid = ks.prepare("SELECT id FROM user_keys WHERE conversation_id = ?").get(hold)?.id;
+  if (!nid) {
+    const raw = randomBytes(32);
+    nid = Number(ks.prepare("INSERT INTO user_keys (conversation_id, wrapped, ik_version, created_at) VALUES (?, '', ?, ?)").run(hold, ikVersion, Date.now()).lastInsertRowid);
+    ks.prepare("UPDATE user_keys SET wrapped = ? WHERE id = ?").run(gcmSeal(ik, raw, `dek:${nid}`), nid);
+  }
+  const newKey = loadDek(nid);
+  const oldTag = `${PREFIX}${old.id}:`;
+  let resealed = 0;
+  for (const s of SENSITIVE) {
+    if (!tableExists(rawPrepare, s.table)) continue;
+    const pk = s.table === "conversations" ? "id" : "rowid";
+    for (const col of s.cols) {
+      if (!hasCol(rawPrepare, s.table, col)) continue;
+      const upd = rawPrepare(`UPDATE ${s.table} SET ${col} = ? WHERE ${pk} = ? AND ${col} = ?`);
+      for (const r of rawPrepare(`SELECT ${pk} AS k, ${col} AS v FROM ${s.table} WHERE substr(${col}, 1, ${oldTag.length}) = ?`).all(oldTag)) {
+        const plain = openAny(r.v);
+        resealed += Number(upd.run(`${PREFIX}${nid}:${gcmSeal(newKey, Buffer.from(plain, "utf8"), `u:${nid}`)}`, r.k, r.v).changes);
+      }
+    }
+  }
+  ks.exec("BEGIN IMMEDIATE");
+  try {
+    ks.prepare("DELETE FROM user_keys WHERE id = ?").run(old.id);
+    ks.prepare("UPDATE user_keys SET conversation_id = ? WHERE id = ?").run(c, nid);
+    ks.prepare("INSERT OR REPLACE INTO shredded (key_id, conv_hash, at) VALUES (?, ?, ?)").run(old.id, createHash("sha256").update(c).digest("hex").slice(0, 16), Date.now());
+    ks.exec("COMMIT");
+  } catch (e) { ks.exec("ROLLBACK"); throw e; }
+  deks.delete(old.id); deks.set("c:" + c, nid);
+  return { resealed, shredded: true };
+}
+
 /** Rotate the install key: new IK, every person key re-wrapped. No data row is touched. */
 export async function rotateInstallKey() {
   if (!ik) throw new Error("Not active.");

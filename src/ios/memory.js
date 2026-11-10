@@ -143,13 +143,13 @@ function applyCuts(conv, cuts) {
     // The search vectors over this message go now; the run is indexed again from what is left.
     for (const r of spans.all(conv, c.id)) requeue.run(conv, r.from_id, r.to_id, at);
     db.db.prepare("DELETE FROM graph_mentions WHERE conversation_id = ? AND event_log_id = ?").run(conv, c.id);
-    if (keep || !noFiles) db.db.prepare("UPDATE event_log SET content = ? WHERE id = ? AND conversation_id = ?").run(keep ? kept : "", c.id, conv);
+    if (keep || !noFiles) db.db.prepare("UPDATE event_log SET content = ? WHERE id = ? AND conversation_id = ?").run(db.restcrypt.sealFor(conv, keep ? kept : ""), c.id, conv);
     else db.forgetEvent(c.id);
     // The same message's other copies: the same person, the same moment, holding the very words.
     const near = (table, col, time, extra = "") => (hasColumn(table, col) && hasColumn(table, time) ? ALL(`SELECT rowid AS rid, ${col} AS t, ${hasColumn(table, "media") ? "media" : "'[]'"} AS media FROM ${table} WHERE conversation_id = ? AND ${time} BETWEEN ? AND ?${extra}`, conv, c.at - WINDOW_MS, c.at + WINDOW_MS).filter(r => typeof r.t === "string" && r.t.length && (r.t.includes(c.content) || c.content.includes(r.t)) && c.spans.some(s => r.t.includes(s))) : []);
     for (const r of near("messages", "text", "at", ` AND role = '${c.role === "user" ? "user" : "assistant"}'`)) {
       const next = cutOut(r.t, c.spans);
-      if (anythingLeft(next)) db.db.prepare("UPDATE messages SET text = ? WHERE rowid = ?").run(next, r.rid);
+      if (anythingLeft(next)) db.db.prepare("UPDATE messages SET text = ? WHERE rowid = ?").run(db.restcrypt.sealFor(conv, next), r.rid);
       else if (String(r.media ?? "[]") === "[]") db.db.prepare("UPDATE messages SET text = '', deleted_at = ? WHERE rowid = ?").run(at, r.rid);
       else db.db.prepare("UPDATE messages SET text = '' WHERE rowid = ?").run(r.rid);
     }
@@ -245,12 +245,12 @@ export async function forgetForever(conv, key, { log = () => {} } = {}) {
           db.scrubToolResults(conv, { tools: db.MEMORY_TOOL_NAMES, mentioning: [f.fact] });
           db.redactFromReplies(conv, [f.fact]);
           outOfReplies(conv, f.fact);
-          if (present("memories")) db.db.prepare("DELETE FROM memories WHERE conversation_id = ? AND fact = ?").run(conv, f.fact);
+          if (present("memories")) db.db.prepare("DELETE FROM memories WHERE conversation_id = ? AND pt(fact) = ?").run(conv, f.fact);
           db.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'").run(id);
           // One mark per subject and wording: the table allows no two alike, and one is all a refusal needs.
           const mark = db.forgottenMark(f.person_id, db.factKey(f.fact));
-          if (ONE("SELECT 1 AS x FROM person_facts WHERE person_id = ? AND fact = ?", f.person_id, mark)) db.db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
-          else db.db.prepare("UPDATE person_facts SET fact = ?, status = 'deleted', valid_to = COALESCE(valid_to, ?) WHERE id = ?").run(mark, clock.now(), id);
+          if (ONE("SELECT 1 AS x FROM person_facts WHERE person_id = ? AND pt(fact) = ?", f.person_id, mark)) db.db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
+          else db.db.prepare("UPDATE person_facts SET fact = ?, status = 'deleted', valid_to = COALESCE(valid_to, ?) WHERE id = ?").run(db.sealFact(f.person_id, mark), clock.now(), id);
         }
       } else if (row.kind === "rule") {
         // The row stays as 'deleted' with no words: a review refuses to re-derive a rule from that source message.
@@ -299,6 +299,9 @@ export async function forgetEverything(account, { log = () => {} } = {}) {
     } catch (e) { db.db.exec("ROLLBACK"); throw e; }
     db.clearConversation(conv);
   });
-  log({ ios_memory: "forgot_everything" });
+  // Encryption at rest: what stays is re-sealed under a new key and the old key is destroyed, so the
+  // deleted words are unreadable in every backup taken before today (src/restcrypt.js rotatePersonKey).
+  const key = db.restcrypt.rotatePersonKey(db.rawPrepare, conv);
+  log({ ios_memory: "forgot_everything", key_shredded: key.shredded });
   return { ok: true, removed: counts };
 }
