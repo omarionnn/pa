@@ -86,7 +86,7 @@ function fakePage({ button = "Continue with Google", signedIn = true, already = 
     waitForTimeout: async () => {},
     url: () => (signedInNow ? amazon.signed_in.url : amazon.signin_url),
     evaluate: async (js, arg) => {
-      if (typeof js === "string" && js.includes("provider")) {
+      if (String(js).includes("findProviderButton")) {
         did.push(["press", arg]);
         const t = String(button ?? "").toLowerCase();
         if (t.includes(String(arg))) { if (signedIn) signedInNow = true; return button; }
@@ -319,7 +319,7 @@ function makeLink({ conversationId = CONV, entry = amazon, provider = "", frames
   const page = {
     screenshot: async () => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x2a]),
     evaluate: async (js, arg) => {
-      if (typeof js === "string" && js.includes("provider")) { did.push(["press", arg]); return String(button).toLowerCase().includes(arg) ? button : ""; }
+      if (String(js).includes("findProviderButton")) { did.push(["press", arg]); return String(button).toLowerCase().includes(arg) ? button : ""; }
       return frames[Math.min(i++, frames.length - 1)];
     },
     mouse: { click: async (x, y) => { did.push(["click", x, y]); }, wheel: async () => {} },

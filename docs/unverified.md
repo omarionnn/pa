@@ -5271,3 +5271,15 @@ not been run against the real model: no live lane exists for it, and none was ru
   line said once — have not been run on `claude-cli` (no API credit; no live lane written for it).
 - **Live** carries the flag as `owner`; the owner has not yet asked Reason for a task on a site that
   signs in through one of these.
+- **Uber, the first target, is still walled.** On 2026-11-10 headless Chromium run on the live box
+  (15.204.113.250, as `reason`, a scratch profile) got HTTP 403 and Cloudflare's "Performing security
+  verification" on https://auth.uber.com/login, unchanged after 20 s; riders.uber.com redirects there
+  and gets the same; plain curl with a browser User-Agent gets "Just a moment" (403). m.uber.com/go/home
+  loads but carries no sign-in buttons (its Login goes to auth.uber.com). So `signinWall` says walled
+  from live, `signin_link` for `uber` with `provider: "google"` refuses with the connect card as the
+  fallback, and the owner's planned live test — an Uber ask, the one-line Google question, the secure
+  link, Google's phone tap — can reach the question and the refusal but NOT the Google prompt. What
+  the wall check does when Uber's wall lifts has only met the fakes in `test/social-signin-uber.test.js`.
+- **The Uber sign-in page fixture is hand-made.** `test/fixtures/uber-login.html` is written from how
+  Uber's page is laid out, not captured from it (the capture is exactly what the wall refuses). The
+  finder pressing "Continue with Google" there is proof about the finder, not about Uber's page.

@@ -459,9 +459,32 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
 - **A lapse is tried first.** `signin_status` with `recheck` reads the saved button before the probe
   and, when the site says signed out, opens the sign-in page, presses it and asks again; only when
   that lands on the provider's own page is the person sent a fresh link.
+- **Uber first** (the owner's scope addition, same day): most people's Uber is a Google sign-in,
+  through "Continue with Google" on auth.uber.com — where uber.com, m.uber.com and riders.uber.com
+  all send a signed-out browser (`src/sites.js` lists those hosts now). The rules carry the exact
+  ask — *"Uber signs in through your Google account. Want me to use it?"* — and on a yes it is
+  `signin_link` for `uber` with `provider: "google"`. That route **supersedes the Uber OAuth connect
+  card**: `uber_connect` answers with the Google route (the ask, or "already saved, nothing to
+  connect") whenever a Google-backed Uber login is saved or the social flow can get in, and makes
+  the card only with `fallback: true`; the web setup shows a saved Google-backed Uber as connected
+  `via: "google"`, and where the flag is on for everyone and Uber's page loads, `capabilities.uber`
+  is false and `connect/uber` says `superseded` (`src/websetup.js`). A walled Uber keeps the card.
+- **The wall is asked live.** Uber's `signin_blocked` in `src/sites.js` is a dated finding, so with a
+  provider the link and the window ask the site first (`signinWall`: the sign-in page fetched from
+  where Reason runs; a 403 / "Just a moment" / "Performing security verification" is a wall, kept
+  30 s; a page that loads is kept 10 min and says which buttons it offers). A wall still up is said
+  plainly with the connect card named as the fallback and no link made; a wall that has lifted lets
+  the Google button be pressed. Without a provider, or where the flag does not reach them, the dated
+  finding answers as before.
+- **The finder is a real function now.** The draft sent Playwright a string, which it evaluates as
+  an expression and never calls — so nothing would ever have been pressed on a real page. A hand-made
+  Uber sign-in page (`test/fixtures/uber-login.html`) in real Chromium is what showed it; the finder
+  presses the visible "Continue with Google" there and not the phone box, the hidden copy or the
+  footer's "Google Privacy Policy" link (`test/social-signin-uber.test.js`, 7 tests).
 
-**Not proved:** no real site has been signed in to through a real provider button here (see
-`docs/unverified.md`).
+**Not proved:** no real site has been signed in to through a real provider button here, and Uber's
+real sign-in page still bot-walls Reason's browser from the live box (2026-11-10), so the Google
+step on Uber has not been reached (see `docs/unverified.md`).
 
 
 ## Telling people what's new (added 2026-10-05)

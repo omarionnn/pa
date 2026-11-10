@@ -40,10 +40,22 @@ Tests: `test/social-signin.test.js` (24, offline), `test/social-signin-rest.test
 - **A lapse.** `signin_status { recheck }` reads the provider BEFORE the probe; signed out + a provider
   → `signInAgain` (sign-in page, button, probe again). Signed in: nothing to tell them. Still out:
   the result says to send a fresh link with that provider and the one-line expectation.
+- **Uber first** (`uberSocialPath` / `uberRoute`, `UBER_ASK`): a Google-backed Uber login (saved, or
+  the flag reaches them + Uber's page loads + no Google no in 30 days) supersedes the OAuth connect
+  card. `uber_connect` → `{ superseded: "google", ask | say, fallback }` unless `fallback: true`;
+  web setup `connections.uber` = connected `via: "google"` when saved on the stand-in;
+  `capabilities.uber` false + `uber_via: "google"` and `connect/uber` → `superseded` only with the flag
+  `on` for everyone and Uber's page open. Hosts: uber.com, m.uber.com, riders.uber.com, auth.uber.com.
+- **The wall, live** (`signinWall`, `wallCached`, `_resetWalls`): a blocked site asked for with a
+  provider is fetched from here first — 403 / "Just a moment" / "Performing security verification"
+  is a wall (30 s), a loading page is open (10 min, `providers_offered`). `signin_link` / `signin_open`
+  refuse with `checked_live: true`, the Google words and (Uber) the card as `fallback` while walled.
 
 ## Prove
 
-- Offline: `node --test test/social-signin.test.js test/social-signin-rest.test.js` → 25/25.
+- Offline: `node --test test/social-signin.test.js test/social-signin-rest.test.js test/social-signin-uber.test.js`
+  → 32/32. The Uber file drives the REAL finder in real Chromium against `test/fixtures/uber-login.html`
+  (hand-made; see Unproven) — that is what caught the draft's string-not-function finder.
   Flag off: `systemFor` has no "your Google login", `toolsFor` has no `signin_provider`, a `provider`
   on a link is dropped, typed text is untouched.
 - Live: `grep REASON_SOCIAL_SIGNIN /opt/reason/.env` → `owner`; startup journal line
@@ -56,3 +68,9 @@ Tests: `test/social-signin.test.js` (24, offline), `test/social-signin-rest.test
   phone, a code), and whether a lapsed site session comes back through Google's cookie alone are all
   untested against the network. Treat as built, not working. No real model run either (no API
   credit; claude-cli only).
+- **Uber is walled from live (2026-11-10):** headless Chromium on the live box gets HTTP 403
+  "Performing security verification" on auth.uber.com/login (riders.uber.com redirects there), so the
+  owner's live test reaches the one-line Google question and the honest refusal, not Google's prompt.
+  Re-run the probe before claiming otherwise:
+  `ssh root@15.204.113.250 'sudo -u reason HOME=/home/reason node /tmp/uberprobe.mjs'` (script in the
+  session log of 2026-11-10; any Playwright goto of auth.uber.com/login + 20 s of innerText is the same).

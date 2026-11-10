@@ -106,15 +106,17 @@ export function providersOffered(text) {
  * Runs inside the page: find the site's own "Continue with <provider>" control and press it. Returns
  * what it pressed (the control's text) or "" when there is none. Only visible buttons, links and
  * role=button elements whose own text or aria-label names the provider; never a form field. Browser
- * globals only — Playwright serialises it across.
+ * globals only — Playwright serialises the function's source across and calls it with the provider.
+ * (A real function, not a string: Playwright evaluates a string as an expression and never calls
+ * it, which the hand-made Uber page in test/social-signin-uber.test.js was the first to show.)
  */
-export const PROVIDER_BUTTON_JS = `((provider) => {
+export function findProviderButton(provider) {
   var want = String(provider || "").toLowerCase();
   if (!want) return "";
   var els = document.querySelectorAll('button,a[href],[role="button"],input[type="button"],input[type="submit"]');
   for (var i = 0; i < els.length; i++) {
     var el = els[i];
-    var txt = ((el.innerText || el.value || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "") + " " + (el.getAttribute("data-provider") || "")).replace(/\\s+/g, " ").trim().toLowerCase();
+    var txt = ((el.innerText || el.value || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "") + " " + (el.getAttribute("data-provider") || "")).replace(/\s+/g, " ").trim().toLowerCase();
     if (!txt || txt.indexOf(want) < 0) continue;
     if (txt.length > 80) continue;
     if (!/(continue|sign|log|use|with|account|via)/.test(txt) && txt !== want) continue;
@@ -126,7 +128,9 @@ export const PROVIDER_BUTTON_JS = `((provider) => {
     return txt.slice(0, 80);
   }
   return "";
-})`;
+}
+/** The finder's source, for anything that wants to read it; `String(fn)` is what Playwright sends. */
+export const PROVIDER_BUTTON_JS = String(findProviderButton);
 
 /** The text of a candidate control, the way PROVIDER_BUTTON_JS judges it. Pure, for tests and for hand checks. */
 export function providerButtonMatches(label, provider) {
@@ -145,7 +149,7 @@ export async function clickProviderButton(page, provider, { settleMs = 1500 } = 
   const key = providerKey(provider);
   if (!key || !page?.evaluate) return { pressed: "" };
   let pressed = "";
-  try { pressed = String(await page.evaluate(PROVIDER_BUTTON_JS, key) ?? ""); } catch { pressed = ""; }
+  try { pressed = String(await page.evaluate(findProviderButton, key) ?? ""); } catch { pressed = ""; }
   if (pressed && settleMs > 0 && page.waitForTimeout) await page.waitForTimeout(settleMs).catch(() => {});
   return { pressed };
 }
@@ -186,24 +190,93 @@ export function providerPrompt(raw = {}) {
   return { provider, kind: "", say: "" };
 }
 
+// ---------------------------------------------------------------- the wall, asked live
+/**
+ * Can Reason's browser reach a site's sign-in page from where it runs, today? Asked of the site
+ * itself and kept ten minutes per site (a walled answer thirty seconds, so a wall that lifts is seen).
+ *
+ * `src/sites.js` carries `signin_blocked` as a dated finding: Uber's auth.uber.com answered the
+ * Hetzner box with Cloudflare's "Performing security verification" on 2026-10-15, and the live box
+ * again on 2026-11-10 (HTTP 403 to headless Chromium, never clearing in 20 s). A finding with a date
+ * on it is not a property of the site, and the Google route is only worth offering when the page
+ * loads — so the social path asks each time, and the static finding stays for everybody else.
+ *
+ * `{ in, status, why, providers_offered, checked_at }`: `in` only when the page came back 2xx with
+ * no challenge marker on it; `providers_offered` is what the page's words name.
+ */
+const WALL_TTL_MS = 10 * 60_000;
+const WALL_BLOCKED_TTL_MS = 30_000;
+const CHALLENGE = /performing security verification|just a moment|challenge-platform|cf-chl|attention required|access denied/i;
+const walls = new Map();
+export function _resetWalls() { walls.clear(); }
+/** The last live answer for a site, or null when nobody has asked (or it has gone stale). */
+export function wallCached(site) {
+  const hit = walls.get(site);
+  if (!hit) return null;
+  return clock.now() - hit.at < (hit.out.in ? WALL_TTL_MS : WALL_BLOCKED_TTL_MS) ? hit.out : null;
+}
+export async function signinWall(entry, { fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
+  const site = entry?.site ?? "";
+  const url = entry?.signin_url ?? "";
+  if (!site || !url) return { in: false, status: 0, why: "the site has no sign-in page on record", providers_offered: [], checked_at: clock.now() };
+  const hit = wallCached(site);
+  if (hit) return hit;
+  let out;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const label = entry.label ?? site;
+  try {
+    const res = await fetchImpl(url, { method: "GET", redirect: "follow", signal: ctl.signal, headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36", Accept: "text/html" } });
+    const status = Number(res?.status ?? 0);
+    const html = String((await res.text().catch(() => "")) ?? "").slice(0, 400_000);
+    const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    const marker = CHALLENGE.exec(text)?.[0] ?? "";
+    if (marker || status === 403 || status === 503) {
+      out = { in: false, status, why: `${label}'s sign-in page answers Reason's browser from here with a bot check (HTTP ${status}${marker ? `, "${marker}"` : ""}), so a link would show the wall and nothing else.`, providers_offered: [], checked_at: clock.now() };
+    } else if (status >= 200 && status < 300) {
+      out = { in: true, status, why: "", providers_offered: providersOffered(text), checked_at: clock.now() };
+    } else {
+      out = { in: false, status, why: `${label}'s sign-in page answered HTTP ${status} from here.`, providers_offered: [], checked_at: clock.now() };
+    }
+  } catch (e) {
+    out = { in: false, status: 0, why: `${label}'s sign-in page could not be reached from here: ${(e?.message ?? String(e)).split("\n")[0]}`, providers_offered: [], checked_at: clock.now() };
+  } finally { clearTimeout(timer); }
+  walls.set(site, { at: clock.now(), out });
+  return out;
+}
+
 // ---------------------------------------------------------------- Uber, first
 /**
- * Uber was the first site this is for (owner, 2026-11-10): a Google-backed Uber login goes through
- * the site's "Continue with Google" button on auth.uber.com, and that route SUPERSEDES the Uber
- * OAuth connect card (src/uber.js authorizeUrl, the web setup's Uber card) — the card is the
- * fallback, not the first offer. The card is kept back when a Google sign-in to Uber is already
- * saved, or when the social flow can still get in (the flag reaches them, Uber's sign-in page is
- * not walled for Reason's browser, and they have not said no to Google inside the 30 days).
+ * Uber is the first site this is for (owner, 2026-11-10): most people's Uber is a Google sign-in,
+ * through the "Continue with Google" button on auth.uber.com — where uber.com, m.uber.com and
+ * riders.uber.com all send a signed-out browser. That route SUPERSEDES the Uber OAuth connect card
+ * (src/uber.js authorizeUrl, the web setup's Uber card, the app.heyreason.com/uber/callback flow):
+ * the card is the fallback, not the first offer. The card is kept back when a Google sign-in to
+ * Uber is already saved, or when the social flow can still get in: the flag reaches them, Uber's
+ * sign-in page is not walled for Reason's browser (the live answer from `signinWall` when there is
+ * one, else the dated finding in src/sites.js), and they have not said no to Google inside the 30 days.
  *   { saved, can_try, supersedes, why }
  */
-export function uberSocialPath(conversationId, entry) {
+export const UBER_ASK = "Uber signs in through your Google account. Want me to use it?";
+export const UBER_SIGNIN_HOSTS = ["uber.com", "m.uber.com", "riders.uber.com", "auth.uber.com"];
+export function uberSocialPath(conversationId, entry, { live = entry ? wallCached(entry.site) : null } = {}) {
   if (!entry || entry.site !== "uber") return { saved: false, can_try: false, supersedes: false, why: "not Uber" };
   const saved = providerOf(conversationId, "uber") === "google";
   if (!socialAllowedFor(conversationId)) return { saved, can_try: false, supersedes: saved, why: saved ? "their Uber login is saved as a Google sign-in" : "social sign-in does not reach them" };
   if (saved) return { saved, can_try: true, supersedes: true, why: "their Uber login is saved as a Google sign-in" };
-  if (entry.signin_blocked) return { saved, can_try: false, supersedes: false, why: `Uber's sign-in page refuses Reason's browser (${entry.signin_blocked.why})` };
+  const walled = live ? !live.in : !!entry.signin_blocked;
+  if (walled) return { saved, can_try: false, supersedes: false, walled: true, why: `Uber's sign-in page refuses Reason's browser (${live ? live.why : entry.signin_blocked.why})` };
   if (!askAllowed(conversationId, "google")) return { saved, can_try: false, supersedes: false, why: "they said no to their Google login inside the last 30 days" };
   return { saved, can_try: true, supersedes: true, why: "Uber signs in through their Google account: the sign-in link with provider google, not the connect card" };
+}
+/** The same answer after asking Uber's page live first (cached), for the places that can wait on it. */
+export async function uberRoute(conversationId, entry, { wall = signinWall } = {}) {
+  if (!entry || entry.site !== "uber") return uberSocialPath(conversationId, entry);
+  let live = null;
+  if (socialAllowedFor(conversationId) && providerOf(conversationId, "uber") !== "google") {
+    try { live = (await wall(entry)) ?? null; } catch { live = null; /* the dated finding answers */ }
+  }
+  return uberSocialPath(conversationId, entry, { live });
 }
 
 // ---------------------------------------------------------------- the record
@@ -272,6 +345,7 @@ export const RULES = [
   `- HOW IT IS COLLECTED: never a password, a code or a card number in this chat. Send the secure sign-in link (signin_link, with the provider as its \`provider\`) and they sign in on the provider's own page inside it. The login is saved only once the site says they are signed in, and which provider each site uses is written down with it; you are told when that happens.`,
   `- TWO-STEP VERIFICATION: expect it. Least effort first: a Yes tap on their phone, then a code sent to an email you can read yourself (gmail_search, gmail_read — never "check your email"), then a texted code they forward to you. Tell them what to expect in one line: "Google will ping your phone. Tap Yes." A forwarded code is cleaned before it is typed (a "G-", spaces and dashes come off), so take it as they send it. If a code fails twice, switch methods once; if that fails too, stop and say plainly what blocked it. Sites often send a second code of their own after the provider approves: warn them one more may come.`,
   `- AFTER ACCESS: finish the task first. Then, once, say what it unlocked: "Now I can handle your Uber and Airbnb too, since they use the same Google sign-in." When a session lapses, sign back in yourself (signin_status with recheck tries the saved provider button for you); only involve them for an approval tap or a code.`,
+  `- UBER FIRST: most people's Uber signs in through Google. The first time a real task needs Uber (a ride booked or priced, a past trip, a receipt) and no Uber login is saved, the ask is one line — "${UBER_ASK}" — and on a yes it is signin_link with site "uber" and provider "google", then "Google will ping your phone. Tap Yes." That comes BEFORE the Uber connect card (uber_connect), which is the fallback only when the Google route cannot get in — the tool tells you when that is so; then say plainly what blocked it and use uber_link. A no: uber_link as before, and no ask for ${DECLINE_DAYS} days.`,
   `- TRUST: use provider access only for tasks they asked for or approved — no curiosity browsing. Never change passwords, security settings, recovery emails or connected apps. Never grant a new third-party app access without asking. Money, a message sent as them, and anything permanent still need their go-ahead. If they ask what you can get into, answer honestly from signin_status and say how to revoke it (account_revoke, or the provider's own connected-apps page). Signing in with Google is not the same as reading their Gmail: it opens that site, nothing else.`,
 ].join("\n");
 

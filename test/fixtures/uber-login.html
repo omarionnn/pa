@@ -1,0 +1,50 @@
+<!doctype html>
+<!--
+  A stand-in for auth.uber.com/login, HAND-MADE from how Uber's sign-in page is laid out (phone or
+  email box, Continue, a divider, "Continue with Google" / "Continue with Apple" buttons, a footer
+  that names Google in its reCAPTCHA line). It is NOT a capture: on 2026-11-10 the real page answered
+  headless Chromium from the live box (and this Mac) with Cloudflare's "Performing security
+  verification" (HTTP 403), so no real copy could be taken. test/social-signin-uber.test.js drives
+  the real button finder against it; what the real page does is in docs/unverified.md.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Login | Uber</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; }
+    .wrap { max-width: 400px; margin: 40px auto; padding: 0 16px; }
+    button, .btn { display: block; width: 100%; height: 48px; margin: 8px 0; font-size: 16px; }
+    .btn { background: #eee; color: #000; text-align: center; line-height: 48px; text-decoration: none; }
+    .hidden-btn { display: none; }
+    .divider { text-align: center; margin: 16px 0; color: #666; }
+    footer { font-size: 12px; color: #666; margin-top: 32px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header><a href="https://www.uber.com" aria-label="Uber">Uber</a></header>
+    <h1>What's your phone number or email?</h1>
+    <form id="login" onsubmit="return false">
+      <label for="PHONE_NUMBER_or_EMAIL_ADDRESS">Enter phone number or email</label>
+      <input id="PHONE_NUMBER_or_EMAIL_ADDRESS" name="PHONE_NUMBER_or_EMAIL_ADDRESS" type="text" inputmode="text" autocomplete="username" placeholder="Enter phone number or email">
+      <button id="forward-button" type="submit" onclick="window.__pressed='continue'">Continue</button>
+    </form>
+    <div class="divider">or</div>
+    <!-- A hidden copy, as some pages keep one for a different layout: never the one to press. -->
+    <button class="hidden-btn" data-testid="google-hidden" onclick="window.__pressed='google-hidden'">Continue with Google</button>
+    <button id="social-login-google" type="button" data-provider="google" onclick="window.__pressed='google'">
+      <span aria-hidden="true">G</span> Continue with Google
+    </button>
+    <button id="social-login-apple" type="button" data-provider="apple" onclick="window.__pressed='apple'">
+      <span aria-hidden="true"></span> Continue with Apple
+    </button>
+    <div class="divider">or</div>
+    <a class="btn" href="#qr" onclick="window.__pressed='qr'; return false">Log in with QR code</a>
+    <footer>
+      <p>By proceeding, you consent to get calls, WhatsApp or SMS messages, including by automated means, from Uber and its affiliates to the number provided.</p>
+      <p>This site is protected by reCAPTCHA and the Google <a href="https://policies.google.com/privacy">Privacy Policy</a> and <a href="https://policies.google.com/terms">Terms of Service</a> apply.</p>
+    </footer>
+  </div>
+</body>
+</html>

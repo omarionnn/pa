@@ -34,6 +34,8 @@ import * as amazon from "./amazonconnect.js";
 import * as google from "./google.js";
 import * as uber from "./uber.js";
 import * as shop from "./shopconnect.js";
+import * as social from "./socialsignin.js";
+import * as signin from "./signin.js";
 import { profilePath } from "./browser.js";
 import { cookieDomain } from "./pages/siteproxy.js";
 import { clientIp } from "./opspassword.js";
@@ -205,6 +207,9 @@ export function connectState(row, which, { remoteSession = null } = {}) {
     return { state: row.amazon_state === "pending" ? "failed" : "none", step: 1, of: STEPS };
   }
   if (which === "uber") {
+    // A Google-backed Uber login saved in Reason's browser (src/socialsignin.js) is the connection,
+    // and it supersedes the OAuth card: the page shows it connected, `via: "google"`.
+    if (social.uberSocialPath(c, signin.entryFor("uber")).saved) return { state: "connected", step: STEPS, of: STEPS, via: "google" };
     if (db.db.prepare("SELECT 1 FROM oauth_tokens WHERE conversation_id = ? AND provider = 'uber'").get(c)) return { state: "connected", step: STEPS, of: STEPS };
     if (row.uber_state === "failed" || row.uber_state === "not_ready") return { state: "failed", step: 1, of: STEPS, ...(row.uber_state === "not_ready" ? { why: "not_ready" } : {}) };
     if (row.uber_state === "pending" && db.db.prepare("SELECT 1 FROM oauth_states WHERE conversation_id = ? AND provider = 'uber'").get(c)) return { state: "connecting", step: 2, of: STEPS };
@@ -222,6 +227,22 @@ export function connectState(row, which, { remoteSession = null } = {}) {
   if (row.email_state === "failed") return { state: "failed", step: 1, of: STEPS, provider: "gmail" };
   if (row.email_state === "pending" && db.db.prepare("SELECT 1 FROM oauth_states WHERE conversation_id = ? AND provider = 'google'").get(c)) return { state: "connecting", step: 2, of: STEPS, provider: "gmail" };
   return { state: "none", step: 1, of: STEPS };
+}
+
+/**
+ * Does the Google route into Uber supersede the OAuth card here? For one setup: its stand-in, when
+ * the flag reaches it (which is only ever "on": a stand-in is nobody's owner). For the capabilities
+ * read, with no setup yet: only when the flag is on for everyone. Either way Uber's sign-in page is
+ * asked live (cached) before the card is kept back, so a walled Uber still gets the card.
+ */
+async function uberSuperseded(wall, c = null) {
+  const entry = signin.entryFor("uber");
+  if (!entry) return false;
+  if (c) return (await social.uberRoute(c, entry, { wall })).supersedes;
+  if (social.socialMode() !== "on") return false;
+  let w = null;
+  try { w = await wall(entry); } catch { w = null; }
+  return !!w?.in;
 }
 
 export function view(row, opts = {}) {
@@ -333,6 +354,7 @@ export async function request({ method = "GET", path = "", query = {}, headers =
   googleLink = (c) => google.authorizeUrl(c),
   uberReady = () => uber.connectReady(),
   uberLink = (c) => uber.authorizeUrl(c),
+  uberWall = (entry) => social.signinWall(entry),
   cardLink = (c) => shop.setupCardLink(c),
   remoteSession = null } = {}) {
   if (!on()) return json(404, { error: "not found" });
@@ -342,12 +364,16 @@ export async function request({ method = "GET", path = "", query = {}, headers =
   const session = remoteSession ?? (await import("./signin-remote.js")).remoteSessionFor;
 
   if (method === "GET" && path === "/api/capabilities") {
-    // uber: the card always shows; `ready` says whether Uber's app takes a connect today (src/uber.js connectReady).
+    // uber: the card shows when Uber's app takes a connect today (src/uber.js connectReady) — unless
+    // the social sign-in reaches everyone and Uber's sign-in page loads from here, in which case the
+    // Google route supersedes the card (src/socialsignin.js) and the card is not offered.
     let ub = { ready: false };
     try { ub = await uberReady(); } catch { ub = { ready: false }; }
+    const superseded = await uberSuperseded(uberWall);
     return json(200, {
       amazon: !!config.publicUrl && amazon.setupAvailable(), gmail: google.googleStatus().connected === true, outlook: false,
-      uber: !!ub?.ready, card: shop.connectMode() === "on" && !!process.env.CROSSMINT_CLIENT_KEY && !!process.env.CROSSMINT_SERVER_KEY,
+      uber: !!ub?.ready && !superseded, ...(superseded ? { uber_via: "google" } : {}),
+      card: shop.connectMode() === "on" && !!process.env.CROSSMINT_CLIENT_KEY && !!process.env.CROSSMINT_SERVER_KEY,
     });
   }
 
@@ -416,6 +442,12 @@ export async function request({ method = "GET", path = "", query = {}, headers =
       return json(200, out?.ok ? { ok: true, url: out.url } : { ok: false, why: out?.why || "unavailable" });
     }
     if (m[2] === "uber") {
+      // The Google route first: a setup whose stand-in the social flag reaches, with Uber's sign-in
+      // page loading from here, is not handed the OAuth card (src/socialsignin.js uberSocialPath).
+      if (await uberSuperseded(uberWall, c)) {
+        log({ websetup_connect: "uber", setup: row.id, ok: false, why: "superseded_google" });
+        return json(200, { ok: false, why: "superseded", via: "google" });
+      }
       // Honest first: Uber's own app must take this server's return address, or the link would only
       // reach Uber's error page. Not ready → the card says so; nothing is made.
       let ready = { ready: false, why: "uber_unreachable" };
