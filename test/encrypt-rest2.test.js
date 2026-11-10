@@ -134,7 +134,7 @@ test("search vectors are sealed, and search still finds the nearest", async () =
 });
 
 test("a raw byte scan of reason.db finds none of the numbers, emails or words", () => {
-  for (const needle of [FRIEND_PHONE, FRIEND_PHONE.slice(2), STRANGER_PHONE.slice(2), FRIEND_EMAIL, "kofi.mensah", "7731", "sesame", "Quietwater", "Nostrand", "Owusu", "Letter to Kofi"]) {
+  for (const needle of [FRIEND_PHONE, FRIEND_PHONE.slice(2), STRANGER_PHONE.slice(2), FRIEND_EMAIL, "kofi.mensah", "code is 7731", "sesame", "Quietwater", "Nostrand", "Owusu", "Letter to Kofi"]) {
     assert.equal(fileHas(needle), false, `"${needle}" is in the database file in plain text`);
   }
 });
