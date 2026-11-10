@@ -1256,3 +1256,22 @@ test("native relay: a pasted Google code is cleaned for the code box and entered
     await req(token, "cancel", { method: "POST", cookie });
   } finally { delete process.env.REASON_SOCIAL_SIGNIN; }
 });
+
+test("a site that opens its provider in a popup (Notion → Google): the session follows the popup, and goes back to the site's tab when it closes", async () => {
+  const { EventEmitter } = await import("node:events");
+  const b = fakeBrowser({ frames: [NOTION_CHOOSER] });
+  const site = new EventEmitter();
+  const launch = async (a) => { const r = await b.launch(a); Object.assign(site, r.page); r.page = site; return r; };
+  const out = remote.createRemoteSignin({ conversationId: CONV, entry: sites.site("amazon"), launch, log: () => {}, timers: { set: () => ({}), clear: () => {} }, check: async () => ({ ok: true, state: "signed_out", why: "x" }) });
+  const token = out.url.split("/").pop();
+  const { cookie } = await start(token);
+  const pop = new EventEmitter();
+  Object.assign(pop, { screenshot: async () => Buffer.from([0xff, 0xd8, 0x99]), evaluate: async () => GOOGLE_EMAIL, mouse: { click: async () => {}, wheel: async () => {} }, keyboard: { type: async () => {}, press: async () => {} } });
+  site.emit("popup", pop);
+  let v = await view(token, cookie);
+  assert.match(JSON.stringify(v.meta.fields), /Email or phone/, "the picture and the form are Google's popup now");
+  pop.emit("close");
+  v = await view(token, cookie);
+  assert.doesNotMatch(JSON.stringify(v.meta.fields), /Email or phone/, "back on the site's own tab");
+  await req(token, "cancel", { method: "POST", cookie });
+});

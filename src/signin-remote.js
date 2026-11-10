@@ -177,6 +177,25 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
   };
 }
 
+/**
+ * A site that opens its provider's page in a popup (Notion's "Continue with Google", seen live
+ * 2026-11-10): the session follows it, so the picture and Reason's own panel show Google's page and
+ * what is typed lands there; when the popup closes (Google hands back to the site), the session goes
+ * back to the tab that opened it. The popup is in the same browser context, so the private-network
+ * guard on every request (guardContext) covers it too. Nothing is navigated here — only followed.
+ */
+export function followPopups(s, page) {
+  if (!page || typeof page.on !== "function") return;
+  page.on("popup", (pop) => {
+    if (s.ended || !s.browser) return;
+    const opener = s.browser.page;
+    s.browser.page = pop;
+    s.log({ signin_remote: "popup_followed", site: s.entry.site });
+    followPopups(s, pop);
+    pop.on("close", () => { if (s.browser && s.browser.page === pop) s.browser.page = opener; });
+  });
+}
+
 /** One thing at a time per browser: a tap and a screenshot racing each other is how a click lands on the wrong page. */
 function inTurn(s, fn) {
   const run = s.queue.then(fn, fn);
@@ -297,7 +316,16 @@ const FRAME_JS = `(() => {
       focused: el === document.activeElement
     });
   }
-  return { fields: out, url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
+  // The labels of the visible buttons (a site's bare "Google" button), for the native chooser. Words
+  // the site drew on its buttons, never anything in a box.
+  var bl = [], bs = document.querySelectorAll('button,a[href],[role="button"]');
+  for (var j = 0; j < bs.length && bl.length < 24; j++) {
+    var b = bs[j], br = b.getBoundingClientRect();
+    if (br.width < 20 || br.height < 14 || br.bottom <= 0 || br.top >= H) continue;
+    var bt = String((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).replace(/\\s+/g, ' ').trim();
+    if (bt && bt.length <= 60) bl.push(bt);
+  }
+  return { fields: out, buttons: bl, url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
 })()`;
 
 /**
@@ -578,6 +606,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         // The saved profile can be in one browser at a time, and this one needs it.
         await s.closeBrowser(s.conversationId);
         s.browser = await s.launch({ conversationId: s.conversationId, url: s.entry.signin_url });
+        followPopups(s, s.browser.page);
         // Their account on this site uses a provider: press that button so the page they see is the
         // provider's own, not a username box they would have to skip. A page with no such button is
         // left as it is — the person's form, as before — and nothing else is typed or pressed.
@@ -830,7 +859,10 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
  */
 function npFor(s, raw) {
   if (!nativeOn(s)) return {};
-  const st = stepNow(s, raw);
+  // A page still drawing is "opening", not a step to hand over to the picture.
+  const st = frameFor(raw).blank ? { step: "loading", provider: "", number: "", say: `Opening ${s.entry.label}…` } : stepNow(s, raw);
+  // Off a provider's page the machine says "The site"; the person knows it by its name.
+  st.say = String(st.say ?? "").replace(/\bThe site\b/g, s.entry.label);
   const key = `${st.step}:${st.provider}:${st.number}:${(st.offered ?? []).join(",")}`;
   const np = { step: st.step, key, page: STEP_NEEDS_PAGE.has(st.step), say: st.say,
     ...(key === s.npKey ? {} : { html: nativeStepPanel(st, { entry: s.entry }) }) };
