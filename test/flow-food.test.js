@@ -109,10 +109,14 @@ test("'my usual from Habibi' is proposed back in one line, nothing started befor
 
 test("the allergy check (real model): a sesame allergy flags the tahini dish they picked, plain fries pass", { skip }, async () => {
   db.remember(C, "me", "Omari is allergic to sesame");
+  // The runner keeps side calls off on the CLI (src/backends/side.js sideAskAllowed); this one is the subject.
+  const side = await import("../src/backends/side.js");
+  food._setAllergyAsk(side.askStructured);
   const flagged = await food.checkAllergies(C, [{ name: "Falafel plate", qty: 1, modifiers: ["extra tahini"] }, { name: "Fries", qty: 1, modifiers: [] }]);
   if (process.env.FLOW_DEBUG) console.log("CHECK", JSON.stringify(flagged));
   assert.equal(flagged.ok, true, JSON.stringify(flagged));
   assert.ok(flagged.conflicts.some((x) => /falafel|tahini/i.test(`${x.item} ${x.why}`)), JSON.stringify(flagged));
   assert.ok(!flagged.conflicts.some((x) => /^fries$/i.test(x.item.trim())), "plain fries are fine");
   assert.match(food.allergyFlag(flagged), /^Heads up: /);
+  food._setAllergyAsk(null);
 });
