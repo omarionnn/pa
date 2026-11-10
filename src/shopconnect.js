@@ -128,10 +128,31 @@ export function checkoutStoreKey(store, startUrl) {
   return bySite ?? byName ?? (slug(store) || null);
 }
 const titleCase = (k) => String(k ?? "").replace(/^./, (c) => c.toUpperCase());
-export const storeName = (key) => (key ? STORES[key]?.name ?? (siteRow(key)?.name || titleCase(key)) : "");
+export const storeName = (key) => (key ? STORES[key]?.name ?? PLATFORM_NAMES[key] ?? (siteRow(key)?.name || titleCase(key)) : "");
+/** Delivery platforms an order for a restaurant can run on: whose account a sign-in is really for. */
+const PLATFORMS = { doordash: ["DoorDash", "www.doordash.com"], ubereats: ["Uber Eats", "www.ubereats.com"], grubhub: ["Grubhub", "www.grubhub.com"] };
+const PLATFORM_NAMES = Object.fromEntries(Object.entries(PLATFORMS).map(([k, [n]]) => [k, n]));
+const PLATFORM_SEEN = [["doordash", "door\\s?dash"], ["ubereats", "uber\\s?eats"], ["grubhub", "grub\\s?hub"]];
+/**
+ * Whose account a sign-in form asks for. A restaurant's checkout that runs on DoorDash asks for the
+ * DoorDash login (11-10, Chick-fil-A: fields "DoorDash account email/password"), so the text and the page
+ * name DoorDash, never the restaurant. The form's field labels decide; the question only when no label
+ * names one, and then only as "<platform> account/login/password/email/sign-in" (a restaurant's own login
+ * for "this DoorDash delivery" stays the restaurant's). Exactly one platform named → it, else the store.
+ */
+export function signinAccount(store, rq) {
+  if (PLATFORMS[store]) return store;
+  // Crossmint's own shape ({ request: { question, interaction: { fields } } }) or the page's flat one.
+  const r = rq?.request ?? rq ?? {};
+  const fields = r.fields ?? r.interaction?.fields ?? [];
+  const pick = (text, tail = "") => PLATFORM_SEEN.filter(([, p]) => new RegExp(`\\b${p}\\b${tail}`, "i").test(text)).map(([k]) => k);
+  let named = pick(fields.map((f) => f?.label ?? "").join(" \n "));
+  if (!named.length) named = pick(String(r.question ?? ""), "(?:'s)?\\s+(?:account|login|log-?in|sign-?in|password|email)");
+  return named.length === 1 ? named[0] : store;
+}
 /** "required" when this store is known (or was found) to have no guest checkout. */
 export const storeSignIn = (key) => STORES[key]?.signIn ?? (siteRow(key)?.sign_in || "");
-export const storeHost = (key) => (STORES[key] ? new URL(STORES[key].url).hostname : siteRow(key)?.host || "");
+export const storeHost = (key) => (STORES[key] ? new URL(STORES[key].url).hostname : PLATFORMS[key]?.[1] ?? (siteRow(key)?.host || ""));
 
 // ---------------------------------------------------------------- tables
 db.db.exec(`
@@ -2038,8 +2059,10 @@ export async function step(runId) {
       if (link) {
         q("UPDATE shop_links SET request_id = ?, request_json = ? WHERE id = ?").run(requestId, JSON.stringify(publicRequest(rq)), link.id);
       } else {
-        const token = createLink({ conversationId: run.conversation_id, kind: "signin", store: run.store, runId, request: rq });
-        const name = storeName(run.store) || "the store";
+        // The link and the line name whose login it is: the platform when the order runs on one.
+        const account = signinAccount(run.store, rq);
+        const token = createLink({ conversationId: run.conversation_id, kind: "signin", store: account, runId, request: rq });
+        const name = storeName(account) || "the store";
         // Never names Crossmint (owner 10-30): people know Reason, and the password goes on to the store.
         await say(run.mode === "signed"
           ? `${name} signed me out. Sign in again here and I'll pick up where we left off. Your password goes straight to ${name}, not to me.\n${linkBase()}/${token}`
@@ -2224,6 +2247,9 @@ function needsAccount(result) {
 }
 function finishSignin(run, link) {
   if (run.store) markConnected(run.conversation_id, run.store);
+  // Signed in to the platform the order ran on (signinAccount): that account is what's connected, so
+  // Settings shows it, it can be removed there, and its next order (any restaurant) runs signed in.
+  if (link?.store && link.store !== run.store && PLATFORMS[link.store]) markConnected(run.conversation_id, link.store);
   q("UPDATE shop_runs SET signed_in = 1 WHERE run_id = ?").run(run.run_id);
   if (link) q("UPDATE shop_links SET state = 'connected' WHERE id = ?").run(link.id);
 }

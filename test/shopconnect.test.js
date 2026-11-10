@@ -203,6 +203,41 @@ test("a connected store is reused without asking; guest stays guest; removing it
   assert.equal(shop.profileOf(OMARI), null);
 });
 
+test("a restaurant's checkout that runs on DoorDash asks for the DoorDash login, and the text and page say DoorDash (11-10 Chick-fil-A)", async () => {
+  const out = await shop.startCheckout({ conversationId: OMARI, store: "target", startUrl: "https://www.target.com/", what: "Order one sandwich.", maxUsd: 15 });
+  runs[out.runId].status = "awaiting_input";
+  const rq = SIGNIN("req_dd_1", { key: "dd_password", label: "DoorDash account password" });
+  rq.request.question = "Please enter your DoorDash account email and password so I can sign in and continue this Chick-fil-A delivery checkout.";
+  runs[out.runId].requiredAction = rq;
+  await shop.step(out.runId);
+  const line = said.at(-1).t;
+  assert.match(line, /^DoorDash needs you signed in/);
+  assert.match(line, /Your password goes straight to DoorDash, not to me\./);
+  assert.doesNotMatch(line, /Target|Chick/);
+  const view = shop.linkView(shop.linkFor(line.split("/").pop()));
+  assert.equal(view.store, "doordash");
+  assert.equal(shop.storeName(view.store), "DoorDash", "named even when the food flag leaves DoorDash out of the store list");
+  assert.equal(shop.storeHost(view.store), "www.doordash.com", "the page can still link to the account");
+  // Past the sign-in: DoorDash is what's connected (Settings shows it, the next DoorDash order runs signed in).
+  runs[out.runId].requiredAction = PAY("req_pay_dd");
+  await shop.step(out.runId);
+  assert.equal(shop.isConnected(OMARI, "doordash"), true);
+});
+
+test("whose login a form asks for: the one platform it names, else the store", () => {
+  const f = (question, labels = []) => ({ question, fields: labels.map((label) => ({ label })) });
+  assert.equal(shop.signinAccount("chickfila", f("Sign in", ["Uber Eats email", "Uber Eats password"])), "ubereats");
+  assert.equal(shop.signinAccount("chickfila", f("Enter your Grubhub login")), "grubhub");
+  assert.equal(shop.signinAccount("chickfila", f("Enter your Chick-fil-A One email and password")), "chickfila");
+  assert.equal(shop.signinAccount("chickfila", f("Sign in with DoorDash or Uber Eats")), "chickfila", "two named: no guess");
+  assert.equal(shop.signinAccount("doordash", f("Enter your email")), "doordash");
+  assert.equal(shop.signinAccount("target", null), "target");
+  // A restaurant's own login that merely mentions the platform it delivers through stays the restaurant's.
+  assert.equal(shop.signinAccount("chickfila", f("Enter your Chick-fil-A One password to continue this DoorDash delivery", ["Email", "Password"])), "chickfila");
+  assert.equal(shop.signinAccount("chickfila", f("Enter your DoorDash account email and password", ["Email", "Password"])), "doordash");
+  assert.equal(shop.signinAccount("chickfila", { request: { question: "x", interaction: { fields: [{ label: "DoorDash account password" }] } } }), "doordash", "Crossmint's nested shape");
+});
+
 test("the sign-in link is texted once per run; later questions land on the same page", async () => {
   const { runId, token } = await signinLink();
   assert.equal(said.length, 1);
