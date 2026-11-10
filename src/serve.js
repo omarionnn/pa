@@ -21,7 +21,7 @@ import { webOn } from "./web.js";
 import { chooseCallProvider } from "./calls/choose.js";
 import { createServer } from "./http.js";
 import { withGptLive } from "./calls/gptlive.js";
-import { makeDeliver } from "./deliver.js";
+import { makeDeliver, ORDER_CARD_FAILED } from "./deliver.js";
 import { backfillContactCards } from "./contact.js";
 import { endAllRemoteSignins } from "./signin-remote.js";
 import { subscriptionBackendBlock } from "./backends/guard.js";
@@ -102,7 +102,7 @@ startOps({ runtime, router, log });
     shop.attach({
       say: (c, text) => runtime.say(c, text),
       // A food order's approval card (src/food.js): one picture, before its one line.
-      picture: (c, file) => deliver({ conversationId: c, text: "", media: { file, mimeType: "image/jpeg", filename: "order.jpg" } }),
+      picture: (c, file) => deliver({ conversationId: c, text: "", media: { file, mimeType: "image/jpeg", filename: "order.jpg", failLine: ORDER_CARD_FAILED } }),
       // A plain question from the store, or the confirmation email: an event turn, keyed so a restart
       // cannot raise the same one twice.
       wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
@@ -113,7 +113,7 @@ startOps({ runtime, router, log });
     if (food.foodMode() !== "off") {
       food.attach({
         say: (c, text) => runtime.say(c, text),
-        picture: (c, file) => deliver({ conversationId: c, text: "", media: { file, mimeType: "image/jpeg", filename: "order.jpg" } }),
+        picture: (c, file) => deliver({ conversationId: c, text: "", media: { file, mimeType: "image/jpeg", filename: "picture.jpg" } }),
         wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
         channels: () => router,
         log,
