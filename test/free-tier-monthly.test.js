@@ -219,6 +219,17 @@ const tick = async (via, num, want = 2) => {
   await new Promise(r => setTimeout(r, 20));
 };
 
+test("a name saved as typed (lower case) is said with a capital in the over-ceiling call line and text", async () => {
+  const { c, num } = newcomer("ama mensah");
+  accounts.countUse(c, "turn");
+  const via = liveRouter();
+  for (let i = 0; i < 2; i++) ring(num, via);
+  const third = ring(num, via);
+  assert.match(third.body, /<Say[^>]*>hey Ama, it's Reason\./);
+  assert.equal(plan.callGate(c)?.line.startsWith("hey Ama, it's Reason."), true);
+  await tick(via, num);
+});
+
 test("2 calls a month: the 3rd call in hears one line, the line closes, and the link is texted", async () => {
   const { c, num } = newcomer("Kofi");
   accounts.countUse(c, "turn");
