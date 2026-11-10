@@ -142,11 +142,6 @@ export function providerButtonMatches(label, provider) {
 }
 
 /**
- * Press the site's provider button on a page already on its sign-in page. `{ pressed }` is the
- * control's text, "" when the page had none (then the person's own form is where they are, as before).
- * A page that will not run the script (closed, navigating) is "" too: nothing was pressed.
- */
-/**
  * Which providers a rendered sign-in page offers, from its controls' own labels (text, aria-label,
  * title) — the same match that presses one, so a bare "Google" button counts (Notion) and a word in
  * a paragraph does not. `read` is either those labels (an array) or a page's text.
@@ -156,6 +151,11 @@ export function providersOnPage(read) {
   return PROVIDERS.filter(p => read.some(l => providerButtonMatches(l, p)));
 }
 
+/**
+ * Press the site's provider button on a page already on its sign-in page. `{ pressed }` is the
+ * control's text, "" when the page had none (then the person's own form is where they are, as before).
+ * A page that will not run the script (closed, navigating) is "" too: nothing was pressed.
+ */
 export async function clickProviderButton(page, provider, { settleMs = 1500 } = {}) {
   const key = providerKey(provider);
   if (!key || !page?.evaluate) return { pressed: "" };

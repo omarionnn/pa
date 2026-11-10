@@ -416,18 +416,12 @@ export function socialToolVisible(name, conversationId) {
  * notes and Reason said it could not get in, because only registry names resolved here.
  */
 /**
- * A site's sign-in page as a person sees it, rendered in this person's own guarded browser: the
- * labels of its buttons and links (text, aria-label, title). Notion's buttons say only "Google",
- * Airbnb's are not in the page's visible text at all (seen live 2026-11-10); the labels have both.
+ * A site's sign-in page as a person sees it: the labels of its buttons and links (text, aria-label,
+ * title), rendered in a throwaway guarded browser (src/browser.js readPageLabels) — never their own
+ * profile or a page an errand is on. Notion's buttons say only "Google"; Airbnb's are not in the
+ * page's visible text at all (seen live 2026-11-10); the labels have both.
  */
-async function renderedSigninText(c, entry) {
-  const page = await browser.pageFor(c);
-  await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-  if (page.waitForTimeout) await page.waitForTimeout(2500).catch(() => {});
-  return await page.evaluate(() => [...document.querySelectorAll("button, a, [role=button], input[type=submit]")]
-    .map(e => [(e.innerText || e.value || "").trim(), e.getAttribute("aria-label") || "", e.getAttribute("title") || ""].filter(Boolean).join(" | "))
-    .filter(Boolean).slice(0, 200)).catch(() => []);
-}
+const renderedSigninText = (_c, entry) => browser.readPageLabels(entry.signin_url);
 
 function signinSite(c, site) {
   return social.socialAllowedFor(c) ? signin.anyEntryFor(site) : signin.entryFor(site);
@@ -14662,7 +14656,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // browser and read the way a person sees it. Under test only a handed-in reader runs.
       let live = liveWall?.providers_offered ?? [];
       const reader = ctx.readSigninPage ?? (process.env.NODE_TEST_CONTEXT ? null : (e) => renderedSigninText(c, e));
-      if (social.socialAllowedFor(c) && !live.length && liveWall?.in !== false && reader) {
+      // Only for a site named by its address: a registry site's buttons are known from its static read.
+      if (social.socialAllowedFor(c) && entry.generic && !live.length && liveWall?.in !== false && reader) {
         try { live = social.providersOnPage(await reader(entry)); } catch {}
         // A site named by its bare domain opens on its front page, where the buttons often sit behind
         // a "Log in" modal (Airbnb). Its /login is tried once; when that page has them, the link

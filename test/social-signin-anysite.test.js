@@ -254,7 +254,8 @@ test("buttons drawn by JavaScript: an empty plain read is followed by the render
   const out = await call("signin_link", { site: "https://www.airbnb.com/login" }, CONV, {
     ...linkSeam(made),
     signinWall: async () => ({ in: true, status: 200, providers_offered: [] }),
-    readSigninPage: async (e) => { assert.equal(e.site, "airbnb.com"); return "Log in or sign up\nContinue with Google\nContinue with Apple\nContinue with email\nContinue with Facebook"; },
+    // What the real reader returns: the page's button labels (Notion-style bare names included).
+    readSigninPage: async (e) => { assert.equal(e.site, "airbnb.com"); return ["Skip to content", "Continue with Google", "Apple", "Continue with email", "Continue with Facebook", "Get it on Google Play"]; },
   });
   assert.equal(out.ok, true);
   assert.deepEqual(made[0].offered, ["google", "apple", "facebook"]);
@@ -271,7 +272,7 @@ test("a bare domain whose front page hides the buttons: its /login is tried, and
   const out = await call("signin_link", { site: "airbnb.com" }, CONV, {
     ...linkSeam(made),
     signinWall: async () => ({ in: true, status: 200, providers_offered: [] }),
-    readSigninPage: async (e) => { asked.push(e.signin_url); return e.signin_url.endsWith("/login") ? "Log in or sign up\nContinue with Google\nContinue with Apple" : "Where to?\nLog in\nSign up"; },
+    readSigninPage: async (e) => { asked.push(e.signin_url); return e.signin_url.endsWith("/login") ? ["Continue", "Continue with Google", "Continue with Apple"] : ["Where to?", "Log in", "Sign up"]; },
   });
   assert.equal(out.ok, true);
   assert.deepEqual(asked, ["https://airbnb.com/", "https://airbnb.com/login"]);
@@ -290,4 +291,19 @@ test("the rendered page is read by its buttons' labels: Notion's bare 'Google', 
   assert.deepEqual(social.providersOnPage(["Privacy Policy", "Continue", "Continue with Google", "Continue with Apple", "Log in"]), ["google", "apple"]);
   assert.deepEqual(social.providersOnPage(["Get it on Google Play", "Download on the Apple App Store", "Log in"]), [], "app-store badges are not sign-in buttons");
   assert.deepEqual(social.providersOnPage("Continue with Google"), ["google"]);
+});
+
+test("the rendered read never runs without the flag, nor for a registry site", async () => {
+  let rendered = 0;
+  const reader = async () => { rendered++; return ["Continue with Google"]; };
+  const wall = async () => ({ in: true, status: 200, providers_offered: [] });
+  const made = [];
+  await call("signin_link", { site: "amazon" }, CONV, { ...linkSeam(made), signinWall: wall, readSigninPage: reader });
+  assert.equal(rendered, 0, "registry site: its static read stands");
+  assert.deepEqual(made[0].offered, []);
+  process.env.REASON_SOCIAL_SIGNIN = "";
+  await call("signin_link", { site: "amazon" }, CONV, { ...linkSeam(made), signinWall: wall, readSigninPage: reader });
+  const off = await call("signin_link", { site: "notion.so" }, CONV, { ...linkSeam(made), signinWall: wall, readSigninPage: reader });
+  assert.equal(off.ok, false);
+  assert.equal(rendered, 0, "flag off: nothing rendered");
 });
