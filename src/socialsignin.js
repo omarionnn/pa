@@ -150,6 +150,62 @@ export async function clickProviderButton(page, provider, { settleMs = 1500 } = 
   return { pressed };
 }
 
+// ---------------------------------------------------------------- the provider's own page
+/**
+ * What the provider's page is asking for, read off the text the link's browser is showing. After
+ * the site's button is pressed the person is on Google's (Apple's, …) page, and the spec's order of
+ * two-step methods — a tap on the phone, then a code — is what this names, so the link's view and
+ * the model can say the one line that fits ("Google will ping your phone. Tap Yes."). Pure, and it
+ * only ever reads the page's words; nothing on that page is pressed or typed by this file.
+ *   kind: "account" (pick / type the account) | "password" | "phone_tap" | "code" | "" (not a prompt
+ *   this file knows).
+ */
+export function providerPrompt(raw = {}) {
+  const url = String(raw?.url ?? "").toLowerCase();
+  const text = String(raw?.text ?? "").replace(/\s+/g, " ").trim();
+  const t = text.toLowerCase();
+  const google = /accounts\.google\.com|google\.com\/signin|google\.com\/o\/oauth/.test(url) || /\bgoogle\b/.test(t.slice(0, 200));
+  const apple = /appleid\.apple\.com/.test(url) || /\bapple id\b|\bsign in with apple\b/.test(t.slice(0, 300));
+  const microsoft = /login\.(microsoftonline|live)\.com|login\.microsoft\.com/.test(url) || /\bmicrosoft\b/.test(t.slice(0, 200));
+  const facebook = /facebook\.com/.test(url);
+  const provider = google ? "google" : apple ? "apple" : microsoft ? "microsoft" : facebook ? "facebook" : "";
+  if (!provider) return { provider: "", kind: "", say: "" };
+  const name = LABELS[provider];
+  if (/check your (phone|device)|tap yes|tap the number|open the gmail app|google sent a notification|approve (this )?sign[- ]?in|approve the request|authenticator app/.test(t)) {
+    return { provider, kind: "phone_tap", say: provider === "google" ? "Google is pinging your phone. Tap Yes there." : provider === "microsoft" ? "Microsoft is pinging your Authenticator app. Tap Approve there." : `${name} wants a Yes on your phone.` };
+  }
+  if (/enter (the )?(\d+[- ]digit )?(verification )?code|g-\d|code (was )?sent to|text message with|2-step verification|two-factor|verification code/.test(t)) {
+    return { provider, kind: "code", say: `${name} wants the code it sent. Send it to me as it came — I'll clean it up.` };
+  }
+  if (/enter your password|password/.test(t) && /sign in|welcome|hi,? /.test(t)) {
+    return { provider, kind: "password", say: `${name} wants your password — type it here on ${name}'s own page, never to me.` };
+  }
+  if (/choose an account|use another account|sign in with your google account|email or phone|sign in to continue|use your .* account/.test(t)) {
+    return { provider, kind: "account", say: `${name} is asking which account. Pick yours.` };
+  }
+  return { provider, kind: "", say: "" };
+}
+
+// ---------------------------------------------------------------- Uber, first
+/**
+ * Uber was the first site this is for (owner, 2026-11-10): a Google-backed Uber login goes through
+ * the site's "Continue with Google" button on auth.uber.com, and that route SUPERSEDES the Uber
+ * OAuth connect card (src/uber.js authorizeUrl, the web setup's Uber card) — the card is the
+ * fallback, not the first offer. The card is kept back when a Google sign-in to Uber is already
+ * saved, or when the social flow can still get in (the flag reaches them, Uber's sign-in page is
+ * not walled for Reason's browser, and they have not said no to Google inside the 30 days).
+ *   { saved, can_try, supersedes, why }
+ */
+export function uberSocialPath(conversationId, entry) {
+  if (!entry || entry.site !== "uber") return { saved: false, can_try: false, supersedes: false, why: "not Uber" };
+  const saved = providerOf(conversationId, "uber") === "google";
+  if (!socialAllowedFor(conversationId)) return { saved, can_try: false, supersedes: saved, why: saved ? "their Uber login is saved as a Google sign-in" : "social sign-in does not reach them" };
+  if (saved) return { saved, can_try: true, supersedes: true, why: "their Uber login is saved as a Google sign-in" };
+  if (entry.signin_blocked) return { saved, can_try: false, supersedes: false, why: `Uber's sign-in page refuses Reason's browser (${entry.signin_blocked.why})` };
+  if (!askAllowed(conversationId, "google")) return { saved, can_try: false, supersedes: false, why: "they said no to their Google login inside the last 30 days" };
+  return { saved, can_try: true, supersedes: true, why: "Uber signs in through their Google account: the sign-in link with provider google, not the connect card" };
+}
+
 // ---------------------------------------------------------------- the record
 /** The provider a site's saved login uses for this person, from the live row; "" when none or not signed in. */
 export function providerOf(conversationId, site) {
