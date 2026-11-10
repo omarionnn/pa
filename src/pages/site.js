@@ -91,7 +91,7 @@ export function privacyPage() {
       {
         title: "What Reason stores",
         lines: [
-          "One database file on the machine Reason runs on. There is no other copy, no analytics service and no third-party storage. Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
+          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service and no third-party storage. Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
           "Your messages to Reason and its replies to you, as a running transcript. The transcript keeps the most recent 60 messages of your thread and older ones fall off it.",
           "What the transcript holds is worth being plain about: it includes the results of things Reason looked up for you. So if Reason read an email or an event for you, the text of that email or event is in the transcript on the disk until it falls out of those 60 messages. It is not stored anywhere else, it is not indexed, and nothing goes looking through it.",
           "Plans, reminders, timers and the jobs Reason is working on between messages. Facts you have asked it to remember about people. Pages it made for you, and any answers you tapped on one.",
@@ -123,6 +123,7 @@ export function privacyPage() {
         lines: [
           "To answer you at all, Reason sends your conversation to Anthropic's API, because that is the model that reads it and writes the reply. There is no model on the machine. That means the part of your conversation still in the transcript — including text from an email or an event Reason read for you — is sent to Anthropic as part of producing your answer. Anthropic's own terms govern what they do with it.",
           "When you ask Reason to do something with a service, it talks to that service: Google for your mail, calendar and Drive, and whichever of a search provider, a telephony provider or a payments provider is set up on this install. It sends what the request needs and nothing more.",
+          "Encrypted backups. Once a day an encrypted copy of the database and your files goes to an off-site storage server, so nothing is lost if the machine fails. It is locked with a key the storage provider does not have, so they cannot read it, and the backups can only be added to from the machine, never changed or deleted from it.",
           "That is the whole list. Nothing is sent anywhere for analytics, advertising, or model training.",
         ],
       },
@@ -139,7 +140,7 @@ export function privacyPage() {
         lines: [
           "Ask Reason and it will tell you. If you run this install yourself, two commands do it: `npm run data:export` writes out everything held about you, including the call recordings, with the tokens replaced by a marker because those are live credentials rather than your records. `npm run data:delete` removes it.",
           "A delete is real and immediate. It removes the rows, the call recordings as files from the disk, and the saved browser logins, and it asks Google to let go of your connection on the way through — and reports honestly if Google would not.",
-          "Reason has no backups. There is nothing to recover from and nothing to ask anybody else to delete.",
+          "Reason keeps encrypted backups: a rolling copy on the same machine, replaced twice a day, and a daily encrypted copy off-site. A delete clears the live database at once; the rolling copy drops it within a day, and the off-site backups keep what they already hold, still encrypted and unread, until those older backups are cleared out.",
         ],
       },
       {

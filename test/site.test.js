@@ -182,7 +182,13 @@ test("the policy says how to disconnect and how to get or delete everything", as
   assert.match(body, /google\.com\/permissions/, "and that they can take it away from their own side");
   assert.match(body, /data:export/);
   assert.match(body, /data:delete/);
-  assert.match(body, /no backups/i);
+  // Reason keeps encrypted backups (a rolling copy on the server, daily encrypted off-site), and the
+  // page says so and says what a delete means for them, instead of the old "no backups" line.
+  assert.doesNotMatch(body, /no backups/i);
+  assert.doesNotMatch(body, /no other copy/i);
+  assert.match(body, /encrypted backups/i);
+  assert.match(body, /off-site/i);
+  assert.match(body, /delete[^.]*backups?/i, "what a delete means for the backups");
 });
 
 test("neither page has anybody's data on it", async () => {
@@ -365,4 +371,11 @@ test("/ops and /ops.json refuse to be framed (signed-out answer; the header is a
     assert.equal(out.headers.get("x-frame-options"), "DENY", p);
     assert.match(out.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/, p);
   }
+});
+
+test("the stranger-call facts sell signing up as one text, never 'no download' (an iPhone app is coming)", async () => {
+  const { PUBLIC_FACTS } = await import("../src/calls/stranger.js");
+  const all = PUBLIC_FACTS.join(" ");
+  assert.doesNotMatch(all, /no download|no app|nothing to install/i);
+  assert.match(all, /signing up is one text/i);
 });
