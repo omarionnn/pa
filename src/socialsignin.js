@@ -233,6 +233,55 @@ export function refusalAnswer(entry, provider) {
   };
 }
 
+// ---------------------------------------------------------------- the choice on the link's page
+/**
+ * The provider buttons a sign-in link's page offers (owner, 2026-11-10: "when a site offers Sign in
+ * with Google, Reason's own page should offer the same choices"). In order: the provider their saved
+ * login already went through, the one Reason was told, then what the site's own sign-in page names
+ * (signinWall's providers_offered). Never one refused for this site in the last 7 days, and nothing
+ * at all where the flag does not reach this person.
+ */
+export function offeredFor(conversationId, entry, { asked = "", live = [] } = {}) {
+  if (!socialAllowedFor(conversationId) || !entry?.site) return [];
+  const out = [];
+  for (const p of [providerOf(conversationId, entry.site), asked, ...(live ?? [])]) {
+    const k = providerKey(p);
+    if (k && !out.includes(k) && !refusedRecently(conversationId, entry.site, k)) out.push(k);
+  }
+  return out;
+}
+
+/** "Google", "Google or Apple", "Google, Apple or Facebook". */
+export function namesOf(list) {
+  const n = (list ?? []).map(p => LABELS[providerKey(p)]).filter(Boolean);
+  return n.length <= 1 ? (n[0] ?? "") : `${n.slice(0, -1).join(", ")} or ${n.at(-1)}`;
+}
+
+/**
+ * The one line that goes with the link, naming the choice in plain words. `recorded`: their saved
+ * login for this site already goes through that provider, so it is said as theirs, not as an option.
+ */
+export function choiceLine(entry, offered, recorded = "") {
+  const n = entry?.label ?? "the site";
+  const rec = providerKey(recorded);
+  if (rec) return `${n} signs in through your ${LABELS[rec]} account. Tap Continue with ${LABELS[rec]} on the page and ${expectLine(rec).replace(/^\w+ will/, (m) => m.toLowerCase().replace(/^\w+/, "it"))}`;
+  if (!offered?.length) return "";
+  return `${n} lets you sign in with ${namesOf(offered)}, or with your ${n} email. Pick whichever you use on the page.`;
+}
+
+/** Sites that only deliver food: walled, the restaurant's own ordering still works (src/food.js, #449). */
+const FOOD_APPS = new Set(["doordash", "uber_eats", "grubhub", "postmates", "caviar", "seamless"]);
+/**
+ * What works instead when a site walls Reason's browser off its sign-in page, for the page and the
+ * text alike. Plain words, no "bot", no blame on them.
+ */
+export function wallInstead(entry) {
+  const site = entry?.site ?? "";
+  if (FOOD_APPS.has(site)) return { say: "Ordering straight from the restaurant's own site still works, and it's often cheaper.", tool: "food_order: build the order direct at the restaurant's own ordering page (route direct), with the delivery app only as the fallback it already is." };
+  if (site === "uber" || site === "uber_eats") return { say: "Connecting Uber with its own Connect button still works.", tool: "uber_connect with they_asked_to_connect true; for a ride, uber_link needs no sign-in." };
+  return { say: "", tool: "Offer what does not need a sign-in here, or say plainly this one has to be done by them on their own phone." };
+}
+
 const REFUSAL_DAYS = 7;
 db.db.exec(`
   CREATE TABLE IF NOT EXISTS social_refusals (

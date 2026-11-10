@@ -119,7 +119,7 @@ export function remoteSessionFor(conversationId) {
  * Make a link. Nothing is launched yet: the browser starts when somebody taps Start, so a link
  * nobody opens never holds the saved profile.
  */
-export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "", pressProvider = social.clickProviderButton }) {
+export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "", offered = [], pressProvider = social.clickProviderButton }) {
   const old = sessions.get(byConversation.get(conversationId));
   if (old) end(old, "replaced").catch(() => {});
 
@@ -131,6 +131,9 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
   const s = {
     token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
     provider: prov, pressProvider, pressed: "", lastFields: [],
+    // The "Continue with" choices the intro page shows (src/socialsignin.js offeredFor); the one
+    // tapped replaces `provider` at Start, and the email button clears it. None without the flag.
+    offered: social.socialAllowedFor(conversationId) ? [...new Set([prov, ...(offered ?? []).map(social.providerKey)].filter(Boolean))] : [],
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
     ended: null, startedAt: null, timer: null, signedInRun: 0,
   };
@@ -188,7 +191,7 @@ async function end(s, how) {
     s.ended.why = `${entry.label} stopped Reason's browser with a bot check before its sign-in page loaded`;
     await s.browser.close();
     s.browser = null;
-    note = `the ${entry.label} sign-in link you sent never got past ${entry.label}'s bot check: ${entry.label} blocks Reason's browser from its sign-in page, so nothing could be typed and nothing was saved, and a fresh link would hit the same wall. Say that plainly in one short line — it is ${entry.label}'s choice, not something they did — and offer what works instead${entry.deep_link ? ` (for a ride, uber_link opens Uber on their phone with the destination filled in)` : ""}.`;
+    note = `the ${entry.label} sign-in link you sent never got past ${entry.label}'s bot check: ${entry.label} blocks Reason's browser from its sign-in page, so nothing could be typed and nothing was saved, and a fresh link would hit the same wall. Say that plainly in one short line — it is ${entry.label}'s choice, not something they did — and offer what works instead${entry.deep_link ? ` (for a ride, uber_link opens Uber on their phone with the destination filled in)` : ""}${social.socialAllowedFor(c) ? ` — ${social.wallInstead(entry).tool}` : ""}.`;
   } else if (s.browser) {
     try {
       const out = await inTurn(s, () => s.check(s.browser.page, c, entry.site, { provider: s.provider }));
@@ -426,13 +429,13 @@ function provedOwner(s, headers) {
 const gateFor = (s) => proofPage(s.conversationId, `${s.entry.label} sign-in`);
 
 /** Text the person a code to their own thread, at most MAX_CODES_SENT in the window, and ask for it. */
-function sendCode(s, tell) {
+function sendCode(s, tell, via = null) {
   if (typeof tell !== "function") {
     return { status: 403, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Open this on your own browser.", why: "This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.", card: cardKind(s.entry) }) };
   }
   const page = gateFor(s);
   if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
-    return codePage(s, { status: 429, error: `Reason has already texted you a code. Use that one, or try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60_000)} minutes.` });
+    return codePage(s, { status: 429, via, error: `Reason has already texted you a code. Use that one, or try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60_000)} minutes.` });
   }
   const { id, code } = issueCode(page.id);
   const mins = Math.round(CODE_TTL_MS / 60_000);
@@ -441,7 +444,7 @@ function sendCode(s, tell) {
     .then(() => tell(s.conversationId, line, { idempotencyKey: `scode:${cookieName(s.token)}:${id}` }))
     .catch((e) => s.log({ signin_remote: "code_text_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] }));
   s.log({ signin_remote: "code_sent", site: s.entry.site, conversation: s.conversationId });
-  return codePage(s, { status: 401 });
+  return codePage(s, { status: 401, via });
 }
 
 /** Check a typed code. A right one proves this browser as the person's: `{ ok, cookie }` to remember it. */
@@ -490,6 +493,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     if (s.secret && !mine) return gone();
     let remember = null;
     if (!s.secret) {
+      let form = null;
       // Holding the link is not enough (security audit lead 6, 2026-11-07): it opens the person's
       // whole saved profile, every site's session in it. The browser tapping Start must be the
       // person's own — a Reason session proved for this conversation — or prove the phone with a
@@ -504,19 +508,29 @@ export async function remoteRequest({ token, action = "", method = "GET", header
           s.log({ signin_remote: "cross_site_start", site: s.entry.site });
           return codePage(s, { status: 403, error: "This page has to be used directly. Open the link Reason texted again." });
         }
-        const form = new URLSearchParams(String((await readBody()) ?? ""));
+        form = new URLSearchParams(String((await readBody()) ?? ""));
         // Another tap may have claimed or ended it while the body was read.
         if (s.secret || s.ended) return gone();
+        const via = chosenVia(s, form);
         const typed = form.get("code");
-        if (typed === null || form.has("send")) return sendCode(s, tell);
+        if (typed === null || form.has("send")) return sendCode(s, tell, via);
         // An empty tap on Sign in is not a guess: it costs none of the few tries (review, 2026-11-10).
-        if (!typed.trim()) return codePage(s, { status: 401, error: "Type the code Reason texted you first." });
+        if (!typed.trim()) return codePage(s, { status: 401, via, error: "Type the code Reason texted you first." });
         // Busy first, so a right code is not used up on a Start that cannot open anything.
         const busyNow = s.busy(s.conversationId);
         if (busyNow) return { status: 409, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Not right now.", why: busyNow, card: cardKind(s.entry) }) };
         const tried = tryCode(s, typed, headers);
-        if (!tried.ok) return codePage(s, { status: tried.status, error: tried.error });
+        if (!tried.ok) return codePage(s, { status: tried.status, via, error: tried.error });
         remember = tried.cookie;
+      } else {
+        form = new URLSearchParams(String((await readBody()) ?? ""));
+        if (s.secret || s.ended) return gone();
+      }
+      // The intro's "Continue with" tapped (or the email button): that is the button pressed.
+      const via = chosenVia(s, form);
+      if (via !== null && via !== s.provider) {
+        s.log({ signin_remote: "provider_chosen", site: s.entry.site, provider: via || "email" });
+        s.provider = via;
       }
       const blocked = s.busy(s.conversationId);
       if (blocked) return { status: 409, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Not right now.", why: blocked, card: cardKind(s.entry) }) };
@@ -759,12 +773,23 @@ async function setupBack(s) {
 }
 
 function startPage(s) {
-  return setupStartPage({ entry: s.entry, action: `${PATH}/${s.token}/start` });
+  return setupStartPage({ entry: s.entry, action: `${PATH}/${s.token}/start`, offered: s.offered ?? [], mine: s.provider });
 }
 
 /** The code step, for a browser that is not the person's own proved one. The code went to their own thread. */
-function codePage(s, { status = 401, error = "" } = {}) {
-  return { status, headers: HTML(), body: setupCodePage({ entry: s.entry, action: `${PATH}/${s.token}/start`, error, card: cardKind(s.entry) }) };
+function codePage(s, { status = 401, error = "", via = null } = {}) {
+  return { status, headers: HTML(), body: setupCodePage({ entry: s.entry, action: `${PATH}/${s.token}/start`, error, card: cardKind(s.entry), via }) };
+}
+
+/**
+ * The intro's choice, from the Start post: a provider it offered, "" for the site's own email
+ * button, or null when the post named none (an old page, or no choice was shown) — then the
+ * provider the link was made with stands.
+ */
+function chosenVia(s, form) {
+  if (!form || !form.has("via") || !(s.offered ?? []).length) return null;
+  const v = social.providerKey(form.get("via"));
+  return v && s.offered.includes(v) ? v : "";
 }
 
 /**
@@ -776,8 +801,10 @@ function codePage(s, { status = 401, error = "" } = {}) {
  * tap is the faster of the two.
  */
 async function resultPage(s) {
-  if (isSetup(s)) return setupResultPage({ entry: s.entry, ended: s.ended, back: await setupBack(s), card: cardKind(s.entry) });
-  return setupResultPage({ entry: s.entry, ended: s.ended, thread: { reply: backToReasonHref }, card: cardKind(s.entry) });
+  // A walled site's page says what still works (src/socialsignin.js wallInstead), where the flag reaches them.
+  const instead = s.ended?.state === "blocked" && social.socialAllowedFor(s.conversationId) ? social.wallInstead(s.entry).say : "";
+  if (isSetup(s)) return setupResultPage({ entry: s.entry, ended: s.ended, back: await setupBack(s), card: cardKind(s.entry), instead });
+  return setupResultPage({ entry: s.entry, ended: s.ended, thread: { reply: backToReasonHref }, card: cardKind(s.entry), instead });
 }
 
 /**
