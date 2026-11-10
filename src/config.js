@@ -1178,6 +1178,18 @@ export function normalizeNumber(n) {
   return digits ? `+${digits}` : "";
 }
 
+/**
+ * Is this one of Reason's OWN phone lines (the Twilio, Sendblue, Linq or Bland "from" number)? A
+ * text to one of these is Reason talking to itself — a test, or a number pasted by mistake — never
+ * a person (2026-11-09: the Twilio line texted the Sendblue line once, Sendblue refused to answer
+ * it, and the status page called that "texts over sendblue are failing").
+ */
+export function isOwnLine(n) {
+  const x = normalizeNumber(n);
+  if (!x) return false;
+  return [config.twilioFrom, config.sendblueFrom, config.linqFrom, config.blandFrom].some(f => f && normalizeNumber(f) === x);
+}
+
 /** Is this number the owner's? Read from config only — never from anything a message says. */
 export function isOwnerNumber(n) {
   const x = normalizeNumber(n);
