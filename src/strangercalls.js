@@ -43,6 +43,9 @@ try { db.db.exec("ALTER TABLE stranger_calls ADD COLUMN offered_at INTEGER"); } 
 // The call's audio (2026-10-31): the intro tells them the call is recorded, so it is. Dropped with
 // their words (`prune`), and with the row.
 try { db.db.exec("ALTER TABLE stranger_calls ADD COLUMN recording_path TEXT"); } catch { /* already there */ }
+db.restStrictRefresh();
+// Their words are sealed (REASON_ENCRYPT_REST2) under a key of the call's own: a stranger has no Reason.
+const own = (id) => `stranger:${id}`;
 
 const q = (sql) => db.db.prepare(sql);
 const MAX_LINES = 30;
@@ -56,8 +59,9 @@ export function open({ phone, externalId = "", withheld = false, now = clock.now
   const e164 = withheld ? "" : normalizeNumber(phone);
   if (!withheld && (!e164 || !/^\+\d{8,15}$/.test(e164))) return null;
   const token = randomBytes(12).toString("hex");
+  // The number is only ever matched, never read back: with phase 2 on it is stored as a keyed hash.
   const r = q("INSERT INTO stranger_calls (phone, external_id, token, started_at, last_at) VALUES (?, ?, ?, ?, ?)")
-    .run(e164, String(externalId ?? ""), token, now, now);
+    .run(db.restcrypt.blindIndex("phone", e164), String(externalId ?? ""), token, now, now);
   return { id: Number(r.lastInsertRowid), token };
 }
 
@@ -90,7 +94,7 @@ export function noteTurn({ id, token, messages, now = clock.now() }) {
   if (!row || row.content_dropped_at) return false;
   const lines = theirLines(messages);
   q("UPDATE stranger_calls SET said = ?, summary = ?, last_at = ?, duration_s = ? WHERE id = ?")
-    .run(JSON.stringify(lines), summaryOf(lines), now, Math.max(0, Math.round((now - row.started_at) / 1000)), row.id);
+    .run(db.seal2(own(row.id), JSON.stringify(lines)), db.seal2(own(row.id), summaryOf(lines)), now, Math.max(0, Math.round((now - row.started_at) / 1000)), row.id);
   return true;
 }
 
@@ -115,7 +119,7 @@ export function settleFromPostCall({ externalId, live, now = clock.now() }) {
   if (row.content_dropped_at || !lines.length) {
     q("UPDATE stranger_calls SET duration_s = ? WHERE id = ?").run(duration, row.id);
   } else {
-    q("UPDATE stranger_calls SET said = ?, summary = ?, duration_s = ? WHERE id = ?").run(JSON.stringify(lines), summaryOf(lines), duration, row.id);
+    q("UPDATE stranger_calls SET said = ?, summary = ?, duration_s = ? WHERE id = ?").run(db.seal2(own(row.id), JSON.stringify(lines)), db.seal2(own(row.id), summaryOf(lines)), duration, row.id);
   }
   return true;
 }
@@ -133,7 +137,8 @@ function verifiedPhone(conversationId) {
 export function pendingFor(conversationId) {
   const phone = verifiedPhone(conversationId);
   if (!phone) return null;
-  return q("SELECT * FROM stranger_calls WHERE phone = ? AND used_at IS NULL ORDER BY started_at DESC LIMIT 1").get(phone) ?? null;
+  const forms = db.restcrypt.blindIndexes("phone", phone);
+  return q(`SELECT * FROM stranger_calls WHERE phone IN (${forms.map(() => "?").join(", ")}) AND used_at IS NULL ORDER BY started_at DESC LIMIT 1`).get(...forms) ?? null;
 }
 
 /** "earlier today", "yesterday", "on Tuesday", "on October 3". */

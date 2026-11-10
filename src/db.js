@@ -26,6 +26,15 @@ export function sealFact(personId, text) {
   return restcrypt.sealFor(owner, text);
 }
 export { restcrypt };
+/** Seal a phase-2 column (restcrypt.SENSITIVE2) for its owner; unchanged unless REASON_ENCRYPT_REST2=on. */
+export const seal2 = (conversationId, text) => restcrypt.sealFor2(conversationId, text);
+/**
+ * Strict mode for tables a module makes after db.js has loaded (stranger_calls, shop_shipping):
+ * that module calls this once its CREATE TABLE has run.
+ */
+export function restStrictRefresh() {
+  if (restcrypt.flagOn() && process.env.REASON_ENCRYPT_STRICT === "1") restcrypt.installStrictTriggers(db);
+}
 
 /**
  * The online migration (serve.js calls this on boot). Flag on: seal old plain rows, 200 at a time,
@@ -1617,9 +1626,9 @@ addColumnIfMissing("threads", "web_hint_due", "INTEGER NOT NULL DEFAULT 0");
   if (!hadTold) {
     db.prepare(`UPDATE threads SET web_hint_told_at = (
         SELECT MIN(created_at) FROM outbox o WHERE o.conversation_id = threads.conversation_id
-          AND o.body LIKE '%the Web part included, is on Reason Web.%')
+          AND pt(o.body) LIKE '%the Web part included, is on Reason Web.%')
       WHERE web_hint_told_at IS NULL AND EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id = threads.conversation_id
-          AND o.body LIKE '%the Web part included, is on Reason Web.%')`).run();
+          AND pt(o.body) LIKE '%the Web part included, is on Reason Web.%')`).run();
   }
 }
 // The first time this person opened their conversation on Web: the history boundary is explained
@@ -3686,7 +3695,7 @@ export function savePlace(conversationId, { name, address, lat, lng, arriveBy = 
       arrive_by = excluded.arrive_by, days = excluded.days, mode = excluded.mode,
       travel_minutes = excluded.travel_minutes, route_description = excluded.route_description,
       updated_at = excluded.updated_at`)
-    .run(conversationId, n, key, a, lat, lng, arriveBy, days, md, tm, rd, now, now);
+    .run(conversationId, n, key, seal2(conversationId, a), lat, lng, arriveBy, days, md, tm, seal2(conversationId, rd), now, now);
   return { ok: true, name: n, address: a, lat, lng, arrive_by: arriveBy, days, mode: md, travel_minutes: tm, route_description: rd };
 }
 
@@ -4610,7 +4619,7 @@ export function isOwnerThread(conversationId) {
 export function claimInbound({ channel, externalId, conversationId, text = null, replyTo = null, threadRoot = null }) {
   try {
     db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, text, reply_to, thread_root) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(channel, externalId, conversationId, clock.now(), text ? String(text) : null,
+      .run(channel, externalId, conversationId, clock.now(), text ? seal2(conversationId, String(text)) : null,
         replyTo ? String(replyTo) : null, threadRoot ? String(threadRoot) : null);
     return true;
   } catch (e) {
@@ -4631,7 +4640,7 @@ export function rememberInboundPart({ channel, baseHandle, partIndex, conversati
     ON CONFLICT(channel, base_handle, part_index) DO UPDATE SET
       conversation_id = excluded.conversation_id, text = excluded.text,
       urls = excluded.urls, attachments = excluded.attachments, at = excluded.at`)
-    .run(channel, baseHandle, partIndex, conversationId, text, JSON.stringify(urls), JSON.stringify(attachments), clock.now());
+    .run(channel, baseHandle, partIndex, conversationId, seal2(conversationId, text), JSON.stringify(urls), JSON.stringify(attachments), clock.now());
 }
 
 /** One part, with its JSON columns already parsed, or null when it was never seen. */
@@ -4757,7 +4766,7 @@ export function holdInbound({ conversationId, channel, address, chatId = null, e
   db.prepare(`INSERT INTO pending_inbound
       (conversation_id, channel, address, chat_id, external_id, text, attachments, service, is_operator, arrived_at, ready_at, deadline_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, channel, address, chatId, externalId, text, JSON.stringify(attachments), service, isOperator ? 1 : 0, now, readyAt, deadlineAt);
+    .run(conversationId, channel, address, chatId, externalId, seal2(conversationId, text), JSON.stringify(attachments), service, isOperator ? 1 : 0, now, readyAt, deadlineAt);
   // Everything held for this conversation now shares one window, so "is it due" is one comparison
   // wherever it is asked from — the waiting request, the sweep, or /health.
   db.prepare("UPDATE pending_inbound SET ready_at = ?, deadline_at = ? WHERE conversation_id = ?")
@@ -4779,7 +4788,7 @@ export function reholdInbound(rows, { readyAt, downSince }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const r of rows) {
     ins.run(
-      r.conversation_id, r.channel, r.address, r.chat_id ?? null, r.external_id, r.text,
+      r.conversation_id, r.channel, r.address, r.chat_id ?? null, r.external_id, seal2(r.conversation_id, r.text),
       JSON.stringify(r.attachments ?? []), r.service ?? null, r.is_operator ? 1 : 0, r.arrived_at,
       readyAt, readyAt, (r.held_times ?? 0) + 1, r.down_since ?? downSince,
     );
@@ -4908,7 +4917,7 @@ export function enqueueOutbound({ idemKey, conversationId, channel, address, cha
   const r = db.prepare(`INSERT INTO outbox
     (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, after_id, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
-    .run(idemKey, conversationId, channel, address, chatId, String(body ?? ""),
+    .run(idemKey, conversationId, channel, address, chatId, seal2(conversationId, String(body ?? "")),
       media ? JSON.stringify(media) : null, sendStyle, replyTo, afterId, maxAttempts, now, toOwner ? 1 : 0, now, now);
   return { fresh: true, row: rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(r.lastInsertRowid)) };
 }
@@ -5266,7 +5275,7 @@ export function createCall(conversationId, {
     (conversation_id, provider, external_id, to_number, is_owner, goal, facts, state, direction,
      confirmation_id, announcement, webhook_token, task_id, timer_id, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, provider, externalId, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []),
+    .run(conversationId, provider, externalId, toNumber, isOwner ? 1 : 0, seal2(conversationId, goal), seal2(conversationId, JSON.stringify(facts ?? [])),
          state, direction === "in" ? "in" : "out", confirmationId,
          announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), taskId, timerId, now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
@@ -5595,7 +5604,6 @@ export function updateCallRequest(conversationId, id, fields) {
 }
 
 
-const CALL_SEALED = new Set(["transcript", "summary", "turn_log"]);
 export function updateCall(conversationId, id, fields) {
   const allowed = [
     "external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents",
@@ -5630,7 +5638,7 @@ export function updateCall(conversationId, id, fields) {
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
   for (const k of allowed) {
-    if (fields[k] !== undefined) { sets.push(`${k} = ?`); args.push(CALL_SEALED.has(k) ? restcrypt.sealFor(conversationId, fields[k]) : fields[k]); }
+    if (fields[k] !== undefined) { sets.push(`${k} = ?`); args.push(restcrypt.sealCell("calls", k, conversationId, fields[k])); }
   }
   const ended = !!fields.state && !["placing", "ringing", "in_progress"].includes(fields.state);
   if (ended) {
@@ -5935,7 +5943,8 @@ export function createPage(conversationId, { title, blocks, subtitle = null, clo
   const id = pageId();
   db.prepare(`INSERT INTO pages (id, conversation_id, title, content, shared, revision, created_at, updated_at, owner_key, subtitle, closing)
     VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, ?, ?)`)
-    .run(id, conversationId, title, JSON.stringify(blocks), now, now, pageKey(), subtitle || null, closing || null);
+    .run(id, conversationId, seal2(conversationId, title), seal2(conversationId, JSON.stringify(blocks)), now, now, pageKey(),
+      seal2(conversationId, subtitle || null), seal2(conversationId, closing || null));
   return getPage(id);
 }
 
@@ -6074,7 +6083,8 @@ export function updatePage(conversationId, id, { title, blocks, subtitle, closin
   const sub = subtitle === undefined ? page.subtitle : (subtitle || null);
   const close = closing === undefined ? page.closing : (closing || null);
   db.prepare("UPDATE pages SET title = ?, content = ?, subtitle = ?, closing = ?, revision = revision + 1, updated_at = ? WHERE id = ?")
-    .run(title ?? page.title, JSON.stringify(blocks ?? page.blocks), sub, close, clock.now(), id);
+    .run(seal2(page.conversation_id, title ?? page.title), seal2(page.conversation_id, JSON.stringify(blocks ?? page.blocks)),
+      seal2(page.conversation_id, sub), seal2(page.conversation_id, close), clock.now(), id);
   return getPage(id);
 }
 
@@ -6121,7 +6131,8 @@ export function createDocument(conversationId, { id, kind, title, subtitle = nul
   db.prepare(`INSERT INTO documents
     (id, conversation_id, kind, title, subtitle, closing, content, filename, path, bytes, sha256, owner_key, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, conversationId, kind, title, subtitle || null, closing || null, JSON.stringify(blocks),
+    .run(id, conversationId, kind, seal2(conversationId, title), seal2(conversationId, subtitle || null), seal2(conversationId, closing || null),
+      seal2(conversationId, JSON.stringify(blocks)),
       filename, path, bytes, sha256, linkToken(PAGE_KEY_LENGTH), clock.now());
   return getDocument(id);
 }
@@ -9445,12 +9456,12 @@ export function learnPreference(conversationId, { category, words, note = "", tu
   const cat = String(category ?? "").trim();
   if (!clean || !cat) return null;
   const down = String(turnedDown ?? "").trim();
-  const before = db.prepare("SELECT * FROM preferences WHERE conversation_id = ? AND words = ? AND turned_down = ?")
+  const before = db.prepare("SELECT * FROM preferences WHERE conversation_id = ? AND pt(words) = ? AND pt(turned_down) = ?")
     .get(conversationId, clean, down);
   if (before) return { ...before, already_knew: true };
   const r = db.prepare(`INSERT INTO preferences (conversation_id, category, words, note, turned_down, task_id, learned_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, cat, clean, String(note ?? "").trim(), down, taskId, clock.now());
+    .run(conversationId, cat, seal2(conversationId, clean), seal2(conversationId, String(note ?? "").trim()), seal2(conversationId, down), taskId, clock.now());
   return { ...getPreference(conversationId, Number(r.lastInsertRowid)), already_knew: false };
 }
 
@@ -9479,7 +9490,8 @@ export function setOnlyPreference(conversationId, { category, words, note = "", 
     db.prepare("DELETE FROM preferences WHERE conversation_id = ? AND category = ?").run(conversationId, cat);
     id = Number(db.prepare(`INSERT INTO preferences (conversation_id, category, words, note, turned_down, task_id, learned_at)
       VALUES (?, ?, ?, ?, ?, NULL, ?)`)
-      .run(conversationId, cat, clean, String(note ?? "").trim(), String(turnedDown ?? "").trim(), clock.now()).lastInsertRowid);
+      .run(conversationId, cat, seal2(conversationId, clean), seal2(conversationId, String(note ?? "").trim()),
+        seal2(conversationId, String(turnedDown ?? "").trim()), clock.now()).lastInsertRowid);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -9521,7 +9533,7 @@ export function correctPreference(conversationId, id, { category = null, words =
     const clean = String(v).trim();
     if (!clean) continue;
     sets.push(`${col} = ?`);
-    args.push(clean);
+    args.push(restcrypt.sealCell("preferences", col, conversationId, clean));
   }
   db.prepare(`UPDATE preferences SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
   return { ok: true, was: row, preference: getPreference(conversationId, id) };
@@ -9583,14 +9595,15 @@ export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out
   const what = String(guess ?? "").trim();
   if (!who || !what) return null;
   const source = GUESS_SOURCES.includes(how) ? how : "i_worked_it_out";
-  const before = db.prepare("SELECT * FROM guesses WHERE conversation_id = ? AND about = ? AND guess = ?")
+  const before = db.prepare("SELECT * FROM guesses WHERE conversation_id = ? AND pt(about) = ? AND pt(guess) = ?")
     .get(conversationId, who, what);
   if (before) return { ...before, already_guessed: true };
   const receipts = JSON.stringify(Array.isArray(evidence) ? evidence : []);
   const changes = String(use ?? "").trim();
   const r = db.prepare(`INSERT INTO guesses (conversation_id, about, guess, how, noted_at, evidence, "use", last_supported_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, who, what, source, clock.now(), receipts, changes,
+    .run(conversationId, seal2(conversationId, who), seal2(conversationId, what), source, clock.now(),
+      seal2(conversationId, receipts), seal2(conversationId, changes),
       source === PATTERN_SOURCE ? clock.now() : null);
   return { ...getGuess(conversationId, Number(r.lastInsertRowid)), already_guessed: false };
 }
@@ -9618,11 +9631,11 @@ export function listGuesses(conversationId, { includeConfirmed = false, includeP
  * was — being told "Kofi lives in Bed-Stuy" is not confirmation that he bought a car.
  */
 export function confirmGuess(conversationId, { about, guess, said = "" } = {}) {
-  const row = db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND about = ? AND guess = ?
+  const row = db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND pt(about) = ? AND pt(guess) = ?
     AND confirmed_at IS NULL`).get(conversationId, String(about ?? "").trim(), String(guess ?? "").trim());
   if (!row) return null;
   db.prepare("UPDATE guesses SET confirmed_at = ?, confirmed_said = ? WHERE id = ?")
-    .run(clock.now(), String(said ?? "").trim(), row.id);
+    .run(clock.now(), seal2(conversationId, String(said ?? "").trim()), row.id);
   return getGuess(conversationId, row.id);
 }
 
@@ -9637,7 +9650,7 @@ export function correctGuess(conversationId, id, { guess = null, about = null } 
     const clean = String(v).trim();
     if (!clean) continue;
     sets.push(`${col} = ?`);
-    args.push(clean);
+    args.push(restcrypt.sealCell("guesses", col, conversationId, clean));
   }
   db.prepare(`UPDATE guesses SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
   return { ok: true, was: row, guess: getGuess(conversationId, id) };
@@ -9688,7 +9701,7 @@ export function supportPattern(conversationId, id, at = clock.now(), { evidence 
   if (!row) return null;
   if (Array.isArray(evidence) && evidence.length) {
     db.prepare(`UPDATE guesses SET last_supported_at = ?, evidence = ? WHERE id = ?`)
-      .run(at, JSON.stringify(evidence), id);
+      .run(at, seal2(conversationId, JSON.stringify(evidence)), id);
   } else {
     db.prepare("UPDATE guesses SET last_supported_at = ? WHERE id = ?").run(at, id);
   }
@@ -9818,11 +9831,11 @@ export function stateWhy(conversationId, { about, why, said, taskId = null } = {
   const goal = String(why ?? "").trim();
   const words = String(said ?? "").trim();
   if (!subject || !goal || !words) return null;
-  const before = db.prepare(`SELECT * FROM whys WHERE conversation_id = ? AND about = ? AND why = ?
+  const before = db.prepare(`SELECT * FROM whys WHERE conversation_id = ? AND pt(about) = ? AND pt(why) = ?
     AND superseded_at IS NULL`).get(conversationId, subject, goal);
   if (before) return { ...before, already_knew: true };
   const r = db.prepare(`INSERT INTO whys (conversation_id, about, why, said, task_id, stated_at)
-    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, subject, goal, words, taskId, clock.now());
+    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, seal2(conversationId, subject), seal2(conversationId, goal), seal2(conversationId, words), taskId, clock.now());
   return { ...getWhy(conversationId, Number(r.lastInsertRowid)), already_knew: false };
 }
 
@@ -9857,7 +9870,7 @@ export function correctWhy(conversationId, id, { why = null, said }) {
   if (!words) return { ok: false, error: `A correction needs their own words, verbatim.` };
   const now = clock.now();
   const r = db.prepare(`INSERT INTO whys (conversation_id, about, why, said, task_id, stated_at)
-    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, row.about, goal, words, row.task_id, now);
+    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, seal2(conversationId, row.about), seal2(conversationId, goal), seal2(conversationId, words), row.task_id, now);
   const next = Number(r.lastInsertRowid);
   db.prepare("UPDATE whys SET superseded_at = ?, superseded_by = ? WHERE id = ?").run(now, next, id);
   return { ok: true, was: row, why: getWhy(conversationId, next) };
@@ -11215,7 +11228,7 @@ export function latestMessagesFor(conversationId, { before = Number.MAX_SAFE_INT
  */
 export function webMessageSent({ address, text, since, until }) {
   return db.prepare(`SELECT m.external_id, m.at FROM messages m JOIN outbox o ON o.id = m.outbox_id
-    WHERE m.channel = 'web' AND o.address = ? AND o.body = ? AND m.at >= ? AND m.at <= ?
+    WHERE m.channel = 'web' AND o.address = ? AND pt(o.body) = ? AND m.at >= ? AND m.at <= ?
     ORDER BY m.at DESC LIMIT 1`).get(address, text, since, until) ?? null;
 }
 
@@ -13759,7 +13772,7 @@ export function addRule(conversationId, { rule, why = "", sourceMessageId = null
   const clean = String(rule ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
   if (!clean) return { ok: false, error: "empty" };
   const key = normalize(clean);
-  const same = db.prepare("SELECT * FROM treat_rules WHERE conversation_id = ? AND rule_key = ? ORDER BY id DESC").all(conversationId, key);
+  const same = db.prepare("SELECT * FROM treat_rules WHERE conversation_id = ? AND pt(rule_key) = ? ORDER BY id DESC").all(conversationId, key);
   const active = same.find(r => r.status === "active");
   if (active) return { ok: true, already: true, rule: active };
   const takenBack = same.find(r => r.status === "deleted");
@@ -13769,7 +13782,8 @@ export function addRule(conversationId, { rule, why = "", sourceMessageId = null
   }
   const msg = Number.isInteger(Number(sourceMessageId)) && Number(sourceMessageId) > 0 ? Number(sourceMessageId) : null;
   const r = db.prepare(`INSERT INTO treat_rules (conversation_id, rule, rule_key, why, source_message_id, source, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`).run(conversationId, clean, key, String(why ?? "").trim().slice(0, 300), msg, source, at);
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`).run(conversationId, seal2(conversationId, clean), seal2(conversationId, key),
+      seal2(conversationId, String(why ?? "").trim().slice(0, 300)), msg, source, at);
   return { ok: true, rule: getRule(conversationId, Number(r.lastInsertRowid)) };
 }
 

@@ -53,7 +53,7 @@ test("flag on: every phase-1 column is written sealed, and reads back as written
   assert.equal(back.transcript, `them: ${SECRET}`);
 
   // Raw rows: every value sealed, none plain.
-  for (const s of rc.status(d.rawPrepare)) assert.equal(s.plain, 0, `${s.column} has plain rows`);
+  for (const s of rc.status(d.rawPrepare).filter(s => s.phase === 1)) assert.equal(s.plain, 0, `${s.column} has plain rows`);
   assert.equal(rawScan("AB negative"), false, "the words are nowhere in the database file");
 });
 
@@ -84,7 +84,7 @@ test("online migration seals old plain rows, and rollback opens them again", () 
   let n, total = 0;
   while ((n = rc.migrateBatch(d.rawPrepare, "seal", 1)) > 0) total += n;
   assert.ok(total >= 2);
-  assert.ok(rc.status(d.rawPrepare).every(s => s.plain === 0));
+  assert.ok(rc.status(d.rawPrepare).filter(s => s.phase === 1).every(s => s.plain === 0));
   assert.ok(d.recentEvents(C, { limit: 20 }).some(e => e.content === old), "reads the same after sealing");
   assert.equal(rawScan("an old plain message"), false, "secure_delete: the plain original is not left in free pages");
 
