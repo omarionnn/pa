@@ -50,6 +50,7 @@
 // is ever refused or shown, the /pay pages are not served and Stripe's webhook acts on nothing. `owner`: the operator's own thread only — and HIS
 // grandfather rules are skipped there, or there would be nothing to try. `on`: everybody, minus the
 // grandfathered. Read at call time, so a test sets the env and a restart is the only switch.
+import { nameCase } from "./contact.js";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
 import * as stripe from "./stripe.js";
@@ -692,7 +693,8 @@ export async function afterTurn({ conversationId, router = null, sleep = realSle
   return { did: "nothing" };
 }
 
-const firstName = (name) => String(name ?? "").trim().split(/\s+/)[0] ?? "";
+/** Their first name as a bubble says it: a capital on each part (#426 nameCase), "sam" → "Sam", "anne-marie" → "Anne-Marie". */
+const firstName = (name) => nameCase(String(name ?? "").trim().split(/\s+/)[0] ?? "");
 
 /** Code's bubbles into their thread, a beat apart, and into the model's history so the turn after knows. */
 async function sayBubbles({ conversationId, router, bubbles, key, sleep, log }) {
