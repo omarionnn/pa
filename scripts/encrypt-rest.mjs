@@ -7,11 +7,24 @@
 //   node --env-file=.env scripts/encrypt-rest.mjs --rotate-install-key --server-stopped   new install key, every person key re-wrapped (Reason stopped)
 //   ... --move-master --server-stopped        re-wrap install keys under REASON_REST_KEK_SOURCE (file -> aws-kms)
 //   ... --rotate-master --server-stopped      new master key file; old backups' keystores become unopenable
+//   ... --seal-recovery-copy                  write <master file>.age for the off-site backup (also after every rotation)
 //   ... --prune-old-masters                   delete retired master files older than 3 days
 // Batches of 500 with a short pause, so it can run beside the live server (WAL, busy_timeout).
 const arg = process.argv[2] ?? "--status";
+const childProcess = await import("node:child_process");
 const d = await import("../src/db.js");
 const rc = d.restcrypt;
+// The disaster-recovery copy of the master: sealed with age to the owner's key (the same one env.age
+// uses), written beside it as <file>.age, which reason-offsite-backup uploads. Without one, losing the
+// box loses everyone's history. REASON_REST_MASTER_AGE_RECIPIENT = the owner's age public key.
+function sealRecoveryCopy() {
+  const to = process.env.REASON_REST_MASTER_AGE_RECIPIENT;
+  if (!to) { console.error("REASON_REST_MASTER_AGE_RECIPIENT is not set: no recovery copy written. Losing this box would lose everyone's history."); process.exitCode = 3; return; }
+  const { execFileSync } = childProcess;
+  const f = rc.kekFilePath();
+  execFileSync("age", ["-r", to, "-o", f + ".age", f]);
+  console.log(`recovery copy: ${f}.age`);
+}
 const pause = () => new Promise(r => setTimeout(r, 50));
 if (arg === "--status") {
   console.table(rc.status(d.rawPrepare));
@@ -34,6 +47,9 @@ if (arg === "--status") {
 } else if (arg === "--move-master" || arg === "--rotate-master") {
   if (!process.argv.includes("--server-stopped")) { console.error(`Stop Reason first, then run with ${arg} --server-stopped.`); process.exit(2); }
   console.log(arg === "--move-master" ? await rc.moveMaster() : await rc.rotateFileMaster());
+  if (arg === "--rotate-master") sealRecoveryCopy();
+} else if (arg === "--seal-recovery-copy") {
+  sealRecoveryCopy();
 } else if (arg === "--prune-old-masters") {
   console.log(`removed ${rc.pruneOldMasters()} retired master key file(s) older than 3 days`);
-} else { console.error("usage: --status | --seal | --open | --rotate-install-key | --move-master | --rotate-master | --prune-old-masters"); process.exit(2); }
+} else { console.error("usage: --status | --seal | --open | --rotate-install-key | --move-master | --rotate-master | --seal-recovery-copy | --prune-old-masters"); process.exit(2); }
