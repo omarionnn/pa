@@ -86,7 +86,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   calls = []; runs = {}; nextRun = 1; said.length = 0; pictures.length = 0; reacts.length = 0; woke.length = 0; lastHtml = ""; clock.reset();
   food._setAllergyAsk(async () => ({ value: { constraints: [], conflicts: [] } }));
-  for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks", "shop_shipping", "spend", "food_orders", "food_notes", "confirmations"]) { try { db.db.exec(`DELETE FROM ${t}`); } catch { /* table made later */ } }
+  for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks", "shop_shipping", "spend", "food_orders", "food_notes", "food_places", "food_told", "confirmations"]) { try { db.db.exec(`DELETE FROM ${t}`); } catch { /* table made later */ } }
   q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_secret_4821', 'visa', '4821', ?, 1)").run(OMARI, clock.now());
   // Signed in to DoorDash already, so the checkout starts in their profile.
   q("INSERT OR REPLACE INTO shop_profiles (conversation_id, profile_id, created_at) VALUES (?, 'prof_1', ?)").run(OMARI, clock.now());
@@ -96,7 +96,8 @@ beforeEach(() => {
 });
 
 const CART = {
-  platform: "doordash", restaurant: "Habibi Halal", store_url: STORE,
+  // They asked for DoorDash themselves (ordering direct is test/food-direct.test.js).
+  platform: "doordash", restaurant: "Habibi Halal", store_url: STORE, their_choice: true,
   items: [{ name: "Chicken over rice", qty: 1, modifiers: ["white sauce", "no hot sauce"], price: "14.99" }, { name: "Fries", qty: 1, price: "4.50" }],
   fees: [{ label: "Subtotal", amount: "19.49" }, { label: "Delivery fee", amount: "2.99" }, { label: "Service fee", amount: "3.12" }, { label: "Tax", amount: "1.82" }],
   tip: "4.00", total: "31.42", address: "3247 Bruner Ave, Apt 1", address_label: "Home", eta: "7:55–8:15",
