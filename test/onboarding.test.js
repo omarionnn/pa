@@ -299,6 +299,44 @@ test("the name they pick: the card under THAT name, its line on the card's own m
   assert.equal(h.turns.length, 1);
 });
 
+// ---------- names get a capital on each word (Omari, 2026-11-09) ----------
+
+test("names typed lowercase: a capital on each word on the card, its line, the greeting and the account", async () => {
+  const h = harness({ ...GREET, "kofi mensah": { kind: "answer", name: "kofi mensah" }, "jarvis": { kind: "answer", card_name: "jarvis" } });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  const before = to(h, num).length;
+  await h.router.deliver(text(num, "kofi mensah"));
+  assert.deepEqual(words(h, num).slice(before), ["nice to meet you, Kofi Mensah", ob.CARD_NAME_ASK]);
+  assert.equal(db.getAccount(conv(num)).name, "Kofi Mensah");
+  const at = to(h, num).length;
+  await h.router.deliver(text(num, "jarvis"));
+  const sent = to(h, num).slice(at);
+  assert.equal(sent[0].text, "Jarvis it is. here's my card, save it so you can always find me");
+  assert.equal(db.getAccount(conv(num)).contact_card_name, "Jarvis");
+  const file = cardFile(sent[0].media.url);
+  assert.match(file.body, /\r\nFN:Jarvis\r\n/);
+  assert.match(file.body, /\r\nN:Jarvis;;;;\r\n/);
+  assert.match(file.headers["Content-Disposition"], /filename="Jarvis\.vcf"/);
+});
+
+test("name capitals: only a word's first letter is raised; nothing lowered, emoji and digits as typed", async () => {
+  const { nameCase, cardName } = await import("../src/contact.js");
+  const cases = {
+    "jarvis": "Jarvis", "kofi mensah": "Kofi Mensah", "McKenna": "McKenna", "mcKenna": "McKenna",
+    "JJ": "JJ", "lil mike": "Lil Mike", "jean-luc": "Jean-Luc", "my assistant": "My Assistant",
+    "🦞": "🦞", "🦞 boo": "🦞 Boo", "2pac": "2pac", "élodie": "Élodie", "o'brien": "O'brien", "Kofi": "Kofi",
+  };
+  for (const [typed, want] of Object.entries(cases)) assert.equal(nameCase(typed), want, typed);
+  assert.equal(cardName("  jarvis  "), "Jarvis");
+  assert.equal(cardName(""), "Reason");
+  assert.equal(ob.MET("kofi"), "nice to meet you, Kofi");
+  // The person's name read off their text is kept with its capitals, emoji names as typed.
+  const read = (name) => ob.readText({ state: "awaiting_name", text: name, ask: async () => ({ value: { kind: "answer", name, card_name: "", reply: "", name_line: "" } }) });
+  assert.equal((await read("ama serwaa")).name, "Ama Serwaa");
+  assert.equal((await read("😎")).name, "😎");
+});
+
 test("skipping the name ('whatever', 'you pick'): the card as Reason", async () => {
   for (const [said, read] of [["whatever", { kind: "decline" }], ["you pick", { kind: "decline" }], ["sure", { kind: "answer", card_name: "" }]]) {
     const h = harness({ ...GREET, ...NAME, [said]: read });
