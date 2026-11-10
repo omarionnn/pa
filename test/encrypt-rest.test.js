@@ -101,10 +101,10 @@ test("forget everything re-keys the person: an earlier backup is unreadable, kep
   d.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   const backup = join(dir, "backup-before.db");
   copyFileSync(process.env.REASON_DB_PATH, backup);
-  const sealedThen = new DatabaseSync(backup).prepare("SELECT content FROM event_log WHERE conversation_id = ? AND content <> '' LIMIT 1").get(C).content;
+  const sealedThen = new DatabaseSync(backup).prepare("SELECT content FROM event_log WHERE conversation_id = ? AND content <> '' ORDER BY id LIMIT 1").get(C).content;
   assert.equal(rc.openAny(sealedThen), SECRET, "readable while the key exists");
 
-  d.upsertAccount?.(C);
+  d.upsertAccount({ conversationId: C, channel: "sendblue", address: "+15550001111" });
   const res = await ios.forgetEverything({ conversation_id: C });
   assert.equal(res.ok, true);
   // The backup's ciphertext now has no key anywhere: it reads as nothing.

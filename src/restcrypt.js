@@ -20,7 +20,7 @@
 //
 // REASON_REST_KEK_SOURCE=local (REASON_REST_KEK, 64 hex in env) exists for tests and development
 // only: with it the master key sits beside the data, which defeats the point on a real box.
-import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -188,7 +188,8 @@ function loadDek(keyId) {
   if (!ik) throw new Error("Sealed data found but the install key is not unlocked (REASON_REST_KEK_SOURCE / KMS unreachable at boot?).");
   const row = ks.prepare("SELECT id, conversation_id, wrapped, ik_version FROM user_keys WHERE id = ?").get(keyId);
   if (!row) return null; // shredded
-  const k = gcmOpen(ikFor(row.ik_version), row.wrapped, `dek:${row.id}`);
+  // A KeyObject, made once: handing node:crypto a raw Buffer re-imports the key on every call (~5x slower).
+  const k = createSecretKey(gcmOpen(ikFor(row.ik_version), row.wrapped, `dek:${row.id}`));
   deks.set(keyId, k); deks.set("c:" + row.conversation_id, row.id);
   return k;
 }
@@ -204,7 +205,7 @@ function keyIdFor(conversationId, create) {
   const raw = randomBytes(32);
   const id = Number(ks.prepare("INSERT INTO user_keys (conversation_id, wrapped, ik_version, created_at) VALUES (?, '', ?, ?)").run(c, ikVersion, Date.now()).lastInsertRowid);
   ks.prepare("UPDATE user_keys SET wrapped = ? WHERE id = ?").run(gcmSeal(ik, raw, `dek:${id}`), id);
-  deks.set(id, raw); deks.set("c:" + c, id);
+  deks.set(id, createSecretKey(raw)); deks.set("c:" + c, id);
   return id;
 }
 
@@ -363,28 +364,53 @@ function hasCol(rawPrepare, t, c) { return rawPrepare(`PRAGMA table_info(${t})`)
  * One small batch of the online migration. direction "seal" seals plain rows (flag on);
  * "open" writes sealed rows back as plain text (rollback, flag off). Each row is updated only if it
  * still holds the value we read (`AND col = ?`), so a write that lands meanwhile is never clobbered.
- * Returns how many rows it changed; 0 means that direction is finished.
+ * Returns how many rows it changed (at least 1 while there is work left); 0 means that direction is
+ * finished. Keeps a cursor per column, so each call reads only the next rows, never the whole table.
  */
+const shape = new Map();
+function colsOf(rawPrepare, t) {
+  if (!shape.has(t)) shape.set(t, rawPrepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t)
+    ? new Set(rawPrepare(`PRAGMA table_info(${t})`).all().map(r => r.name)) : null);
+  return shape.get(t);
+}
+const cursors = new Map(); // "dir:table.col" -> last primary key done, so a batch never rescans
+
 export function migrateBatch(rawPrepare, direction = "seal", batch = 200) {
   let changed = 0;
   for (const s of SENSITIVE) {
-    if (!tableExists(rawPrepare, s.table)) continue;
+    const cols = colsOf(rawPrepare, s.table);
+    if (!cols) continue;
     const pk = s.table === "conversations" ? "id" : "rowid";
+    // A thread is one JSON value that can run to hundreds of KB: a few at a time keeps a batch short.
+    const limit = s.table === "conversations" ? Math.max(1, Math.ceil(batch / 50)) : batch;
     for (const col of s.cols) {
-      if (!hasCol(rawPrepare, s.table, col)) continue;
+      if (!cols.has(col)) continue;
       const where = direction === "seal"
         ? `${col} IS NOT NULL AND ${col} <> '' AND ${col} <> '[]' AND substr(${col}, 1, ${PREFIX.length}) <> '${PREFIX}'`
         : `substr(${col}, 1, ${PREFIX.length}) = '${PREFIX}'`;
-      const rows = rawPrepare(`SELECT ${pk} AS k, ${col} AS v, ${s.owner} AS owner FROM ${s.table} WHERE ${where} LIMIT ${batch}`).all();
+      const ck = `${direction}:${s.table}.${col}`;
+      const from = cursors.get(ck) ?? (pk === "id" ? "" : -1);
+      const rows = rawPrepare(`SELECT ${pk} AS k, ${col} AS v, ${s.owner} AS owner FROM ${s.table} WHERE ${pk} > ? AND ${where} ORDER BY ${pk} LIMIT ${limit}`).all(from);
+      if (!rows.length) continue;
+      cursors.set(ck, rows[rows.length - 1].k);
       const upd = rawPrepare(`UPDATE OR IGNORE ${s.table} SET ${col} = ? WHERE ${pk} = ? AND ${col} = ?`);
-      for (const r of rows) {
-        if (direction === "seal" && !r.owner) continue; // orphan fact with no person: left for the report
-        const next = direction === "seal" ? forceSeal(r.owner, r.v) : openAny(r.v);
-        changed += Number(upd.run(next, r.k, r.v).changes);
-      }
+      rawPrepare("SAVEPOINT rest_mig").run();
+      try {
+        for (const r of rows) {
+          if (direction === "seal" && !r.owner) continue; // orphan fact with no person: left for --status
+          const next = direction === "seal" ? forceSeal(r.owner, r.v) : openAny(r.v);
+          changed += Number(upd.run(next, r.k, r.v).changes);
+        }
+        rawPrepare("RELEASE rest_mig").run();
+      } catch (e) { rawPrepare("ROLLBACK TO rest_mig").run(); rawPrepare("RELEASE rest_mig").run(); throw e; }
+      // One column's batch per call keeps each call short. Rows skipped (orphans, unique clashes)
+      // still advance the cursor, so they are reported by --status and never spun on.
+      return Math.max(changed, 1);
     }
   }
-  return changed;
+  // A full pass found nothing left: reset cursors so a later run (new plain rows) starts again.
+  for (const k of [...cursors.keys()]) if (k.startsWith(direction + ":")) cursors.delete(k);
+  return 0;
 }
 
 /** Counts for --status and /ops: how much is sealed vs plain, per column. */
@@ -405,4 +431,4 @@ export function status(rawPrepare) {
 }
 
 /** Test hook: forget in-memory keys (simulates a fresh process). */
-export function _resetForTests() { ks = null; ik = null; ikVersion = 0; deks.clear(); }
+export function _resetForTests() { ks = null; ik = null; ikVersion = 0; deks.clear(); cursors.clear(); shape.clear(); }
