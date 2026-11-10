@@ -70,6 +70,8 @@ const MAX_DEL = 500;
 /** How many of the site's fields the page is told about. A sign-in form has one or two. */
 const MAX_FIELDS = 12;
 const KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+/** Where the page is scrolled to, and whether the page itself (not a box inside it) scrolls at all. */
+const SCROLL_JS = `({ x: scrollX, y: scrollY, doc: (document.scrollingElement || document.documentElement).scrollHeight > innerHeight + 1 || (document.scrollingElement || document.documentElement).scrollWidth > innerWidth + 1 })`;
 /** JPEG quality of a picture taken mid-scroll (a still one is 58). */
 const MOVING_QUALITY = 40;
 /** Two readings in a row before the session finishes itself, so one odd frame cannot end it. */
@@ -656,24 +658,34 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       const dy = Math.max(-2000, Math.min(2000, Math.round(Number(input.dy) || 0)));
       const dx = Math.max(-2000, Math.min(2000, Math.round(Number(input.dx) || 0)));
       const q = Math.max(0, Math.min(1e9, Math.trunc(Number(input.q) || 0)));
-      let got;
+      let got, atEnd = false;
       try {
         got = await inTurn(s, async () => {
+          const was = await page.evaluate(SCROLL_JS).catch(() => null);
           await page.mouse.wheel(dx, dy);
           // One frame of the site's own, so the picture is the page after the move, not before it.
-          await Promise.race([
-            page.evaluate(() => new Promise(r => requestAnimationFrame(() => r(true)))).catch(() => {}),
-            new Promise(r => setTimeout(r, 150)),
+          const now = await Promise.race([
+            page.evaluate(`new Promise(r => requestAnimationFrame(() => r(${SCROLL_JS})))`).catch(() => null),
+            new Promise(r => setTimeout(() => r(null), 150)),
           ]);
           // A picture while the page is moving is a lighter one: the eye cannot read a page in
           // motion, and on a weak signal the bytes ARE the delay. The sharp one comes from /view
           // once the page stops. (Same size, so it lines up; only the JPEG quality is lower.)
-          return takeView(s, { quality: MOVING_QUALITY });
+          const view = await takeView(s, { quality: MOVING_QUALITY });
+          // The end of the page: the page itself scrolls and did not move. Read off where the page
+          // is, never off the picture, which a blinking cursor or an ad changes on its own. A page
+          // that scrolls a box of its own instead (no window scroll at all) is the picture's call.
+          const hash = createHash("sha1").update(view.shot).digest("hex").slice(0, 16);
+          if (was && now && was.x === now.x && was.y === now.y) atEnd = now.doc || hash === s.lastScrollHash;
+          s.lastScrollHash = hash;
+          return view;
         });
       } catch (e) {
         return json(503, { why: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) });
       }
-      return viewAnswer(s, got, input.h, { sq: q });
+      // judge:false — two scroll answers 100 ms apart are not two readings of a page at rest: a
+      // flick that pushes the form off screen must not count as "signed in" twice and end it.
+      return viewAnswer(s, got, input.h, { sq: q, end: atEnd }, { judge: false });
     }
     if (action === "type") {
       // The one place a password passes through. It goes to the page and nowhere else: not to the
@@ -728,7 +740,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
  * same checks for a site that finished, refused the browser, or walled it.
  * `extra` rides along in the JSON (a scroll's `sq`).
  */
-async function viewAnswer(s, got, h, extra = {}) {
+async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
   const settled = clock.now() - (s.startedAt ?? 0) > EARLIEST_AUTO_FINISH_MS;
   // A wall is read first, because a wall also reads as "no sign-in prompt on the page" — which
   // is exactly what `looksSignedIn` infers signed-in from. Uber's bot-check page has none of
@@ -743,6 +755,8 @@ async function viewAnswer(s, got, h, extra = {}) {
       return json(200, { over: true, state: ended.state });
     }
   }
+  // Only a picture of the page at rest says it is signed in or walled; a scroll's leaves the counts as they are.
+  if (!judge) return frameAnswer(got, h, extra);
   const walled = looksBlocked(got.raw);
   if (!walled && looksSignedIn(s, got.raw) && settled) s.signedInRun += 1;
   else s.signedInRun = 0;
@@ -758,6 +772,10 @@ async function viewAnswer(s, got, h, extra = {}) {
     const ended = await end(s, "blocked");
     return json(200, { over: true, state: ended.state });
   }
+  return frameAnswer(got, h, extra);
+}
+/** `[4 bytes: JSON length][JSON][JPEG]`, the JPEG left off when the phone already has that picture. */
+function frameAnswer(got, h, extra = {}) {
   const hash = createHash("sha1").update(got.shot).digest("hex").slice(0, 16);
   const unchanged = String(h ?? "") === hash;
   const meta = { ...frameFor(got.raw), h: hash, same: unchanged, ...extra };
@@ -1060,21 +1078,23 @@ function sendScroll(){
     return r.arrayBuffer().then(function(b){
       return draw(b,function(meta,fresh){
         var sq=meta.sq||q;if(sq<shownSq)return false;shownSq=sq;
-        // The page did not move: it is at its end. What is still owed is dropped, so the picture
+        // The page did not move: it is at its end (the server reads where the page is). What is still owed is dropped, so the picture
         // does not slide off and snap back over and over.
-        if(meta.same){pend.x=pend.y=0;fling=null}
+        if(meta.end){pend.x=pend.y=0;fling=null}
         for(var i=fly.length-1;i>=0;i--)if(fly[i].q<=sq)fly.splice(i,1);
         shift();
       });
     }).then(done,done);
   },done);
 }
-var sx=0,sy=0,moved=false,pid=null;
+var sx=0,sy=0,moved=false,pid=null,halt=false;
 function scale(){var r=box();return V.width/r.width}
 stage.addEventListener('pointerdown',function(e){
-  if(e.target!==v)return;
+  if(e.target!==v||!e.isPrimary)return;
   sx=e.clientX;sy=e.clientY;moved=false;pid=e.pointerId;
-  // A finger on a moving page stops it, the way it does on the phone itself.
+  // A finger on a moving page stops it, the way it does on the phone itself — and that touch is
+  // only a stop, never a tap on the site: the picture under it is not where the page is yet.
+  halt=scrolling();
   fling=null;
   drag={x:e.clientX,y:e.clientY,s:[{t:performance.now(),x:e.clientX,y:e.clientY}]};
   try{v.setPointerCapture(e.pointerId)}catch(err){}
@@ -1104,10 +1124,10 @@ function release(e,flick){
 }
 stage.addEventListener('pointercancel',function(e){release(e,false)},{passive:true});
 // The paper page around the picture never scrolls under a finger that started on the picture.
-stage.addEventListener('touchmove',function(e){if(drag||moved&&e.target===v)e.preventDefault()},{passive:false});
+stage.addEventListener('touchmove',function(e){if(drag)e.preventDefault()},{passive:false});
 stage.addEventListener('pointerup',function(e){
-  if(e.target!==v&&e.pointerId!==pid)return;
-  if(release(e,true))return;
+  if(e.pointerId!==pid)return;
+  if(release(e,true)||halt){halt=false;return}
   var r=box();
   var nx=(e.clientX-r.left)/r.width,ny=(e.clientY-r.top)/r.height,f=at(nx,ny);
   // Focus happens HERE, in the tap itself. Anything after an await is too late for iOS.

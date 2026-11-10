@@ -535,6 +535,45 @@ test("the site looking signed in finishes the session on its own, and the site i
   assert.match(notes()[0], /they finished signing in to Amazon through the link you sent, and Amazon says they ARE signed in now/);
 });
 
+test("a flick never ends the sign-in: scroll answers are not readings of a page at rest", async () => {
+  // A flick that pushes the form off screen leaves a page with no box on it, and two scroll
+  // answers come back ~100 ms apart. Counted, that would be "signed in" twice and the end.
+  const { token, b, checks } = make({ frames: [AMAZON_SIGNED_IN] });
+  const { cookie } = await start(token);
+  clock.skip(20_000);
+  for (let q = 1; q <= 5; q++) {
+    const r = await req(token, "scroll", { method: "POST", cookie, body: { dy: 200, q } });
+    assert.equal(r.status, 200);
+    assert.equal(unpack(r).meta.sq, q, "a picture, not an ending");
+  }
+  assert.deepEqual(checks, [], "the account page was never asked");
+  assert.equal(b.closed, 0);
+  // At rest, the same page still finishes it the usual way: two /view readings.
+  assert.equal((await req(token, "view", { cookie })).status, 200);
+  assert.deepEqual(JSON.parse((await req(token, "view", { cookie })).body), { over: true, state: "signed_in" });
+});
+
+test("the end of the page is read off where the page is, not off the picture", async () => {
+  // A blinking cursor or an ad changes the picture at the bottom of a page; where the page is
+  // scrolled to does not. Only the page's own position says "this is the end".
+  let y = 0, max = 400;
+  const did = [];
+  const page = {
+    screenshot: async () => Buffer.from("jpeg-" + Math.random()), // never the same twice, like a blinking cursor
+    evaluate: async (fn) => typeof fn === "string" && fn.includes("scrollY") ? { x: 0, y, doc: true } : AMAZON_EMAIL_STEP,
+    mouse: { click: async () => {}, wheel: async (dx, dy) => { did.push(dy); y = Math.max(0, Math.min(max, y + dy)); } },
+    keyboard: { type: async () => {}, press: async () => {} },
+    goBack: async () => {},
+  };
+  const { token } = make({ launch: async () => ({ page, close: async () => {} }) });
+  const { cookie } = await start(token);
+  const step = async (dy, q) => unpack(await req(token, "scroll", { method: "POST", cookie, body: { dy, q } })).meta;
+  assert.equal((await step(300, 1)).end, false, "it moved");
+  assert.equal((await step(300, 2)).end, false, "it moved the last 100");
+  assert.equal((await step(300, 3)).end, true, "it could not move: the end, though the picture changed");
+  assert.equal((await step(-300, 4)).end, false, "and back up it goes");
+});
+
 test("nothing finishes itself in the first few seconds, or while a box is still asking for something", async () => {
   // Two ways to end somebody's sign-in out from under them, both shut.
   const early = make({ frames: [AMAZON_SIGNED_IN] });
