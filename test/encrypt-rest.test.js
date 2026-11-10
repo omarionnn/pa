@@ -137,6 +137,29 @@ test("install key rotation re-wraps person keys without touching data rows", asy
   assert.equal(rc.openAny(before), SECRET);
 });
 
+test("a missing or wrong keystore refuses to start instead of reading everyone as blank", async () => {
+  const { renameSync } = await import("node:fs");
+  const ksPath = rc.keystorePath(process.env.REASON_DB_PATH);
+  rc._resetForTests();
+  renameSync(ksPath, ksPath + ".away");
+  try {
+    await assert.rejects(rc.init(process.env.REASON_DB_PATH, { hasSealed: () => rc.anySealed(d.rawPrepare) }), /keystore .* is missing/);
+  } finally { renameSync(ksPath + ".away", ksPath); }
+  rc._resetForTests();
+  await rc.init(process.env.REASON_DB_PATH, { hasSealed: () => rc.anySealed(d.rawPrepare) });
+  // A key id that is neither in the keystore nor destroyed is a loud error, never a blank.
+  assert.throws(() => rc.openAny("enc:u1:999:AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA:AAAA"), /not in the keystore and was never destroyed/);
+});
+
+test("a person key wrapped under a retired install key still opens (a process that missed a rotation)", async () => {
+  const conv = "dm:sendblue:+15550003333";
+  const sealed = rc.forceSeal(conv, "made before the rotation");
+  await rc.rotateInstallKey();
+  rc._resetForTests();
+  await rc.init(process.env.REASON_DB_PATH);
+  assert.equal(rc.openAny(sealed), "made before the rotation");
+});
+
 test("AWS SigV4 matches the published get-vanilla vector", () => {
   // aws-sig-v4-test-suite/get-vanilla: GET / on example.amazonaws.com, service "service", us-east-1.
   const h = rc.sigv4({ method: "GET", host: "example.amazonaws.com", path: "/", query: "", headers: {}, body: "",

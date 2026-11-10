@@ -23,7 +23,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 
 export const PREFIX = "enc:u1:";
 
@@ -161,33 +161,49 @@ function sourceName() { return String(process.env.REASON_REST_KEK_SOURCE || "aws
  * (one KMS call). Called with top-level await from db.js before any query, so every read after it can
  * stay synchronous. With the flag off and no key ever made, it does nothing at all.
  */
-export async function init(dbPath) {
-  ks = openKeystore(keystorePath(dbPath));
-  const cur = ks.prepare("SELECT version, source, wrapped FROM install_key WHERE retired_at IS NULL ORDER BY version DESC LIMIT 1").get();
-  if (!cur && !flagOn()) return { active: false };
-  if (cur) { ik = await unwrapIK(cur.source, cur.wrapped); ikVersion = cur.version; }
-  else {
+export async function init(dbPath, { hasSealed = () => false } = {}) {
+  const path = keystorePath(dbPath);
+  // With the flag off, nothing is created: no keys.db, no KMS call, unless sealed rows exist to read.
+  const sealedRows = hasSealed();
+  if (!flagOn() && !sealedRows) return { active: false };
+  if (path !== ":memory:" && !existsSync(path) && sealedRows) {
+    throw new Error(`reason.db holds sealed rows but the keystore ${path} is missing. Restore keys.db (latest backup) before starting; starting without it would read everyone as blank.`);
+  }
+  ks = openKeystore(path);
+  const all = ks.prepare("SELECT version, source, wrapped, retired_at FROM install_key ORDER BY version DESC").all();
+  const cur = all.find(r => r.retired_at == null);
+  if (!cur && sealedRows) throw new Error("reason.db holds sealed rows but the keystore has no install key: wrong or empty keys.db.");
+  if (cur) {
+    // Retired install keys stay usable: a person key wrapped under one (a process that had not seen a
+    // rotation yet) still opens. One KMS call per version, at boot only.
+    for (const r of all) iks.set(r.version, await unwrapIK(r.source, r.wrapped));
+    ik = iks.get(cur.version); ikVersion = cur.version;
+  } else {
     const raw = randomBytes(32);
     const source = sourceName();
     const wrapped = await wrapIK(source, raw);
     ks.prepare("INSERT INTO install_key (version, source, wrapped, created_at) VALUES (1, ?, ?, ?)").run(source, wrapped, Date.now());
-    ik = raw; ikVersion = 1;
+    ik = raw; ikVersion = 1; iks.set(1, raw);
   }
   return { active: true };
 }
 let ikVersion = 0;
+const iks = new Map(); // install key version -> Buffer
 export function active() { return !!ik; }
 
 function ikFor(version) {
-  if (version === ikVersion) return ik;
-  throw new Error(`Person key wrapped under install key v${version}, current is v${ikVersion}: run scripts/encrypt-rest.mjs --rewrap.`);
+  if (iks.has(version)) return iks.get(version);
+  throw new Error(`Person key wrapped under install key v${version}, which this process has not unlocked (rotated by another process?). Restart Reason.`);
 }
 
 function loadDek(keyId) {
   if (deks.has(keyId)) return deks.get(keyId);
   if (!ik) throw new Error("Sealed data found but the install key is not unlocked (REASON_REST_KEK_SOURCE / KMS unreachable at boot?).");
   const row = ks.prepare("SELECT id, conversation_id, wrapped, ik_version FROM user_keys WHERE id = ?").get(keyId);
-  if (!row) return null; // shredded
+  if (!row) {
+    if (ks.prepare("SELECT 1 FROM shredded WHERE key_id = ?").get(keyId)) return null; // destroyed on purpose
+    throw new Error(`Person key ${keyId} is not in the keystore and was never destroyed: keys.db is older than reason.db or from another install. Restore the matching keys.db.`);
+  }
   // A KeyObject, made once: handing node:crypto a raw Buffer re-imports the key on every call (~5x slower).
   const k = createSecretKey(gcmOpen(ikFor(row.ik_version), row.wrapped, `dek:${row.id}`));
   deks.set(keyId, k); deks.set("c:" + row.conversation_id, row.id);
@@ -202,11 +218,25 @@ function keyIdFor(conversationId, create) {
   if (row) { loadDek(row.id); return row.id; }
   if (!create) return null;
   if (!ik) throw new Error("Encryption at rest is on but the install key is not unlocked.");
+  return newKeyRow(c);
+}
+
+/**
+ * A new person key, in one keystore write. Ids are random (48-bit), never a counter: a keystore
+ * restored from an older backup then lacks a key (a loud error) instead of handing an old id to
+ * someone else (silent wrong key). Another process making the same person's key at the same moment
+ * loses the race quietly and uses the winner's.
+ */
+function newKeyRow(c) {
   const raw = randomBytes(32);
-  const id = Number(ks.prepare("INSERT INTO user_keys (conversation_id, wrapped, ik_version, created_at) VALUES (?, '', ?, ?)").run(c, ikVersion, Date.now()).lastInsertRowid);
-  ks.prepare("UPDATE user_keys SET wrapped = ? WHERE id = ?").run(gcmSeal(ik, raw, `dek:${id}`), id);
-  deks.set(id, createSecretKey(raw)); deks.set("c:" + c, id);
-  return id;
+  const id = randomBytes(6).readUIntBE(0, 6);
+  const r = ks.prepare("INSERT OR IGNORE INTO user_keys (id, conversation_id, wrapped, ik_version, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(id, c, gcmSeal(ik, raw, `dek:${id}`), ikVersion, Date.now());
+  if (Number(r.changes) === 1) { deks.set(id, createSecretKey(raw)); deks.set("c:" + c, id); return id; }
+  const won = ks.prepare("SELECT id FROM user_keys WHERE conversation_id = ?").get(c);
+  if (!won) throw new Error("Could not make a person key (id clash); try again.");
+  loadDek(won.id);
+  return won.id;
 }
 
 const SEALED_CELLS = new Set(SENSITIVE.flatMap(s => s.cols.map(c => `${s.table}.${c}`)));
@@ -230,8 +260,17 @@ export function forceSeal(conversationId, plain) {
 export const SHREDDED = "";
 
 /** Open any value. Plain text passes through; a sealed value whose key was destroyed reads empty. */
+const opened = new Map(); // ciphertext -> plain, small LRU: one query that names a value twice opens it once
+const OPENED_MAX = 4000;
 export function openAny(v) {
   if (!isSealed(v)) return v;
+  const hit = opened.get(v);
+  if (hit !== undefined) return hit;
+  const plain = openUncached(v);
+  if (v.length < 8192) { if (opened.size >= OPENED_MAX) opened.delete(opened.keys().next().value); opened.set(v, plain); }
+  return plain;
+}
+function openUncached(v) {
   const rest = v.slice(PREFIX.length);
   const cut = rest.indexOf(":");
   const id = Number(rest.slice(0, cut));
@@ -248,7 +287,7 @@ export function destroyKey(conversationId) {
   if (!row) return false;
   ks.prepare("DELETE FROM user_keys WHERE id = ?").run(row.id);
   ks.prepare("INSERT OR REPLACE INTO shredded (key_id, conv_hash, at) VALUES (?, ?, ?)").run(row.id, createHash("sha256").update(c).digest("hex").slice(0, 16), Date.now());
-  deks.delete(row.id); deks.delete("c:" + c);
+  deks.delete(row.id); deks.delete("c:" + c); opened.clear();
   return true;
 }
 
@@ -266,11 +305,7 @@ export function rotatePersonKey(rawPrepare, conversationId) {
   if (!old) return { resealed: 0, shredded: false };
   const hold = c + "\u0000next";
   let nid = ks.prepare("SELECT id FROM user_keys WHERE conversation_id = ?").get(hold)?.id;
-  if (!nid) {
-    const raw = randomBytes(32);
-    nid = Number(ks.prepare("INSERT INTO user_keys (conversation_id, wrapped, ik_version, created_at) VALUES (?, '', ?, ?)").run(hold, ikVersion, Date.now()).lastInsertRowid);
-    ks.prepare("UPDATE user_keys SET wrapped = ? WHERE id = ?").run(gcmSeal(ik, raw, `dek:${nid}`), nid);
-  }
+  if (!nid) nid = newKeyRow(hold);
   const newKey = loadDek(nid);
   const oldTag = `${PREFIX}${old.id}:`;
   let resealed = 0;
@@ -293,7 +328,7 @@ export function rotatePersonKey(rawPrepare, conversationId) {
     ks.prepare("INSERT OR REPLACE INTO shredded (key_id, conv_hash, at) VALUES (?, ?, ?)").run(old.id, createHash("sha256").update(c).digest("hex").slice(0, 16), Date.now());
     ks.exec("COMMIT");
   } catch (e) { ks.exec("ROLLBACK"); throw e; }
-  deks.delete(old.id); deks.set("c:" + c, nid);
+  deks.delete(old.id); deks.set("c:" + c, nid); opened.clear();
   return { resealed, shredded: true };
 }
 
@@ -313,7 +348,7 @@ export async function rotateInstallKey() {
     ks.prepare("INSERT INTO install_key (version, source, wrapped, created_at) VALUES (?, ?, ?, ?)").run(next, source, wrapped, Date.now());
     ks.exec("COMMIT");
   } catch (e) { ks.exec("ROLLBACK"); throw e; }
-  ik = raw; ikVersion = next;
+  ik = raw; ikVersion = next; iks.set(next, raw);
   return next;
 }
 
@@ -437,4 +472,14 @@ export function status(rawPrepare) {
 }
 
 /** Test hook: forget in-memory keys (simulates a fresh process). */
-export function _resetForTests() { ks = null; ik = null; ikVersion = 0; deks.clear(); cursors.clear(); shape.clear(); }
+export function _resetForTests() { ks = null; ik = null; ikVersion = 0; deks.clear(); iks.clear(); opened.clear(); cursors.clear(); shape.clear(); }
+
+/** For db.js: does reason.db already hold any sealed value? Cheap: one indexed-free LIMIT 1 per column. */
+export function anySealed(rawPrepare) {
+  for (const s of SENSITIVE) {
+    if (!rawPrepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(s.table)) continue;
+    const cols = new Set(rawPrepare(`PRAGMA table_info(${s.table})`).all().map(r => r.name));
+    for (const col of s.cols) if (cols.has(col) && rawPrepare(`SELECT 1 FROM ${s.table} WHERE substr(${col}, 1, ${PREFIX.length}) = '${PREFIX}' LIMIT 1`).get()) return true;
+  }
+  return false;
+}

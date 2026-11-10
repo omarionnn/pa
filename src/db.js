@@ -14,7 +14,7 @@ mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
 // Encryption at rest (src/restcrypt.js, REASON_ENCRYPT_REST): unlock the install key before any query,
 // so every read below stays synchronous. Rows from statements on a sensitive table open themselves.
-await restcrypt.init(config.dbPath);
+await restcrypt.init(config.dbPath, { hasSealed: () => restcrypt.anySealed(db.prepare.bind(db)) });
 /** The unwrapped prepare: sealed values come back as stored. Migration and tests only. */
 export const rawPrepare = restcrypt.wrapDatabase(db);
 /** Seal a person_facts text for the person row's owner. */
@@ -2069,7 +2069,8 @@ const PLAN_FIELDS = ["title", "kind", "when", "where", "who", "details", "open_q
 // ---------- conversations ----------
 export function loadConversation(id) {
   const row = db.prepare("SELECT messages FROM conversations WHERE id = ?").get(id);
-  return row ? JSON.parse(row.messages) : [];
+  // A destroyed key reads as "" (src/restcrypt.js): that thread is gone, which is an empty thread.
+  return row ? JSON.parse(row.messages || "[]") : [];
 }
 export function saveConversation(id, messages) {
   db.prepare(`INSERT INTO conversations (id, messages, updated_at) VALUES (?, ?, ?)
