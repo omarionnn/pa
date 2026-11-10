@@ -229,3 +229,22 @@ test("tool diet: the sign-in tools are loaded whole wherever the rules are in th
   process.env.REASON_SOCIAL_SIGNIN = "";
   assert.ok(!diet.statePacks(CONV).includes("signin"));
 });
+
+test("the live read of a sign-in page never follows a redirect into this machine's network", async () => {
+  social._resetWalls();
+  const seen = [];
+  // Behaves like the platform's fetch: with redirect "follow" it goes on to the Location itself.
+  const fetchImpl = async (url, opts = {}) => {
+    seen.push(url);
+    if (url.includes("169.254")) return { status: 200, headers: { get: () => null }, text: async () => "Continue with Google" };
+    const loc = "http://169.254.169.254/latest/meta-data/";
+    if (opts.redirect === "follow") return fetchImpl(loc, opts);
+    return { status: 302, headers: { get: (h) => (h === "location" ? loc : null) }, text: async () => "" };
+  };
+  const out = await social.signinWall(signin.genericEntry("https://evil-redirect.example.com/login"), { fetchImpl });
+  assert.equal(out.in, false);
+  assert.deepEqual(out.providers_offered, []);
+  assert.equal(seen.length, 1, "the private hop is never fetched");
+  const ok = await social.signinWall(signin.genericEntry("https://www.notion.so/login"), { fetchImpl: async () => ({ status: 200, headers: { get: () => null }, text: async () => "<button>Continue with Google</button><button>Continue with Apple</button> Log in with email" }) });
+  assert.deepEqual(ok.providers_offered, ["google", "apple"]);
+});
