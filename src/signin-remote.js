@@ -875,7 +875,9 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
 function npFor(s, raw) {
   if (!nativeOn(s)) return {};
   // A page still drawing is "opening", not a step to hand over to the picture.
-  const st = frameFor(raw).blank ? { step: "loading", provider: "", number: "", say: `Opening ${s.entry.label}…` } : stepNow(s, raw);
+  const blank = frameFor(raw).blank;
+  const st = blank ? { step: "loading", provider: "", number: "", say: s.npSeen ? "Loading the next page…" : `Opening ${s.entry.label}…` } : stepNow(s, raw);
+  if (!blank) s.npSeen = true;
   // Off a provider's page the machine says "The site"; the person knows it by its name.
   st.say = String(st.say ?? "").replace(/\bThe site\b/g, s.entry.label);
   const key = `${st.step}:${st.provider}:${st.number}:${(st.offered ?? []).join(",")}`;
