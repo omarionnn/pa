@@ -367,11 +367,46 @@ test("a tap lands where they tapped, a drag scrolls, Back goes back", async () =
   await req(token, "tap", { method: "POST", cookie, body: { x: 0.5, y: 0.25 } });
   assert.deepEqual(b.did.at(-1), ["click", Math.round(0.5 * remote.VIEW.width), Math.round(0.25 * remote.VIEW.height)]);
   await req(token, "scroll", { method: "POST", cookie, body: { dy: 420 } });
-  assert.deepEqual(b.did.at(-1), ["wheel", 0, 420]);
+  assert.deepEqual(b.did.findLast(d => d[0] === "wheel"), ["wheel", 0, 420]);
   await req(token, "back", { method: "POST", cookie });
   assert.deepEqual(b.did.at(-1), ["back"]);
   await req(token, "key", { method: "POST", cookie, body: { key: "Enter" } });
   assert.deepEqual(b.did.at(-1), ["press", "Enter"]);
+});
+
+test("a scroll answers with the picture it made, in the same turn, and says which scroll it shows", async () => {
+  const { token, b } = make();
+  const { cookie } = await start(token);
+  const r = await req(token, "scroll", { method: "POST", cookie, body: { dy: 300, q: 7 } });
+  assert.equal(r.status, 200);
+  const { meta, jpeg } = unpack(r);
+  assert.equal(meta.sq, 7, "the phone's own count comes back, so it knows what the picture already shows");
+  assert.ok(jpeg.length > 0, "a picture rides with the scroll: no separate /view round trip");
+  assert.equal(meta.same, false);
+  assert.ok(Array.isArray(meta.fields), "and the form's shape, so a tap after the scroll lands right");
+  const wheel = b.did.findIndex(d => d[0] === "wheel");
+  const shot = b.did.findIndex((d, i) => i > wheel && d[0] === "screenshot");
+  assert.ok(wheel >= 0 && shot > wheel, "the picture is taken after the wheel, not before");
+  // At the end of the page the picture does not change: only the JSON travels, marked same.
+  const again = unpack(await req(token, "scroll", { method: "POST", cookie, body: { dy: 300, q: 8, h: meta.h } }));
+  assert.equal(again.meta.same, true);
+  assert.equal(again.meta.sq, 8);
+  assert.equal(again.jpeg.length, 0);
+  // A count that is not a count is not trusted either.
+  assert.equal(unpack(await req(token, "scroll", { method: "POST", cookie, body: { dy: 1, q: "x".repeat(20) } })).meta.sq, 0);
+});
+
+test("the live page moves the picture under the finger and keeps the paper page still", async () => {
+  const { token } = make();
+  const { cookie } = await start(token);
+  const page = await req(token, "", { cookie });
+  const html = String(page.body);
+  assert.match(html, /function shift\(\)/, "the last picture is shifted locally while the next one comes");
+  assert.match(html, /addEventListener\('touchmove',function\(e\)\{if\(drag/, "a drag on the picture never scrolls the page around it");
+  assert.match(html, /\{passive:false\}/);
+  assert.match(html, /fling=\{vx/, "a flick carries on after the finger lifts");
+  assert.match(html, /fly\.length<2/, "at most two scrolls on the way: coalesced, not one per touchmove");
+  assert.doesNotMatch(html, /post\('scroll'/, "a scroll is never a bare post followed by a separate /view");
 });
 
 test("what cannot be a tap, a key or a scroll is refused before the browser hears of it", async () => {
@@ -393,7 +428,7 @@ test("what cannot be a tap, a key or a scroll is refused before the browser hear
   assert.equal(b.did.length, before);
 
   await post("scroll", { dy: 999_999, dx: -999_999 });
-  assert.deepEqual(b.did.at(-1), ["wheel", -2000, 2000], "a scroll is clamped, not trusted");
+  assert.deepEqual(b.did.findLast(d => d[0] === "wheel"), ["wheel", -2000, 2000], "a scroll is clamped, not trusted");
   await post("type", { del: 999_999, text: "a" });
   assert.equal(b.did.filter(d => d[0] === "press" && d[1] === "Backspace").length, 500, "and so is a rubbing-out");
   const bad = await remote.remoteRequest({ token, action: "tap", method: "POST", headers: { cookie }, readBody: async () => "{not json" });
