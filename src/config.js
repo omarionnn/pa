@@ -340,6 +340,11 @@ export const config = {
   // When true, anyone who texts the number gets their own Reason instantly — no master approval.
   // For when every number that has the line was given it by the owner personally.
   autoAdmit: process.env.REASON_AUTO_ADMIT === "1",
+  // Auto-admit's ceiling (owner, 2026-11-09): at most this many people who came in on their own (not by
+  // invite or event) get an account in any rolling hour. Past it a new number gets one text pointing at
+  // the access list (`accessListUrl`) and joins the approval queue (src/access.js). 0 = no ceiling.
+  signupsPerHour: Number(process.env.REASON_SIGNUPS_PER_HOUR ?? 30),
+  accessListUrl: /^https?:\/\/[^\s"'<>]+$/.test(process.env.REASON_ACCESS_LIST_URL || "") ? process.env.REASON_ACCESS_LIST_URL : "https://heyreason.com/access",
   // The first-chat onboarding (src/onboarding.js): on | test | off, ON by default since 2026-11-06
   // (name → what Reason is → what to save it as → the card under that name). Only a person whose
   // account a text of theirs, or an event join, just made ever starts it; every existing account is
@@ -566,7 +571,13 @@ export const config = {
   remoteSigninSessionMs: Number(process.env.REASON_SIGNIN_SESSION_MS || 10 * 60_000),
   remoteSigninSettleMs: Number(process.env.REASON_SIGNIN_SETTLE_MS || 250),
   signinWindowMaxMs: Number(process.env.REASON_SIGNIN_WINDOW_MAX_MS || 15 * 60_000),
-  hearFallbackModel: process.env.REASON_HEAR_FALLBACK_MODEL || "gemini-3.5-flash-lite",
+  // Voice notes have their own model order, apart from videos (videoModel): the small model listens
+  // first and the big one is the fallback. Owner's call 2026-11-09: gemini-3.8-flash kept answering
+  // 503 "high demand" or hanging, and every voice note waited it out before the small one was asked.
+  hearModel: process.env.REASON_HEAR_MODEL || "gemini-3.5-flash-lite",
+  hearFallbackModel: process.env.REASON_HEAR_FALLBACK_MODEL || "gemini-3.8-flash",
+  // The longest one listening attempt may take (a long memo). A short note gets far less: see
+  // hearAttemptMs in src/voice.js.
   hearTimeoutMs: Number(process.env.REASON_HEAR_TIMEOUT_MS || 60_000),
   imageFetchTimeoutMs: Number(process.env.REASON_IMAGE_FETCH_TIMEOUT_MS || 20_000),
   // The outbox. Every outbound message on a real channel is a row before it is an attempt, so a
@@ -1077,10 +1088,9 @@ export const config = {
   shotRoot: process.env.REASON_SHOT_ROOT || `${DATA_DIR}/shots`,
   browserHeaded: process.env.REASON_BROWSER_HEADED === "1",
   browserTimeoutMs: Number(process.env.REASON_BROWSER_TIMEOUT_MS || 20_000),
-  // Image generation via the Gemini API's Imagen model (src/imagen.js). Uses the same
-  // GEMINI_API_KEY; the model default is imagen-3.0-generate-002, the cheapest production model
-  // with good quality. Generated images land under the data dir and are served as page content.
-  imagenModel: process.env.REASON_IMAGEN_MODEL || "imagen-3.0-generate-002",
+  // Image generation (src/imagen.js): OpenAI gpt-image-2 only, on OPENAI_API_KEY (owner, 2026-11-09 —
+  // Google retired the Imagen model that used to go first). Generated images land under the data dir
+  // and are served as page content.
   imagenTimeoutMs: Number(process.env.REASON_IMAGEN_TIMEOUT_MS || 60_000),
   imagenOutputDir: process.env.REASON_IMAGEN_OUTPUT || `${DATA_DIR}/images`,
   extractionModel: process.env.REASON_EXTRACTION_MODEL || "claude-haiku-5-5",
@@ -1176,6 +1186,18 @@ export function normalizeNumber(n) {
   else if (/^[a-z][a-z0-9+.-]*:(?!\s)/i.test(s)) return "";
   const digits = s.replace(/\D/g, "");
   return digits ? `+${digits}` : "";
+}
+
+/**
+ * Is this one of Reason's OWN phone lines (the Twilio, Sendblue, Linq or Bland "from" number)? A
+ * text to one of these is Reason talking to itself — a test, or a number pasted by mistake — never
+ * a person (2026-11-09: the Twilio line texted the Sendblue line once, Sendblue refused to answer
+ * it, and the status page called that "texts over sendblue are failing").
+ */
+export function isOwnLine(n) {
+  const x = normalizeNumber(n);
+  if (!x) return false;
+  return [config.twilioFrom, config.sendblueFrom, config.linqFrom, config.blandFrom].some(f => f && normalizeNumber(f) === x);
 }
 
 /** Is this number the owner's? Read from config only — never from anything a message says. */

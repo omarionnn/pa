@@ -407,9 +407,10 @@ function peopleSection(people, now) {
   if (!people.length) return "";
   const sorted = [...people].sort((a, b) => (b.last_seen_at ?? 0) - (a.last_seen_at ?? 0));
   const day = 24 * 60 * 60 * 1000;
-  const today = sorted.filter(p => p.last_seen_at && now - p.last_seen_at < day).length;
+  const persons = sorted.filter(p => !p.own_line);
+  const today = persons.filter(p => p.last_seen_at && now - p.last_seen_at < day).length;
   const rows = sorted.map(p => {
-    const tags = `${p.operator ? `<span class="tag">you</span>` : ""}${p.state && p.state !== "active" ? `<span class="tag">${esc(p.state)}</span>` : ""}`
+    const tags = `${p.operator ? `<span class="tag">you</span>` : ""}${p.own_line ? `<span class="tag">Reason's own line</span>` : ""}${p.state && p.state !== "active" ? `<span class="tag">${esc(p.state)}</span>` : ""}`
       + (p.plan ? `<span class="tag plan">${esc(p.plan)}</span>` : "");
     const bits = [p.last_seen_at ? `active ${esc(ago(now - p.last_seen_at))} ago` : "never texted"];
     if (p.turns_today) bits.push(`${Number(p.turns_today)} turns today`);
@@ -418,7 +419,7 @@ function peopleSection(people, now) {
     return `<div class="pp"><div class="who">${esc(p.name || p.address || p.conversation)}${tags}</div>`
       + `<div class="wk">${weekBars(p.week)}<small>7 days</small></div><div class="meta">${bits.join(" · ")}</div></div>`;
   }).join("");
-  return `<section class="sec"><h2>People</h2><div class="people"><p class="ppsum">${sorted.length} on the line · ${today} active today</p>${rows}</div></section>`;
+  return `<section class="sec"><h2>People</h2><div class="people"><p class="ppsum">${persons.length} on the line · ${today} active today</p>${rows}</div></section>`;
 }
 
 function pillFor(verdict) {
