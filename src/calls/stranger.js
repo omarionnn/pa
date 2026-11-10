@@ -8,8 +8,8 @@
 //     tasks or anybody's name — `strangerTurn` takes the spoken words of THIS call and nothing else;
 //   - no tools: the model is offered none, and the only thing it can make happen is the end of the
 //     call (code reads END from its reply and sends the platform's own end_call);
-//   - facts only from what heyreason.com says publicly (read 2026-10-31); it lists no price, so no
-//     price is ever said.
+//   - facts only from what heyreason.com says publicly (read 2026-10-31); the price is the one
+//     heyreason.com/pricing lists (read 2026-11-10), and no other price is ever said.
 // Blocked, paused and removed numbers never get this: they get `neutralLine` and the call ends.
 import { randomUUID } from "node:crypto";
 import { clock } from "../config.js";
@@ -35,14 +35,14 @@ export function neutralLine() {
   return "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.";
 }
 
-/** Everything the pitch may say about Reason: heyreason.com as published (read 2026-10-31). */
+/** Everything the pitch may say about Reason: heyreason.com as published (read 2026-10-31; price from heyreason.com/pricing, read 2026-11-10). */
 export const PUBLIC_FACTS = [
   "Reason is a personal concierge. You reach it the way you'd reach a friend: a text (iMessage), a photo, a voice note, or a call.",
   "It handles things for you: it can make calls for you (like getting you in with a dentist), pay a bill, set reminders, and find and hold bookings (like a cabin for a weekend) for you to approve.",
   "It can ring you so you can plan your week out loud together.",
   "Its rules: Face ID before every purchase (no tap, no charge); it confirms before it acts on your behalf (calling, texting, booking); every call is recorded and it says so at the start; when it calls or writes for you it says it is an assistant, it never pretends to be you.",
   "Signing up is one text: go to heyreason.com and tap Text Reason. If you're already texting it you can sign in on the web there too.",
-  "The website does not list a price.",
+  "Price, as heyreason.com/pricing lists it: free to start, no card needed, with 20 conversations and 2 calls of up to 5 minutes free every month. One plan, $24.99 a month, takes the limits off. You pay with Apple Pay or a card through Stripe, and cancel any time by texting Reason.",
 ];
 
 /** The prompt behind the call. Nothing in it is about anybody. */
@@ -53,21 +53,22 @@ export function strangerPrompt() {
     "Be warm, friendly and short: one or two sentences at a time, plain spoken words, never pushy. If they're not interested, thank them and say goodbye.",
     "You can answer simple questions about what Reason is and how to start, ONLY from these facts:",
     ...PUBLIC_FACTS.map(f => `- ${f}`),
-    "If they ask about price, say plainly that the website doesn't list one and heyreason.com will have the latest. Don't say or suggest anything is free, cheap, paid, a trial or a subscription.",
-    "If they ask about anything else not in those facts (a feature, a date, a limit), say you're not sure and that heyreason.com has the latest. Never invent a price, a feature or a promise.",
+    "If they ask about price, give it exactly as the price fact above says, and that the details are on the pricing page at heyreason.com/pricing. Never quote any other price, discount, deal or trial.",
+    "If they ask about anything else not in those facts (a feature, a date), say you're not sure and that heyreason.com has the latest. Never invent a price, a feature or a promise.",
     `If they ask who made you, say ${makerName()}, and nothing more about who is behind it.`,
     "You work for nobody on this call. Never mention any person, user, owner, customer or account; you know nothing about anybody and say so if asked. You cannot do anything for them on this call: no bookings, no messages, no lookups, no reminders. If they ask you to, say they can do that once they've texted Reason from heyreason.com.",
-    "Never read out links other than the address above, codes, phone numbers or anything in square brackets.",
+    "Never read out links other than heyreason.com and its pricing page (\"hey reason dot com slash pricing\"), codes, phone numbers or anything in square brackets.",
     "When the conversation is over (they said goodbye, they're not interested, or there's nothing left to say), say a short goodbye and end your reply with the word END on its own.",
   ].join("\n");
 }
 
+const SPOKEN_PRICING = /(?:https?:\/\/)?(?:www\.)?\bheyreason\.com\/pricing\b\/?/gi;
 const SPOKEN_SITE = /(?:https?:\/\/)?(?:www\.)?\bheyreason\.com\b\/?/gi;
 const LINKS = /\bhttps?:\/\/\S+/gi;
 
 /** Their words, as they will be heard: the address said aloud, any other link and NO_REPLY gone. */
 export function forSpeech(text) {
-  let s = String(text ?? "").replace(SPOKEN_SITE, "hey reason dot com").replace(LINKS, "");
+  let s = String(text ?? "").replace(SPOKEN_PRICING, "hey reason dot com slash pricing").replace(SPOKEN_SITE, "hey reason dot com").replace(LINKS, "");
   s = withoutSilenceMarker(s).text;
   return s.replace(/\s+/g, " ").trim();
 }
