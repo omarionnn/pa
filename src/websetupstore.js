@@ -47,16 +47,22 @@ for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL D
 const owner = (conversationId) => db.restcrypt.blindIndex("conversation", String(conversationId ?? ""));
 const ownerForms = (conversationId) => db.restcrypt.blindIndexes("conversation", String(conversationId ?? ""));
 // The export/delete scope (src/data.js CHILD_SCOPE) matches a conversation id against this column.
-try { db.db.function("websetup_owner", { deterministic: true }, (c) => owner(c)); } catch { /* registered */ }
+// Hashed whenever the index key exists (blindIndexes), so rows hashed before REASON_ENCRYPT_REST2 was
+// turned off are still reached; the plain form is matched by the `?` beside it.
+try { db.db.function("websetup_owner", { deterministic: true }, (c) => { const f = ownerForms(c); return f[f.length - 1]; }); } catch { /* registered */ }
 /** Rows claimed before this: names blanked, owners hashed (idempotent, every boot). */
 export function scrubClaimed() {
+  db.atomically(() => scrubRows());
+}
+function scrubRows() {
   db.db.prepare("UPDATE web_setups SET user_name = '', reason_name = '' WHERE claimed_by IS NOT NULL AND (user_name != '' OR reason_name != '')").run();
   for (const r of db.db.prepare("SELECT id, claimed_by FROM web_setups WHERE claimed_by IS NOT NULL AND claimed_by NOT LIKE 'bi1:%'").all()) {
     const h = owner(r.claimed_by);
     if (h !== r.claimed_by) db.db.prepare("UPDATE web_setups SET claimed_by = ? WHERE id = ?").run(h, r.id);
   }
 }
-scrubClaimed();
+// Never in the way of a boot: a missing index key is reported by restcrypt.ensureIndexKey on its own.
+try { scrubClaimed(); } catch (e) { console.error("websetup scrub:", (e?.message ?? String(e)).split("\n")[0]); }
 
 /** A code whose text came with the wrong names this many times is shut: guessing a code is not enough. */
 export const MAX_MISSES = 5;

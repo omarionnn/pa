@@ -32,6 +32,7 @@ import { config } from "./config.js";
 // Creates stranger_calls if this runs before anything else has (npm run data:*).
 import "./strangercalls.js";
 import "./tooldiet.js";
+import "./websetupstore.js"; // web_setups + the websetup_owner() SQL function CHILD_SCOPE uses
 import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";

@@ -87,3 +87,11 @@ test("rows claimed before this are scrubbed at boot; export/delete still reaches
   assert.equal(n, 1, "the data.js scope fragment matches");
   assert.ok(data.COVERAGE, "data.js loads with the new fragment");
 });
+
+test("data.js alone (the export/delete CLI) can run the web_setups scope", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e",
+    `const d = await import(${JSON.stringify(new URL("../src/db.js", import.meta.url).href)}); await import(${JSON.stringify(new URL("../src/data.js", import.meta.url).href)}); console.log(d.db.prepare("SELECT count(*) n FROM web_setups WHERE claimed_by IN (?, websetup_owner(?))").get("x","x").n)`],
+    { env: { ...process.env, REASON_DB_PATH: join(dir, "fresh.db") }, encoding: "utf8" });
+  assert.equal(out.trim(), "0");
+});
