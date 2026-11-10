@@ -546,6 +546,12 @@ unchanged, 0 clipped. `bin/gptlive-drive.mjs --expect hearing` with real GPT-Liv
 config): the −51 dBFS clip went from wrong (off, 2/2) to right (on, 2/2), and `calls.turn_log` was written with level/boost.
 Not proven: a real phone call.
 
+### Baseline — the monthly free tier + sign-up ceiling (trial-rules, 2026-11-09, not merged)
+
+`npm run test:offline` in the worktree: 6,001 tests, 5,870 passing, 131 skipped, 0 failing. New
+`test/free-tier-monthly.test.js` (13). `bin/free-tier-drive.mjs` all ok; `bin/paywall-drive.mjs` all ok
+(flag unset = old trial unchanged). Live needs `REASON_FREE_TIER=monthly`; see [features/paywall.md](features/paywall.md).
+
 ### Baseline — #385 bubble-only contact photo LIVE + the paywall ON (2026-11-07)
 
 origin/main `cf415f7` (#385 on `b047383`): 5,610 tests, 5,478 passing, 131 skipped, 1 failing (web-ongoing

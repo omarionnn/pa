@@ -447,7 +447,11 @@ export const INVITE_TOOLS = new Set(["invites_list", "invite_link_create", "invi
  * dark launch, so nobody else's model is ever told invites exist.
  */
 export function invitesOpenFor(conversationId) {
-  return config.invitesOpen || accounts.ownerOf(conversationId).isOperator || db.invitesEnabledFor(conversationId);
+  if (accounts.ownerOf(conversationId).isOperator) return true;
+  // Under the paywall, only somebody free for good invites (owner, 2026-11-09: trial users get NO
+  // invites) — an invite is the promise "free for you, for good", which only their invite keeps.
+  try { if (plan.monthly() && plan.appliesTo(conversationId) && !plan.grandfathered(conversationId)) return false; } catch { /* fall through */ }
+  return config.invitesOpen || db.invitesEnabledFor(conversationId);
 }
 
 /**
@@ -2416,7 +2420,9 @@ export const CAPABILITIES = [
   { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
   // Rewritten by capabilitiesNow() from REASON_PAYWALL and this person's own plan row (src/plan.js):
   // absent while the switch is off or for somebody Reason is free for.
-  { name: "your_plan", status: "live", what: `Reason's own plan: ${plan.TRIAL_SESSIONS} free sessions, then ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)` },
+  { name: "your_plan", status: "live", what: plan.monthly()
+    ? `Reason's own plan: free each month for ${plan.FREE_CONVERSATIONS} conversations and ${plan.FREE_CALLS} calls (up to ${Math.round(plan.FREE_CALL_SECONDS / 60)} minutes each), unlimited for ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)`
+    : `Reason's own plan: ${plan.TRIAL_SESSIONS} free sessions, then ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)` },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "github", status: "not connected", what: "GitHub" },
   { name: "x", status: "not connected", what: "X (Twitter) — read mentions, timeline, search, bookmarks, and draft posts, replies, DMs for them to approve" },
@@ -4713,7 +4719,7 @@ export const tools = [
   // ---------- Reason's own plan: the free trial and the $24.99/month subscription (src/plan.js) ----------
   {
     name: "subscription_show",
-    description: `Where this person stands with REASON'S OWN plan — the free trial (${plan.TRIAL_SESSIONS} sessions) and the ${plan.PRICE_LINE} subscription: sessions used and left, whether they are paying, the next bill date, or the date access ends after a cancellation. Call it when they ask about their trial, their plan, what Reason costs, when they are billed, or whether they are still paying. Never answer those from memory. This is about paying for Reason — NOT their own merchant subscriptions (Netflix, a gym): those are subscription_list and subscription_cancel_start.`,
+    description: `Where this person stands with REASON'S OWN plan — ${plan.monthly() ? `the free plan (${plan.FREE_CONVERSATIONS} conversations and ${plan.FREE_CALLS} calls a month, counts and the date they come back)` : `the free trial (${plan.TRIAL_SESSIONS} sessions)`} and the ${plan.PRICE_LINE} subscription: sessions used and left, whether they are paying, the next bill date, or the date access ends after a cancellation. Call it when they ask about their trial, their plan, what Reason costs, when they are billed, or whether they are still paying. Never answer those from memory. This is about paying for Reason — NOT their own merchant subscriptions (Netflix, a gym): those are subscription_list and subscription_cancel_start.`,
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -9459,6 +9465,13 @@ async function runToolInner(name, rawInput, ctx) {
     if (granted && google.missingScopeFor(name, granted)) return driveOrganiseScopeRefusal(DRIVE_ORGANISE_TOOLS.get(name));
   }
 
+  // The monthly free tier's 2 calls (src/plan.js): used up, call_place is refused here, before any yes
+  // is asked — asking "shall I call them?" and then refusing after the yes would be a broken promise.
+  if (name === "call_place") {
+    const freeCalls = await plan.callPlaceGate(c, { log: ctx.log ?? (() => {}) });
+    if (freeCalls) return freeCalls;
+  }
+
   let confirmationId = null;
   let spend = null;
   // The standing permission this action is going through on, when it is going through on one. Set
@@ -11305,6 +11318,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // minute, so nothing else needed this: a turn is a fixed number of tokens, while a call runs
       // at a per-minute rate for as long as whoever picked up keeps talking. Both caps are counted
       // in the usage table, so a restart does not reset them, and 0 means uncapped.
+      // The monthly free tier's 2 calls are checked in runTool, before the confirm gate (callPlaceGate).
       const placedToday = accounts.withinCap(c, "call");
       if (!placedToday.ok) {
         return {
@@ -11326,7 +11340,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      const maxSeconds = (input.max_minutes ?? config.callMaxMinutes) * 60;
+      // On the free tier a call to them runs up to its 5 minutes (FREE_CALL_SECONDS), goodbye included.
+      // Only a call to them: an errand call to a business is not cut at 5 (review 2026-11-10).
+      const freeCallS = toOwner ? plan.callLimitSeconds(c) : null;
+      const maxSeconds = Math.min((input.max_minutes ?? config.callMaxMinutes) * 60, freeCallS || Infinity);
 
       // What the call opens with — and what it will not do, whatever it is asked — is not the
       // model's to write, and not the model's to forget. Recording somebody without telling them
@@ -11550,6 +11567,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");
+      try { plan.noteCall(c); } catch { /* the call is placed either way */ }
       return {
         ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
@@ -12802,7 +12820,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const v = plan.view(c);
       return {
         ok: true, ...v,
-        note: v.status === "trial"
+        note: v.monthly && (v.status === "trial" || v.status === "lapsed")
+          ? `${me.name} is on the free plan: ${v.free_tier}. This month: ${v.conversations_used} of ${plan.FREE_CONVERSATIONS} conversations and ${v.calls_used} of ${plan.FREE_CALLS} calls used; it all comes back ${v.resets}. A conversation is a stretch of chat (a new one after 30 quiet minutes). Unlimited is ${v.price}; cancel any time by text. Say only what they asked; never "unlock" or "upgrade".`
+          : v.status === "trial"
           ? `${me.name} is on the free trial: ${v.sessions_used} of ${v.trial_sessions} sessions used, ${v.sessions_left} left. A session is a stretch of chat (a new one after 30 quiet minutes). After that it is ${v.price}; cancel any time by text. Say only what they asked; never "unlock" or "upgrade".`
           : v.status === "paid" ? `Paying ${v.price}. Next bill ${v.next_bill}. Cancel any time by text (subscription_cancel), and everything keeps working until the period ends.`
             : v.status === "cancelled" ? `Cancelled. Nothing more is charged; everything keeps working until ${v.access_until}, then holds. They can start again any time.`
