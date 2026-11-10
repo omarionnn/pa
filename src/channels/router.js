@@ -248,16 +248,16 @@ export class Router {
       return { ok: false, refused: "conversation_mismatch", conversationId: null };
     }
 
-    // Somebody Reason works for who has never been sent its contact card: a pre-approved number's
-    // first text, or an account from before the card existed whose startup send did not go. Once,
-    // and off the turn's path — a card is a nicety, and nothing about it may delay an answer.
-    // Delayed until they have a name when auto-admitted — a card with just a number is impersonal.
-    // Not to somebody about to be sent the new number's card below: that card is this one too.
-    // Somebody starting the first-chat onboarding gets the card from it, after their name, with its
-    // own line — never this one first as well.
+    // No contact card here, before the turn (11-09). This used to send it to anybody without one, on
+    // any text, off the turn's path — and its "not auto-admitted" check read a field accounts.admit
+    // never sets. So a brand-new stranger's FIRST text from Reason was "one more thing — save me as
+    // a contact", with no hello before it, and a nameless person's next text got it ahead of the
+    // answer too. The card goes after a turn's reply instead, once they have a name
+    // (#offerCardIfNamed, below the turn); the master's yes sends it after "you're in"; the startup
+    // pass reaches accounts from before the card existed. Somebody in the first-chat onboarding gets
+    // the card from it, after their name, with its own line.
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
-    if (!readmitted.autoAdmitted && !isReturning(conversationId) && !onboarding.active(conversationId)) void this.#offerCard(conversationId);
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
@@ -807,8 +807,9 @@ export class Router {
       this.bubbles.delete(conversationId);
     }
     // After the turn: if this person now has a name and hasn't gotten their card, send it.
-    // Fires here rather than before the turn so the card arrives after "nice to meet you".
-    void this.#offerCardIfNamed(conversationId);
+    // Fires here rather than before the turn so the card arrives after "nice to meet you" — and only
+    // after a turn that actually said something, so it never follows a failure line or silence.
+    if (reply !== null) void this.#offerCardIfNamed(conversationId);
     // The free trial's 25th-session bubbles, after that session's reply has answered them, and the
     // hold once they have lapsed (src/plan.js). Nothing under REASON_PAYWALL=off; never throws here.
     await plan.afterTurn({ conversationId, router: this, log: this.log })
