@@ -35,13 +35,14 @@ function sealRecoveryCopy() {
 const pause = () => new Promise(r => setTimeout(r, 50));
 if (arg === "--status") {
   console.table(rc.status(d.rawPrepare));
+  console.table(rc.indexStatus(d.rawPrepare));
   console.table(d.restfiles.fileStatus());
-  console.log(`flag=${rc.flagOn() ? "on" : "off"} flag2=${rc.flag2On() ? "on" : "off"} install_key=${rc.active() ? "unlocked" : "none"}`);
+  console.log(`flag=${rc.flagOn() ? "on" : "off"} flag2=${rc.flag2On() ? "on" : "off"} flag3=${rc.flag3On() ? "on" : "off"} install_key=${rc.active() ? "unlocked" : "none"}`);
 } else if (arg === "--seal" || arg === "--open") {
   if (arg === "--seal" && !rc.flagOn()) { console.error("REASON_ENCRYPT_REST is not on."); process.exit(2); }
-  if (arg === "--open" && rc.flag2On()) { console.error("Set REASON_ENCRYPT_REST2=off (phase 2 only) or REASON_ENCRYPT_REST=off (everything), and restart the server, before opening rows back up, or new writes keep sealing."); process.exit(2); }
-  // Phase 1 still on: roll back phase 2 alone.
-  const phases = arg === "--open" && rc.flagOn() ? [2] : null;
+  if (arg === "--open" && rc.flag3On()) { console.error("Set REASON_ENCRYPT_REST3=off (phase 3 only; then REASON_ENCRYPT_REST2=off as well to roll phase 2 back too) or REASON_ENCRYPT_REST=off (everything), and restart the server, before opening rows back up, or new writes keep sealing."); process.exit(2); }
+  // Rollback scope: phase 2 still on = phase 3 alone; only phase 1 on = phases 2 and 3; all off = everything.
+  const phases = arg !== "--open" ? null : rc.flag2On() ? [3] : rc.flagOn() ? [2, 3] : null;
   // Phase 2's files: sealed when phase 2 is on; opened on any rollback (files are phase 2 only).
   // A rollback opens files FIRST: with the rows open, a later start may not unlock the keystore.
   const files = async () => {
@@ -49,11 +50,11 @@ if (arg === "--status") {
     console.log(`files: ${JSON.stringify({ ...f, unowned_files: undefined })}`);
     if (f.unowned_files.length) console.log(`files with no owner found (left plain): ${f.unowned_files.join(", ")}`);
   };
-  if (arg === "--open") await files();
+  if (arg === "--open" && (!phases || phases.includes(2))) await files();
   if (arg === "--open") rc.dropStrictTriggers(d.db);
   let total = 0, n;
   while ((n = rc.migrateBatch(d.rawPrepare, arg === "--seal" ? "seal" : "open", 500, phases)) > 0) { total += n; await pause(); }
-  console.log(`${arg === "--seal" ? "sealed" : "opened"} ${total} value(s)${phases ? " (phase 2 only)" : ""}`);
+  console.log(`${arg === "--seal" ? "sealed" : "opened"} ${total} value(s)${phases ? ` (phase ${phases.join(" + ")} only)` : ""}`);
   if (arg === "--seal" && rc.flag2On()) await files();
   const st = rc.status(d.rawPrepare).filter(r => !phases || phases.includes(r.phase));
   console.table(st);

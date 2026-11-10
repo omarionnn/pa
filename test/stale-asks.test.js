@@ -137,7 +137,7 @@ function oldRow(action, hoursAgo, summary) {
   return Number(r.lastInsertRowid);
 }
 const runSweep = (...args) => spawnSync(process.execPath, [script, ...args], {
-  env: { PATH: process.env.PATH, REASON_DB_PATH: process.env.REASON_DB_PATH, REASON_TZ: "America/New_York" }, encoding: "utf8",
+  env: { PATH: process.env.PATH, REASON_DB_PATH: process.env.REASON_DB_PATH, REASON_TZ: "America/New_York", ...Object.fromEntries(Object.entries(process.env).filter(([k]) => /^REASON_(ENCRYPT|REST)_/.test(k))) }, encoding: "utf8",
 });
 
 test("sweep --dry-run lists what would close and writes nothing", () => {

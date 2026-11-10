@@ -32,7 +32,7 @@ export function findAccount(who) {
   if (byId) return byId;
   const n = normalizeNumber(who);
   if (!n) return null;
-  return db.db.prepare("SELECT * FROM accounts WHERE address = ? ORDER BY last_seen_at DESC LIMIT 1").get(n) ?? null;
+  return db.accountByNumber(n);
 }
 
 export function grant(argv) {

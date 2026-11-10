@@ -195,7 +195,7 @@ test("4e. the backfill refuses without the claude-cli backend and changes nothin
   db.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   copyFileSync(process.env.REASON_DB_PATH, copy);
   let code = 0, out = "";
-  try { execFileSync(process.execPath, ["scripts/backfill-item-titles.js", `--db=${copy}`, "--write"], { env: { PATH: process.env.PATH, REASON_DATA_DIR: dir }, stdio: "pipe" }); }
+  try { execFileSync(process.execPath, ["scripts/backfill-item-titles.js", `--db=${copy}`, "--write"], { env: { PATH: process.env.PATH, REASON_DATA_DIR: dir, ...Object.fromEntries(Object.entries(process.env).filter(([k]) => /^REASON_(ENCRYPT|REST)_/.test(k))) }, stdio: "pipe" }); }
   catch (e) { code = e.status; out = String(e.stderr); }
   assert.equal(code, 1);
   assert.match(out, /not claude-cli/);

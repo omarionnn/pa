@@ -210,8 +210,8 @@ export function grandfathered(conversationId, seen = new Set()) {
     return grandfathered(sponsor, seen);
   };
   if (row?.address) {
-    const ways = q(`SELECT conversation_id, invited_by, joined_via_event FROM accounts WHERE address = ? AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL)
-             AND created_at <= (SELECT MIN(created_at) FROM accounts WHERE address = ?)`).all(row.address, row.address);
+    const ways = q(`SELECT conversation_id, invited_by, joined_via_event FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH} AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL)
+             AND created_at <= (SELECT MIN(created_at) FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH})`).all(...db.accountAddrArgs(row.address), ...db.accountAddrArgs(row.address));
     if (ways.some(viaFree)) return true;
   } else if ((row?.invited_by || row?.joined_via_event != null) && viaFree(row)) return true;
   const ship = shipTs();
@@ -219,7 +219,7 @@ export function grandfathered(conversationId, seen = new Set()) {
   // The same number moved channel after the cut-off (a new `dm:<channel>:<number>` account, made later):
   // still the person who was here before it, so still free. Any account on that number counts.
   if (row?.address && ship) {
-    const first = q("SELECT MIN(created_at) AS t FROM accounts WHERE address = ?").get(row.address)?.t;
+    const first = q(`SELECT MIN(created_at) AS t FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH}`).get(...db.accountAddrArgs(row.address))?.t;
     if (first && first < ship) return true;
   }
   return false;
@@ -234,14 +234,14 @@ export function grandfathered(conversationId, seen = new Set()) {
 const linesOf = (conversationId) => {
   const a = db.getAccount(conversationId);
   if (!a?.address) return [conversationId];
-  const ids = q("SELECT conversation_id FROM accounts WHERE address = ? ORDER BY created_at, conversation_id").all(a.address).map(r => r.conversation_id);
+  const ids = q(`SELECT conversation_id FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH} ORDER BY created_at, conversation_id`).all(...db.accountAddrArgs(a.address)).map(r => r.conversation_id);
   return ids.includes(conversationId) ? ids : [conversationId, ...ids];
 };
 export function planId(conversationId) {
   const a = db.getAccount(conversationId);
   if (!a?.address) return conversationId;
   const r = q(`SELECT p.conversation_id FROM plan p JOIN accounts a ON a.conversation_id = p.conversation_id
-               WHERE a.address = ? ORDER BY p.first_seen_at, p.conversation_id LIMIT 1`).get(a.address);
+               WHERE ${db.accountAddrMatch("a.")} ORDER BY p.first_seen_at, p.conversation_id LIMIT 1`).get(...db.accountAddrArgs(a.address));
   return r?.conversation_id ?? conversationId;
 }
 
