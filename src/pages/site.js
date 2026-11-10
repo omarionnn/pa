@@ -91,7 +91,7 @@ export function privacyPage() {
       {
         title: "What Reason stores",
         lines: [
-          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service and no third-party storage. Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
+          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service, and the only storage off that machine is the encrypted backup. Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
           "Your messages to Reason and its replies to you, as a running transcript. The transcript keeps the most recent 60 messages of your thread and older ones fall off it.",
           "What the transcript holds is worth being plain about: it includes the results of things Reason looked up for you. So if Reason read an email or an event for you, the text of that email or event is in the transcript on the disk until it falls out of those 60 messages. It is not stored anywhere else, it is not indexed, and nothing goes looking through it.",
           "Plans, reminders, timers and the jobs Reason is working on between messages. Facts you have asked it to remember about people. Pages it made for you, and any answers you tapped on one.",
@@ -140,7 +140,7 @@ export function privacyPage() {
         lines: [
           "Ask Reason and it will tell you. If you run this install yourself, two commands do it: `npm run data:export` writes out everything held about you, including the call recordings, with the tokens replaced by a marker because those are live credentials rather than your records. `npm run data:delete` removes it.",
           "A delete is real and immediate. It removes the rows, the call recordings as files from the disk, and the saved browser logins, and it asks Google to let go of your connection on the way through — and reports honestly if Google would not.",
-          "Reason keeps encrypted backups: a rolling copy on the same machine, replaced twice a day, and a daily encrypted copy off-site. A delete clears the live database at once; the rolling copy drops it within a day, and the off-site backups keep what they already hold, still encrypted and unread, until those older backups are cleared out.",
+          "Reason keeps encrypted backups: a rolling copy on the same machine, replaced twice a day, and a daily encrypted copy off-site. A delete clears the live database at once; the rolling copy drops it within a day, and the off-site backups keep what they already hold, still encrypted and unread, with no fixed end date: they exist so Reason can be restored if the machine fails.",
         ],
       },
       {
