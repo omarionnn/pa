@@ -55,6 +55,7 @@ import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
 import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
+import * as setupPages from "./pages/setupsignin.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
 
@@ -117,12 +118,14 @@ export function remoteSessionFor(conversationId) {
  * Make a link. Nothing is launched yet: the browser starts when somebody taps Start, so a link
  * nobody opens never holds the saved profile.
  */
-export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {} }) {
+export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, setupBack = "", launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {} }) {
   const old = sessions.get(byConversation.get(conversationId));
   if (old) end(old, "replaced").catch(() => {});
 
   const token = newToken();
   const s = {
+    // setupBack: a web setup's sign-in (src/websetup.js) is drawn in the paper store sign-in look and ends back on the setup.
+    setupBack: String(conversationId ?? "").startsWith("websetup:") ? String(setupBack ?? "") : "",
     token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
     ended: null, startedAt: null, timer: null, signedInRun: 0,
@@ -681,6 +684,7 @@ header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}
 }
 
 function startPage(s) {
+  if (s.setupBack) return setupPages.startPage({ name: s.entry.label, action: `${PATH}/${s.token}/start`, kind: cardKind(s.entry) });
   const label = esc(s.entry.label);
   return shell(`Sign in to ${s.entry.label}`, `
 <h1>Sign in to ${label}</h1>
@@ -722,6 +726,7 @@ ${error ? `<p class="lead"><b>${esc(error)}</b></p>` : ""}
  * stays — both are true, and the tap is the faster of the two.
  */
 function resultPage(s) {
+  if (s.setupBack) return setupPages.resultPage({ name: s.entry.label, state: s.ended?.state ?? "", back: s.setupBack, kind: cardKind(s.entry) });
   const label = esc(s.entry.label);
   const name = s.entry.label;
   const [body, back] = s.ended.state === "signed_in"
@@ -770,10 +775,7 @@ function resultPage(s) {
 function livePage(s) {
   const base = `${PATH}/${s.token}`;
   const label = esc(s.entry.label);
-  return shell(`Sign in to ${s.entry.label}`, `
-<header><h1>${label}</h1><button id="back">Back</button></header>
-<p class="small" id="tip">Tap the page and sign in the way you normally would.</p>
-<div id="stage">
+  const stage = `<div id="stage" style="aspect-ratio:${VIEW.width}/${VIEW.height}">
   <img id="v" alt="">
   <form id="f" autocomplete="on" onsubmit="return false">
     <input id="in-u" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
@@ -782,9 +784,8 @@ function livePage(s) {
     <input id="in-g" type="text" autocomplete="on">
   </form>
   <div id="veil"><span><span class="spin"></span>Opening ${label}…</span></div>
-</div>
-<p class="small" id="msg"></p>
-<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { card: cardKind(s.entry), script: `<script>
+</div>`;
+  const script = `<script>
 (function(){
 var B=${JSON.stringify(base)},V=${JSON.stringify(VIEW)};
 var v=document.getElementById('v'),stage=document.getElementById('stage'),veil=document.getElementById('veil'),
@@ -951,5 +952,12 @@ document.getElementById('done').onclick=function(){blurAll();msg.textContent='Ch
 document.getElementById('stop').onclick=function(){blurAll();msg.textContent='Closing…';dead=true;ask('/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'},20000).then(function(){location.reload()},function(){location.reload()})};
 say('<span class="spin"></span>Opening ${label}…');pull();
 })();
-</script>` });
+</script>`;
+  if (s.setupBack) return setupPages.livePage({ name: s.entry.label, stage, script, kind: cardKind(s.entry) });
+  return shell(`Sign in to ${s.entry.label}`, `
+<header><h1>${label}</h1><button id="back">Back</button></header>
+<p class="small" id="tip">Tap the page and sign in the way you normally would.</p>
+${stage}
+<p class="small" id="msg"></p>
+<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { card: cardKind(s.entry), script });
 }

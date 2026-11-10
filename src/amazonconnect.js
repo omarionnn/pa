@@ -77,12 +77,13 @@ export function setupAvailable() {
   return !!config.publicUrl && !!e && !e.signin_blocked;
 }
 
-export function setupConnectLink(setupConversationId, { via = "web_setup", log = () => {}, create = remote.createRemoteSignin, onEnd = null } = {}) {
+export function setupConnectLink(setupConversationId, { via = "web_setup", log = () => {}, create = remote.createRemoteSignin, onEnd = null, back = "" } = {}) {
   if (!setupAvailable() || !String(setupConversationId ?? "").startsWith("websetup:")) return { ok: false, why: "unavailable" };
   const e = entry();
   const id = String(setupConversationId).slice("websetup:".length);
   const ended = onEnd ?? ((ended) => import("./websetupstore.js").then(st => st.setConnectState(id, "amazon", ended?.state === "signed_in" ? "connected" : "failed")).catch(() => {}));
-  const out = create({ conversationId: setupConversationId, entry: e, closeBrowser, onEnd: ended, log });
+  // back: the setup's connect screen. Its pages are the paper store sign-in, and end there (src/pages/setupsignin.js).
+  const out = create({ conversationId: setupConversationId, entry: e, closeBrowser, onEnd: ended, log, setupBack: back || "/start/connect?back=amazon" });
   ledgerWrite({ conversationId: setupConversationId, action: "signin_link", input: { site: SITE, via }, out: { ok: out.ok, site: e.site, reachable_from_a_phone: out.reachable_from_a_phone }, target: `site:${e.site}` });
   if (!out.ok || !out.reachable_from_a_phone) return { ok: false, why: out.why || "not_reachable" };
   return { ok: true, url: out.url, goodForMinutes: out.good_for_minutes };

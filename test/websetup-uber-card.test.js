@@ -322,3 +322,34 @@ test("a late claim drops Uber and the card; an expired setup's Uber and card are
   assert.ok(calls.some(c => c.method === "DELETE" && c.path.endsWith("/pm_5151")), "the card is removed at Crossmint too");
   assert.equal(store.get(s.id, 0), null);
 });
+
+// ---------- the setup's Amazon sign-in looks like the store sign-in in texts (11-10) ----------
+
+test("the setup's Amazon sign-in is the paper store sign-in, and ends back on the setup; a thread's stays as it was", async () => {
+  const amazon = await import("../src/amazonconnect.js");
+  const remote = await import("../src/signin-remote.js");
+  const pages = await import("../src/pages/setupsignin.js");
+  const s = await newSetup({ origin: "https://start--staging.example" });
+  const out = await api("POST", `/api/${s.id}/connect/amazon`, { cookie: s.cookie, origin: "https://start--staging.example", amazonLink: (c, o) => amazon.setupConnectLink(c, o) });
+  assert.equal(out.json.ok, true);
+  const token = out.json.url.split("/").pop();
+  const start = await remote.remoteRequest({ token, method: "GET" });
+  assert.equal(start.status, 200);
+  assert.match(start.body, /Sign in to Amazon\./);
+  assert.match(start.body, /Just this once\./);
+  assert.match(start.body, /class="pf-steps"/, "the store sign-in's step checklist");
+  assert.match(start.body, /action="\/s\/[^"]+\/start"/, "Start still opens Reason's browser");
+  const done = pages.resultPage({ name: "Amazon", state: "signed_in", back: "https://start--staging.example/start/connect?back=amazon", kind: "amazon" });
+  assert.match(done, /CONNECTED/);
+  assert.match(done, /href="https:\/\/start--staging\.example\/start\/connect\?back=amazon"/);
+  assert.match(pages.resultPage({ name: "Amazon", state: "blocked", back: "/start/connect?back=amazon" }), /Nothing was saved/);
+  const live = pages.livePage({ name: "Amazon", stage: '<div id="stage"></div>', script: "<script>window.x=1</script>", kind: "amazon" });
+  assert.match(live, /id="done"/); assert.match(live, /id="stop"/); assert.match(live, /id="back"/);
+  assert.doesNotMatch(live, /<script><script>/, "the driver is not double-wrapped");
+  await remote.endAllRemoteSignins("cancelled");
+  // A thread's own remote sign-in (not a setup) keeps its page.
+  const other = remote.createRemoteSignin({ conversationId: "dm:fake:+14155550000", entry: { site: "amazon", label: "Amazon", signin_url: "https://www.amazon.com/" }, setupBack: "/start/connect?back=amazon" });
+  const plain = await remote.remoteRequest({ token: other.url.split("/").pop(), method: "GET" });
+  assert.doesNotMatch(plain.body, /Just this once/);
+  await remote.endAllRemoteSignins("cancelled");
+});

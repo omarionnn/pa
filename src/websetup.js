@@ -329,7 +329,7 @@ export function uberCallbackDone(out) {
  */
 export async function request({ method = "GET", path = "", query = {}, headers = {}, remoteAddress = "", readBody = async () => "", router = null, log = () => {},
   nameLineFor = (name) => nameLine({ name, web: true }),
-  amazonLink = (c) => amazon.setupConnectLink(c, { via: "web_setup", log }),
+  amazonLink = (c, { back: to = "" } = {}) => amazon.setupConnectLink(c, { via: "web_setup", log, back: to }),
   googleLink = (c) => google.authorizeUrl(c),
   uberReady = () => uber.connectReady(),
   uberLink = (c) => uber.authorizeUrl(c),
@@ -408,7 +408,7 @@ export async function request({ method = "GET", path = "", query = {}, headers =
   if (method === "POST" && m[2]) {
     if (!limits.connect(ip)) return json(429, { ok: false, why: "slow_down" });
     if (m[2] === "amazon") {
-      const out = amazonLink(c);
+      const out = amazonLink(c, { back: back(row, "amazon", true) });
       // The sign-in page checks this browser's setup cookie, which lives on the site the setup was made on.
       if (out?.ok && out.url) { const base = siteBase(), o = originFor(row); if (base && o !== base && out.url.startsWith(`${base}/`)) out.url = o + out.url.slice(base.length); }
       store.setConnectState(row.id, "amazon", out?.ok ? "pending" : "failed");
