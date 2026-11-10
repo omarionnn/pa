@@ -244,8 +244,9 @@ export function fileOwners(rawPrepare) {
  * it can be found, else removed (the next play makes them again, sealed).
  */
 export async function migrateFiles(rawPrepare, direction = "seal", { log = () => {} } = {}) {
+  // No temp sweep here: this also runs from a script beside the live server, whose in-flight temps
+  // are its own (the server sweeps at boot, src/db.js startRestMigration).
   const out = { sealed: 0, opened: 0, already: 0, skipped: 0, unowned: 0, cache_removed: 0, unowned_files: [] };
-  sweepPlainTmp();
   const owners = direction === "seal" ? fileOwners(rawPrepare) : null;
   const webAudio = abs(config.webAudioRoot);
   for (const root of fileRoots()) {

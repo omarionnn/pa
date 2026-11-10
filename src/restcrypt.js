@@ -23,7 +23,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, readSync, writeSync, fsyncSync, closeSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, readSync, writeSync, fsyncSync, closeSync, linkSync } from "node:fs";
 
 export const PREFIX = "enc:u1:";
 
@@ -617,9 +617,12 @@ export function rotatePersonKey(rawPrepare, conversationId) {
   // A file that will not open (damaged) is already unreadable and is left; a failed write stops the
   // rotation here, before the old key goes, and a re-run finishes it.
   const moved = new Set();
+  unreadableFiles.length = 0;
   for (const p of [...filesSealedUnder(old.id)]) {
-    let plain;
-    try { plain = openBytes(readFileSync(p)); } catch (e) { if (e.code !== "ENOENT") unreadableFiles.push(p); continue; }
+    let raw, plain;
+    try { raw = readFileSync(p); } catch (e) { if (e.code === "ENOENT") continue; throw e; } // EMFILE/EIO: stop, keep the key
+    // Only a failed authentication (damaged bytes, no error code) is skipped: it opens to nothing either way.
+    try { plain = openBytes(raw); } catch (e) { if (e.code) throw e; unreadableFiles.push(p); continue; }
     try { writeFileAtomic(p, sealBytesWith(nid, newKey, plain), 0o600, { syncParent: false }); moved.add(dirname(p)); resealed++; }
     catch (e) { if (e.code !== "ENOENT") throw e; /* deleted meanwhile */ }
   }
@@ -688,11 +691,13 @@ function readIndexKey({ create }) {
     if (!existsSync(p)) {
       if (!create) return null;
       // Exclusive: the server and a script enabling it at once must not each write their own key.
-      try {
-        const fd = openSync(p, "wx", 0o640);
-        try { writeSync(fd, randomBytes(32).toString("hex") + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
-        syncDir(dirname(p));
-      } catch (e) { if (e.code !== "EEXIST") throw e; }
+      // Written whole to a temp, then linked into place: the loser of a race reads the winner's full key.
+      const tmp = `${p}.${process.pid}.${randomBytes(4).toString("hex")}`;
+      const fd = openSync(tmp, "wx", 0o600);
+      try { writeSync(fd, randomBytes(32).toString("hex") + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
+      try { linkSync(tmp, p); } catch (e) { if (e.code !== "EEXIST") { rmSync(tmp, { force: true }); throw e; } }
+      rmSync(tmp, { force: true });
+      syncDir(dirname(p));
     }
     hex = readFileSync(p, "utf8").trim();
   }
