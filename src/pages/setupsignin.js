@@ -56,7 +56,7 @@ const upper = (s) => String(s ?? "").toUpperCase();
 
 function page(title, body, { entry, script = "", card = "signin", right } = {}) {
   const eyebrow = right === undefined ? `${upper(entry?.label || "STORE")} ACCOUNT` : right;
-  return webPage({ title, body: `${header({ right: eyebrow })}<main class="pf" id="ss-main">${body}</main>`, css: CSS, script: `${LIVE_JS}${script}`, head: securedCardTags(card) });
+  return webPage({ title, body: `${header({ right: eyebrow })}<main class="pf" id="ss-main">${body}</main>`, css: CSS + NATIVE_CSS, script: `${LIVE_JS}${script}`, head: securedCardTags(card) });
 }
 
 /** What signing in lets Reason do, beside the sign-in. Amazon's own words; a store with none gets a plain line. */
@@ -122,6 +122,132 @@ export const startingLines = (n) => [
   [20, "Still opening. This can take a moment."],
   [45, "Taking longer than usual. Still on it."],
 ];
+
+// ---------------------------------------------------------------- the native step panel
+// Reason's OWN page, in its paper look, showing the right control for the step the real page behind
+// is on (src/socialsignin.js stepOf), with a plain live line of what is happening (owner, 2026-11-10:
+// "your own branded page with native controls while you drive the real pages in the background, and
+// say plainly what's happening"). The streamed picture stays underneath as the fallback for any step
+// this cannot drive natively ("Show me the page"). Inputs are relayed to the background page exactly
+// as the live view relays them (password never saved, logged or shown); consent is only ever tapped
+// by the person; the number to tap is shown big.
+const PROVIDER_NAME2 = PROVIDER_NAME;
+/** Which steps Reason drives on its own page (panel primary) vs hand to the streamed page (page primary). */
+export const STEP_NEEDS_PAGE = new Set(["account", "consent", "captcha", "unknown"]);
+
+/** The one branded control block for a step. Pure HTML; the live script swaps it as the step changes. */
+export function nativeStepPanel(step = {}, { entry } = {}) {
+  const n = esc(entry?.label ?? "the site");
+  const prov = step.provider || "";
+  const pname = PROVIDER_NAME2[prov] || "";
+  const mark = PROVIDER_MARKS[prov] || "";
+  const eyebrow = (txt) => `<p class="np-eye">${esc(txt)}</p>`;
+  const say = `<p class="np-say" id="np-say">${esc(step.say || "")}</p>`;
+  const provLine = prov ? `<div class="np-prov">${mark}<span>through ${esc(pname)}</span></div>` : "";
+  switch (step.step) {
+    case "chooser":
+      return eyebrow(`SIGN IN TO ${upper(n)}`) + headline("How do you sign in?")
+        + `<div class="ss-pv" id="np-choose">${Object.keys(PROVIDER_MARKS).map(p => `<button type="button" data-via="${p}">${PROVIDER_MARKS[p]}<span>Continue with ${PROVIDER_NAME2[p]}</span></button>`).join("")}</div>`
+        + `<p class="pf-l ss-or">OR</p>` + actions(two(`Use my ${n} email`, { attrs: ` data-via=""` }));
+    case "email":
+      return provLine + eyebrow(`${upper(pname || n)} · YOUR EMAIL`) + say
+        + `<label class="np-field"><span>Email${step.say && /number/.test(step.say) ? " or phone" : ""}</span><input id="np-in" type="text" inputmode="email" autocomplete="username" enterkeyhint="next" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="you@example.com"></label>`
+        + actions(go("Continue", { type: "button", attrs: ` id="np-go"` }));
+    case "password":
+      return provLine + eyebrow(`${upper(pname || n)} · PASSWORD`) + say
+        + `<label class="np-field"><span>Password</span><input id="np-in" type="password" autocomplete="current-password" enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="••••••••"></label>`
+        + `<p class="np-seal">${sealed(`STAYS ON ${upper(pname || n)}'S PAGE · NEVER KEPT`)}</p>`
+        + actions(go("Sign in", { type: "button", attrs: ` id="np-go"` }));
+    case "code":
+      return provLine + eyebrow(`${upper(pname || n)} · CODE`) + say
+        + codeInput({ name: "code", legend: "THE CODE", id: "np-code" })
+        + note("send it however it came — \"G-123 456\" is fine, I'll clean it up.", { sp: true })
+        + actions(go("Continue", { type: "button", attrs: ` id="np-go"` }));
+    case "number_match":
+      return provLine + eyebrow(`${upper(pname || "GOOGLE")} · CHECK YOUR PHONE`) + say
+        + `<div class="np-num" aria-label="the number to tap">${esc(step.number || "—")}</div>`
+        + note(`open the ${pname === "Microsoft" ? "Authenticator app" : "prompt on your phone"} and tap this number.`, { sp: true })
+        + `<p class="np-wait"><span class="spin"></span>waiting for your phone…</p>`;
+    case "phone_tap":
+      return provLine + eyebrow(`${upper(pname || n)} · CHECK YOUR PHONE`) + say
+        + `<div class="np-tap">${mark || LOCK_DOT}</div>`
+        + `<p class="np-wait"><span class="spin"></span>waiting for your tap…</p>`;
+    case "refused": {
+      const own = !!entry?.signin_url && !entry?.signin_blocked;
+      return eyebrow(`${upper(pname || "PROVIDER")} SAID NO`) + headline(`${pname || "The provider"} refused my browser.`, "Nothing was lost.")
+        + lede(`${pname || "The provider"} wouldn't let my browser sign you in to ${n}, so nothing was saved and I won't try it again.${own ? ` You can sign in with your ${n} email and password instead.` : ""}`)
+        + (own ? actions(go(`Use my ${n} email`, { type: "button", attrs: ` id="np-email"` })) : "");
+    }
+    case "signed_in":
+      return eyebrow(`${upper(n)} · DONE`) + headline(`You're signed in to ${n}.`)
+        + paper({ stamp: "SIGNED IN", label: upper(n), big: "Done.", mono: false })
+        + lede("Reason will pick up what you asked for. Nothing is bought without your Face ID.");
+    case "account":
+      return provLine + eyebrow(`${upper(pname || n)} · PICK YOUR ACCOUNT`) + say
+        + note("your accounts are on the page below — tap yours.", { sp: true });
+    case "consent":
+      return provLine + eyebrow(`${upper(pname || n)} · YOUR CALL`) + say
+        + note("read what it shares on the page below, then tap Allow yourself. I never grant it for you.", { sp: true });
+    case "captcha":
+      return eyebrow(`${upper(n)} · QUICK CHECK`) + headline(`${n} wants to check you're human.`)
+        + lede("finish this step on the page below — it's a quick check only you can do. I'll take it from there.");
+    default:
+      return eyebrow(`${upper(n)}`) + say + note("finish this step on the page below; I'll pick back up when it moves on.", { sp: true });
+  }
+}
+const LOCK_DOT = `<svg viewBox="0 0 24 24" aria-hidden="true" width="40" height="40"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`;
+
+const NATIVE_CSS = `
+.np{padding-top:24px;display:flex;flex-direction:column;gap:14px;max-width:460px}
+.np-eye{margin:0;font:400 11px/1 var(--mono);letter-spacing:.16em;color:var(--pen)}
+.np-say{margin:2px 0 6px;font-size:17px;line-height:1.45;color:var(--ink)}
+.np-prov{display:flex;align-items:center;gap:10px;font:500 14px/1 var(--sans);color:var(--muted)}
+.np-prov svg{width:18px;height:18px}
+.np-field{display:flex;flex-direction:column;gap:6px;margin:4px 0}
+.np-field span{font:400 11px/1 var(--mono);letter-spacing:.14em;color:var(--muted)}
+.np-field input{font:inherit;width:100%;padding:13px 14px;border-radius:var(--radius);border:1px solid var(--ink);background:var(--lifted);color:var(--ink);min-height:50px;-webkit-appearance:none;appearance:none}
+.np-field input:focus{outline:none;border-color:var(--pen);box-shadow:0 0 0 1px var(--pen)}
+.np-seal{margin:2px 0}
+.np-num{font:italic 400 clamp(3.5rem,22vw,6rem)/1 var(--serif);text-align:center;color:var(--pen);letter-spacing:.02em;padding:18px 0;border:1px dashed var(--hair);border-radius:var(--radius);background:var(--lifted)}
+.np-tap{display:flex;align-items:center;justify-content:center;padding:28px 0;color:var(--pen)}
+.np-tap svg{width:48px;height:48px}
+.np-wait{display:flex;align-items:center;gap:10px;justify-content:center;font-size:14px;color:var(--muted);margin:4px 0}
+/* the streamed page, underneath: the fallback for any step Reason can't drive natively */
+.np-page{margin-top:6px}
+.np-page summary{cursor:pointer;font:400 13px/1.4 var(--mono);letter-spacing:.08em;color:var(--pen);list-style:none;padding:8px 0}
+.np-page summary::-webkit-details-marker{display:none}
+.np-page[open] summary{color:var(--muted)}
+.np-page.forced{border:1px solid var(--hair);border-radius:var(--radius);padding:10px;background:var(--lifted)}
+`;
+
+/**
+ * The native page for one step (mockup + live). The branded panel for the step, and underneath it
+ * the streamed picture: open by default on the steps Reason can't drive itself (account, consent,
+ * captcha, unknown), a tucked-away "Show me the page" on the rest. `shot` is a still for a mockup.
+ */
+export function setupNativePage({ entry, step = {}, view = { width: 430, height: 700 }, shot = "", card = "signin", script = "" }) {
+  const n = esc(entry?.label ?? "the site");
+  const forced = STEP_NEEDS_PAGE.has(step.step);
+  const stageInner = shot
+    ? `<img id="v" alt="" src="${shot}">`
+    : `<img id="v" alt=""><div id="veil"><span><span class="spin"></span>Opening ${n}…</span></div>`;
+  const pageBlock = `<details class="np-page${forced ? " forced" : ""}" id="np-page"${forced ? " open" : ""}>`
+    + `<summary>${forced ? "Finish this step on the page below" : "Show me the page"}</summary>`
+    + `<div id="stage" style="--ss-ar:${view.width}/${view.height}">${stageInner}`
+    + `<form id="f" autocomplete="on" onsubmit="return false">`
+    + `<input id="in-u" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">`
+    + `<input id="in-p" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">`
+    + `<input id="in-o" type="text" autocomplete="one-time-code" inputmode="numeric" autocapitalize="off" autocorrect="off" spellcheck="false">`
+    + `<input id="in-g" type="text" autocomplete="on"></form></div></details>`;
+  const body = `<div class="np" id="np" style="--ss-ar:${view.width}/${view.height}">`
+    + `<div id="np-panel">${nativeStepPanel(step, { entry })}</div>`
+    + pageBlock
+    + `<p class="ss-small" id="msg" role="status"></p>`
+    + actions(two("BACK A PAGE", { attrs: ` id="back"` }), two("CANCEL", { attrs: ` id="stop"` }))
+    + label("SEALED · NOTHING YOU TYPE IS KEPT", { pen: true })
+    + `</div>`;
+  return page(`Reason — sign in to ${entry?.label ?? "site"}`, body, { entry, script, card });
+}
 
 /** The live picture, framed in paper. The ids are the ones the live script (src/signin-remote.js) drives. */
 export function setupLivePage({ entry, view, script, card = "signin" }) {
