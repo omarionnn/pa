@@ -15,7 +15,9 @@ mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
 // Encryption at rest (src/restcrypt.js, REASON_ENCRYPT_REST): unlock the install key before any query,
 // so every read below stays synchronous. Rows from statements on a sensitive table open themselves.
-await restcrypt.init(config.dbPath, { hasSealed: () => restcrypt.anySealed(db.prepare.bind(db)) || restfiles.anySealedFile() });
+// Sealed files with no sealed rows left (a rollback cut short, flags off) still need the keystore
+// unlocked to be read and opened. Only asked with the flag off: with it on the keystore opens anyway.
+await restcrypt.init(config.dbPath, { hasSealed: () => restcrypt.anySealed(db.prepare.bind(db)) || (!restcrypt.flagOn() && restfiles.anySealedFile()) });
 /** The unwrapped prepare: sealed values come back as stored. Migration and tests only. */
 export const rawPrepare = restcrypt.wrapDatabase(db);
 // With sealing on, a re-written row must not leave its old plain text in the file's free pages.
