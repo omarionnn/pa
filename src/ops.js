@@ -93,7 +93,10 @@ export const PROVIDERS = [
     id: "openai", name: "OpenAI", dashboard: "https://platform.openai.com/usage",
     hosts: () => [host(config.openaiBase)],
     configured: () => !!config.openaiKey,
-    probe: () => get(`${config.openaiBase}/v1/models`, { authorization: `Bearer ${config.openaiKey}` }),
+    // A paid call (one embedding, a fraction of a cent a day), not /v1/models: listing models still
+    // answers 200 with the balance at zero, so an out-of-credit key looked "working" while every
+    // call, voice and recall failed.
+    probe: () => post(`${config.openaiBase}/v1/embeddings`, { authorization: `Bearer ${config.openaiKey}`, "content-type": "application/json" }, { model: "text-embedding-3-small", input: "ok" }),
   },
   {
     // The phone line every call runs on (GPT-Live over Twilio, src/calls/gptlive.js): the account itself.
@@ -195,7 +198,12 @@ async function get(url, headers = {}) {
 async function post(url, headers, body) {
   try {
     const res = await rawFetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-    return { ok: res.ok, status: res.status };
+    if (res.ok) return { ok: true, status: res.status };
+    // The error code says what a bare status cannot: OpenAI answers an empty balance with a 429
+    // (`insufficient_quota`), the same status as a real rate limit.
+    let code = "";
+    try { code = String((await res.json())?.error?.code ?? ""); } catch { /* no JSON body */ }
+    return { ok: false, status: res.status, ...(code ? { code } : {}) };
   } catch (e) {
     return { ok: false, status: 0, error: short(e) };
   }
@@ -238,10 +246,12 @@ const SCREEN_RATE_LIMITED_BAD = 3;
 const SCREEN_UNREAD_WARN = 3;
 
 const check = (id, group, label, state, detail, link = null) => ({ id, group, label, state, detail, ...(link ? { link } : {}) });
-const hardFail = (s) => [401, 402, 403].includes(Number(s));
+/** Red: the key is refused or the account is out of money — the owner's to fix, never a blip. */
+const hardFail = (s, code = "") => [401, 402, 403].includes(Number(s)) || code === "insufficient_quota";
 
-function failWords({ status, error }) {
+function failWords({ status, error, code }) {
   const s = Number(status);
+  if (code === "insufficient_quota") return `out of credit (HTTP ${s} insufficient_quota)`;
   if (s === 401 || s === 403) return `key rejected (HTTP ${s})`;
   if (s === 402) return "out of credit (HTTP 402)";
   if (s === 429) return "rate limited (HTTP 429)";
@@ -555,7 +565,7 @@ async function serviceChecks({ now, day, probe, emit = (r) => r }) {
     let state, detail;
     let quiet = false;
     if (probed) {
-      state = probed.ok ? "ok" : hardFail(probed.status) ? "bad" : "warn";
+      state = probed.ok ? "ok" : hardFail(probed.status, probed.code) ? "bad" : "warn";
       detail = probed.ok ? `working · ${tail}` : `${failWords(probed)} · ${tail}`;
       // The probe proves the key, not the calls Reason really makes (2026-11-09: Gemini's model list
       // answered 200 every pass while every real Gemini call for four days came back 404, and the
@@ -640,7 +650,7 @@ async function memoryChecks({ now, probe, emit = (r) => r }) {
   } else {
     const r = await probe(EMBED_PROBE);
     const ok = !!r?.ok;
-    out.push(check("embeddings", "memory", "Recall (vectors)", ok ? "ok" : hardFail(r?.status) ? "bad" : "warn",
+    out.push(check("embeddings", "memory", "Recall (vectors)", ok ? "ok" : hardFail(r?.status, r?.code) ? "bad" : "warn",
       ok ? `a real embedding round-trip worked · ${n(facts, "fact")} embedded` : `embedding call failed: ${failWords(r ?? {})} · ${n(facts, "fact")} embedded`, openai.dashboard));
   }
   const q = db.db.prepare(`SELECT
