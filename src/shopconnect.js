@@ -81,9 +81,12 @@ export const STORES = {
   sephora: { name: "Sephora", url: "https://www.sephora.com/" },
   ulta: { name: "Ulta", url: "https://www.ulta.com/" },
   // Food delivery (src/food.js): an order needs the account's saved addresses, so never a guest.
-  doordash: { name: "DoorDash", url: "https://www.doordash.com/", signIn: "required" },
-  ubereats: { name: "Uber Eats", url: "https://www.ubereats.com/", signIn: "required" },
-  grubhub: { name: "Grubhub", url: "https://www.grubhub.com/", signIn: "required" },
+  // Only with REASON_FOOD on (read at start, like every flag here): off, these sites are as before.
+  ...(/^(owner|on|1|true|yes)$/i.test(String(process.env.REASON_FOOD ?? "").trim()) ? {
+    doordash: { name: "DoorDash", url: "https://www.doordash.com/", signIn: "required" },
+    ubereats: { name: "Uber Eats", url: "https://www.ubereats.com/", signIn: "required" },
+    grubhub: { name: "Grubhub", url: "https://www.grubhub.com/", signIn: "required" },
+  } : {}),
   nike: { name: "Nike", url: "https://www.nike.com/" },
   apple: { name: "Apple", url: "https://www.apple.com/" },
 };
@@ -962,7 +965,7 @@ export function paymentAsk(row, { allIn = false } = {}) {
 }
 /** What a yes is pinned to (src/tools.js confirmTargetFor): the row, its run and request, and the amount. */
 export function payTarget(row) {
-  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]${foodMod?.payTargetTail(row.run_id) ?? ""}` : "";
+  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]${foodMod?.payTargetTail(row) ?? ""}` : "";
 }
 /** A payment request from Crossmint: kept as given, once per request id. */
 export function recordPayment({ conversationId, runId, request, item = "" }) {
@@ -1300,10 +1303,21 @@ export async function settleUnknownPayments({ conversationId = null, sinceMs = 7
 /** When this purchase's approval half hour ends: from the first time they were asked, across a store asked again. */
 export function askDeadline(row) {
   const run = row?.run_id ? runRow(row.run_id) : null;
-  return (run?.ask_since ?? row?.created_at ?? clock.now()) + holdMsFor(row?.run_id);
+  return (run?.ask_since ?? row?.created_at ?? clock.now()) + holdMsFor(row?.run_id, row?.conversation_id);
 }
 /** How long an ask is held: shopping's half hour, a food order's 15 minutes (src/food.js HOLD_MS). */
-const holdMsFor = (runId) => (foodMod?.isFoodRun(runId) ? Math.min(foodMod.HOLD_MS, passkey.APPROVAL_TTL_MS) : passkey.APPROVAL_TTL_MS);
+const isFoodHold = (runId, conversationId) => !!(foodMod?.foodOn(conversationId) && foodMod.isFoodRun(runId));
+const holdMsFor = (runId, conversationId) => (isFoodHold(runId, conversationId) ? Math.min(foodMod.HOLD_MS, passkey.APPROVAL_TTL_MS) : passkey.APPROVAL_TTL_MS);
+/**
+ * Let a checkout go without a word (src/food.js: a food cart changed, or its hold ran out): its payment
+ * declined, the run cancelled at Crossmint, and its end marked told so no end text follows.
+ */
+export async function letGo(runId, why) {
+  const run = runRow(runId);
+  if (!run || TERMINAL.has(run.status)) return false;
+  await endQuietly(run, why);
+  return true;
+}
 /** The Face ID link for an asked payment (thirty minutes from the first ask, one use; src/passkey.js). */
 export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row, { until: askDeadline(row) })}`;
 /** The ask once they have a passkey: the same words, and the link instead of "reply yes". */
@@ -2153,7 +2167,9 @@ const holdExpired = (result) => { const code = String(result?.code ?? "").toLowe
 async function renewHold(run, ask, result, say) {
   if (!run || !holdExpired(result)) return null;
   const since = run.ask_since ?? run.created_at;
-  if ((run.renewals ?? 0) >= RENEW_MAX || clock.now() >= since + holdMsFor(run.run_id) - REMIND_BEFORE_MS) return null;
+  // A food order's 15 minutes run to the end (Crossmint holds a payment about ten): asked again up to the last minute.
+  const food = isFoodHold(run.run_id, run.conversation_id);
+  if ((run.renewals ?? 0) >= (food ? RENEW_MAX + 1 : RENEW_MAX) || clock.now() >= since + holdMsFor(run.run_id, run.conversation_id) - (food ? 60_000 : REMIND_BEFORE_MS)) return null;
   // Declined, or Face ID already tapped and the payment still in flight: never a second ask for the same thing.
   if (q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND status IN ('declined', 'paying') LIMIT 1").get(run.run_id)) return null;
   const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
@@ -2179,6 +2195,8 @@ async function renewHold(run, ask, result, say) {
  */
 async function remindApproval(run, say) {
   if (!run || run.stage !== "needs_approval" || toldOf(run).has("reminded")) return {};
+  // A food order's card is the one ask (src/food.js): its 15 minutes end with one line, not a reminder.
+  if (isFoodHold(run.run_id, run.conversation_id)) return {};
   const pay = payOf(run);
   if (!pay || pay.status !== "asked") return {};
   const ends = askDeadline(pay);

@@ -141,7 +141,7 @@ test("the total on the card and the line is Crossmint's, never the cart's; a dif
 
 // ---------------------------------------------------------------- 2. allergies before the ask
 test("an allergy conflict on an item they picked themselves is flagged in the line BEFORE the question", async () => {
-  db.rememberFact?.({ conversationId: OMARI, about: "me", fact: "Omari is allergic to sesame" });
+  db.remember(OMARI, "me", "Omari is allergic to sesame");
   let seen = "";
   food._setAllergyAsk(async ({ prompt }) => { seen = prompt; return { value: { constraints: ["sesame allergy"], conflicts: [{ item: "Chicken over rice", constraint: "sesame allergy", why: "the white sauce on the chicken over rice is usually made with tahini (sesame)" }] } }; });
   q("INSERT INTO food_notes (conversation_id, kind, text, created_at) VALUES (?, 'allergy', 'allergic to sesame', ?)").run(OMARI, clock.now());
@@ -152,6 +152,7 @@ test("an allergy conflict on an item they picked themselves is flagged in the li
   // Every item and modifier went to the check, the ones they named included.
   assert.match(seen, /Chicken over rice \(white sauce, no hot sauce\)/);
   assert.match(seen, /Fries/);
+  assert.match(seen, /Omari is allergic to sesame/);
   assert.match(seen, /allergic to sesame/);
 });
 
@@ -161,6 +162,8 @@ test("a check that cannot run says so in the same place; no facts at all is no f
   await toPayment();
   assert.equal(said[0].t, "Heads up: I couldn't double-check this against your allergies and diet just now. $31.42 to your Visa 4821, here by 8:15. Place it?");
   assert.equal(food.allergyFlag({ ok: true, constraints: [], conflicts: [] }), "");
+  const many = food.allergyFlag({ ok: true, conflicts: [1, 2, 3, 4, 5].map((i) => ({ item: `dish ${i}`, constraint: "nuts", why: `dish ${i} has nuts` })) });
+  assert.equal(many, "Heads up: dish 1 has nuts; dish 2 has nuts; dish 3 has nuts; and 2 more items that may not fit your diet.");
 });
 
 // ---------------------------------------------------------------- 3. a changed total is a fresh ask
@@ -191,11 +194,52 @@ test("a new total before placing is a fresh card and ask, and a yes to the old t
   assert.equal(intents(), before, "no order intent for the new total");
 });
 
-test("while the card is out, the cart cannot be edited in place: a change is a new checkout and a fresh card", async () => {
-  const { orderId } = await toPayment();
+test("a change while the card is out lets the old checkout go (its yes can't pay), is checked again, and needs a new checkout", async () => {
+  const { orderId, runId, pay } = await toPayment();
+  let checked = 0;
+  food._setAllergyAsk(async () => { checked++; return { value: { constraints: [], conflicts: [] } }; });
+  db.remember(OMARI, "me", "Omari doesn't eat pork");
   const out = await runTool("food_order", { action: "cart", order_id: orderId, ...CART, items: [{ name: "Lamb over rice", price: "15.99" }] }, { conversationId: OMARI });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(checked, 1, "the new cart is checked");
+  assert.equal(q("SELECT status FROM shop_payments WHERE id = ?").get(pay.id).status, "declined", "the old card can't be paid");
+  assert.equal(q("SELECT status FROM shop_runs WHERE run_id = ?").get(runId).status, "cancelled");
+  const n = said.length;
+  await shop.step(runId);
+  assert.equal(said.length, n, "letting it go texts nothing");
+  // A new checkout links; a second one while it runs is refused.
+  const ok = await runTool("store_checkout", { store: "DoorDash", start_url: STORE, what: "Lamb over rice. Stop at payment.", item: "Habibi Halal order", max_usd: 60, food_order_id: orderId }, { conversationId: OMARI, messages: asked([]) });
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  const again = await runTool("store_checkout", { store: "DoorDash", start_url: STORE, what: "Lamb over rice. Stop at payment.", item: "Habibi Halal order", max_usd: 60, food_order_id: orderId }, { conversationId: OMARI, messages: asked([]) });
+  assert.equal(again.error, "checkout_running");
+});
+
+test("a food checkout never starts without a recorded, checked cart", async () => {
+  const st = await runTool("food_order", { action: "start" }, { conversationId: OMARI });
+  const out = await runTool("store_checkout", { store: "DoorDash", start_url: STORE, what: "Chicken over rice. Stop at payment.", item: "Habibi Halal order", max_usd: 60, food_order_id: st.order_id }, { conversationId: OMARI, messages: asked([]) });
   assert.equal(out.ok, false);
-  assert.equal(out.error, "card_out");
+  assert.equal(out.error, "no_cart");
+  assert.equal(calls.filter((c) => c.path === "/api/unstable/agent-checkouts" && c.method === "POST").length, 0);
+  // And an ask on an order that somehow skipped the check says so before the question.
+  q("UPDATE food_orders SET allergy_checked = 0, allergy_flag = '' WHERE id = ?").run(st.order_id);
+  assert.equal(food.allergyFlag({ ok: false }), "Heads up: I couldn't double-check this against your allergies and diet just now.");
+});
+
+test("Crossmint letting go at ~10 minutes is asked again inside the 15, with a fresh card; the deadline stays the first ask's", async () => {
+  const { runId, pay } = await toPayment();
+  const deadline = shop.askDeadline(pay);
+  clock.skip(10 * 60_000);
+  runs[runId] = { status: "failed", result: { code: "input_expired" }, revision: 5 };
+  await shop.step(runId);
+  const next = q("SELECT run_id FROM shop_runs WHERE run_id <> ? ORDER BY created_at DESC LIMIT 1").get(runId)?.run_id;
+  assert.ok(next, "asked again");
+  assert.equal(food.orderForRun(next)?.restaurant, "Habibi Halal", "the order follows the new checkout");
+  runs[next].requiredAction = PAY("req_r", "31.42"); runs[next].revision = 2;
+  await shop.step(next);
+  const p2 = q("SELECT * FROM shop_payments WHERE run_id = ?").get(next);
+  assert.equal(shop.askDeadline(p2), deadline);
+  assert.equal(said.at(-1).t, "$31.42 to your Visa 4821, here by 8:15. Place it?");
+  assert.equal(pictures.length, 2);
 });
 
 // ---------------------------------------------------------------- 4. silence, and the 15-minute hold
@@ -214,7 +258,8 @@ test("silence is not a yes: no reply after the ask grants nothing and pays nothi
 
 test("the hold is 15 minutes: after it no yes pays, and the cart is let go with one line and ❓", async () => {
   const { pay } = await toPayment();
-  assert.equal(shop.askDeadline(pay) - pay.created_at, 15 * 60_000, "food holds 15 minutes, not shopping's 30");
+  const since = q("SELECT ask_since FROM shop_runs WHERE run_id = ?").get(pay.run_id).ask_since;
+  assert.equal(shop.askDeadline(pay) - since, 15 * 60_000, "food holds 15 minutes, not shopping's 30");
   // They answer at minute 14 (inside the hold); the pay call lands at minute 16 (outside it).
   clock.skip(14 * 60_000);
   const t1 = await runTool("shop_pay", { payment_id: pay.id }, { conversationId: OMARI });
@@ -233,6 +278,13 @@ test("the hold is 15 minutes: after it no yes pays, and the cart is let go with 
   assert.equal(said.length, n + 1, "said once");
   assert.equal(said.at(-1).t, "I let the Habibi Halal cart go after 15 minutes, nothing charged. Want me to rebuild it?");
   assert.equal(q("SELECT status FROM shop_payments WHERE id = ?").get(pay.id).status, "declined");
+  assert.equal(reacts.at(-1).reaction, "❓");
+  // Crossmint's end of that run says nothing more, and puts no other tapback on.
+  const m = said.length, r = reacts.length;
+  runs[pay.run_id] = { status: "cancelled", revision: 9 };
+  await shop.step(pay.run_id);
+  assert.equal(said.length, m);
+  assert.equal(reacts.length, r);
 });
 
 test("a restaurant closing inside the hold is warned once, 15 minutes ahead", async () => {
@@ -353,4 +405,13 @@ test("the comparison: up to three real photos as ONE numbered picture; a picture
   assert.match(lastHtml, />1<\/div>[\s\S]*>2<\/div>/);
   const unseen = await food.showOptions(OMARI, [{ dish: "A", restaurant: "R", photo_url: "https://stock.example.com/a.jpg" }, { dish: "B", restaurant: "R", photo_url: photo }], { fetchPhoto, shoot: fakeShoot });
   assert.equal(unseen.ok, false, "a photo no tool returned is refused");
+});
+
+test("with REASON_FOOD off the food platforms are ordinary stores (a guest first), as before", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const probe = `const s = await import(${JSON.stringify(new URL("../src/shopconnect.js", import.meta.url).href)}); console.log(JSON.stringify([s.storeSignIn("doordash"), s.STORES.doordash ?? null]));`;
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, REASON_DB_PATH: join(dir, "off.db"), REASON_DATA_DIR: dir, REASON_FOOD: "off" };
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { env, encoding: "utf8" });
+  assert.equal(r.stdout.trim(), JSON.stringify(["", null]), r.stderr);
+  assert.equal(shop.storeSignIn("doordash"), "required", "on (owner), DoorDash needs their account");
 });

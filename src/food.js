@@ -142,7 +142,7 @@ const parse = (s, d) => { try { const v = JSON.parse(open(s) || ""); return v ??
 /** A row with its sealed columns opened. */
 function view(r) {
   if (!r) return null;
-  return { ...r, restaurant: open(r.restaurant), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
+  return { ...r, restaurant: open(r.restaurant), store_url: open(r.store_url), card_label: open(r.card_label), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
 }
 export const orderRow = (id, c) => view(q("SELECT * FROM food_orders WHERE id = ? AND conversation_id = ?").get(id, c));
 /** Their order with this id, or null: another person's id reads as missing. */
@@ -184,11 +184,12 @@ export async function setStatus(order, status) {
   const emoji = STATUS[status];
   if (!o || !emoji) return { ok: false, error: "no_such_status" };
   if (o.tapback === emoji) return { ok: true, same: true };
-  q("UPDATE food_orders SET tapback = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(emoji, clock.now(), o.id, o.conversation_id);
   if (!o.request_handle || !channelsFn) return { ok: false, error: "no_message" };
   try {
     const { sendTapback } = await import("./tapbacks.js");
     const r = await sendTapback({ conversationId: o.conversation_id, channels: channelsFn(), reaction: emoji, messageHandle: o.request_handle });
+    // Kept only once it went, so a refused one is tried again next time the status is set.
+    if (r?.ok) q("UPDATE food_orders SET tapback = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(emoji, clock.now(), o.id, o.conversation_id);
     logFn({ food_status: status, order: o.id, ok: !!r?.ok, ...(r?.ok ? {} : { why: r?.refused ?? "error" }) });
     return r;
   } catch (e) {
@@ -227,8 +228,14 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   const o = ownOrder(c, input.order_id) ?? openOrder(c);
   if (!o) return { ok: false, error: "no_order", say: "Start the food order first (food_order start)." };
   if (["placed", "failed", "cancelled"].includes(o.status)) return { ok: false, error: "order_over", say: `That order is ${o.status}. Start a new one for a new request.` };
-  if (o.status === "asked") {
-    return { ok: false, error: "card_out", say: "The approval card for this order is already with them. To change anything (an item, the address, the card), start a new store_checkout with the change and food_order_id; the old one is let go and a fresh card goes out with the new total. Never edit it in place." };
+  // A change once a checkout is running (or its card is out) lets that checkout go, quietly: its
+  // payment is declined and nothing it asked can be approved. The new cart is checked again and
+  // needs a new store_checkout, which brings a fresh card and a fresh ask.
+  let letGo = false;
+  if (o.run_id) {
+    const shop = await import("./shopconnect.js");
+    letGo = await shop.letGo(o.run_id, "the food cart changed").catch(() => false);
+    q("UPDATE food_orders SET run_id = NULL WHERE id = ? AND conversation_id = ?").run(o.id, c);
   }
   const items = (input.items ?? []).slice(0, 20).map((it) => ({
     name: clean(it.name, 80), qty: Math.max(1, Math.min(20, Math.round(Number(it.qty ?? 1)) || 1)),
@@ -246,7 +253,7 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   const rev = Number(o.revision ?? 0) + 1;
   q(`UPDATE food_orders SET status = 'building', platform = ?, restaurant = ?, store_url = ?, items_json = ?, lines_json = ?, notes = ?, address = ?, address_label = ?, tip = ?, cart_total = ?,
        eta_text = ?, eta_latest_at = ?, closes_at = ?, revision = ?, allergy_flag = '', allergy_checked = 0, updated_at = ? WHERE id = ? AND conversation_id = ?`).run(
-    isPlatform(platform) ? platform : (platform === "uber" ? "ubereats" : ""), seal("restaurant", c, clean(input.restaurant, 80)), clean(input.store_url, 500),
+    isPlatform(platform) ? platform : (platform === "uber" ? "ubereats" : ""), seal("restaurant", c, clean(input.restaurant, 80)), seal("store_url", c, clean(input.store_url, 500)),
     seal("items_json", c, JSON.stringify(items)), JSON.stringify(lines), seal("notes", c, clean(input.notes, 300)), seal("address", c, clean(input.address, 200)),
     seal("address_label", c, clean(input.address_label, 40)), tip, total, clean(input.eta, 20), Number.isFinite(eta) ? eta : null, Number.isFinite(closes) ? closes : null, rev, now, o.id, c);
   const checked = await check(c, items).catch(() => ({ ok: false }));
@@ -254,6 +261,7 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, o.id, c);
   return {
     ok: true, order_id: o.id, revision: rev,
+    ...(letGo || o.run_id ? { previous_checkout: "let go, nothing charged; start store_checkout again with food_order_id" } : {}),
     ...(flag ? { allergy_flag: flag } : {}),
     say: flag
       ? `Recorded. ${flag} This goes in the approval text before the question, by code. If an item conflicts and they did not knowingly choose it, fix the cart before the checkout instead.`
@@ -271,14 +279,17 @@ const ALLERGY_SCHEMA = {
   required: ["constraints", "conflicts"],
 };
 const ALLERGY_SYSTEM = `You check a food order against one person's allergies and diet before they approve it. You get facts saved about them and the cart: each item with its modifiers.
-First list every allergy, intolerance, dietary rule (vegetarian, halal, kosher, no pork, gluten-free...) and strong dislike the facts state about THEM (not about other people). Then, for every item including its modifiers, report a conflict when the item as normally made, or a modifier, contains or very likely contains what they must avoid (pad thai usually has peanuts; pesto has pine nuts and cheese; a cheeseburger is not vegetarian; most fried items share a fryer only matters for a severe allergy the facts call severe). One short "why" per conflict, in plain words, naming the item. No conflict when the item plainly avoids it (a "no peanuts" modifier, a vegan dish for a dairy allergy). When nothing applies, return empty lists.`;
+First list every allergy, intolerance, dietary rule (vegetarian, halal, kosher, no pork, gluten-free...) and strong dislike the facts state about the person ordering (facts about other people count only when a fact says they eat from this order). Then, for every item including its modifiers, report a conflict when the item as normally made, or a modifier, contains or very likely contains what they must avoid (pad thai usually has peanuts; pesto has pine nuts and cheese; a cheeseburger is not vegetarian; most fried items share a fryer only matters for a severe allergy the facts call severe). One short "why" per conflict, in plain words, naming the item. No conflict when the item plainly avoids it (a "no peanuts" modifier, a vegan dish for a dairy allergy). When nothing applies, return empty lists.`;
 let allergyAsk = null;
 /** Tests: the model seam (same shape as side.askStructured). null puts the real one back. */
 export function _setAllergyAsk(fn) { allergyAsk = fn; }
 /** Their facts and food notes against the cart. { ok, constraints, conflicts } or { ok: false }. */
 export async function checkAllergies(c, items) {
   const facts = [];
-  try { for (const f of db.listFacts(c, { limit: 200 })) if (!f.about || f.about === "me" || f.about === accounts.ownerOf(c).name) facts.push(String(f.fact)); } catch { /* none */ }
+  // Every fact with whom it is about: the model reads which ones are theirs (meaning, never a name match).
+  let me = "";
+  try { me = accounts.ownerOf(c).name || ""; } catch { /* unnamed */ }
+  try { for (const f of db.listFacts(c, { limit: 200 })) facts.push(`(about ${f.about || "them"}) ${f.fact}`); } catch { /* none */ }
   for (const n of q("SELECT kind, text FROM food_notes WHERE conversation_id = ? ORDER BY id DESC LIMIT 40").all(c)) facts.push(`(${n.kind}) ${open(n.text)}`);
   if (!facts.length) return { ok: true, constraints: [], conflicts: [], none: true };
   let ask = allergyAsk;
@@ -288,7 +299,7 @@ export async function checkAllergies(c, items) {
     ask = side.askStructured;
   }
   const cart = items.map((it, i) => `${i + 1}. ${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}${it.modifiers?.length ? ` (${it.modifiers.join(", ")})` : ""}`).join("\n");
-  const prompt = `Facts about them:\n${facts.slice(0, 200).map((f) => `- ${String(f).slice(0, 300)}`).join("\n")}\n\nThe cart:\n${cart}`;
+  const prompt = `The person ordering${me ? ` is ${me}` : ""}. Facts saved for them:\n${facts.slice(0, 200).map((f) => `- ${String(f).slice(0, 300)}`).join("\n")}\n\nThe cart:\n${cart}`;
   for (let i = 0; i < 2; i++) {
     let out;
     try { out = await ask({ prompt, system: ALLERGY_SYSTEM, schema: ALLERGY_SCHEMA, model: process.env.REASON_FOOD_CHECK_MODEL || "haiku", timeoutMs: 30_000, feature: "food_allergy" }); } catch { continue; }
@@ -305,16 +316,30 @@ export function allergyFlag(checked) {
   if (!checked) return "";
   if (!checked.ok) return "Heads up: I couldn't double-check this against your allergies and diet just now.";
   if (!checked.conflicts?.length) return "";
-  const one = checked.conflicts.slice(0, 2).map((x) => (x.why ? x.why.replace(/[.\s]+$/, "") : `${x.item} may not fit ${x.constraint}`)).join("; ");
-  return `Heads up: ${one}.`;
+  const all = checked.conflicts.map((x) => (x.why ? x.why.replace(/[.\s]+$/, "") : `${x.item} may not fit ${x.constraint}`));
+  const shown = all.slice(0, 3).join("; ");
+  return `Heads up: ${shown}${all.length > 3 ? `; and ${all.length - 3} more item${all.length - 3 > 1 ? "s" : ""} that may not fit your diet` : ""}.`;
 }
 
 // ---------------------------------------------------------------- linking checkouts
+/**
+ * Before store_checkout starts one for this order: the cart is recorded (and so checked against their
+ * allergies) and no other checkout is running for it. Null when it may start; else the refusal.
+ */
+export function checkoutGate(c, orderId) {
+  const o = ownOrder(c, orderId);
+  if (!o) return { ok: false, error: "no_order", say: "No such food order. Start one with food_order start." };
+  if (["placed", "failed", "cancelled"].includes(o.status)) return { ok: false, error: "order_over", say: `That order is ${o.status}. Start a new one.` };
+  if (!o.items.length || !o.revision) return { ok: false, error: "no_cart", say: "Record the cart first with food_order cart (it checks every item against their allergies and diet), then start the checkout. Nothing was started." };
+  if (o.run_id) return { ok: false, error: "checkout_running", say: "A checkout is already running for this order. To change it, record the changed cart with food_order cart (that lets the old checkout go), then start again." };
+  return null;
+}
 /** store_checkout started a run for this order. */
 export function linkRun(c, orderId, runId) {
   const o = ownOrder(c, orderId);
   if (!o || !runId) return false;
-  q("UPDATE food_orders SET run_id = ?, status = CASE WHEN status IN ('draft', 'needs') THEN 'building' ELSE status END, updated_at = ? WHERE id = ? AND conversation_id = ?").run(runId, clock.now(), o.id, c);
+  if (checkoutGate(c, orderId)) return false;
+  q("UPDATE food_orders SET run_id = ?, status = 'building', updated_at = ? WHERE id = ? AND conversation_id = ?").run(runId, clock.now(), o.id, c);
   return true;
 }
 /** Code started the same checkout again (a renewed hold, a sign-in retry): the order follows it. */
@@ -424,8 +449,10 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
   const changedFrom = o.cart_total && cents(o.cart_total) !== cents(row.amount) ? o.cart_total : "";
   const changed = changedFrom ? `The total came to ${amount}, not the ${changedFrom} the cart showed.` : "";
   const eta = etaWords(o);
-  const text = approvalLine({ amount, card: label, eta, flag: o.allergy_flag, changed }) + passkeyTail;
-  q("UPDATE food_orders SET status = 'asked', card_label = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(label, clock.now(), o.id, o.conversation_id);
+  // A cart that never went through the check (it should not get here) is said to be unchecked, never silent.
+  const flag = o.allergy_flag || (o.allergy_checked ? "" : allergyFlag({ ok: false }));
+  const text = approvalLine({ amount, card: label, eta, flag, changed }) + passkeyTail;
+  q("UPDATE food_orders SET status = 'asked', card_label = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(seal("card_label", o.conversation_id, label), clock.now(), o.id, o.conversation_id);
   let file = null;
   try {
     const items = o.items.length ? o.items : [{ name: row.item || "Your order", qty: 1, modifiers: [], price: "" }];
@@ -434,9 +461,10 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
   return { text, file, orderId: o.id, order: o };
 }
 /** What a yes to a food card is pinned to, on top of the payment's own target: the cart revision. */
-export function payTargetTail(runId) {
-  const o = orderForRun(runId);
-  return o ? ` food#${o.id} r${o.revision}` : "";
+export function payTargetTail(row) {
+  if (!row?.run_id || !foodOn(row.conversation_id)) return "";
+  const o = orderForRun(row.run_id);
+  return o && o.conversation_id === row.conversation_id ? ` food#${o.id} r${o.revision}` : "";
 }
 
 // ---------------------------------------------------------------- the end of a checkout
@@ -466,12 +494,14 @@ export async function ended(run, status) {
   const o = orderForRun(run.run_id);
   if (!o || ["placed", "cancelled", "failed"].includes(o.status)) return null;
   if (status === "cancelled" && !String(run.result ?? "").startsWith("renewed") && run.result !== "superseded") {
+    q("UPDATE food_orders SET run_id = NULL WHERE id = ? AND conversation_id = ?").run(o.id, o.conversation_id);
     setStatusRow(o, "cancelled");
     await setStatus(o, "cancelled");
     return { cancelled: true };
   }
   const failures = Number(o.failures ?? 0) + 1;
-  q("UPDATE food_orders SET failures = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(failures, clock.now(), o.id, o.conversation_id);
+  // The checkout is over: the order is free for the fix's new checkout.
+  q("UPDATE food_orders SET failures = ?, run_id = NULL, updated_at = ? WHERE id = ? AND conversation_id = ?").run(failures, clock.now(), o.id, o.conversation_id);
   if (failures >= 2) {
     setStatusRow(o, "failed");
     await setStatus(o, "failed");
@@ -491,8 +521,13 @@ export const holdsMoveOn = (run) => !!orderForRun(run?.run_id);
 
 // ---------------------------------------------------------------- the sweep: hold, closing, late
 /** Every minute: the hold running out, the restaurant closing, an order running late. Never throws. */
+let sweeping = false;
 export async function sweep({ now = clock.now() } = {}) {
-  if (foodMode() === "off") return { looked: 0 };
+  if (foodMode() === "off" || sweeping) return { looked: 0 };
+  sweeping = true;
+  try { return await sweepOnce(now); } finally { sweeping = false; }
+}
+async function sweepOnce(now) {
   const shop = await import("./shopconnect.js");
   let looked = 0;
   for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'asked' ORDER BY id").all()) {
@@ -500,16 +535,16 @@ export async function sweep({ now = clock.now() } = {}) {
     if (!o || !foodOn(o.conversation_id)) continue;
     looked++;
     const pay = q("SELECT * FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status = 'asked' ORDER BY id DESC LIMIT 1").get(o.run_id ?? "", o.conversation_id);
-    if (!pay) continue;
+    if (!pay) {
+      // Asked again by code (the store let go before the yes) and still running past the hold: let go too.
+      const run = o.run_id ? q("SELECT ask_since, status FROM shop_runs WHERE run_id = ? AND conversation_id = ?").get(o.run_id, o.conversation_id) : null;
+      if (run?.status === "running" && run.ask_since && now > run.ask_since + HOLD_MS) await lapse(o, shop);
+      continue;
+    }
     if (o.closes_at && now >= o.closes_at - CLOSING_WARN_MS && now < o.closes_at && tellOnce(o, "closing")) {
       await sayTo(o.conversation_id, `${o.restaurant || "The restaurant"} closes at ${clockText(o.closes_at, o.conversation_id)}, so it has to go in soon. Place it?`);
     }
-    if (now > shop.askDeadline(pay) && tellOnce(o, `hold:${pay.id}`)) {
-      await shop.declinePayment({ conversationId: o.conversation_id, paymentId: pay.id }).catch(() => null);
-      setStatusRow(o, "needs");
-      await setStatus(o, "needs");
-      await sayTo(o.conversation_id, `I let the ${o.restaurant || "food"} cart go after 15 minutes, nothing charged. Want me to rebuild it?`);
-    }
+    if (now > shop.askDeadline(pay)) await lapse(o, shop);
   }
   for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'placed' AND eta_latest_at IS NOT NULL AND eta_latest_at <= ? AND told NOT LIKE '%late%' ORDER BY id").all(now - LATE_CHECK_MS)) {
     const o = orderRow(o0.id, o0.conversation_id);
@@ -518,11 +553,20 @@ export async function sweep({ now = clock.now() } = {}) {
     const due = clockText(o.eta_latest_at, o.conversation_id);
     if (wakeFn) {
       try {
-        await wakeFn(o.conversation_id, `[food] Their ${o.restaurant || "food"} order (order ${o.id}, placed ${PLATFORMS[o.platform]?.name ? `on ${PLATFORMS[o.platform].name}` : ""}) was due by ${due}; it is now ${Math.round((now - o.eta_latest_at) / 60_000)} minutes past that. Check what you can (their email from the platform with gmail_read, if connected) for whether it was delivered. If it was, or they already said so, reply NO_REPLY and say nothing. If not, ONE text: how late it is, and ask: file a complaint for a refund, or just check where it is? Never file a complaint or cancel without their yes; a refund goes to the original card first, platform credit only if that is refused.`, { key: `food:${o.id}:late` });
+        // Not awaited: a whole model turn must not hold up another person's hold running out.
+        Promise.resolve(wakeFn(o.conversation_id, `[food] Their ${o.restaurant || "food"} order (order ${o.id}, placed ${PLATFORMS[o.platform]?.name ? `on ${PLATFORMS[o.platform].name}` : ""}) was due by ${due}; it is now ${Math.round((now - o.eta_latest_at) / 60_000)} minutes past that. Check what you can (their email from the platform with gmail_read, if connected) for whether it was delivered. If it was, or they already said so, reply NO_REPLY and say nothing. If not, ONE text: how late it is, and ask: file a complaint for a refund, or just check where it is? Never file a complaint or cancel without their yes; a refund goes to the original card first, platform credit only if that is refused.`, { key: `food:${o.id}:late` })).catch(() => {});
       } catch { /* once */ }
     }
   }
   return { looked };
+}
+/** The hold is over: the checkout let go without its own end text, the order waits on them, one line. */
+async function lapse(o, shop) {
+  if (!tellOnce(o, `hold:${o.run_id}`)) return;
+  await shop.letGo(o.run_id, "the 15-minute food hold ran out").catch(() => null);
+  q("UPDATE food_orders SET run_id = NULL, status = 'needs', updated_at = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), o.id, o.conversation_id);
+  await setStatus(o, "needs");
+  await sayTo(o.conversation_id, `I let the ${o.restaurant || "food"} cart go after 15 minutes, nothing charged. Want me to rebuild it?`);
 }
 async function sayTo(c, text) { try { if (sayFn) await sayFn(c, text); } catch { /* said or not, once */ } }
 

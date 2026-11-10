@@ -259,11 +259,20 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
           say: `Not started: they said ${fit.need || "what they need"}. ${fit.why || `${input.item} is a different variant.`} Find the variant that matches and start that one instead; if you can't tell which they want, ask them in one line. Only if they then say they want this exact one, call store_checkout again with variant_confirmed: true. Nothing was charged.` };
       }
     }
+    // A food order's checkout starts only on a recorded, checked cart, one at a time (src/food.js).
+    let food = null;
+    if (input.food_order_id) {
+      food = await import("./food.js");
+      if (!food.foodOn(c)) food = null;
+      else { const no = food.checkoutGate(c, input.food_order_id); if (no) return no; }
+    }
+    // The longer instruction is for a food cart's every item and modifier; anything else keeps 400.
+    if (!food && input.what.length > 400) return { ok: false, error: "what_too_long", say: "Say what to buy in 400 characters or fewer." };
     shop.noteStore({ store, name: input.store, url: input.start_url });
     shop.ensureIcon(store); // for the sign-in page, if it comes to that; never waited on
     const out = await shop.startCheckout({ conversationId: c, store, startUrl: input.start_url, what: input.what, item: input.item, maxUsd: input.max_usd, signIn: !!input.sign_in });
     if (!out.ok) return out;
-    if (input.food_order_id) { const food = await import("./food.js"); if (food.foodOn(c)) food.linkRun(c, input.food_order_id, out.runId); }
+    if (food) food.linkRun(c, input.food_order_id, out.runId);
     shop.follow(out.runId);
     const how = out.plan === "guest" ? "as a guest" : out.plan === "signed" ? `signed in to their ${shop.storeName(store)} account` : `signing in to their ${shop.storeName(store)} account first (they get a link by text if it asks)`;
     return { ok: true, run_id: out.runId, plan: out.plan, say: `Started ${how}. Nothing is charged: when it reaches payment they get a text with Crossmint's exact total to approve. Tell them in one line you're on it; don't promise a time.` };

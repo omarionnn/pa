@@ -119,6 +119,7 @@ startOps({ runtime, router, log });
         log,
       });
     }
+    await shop.foodReady;
     const resumed = shop.resumeFollowing();
     if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });
   }
