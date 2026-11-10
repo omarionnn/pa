@@ -2076,7 +2076,7 @@ export function updatePlan(conversationId, id, changes) {
   if (["cancelled", "done"].includes(plan.status)) return { ok: false, error: `Plan #${id} is ${plan.status}; it can't be changed. Start a new one.` };
   const data = {};
   for (const f of PLAN_FIELDS) data[f] = changes[f] !== undefined ? changes[f] : plan[f];
-  db.prepare("UPDATE plans SET data = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(data), clock.now(), id);
+  db.prepare("UPDATE plans SET data = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(JSON.stringify(data), clock.now(), id, conversationId);
   return { ok: true, before: plan, plan: getPlan(conversationId, id) };
 }
 export function setPlanStatus(conversationId, id, status) {
@@ -2087,7 +2087,7 @@ export function setPlanStatus(conversationId, id, status) {
   if (status === "locked" && plan.open_questions?.length) {
     return { ok: false, error: `Plan #${id} still has open questions: ${plan.open_questions.join("; ")}. Resolve them (plan_update) before locking.` };
   }
-  db.prepare("UPDATE plans SET status = ?, updated_at = ? WHERE id = ?").run(status, clock.now(), id);
+  db.prepare("UPDATE plans SET status = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(status, clock.now(), id, conversationId);
   return { ok: true, before: plan, plan: getPlan(conversationId, id) };
 }
 
@@ -2168,7 +2168,7 @@ export function cancelTimer(conversationId, id) {
   if (!t) return { ok: false, error: `No timer #${id}` };
   if (t.fired_at) return { ok: false, error: `Timer #${id} already fired` };
   if (t.cancelled_at) return { ok: false, error: `Timer #${id} was already cancelled` };
-  db.prepare("UPDATE timers SET cancelled_at = ? WHERE id = ?").run(clock.now(), id);
+  db.prepare("UPDATE timers SET cancelled_at = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), id, conversationId);
   return { ok: true, timer: getTimer(conversationId, id) };
 }
 /** Due, and not waiting out the gap after a try that failed. */
@@ -2282,10 +2282,10 @@ export function setSeriesState(conversationId, id, state, { why = null, at = clo
   if (s.state === state) return { ok: false, error: `Series #${id} is already ${state}.`, series: s };
   if (s.state === "ended") return { ok: false, error: `Series #${id} already ended${s.ended_why ? ` (${s.ended_why})` : ""}.`, series: s };
   if (state === "ended") {
-    db.prepare("UPDATE series SET state = 'ended', ended_at = ?, ended_why = ?, next_at = NULL, awaiting_since = NULL WHERE id = ?")
-      .run(at, why === null ? null : String(why).slice(0, 300), id);
+    db.prepare("UPDATE series SET state = 'ended', ended_at = ?, ended_why = ?, next_at = NULL, awaiting_since = NULL WHERE id = ? AND conversation_id = ?")
+      .run(at, why === null ? null : String(why).slice(0, 300), id, conversationId);
   } else {
-    db.prepare("UPDATE series SET state = ? WHERE id = ?").run(state, id);
+    db.prepare("UPDATE series SET state = ? WHERE id = ? AND conversation_id = ?").run(state, id, conversationId);
   }
   return { ok: true, before: s, series: getSeries(conversationId, id) };
 }
@@ -4191,7 +4191,7 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
   // Real progress clears the crash counter: the retry budget is for a step that keeps dying,
   // not for a task that is simply long.
   if (progress) { sets.push("attempts = 0"); }
-  db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
+  db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
   taskChanged(conversationId, id);
   return { ok: true, task: getTask(conversationId, id), ...(pulledIn ? { pulled_in: pulledIn } : {}) };
 }
@@ -4201,8 +4201,8 @@ export function finishTask(conversationId, id, { state, outcome, result = null }
   if (!t) return { ok: false, error: `No task #${id}` };
   if (!t.open) return { ok: false, error: `Task #${id} was already ${t.state}.` };
   logTask(id, "state", `${state}: ${outcome}`);
-  db.prepare("UPDATE tasks SET state = ?, outcome = ?, next_wake_at = NULL, finished_at = ?, updated_at = ?, result_json = ? WHERE id = ?")
-    .run(state, String(outcome).slice(0, 600), clock.now(), clock.now(), result ? JSON.stringify(result) : null, id);
+  db.prepare("UPDATE tasks SET state = ?, outcome = ?, next_wake_at = NULL, finished_at = ?, updated_at = ?, result_json = ? WHERE id = ? AND conversation_id = ?")
+    .run(state, String(outcome).slice(0, 600), clock.now(), clock.now(), result ? JSON.stringify(result) : null, id, conversationId);
   if (state === "done") emitCompletion("task", { conversationId, id });
   taskChanged(conversationId, id);
   return { ok: true, task: getTask(conversationId, id) };
@@ -8296,7 +8296,9 @@ export function recordAgentcardPurchase({ conversationId, buyConversationId, sta
       placement_fail_reason = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.placement_fail_reason END,
       authorization_state = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.authorization_state END,
       authorization_id = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.authorization_id END,
-      decline_code = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.decline_code END`)
+      decline_code = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.decline_code END
+    -- Never rewrites another person's purchase row, whatever buy_conversation_id came back (isolation 11-09).
+    WHERE agentcard_purchases.conversation_id = excluded.conversation_id`)
     .run(conversationId, buyConversationId, status, cartHash, Math.round(amountCents), merchant, what, clock.now(), clock.now());
   return getAgentcardPurchase(buyConversationId);
 }
@@ -13489,9 +13491,12 @@ export function saveTodoList(conversationId, { listId = null, title = "", source
   try {
     let id = listId;
     if (id) {
-      db.prepare("UPDATE todo_lists SET title = ?, source = ?, plan_fp = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+      // Only their own list: a list id that is not theirs changes nothing and adds nothing (isolation
+      // 11-09; before, the items of whoever owned that id were deleted and theirs written under it).
+      const mine = db.prepare("UPDATE todo_lists SET title = ?, source = ?, plan_fp = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
         .run(title, source, planFp, now, id, conversationId);
-      db.prepare("DELETE FROM todo_items WHERE list_id = ?").run(id);
+      if (mine.changes !== 1) throw new Error(`No to-do list #${id}`);
+      db.prepare("DELETE FROM todo_items WHERE list_id = ? AND conversation_id = ?").run(id, conversationId);
     } else {
       id = Number(db.prepare("INSERT INTO todo_lists (conversation_id, title, source, plan_fp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
         .run(conversationId, title, source, planFp, now, now).lastInsertRowid);
@@ -13568,6 +13573,8 @@ export function claimTodoWrap(id, text) {
 export function todoListsAwaitingWrap() {
   return db.prepare("SELECT * FROM todo_lists WHERE state = 'approved' AND wrapped_at IS NULL ORDER BY id").all().map(todoListOut);
 }
+/** What knownPersonByNumber says for a number that is another person's own Reason: never their name. */
+export const OTHER_ACCOUNT_WHO = "a person, not a business";
 /** Is this number written down as a way of reaching somebody they know? Digits only, by exact match. */
 export function knownPersonByNumber(conversationId, number) {
   const ten = String(number ?? "").replace(/\D/g, "").slice(-10);
@@ -13577,8 +13584,11 @@ export function knownPersonByNumber(conversationId, number) {
     if ((p.contacts ?? []).some(same)) return { who: p.who, from: "important_people" };
   }
   // Somebody with a Reason of their own on this install is a person, whatever the plan called them.
-  for (const a of db.prepare("SELECT address, name FROM accounts WHERE address IS NOT NULL AND address != ''").all()) {
-    if (same(a.address)) return { who: a.name || a.address, from: "accounts" };
+  // Their account name is THEIRS, not the asker's, so it is never returned (isolation 11-09: a number
+  // typed into permission_grant came back "on record as <their registered name>"). The asker learns
+  // only what gates the ask: this is a person, not a business.
+  for (const a of db.prepare("SELECT address FROM accounts WHERE address IS NOT NULL AND address != ''").all()) {
+    if (same(a.address)) return { who: OTHER_ACCOUNT_WHO, from: "accounts" };
   }
   // A person in memory filed under the number itself, or with the number among their facts. Each
   // phone-shaped run in a fact is compared whole, so a longer number never matches by containing it.

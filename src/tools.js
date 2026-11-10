@@ -562,14 +562,15 @@ function needsConfirmation(name, input, conversationId) {
  * amount a standing permission's limit is checked against, and `browser_submit` checks it a second
  * time against the total actually on the page, which is the number that would really be charged.
  */
-function amountForAction(name, input) {
+function amountForAction(name, input, c = null) {
   if (name === "browser_submit") return trust.largestAmount(input.what);
   // Read off the purchase row rather than out of the input, because the total of an AgentCard cart
   // is AgentCard's number and not the model's: the person was shown the cart this row holds, and
   // that is the figure a limit has to be checked against.
   if (name === "purchase_confirm") {
     const row = db.getAgentcardPurchase(input.conversation_id ?? "");
-    return row && row.cart_hash === input.cart_hash ? Number(row.amount_cents) || null : null;
+    // Only their own purchase: another person's cart is never the amount a permission of theirs is checked against.
+    return row && row.conversation_id === c && row.cart_hash === input.cart_hash ? Number(row.amount_cents) || null : null;
   }
   return null;
 }
@@ -9073,7 +9074,7 @@ function confirmTargetFor(name, input, c = null) {
     // against is the same string, so a builder that changes its mind about what it wants to do
     // between the ask and the yes gets a MISMATCH and has to ask again.
     case "remote_approve": {
-      const job = db.getRemoteJobAnywhere(input.job_id);
+      const job = c ? db.getRemoteJob(c, input.job_id) : null;
       return job?.risky_action ? `remote:${job.risky_action}` : `remote:#${input.job_id}`;
     }
     /**
@@ -9501,7 +9502,7 @@ async function runToolInner(name, rawInput, ctx) {
       // without asking" covers any text to her, so those are checked against the person half alone.
       const forWhom = trust.PERSON_PINNED.has(name) ? (normalizeNumber(input.to) || String(input.to ?? "")) : (target ?? "");
       const standing = permissions.covering({
-        conversationId: c, action: name, target: forWhom, amountCents: amountForAction(name, input),
+        conversationId: c, action: name, target: forWhom, amountCents: amountForAction(name, input, c),
       });
       // A fee turns a cancellation back into something that needs asking about, whatever was
       // granted. Checked here rather than inside `covers`, because it is a fact about the service
@@ -12574,7 +12575,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // whenever" is not read as covering somebody else's number.
       const tgt = String(scope.target ?? "").trim().slice(0, 200);
       const numeric = tgt && /^[+\d\s().-]+$/.test(tgt);
-      const who = numeric ? db.knownPersonByNumber(c, tgt)?.who : null;
+      // Only a name from their OWN records is shown; another person's Reason account is not on record for them.
+      const known = numeric ? db.knownPersonByNumber(c, tgt) : null;
+      const who = known && known.from !== "accounts" ? known.who : null;
       const capsAsk = input.caps ? `, and set their spending limits to $${input.caps.per_purchase} on one thing and $${input.caps.monthly} a month` : "";
       const grants = [
         `From now on, Reason may do this without asking first: ${String(scope.action).replace(/_/g, " ")}`,
