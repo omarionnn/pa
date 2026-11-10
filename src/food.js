@@ -81,6 +81,91 @@ export const PLATFORMS = {
 };
 export const isPlatform = (store) => Object.hasOwn(PLATFORMS, String(store ?? ""));
 
+// ---------------------------------------------------------------- ordering direct (owner, 2026-11-10)
+// The restaurant's own online ordering comes first; a delivery app only when the place has none or
+// they ask for the app. Why: the apps refuse Reason's browser (403), and ordering direct is usually
+// cheaper (no app menu markup, no app service fee) and the menu read is the one that is paid.
+// Hosts that run a restaurant's own ordering for it. A URL's host is structure, not anyone's meaning.
+export const DIRECT_HOSTS = [
+  { via: "toast", name: "Toast", hosts: ["toasttab.com"] },
+  { via: "square", name: "Square Online", hosts: ["square.site", "squareup.com", "square.online"] },
+  { via: "chownow", name: "ChowNow", hosts: ["chownow.com"] },
+  { via: "olo", name: "Olo", hosts: ["olo.com"] },
+  { via: "clover", name: "Clover", hosts: ["clover.com"] },
+  { via: "bentobox", name: "BentoBox", hosts: ["getbento.com", "bentobox.com"] },
+  { via: "owner", name: "Owner.com", hosts: ["owner.com"] },
+  { via: "popmenu", name: "Popmenu", hosts: ["popmenu.com"] },
+  { via: "menufy", name: "Menufy", hosts: ["menufy.com"] },
+  { via: "spoton", name: "SpotOn", hosts: ["spoton.com"] },
+  { via: "gloriafood", name: "GloriaFood", hosts: ["gloriafood.com", "fbgcdn.com"] },
+  // DoorDash's storefront for a restaurant's own site: the restaurant's prices, no app service fee.
+  { via: "storefront", name: "the restaurant's storefront", hosts: ["order.online"] },
+];
+const PLATFORM_HOSTS = { doordash: ["doordash.com"], ubereats: ["ubereats.com", "postmates.com"], grubhub: ["grubhub.com", "seamless.com"] };
+// Other apps and marketplaces that sit between the person and the restaurant: never "direct".
+const OTHER_APPS = {
+  caviar: { name: "Caviar", hosts: ["trycaviar.com", "caviar.com"] },
+  slice: { name: "Slice", hosts: ["slicelife.com"] },
+  google: { name: "Google", hosts: ["food.google.com", "google.com"] },
+  yelp: { name: "Yelp", hosts: ["yelp.com"] },
+  deliverycom: { name: "Delivery.com", hosts: ["delivery.com"] },
+  ezcater: { name: "ezCater", hosts: ["ezcater.com"] },
+  beyondmenu: { name: "BeyondMenu", hosts: ["beyondmenu.com"] },
+  menupages: { name: "MenuPages", hosts: ["menupages.com"] },
+  waitr: { name: "Waitr", hosts: ["waitrapp.com", "waitr.com"] },
+  gopuff: { name: "Gopuff", hosts: ["gopuff.com"] },
+  instacart: { name: "Instacart", hosts: ["instacart.com"] },
+};
+/** An app's display name: DoorDash, Uber Eats, Grubhub, Caviar… */
+export const appName = (key) => PLATFORMS[key]?.name ?? OTHER_APPS[key]?.name ?? "the app";
+const under = (host, base) => host === base || host.endsWith(`.${base}`);
+const hostOfUrl = (u) => { try { const x = new URL(String(u ?? "").trim()); return /^https?:$/.test(x.protocol) ? x.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\d?\./, "") : ""; } catch { return ""; } };
+/**
+ * Where an ordering link really orders: { route: "direct", via, via_name } for a restaurant's own
+ * ordering (a known ordering host, or its own site), { route: "platform", platform } for a delivery
+ * app, or null for something that is not a web link.
+ */
+export function orderingRoute(url) {
+  const host = hostOfUrl(url);
+  if (!host) return null;
+  for (const [platform, bases] of Object.entries(PLATFORM_HOSTS)) if (bases.some((b) => under(host, b))) return { route: "platform", platform, host };
+  for (const [platform, a] of Object.entries(OTHER_APPS)) if (a.hosts.some((b) => under(host, b))) return { route: "platform", platform, host };
+  for (const d of DIRECT_HOSTS) if (d.hosts.some((b) => under(host, b))) return { route: "direct", via: d.via, via_name: d.name, host };
+  return { route: "direct", via: "own_site", via_name: "its own site", host };
+}
+/**
+ * Which restaurant's ordering a link is: its host, plus the restaurant's part of the path on a host
+ * many restaurants share (order.toasttab.com/online/<place>, ordering.chownow.com/order/<id>…), so a
+ * cart built at one place is never checked out at another, and www or a menu sub-page is the same place.
+ */
+export function orderingPlaceKey(url) {
+  const r = orderingRoute(url);
+  if (!r) return "";
+  let path = [];
+  try { path = new URL(String(url).trim()).pathname.toLowerCase().split("/").filter(Boolean); } catch { return ""; }
+  if (r.route === "platform") { try { return `${r.host}/${new URL(String(url).trim()).pathname.toLowerCase().split("/").filter(Boolean).slice(0, 2).join("/")}`; } catch { return r.host; } }
+  if (r.via === "toast") {
+    const i = path.indexOf("online") >= 0 ? path.indexOf("online") : path.indexOf("order");
+    return `toast:${i >= 0 ? path[i + 1] ?? "" : path[0] ?? ""}`;
+  }
+  // ChowNow, Clover and DoorDash's storefront put every restaurant on one host; the path says which.
+  const shared = ["chownow", "clover", "storefront"].includes(r.via) && (r.host.split(".").length <= 2 || /^(?:order|ordering|direct|online)$/.test(r.host.split(".")[0]));
+  return shared ? `${r.host}/${path.slice(0, 2).join("/")}` : r.host;
+}
+/** A host many restaurants share (order.toasttab.com/online/<place>): its store key is per restaurant. */
+export const sharedOrderingHost = (url) => { const r = orderingRoute(url); return !!(r && r.route === "direct" && r.via !== "own_site"); };
+const nameKey = (s) => String(s ?? "").toLowerCase().normalize("NFKD").replace(/['’`]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+/** The checkout's store key on a shared ordering host: the restaurant's own, never "toasttab" for all of them. */
+export function directStoreKey(restaurant, url) {
+  const r = orderingRoute(url);
+  if (!r || r.route !== "direct" || r.via === "own_site") return null;
+  const slug = nameKey(restaurant).replace(/ /g, "").slice(0, 32);
+  return slug ? `${slug}${r.via}` : null;
+}
+
+/** "Why it's cheaper": said once (first direct order), or when they ask. No numbers, ever: none were compared. */
+export const whyDirectLine = (restaurant) => `I'm ordering straight from ${String(restaurant || "the restaurant").trim()}, not through a delivery app: no app menu markup, no app service fee, and more of what you pay goes to them.`;
+
 /** How long a checkout is held for their yes (spec: up to 15 minutes). */
 export const HOLD_MS = 15 * 60_000;
 /** Warned this long before the restaurant closes, once. */
@@ -133,7 +218,29 @@ db.db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS food_notes_conv ON food_notes (conversation_id, id);
+  CREATE TABLE IF NOT EXISTS food_places (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    restaurant TEXT NOT NULL DEFAULT '',
+    direct_url TEXT NOT NULL DEFAULT '',
+    via TEXT NOT NULL DEFAULT '',
+    no_direct INTEGER NOT NULL DEFAULT 0,
+    menu_checked_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS food_places_conv ON food_places (conversation_id, id);
+  CREATE TABLE IF NOT EXISTS food_told (
+    conversation_id TEXT NOT NULL,
+    what TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, what)
+  );
 `);
+{
+  const have = db.db.prepare("PRAGMA table_info(food_orders)").all().map((c) => c.name);
+  if (!have.includes("route")) db.db.exec("ALTER TABLE food_orders ADD COLUMN route TEXT NOT NULL DEFAULT ''");
+  if (!have.includes("via")) db.db.exec("ALTER TABLE food_orders ADD COLUMN via TEXT NOT NULL DEFAULT ''");
+}
 const q = (sql) => db.db.prepare(sql);
 const seal = (col, c, v) => sealCell("food_orders", col, c, v);
 const open = (v) => { try { return openAny(v) ?? ""; } catch { return ""; } };
@@ -142,7 +249,7 @@ const parse = (s, d) => { try { const v = JSON.parse(open(s) || ""); return v ??
 /** A row with its sealed columns opened. */
 function view(r) {
   if (!r) return null;
-  return { ...r, restaurant: open(r.restaurant), store_url: open(r.store_url), card_label: open(r.card_label), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
+  return { ...r, route: r.route ?? "", via: r.via ?? "", restaurant: open(r.restaurant), store_url: open(r.store_url), card_label: open(r.card_label), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
 }
 export const orderRow = (id, c) => view(q("SELECT * FROM food_orders WHERE id = ? AND conversation_id = ?").get(id, c));
 /** Their order with this id, or null: another person's id reads as missing. */
@@ -160,6 +267,52 @@ function tellOnce(o0, what) {
   q("UPDATE food_orders SET told = ? WHERE id = ? AND conversation_id = ?").run([...t].join(","), o0.id, o0.conversation_id);
   return true;
 }
+/** Once per person ever (the "why it's cheaper" line): true the first time only. */
+function tellPersonOnce(c, what) {
+  return q("INSERT OR IGNORE INTO food_told (conversation_id, what, at) VALUES (?, ?, ?)").run(c, what, clock.now()).changes > 0;
+}
+/** shopconnect: the ask with the once-only line went out. */
+export const markTold = (c, what) => { try { tellPersonOnce(c, what); } catch { /* said; a lost mark only means it could be said again */ } };
+export const toldPerson = (c, what) => !!q("SELECT 1 AS x FROM food_told WHERE conversation_id = ? AND what = ?").get(c, what);
+
+// ---------------------------------------------------------------- their places' own ordering links
+const placesOf = (c) => q("SELECT * FROM food_places WHERE conversation_id = ? ORDER BY id DESC LIMIT 200").all(c)
+  .map((p) => ({ ...p, restaurant: open(p.restaurant), direct_url: open(p.direct_url) }));
+/** What is known about this restaurant's ordering for them: its own link, or that it has none. */
+export function placeFor(c, restaurant) {
+  const k = nameKey(restaurant);
+  return k ? placesOf(c).find((p) => nameKey(p.restaurant) === k) ?? null : null;
+}
+/**
+ * Keep a restaurant's own ordering link (or that it has none) with their food history. A delivery
+ * app's page is refused here: this is where the restaurant's own ordering is kept.
+ */
+export function notePlace(c, { restaurant, url = "", noDirect = false, menuChecked = false } = {}) {
+  const name = clean(restaurant, 80);
+  if (!name) return { ok: false, error: "no_restaurant", say: "Name the restaurant." };
+  const was = placeFor(c, name);
+  const now = clock.now();
+  const put = (cols) => {
+    if (was) q("UPDATE food_places SET restaurant = ?, direct_url = ?, via = ?, no_direct = ?, menu_checked_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(...cols, now, was.id, c);
+    else q("INSERT INTO food_places (restaurant, direct_url, via, no_direct, menu_checked_at, updated_at, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?)").run(...cols, now, c);
+  };
+  if (noDirect) {
+    put([sealCell("food_places", "restaurant", c, name), "", "", 1, null]);
+    return { ok: true, route: "none", say: `Kept: ${name} has no ordering of its own that you could find, so a delivery app is the fallback for it. Record that cart with the app's page as store_url.` };
+  }
+  const r = orderingRoute(url);
+  if (!r) return { ok: false, error: "bad_url", say: "Give the ordering page's full link (https://…)." };
+  if (r.route === "platform") {
+    return { ok: false, error: "platform_link", platform: r.platform,
+      say: `That is ${appName(r.platform)}, not ${name}'s own ordering. Look for its own first: the Order Online link on its website or in the places result, or web_search "${name} order online" for a page on Toast, Square, ChowNow, Olo, Clover, BentoBox, Owner.com or its own site. Only if it has none, call place again with no_direct true.` };
+  }
+  const link = clean(url, 500);
+  const checked = menuChecked ? now : (was?.direct_url && orderingPlaceKey(was.direct_url) === orderingPlaceKey(link) ? was.menu_checked_at : null);
+  put([sealCell("food_places", "restaurant", c, name), sealCell("food_places", "direct_url", c, link), r.via, 0, checked]);
+  return { ok: true, route: "direct", via: r.via_name,
+    say: `Kept: ${name} orders direct at this link (${r.via_name}).${checked ? "" : " Read its menu, hours, prices and photos on that page before building the cart."} Its prices are the ones charged; build the cart and the checkout there.` };
+}
+
 function setStatusRow(o, status) { q("UPDATE food_orders SET status = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(status, clock.now(), o.id, o.conversation_id); }
 
 // ---------------------------------------------------------------- the runtime's hands
@@ -228,6 +381,25 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   const o = ownOrder(c, input.order_id) ?? openOrder(c);
   if (!o) return { ok: false, error: "no_order", say: "Start the food order first (food_order start)." };
   if (["placed", "failed", "cancelled"].includes(o.status)) return { ok: false, error: "order_over", say: `That order is ${o.status}. Start a new one for a new request.` };
+  // Direct first: where the cart is built decides the route, by its link, never by a claim.
+  const route = orderingRoute(input.store_url);
+  if (!route) return { ok: false, error: "no_store_url", say: "Record the cart with store_url: the ordering page it is built on (the restaurant's own ordering first)." };
+  const name = clean(input.restaurant, 80);
+  if (route.route === "platform" && !input.their_choice) {
+    const place = placeFor(c, name);
+    if (place?.direct_url) {
+      return { ok: false, error: "direct_exists", direct_url: place.direct_url,
+        say: `${name} has its own ordering (${place.direct_url}). Build the cart there, not on ${appName(route.platform)}: no app markup or service fee, and its menu is the one paid. Only if they asked for ${appName(route.platform)} themselves, record it again with their_choice true. Nothing was recorded.` };
+    }
+    if (!place?.no_direct) {
+      return { ok: false, error: "check_direct_first",
+        say: `Look for ${name || "the restaurant"}'s own ordering first (its website's Order Online link, the places result, or web_search "${name} order online": Toast, Square, ChowNow, Olo, Clover, BentoBox, Owner.com or its own site) and keep what you find with food_order place. If it has none, food_order place with no_direct true, then record this cart again. If they asked for ${appName(route.platform)} themselves, record it again with their_choice true. Nothing was recorded.` };
+    }
+  }
+  if (route.route === "direct" && name) {
+    const place = placeFor(c, name);
+    if (!place || place.no_direct || orderingPlaceKey(place.direct_url) !== orderingPlaceKey(input.store_url)) notePlace(c, { restaurant: name, url: input.store_url });
+  }
   // A change once a checkout is running (or its card is out) lets that checkout go, quietly: its
   // payment is declined and nothing it asked can be approved. The new cart is checked again and
   // needs a new store_checkout, which brings a fresh card and a fresh ask.
@@ -248,19 +420,19 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   const total = cents(input.total) != null ? dollars(cents(input.total)) : "";
   const eta = Date.parse(String(input.eta_latest ?? ""));
   const closes = Date.parse(String(input.closes_at ?? ""));
-  const platform = String(input.platform ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  const platform = route.route === "platform" ? route.platform : "";
   const now = clock.now();
   const rev = Number(o.revision ?? 0) + 1;
   q(`UPDATE food_orders SET status = 'building', platform = ?, restaurant = ?, store_url = ?, items_json = ?, lines_json = ?, notes = ?, address = ?, address_label = ?, tip = ?, cart_total = ?,
        eta_text = ?, eta_latest_at = ?, closes_at = ?, revision = ?, allergy_flag = '', allergy_checked = 0, updated_at = ? WHERE id = ? AND conversation_id = ?`).run(
-    isPlatform(platform) ? platform : (platform === "uber" ? "ubereats" : ""), seal("restaurant", c, clean(input.restaurant, 80)), seal("store_url", c, clean(input.store_url, 500)),
+    platform, seal("restaurant", c, name), seal("store_url", c, clean(input.store_url, 500)),
     seal("items_json", c, JSON.stringify(items)), JSON.stringify(lines), seal("notes", c, clean(input.notes, 300)), seal("address", c, clean(input.address, 200)),
     seal("address_label", c, clean(input.address_label, 40)), tip, total, clean(input.eta, 20), Number.isFinite(eta) ? eta : null, Number.isFinite(closes) ? closes : null, rev, now, o.id, c);
   const checked = await check(c, items).catch(() => ({ ok: false }));
   const flag = allergyFlag(checked);
-  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, o.id, c);
+  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ?, route = ?, via = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, route.route, route.route === "direct" ? route.via : route.platform, o.id, c);
   return {
-    ok: true, order_id: o.id, revision: rev,
+    ok: true, order_id: o.id, revision: rev, route: route.route === "direct" ? `direct (${route.via_name})` : appName(route.platform),
     ...(letGo || o.run_id ? { previous_checkout: "let go, nothing charged; start store_checkout again with food_order_id" } : {}),
     ...(flag ? { allergy_flag: flag } : {}),
     say: flag
@@ -326,11 +498,16 @@ export function allergyFlag(checked) {
  * Before store_checkout starts one for this order: the cart is recorded (and so checked against their
  * allergies) and no other checkout is running for it. Null when it may start; else the refusal.
  */
-export function checkoutGate(c, orderId) {
+export function checkoutGate(c, orderId, startUrl = null) {
   const o = ownOrder(c, orderId);
   if (!o) return { ok: false, error: "no_order", say: "No such food order. Start one with food_order start." };
   if (["placed", "failed", "cancelled"].includes(o.status)) return { ok: false, error: "order_over", say: `That order is ${o.status}. Start a new one.` };
   if (!o.items.length || !o.revision) return { ok: false, error: "no_cart", say: "Record the cart first with food_order cart (it checks every item against their allergies and diet), then start the checkout. Nothing was started." };
+  // The checkout runs where the cart was built: a direct cart is never paid on an app, or the reverse.
+  if (startUrl != null && o.store_url) {
+    const a = orderingRoute(o.store_url), b = orderingRoute(startUrl);
+    if (!b || !a || orderingPlaceKey(o.store_url) !== orderingPlaceKey(startUrl)) return { ok: false, error: "start_url_elsewhere", say: `This cart was built on ${a?.host ?? "another page"}; start the checkout there (start_url on that site), or record the cart again where it is really being ordered. Nothing was started.` };
+  }
   if (o.run_id) return { ok: false, error: "checkout_running", say: "A checkout is already running for this order. To change it, record the changed cart with food_order cart (that lets the old checkout go), then start again." };
   return null;
 }
@@ -375,8 +552,8 @@ const etaWords = (o) => (o.eta_latest_at ? clockText(o.eta_latest_at, o.conversa
  *   "Heads up: the pad thai has peanuts. $31.42 to your Visa 4821, here by 8:15. Place it?"
  * `amount` is Crossmint's, as the row holds it. `changed` is set when it differs from the cart's.
  */
-export function approvalLine({ amount, card, eta = "", flag = "", changed = "" }) {
-  const head = [flag, changed].filter(Boolean).join(" ");
+export function approvalLine({ amount, card, eta = "", flag = "", changed = "", why = "" }) {
+  const head = [why, flag, changed].filter(Boolean).join(" ");
   return `${head ? `${head} ` : ""}${amount} to your ${card}${eta ? `, here by ${eta}` : ""}. Place it?`;
 }
 
@@ -451,14 +628,43 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
   const eta = etaWords(o);
   // A cart that never went through the check (it should not get here) is said to be unchecked, never silent.
   const flag = o.allergy_flag || (o.allergy_checked ? "" : allergyFlag({ ok: false }));
-  const text = approvalLine({ amount, card: label, eta, flag, changed }) + passkeyTail;
+  const why = whyNowFor(o, run);
+  const text = approvalLine({ amount, card: label, eta, flag, changed, why }) + passkeyTail;
   q("UPDATE food_orders SET status = 'asked', card_label = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(seal("card_label", o.conversation_id, label), clock.now(), o.id, o.conversation_id);
   let file = null;
   try {
     const items = o.items.length ? o.items : [{ name: row.item || "Your order", qty: 1, modifiers: [], price: "" }];
     ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip, total: amount, eta, address: o.address, card: label, changed: !!changedFrom }, shoot ? { shoot } : {}));
   } catch (e) { logFn({ food_card_failed: o.id, why: String(e?.message ?? e).split("\n")[0] }); }
-  return { text, file, orderId: o.id, order: o };
+  return { text, file, orderId: o.id, order: o, why: !!why };
+}
+/**
+ * The "why it's cheaper" line for this ask, or "": only when this order really is direct (its cart was
+ * built on the restaurant's own ordering AND this checkout runs there), and only the first time ever.
+ */
+function whyNowFor(o, run) {
+  if (o.route !== "direct") return "";
+  const start = q("SELECT start_url FROM shop_run_asks WHERE run_id = ?").get(run.run_id)?.start_url;
+  const here = orderingRoute(start);
+  if (!here || here.route !== "direct" || orderingPlaceKey(start) !== orderingPlaceKey(o.store_url)) return "";
+  // Marked as said by shopconnect once the text went (markTold), never before.
+  return toldPerson(o.conversation_id, "why_direct") ? "" : whyDirectLine(o.restaurant);
+}
+/**
+ * They ask why not DoorDash, or suggest an app: the line, from the record. asked → always (they asked);
+ * suggested → only if never said. Never for an app order: then nothing here is cheaper to claim.
+ */
+export function whyDirect(c, { restaurant = "", reason = "asked" } = {}) {
+  const o = openOrder(c);
+  const name = clean(restaurant, 80) || o?.restaurant || "";
+  const place = name ? placeFor(c, name) : null;
+  // The order being built decides; a saved link only speaks when there is no order for that place.
+  const sameOrder = o && (!restaurant || nameKey(o.restaurant) === nameKey(name)) && o.route;
+  const direct = sameOrder ? o.route === "direct" : !!place?.direct_url;
+  if (!direct) return { ok: true, direct: false, say: "This one isn't ordered direct, so there is nothing to say about it being cheaper. Never claim a saving or an app's price you didn't see." };
+  const first = tellPersonOnce(c, "why_direct");
+  if (reason !== "asked" && !first) return { ok: true, direct: true, already_told: true, say: "You told them why once already: don't repeat it. If they want the app, respect it: build it there (food_order cart with their_choice true)." };
+  return { ok: true, direct: true, line: whyDirectLine(name), say: `Say this in one short line (your words are fine, same facts, no numbers): "${whyDirectLine(name)}" Never a dollar saving or an app's price unless a tool showed you both totals. If they still want the app, respect it (their_choice true).` };
 }
 /** What a yes to a food card is pinned to, on top of the payment's own target: the cart revision. */
 export function payTargetTail(row) {
@@ -554,7 +760,7 @@ async function sweepOnce(now) {
     if (wakeFn) {
       try {
         // Not awaited: a whole model turn must not hold up another person's hold running out.
-        Promise.resolve(wakeFn(o.conversation_id, `[food] Their ${o.restaurant || "food"} order (order ${o.id}, placed ${PLATFORMS[o.platform]?.name ? `on ${PLATFORMS[o.platform].name}` : ""}) was due by ${due}; it is now ${Math.round((now - o.eta_latest_at) / 60_000)} minutes past that. Check what you can (their email from the platform with gmail_read, if connected) for whether it was delivered. If it was, or they already said so, reply NO_REPLY and say nothing. If not, ONE text: how late it is, and ask: file a complaint for a refund, or just check where it is? Never file a complaint or cancel without their yes; a refund goes to the original card first, platform credit only if that is refused.`, { key: `food:${o.id}:late` })).catch(() => {});
+        Promise.resolve(wakeFn(o.conversation_id, `[food] Their ${o.restaurant || "food"} order (order ${o.id}, placed ${o.route === "direct" ? "direct with the restaurant" : o.platform ? `on ${appName(o.platform)}` : ""}) was due by ${due}; it is now ${Math.round((now - o.eta_latest_at) / 60_000)} minutes past that. Check what you can (their email from the restaurant or the platform with gmail_read, if connected) for whether it was delivered. If it was, or they already said so, reply NO_REPLY and say nothing. If not, ONE text: how late it is, and ask: file a complaint for a refund, or just check where it is? Never file a complaint or cancel without their yes; a refund goes to the original card first, platform credit only if that is refused.`, { key: `food:${o.id}:late` })).catch(() => {});
       } catch { /* once */ }
     }
   }
@@ -589,7 +795,7 @@ export function history(c, { now = clock.now() } = {}) {
   const byPlace = new Map();
   for (const o of rows) { const k = o.restaurant.toLowerCase(); if (!byPlace.has(k)) byPlace.set(k, []); byPlace.get(k).push(o); }
   const usual = [...byPlace.values()].slice(0, 8).map((os) => ({
-    restaurant: os[0].restaurant, platform: PLATFORMS[os[0].platform]?.name ?? os[0].platform, store_url: os[0].store_url, times: os.length,
+    restaurant: os[0].restaurant, ordered_on: os[0].route === "direct" ? "direct" : os[0].platform ? appName(os[0].platform) : "", store_url: os[0].store_url, times: os.length,
     last_two: os.slice(0, 2).map((o) => ({ items: o.items.map((it) => `${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}${it.modifiers?.length ? ` (${it.modifiers.join(", ")})` : ""}`), total: o.paid_amount || o.cart_total, notes: o.notes, when: new Date(o.placed_at).toISOString().slice(0, 10) })),
   }));
   const totals = rows.map((o) => cents(o.paid_amount || o.cart_total)).filter((x) => x != null).sort((a, b) => a - b);
@@ -608,6 +814,8 @@ export function history(c, { now = clock.now() } = {}) {
     // After 10pm the address is re-confirmed even when it is the saved one (spec, intake).
     late_night: localHour(now, c) >= 22 || localHour(now, c) < 5,
     notes,
+    // Each restaurant's own ordering link (or that it has none): direct first, the app only as fallback.
+    places: placesOf(c).slice(0, 20).map((p) => (p.no_direct ? { restaurant: p.restaurant, own_ordering: "none found" } : { restaurant: p.restaurant, order_direct_at: p.direct_url, menu_checked: !!p.menu_checked_at })),
     note: "Allergies and diet are in their saved facts too; the cart check reads both. 'My usual' = the last_two of that restaurant, proposed back in one line, added only after they confirm.",
   };
 }
@@ -678,9 +886,10 @@ FOOD ORDERS (craving → food at the door, fewest texts; never money without a y
 - Start every food request with food_order action "start" (it puts ⏳ on their message). Status after that is set by code; use food_order "status" only for ❓ (waiting on them), ❌ (gave up) or 👍 (they cancelled). Results always go in words too.
 - Intake, before searching: what (a craving or a place they named; a bare "order food" gets 3 picks from food_order "history" and their tastes — name, cuisine, ETA, rough price — never an open "what are you in the mood for?"), where (confirm the saved address in one line, "Home on Bruner Ave?"; re-confirm after 10pm or when their last order went elsewhere), when (now unless they say). "My usual" = the last two orders from that place (history), proposed back in one line; add only after they confirm.
 - One question per text, with the likely answer offered so they can reply in one word. Short, warm, confident: "Habibi's open till 2. Your usual chicken over rice, $18.40 all in?"
-- Platform: the one they're signed into (DoorDash, Uber Eats, Grubhub). Signed into several: the cheaper all-in total for the same order unless they prefer one. Check it's open and delivers to the address before building; closed → say so and offer the closest open alternative. Every constraint (dish, side, dietary flag) must exist on the menu; prefer items the menu flags. At most 4 restaurants per request; none fit → ask before searching more. DoorDash and Uber Eats refuse your own browser and fetches, so menus come from what web_search, places or the restaurant's own site show; the checkout itself runs through store_checkout.
+- Where to order: the RESTAURANT'S OWN online ordering first (Toast, Square Online, ChowNow, Olo, Clover, BentoBox, Owner.com, or its own site). Find it from food_order "history" (places), the places result's website, the restaurant's site's Order Online link, or web_search "<name> order online"; keep it with food_order "place" (or no_direct true when it has none). Read the menu, hours, prices and photos there; its prices are the ones charged. DoorDash, Uber Eats or Grubhub only when the place has no ordering of its own, or when they ask for the app (then respect it: their_choice true, no argument). Several apps signed in: the cheaper all-in total for the same order unless they prefer one. Check it's open and delivers to the address before building; closed → say so and offer the closest open alternative. Every constraint (dish, side, dietary flag) must exist on the menu; prefer items the menu flags. At most 4 restaurants per request; none fit → ask before searching more. Some ordering pages (Toast, ChowNow, the apps) refuse your own browser; then read the menu from what web_search or places show, and the checkout still runs through store_checkout on that page.
+- Why direct: the first direct order's card says it once, by code. When they ask why not DoorDash, or suggest an app, food_order "why_direct" gives the line; say it once, plainly, never as a dig at the app. Never state a dollar saving or an app's price unless a tool showed you both totals for the same order; never claim cheaper on an app order.
 - Choosing: at most 3 options, as ONE numbered picture (food_order "options"), each a real photo a tool returned for that dish, never stock or a generated picture. No photo of something they already named.
-- Cart: exactly to spec. In store_checkout's "what": every item and modifier, uncheck pre-selected extras they didn't ask for, anything the app can't express in the restaurant notes, utensils only for soup, salad or drinks (not sandwiches, fries, wings), their standing tip, deliver to the confirmed address, stop at payment. Within a few dollars of a free-delivery or discount threshold: suggest ONE cheap add-on that fits their diet, once. Pass food_order_id. Record the cart with food_order "cart" before store_checkout (items with modifiers and prices, fees, tip, total, ETA, address, closing time if known): it checks every item against their allergies and diet.
+- Cart: exactly to spec. In store_checkout's "what": every item and modifier, uncheck pre-selected extras they didn't ask for, anything the app can't express in the restaurant notes, utensils only for soup, salad or drinks (not sandwiches, fries, wings), their standing tip, deliver to the confirmed address, stop at payment. Within a few dollars of a free-delivery or discount threshold: suggest ONE cheap add-on that fits their diet, once. Pass food_order_id; start_url is the page the cart was built on. Record the cart with food_order "cart" before store_checkout (items with modifiers and prices, fees, tip, total, ETA, address, closing time if known): it checks every item against their allergies and diet.
 - Approval is by code: one card picture and one line ("$31.42 to your Visa 4821, here by 8:15. Place it?") with any allergy or diet flag before the question. Yes, place it, a 👍 or similar approves THAT card only; silence never does. Any change (item, address, card) or a new total → a new checkout and a fresh card, never a yes carried over. The hold is 15 minutes.
 - After placing: the confirmation goes by code. Never send the order number unless they ask. Tracking stays quiet; one check comes after the latest arrival time. Complaint, refund (original card first, platform credit only if refused) or cancel only on their yes. Missing or wrong item they report: file it on the platform when you can and tell them what support said.
 - Failures: an unavailable item → say which and offer the closest swap or ordering without it; never substitute silently. A restaurant that cancels → bring a fix (the same cart at another nearby place), not just the problem. A sign-in wall → the link goes by code; ask for a code in one line if one is needed. Anything that loops twice: stop, ❌, say plainly what blocked it.
@@ -692,19 +901,22 @@ export const FOOD_TOOLS = new Set(["food_order"]);
 export const foodToolVisible = (name, conversationId) => !FOOD_TOOLS.has(name) || foodOn(conversationId);
 export const FOOD_TOOL_DEFS = [{
   name: "food_order",
-  description: "Food delivery orders. Nothing is charged by this tool. Actions: start (a new food request; ⏳ on their message), history (their past orders, usual per restaurant, addresses, tip, normal cost, notes), options (2–3 dishes as ONE numbered picture; real photo_url from a tool result each), cart (record the cart as built, before store_checkout: checks every item against their allergies and diet), status (needs | failed | cancelled, as a tapback on their request), note (rejected | liked | disliked | instructions | allergy).",
+  description: "Food delivery orders. Nothing is charged by this tool. Actions: start (a new food request; ⏳ on their message), history (their past orders, usual per restaurant, each place's own ordering link, addresses, tip, normal cost, notes), place (keep a restaurant's own ordering link, or no_direct true when it has none: direct first, the apps only as fallback), why_direct (they ask why not an app, or suggest one: the one line, from the record), options (2–3 dishes as ONE numbered picture; real photo_url from a tool result each), cart (record the cart as built, before store_checkout: checks every item against their allergies and diet), status (needs | failed | cancelled, as a tapback on their request), note (rejected | liked | disliked | instructions | allergy).",
   input_schema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["start", "history", "options", "cart", "status", "note"] },
+      action: { type: "string", enum: ["start", "history", "place", "why_direct", "options", "cart", "status", "note"] },
       order_id: { type: "integer", description: "From start. cart/status default to the open order." },
       status: { type: "string", enum: ["needs", "failed", "cancelled"] },
       note_kind: { type: "string", enum: ["rejected", "liked", "disliked", "instructions", "allergy"] },
       note: { type: "string" },
       options: { type: "array", maxItems: 3, items: { type: "object", properties: { dish: { type: "string" }, restaurant: { type: "string" }, price: { type: "string" }, eta: { type: "string" }, photo_url: { type: "string" }, page_url: { type: "string" } }, required: ["dish", "restaurant", "photo_url"] } },
-      platform: { type: "string", description: "doordash | ubereats | grubhub" },
       restaurant: { type: "string" },
-      store_url: { type: "string", description: "The restaurant's page on the platform." },
+      store_url: { type: "string", description: "place: the restaurant's own ordering page. cart: the page the cart is built on (its own ordering first; an app's page only as fallback)." },
+      no_direct: { type: "boolean", description: "place: you looked and it has no ordering of its own." },
+      menu_checked: { type: "boolean", description: "place: you read its menu, hours and prices on that page." },
+      their_choice: { type: "boolean", description: "cart: they asked for that delivery app themselves." },
+      why_reason: { type: "string", enum: ["asked", "suggested_app"], description: "why_direct: they asked why, or suggested an app." },
       items: { type: "array", items: { type: "object", properties: { name: { type: "string" }, qty: { type: "integer" }, modifiers: { type: "array", items: { type: "string" } }, price: { type: "string", description: "Line price, e.g. 12.50" } }, required: ["name"] } },
       fees: { type: "array", items: { type: "object", properties: { label: { type: "string" }, amount: { type: "string" } }, required: ["label", "amount"] }, description: "Subtotal, each fee, tax: as the checkout shows them." },
       tip: { type: "string" },
@@ -723,13 +935,14 @@ export const FOOD_TOOL_DEFS = [{
 const str = (n) => z.string().max(n).optional();
 export const FOOD_SCHEMAS = {
   food_order: z.object({
-    action: z.enum(["start", "history", "options", "cart", "status", "note"]),
+    action: z.enum(["start", "history", "place", "why_direct", "options", "cart", "status", "note"]),
     order_id: z.number().int().positive().optional(),
     status: z.enum(["needs", "failed", "cancelled"]).optional(),
     note_kind: z.enum(["rejected", "liked", "disliked", "instructions", "allergy"]).optional(),
     note: str(300),
     options: z.array(z.object({ dish: z.string().min(1).max(120), restaurant: z.string().min(1).max(80), price: str(20), eta: str(30), photo_url: z.string().min(1).max(2000), page_url: str(2000) })).max(3).optional(),
     platform: str(30), restaurant: str(120), store_url: str(1000),
+    no_direct: z.boolean().optional(), menu_checked: z.boolean().optional(), their_choice: z.boolean().optional(), why_reason: z.enum(["asked", "suggested_app"]).optional(),
     items: z.array(z.object({ name: z.string().min(1).max(120), qty: z.number().int().positive().max(50).optional(), modifiers: z.array(z.string().max(80)).max(12).optional(), price: str(20) })).max(30).optional(),
     fees: z.array(z.object({ label: z.string().min(1).max(60), amount: z.string().max(20) })).max(10).optional(),
     tip: str(20), total: str(20), notes: str(500), address: str(300), address_label: str(40), eta: str(30), eta_latest: str(40), closes_at: str(40),
@@ -741,6 +954,8 @@ export async function runFoodTool(name, input, { conversationId: c, check, fetch
   const a = input?.action;
   if (a === "start") return await startOrder(c);
   if (a === "history") return history(c);
+  if (a === "place") return notePlace(c, { restaurant: input.restaurant, url: input.store_url, noDirect: !!input.no_direct, menuChecked: !!input.menu_checked });
+  if (a === "why_direct") return whyDirect(c, { restaurant: input.restaurant, reason: input.why_reason === "suggested_app" ? "suggested" : "asked" });
   if (a === "options") return await showOptions(c, input.options, { fetchPhoto, ...(shoot ? { shoot } : {}) });
   if (a === "cart") return await recordCart(c, input, check ? { check } : {});
   if (a === "note") return addNote(c, { kind: input.note_kind, text: input.note });

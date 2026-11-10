@@ -249,7 +249,13 @@ export async function checkFit({ texts = [], need = "", item = "", what = "" }, 
 export async function runShopTool(name, input, { conversationId: c, confirmationId = null, messages = [], judge = null, log = () => {} } = {}) {
   if (!shop.connectAllowedFor(c)) return { ok: false, error: "Not available." };
   if (name === "store_checkout") {
-    const store = shop.checkoutStoreKey(input.store, input.start_url);
+    // A food order on a host many restaurants share (Toast, Square…) is keyed per restaurant (src/food.js).
+    let foodKey = null, foodName = "";
+    if (input.food_order_id) {
+      const f = await import("./food.js");
+      if (f.foodOn(c)) { foodName = f.ownOrder(c, input.food_order_id)?.restaurant || ""; foodKey = f.directStoreKey(foodName || input.store, input.start_url); }
+    }
+    const store = foodKey ?? shop.checkoutStoreKey(input.store, input.start_url);
     if (!store) return { ok: false, error: "Which store? Give its site." };
     if (!input.variant_confirmed) {
       const fit = await checkFit({ texts: trust.ownerTexts(messages), need: input.their_need ?? "", item: input.item, what: input.what });
@@ -264,11 +270,11 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     if (input.food_order_id) {
       food = await import("./food.js");
       if (!food.foodOn(c)) food = null;
-      else { const no = food.checkoutGate(c, input.food_order_id); if (no) return no; }
+      else { const no = food.checkoutGate(c, input.food_order_id, input.start_url); if (no) return no; }
     }
     // The longer instruction is for a food cart's every item and modifier; anything else keeps 400.
     if (!food && input.what.length > 400) return { ok: false, error: "what_too_long", say: "Say what to buy in 400 characters or fewer." };
-    shop.noteStore({ store, name: input.store, url: input.start_url });
+    shop.noteStore({ store, name: (foodKey && foodName) || input.store, url: input.start_url });
     shop.ensureIcon(store); // for the sign-in page, if it comes to that; never waited on
     const out = await shop.startCheckout({ conversationId: c, store, startUrl: input.start_url, what: input.what, item: input.item, maxUsd: input.max_usd, signIn: !!input.sign_in });
     if (!out.ok) return out;

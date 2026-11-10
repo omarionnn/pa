@@ -1624,6 +1624,8 @@ async function sayPayment(run, row, it, say) {
     if (a) {
       if (a.file && pictureFn) { try { await pictureFn(run.conversation_id, a.file); } catch { /* the line still goes */ } }
       await say(a.text);
+      // The "why it's cheaper" line counts as said once it went, never before (src/food.js).
+      if (a.why) food.markTold(run.conversation_id, "why_direct");
       await food.setStatus(a.order, "needs");
       return;
     }
