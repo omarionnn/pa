@@ -1107,7 +1107,7 @@ export class Router {
    * ask the master over, and no line to answer the person on if the master said yes — so the form
    * is told it did not go through rather than being told something that is not going to happen.
    */
-  async webAccess({ address }) {
+  async webAccess({ address, name = "" }) {
     const master = db.getAccount(config.ownerConversation);
     const isLive = (name) => name && name !== "console" && this.get(name)?.status?.().status === "live";
     const channel = isLive(master?.channel)
@@ -1115,7 +1115,7 @@ export class Router {
       : this.statuses().find(s => s.status === "live" && s.name !== "console")?.name ?? null;
     if (!channel) return { ok: false, reason: "not_ready" };
 
-    const seen = access.handleWebRequest({ channel, address });
+    const seen = access.handleWebRequest({ channel, address, name });
     if (!seen.ok || seen.outcome !== "queued") {
       this.log({ web_access: seen.ok ? seen.outcome : seen.reason });
       return seen;

@@ -1116,13 +1116,15 @@ export async function webAccessRequest({ rawBody, headers, router, log = () => {
   }
 
   if (Buffer.byteLength(rawBody) > WEB_ACCESS_MAX_BODY) return { status: 413, body: { error: "body too large" } };
-  let phone, ref;
-  try { ({ phone, ref } = JSON.parse(rawBody) ?? {}); } catch { phone = undefined; }
+  let phone, ref, name;
+  try { ({ phone, ref, name } = JSON.parse(rawBody) ?? {}); } catch { phone = undefined; }
 
-  const out = await router.webAccess({ address: phone });
+  const out = await router.webAccess({ address: phone, name: typeof name === "string" ? name : "" });
   // A join that came from a shared stamp's "Get your own Reason" (`ref=s_<shareId>`), when the form passes it on.
   if (out.ok && ref) { try { stamps.noteShareSignup(ref, { log }); } catch { /* never costs a join */ } }
-  if (out.ok) return { status: 200, body: { ok: true } };
+  // `waiting` is how many people are in the queue in all, for the page's "you're #N". It is the same
+  // number whatever happened to this one, so it says nothing about the number that was typed.
+  if (out.ok) return { status: 200, body: { ok: true, waiting: db.pendingRequestCount() } };
   if (out.reason === "bad_number") return { status: 400, body: { ok: false, error: "bad_number" } };
   if (out.reason === "full_today") return { status: 429, body: { ok: false, error: "full_today" } };
   return { status: 503, body: { ok: false, error: "not_ready" } };

@@ -3815,6 +3815,11 @@ export function markRequestAnnounced(id, confirmationId) {
   return getAccessRequest(id);
 }
 
+/** How many people are waiting for an answer, whichever way they asked. The access page shows it. */
+export function pendingRequestCount() {
+  return db.prepare("SELECT COUNT(*) AS n FROM access_requests WHERE state = 'pending'").get().n;
+}
+
 /** How many numbers the website has put in the queue since a moment, for its daily ceiling. */
 export function webRequestsSince(sinceMs) {
   return db.prepare("SELECT COUNT(*) AS n FROM access_requests WHERE source = 'web' AND requested_at >= ?").get(sinceMs).n;
