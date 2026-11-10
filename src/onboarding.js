@@ -8,8 +8,13 @@
 //   awaiting_name       name → saved; what it means and one warm word about it (the model's own
 //                       knowledge, never invented), then "what do you want to call me?"
 //   awaiting_card_name  the name they pick → the contact card under it, inviting them to save it,
-//                       then ONE nudge: a call Reason can make for them, or an event; done.
-//                       Skipped, "whatever", "you pick" → the card as Reason.
+//                       then the Amazon offer (below), or straight to ONE nudge: a call Reason can
+//                       make for them, or an event; done. Skipped, "whatever", "you pick" → the card
+//                       as Reason.
+//   awaiting_amazon     OPTIONAL, REASON_INTRO_AMAZON=on only (off by default): one Amazon connect
+//                       offer after the card (src/amazonconnect.js owns the step; this is only the
+//                       hook — remove the AMAZON HOOK lines to take it out). Yes → the link, then the
+//                       try line; anything else → the try line. Asked once, never nudged.
 //   complete            done; nobody ever goes back in
 //
 // Reason never says it saves itself in their phone or is in their contacts: it cannot touch their
@@ -49,9 +54,10 @@ import { askStructured, sideAskAllowed } from "./backends/side.js";
 import { rulesNote } from "./rules.js";
 import { contactCardUrl, lineNumber, RETRY_AFTER_MS, cardName, nameCase, DEFAULT_CARD_NAME } from "./contact.js";
 import { zoneFor } from "./zone.js";
+import * as amazon from "./amazonconnect.js"; // AMAZON HOOK
 
-export const STATES = ["not_started", "awaiting_name", "awaiting_card_name", "complete"];
-const ACTIVE = new Set(["not_started", "awaiting_name", "awaiting_card_name"]);
+export const STATES = ["not_started", "awaiting_name", "awaiting_card_name", "awaiting_amazon", "complete"];
+const ACTIVE = new Set(["not_started", "awaiting_name", "awaiting_card_name", "awaiting_amazon"]);
 
 /** Who Reason is, in the owner's words (2026-11-06). */
 export const INTRO = "hey, i'm Reason. i will help you with errands and complete your to do list for you";
@@ -141,14 +147,16 @@ const SCHEMA = {
     card_name: { type: "string" },
     reply: { type: "string" },
     name_line: { type: "string" },
+    amazon: { type: "string", enum: ["yes", "no", ""] },
   },
-  required: ["kind", "name", "card_name", "reply", "name_line"],
+  required: ["kind", "name", "card_name", "reply", "name_line", "amazon"],
 };
 
 const PENDING = {
   not_started: "Nothing yet — this is the very first text they have ever sent Reason.",
   awaiting_name: "Reason introduced itself and asked their name.",
   awaiting_card_name: "Reason asked what they want to call it — the name its contact card will carry (Reason, or anything they like).",
+  awaiting_amazon: "Reason sent its contact card, then offered (optional) to connect their Amazon account so it can keep an eye on their orders and help them reorder, and asked if they want the link.",
 };
 
 /** How the model meets a name: shared by the read and the stand-alone line (nameLine). */
@@ -165,6 +173,8 @@ Decide what the text is, by its meaning:
 - "task": they want something real done or looked up now (a reminder, a search, a plan, a call, the weather, a to-do list, anything needing a tool), or the message needs care (someone upset, in crisis, anything harmful or sensitive). When in doubt between question and task, it is a task.
 - "other": anything else (an emoji, "lol", "ok").
 A text can answer AND ask: then kind is "question" with the answer's field filled too, unless the ask is a task.
+
+"amazon": only when Reason last offered the Amazon link. "yes" when they want it, however they say it (sure, ok, go ahead, send it, a thumbs up); kind is then "answer". "no" when they would rather not, don't use Amazon, or not now; kind is then "decline". "" when it is neither (a question about it, something else, unsure). Every other step: "".
 
 "name_line": only when "name" is filled: ${NAME_RULE}
 
@@ -224,6 +234,7 @@ export async function readText({ state, text, ask = askStructured, conversationI
     cardName: clean(v.card_name, 40, { name: true }),
     reply: clean(v.reply, 220),
     nameLine: clean(v.name_line, 240),
+    amazon: v.amazon === "yes" || v.amazon === "no" ? v.amazon : "",
   };
 }
 
@@ -357,14 +368,24 @@ function afterName(router, conversationId, who, { line = null, intro = null, met
   };
 }
 
-/** The card under the name they picked (or Reason when they passed), on its line's message, then the one thing to try; done. */
+/**
+ * The card under the name they picked (or Reason when they passed), on its line's message, then the
+ * Amazon offer when its link can go, else the one thing to try and done.
+ */
 function theCard(router, conversationId, picked) {
   const chose = !!String(picked ?? "").trim();
   const name = cardName(picked);
   const url = cardUrl(router, db.getAccount(conversationId), name);
   if (!url) return { bubbles: [TRY_LINE], next: "complete", name: null };
-  return { bubbles: [{ text: CARD_SENT(name, chose), mediaUrl: url }, TRY_LINE], next: "complete", name };
+  const card = { text: CARD_SENT(name, chose), mediaUrl: url };
+  if (amazonCanOffer(conversationId)) return { bubbles: [card, amazon.OFFER], next: "awaiting_amazon", name }; // AMAZON HOOK
+  return { bubbles: [card, TRY_LINE], next: "complete", name };
 }
+
+// AMAZON HOOK: the optional offer after the card (src/amazonconnect.js), REASON_INTRO_AMAZON=on only.
+export const amazonOfferOn = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_INTRO_AMAZON ?? "").trim().toLowerCase());
+export const amazonCanOffer = (conversationId) => amazonOfferOn() && amazon.available(conversationId);
+const realAmazonLink = (conversationId, { log } = {}) => { const r = amazon.connectLink(conversationId, { via: "first_chat", log }); return r.ok ? r.url : null; };
 
 const cardNote = (name) => `[sent them Reason's contact card under the name they chose for it: ${name}. Saving it is up to them; Reason cannot touch their phone. You are still Reason]`;
 
@@ -424,6 +445,11 @@ export async function afterTask({ router, conversationId, route, ask = askStruct
     step = !steered ? { bubbles: [STEERS.awaiting_name], next: "awaiting_name" } : afterName(router, conversationId, "", { met: false });
   } else if (row.onboarding === "awaiting_card_name") {
     step = !steered ? { bubbles: [STEERS.awaiting_card_name], next: "awaiting_card_name" } : theCard(router, conversationId, "");
+  } else if (row.onboarding === "awaiting_amazon") {
+    // They moved on to something real: the offer is let go, never asked again.
+    finish(conversationId);
+    log({ onboarding: conversationId, from: "awaiting_amazon", to: "complete", why: "task" });
+    return { step: "complete", said: [] };
   } else return null;
   const said = await runStep({ router, conversationId, route, row, bubbles: step.bubbles, next: step.next, cardNamed: step.name ?? null, keyPart: ":after", sleep, log });
   return { step: step.next, said };
@@ -441,7 +467,7 @@ export async function afterTask({ router, conversationId, route, ask = askStruct
  * clear ends the flow and goes to the normal turn, which screens it again and does what that
  * verdict needs.
  */
-export async function handle({ router, conversationId, route, texts = [], attachments = [], ask = askStructured, screen = null, sleep = realSleep, log = () => {} }) {
+export async function handle({ router, conversationId, route, texts = [], attachments = [], ask = askStructured, screen = null, sleep = realSleep, amazonLink = realAmazonLink, log = () => {} }) {
   if (!active(conversationId)) return { handled: false };
   const row = db.getAccount(conversationId);
   const state = row.onboarding;
@@ -521,6 +547,17 @@ export async function handle({ router, conversationId, route, texts = [], attach
     }
     else if (!steered) step = { bubbles: [...replyLine, STEERS.awaiting_card_name], next: state };
     else { const c = theCard(router, conversationId, ""); step = { ...c, bubbles: [...replyLine, ...c.bubbles] }; }
+  } else if (state === "awaiting_amazon") {
+    if (read.amazon === "yes") {
+      const url = await Promise.resolve().then(() => amazonLink(conversationId, { log })).catch(e => { log({ onboarding_amazon_link_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); return null; });
+      // The link alone in its own bubble, so it unfurls as its card. No link: said plainly, then on.
+      step = url
+        ? { bubbles: [amazon.LINK_LINE, url, TRY_LINE], next: "complete" }
+        : { bubbles: [amazon.FAILED_LINE, TRY_LINE], next: "complete" };
+    } else if (read.amazon === "no" || read.kind === "decline") step = { bubbles: [`${amazon.NO_LINE}. ${TRY_LINE}`], next: "complete" };
+    // A question about it gets its answer and the offer stays open, never asked again; a second detour lets it go.
+    else if (read.kind === "question" && !steered && replyLine.length) step = { bubbles: replyLine, next: state };
+    else step = { bubbles: [...replyLine, TRY_LINE], next: "complete" };
   }
 
   const said = await runStep({

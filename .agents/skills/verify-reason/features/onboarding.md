@@ -22,7 +22,10 @@ during the old 3–5 question interview). One question per message; nothing ever
    `RETRY_AFTER_MS`) → nothing to name: `TRY_LINE` instead of the ask, and the flow is done.
 3. The name they pick → the contact card under THAT name, `CARD_SENT(name, true)` on the card's own
    message ("Jarvis it is. here's my card, save it so you can always find me" — an invitation, never a
-   claim it is saved), then `TRY_LINE`; flow `complete`. "whatever" / "you pick" / no name → the card as
+   claim it is saved), then `TRY_LINE`; flow `complete`. Optional hook, off by default
+   (`REASON_INTRO_AMAZON=on`): `amazonconnect.OFFER` instead of `TRY_LINE` (state `awaiting_amazon`); the read's
+   `amazon` field decides — yes → `LINK_LINE`, the link alone, `TRY_LINE`; anything else → `TRY_LINE`. Never
+   nudged or re-asked. The step itself is `src/amazonconnect.js` (test/amazonconnect.test.js). "whatever" / "you pick" / no name → the card as
    Reason (`CARD_SENT("Reason", false)`). The card's address is `/reason-<sha8>-<token>.vcf`: the token is
    random per account (`accounts.contact_card_token`), the name is `accounts.contact_card_name`, and
    `src/http.js assetRequest` draws `FN`/`N` from it (`ORG` stays Reason). An unknown token draws the
