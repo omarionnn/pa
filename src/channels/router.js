@@ -262,7 +262,14 @@ export class Router {
     // its code: what they chose and connected on the page becomes theirs, and the intro asks none of
     // it again (src/onboarding.js webHandoff). No code, or one that does not match: nothing changes.
     if (arrivedNow && !isOperator) {
-      try { websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log }); }
+      try {
+        const claim = websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log });
+        // The code has done its job: it is not stored with their words, and the model never reads it.
+        if (claim) {
+          inbound.text = claim.text;
+          if (typeof inbound.said === "string") inbound.said = websetup.withoutCode(inbound.said);
+        }
+      }
       catch (e) { this.log({ websetup_claim_failed: (e?.message ?? String(e)).split("\n")[0] }); }
     }
 

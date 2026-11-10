@@ -308,3 +308,84 @@ test("event joiners (not web-claimed) keep the Amazon offer; an expired setup's 
   assert.equal(existsSync(profilePath(c)), false);
   assert.equal(store.get(s.id, 0), null);
 });
+
+// ---------- review fixes (11-10) ----------
+
+test("the code is gone once claimed: not in the stored message, not in what the model reads", async () => {
+  const h = harness();
+  const num = newNumber();
+  const s = await newSetup();
+  await h.router.deliver(text(num, `hey jarvis, it's kofi · ${s.code}`));
+  const rows = db.db.prepare("SELECT text FROM inbound_messages WHERE conversation_id = ?").all(conv(num)).map(r => r.text);
+  assert.ok(rows.length >= 1);
+  for (const r of rows) assert.ok(!String(r).includes(s.code), `stored: ${r}`);
+  assert.equal(rows[0], "hey jarvis, it's kofi");
+  // Nowhere else either: every table but the setup's own row (the history the model reads included).
+  const tables = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'web_setups'").all().map(r => r.name);
+  for (const t of tables) {
+    let rows = [];
+    try { rows = db.db.prepare(`SELECT * FROM "${t}"`).all(); } catch { continue; }
+    assert.ok(!JSON.stringify(rows).includes(`· ${s.code}`), `the code is in ${t}`);
+  }
+  assert.ok(to(h, num).length >= 2, "the hello still went out");
+  assert.equal(ws.withoutCode("hey jarvis, it's kofi · r7k2"), "hey jarvis, it's kofi");
+});
+
+test("a code shuts after five texts with the wrong names; a setup with no name is never claimed", async () => {
+  const s = await newSetup();
+  for (let i = 0; i < store.MAX_MISSES; i++) {
+    const body = `hey there · ${s.code}`;
+    const h = harness({ [body]: { kind: "greeting" } });
+    await h.router.deliver(text(newNumber(), body));
+  }
+  const body = `hey jarvis, it's kofi · ${s.code}`;
+  const h = harness({ [body]: { kind: "greeting" } });
+  const num = newNumber();
+  await h.router.deliver(text(num, body));
+  assert.equal(store.get(s.id).claimed_by, null, "the right names after five misses: still shut");
+  assert.deepEqual(to(h, num).map(m => m.text), ob.OPENER);
+  const nameless = await newSetup({ reasonName: "jarvis" });
+  const b2 = `hey jarvis, it's · ${nameless.code}`;
+  const h2 = harness({ [b2]: { kind: "greeting" } });
+  await h2.router.deliver(text(newNumber(), b2));
+  assert.equal(store.get(nameless.id).claimed_by, null);
+});
+
+test("a late claim (over an hour after the setup) takes the names but drops what was connected", async () => {
+  const h = harness();
+  const num = newNumber();
+  const s = await newSetup();
+  const c = `websetup:${s.id}`;
+  db.saveOauthTokens(c, "google", { accessToken: "a", refreshToken: "r", scope: "gmail", accountLabel: "someone@example.com" });
+  db.db.prepare("INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, account_label, state, checked_at) VALUES (?, 'amazon', '[]', ?, '', 'signed_in', ?)").run(c, clock.now(), clock.now());
+  mkdirSync(profilePath(c), { recursive: true });
+  clock.skip(ws.CONNECT_CLAIM_MS + 1000);
+  await h.router.deliver(text(num, `hey jarvis, it's kofi · ${s.code}`));
+  const me = conv(num);
+  assert.equal(db.getAccount(me).name, "Kofi");
+  assert.equal(db.listOauthTokens(me, "google").length, 0, "not someone else's Gmail");
+  assert.equal(amazon.connected(me), false, "not someone else's Amazon");
+  assert.equal(db.listOauthTokens(c, "google").length, 0, "dropped, not left behind");
+  assert.equal(existsSync(profilePath(c)), false);
+});
+
+test("a setup made on a listed staging site: host-only cookie, Google return and Amazon link to that site", async () => {
+  config.siteUrl = "https://heyreason.example";
+  process.env.REASON_SETUP_ORIGINS = "https://start--site.netlify.example";
+  try {
+    const made = await ws.request({ method: "POST", path: "/api/new", headers: { origin: "https://start--site.netlify.example", host: "files.heyreason.example" } });
+    assert.equal(made.status, 201);
+    assert.doesNotMatch(String(made.headers["Set-Cookie"]), /Domain=/);
+    const id = JSON.parse(made.body).id;
+    const cookie = cookieOf(made);
+    assert.equal(ws.googleCallbackDone({ ok: true, conversationId: `websetup:${id}` }).headers.Location, "https://start--site.netlify.example/start/connect?back=email");
+    const amazonLink = () => ({ ok: true, url: "https://heyreason.example/s/tok" });
+    const a = await api("POST", `/api/${id}/connect/amazon`, { cookie, amazonLink });
+    assert.equal(a.json.url, "https://start--site.netlify.example/s/tok");
+    const evil = await ws.request({ method: "POST", path: "/api/new", headers: { origin: "https://start--evil.netlify.example", host: "files.heyreason.example" } });
+    assert.equal(evil.status, 403, "an unlisted site is refused");
+  } finally {
+    config.siteUrl = "";
+    delete process.env.REASON_SETUP_ORIGINS;
+  }
+});

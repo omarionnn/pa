@@ -59,6 +59,19 @@ export function codeInText(text) {
 
 const has = (text, name) => !name || String(text).toLowerCase().includes(String(name).trim().toLowerCase());
 
+/** Their first text without its code: what is stored, and what the model reads. */
+export function withoutCode(text) {
+  return String(text ?? "").replace(/\s*[·•|\-–—]\s*[a-z0-9]{4}\s*$/i, "").trim();
+}
+
+/**
+ * What they connected on the page moves to the phone only when the claim comes soon after the setup
+ * was made. The person who builds a setup taps "text" a minute later; a setup made by someone else and
+ * sent to a stranger as a pre-typed text (so its Amazon or Gmail would become theirs) mostly is not
+ * sent that fast. Later claims still take the names; the connections are dropped.
+ */
+export const CONNECT_CLAIM_MS = 60 * 60_000;
+
 // ---------- the claim ----------
 
 /**
@@ -71,20 +84,22 @@ export function claimFromText({ conversationId, text, log = () => {} }) {
   const code = codeInText(text);
   if (!code) return null;
   const row = store.byCode(code);
-  if (!row || !has(text, row.user_name) || !has(text, row.reason_name)) {
+  if (!row || !row.user_name || !has(text, row.user_name) || !has(text, row.reason_name)) {
+    if (row) store.miss(row.id);
     log({ websetup_claim: "no_match" });
     return null;
   }
   if (!store.markClaimed(row.id, conversationId)) return null;
   const from = store.conversationOf(row.id);
-  if (row.user_name) db.setAccountName(conversationId, nameCase(row.user_name));
+  db.setAccountName(conversationId, nameCase(row.user_name));
   db.setContactCardName(conversationId, cardName(row.reason_name || DEFAULT_CARD_NAME));
-  const moved = moveConnections(from, conversationId);
+  const fresh = clock.now() - row.created_at <= CONNECT_CLAIM_MS;
+  const moved = fresh ? moveConnections(from, conversationId) : (dropConnections(from), { email: false, amazon: false });
   // Amazon signed in on the page: the follow-up the text intro would have run after its link (read
   // their orders, bring back one or two real things), a little after the hello.
   if (moved.amazon) db.createTimer(conversationId, { fireAt: clock.now() + 90_000, note: amazon.followUpNote() });
-  log({ websetup_claim: "claimed", setup: row.id, amazon: moved.amazon, email: moved.email });
-  return { setupId: row.id, user: row.user_name, reasonName: row.reason_name || DEFAULT_CARD_NAME, ...moved };
+  log({ websetup_claim: "claimed", setup: row.id, amazon: moved.amazon, email: moved.email, ...(fresh ? {} : { connections: "dropped_late" }) });
+  return { setupId: row.id, user: row.user_name, reasonName: row.reason_name || DEFAULT_CARD_NAME, text: withoutCode(text), ...moved };
 }
 
 /** What the stand-in holds, moved to the real conversation: Google rows, the Amazon check, the saved browser profile. */
@@ -116,14 +131,18 @@ export function handledOnWeb(conversationId) {
   return on() && !!store.claimedBy(conversationId);
 }
 
+/** Everything a setup's stand-in holds, let go. */
+export function dropConnections(c) {
+  db.db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ?").run(c);
+  db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ?").run(c);
+  db.db.prepare("DELETE FROM oauth_states WHERE conversation_id = ?").run(c);
+  rmSync(profilePath(c), { recursive: true, force: true });
+}
+
 /** Setups past their day: what they connected is let go, and the row with it. */
 export function sweep(now = clock.now()) {
   for (const id of store.expiredUnclaimed(now)) {
-    const c = store.conversationOf(id);
-    db.db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ?").run(c);
-    db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ?").run(c);
-    db.db.prepare("DELETE FROM oauth_states WHERE conversation_id = ?").run(c);
-    rmSync(profilePath(c), { recursive: true, force: true });
+    dropConnections(store.conversationOf(id));
     store.remove(id);
   }
 }
@@ -191,8 +210,25 @@ export function forgetNameLines() { lineCache.clear(); }
 const JSONH = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
 const json = (status, body, extra = {}) => ({ status, headers: { ...JSONH, ...extra }, body: JSON.stringify(body) });
 
+/**
+ * The origins the setup pages may run on: the website, plus any listed in REASON_SETUP_ORIGINS (a
+ * staging copy of the site, comma separated). A setup remembers the one it was made on, so its
+ * Google return and its Amazon link come back to that same site (where its cookie is).
+ */
+const originOf = (u) => { try { return new URL(u).origin; } catch { return ""; } };
+export function setupOrigins() {
+  const listed = String(process.env.REASON_SETUP_ORIGINS ?? "").split(",").map(s => originOf(s.trim())).filter(Boolean);
+  return [...new Set([originOf(config.siteUrl), originOf(config.pagesUrl), originOf(config.publicUrl), ...listed].filter(Boolean))];
+}
+const siteBase = () => (config.siteUrl || config.publicUrl || "").replace(/\/+$/, "");
+const originFor = (row) => (row?.origin && setupOrigins().includes(row.origin)) ? row.origin : siteBase();
+
 function setupCookie(secret, headers) {
-  const domain = cookieDomain(headers ?? {});
+  // Domain-wide on the website (so app.heyreason.com's Google return sees it too); host-only anywhere
+  // else, or a staging copy's browser would refuse a cookie naming heyreason.com.
+  const site = (() => { try { return new URL(config.siteUrl).hostname; } catch { return ""; } })();
+  const from = (() => { try { return new URL(String(headers?.origin ?? "")).hostname; } catch { return ""; } })();
+  const domain = !from || from === site || from.endsWith(`.${site}`) ? cookieDomain(headers ?? {}) : "";
   const secure = /^https:/i.test(config.publicUrl || config.siteUrl || "") ? "; Secure" : "";
   return `${store.COOKIE}=${secret}; Path=/${domain ? `; Domain=${domain}` : ""}; Max-Age=${Math.floor(store.TTL_MS / 1000)}; HttpOnly; SameSite=Lax${secure}`;
 }
@@ -201,11 +237,10 @@ function setupCookie(secret, headers) {
 function sameSite(headers = {}) {
   const origin = String(headers.origin ?? "");
   if (!origin) return true; // a same-origin fetch may omit it; the cookie is SameSite=Lax anyway
-  const ok = [config.siteUrl, config.pagesUrl, config.publicUrl].filter(Boolean).map(u => { try { return new URL(u).origin; } catch { return ""; } });
-  try { return ok.includes(new URL(origin).origin) || new URL(origin).host === String(headers.host ?? ""); } catch { return false; }
+  try { return setupOrigins().includes(new URL(origin).origin) || new URL(origin).host === String(headers.host ?? ""); } catch { return false; }
 }
 
-const back = (which, ok) => `${(config.siteUrl || config.publicUrl || "").replace(/\/+$/, "")}/start/connect?back=${which}${ok ? "" : "&failed=1"}`;
+const back = (row, which, ok) => `${originFor(row)}/start/connect?back=${which}${ok ? "" : "&failed=1"}`;
 
 /** Where a Google callback for a setup sends the person: back to the connect screen, never a thread. */
 export function googleCallbackDone(out) {
@@ -213,7 +248,7 @@ export function googleCallbackDone(out) {
   if (!id) return null;
   if (!out.ok) store.setConnectState(id, "email", "failed");
   else store.setConnectState(id, "email", "connected");
-  return { status: 302, headers: { Location: back("email", out.ok), "Cache-Control": "no-store" }, body: "" };
+  return { status: 302, headers: { Location: back(store.get(id), "email", out.ok), "Cache-Control": "no-store" }, body: "" };
 }
 
 /**
@@ -264,7 +299,8 @@ export async function request({ method = "GET", path = "", query = {}, headers =
   if (method === "POST" && path === "/api/new") {
     if (!limits.create(ip)) return json(429, { error: "slow down" });
     sweep();
-    const s = store.create();
+    const o = originOf(String(headers.origin ?? ""));
+    const s = store.create(undefined, { origin: o && setupOrigins().includes(o) ? o : "" });
     log({ websetup: "created", setup: s.id });
     return json(201, { id: s.id, code: s.code, expiresAt: s.expiresAt }, { "Set-Cookie": setupCookie(s.secret, headers) });
   }
@@ -293,6 +329,8 @@ export async function request({ method = "GET", path = "", query = {}, headers =
     if (!limits.connect(ip)) return json(429, { ok: false, why: "slow_down" });
     if (m[2] === "amazon") {
       const out = amazonLink(c);
+      // The sign-in page checks this browser's setup cookie, which lives on the site the setup was made on.
+      if (out?.ok && out.url) { const base = siteBase(), o = originFor(row); if (base && o !== base && out.url.startsWith(`${base}/`)) out.url = o + out.url.slice(base.length); }
       store.setConnectState(row.id, "amazon", out?.ok ? "pending" : "failed");
       log({ websetup_connect: "amazon", setup: row.id, ok: !!out?.ok });
       return json(200, out?.ok ? { ok: true, url: out.url } : { ok: false, why: out?.why || "unavailable" });

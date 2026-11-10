@@ -30,11 +30,19 @@ db.db.exec(`
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     claimed_by TEXT,
-    claimed_at INTEGER
+    claimed_at INTEGER,
+    origin TEXT NOT NULL DEFAULT '',
+    misses INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS web_setups_code ON web_setups (code);
   CREATE INDEX IF NOT EXISTS web_setups_claimed ON web_setups (claimed_by);
 `);
+// Columns added after the table first shipped to a test DB (harmless when already there).
+for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0"]) {
+  try { db.db.exec(`ALTER TABLE web_setups ADD COLUMN ${col}`); } catch { /* exists */ }
+}
+/** A code whose text came with the wrong names this many times is shut: guessing a code is not enough. */
+export const MAX_MISSES = 5;
 
 const hash = (s) => createHash("sha256").update(String(s)).digest("hex");
 export const conversationOf = (id) => `${PREFIX}${id}`;
@@ -52,12 +60,12 @@ function newCode() {
 }
 
 /** A new setup: its id (in the page's address), its secret (the browser's cookie, stored hashed) and its code. */
-export function create(now = clock.now()) {
+export function create(now = clock.now(), { origin = "" } = {}) {
   const id = randomBytes(12).toString("base64url");
   const secret = randomBytes(24).toString("base64url");
   const code = newCode();
-  db.db.prepare("INSERT INTO web_setups (id, secret_hash, code, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
-    .run(id, hash(secret), code, now, now + TTL_MS);
+  db.db.prepare("INSERT INTO web_setups (id, secret_hash, code, created_at, expires_at, origin) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(id, hash(secret), code, now, now + TTL_MS, String(origin ?? ""));
   return { id, secret, code, expiresAt: now + TTL_MS };
 }
 
@@ -103,7 +111,12 @@ export function setConnectState(id, which, state) {
 /** An open setup by its code, for the claim. */
 export function byCode(code, now = clock.now()) {
   if (!CODE_RE.test(String(code ?? ""))) return null;
-  return db.db.prepare("SELECT * FROM web_setups WHERE code = ? AND claimed_by IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1").get(code, now) ?? null;
+  return db.db.prepare("SELECT * FROM web_setups WHERE code = ? AND claimed_by IS NULL AND expires_at > ? AND misses < ? ORDER BY created_at DESC LIMIT 1").get(code, now, MAX_MISSES) ?? null;
+}
+
+/** A text carried this setup's code but not its names. */
+export function miss(id) {
+  db.db.prepare("UPDATE web_setups SET misses = misses + 1 WHERE id = ?").run(id);
 }
 
 export function markClaimed(id, conversationId, now = clock.now()) {
