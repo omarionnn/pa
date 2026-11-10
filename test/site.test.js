@@ -359,7 +359,7 @@ test("public pages and the web-lookup user-agent carry no personal name, handle 
 });
 
 // The owner's status page can't be framed by another site (security run-3 hardening, 2026-11-10).
-test("/ops and /ops.json refuse to be framed, signed in or not", async () => {
+test("/ops and /ops.json refuse to be framed (signed-out answer; the header is added to every /ops response)", async () => {
   for (const p of ["/ops", "/ops.json"]) {
     const out = await get(p);
     assert.equal(out.headers.get("x-frame-options"), "DENY", p);
