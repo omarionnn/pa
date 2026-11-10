@@ -52,7 +52,7 @@ export function speakingStatus({ apiKey = config.geminiKey, converter = findConv
 /** Can Reason listen to a voice note right now? A converter is only needed for Apple's own format. */
 export function hearingStatus({ apiKey = config.geminiKey, converter = findConverter() } = {}) {
   if (!apiKey) return { ok: false, missing: ["GEMINI_API_KEY"], why: "listening needs a model that takes audio (GEMINI_API_KEY), and there is none" };
-  return { ok: true, missing: [], model: config.videoModel, converter: converter?.kind ?? null };
+  return { ok: true, missing: [], model: config.hearModel, converter: converter?.kind ?? null };
 }
 
 /** A bare 24 kHz 16-bit mono PCM buffer → a WAV file's bytes. Left alone if it already is one. */
@@ -80,6 +80,7 @@ export function asWav(buf, { rate = 24_000 } = {}) {
  */
 async function gemini(opts) {
   const first = await geminiOnce(opts);
+  if (opts.noRetry) return first;
   const again = first.status === 503 || (opts.retryOnTimeout && first.timed_out);
   if (first.ok || !again) return first;
   if (first.status === 503) await new Promise(r => setTimeout(r, opts.retryAfterMs ?? 1_500));
@@ -117,10 +118,12 @@ async function geminiOnce({ model, body, apiKey, fetchImpl, base, timeoutMs }) {
  * short note that has not come back in a quarter of a minute is not going to, and waiting out the
  * whole minute is the person staring at nothing before being asked to type it. So: ten seconds, plus
  * two for every second of audio, never under fifteen and never over the configured ceiling. An
- * unknown length keeps the ceiling.
+ * unknown length gets twenty seconds: it is almost always a short note, and a minute of nothing
+ * before the other model is asked is the wait this exists to stop (2026-11-09).
  */
+export const HEAR_UNKNOWN_LENGTH_MS = 20_000;
 export function hearAttemptMs(seconds, ceilingMs = config.hearTimeoutMs) {
-  if (!(seconds > 0)) return ceilingMs;
+  if (!(seconds > 0)) return Math.min(ceilingMs, HEAR_UNKNOWN_LENGTH_MS);
   return Math.min(ceilingMs, Math.max(15_000, 10_000 + Math.round(seconds * 2_000)));
 }
 
@@ -187,7 +190,7 @@ export async function speak({
  */
 export async function hear({
   url, filename = "", tmpDir = config.audioTmpRoot,
-  apiKey = config.geminiKey, model = config.videoModel, fallbackModel = config.hearFallbackModel,
+  apiKey = config.geminiKey, model = config.hearModel, fallbackModel = config.hearFallbackModel,
   fetchImpl = globalThis.fetch, base = config.geminiBase, timeoutMs = config.hearTimeoutMs,
   converter = findConverter(), convert = runConverter, read = readFileSync, retryAfterMs = 1_500,
   conversationId = "",
@@ -267,19 +270,27 @@ export async function hear({
   };
   let used = model;
   const attemptMs = hearAttemptMs(seconds, timeoutMs);
-  let r = await gemini({ model, apiKey, fetchImpl, base, timeoutMs: attemptMs, retryAfterMs, retryOnTimeout: true, body });
-  // Still busy, or still silent, after a second try: somebody else listens. Only for those two — a
-  // refusal or a bad request would be the same refusal from any model.
-  if (!r.ok && (r.status === 503 || r.timed_out) && fallbackModel && fallbackModel !== model) {
+  const started = clock.now();
+  const hasOther = !!fallbackModel && fallbackModel !== model;
+  // With another model to ask, the first one gets ONE try: busy, over its limit, broken or silent,
+  // the other model is the retry, so nobody waits out the same model twice (2026-11-09: a busy big
+  // model meant a minute of nothing before the small one was asked). Alone, it keeps its one retry.
+  let r = await gemini({ model, apiKey, fetchImpl, base, timeoutMs: attemptMs, retryAfterMs, ...(hasOther ? { noRetry: true } : { retryOnTimeout: true }), body });
+  // Somebody else listens only when the trouble is this model's: busy (503), over its own per-model
+  // limit (429), a server fault (500), or no answer in time. A bad request would be the same
+  // refusal from any model. The fallback is retried once on a 503 and never on a timeout, so the
+  // worst case for a short note is two attempts, not four.
+  if (!r.ok && hasOther && (r.status === 503 || r.status === 429 || r.status === 500 || r.timed_out)) {
     used = fallbackModel;
-    r = await gemini({ model: fallbackModel, apiKey, fetchImpl, base, timeoutMs: attemptMs, retryAfterMs, retryOnTimeout: true, body });
+    r = await gemini({ model: fallbackModel, apiKey, fetchImpl, base, timeoutMs: attemptMs, retryAfterMs, body });
   }
+  const ms = clock.now() - started;
   if (!r.ok) return { ok: false, error: `the audio could not be transcribed: ${r.error}` };
   const said = (r.json?.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? "").join("").replace(/\s+/g, " ").trim();
   if (!said) return { ok: false, error: "the model that listens returned nothing for it" };
-  if (/^\[no speech\]$/i.test(said)) return { ok: true, text: "", silent: true, model: used, ...(seconds === null ? {} : { seconds }) };
+  if (/^\[no speech\]$/i.test(said)) return { ok: true, text: "", silent: true, model: used, ms, ...(seconds === null ? {} : { seconds }) };
   return {
-    ok: true, text: said, model: used,
+    ok: true, text: said, model: used, ms,
     ...(seconds === null ? {} : { seconds }),
     // Counted rather than judged: the marker is one this asked the transcriber for, so finding it
     // is reading a literal string and not a reading of what anybody meant.
@@ -383,7 +394,7 @@ export async function hearInto(text, attachments = [], { log = () => {}, listen 
         detail: r.unclear ? `${r.unclear} stretch(es) could not be made out` : "",
       }
       : { coverage: "failed", detail: r.error });
-    log(r.ok ? { heard: a.filename, chars: r.text.length, ...(r.seconds ? { seconds: r.seconds } : {}), ...(r.unclear ? { unclear: r.unclear } : {}) } : { could_not_hear: a.filename, why: r.error });
+    log(r.ok ? { heard: a.filename, chars: r.text.length, model: r.model, ms: r.ms, ...(r.seconds ? { seconds: r.seconds } : {}), ...(r.unclear ? { unclear: r.unclear } : {}) } : { could_not_hear: a.filename, why: r.error });
   }
   return out;
 }

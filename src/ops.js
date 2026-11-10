@@ -25,7 +25,7 @@
 // The page carries their names and numbers, so a stranger who finds /ops gets the same gate as a
 // stranger with a page link, and no button that reaches the owner's phone unless the link they
 // hold carries the key only Reason hands out.
-import { statfsSync, readFileSync } from "node:fs";
+import { statfsSync, statSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
@@ -33,7 +33,8 @@ import { spendCheck, fallbackCheck, callCapCheck, limitCheck, startAlerts as sta
 import * as accounts from "./accounts.js";
 import { opsLabel as planLabel } from "./plan.js";
 import * as agentcard from "./agentcard.js";
-import { config, clock, callbackUrl } from "./config.js";
+import { config, clock, callbackUrl, isOwnLine } from "./config.js";
+import { aboutThem } from "./outbox.js";
 import { flightProviders, LEDGER as FLIGHT_LEDGER, monthOf } from "./flightproviders.js";
 import * as subusage from "./subusage.js";
 import * as incidents from "./incidents.js";
@@ -92,7 +93,10 @@ export const PROVIDERS = [
     id: "openai", name: "OpenAI", dashboard: "https://platform.openai.com/usage",
     hosts: () => [host(config.openaiBase)],
     configured: () => !!config.openaiKey,
-    probe: () => get(`${config.openaiBase}/v1/models`, { authorization: `Bearer ${config.openaiKey}` }),
+    // A paid call (one embedding, a fraction of a cent a day), not /v1/models: listing models still
+    // answers 200 with the balance at zero, so an out-of-credit key looked "working" while every
+    // call, voice and recall failed.
+    probe: () => post(`${config.openaiBase}/v1/embeddings`, { authorization: `Bearer ${config.openaiKey}`, "content-type": "application/json" }, { model: "text-embedding-3-small", input: "ok" }),
   },
   {
     // The phone line every call runs on (GPT-Live over Twilio, src/calls/gptlive.js): the account itself.
@@ -194,7 +198,12 @@ async function get(url, headers = {}) {
 async function post(url, headers, body) {
   try {
     const res = await rawFetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-    return { ok: res.ok, status: res.status };
+    if (res.ok) return { ok: true, status: res.status };
+    // The error code says what a bare status cannot: OpenAI answers an empty balance with a 429
+    // (`insufficient_quota`), the same status as a real rate limit.
+    let code = "";
+    try { code = String((await res.json())?.error?.code ?? ""); } catch { /* no JSON body */ }
+    return { ok: false, status: res.status, ...(code ? { code } : {}) };
   } catch (e) {
     return { ok: false, status: 0, error: short(e) };
   }
@@ -237,10 +246,12 @@ const SCREEN_RATE_LIMITED_BAD = 3;
 const SCREEN_UNREAD_WARN = 3;
 
 const check = (id, group, label, state, detail, link = null) => ({ id, group, label, state, detail, ...(link ? { link } : {}) });
-const hardFail = (s) => [401, 402, 403].includes(Number(s));
+/** Red: the key is refused or the account is out of money — the owner's to fix, never a blip. */
+const hardFail = (s, code = "") => [401, 402, 403].includes(Number(s)) || code === "insufficient_quota";
 
-function failWords({ status, error }) {
+function failWords({ status, error, code }) {
   const s = Number(status);
+  if (code === "insufficient_quota") return `out of credit (HTTP ${s} insufficient_quota)`;
   if (s === 401 || s === 403) return `key rejected (HTTP ${s})`;
   if (s === 402) return "out of credit (HTTP 402)";
   if (s === 429) return "rate limited (HTTP 429)";
@@ -271,7 +282,7 @@ export async function runChecks({ runtime = null, router = null, now = clock.now
   const money = emit(moneyChecks({ now, day }));
   const quality = emit(qualityChecks({ now, day }));
   const [services, memory, subs] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit }), subscriptionChecks({ now, day, usageFetch, emit })]);
-  const raised = emit([...incidentChecks(now), watchdogCheck(now)].filter(Boolean));
+  const raised = emit([...incidentChecks(now), watchdogCheck(now), backupCheck(now)].filter(Boolean));
   const checks = [...raised, ...alive, ...people, ...subs, ...services, ...memory, ...money, ...quality];
   // Hourly counts behind the trend lines; a database too old for a column is a page without lines,
   // never a pass that fails.
@@ -325,18 +336,23 @@ function aliveChecks({ runtime, router, now }) {
   const wo = windowFor("outbox", now, DAY);
   const ob = db.db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN state = 'sent' AND sent_at >= ? THEN 1 ELSE 0 END), 0) AS sent,
-      COALESCE(SUM(CASE WHEN state = 'failed' AND failed_at >= ? THEN 1 ELSE 0 END), 0) AS failed,
-      COALESCE(SUM(CASE WHEN state = 'failed' AND failed_at >= ? AND (last_error_key IS NULL OR (last_error_key NOT IN ('OPTED_OUT','unverified_contact_inferred') AND last_error_key NOT LIKE 'PRE_REPLY_%')) THEN 1 ELSE 0 END), 0) AS ours,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') AND attempts > 0 THEN 1 ELSE 0 END), 0) AS retrying,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') THEN 1 ELSE 0 END), 0) AS waiting
-    FROM outbox`).get(now - DAY, wo.since, wo.since);
-  const lastFail = db.db.prepare("SELECT last_error FROM outbox WHERE state = 'failed' AND failed_at >= ? ORDER BY failed_at DESC LIMIT 1").get(wo.since);
+    FROM outbox`).get(now - DAY);
+  // A text to one of Reason's own lines (a test talking to itself) is not counted at all; one the
+  // person's own settings refused (opted out, never texted the line) is amber; the rest are Reason's.
+  const fails = db.db.prepare("SELECT address, last_error_key AS k, last_error FROM outbox WHERE state = 'failed' AND failed_at >= ? ORDER BY failed_at DESC").all(wo.since);
+  const toSelf = fails.filter(f => isOwnLine(f.address)).length;
+  const counted = fails.filter(f => !isOwnLine(f.address));
+  const ours = counted.filter(f => !aboutThem(f.k)).length;
+  const lastFail = counted[0] ?? null;
+  const selfNote = toSelf ? ` · ${n(toSelf, "text")} to Reason's own line not counted` : "";
   // Red only for a failure that is Reason's: a person who opted out or never texted the line is on
   // the page as amber — never a live text to the owner about somebody else (review 11-06).
-  out.push(check("outbox", "alive", "Texts out", ob.ours ? "bad" : ob.failed || ob.retrying ? "warn" : "ok",
-    ob.failed ? `${n(ob.failed, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(digest.scrub(lastFail.last_error), 90)}` : ""}`
-      : ob.retrying ? `${n(ob.retrying, "text")} retrying`
-        : `${ob.sent} sent in the last day${ob.waiting ? ` · ${ob.waiting} waiting` : ""}`));
+  out.push(check("outbox", "alive", "Texts out", ours ? "bad" : counted.length || ob.retrying ? "warn" : "ok",
+    counted.length ? `${n(counted.length, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(digest.scrub(lastFail.last_error), 90)}` : ""}${selfNote}`
+      : ob.retrying ? `${n(ob.retrying, "text")} retrying${selfNote}`
+        : `${ob.sent} sent in the last day${ob.waiting ? ` · ${ob.waiting} waiting` : ""}${selfNote}`));
 
   const held = db.pendingInboundSummary(now);
   const overdue = held.filter(h => h.due && now - h.ready_at > 2 * 60 * 1000);
@@ -391,6 +407,50 @@ export function watchdogCheck(now = clock.now(), file = join(config.dataDir, "wa
   const lastAlert = w.last_alert ? ` · last alert ${ago(now - w.last_alert.at)} ago: ${trim(w.last_alert.what, 80)}` : "";
   // Quiet: whatever it found, it texted itself; this row is the page's view of it.
   return { ...check("watchdog", "alive", "Watchdog", "ok", `every minute · last ran ${ago(age)} ago${said}${lastAlert}`), quiet: true };
+}
+
+/**
+ * The two backups (memory: reason-rolling-backup), both made by systemd timers outside this
+ * process, and until 2026-11-09 not on this page at all:
+ *   - the one rolling copy on the server, data/reason.db.bak-rolling, every 4am/4pm New York;
+ *   - the encrypted off-site copy, written by /usr/local/bin/reason-offsite-backup at 4:30am New
+ *     York, which leaves its result in data/offsite-backup.json ({ok, at, snapshot, step, message}).
+ * A failed off-site run texts the owner itself, so that row is `quiet`; a copy that has simply
+ * stopped being made tells nobody, so a late one is amber and goes the normal way.
+ * Neither present is a host without backups set up (a laptop, the suite): `off`.
+ */
+export const ROLLING_LATE_MS = 13 * 60 * 60_000;
+export const OFFSITE_LATE_MS = 27 * 60 * 60_000;
+export function backupCheck(now = clock.now(), dir = config.dataDir) {
+  let rollingAt = null;
+  try { rollingAt = statSync(join(dir, "reason.db.bak-rolling")).mtimeMs; } catch { /* none */ }
+  let off = null;
+  try { off = JSON.parse(readFileSync(join(dir, "offsite-backup.json"), "utf8")); } catch { /* none */ }
+  if (rollingAt == null && !off) return check("backup", "alive", "Backups", "off", "no backup set up on this host");
+  const parts = [];
+  let state = "ok";
+  let quiet = false;
+  const worse = (s) => { if (s === "bad" || (s === "warn" && state === "ok")) state = s; };
+  if (rollingAt == null) { parts.push("no copy on the server"); worse("warn"); }
+  else {
+    const late = now - rollingAt > ROLLING_LATE_MS;
+    parts.push(`server copy ${ago(now - rollingAt)} ago${late ? " — late (systemctl status reason-backup.timer)" : ""}`);
+    if (late) worse("warn");
+  }
+  if (!off) { parts.push("no off-site copy"); worse("warn"); }
+  else {
+    const at = Date.parse(off.at ?? "") || 0;
+    if (off.ok === false) {
+      parts.push(`off-site FAILED ${at ? `${ago(now - at)} ago` : ""} at ${trim(off.step ?? "?", 30)}: ${trim(digest.scrub(String(off.message ?? "")), 90)}`);
+      worse("bad"); quiet = true;
+    } else {
+      const late = !at || now - at > OFFSITE_LATE_MS;
+      parts.push(`off-site ${at ? `${ago(now - at)} ago` : "time unknown"}${off.snapshot ? ` · snapshot ${trim(off.snapshot, 12)}` : ""}${late ? " — late (systemctl status reason-offsite-backup.timer)" : ""}`);
+      if (late) worse("warn");
+    }
+  }
+  const row = check("backup", "alive", "Backups", state, parts.join(" · "));
+  return quiet ? { ...row, quiet: true } : row;
 }
 
 // ---------- the event loop, for /alive ----------
@@ -456,6 +516,8 @@ function peopleRows({ now, day }) {
     // else (accounts.accountState), so it is here too.
     state: a.state ?? "active",
     operator: !!a.is_operator,
+    // One of Reason's own phone lines that once texted another (a test): listed, never counted as a person.
+    own_line: isOwnLine(a.address),
     last_seen_at: a.last_seen_at ?? null,
     turns_today: turns[a.conversation_id] ?? 0,
     // Where they stand on Reason's own plan (src/plan.js): "trial 3/25", "free", "paid", "lapsed",
@@ -468,7 +530,7 @@ function peopleRows({ now, day }) {
 }
 
 function peopleChecks({ now, day }) {
-  const people = peopleRows({ now, day }).filter(p => p.state === "active");
+  const people = peopleRows({ now, day }).filter(p => p.state === "active" && !p.own_line);
   const seen24 = people.filter(p => p.last_seen_at && now - p.last_seen_at < DAY).length;
   const seen7 = people.filter(p => p.last_seen_at && now - p.last_seen_at < 7 * DAY).length;
   const turns = people.reduce((s, p) => s + p.turns_today, 0);
@@ -501,9 +563,25 @@ async function serviceChecks({ now, day, probe, emit = (r) => r }) {
     // from pretending a provider was asked.
     const probed = p.probe ? await probe(p) : null;
     let state, detail;
+    let quiet = false;
     if (probed) {
-      state = probed.ok ? "ok" : hardFail(probed.status) ? "bad" : "warn";
+      state = probed.ok ? "ok" : hardFail(probed.status, probed.code) ? "bad" : "warn";
       detail = probed.ok ? `working · ${tail}` : `${failWords(probed)} · ${tail}`;
+      // The probe proves the key, not the calls Reason really makes (2026-11-09: Gemini's model list
+      // answered 200 every pass while every real Gemini call for four days came back 404, and the
+      // row stayed green). A real call that failed in the last day, with no good one since, is amber
+      // — shown, not texted: the key works, so it is a broken feature to look at, not an outage.
+      // Only a refusal that will happen again (a 4xx, not a timeout, a 5xx or a rate limit): a blip
+      // on a real call followed by a good probe is still a blip, and stays green.
+      const last = probed.ok ? db.providerState(p.id) : null;
+      const st = Number(last?.last_status);
+      const lasting = st >= 400 && st < 500 && st !== 408 && st !== 429;
+      if (lasting && last.last_fail_at && now - last.last_fail_at < DAY && (!last.last_ok_at || last.last_fail_at > last.last_ok_at)) {
+        state = "warn"; quiet = true;
+        detail = `key works, but the last real call failed ${ago(now - last.last_fail_at)} ago: ${failWords({ status: last.last_status, error: last.last_error })} · ${tail}`;
+      } else if (calls.failures && last?.last_fail_at) {
+        detail += ` · last failure ${ago(now - last.last_fail_at)} ago`;
+      }
     } else {
       const last = db.providerState(p.id);
       if (!last || (!last.last_ok_at && !last.last_fail_at)) { state = "ok"; detail = "ready · no calls yet"; }
@@ -512,7 +590,8 @@ async function serviceChecks({ now, day, probe, emit = (r) => r }) {
         detail = `last call failed ${ago(now - last.last_fail_at)} ago: ${failWords({ status: last.last_status, error: last.last_error })} · ${tail}`;
       } else { state = "ok"; detail = `working · last call ${ago(now - last.last_ok_at)} ago · ${tail}`; }
     }
-    return emit([check(id, "services", label, state, detail, p.dashboard)])[0];
+    const row = check(id, "services", label, state, detail, p.dashboard);
+    return emit([quiet ? { ...row, quiet: true } : row])[0];
   }));
   const turns = db.db.prepare("SELECT COALESCE(SUM(turns), 0) AS n FROM usage WHERE day = ?").get(day).n;
   out.push(...emit([check("brain", "services", "Brain", "ok",
@@ -571,7 +650,7 @@ async function memoryChecks({ now, probe, emit = (r) => r }) {
   } else {
     const r = await probe(EMBED_PROBE);
     const ok = !!r?.ok;
-    out.push(check("embeddings", "memory", "Recall (vectors)", ok ? "ok" : hardFail(r?.status) ? "bad" : "warn",
+    out.push(check("embeddings", "memory", "Recall (vectors)", ok ? "ok" : hardFail(r?.status, r?.code) ? "bad" : "warn",
       ok ? `a real embedding round-trip worked · ${n(facts, "fact")} embedded` : `embedding call failed: ${failWords(r ?? {})} · ${n(facts, "fact")} embedded`, openai.dashboard));
   }
   const q = db.db.prepare(`SELECT

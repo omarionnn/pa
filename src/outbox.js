@@ -30,7 +30,7 @@
 // What is deliberately NOT in here: deciding whether Reason was ALLOWED to send something. That is
 // the `message_send` tool and its confirm gate, upstream of every line of this file.
 import * as db from "./db.js";
-import { config, clock } from "./config.js";
+import { config, clock, isOwnLine } from "./config.js";
 import { freshRideLinks } from "./ridelinks.js";
 import * as incidents from "./incidents.js";
 import { withoutNoReply } from "./plain.js";
@@ -259,7 +259,7 @@ function settle({ row, result, log }) {
  * most of a week's failures (10 opt-outs and one unverified contact, 2026-10-18..25).
  */
 const ABOUT_THEM = new Set(["OPTED_OUT", "unverified_contact_inferred"]);
-const aboutThem = (key) => ABOUT_THEM.has(key) || String(key ?? "").startsWith("PRE_REPLY_");
+export const aboutThem = (key) => ABOUT_THEM.has(key) || String(key ?? "").startsWith("PRE_REPLY_");
 
 /**
  * A text that is never going, as an alert at the moment the outbox gives up on it (src/incidents.js).
@@ -273,6 +273,8 @@ function raiseSendFailure(row, { why, key = null, code = null, tried = "" }) {
     if (!row || row.channel === "console") return;
     if (String(row.idem_key ?? "").startsWith(incidents.KEY_PREFIX)) return;
     if (aboutThem(key)) return;
+    // Reason's own phone line on the other end is a test talking to itself, not texts failing.
+    if (isOwnLine(row.address)) return;
     incidents.raise({
       key: `send:${row.channel}:${key || code || "other"}`, area: "messaging", covers: "outbox",
       what: `texts over ${row.channel} are failing`, addr: row.address ?? "",

@@ -1,14 +1,14 @@
 # Generated images on pages
 
 A page that needs an illustration made for *this* answer — a gift-guide header, a plan cover, a
-visual comparison — gets one from an image model (Imagen first, OpenAI's gpt-image-2 as the fallback
-that live actually lands on) rather than a stock photo. The picture is written to this machine,
+visual comparison — gets one from OpenAI's gpt-image-2 — the one picture model since 2026-11-09 (owner; Google retired
+Imagen) — rather than a stock photo. The picture is written to this machine,
 served from `/img/<file>`, and used in an `image` block. **Since #100 (2026-10-24) a picture they
 asked for is sent straight into the thread as an attachment** (`image_generate` `send`, default
 true; `sendGeneratedImages` in `src/tools.js`); only `send: false` — a picture for a page — hands
 back the `/img/` URL.
 
-Source: `src/imagen.js` (`imagenStatus`, `imagenProvider`, `openaiImageProvider`, `imageModelFor`),
+Source: `src/imagen.js` (`imagenStatus`, `openaiImageProvider`, `imageModelFor`),
 the `image_generate` tool in `src/tools.js`, `src/http.js` (`imageRequest`), `src/pages/content.js`
 (what an `image` block will accept), `src/pages/pictures.js` (`preparePictures`: pictures put on a
 page by code, real ones copied into Reason's store with their source, a generated one labelled and
@@ -20,15 +20,15 @@ HEIC→JPEG and `checkUrl` — not this feature.)
 ## Sub-features
 
 - **Status, honestly.** No image model on the machine → Reason says so plainly instead of
-  promising a picture. `GEMINI_API_KEY` (Imagen, primary) or `OPENAI_API_KEY` (gpt-image-2,
-  fallback) is what turns it on. `imagenStatus()` checks both: Gemini first, then OpenAI. Neither →
-  `{ connected: false, provider: "imagen", missing: ["GEMINI_API_KEY", "OPENAI_API_KEY"], why }`
-  — there is no `status` string; `image_generate` hands back the same object with `ok: false`.
-  **Connected is not working:** on 2026-10-23 the default model `imagen-3.0-generate-002`
-  (`src/config.js`, `REASON_IMAGEN_MODEL`) answered Google's `404 … not found for API version
-  v1beta`. The cage (this Mac's `.env` has `GEMINI_API_KEY` and no `OPENAI_API_KEY`) therefore
-  cannot generate a picture at all; Hetzner has both keys, so it lands on the OpenAI fallback after
-  a failed Imagen call. `imagenStatus()` still says `connected: true` either way.
+  promising a picture. `OPENAI_API_KEY` (gpt-image-2) is the only thing that turns it on; a Gemini
+  key alone makes no pictures. Missing → `{ connected: false, provider: "openai", missing:
+  ["OPENAI_API_KEY"], why }` — there is no `status` string; `image_generate` hands back the same
+  object with `ok: false`. **History:** Imagen (`imagen-3.0-generate-002`) went first until
+  2026-11-09 and 404'd from at least 2026-10-23, so every picture paid a wasted Google call and the
+  status page's Gemini row went amber; PR "pictures: OpenAI only" removed it from `image_generate`
+  and `generateIllustration` (one OpenAI call, no fallback). Driven 2026-11-10 in-process with a
+  Gemini key set and no OpenAI key: `connected:false, missing:["OPENAI_API_KEY"]`, capability
+  `not connected`; fake provider → `/img/` 200 `image/png`, no outside host asked.
 - **Send, or keep for a page.** `send` defaults to true: the tool sends the picture as an image
   attachment and returns `sent:true` with **no URL**. With no texting thread (the cage, a bare
   `runTool`) it answers `ok:false, status:"not_connected"`, "there is no texting thread here to send
@@ -71,7 +71,7 @@ cd ~/Desktop/pa
 node --test test/imagen.test.js test/page-pictures.test.js
 ```
 
-**The free way to drive the whole round trip.** `runTool` reads `ctx.imagenProvider ?? imagenProvider()`
+**The free way to drive the whole round trip.** `runTool` reads `ctx.imagenProvider ?? imageModelFor()`
 (`case "image_generate"` in `src/tools.js` — re-grep), so handing it a provider that writes real bytes exercises the real tool, the
 real URL-minting, the real `seen_urls` bookkeeping, the real route and the real page refusal — with
 no key and no paid call. That is a seam production ships, not a stubbed `runTool`:
@@ -101,19 +101,17 @@ status:"not_connected"`; `/img/<file>` 200 `image/png`, 70 bytes = the file on d
 that block opens with the `<img>`; `https://example.com/x.png` refused ("has not come back from any
 tool in this conversation").
 
-**Export `GEMINI_API_KEY= OPENAI_API_KEY=` before using the fake.** If the fake ever answers
-`ok: false` and `config.openaiKey` is set, `image_generate` retries on `openaiImageProvider()` — a
-real, paid OpenAI generation, from a drive that was meant to be free. Blank keys also stop the
+**Export `OPENAI_API_KEY=` before using the fake.** There is no fallback any more, but a blank key stops the
 `generateIllustration` that every `page_create` / `page_update` fires, and pass
 `pictures: { search: null }` in `ctx` to keep `page_create` off the paid Parallel image search.
 
-`$REASON_IMAGEN_OUTPUT` has to exist before a fake provider writes into it. The real Imagen
-providers `mkdirSync` it themselves (`imagenProvider` and `openaiImageProvider` in `src/imagen.js`) so a real generation is fine, but
+`$REASON_IMAGEN_OUTPUT` has to exist before a fake provider writes into it. The real provider
+`mkdirSync` it themselves (`openaiImageProvider` in `src/imagen.js`) so a real generation is fine, but
 this recipe bypasses them — it died with `ENOENT` on a clean cage until `caged.sh start` was fixed
 to create the directory. It does now; if you drive outside the cage, `mkdir -p` it yourself.
 
-For the real round trip against Google, `GEMINI_API_KEY` has to be set (it comes from `.env`) and
-the call costs money and ~10 seconds:
+For the real round trip against OpenAI, `OPENAI_API_KEY` has to be set (it comes from `.env`) and
+the call costs money and ~10–30 seconds:
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason
@@ -154,8 +152,8 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
 - **The `<img src>` on a caged page carries that live host too**, because the absolute URL is stored
   in the page's blocks. So the `<img>` being present in the HTML proves the block was accepted, and
   nothing about the bytes. Fetch `127.0.0.1:<caged port>/img/<file>` separately for those.
-- **`imagenStatus()` reads `config.geminiKey` and `config.openaiKey`, so a bare `node -e` without
-  `--env-file-if-exists=.env` reports `connected: false` (with `missing: ["GEMINI_API_KEY", "OPENAI_API_KEY"]`) and you will think the feature is broken.**
+- **`imagenStatus()` reads `config.openaiKey`, so a bare `node -e` without
+  `--env-file-if-exists=.env` reports `connected: false` (with `missing: ["OPENAI_API_KEY"]`) and you will think the feature is broken.**
 - `REASON_IMAGEN_OUTPUT` is the only thing keeping generated files out of the live
   `data/` tree. `caged.sh` sets it; if you drive `image_generate` by hand without the
   `caged.sh env` exports, you are writing into the owner's real image directory.

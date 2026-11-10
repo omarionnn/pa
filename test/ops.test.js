@@ -134,6 +134,36 @@ test("a probe that is refused is red for a bad key and yellow for a rate limit",
   assert.equal(report.checks.find(c => c.id === "provider:openai").state, "warn");
 });
 
+test("an OpenAI account out of credit is red and urgent, not a yellow rate limit (its 429 says insufficient_quota)", async () => {
+  const { checkIsUrgent } = await import("../src/opsdigest.js");
+  const broke = { ok: false, status: 429, code: "insufficient_quota" };
+  const report = await ops.runChecks({ runtime, probe: async (p) => p.id === "openai" || p.id === "embeddings" ? broke : { ok: true, status: 200 } });
+  const openai = report.checks.find(c => c.id === "provider:openai");
+  assert.equal(openai.state, "bad");
+  assert.match(openai.detail, /out of credit \(HTTP 429 insufficient_quota\)/);
+  assert.equal(checkIsUrgent(openai), true, "a dead OpenAI account texts the owner live, not in tomorrow's digest");
+  assert.equal(report.checks.find(c => c.id === "embeddings").state, "bad");
+});
+
+test("the OpenAI probe is a paid embedding call that reads the error code — listing models answers 200 at a zero balance", async () => {
+  const seen = [];
+  const before = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    seen.push({ url: String(input), method: init?.method ?? "GET" });
+    return new Response(JSON.stringify({ error: { code: "insufficient_quota", message: "You exceeded your current quota" } }), { status: 429 });
+  };
+  let r;
+  try {
+    ops.watchFetch({ record: () => {}, day: () => "2026-11-09" });
+    r = await ops.PROVIDERS.find(p => p.id === "openai").probe();
+  } finally {
+    ops.unwatchFetch();
+    globalThis.fetch = before;
+  }
+  assert.deepEqual(seen, [{ url: `${config.openaiBase}/v1/embeddings`, method: "POST" }]);
+  assert.deepEqual(r, { ok: false, status: 429, code: "insufficient_quota" });
+});
+
 test("recall is only green when a real embedding round-trip worked", async () => {
   let report = await ops.runChecks({ runtime, probe: async (p) => p.id === "embeddings" ? { ok: false, status: 0, error: "fetch failed" } : { ok: true, status: 200 } });
   const recall = report.checks.find(c => c.id === "embeddings");

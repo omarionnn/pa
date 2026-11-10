@@ -8,6 +8,7 @@
 // It starts cleanly with no credentials at all. A channel with no key reports not_connected, the
 // capabilities tool says texting is not available, and Reason tells people so instead of
 // pretending. That is the point: an install with nothing configured should still run.
+import "./logmask-install.js"; // first: phone numbers out of every printed line (src/logmask.js)
 import { Runtime } from "./runtime.js";
 import { requireKey as requireTokenKey } from "./secretbox.js";
 import { Router } from "./channels/router.js";
