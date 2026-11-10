@@ -1,16 +1,23 @@
 // The web setup (heyreason.com/start → Messages), behind REASON_WEB_SETUP (default off).
 //
 // Tapping "Text Reason" on the site opens four short screens before Messages: their name, the name
-// they want for Reason, an optional Amazon and email connect, then Messages with the first text typed
-// for them: `hey jarvis, it's kofi · r7k2`. The visitor has no phone number and no conversation yet,
-// so everything they choose is kept on a setup (src/websetupstore.js) under a stand-in conversation,
-// and their first text claims it by its code:
+// they want for Reason, an optional Amazon, email and card connect, then Messages with the first text
+// typed for them: `hey jarvis, it's kofi · r7k2`. The visitor has no phone number and no conversation
+// yet, so everything they choose is kept on a setup (src/websetupstore.js) under a stand-in
+// conversation, and their first text claims it by its code:
 //
 //   - their name goes on the account, the name they gave Reason on the contact card;
-//   - what they connected (a Google grant, an Amazon sign-in in Reason's browser, an Uber grant, a
-//     card saved in Crossmint's own form) moves to them;
+//   - what they connected moves to them: a Google grant; a card saved in Crossmint's own form; an
+//     Amazon sign-in made through the store sign-in Reason's checkouts use (owner, 11-10:
+//     shopconnect.setupStoreLink, Crossmint's sealed password field on Reason's /web/connect page —
+//     never Reason's own browser, so no thread, no texted code and no code gate), which rides the
+//     same Crossmint user and browser profile as the card (shop.adoptSetup, claim ≤ PAY_CLAIM_MS);
 //   - the text intro's questions are skipped: never ask on the phone what was answered on the page
-//     (src/onboarding.js webHandoff), and the Amazon offer is not made to them (the AMAZON HOOK).
+//     (src/onboarding.js webHandoff). The thread still makes its Amazon offer after the card UNLESS
+//     Amazon was connected on the page (per connection: skipped or failed there → offered; the
+//     AMAZON HOOK reads shop.isConnected).
+//   - Uber is OFF the page (owner, 11-10): `/api/capabilities` says uber:false and the uber connect
+//     endpoint refuses (404, nothing made); the claim still moves a grant an older stand-in holds.
 //
 // Without a code (or with one that does not match) the normal text intro runs unchanged. Event and
 // invite joiners never claim (their first text is the event's or invite's, router #claimEvent /
@@ -32,7 +39,6 @@ import { cardName, nameCase, vcard, liveLineNumber, DEFAULT_CARD_NAME } from "./
 import { nameLine } from "./onboarding.js";
 import * as amazon from "./amazonconnect.js";
 import * as google from "./google.js";
-import * as uber from "./uber.js";
 import * as shop from "./shopconnect.js";
 import { profilePath } from "./browser.js";
 import { cookieDomain } from "./pages/siteproxy.js";
@@ -113,11 +119,12 @@ export function claimFromText({ conversationId, text, log = () => {} }) {
   db.setContactCardName(conversationId, cardName(row.reason_name || DEFAULT_CARD_NAME));
   const fresh = clock.now() - row.created_at <= CONNECT_CLAIM_MS;
   if (fresh && clock.now() - row.created_at > PAY_CLAIM_MS) dropRidesAndCard(from);
-  const moved = fresh ? moveConnections(from, conversationId) : (dropConnections(from), { email: false, amazon: false, uber: false, card: false });
-  // Amazon signed in on the page: the follow-up the text intro would have run after its link (read
-  // their orders, bring back one or two real things), a little after the hello.
+  const moved = fresh ? moveConnections(from, conversationId) : (dropConnections(from), { email: false, amazon: false, uber: false, card: false, amazonStore: false });
+  // An older setup's Amazon sign-in in Reason's own browser: the follow-up the text intro would have run
+  // after its link (read their orders), a little after the hello. The store sign-in (Crossmint) is for
+  // buying only: nothing to read, no follow-up.
   if (moved.amazon) db.createTimer(conversationId, { fireAt: clock.now() + 90_000, note: amazon.followUpNote() });
-  log({ websetup_claim: "claimed", setup: row.id, amazon: moved.amazon, email: moved.email, uber: moved.uber, card: moved.card, ...(fresh ? {} : { connections: "dropped_late" }) });
+  log({ websetup_claim: "claimed", setup: row.id, amazon: moved.amazon, amazon_store: moved.amazonStore, email: moved.email, uber: moved.uber, card: moved.card, ...(fresh ? {} : { connections: "dropped_late" }) });
   return { setupId: row.id, user: row.user_name, reasonName: row.reason_name || DEFAULT_CARD_NAME, text: withoutCode(text), ...moved };
 }
 
@@ -148,15 +155,17 @@ export function moveConnections(from, to) {
     if (!db.db.prepare("SELECT 1 FROM shop_shipping WHERE conversation_id = ?").get(to)) db.db.prepare("UPDATE shop_shipping SET conversation_id = ? WHERE conversation_id = ?").run(to, from);
     else db.db.prepare("DELETE FROM shop_shipping WHERE conversation_id = ?").run(from);
   });
-  const card = shop.adoptSetupCard(from, to);
-  // The Amazon sign-in lives in the browser profile it was made in. A brand-new account has none, so
-  // the setup's becomes theirs; one that somehow does keeps its own, and the Amazon check goes with it.
+  // The card and the Amazon store sign-in (shop.setupStoreLink) share the setup's Crossmint user and
+  // browser profile: both move together, or neither (an account with Crossmint state keeps its own).
+  const { card, stores } = shop.adoptSetup(from, to);
+  // An older setup's Amazon sign-in in Reason's own browser lives in the profile it was made in. A
+  // brand-new account has none, so the setup's becomes theirs; one that somehow does keeps its own.
   const src = profilePath(from), dst = profilePath(to);
   if (existsSync(src)) {
     if (!existsSync(dst)) { try { renameSync(src, dst); } catch { amazonOk = false; } }
     else { rmSync(src, { recursive: true, force: true }); if (amazonOk) { db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ? AND name = 'amazon'").run(to); amazonOk = false; } }
   }
-  return { email, amazon: amazonOk, uber: uberOk, card };
+  return { email, amazon: amazonOk, uber: uberOk, card, amazonStore: stores.includes("amazon") };
 }
 
 /** Did this conversation do the setup on the web? Then the text intro asks none of it again. */
@@ -194,20 +203,38 @@ export function sweep(now = clock.now()) {
 
 const STEPS = 3;
 
+/**
+ * How long a connect that was started but never finished still reads "connecting". A person who
+ * tapped Connect, then came back or refreshed, would otherwise see a card stuck on "connecting"
+ * with no way out: past this, with no live sign-in going on, the card says failed (try again), and a
+ * new tap always starts fresh (the providers clear their old state for the stand-in, and the Amazon
+ * link replaces an open session).
+ */
+export const STALE_CONNECT_MS = 2 * 60_000;
+
+/** An OAuth handshake still open for the stand-in, and fresh enough to be the one they are in the middle of. */
+function openOauth(c, provider, now) {
+  const st = db.db.prepare("SELECT created_at FROM oauth_states WHERE conversation_id = ? AND provider = ? AND used_at IS NULL ORDER BY created_at DESC LIMIT 1").get(c, provider);
+  return !!st && now - Number(st.created_at ?? 0) <= STALE_CONNECT_MS;
+}
+
 /** One card's state for the page: none | connecting | connected | failed, and which of three steps. */
-export function connectState(row, which, { remoteSession = null } = {}) {
+export function connectState(row, which, { now = clock.now() } = {}) {
   const c = store.conversationOf(row.id);
   if (which === "amazon") {
-    if (amazon.connected(c)) return { state: "connected", step: STEPS, of: STEPS };
-    const live = remoteSession ? remoteSession(c) : null;
-    if (live) return { state: "connecting", step: live.started ? 2 : 1, of: STEPS };
-    if (row.amazon_state === "failed") return { state: "failed", step: 1, of: STEPS };
-    return { state: row.amazon_state === "pending" ? "failed" : "none", step: 1, of: STEPS };
+    // The store sign-in (shop.setupStoreLink): connected once the store let them in; connecting while
+    // the sign-in run is alive and Crossmint keeps answering about it (step 2 once the login was asked
+    // for); a tap whose run died, or that nothing answers for two minutes, is failed (try again).
+    if (shop.isConnected(c, "amazon")) return { state: "connected", step: STEPS, of: STEPS };
+    const live = shop.setupStorePending(c, "amazon");
+    if (live && now - Number(live.since ?? now) <= STALE_CONNECT_MS) return { state: "connecting", step: live.asked || live.answered ? 2 : 1, of: STEPS };
+    if (row.amazon_state === "failed" || row.amazon_state === "pending") return { state: "failed", step: 1, of: STEPS };
+    return { state: "none", step: 1, of: STEPS };
   }
   if (which === "uber") {
     if (db.db.prepare("SELECT 1 FROM oauth_tokens WHERE conversation_id = ? AND provider = 'uber'").get(c)) return { state: "connected", step: STEPS, of: STEPS };
     if (row.uber_state === "failed" || row.uber_state === "not_ready") return { state: "failed", step: 1, of: STEPS, ...(row.uber_state === "not_ready" ? { why: "not_ready" } : {}) };
-    if (row.uber_state === "pending" && db.db.prepare("SELECT 1 FROM oauth_states WHERE conversation_id = ? AND provider = 'uber'").get(c)) return { state: "connecting", step: 2, of: STEPS };
+    if (row.uber_state === "pending") return openOauth(c, "uber", now) ? { state: "connecting", step: 2, of: STEPS } : { state: "failed", step: 1, of: STEPS };
     return { state: "none", step: 1, of: STEPS };
   }
   if (which === "card") {
@@ -220,7 +247,7 @@ export function connectState(row, which, { remoteSession = null } = {}) {
   }
   if (db.db.prepare("SELECT 1 FROM oauth_tokens WHERE conversation_id = ? AND provider = 'google'").get(c)) return { state: "connected", step: STEPS, of: STEPS, provider: "gmail" };
   if (row.email_state === "failed") return { state: "failed", step: 1, of: STEPS, provider: "gmail" };
-  if (row.email_state === "pending" && db.db.prepare("SELECT 1 FROM oauth_states WHERE conversation_id = ? AND provider = 'google'").get(c)) return { state: "connecting", step: 2, of: STEPS, provider: "gmail" };
+  if (row.email_state === "pending") return openOauth(c, "google", now) ? { state: "connecting", step: 2, of: STEPS, provider: "gmail" } : { state: "failed", step: 1, of: STEPS, provider: "gmail" };
   return { state: "none", step: 1, of: STEPS };
 }
 
@@ -323,32 +350,26 @@ export function uberCallbackDone(out) {
 
 /**
  * One request under /setup. `path` is what follows /setup. Returns `{ status, headers, body }`.
- * Seams: `nameLineFor` (the model's line), `amazonLink` (the setup's Connect Amazon link),
- * `googleLink` (the setup's Google link), `uberLink` (the setup's Uber link, after Uber's app is
- * checked ready), `cardLink` (the setup's card-entry link), `remoteSession` (is an Amazon sign-in live).
+ * Seams: `nameLineFor` (the model's line), `amazonLink` (the setup's Amazon store sign-in link,
+ * shop.setupStoreLink), `googleLink` (the setup's Google link), `cardLink` (the setup's card-entry
+ * link). The uber connect takes no seam: it is refused before anything is made.
  */
 export async function request({ method = "GET", path = "", query = {}, headers = {}, remoteAddress = "", readBody = async () => "", router = null, log = () => {},
   nameLineFor = (name) => nameLine({ name, web: true }),
-  amazonLink = (c) => amazon.setupConnectLink(c, { via: "web_setup", log }),
+  amazonLink = (c) => shop.setupStoreLink(c, "amazon"),
   googleLink = (c) => google.authorizeUrl(c),
-  uberReady = () => uber.connectReady(),
-  uberLink = (c) => uber.authorizeUrl(c),
-  cardLink = (c) => shop.setupCardLink(c),
-  remoteSession = null } = {}) {
+  cardLink = (c) => shop.setupCardLink(c) } = {}) {
   if (!on()) return json(404, { error: "not found" });
   const ip = clientIp(headers, remoteAddress);
   const secret = store.readSecret(headers.cookie);
   const body = async () => { try { return JSON.parse(String((await readBody()) ?? "") || "{}"); } catch { return null; } };
-  const session = remoteSession ?? (await import("./signin-remote.js")).remoteSessionFor;
 
   if (method === "GET" && path === "/api/capabilities") {
-    // uber: the card always shows; `ready` says whether Uber's app takes a connect today (src/uber.js connectReady).
-    let ub = { ready: false };
-    try { ub = await uberReady(); } catch { ub = { ready: false }; }
-    return json(200, {
-      amazon: !!config.publicUrl && amazon.setupAvailable(), gmail: google.googleStatus().connected === true, outlook: false,
-      uber: !!ub?.ready, card: shop.connectMode() === "on" && !!process.env.CROSSMINT_CLIENT_KEY && !!process.env.CROSSMINT_SERVER_KEY,
-    });
+    // Amazon and the card ride Crossmint: both need shop connect open to everyone and the keys. Uber
+    // is off the page for good (11-10): false whatever the server could do, so a cached page never
+    // shows its card.
+    const crossmint = shop.connectMode() === "on" && !!process.env.CROSSMINT_CLIENT_KEY && !!process.env.CROSSMINT_SERVER_KEY;
+    return json(200, { amazon: crossmint, gmail: google.googleStatus().connected === true, outlook: false, uber: false, card: crossmint });
   }
 
   if (method === "GET" && path === "/api/name-line") {
@@ -391,7 +412,7 @@ export async function request({ method = "GET", path = "", query = {}, headers =
   if (!row) return json(404, { error: "not found" });
   const c = store.conversationOf(row.id);
 
-  if (method === "GET" && !m[2]) return json(200, view(row, { remoteSession: session }));
+  if (method === "GET" && !m[2]) return json(200, view(row));
 
   if (method === "POST" && !m[2]) {
     if (!limits.write(ip)) return json(429, { error: "slow down" });
@@ -406,29 +427,27 @@ export async function request({ method = "GET", path = "", query = {}, headers =
   }
 
   if (method === "POST" && m[2]) {
+    // Uber left the page (11-10): refused outright, no link made, the setup untouched.
+    if (m[2] === "uber") {
+      log({ websetup_connect: "uber", setup: row.id, ok: false, why: "unavailable" });
+      return json(404, { ok: false, why: "unavailable" });
+    }
     if (!limits.connect(ip)) return json(429, { ok: false, why: "slow_down" });
     if (m[2] === "amazon") {
-      const out = amazonLink(c);
-      // The sign-in page checks this browser's setup cookie, which lives on the site the setup was made on.
-      if (out?.ok && out.url) { const base = siteBase(), o = originFor(row); if (base && o !== base && out.url.startsWith(`${base}/`)) out.url = o + out.url.slice(base.length); }
-      store.setConnectState(row.id, "amazon", out?.ok ? "pending" : "failed");
-      log({ websetup_connect: "amazon", setup: row.id, ok: !!out?.ok });
-      return json(200, out?.ok ? { ok: true, url: out.url } : { ok: false, why: out?.why || "unavailable" });
-    }
-    if (m[2] === "uber") {
-      // Honest first: Uber's own app must take this server's return address, or the link would only
-      // reach Uber's error page. Not ready → the card says so; nothing is made.
-      let ready = { ready: false, why: "uber_unreachable" };
-      try { ready = await uberReady(); } catch { /* not ready */ }
-      if (!ready?.ready) {
-        store.setConnectState(row.id, "uber", "not_ready");
-        log({ websetup_connect: "uber", setup: row.id, ok: false, why: ready?.why || "not_ready" });
-        return json(200, { ok: false, why: "not_ready" });
+      // The store sign-in through Crossmint (shop.setupStoreLink): the link is Reason's /web/connect page,
+      // keyed by its token alone, so it opens on any browser; no setup cookie, no code. Near the window's
+      // end the sign-in would not move to them anyway (and its form's JWT ends at the mark): say so
+      // instead of starting one.
+      if (clock.now() - row.created_at > PAY_CLAIM_MS - 2 * 60_000) {
+        store.setConnectState(row.id, "amazon", "failed");
+        log({ websetup_connect: "amazon", setup: row.id, ok: false, why: "too_late" });
+        return json(200, { ok: false, why: "too_late" });
       }
-      const out = uberLink(c);
-      store.setConnectState(row.id, "uber", out?.ok ? "pending" : "failed");
-      log({ websetup_connect: "uber", setup: row.id, ok: !!out?.ok });
-      return json(200, out?.ok && out.url ? { ok: true, url: out.url } : { ok: false, why: "unavailable" });
+      let out = null;
+      try { out = await amazonLink(c); } catch { out = null; }
+      store.setConnectState(row.id, "amazon", out?.ok ? "pending" : "failed");
+      log({ websetup_connect: "amazon", setup: row.id, ok: !!out?.ok, ...(out?.ok ? {} : { why: out?.why || "unavailable" }) });
+      return json(200, out?.ok && out.url ? { ok: true, url: out.url } : { ok: false, why: out?.why || "unavailable" });
     }
     if (m[2] === "card") {
       // Past the window a card would not move to them anyway: say so instead of taking it.

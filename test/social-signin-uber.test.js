@@ -244,18 +244,19 @@ async function newSetup() {
 }
 const ready = async () => ({ ready: true, why: "" });
 
-test("web setup: the Uber card is as before the social sign-in — offered and made with the flag on, and a saved Google-backed Uber login is not a connection", async () => {
+test("web setup: Uber is off the page (11-10) whatever the social sign-in flag says: uber:false, the connect refused, and a saved Google-backed Uber login is not a connection", async () => {
   process.env.REASON_SOCIAL_SIGNIN = "on";
   const caps = (await api("GET", "/api/capabilities", { uberReady: ready })).json;
-  assert.equal(caps.uber, true);
+  assert.equal(caps.uber, false);
   assert.equal(caps.uber_via, undefined);
   const s = await newSetup();
   assert.deepEqual((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber, { state: "none", step: 1, of: 3 });
   const asked = [];
   const uberLink = (c) => { asked.push(c); return { ok: true, url: "https://app.example/connect/start?state=st" }; };
-  const yes = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, uberLink });
-  assert.deepEqual(yes.json, { ok: true, url: "https://app.example/connect/start?state=st" });
-  assert.deepEqual(asked, [s.c]);
+  const no = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, uberLink });
+  assert.equal(no.status, 404);
+  assert.deepEqual(no.json, { ok: false, why: "unavailable" });
+  assert.deepEqual(asked, [], "nothing made");
   db.recordSiteSignin(s.c, "uber", { state: "signed_in", evidence: "t", provider: "google" });
   const after = (await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber;
   assert.notEqual(after.state, "connected");

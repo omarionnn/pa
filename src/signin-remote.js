@@ -58,7 +58,7 @@ import { backToReasonHref, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
-import { setupStartPage, setupLivePage, setupResultPage, setupCodePage, setupGonePage, setupNoticePage } from "./pages/setupsignin.js";
+import { setupStartPage, setupLivePage, setupResultPage, setupCodePage, setupGonePage, setupNoticePage, setupBackPage } from "./pages/setupsignin.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -115,6 +115,12 @@ export function remoteSigninStatus() {
 export function remoteSessionFor(conversationId) {
   const s = sessions.get(byConversation.get(conversationId));
   return s && !s.ended ? { site: s.entry.site, started: !!s.browser } : null;
+}
+
+/** When the open link for this conversation was made (ms), or null: the web setup reads a stale, untapped link off it. */
+export function remoteSessionSince(conversationId) {
+  const s = sessions.get(byConversation.get(conversationId));
+  return s && !s.ended ? s.createdAt : null;
 }
 
 /**
@@ -480,19 +486,25 @@ export async function remoteRequest({ token, action = "", method = "GET", header
   if (!s) return gone();
   const name = cookieName(s.token);
   const mine = s.secret && same(readCookie(headers, name), s.secret);
+  // A web setup's link on a browser that is not the setup's own (no setup cookie, or a setup that has
+  // run out): there is no thread and no code was ever texted, so never the code step — the way back
+  // to the setup instead, before anything is started (src/pages/setupsignin.js setupBackPage).
+  const toSetup = async (status = 403) => ({ status, headers: HTML(), body: setupBackPage({ entry: s.entry, back: await setupBack(s), card: cardKind(s.entry) }) });
 
   // ---------- the page ----------
   if (method === "GET" && action === "") {
     if (s.ended) return { status: 200, headers: HTML(), body: await resultPage(s) };
+    if (isSetup(s) && !s.secret && !provedOwner(s, headers)) return toSetup(200);
     if (!s.secret) return { status: 200, headers: HTML(), body: startPage(s) };
-    if (!mine) return gone();
+    if (!mine) return isSetup(s) ? toSetup(200) : gone();
     return { status: 200, headers: HTML(), body: livePage(s) };
   }
 
   // ---------- Start: this browser becomes the only one that can use the link ----------
   if (method === "POST" && action === "start") {
     if (s.ended) return gone();
-    if (s.secret && !mine) return gone();
+    if (s.secret && !mine) return isSetup(s) ? toSetup() : gone();
+    if (isSetup(s) && !s.secret && !provedOwner(s, headers)) { s.log({ signin_remote: "setup_unproved", site: s.entry.site }); return toSetup(); }
     let remember = null;
     if (!s.secret) {
       let form = null;

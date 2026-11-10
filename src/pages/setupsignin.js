@@ -225,6 +225,22 @@ export function setupGonePage() {
   return page("Reason — sign-in link", frame({ main, margin: side }), { right: "", card: "signin" });
 }
 
+/**
+ * A web setup's link (src/websetup.js, conversation `websetup:<id>`) opened on a browser that does not
+ * hold the setup's cookie — another browser, a site the cookie cannot reach, or a setup that has run
+ * out. There is no thread and Reason has never texted this person, so there is no code to ask for:
+ * one plain line and the way back to the setup's connect screen. `entry` is optional (a Google or
+ * Uber connect has no store entry): `label` names what they were connecting.
+ */
+export function setupBackPage({ entry = null, label: what = "", back, card = "signin" }) {
+  const n = entry?.label || what || "that";
+  const main = headline("Let's pick that up from your setup.", "Nothing was lost.")
+    + lede(`This browser isn't the one your setup is open in, or the setup has run out, so I can't connect ${esc(n)} from here. Head back to your setup and tap ${esc(n)} again.`)
+    + `<div class="ss-form">${actions(go("Back to your setup", { href: back, attrs: ` id="ss-back"` }))}</div>`;
+  const side = label("WHAT YOU TYPED") + para("Wasn't kept. You'll sign in fresh next time.") + note("it's fine to skip it for now.", { sp: true });
+  return page(`Reason — back to your setup`, frame({ main, margin: side }), { entry: entry ?? { label: n }, right: "YOUR SETUP", card });
+}
+
 /** One short notice with no way on: the link is somebody else's browser (403), or the profile is busy (409). */
 export function setupNoticePage({ entry, h1, why, card = "signin" }) {
   const main = headline(h1, "Nothing was lost.") + lede(why);
