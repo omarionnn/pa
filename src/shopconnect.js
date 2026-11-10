@@ -491,7 +491,7 @@ function endSetupRuns(c, why) {
   const now = clock.now();
   for (const r of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND status = 'running'").all(c)) {
     tellOnce(r.run_id, "end");
-    q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, progress_at = ?, result = ? WHERE run_id = ? AND status = 'running'").run(now, now, now, `setup: ${why}`.slice(0, 300), r.run_id);
+    q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, progress_at = ?, result = ? WHERE run_id = ? AND conversation_id = ? AND status = 'running'").run(now, now, now, `setup: ${why}`.slice(0, 300), r.run_id, c);
     cancelAtCrossmint(r).catch(() => {});
   }
 }
