@@ -7,7 +7,7 @@
 //   over the 20 or the 2 calls, a call in hears one line, hangs up, and the link is texted
 //   call_place past the 2 calls is refused with the line + link; a free call wraps at 5:00, ends at 6:00
 //   trial users get no invites; an invite or event from a non-free-for-good member makes nobody free
-//   auto-admit lets ~30 an hour in; past that a new number gets the access-list text and is queued
+//   auto-admit lets ~25 an hour in; past that a new number gets the access-list text and is queued
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -44,6 +44,7 @@ const { FakeChannel } = await import("../src/channels/fake.js");
 const gl = await import("../src/calls/gptlive.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
+const DEFAULT_SIGNUPS_PER_HOUR = config.signupsPerHour; // before beforeEach touches it
 
 const OMARI = "dm:owner";
 const MASTER = "+12025551234";
@@ -57,7 +58,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   config.autoAdmit = true;
-  config.signupsPerHour = 30;
+  config.signupsPerHour = DEFAULT_SIGNUPS_PER_HOUR;
   db.db.exec("DELETE FROM accounts; DELETE FROM plan; DELETE FROM usage; DELETE FROM conversations; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM outbox; DELETE FROM timers; DELETE FROM calls; DELETE FROM access_requests; DELETE FROM events;");
   db.upsertAccount({ conversationId: OMARI, channel: "fake", address: MASTER, name: "Omari", isOperator: true });
 });
@@ -352,8 +353,12 @@ test("trial users get no invites, and a trial user's invitee or event guest is o
 
 // ---------------------------------------------------------------- the signup ceiling
 
-test("auto-admit lets 30 an hour in; the 31st gets the access-list text and is queued; next hour their text lets them in", () => {
-  for (let i = 0; i < 30; i++) {
+test("the hourly sign-up ceiling defaults to 25 (owner 2026-11-10)", () => {
+  assert.equal(DEFAULT_SIGNUPS_PER_HOUR, 25);
+});
+
+test("auto-admit lets 25 an hour in; the 26th gets the access-list text and is queued; next hour their text lets them in", () => {
+  for (let i = 0; i < 25; i++) {
     const out = access.handleUnknown({ channel: "fake", address: newNumber(), text: "hey" });
     assert.equal(out.action, "auto_admitted", `#${i + 1}`);
   }

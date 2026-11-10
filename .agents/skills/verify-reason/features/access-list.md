@@ -6,7 +6,7 @@ i'll text you the moment you're in. more here: https://heyreason.com/access"*. T
 page, where somebody can also leave their number (plus an optional name) and see how many are ahead.
 
 Source:
-- The ceiling — `src/access.js:70` (`signupsPerHour`, `REASON_SIGNUPS_PER_HOUR`, default 30 walk-ins per
+- The ceiling — `src/access.js:70` (`signupsPerHour`, `REASON_SIGNUPS_PER_HOUR`, default 25 walk-ins per
   rolling hour; invites, event joiners and the operator never count, `src/access.js:129`); the text is
   `src/access.js:121` with `config.accessListUrl` (`REASON_ACCESS_LIST_URL`, default
   https://heyreason.com/access). Past it the number joins the approval queue exactly as with auto-admit off.

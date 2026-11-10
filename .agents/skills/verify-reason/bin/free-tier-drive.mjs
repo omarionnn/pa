@@ -3,7 +3,7 @@
 // router and the REAL inbound-call TwiML on a fresh database: a walk-in's 20 conversations answered,
 // the 21st's first text answered by code with one line + the pay link (no model turn), a 2nd text in it
 // left; two calls through, the 3rd hears one line + hangs up and the link is texted; a 6-minute end on a
-// free call; a trial user offered no invites; the 31st sign-up in an hour sent to the access list.
+// free call; a trial user offered no invites; the 26th sign-up in an hour sent to the access list.
 // No model (a stub turn), no phone, nothing leaves the machine. Prints the texts and "all ok" / "FAILED".
 //
 //   REASON_DB_PATH=$(mktemp -d)/ft.db node .agents/skills/verify-reason/bin/free-tier-drive.mjs
@@ -42,7 +42,7 @@ const MIN = 60_000;
 db.upsertAccount({ conversationId: "dm:owner", channel: "fake", address: "+12025551234", name: "Omari", isOperator: true });
 
 // ---- texts: 20 conversations, then the 21st (a walk-in: auto-admit on, as on live)
-config.autoAdmit = true; config.signupsPerHour = 30;
+config.autoAdmit = true; config.signupsPerHour = 25;
 const num = "+13475550101", c = `dm:fake:${num}`;
 const turns = [];
 const runtime = new Runtime({ runTurn: async ({ text }) => { turns.push(text); return "on it"; } });
@@ -84,16 +84,16 @@ step("4:30 wrap-up, 5:00 close", plan.callLimitSeconds("dm:fake:+13475550103") =
 // ---- invites
 step("a trial user is offered no invites", invitesOpenFor(c) === false && invitesOpenFor("dm:owner") === true);
 
-// ---- sign-ups: 30 an hour, the 31st to the access list
-config.autoAdmit = true; config.signupsPerHour = 30;
+// ---- sign-ups: 25 an hour, the 26th to the access list
+config.autoAdmit = true; config.signupsPerHour = 25;
 clock.skip(2 * 60 * MIN);
 let admitted = 0, last = null;
-for (let i = 0; i < 31; i++) {
+for (let i = 0; i < 26; i++) {
   last = access.handleUnknown({ channel: "fake", address: `+1347666${String(1000 + i)}`, text: "hey" });
   if (last.action === "auto_admitted") admitted++;
 }
-console.log(`     (31st sign-up) reason: ${last.toThem}`);
-step("30 admitted, the 31st queued with the access-list text", admitted === 30 && last.action === "ask_master" && /heyreason\.com\/access/.test(last.toThem));
+console.log(`     (26th sign-up) reason: ${last.toThem}`);
+step("25 admitted, the 26th queued with the access-list text", admitted === 25 && last.action === "ask_master" && /heyreason\.com\/access/.test(last.toThem));
 
 clearInterval(keepAlive);
 console.log(failed ? `FAILED (${failed})` : "all ok");
