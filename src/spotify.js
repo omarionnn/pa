@@ -33,6 +33,7 @@
 // routes are the ones above. docs/unverified.md says so test by test.
 import { config, clock, callbackUrl, stamp } from "./config.js";
 import { renderConnected, backToReason, dark, THEME, iconLinks } from "./pages/render.js";
+import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
 import * as db from "./db.js";
@@ -455,7 +456,9 @@ export function joinPage({ ownerName = config.ownerName, token = "", error = "",
       + `</form>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 ${iconLinks()}
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+${securedCardTags("spotify")}
+<title>${title}</title>
 <script>${THEME.head}</script>
 <style>
 :root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--line:${PAPER.line};--edge:rgba(22,19,15,.19);--mark:${BRAND_PEN}}

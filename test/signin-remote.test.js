@@ -154,6 +154,10 @@ test("opening the link shows what it is and waits for a tap — a link preview t
     assert.match(page.body, /Face ID and passkeys do not/);
     assert.match(page.body, new RegExp(`action="/s/${token}/start"`));
     assert.equal(page.headers["Cache-Control"], "no-store");
+    // The phone's preview of the link: "Secured by Reason", the action only, not the site.
+    assert.match(page.body, /<meta property="og:title" content="Sign in securely">/);
+    assert.match(page.body, /<meta property="og:image" content="[^"]+\/web\/og\/secured\/signin\.png\?v=\d+">/);
+    assert.doesNotMatch(page.body.slice(0, page.body.indexOf("<title>")), /Amazon/, "the card names no site");
   }
   assert.equal(b.launched.length, 0, "three fetches and still no browser, and nobody owns the session");
   assert.equal((await req(token, "view")).status, 404, "and nothing can be driven before Start");

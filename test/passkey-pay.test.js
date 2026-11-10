@@ -184,6 +184,14 @@ test("approve: the page shows the exact total, the assertion pays that amount on
   assert.match(got.body, /Pay \$12\.49 at Best Buy\?/);
   assert.match(got.body, /Approve with Face ID/);
   assert.match(got.body, /USB-C cable/);
+  // What the phone draws for the texted link (no cookie, same page): "Secured by Reason · Approve
+  // purchase", and nothing of the payment — no store, no item, no amount — in the card's tags.
+  const head = got.body.slice(0, got.body.indexOf("<title>"));
+  assert.match(head, /<meta property="og:title" content="Approve purchase">/);
+  assert.match(head, /<meta property="og:image" content="https:\/\/heyreason\.com\/web\/og\/secured\/approve\.png\?v=\d+">/);
+  assert.match(head, /<meta property="og:image:width" content="1200">/);
+  assert.match(head, /<meta name="twitter:card" content="summary_large_image">/);
+  assert.doesNotMatch(head, /Best Buy|12\.49|USB-C|og:url/, "no store, amount, item or token in the card");
   const o = optionsOf(got.body);
   assert.equal(o.userVerification, "required");
   assert.equal(o.rpId, "heyreason.com");

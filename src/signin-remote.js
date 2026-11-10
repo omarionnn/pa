@@ -54,6 +54,7 @@ import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_
 import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
 import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
+import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
 
@@ -633,7 +634,9 @@ export function shell(title, inner, { script = "" } = {}) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 ${iconLinks()}
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="robots" content="noindex"><title>${esc(title)}</title>
+<meta name="robots" content="noindex">
+${securedCardTags("signin")}
+<title>${esc(title)}</title>
 <script>${THEME.head}</script>
 <style>
 :root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--card:${PAPER.card};--line:${PAPER.line};--soft:${PAPER.soft};--go:${PAPER.ink};--gofg:${PAPER.bg};--mark:${BRAND_PEN}}
