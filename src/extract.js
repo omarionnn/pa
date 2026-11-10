@@ -203,7 +203,7 @@ export async function backfillEmbeddings({ limit = BACKFILL_LIMIT, embedFn = emb
     // not fixed by asking again on the next pass: 2026-11-09 an invalidated key made this loop send
     // 220 refused calls in one hour, the bulk of the 277 OpenAI failures on the status page. Wait.
     const keyRefused = /OpenAI embeddings (401|403)\b/.test(e.message)
-      || /OpenAI embeddings 429\b/.test(e.message) && /insufficient_quota|no credits/i.test(e.message);
+      || /OpenAI embeddings 429\b/.test(e.message) && /quota|billing|no credits/i.test(e.message);
     if (keyRefused) backfillPausedUntil = now + BACKFILL_KEY_PAUSE_MS;
     log(`embedding backfill failed (${rows?.length ?? 0} waiting)${keyRefused ? `, paused ${BACKFILL_KEY_PAUSE_MS / 60_000} min` : ""}: ${e.message}`);
     return 0;
