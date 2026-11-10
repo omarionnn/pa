@@ -70,6 +70,10 @@ const MAX_DEL = 500;
 /** How many of the site's fields the page is told about. A sign-in form has one or two. */
 const MAX_FIELDS = 12;
 const KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+/** Where the page is scrolled to, and whether the page itself (not a box inside it) scrolls at all. */
+const SCROLL_JS = `({ x: scrollX, y: scrollY, doc: (document.scrollingElement || document.documentElement).scrollHeight > innerHeight + 1 || (document.scrollingElement || document.documentElement).scrollWidth > innerWidth + 1 })`;
+/** JPEG quality of a picture taken mid-scroll (a still one is 58). */
+const MOVING_QUALITY = 40;
 /** Two readings in a row before the session finishes itself, so one odd frame cannot end it. */
 const SIGNED_IN_RUN = 2;
 /** Nothing finishes itself in the first few seconds, when the site's own page is still settling. */
@@ -92,13 +96,24 @@ async function realLaunch({ conversationId, url }) {
   const context = await chromium.launchPersistentContext(profileDirFor(conversationId), {
     headless: true, viewport: VIEW, deviceScaleFactor: 2,
     // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
+    // Smooth scrolling off, and only that: a wheel otherwise animates for ~300 ms, so the picture
+    // taken after a scroll showed the page before it had moved (measured 2026-11-10).
+    args: ["--disable-smooth-scrolling"],
   });
   // Never this machine's own network, on every request — a link can name any site by its address.
   await guardContext(context);
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
+  // The picture straight from the browser's compositor: about half the time of page.screenshot.
+  const cdp = await context.newCDPSession(page).catch(() => null);
+  const shot = async (quality) => {
+    if (cdp) {
+      try { return Buffer.from((await cdp.send("Page.captureScreenshot", { format: "jpeg", quality, optimizeForSpeed: true })).data, "base64"); } catch { /* the slower way below */ }
+    }
+    return page.screenshot({ type: "jpeg", quality });
+  };
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
-  return { page, close: () => context.close().catch(() => {}) };
+  return { page, shot, close: () => context.close().catch(() => {}) };
 }
 
 export function remoteSigninStatus() {
@@ -355,14 +370,16 @@ const round3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
 
 /** Picture and page reading together, in one turn of the browser, so they always match. */
 async function readView(s) {
+  return inTurn(s, () => takeView(s));
+}
+/** The same reading, for a caller already holding the browser's turn (a scroll and its picture are one turn). */
+async function takeView(s, { quality = 58 } = {}) {
   const page = s.browser.page;
-  return inTurn(s, async () => {
-    const shot = await page.screenshot({ type: "jpeg", quality: 58 });
-    const raw = await page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
-    // The shape of the last form the phone saw, so a typed code can be cleaned for the box it lands in.
-    s.lastFields = Array.isArray(raw?.fields) ? raw.fields : [];
-    return { shot, raw };
-  });
+  const shot = s.browser.shot ? await s.browser.shot(quality) : await page.screenshot({ type: "jpeg", quality });
+  const raw = await page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
+  // The shape of the last form the phone saw, so a typed code can be cleaned for the box it lands in.
+  s.lastFields = Array.isArray(raw?.fields) ? raw.fields : [];
+  return { shot, raw };
 }
 
 /**
@@ -609,46 +626,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     try { got = await readView(s); } catch (e) {
       return json(503, { why: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) });
     }
-    const settled = clock.now() - (s.startedAt ?? 0) > EARLIEST_AUTO_FINISH_MS;
-    // A wall is read first, because a wall also reads as "no sign-in prompt on the page" — which
-    // is exactly what `looksSignedIn` infers signed-in from. Uber's bot-check page has none of
-    // Uber's sign-in words on it and no box, and the first version of this called that signed in.
-    // The provider's own refusal of this browser ("This browser or app may not be secure"): ended at
-    // once, nothing saved, nothing pressed again (src/socialsignin.js providerRefused).
-    if (s.provider || social.socialAllowedFor(s.conversationId)) {
-      const no = social.providerRefused(got.raw);
-      if (no.refused) {
-        s.refusal = no;
-        const ended = await end(s, "refused");
-        return json(200, { over: true, state: ended.state });
-      }
-    }
-    const walled = looksBlocked(got.raw);
-    if (!walled && looksSignedIn(s, got.raw) && settled) s.signedInRun += 1;
-    else s.signedInRun = 0;
-    if (s.signedInRun >= SIGNED_IN_RUN) {
-      const ended = await end(s, "finished");
-      return json(200, { over: true, state: ended.state });
-    }
-    // A wall where the form should be. Ended rather than left to spin, so the person is told the
-    // truth instead of waiting on a page that will not change.
-    if (walled && settled) s.blockedRun = (s.blockedRun ?? 0) + 1;
-    else s.blockedRun = 0;
-    if (s.blockedRun >= SIGNED_IN_RUN) {
-      const ended = await end(s, "blocked");
-      return json(200, { over: true, state: ended.state });
-    }
-    const hash = createHash("sha1").update(got.shot).digest("hex").slice(0, 16);
-    const unchanged = String(query?.h ?? "") === hash;
-    const meta = { ...frameFor(got.raw), h: hash, same: unchanged };
-    const head = Buffer.alloc(4);
-    const body = Buffer.from(JSON.stringify(meta), "utf8");
-    head.writeUInt32BE(body.length, 0);
-    return {
-      status: 200,
-      headers: { "Content-Type": "application/octet-stream", "Cache-Control": "no-store" },
-      body: Buffer.concat(unchanged ? [head, body] : [head, body, got.shot]),
-    };
+    return viewAnswer(s, got, query?.h);
   }
 
   if (method === "POST") {
@@ -667,6 +645,47 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       if (!at) return json(400, { error: "tap needs x and y between 0 and 1" });
       await inTurn(s, async () => { await page.mouse.click(at[0], at[1]); await settle(); });
       return json(200, { ok: true });
+    }
+    /**
+     * A scroll answers with the picture it made, in the same turn of the browser: one round trip
+     * per step instead of a post, a wait, and a separate /view (measured 2026-11-10: ~1.6 s from a
+     * flick to the first moved picture, nothing at all moving under the finger). The phone moves
+     * its last picture under the finger itself and sends what the finger did a frame at a time, so
+     * this only has to say where the page really is. `q` is the phone's own count of its scrolls,
+     * echoed back, so it knows which of what it sent the picture already shows.
+     */
+    if (action === "scroll") {
+      const dy = Math.max(-2000, Math.min(2000, Math.round(Number(input.dy) || 0)));
+      const dx = Math.max(-2000, Math.min(2000, Math.round(Number(input.dx) || 0)));
+      const q = Math.max(0, Math.min(1e9, Math.trunc(Number(input.q) || 0)));
+      let got, atEnd = false;
+      try {
+        got = await inTurn(s, async () => {
+          const was = await page.evaluate(SCROLL_JS).catch(() => null);
+          await page.mouse.wheel(dx, dy);
+          // One frame of the site's own, so the picture is the page after the move, not before it.
+          const now = await Promise.race([
+            page.evaluate(`new Promise(r => requestAnimationFrame(() => r(${SCROLL_JS})))`).catch(() => null),
+            new Promise(r => setTimeout(() => r(null), 150)),
+          ]);
+          // A picture while the page is moving is a lighter one: the eye cannot read a page in
+          // motion, and on a weak signal the bytes ARE the delay. The sharp one comes from /view
+          // once the page stops. (Same size, so it lines up; only the JPEG quality is lower.)
+          const view = await takeView(s, { quality: MOVING_QUALITY });
+          // The end of the page: the page itself scrolls and did not move. Read off where the page
+          // is, never off the picture, which a blinking cursor or an ad changes on its own. A page
+          // that scrolls a box of its own instead (no window scroll at all) is the picture's call.
+          const hash = createHash("sha1").update(view.shot).digest("hex").slice(0, 16);
+          if (was && now && was.x === now.x && was.y === now.y) atEnd = now.doc || hash === s.lastScrollHash;
+          s.lastScrollHash = hash;
+          return view;
+        });
+      } catch (e) {
+        return json(503, { why: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) });
+      }
+      // judge:false — two scroll answers 100 ms apart are not two readings of a page at rest: a
+      // flick that pushes the form off screen must not count as "signed in" twice and end it.
+      return viewAnswer(s, got, input.h, { sq: q, end: atEnd }, { judge: false });
     }
     if (action === "type") {
       // The one place a password passes through. It goes to the page and nowhere else: not to the
@@ -704,12 +723,6 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       await inTurn(s, async () => { await page.keyboard.press(input.key); await settle(); });
       return json(200, { ok: true });
     }
-    if (action === "scroll") {
-      const dy = Math.max(-2000, Math.min(2000, Number(input.dy) || 0));
-      const dx = Math.max(-2000, Math.min(2000, Number(input.dx) || 0));
-      await inTurn(s, async () => { await page.mouse.wheel(dx, dy); await settle(); });
-      return json(200, { ok: true });
-    }
     if (action === "back") {
       await inTurn(s, async () => { await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {}); await settle(); });
       return json(200, { ok: true });
@@ -720,6 +733,60 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     }
   }
   return json(404, { error: "not found" });
+}
+
+/**
+ * The answer to /view, and to a scroll: the picture and the shape of the site's form, after the
+ * same checks for a site that finished, refused the browser, or walled it.
+ * `extra` rides along in the JSON (a scroll's `sq`).
+ */
+async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
+  const settled = clock.now() - (s.startedAt ?? 0) > EARLIEST_AUTO_FINISH_MS;
+  // A wall is read first, because a wall also reads as "no sign-in prompt on the page" — which
+  // is exactly what `looksSignedIn` infers signed-in from. Uber's bot-check page has none of
+  // Uber's sign-in words on it and no box, and the first version of this called that signed in.
+  // The provider's own refusal of this browser ("This browser or app may not be secure"): ended at
+  // once, nothing saved, nothing pressed again (src/socialsignin.js providerRefused).
+  if (s.provider || social.socialAllowedFor(s.conversationId)) {
+    const no = social.providerRefused(got.raw);
+    if (no.refused) {
+      s.refusal = no;
+      const ended = await end(s, "refused");
+      return json(200, { over: true, state: ended.state });
+    }
+  }
+  // Only a picture of the page at rest says it is signed in or walled; a scroll's leaves the counts as they are.
+  if (!judge) return frameAnswer(got, h, extra);
+  const walled = looksBlocked(got.raw);
+  if (!walled && looksSignedIn(s, got.raw) && settled) s.signedInRun += 1;
+  else s.signedInRun = 0;
+  if (s.signedInRun >= SIGNED_IN_RUN) {
+    const ended = await end(s, "finished");
+    return json(200, { over: true, state: ended.state });
+  }
+  // A wall where the form should be. Ended rather than left to spin, so the person is told the
+  // truth instead of waiting on a page that will not change.
+  if (walled && settled) s.blockedRun = (s.blockedRun ?? 0) + 1;
+  else s.blockedRun = 0;
+  if (s.blockedRun >= SIGNED_IN_RUN) {
+    const ended = await end(s, "blocked");
+    return json(200, { over: true, state: ended.state });
+  }
+  return frameAnswer(got, h, extra);
+}
+/** `[4 bytes: JSON length][JSON][JPEG]`, the JPEG left off when the phone already has that picture. */
+function frameAnswer(got, h, extra = {}) {
+  const hash = createHash("sha1").update(got.shot).digest("hex").slice(0, 16);
+  const unchanged = String(h ?? "") === hash;
+  const meta = { ...frameFor(got.raw), h: hash, same: unchanged, ...extra };
+  const head = Buffer.alloc(4);
+  const body = Buffer.from(JSON.stringify(meta), "utf8");
+  head.writeUInt32BE(body.length, 0);
+  return {
+    status: 200,
+    headers: { "Content-Type": "application/octet-stream", "Cache-Control": "no-store" },
+    body: Buffer.concat(unchanged ? [head, body] : [head, body, got.shot]),
+  };
 }
 
 /** For tests, and for a shutdown that should not leave a browser holding somebody's profile. */
@@ -888,14 +955,18 @@ function kick(){quickUntil=Date.now()+2500;schedule(0)}
 function schedule(ms){if(dead)return;clearTimeout(timer);timer=setTimeout(pull,ms)}
 function pull(){
   if(dead||running)return;
+  // While a finger or a fling is moving the page, its own scrolls bring the pictures.
+  if(scrolling()){schedule(150);return}
   running=true;
+  var gen=sent;
   // Nine seconds is longer than a picture takes over a bad connection and short enough that a
   // request which is never coming back is given up on while somebody is still watching.
   ask('/view?h='+encodeURIComponent(hash),{},9000).then(function(r){
     if(r.status===503)throw new Error('no picture');
     var ct=r.headers.get('Content-Type')||'';
     if(ct.indexOf('application/json')===0)return r.json().then(function(j){if(j&&j.over){over()}throw new Error('ended')});
-    return r.arrayBuffer().then(draw);
+    // A picture asked for before a scroll began shows the page before it: not drawn.
+    return r.arrayBuffer().then(function(b){if(gen===sent&&!scrolling())return draw(b)});
   }).then(function(){
     misses=0;
     // The panel comes off only once there is a real picture under it AND the site has drawn
@@ -914,20 +985,32 @@ function pull(){
     schedule(Math.min(600*misses,5000));
   }).then(function(){running=false},function(){running=false});
 }
-function draw(buf){
-  var d=new DataView(buf),n=d.getUint32(0),meta=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,n)));
-  hash=meta.h||hash;fields=meta.fields||[];blank=!!meta.blank;
-  if(buf.byteLength>4+n){
-    var old=v.src,u=URL.createObjectURL(new Blob([new Uint8Array(buf,4+n)],{type:'image/jpeg'}));
-    v.src=u;if(old&&old.indexOf('blob:')===0)setTimeout(function(){URL.revokeObjectURL(old)},600);
+function unpack(buf){
+  var d=new DataView(buf),n=d.getUint32(0);
+  return {meta:JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,n))),jpeg:buf.byteLength>4+n?new Uint8Array(buf,4+n):null};
+}
+// The picture is decoded off screen first and swapped in with the shift that goes with it, in one
+// frame, so a new picture never flashes at the old position.
+function draw(buf,then){
+  var p=unpack(buf),meta=p.meta;
+  function apply(u){
+    // A scroll's picture older than one already shown is dropped (two can be on the way at once).
+    if(then&&then(meta,!!u)===false){if(u)URL.revokeObjectURL(u);return}
+    hash=meta.h||hash;fields=meta.fields||[];blank=!!meta.blank;
+    if(u){var old=v.src;v.src=u;if(old&&old.indexOf('blob:')===0)setTimeout(function(){URL.revokeObjectURL(old)},600)}
+    place();
   }
-  place();
+  if(!p.jpeg){apply(null);return Promise.resolve()}
+  var u=URL.createObjectURL(new Blob([p.jpeg],{type:'image/jpeg'})),im=new Image();
+  im.src=u;
+  return (im.decode?im.decode():Promise.resolve()).then(function(){apply(u)},function(){apply(u)});
 }
 
 // ---------- the real boxes, over the site's own ----------
 // Measured off the picture itself, never off the frame around it: a field's position is a
 // fraction OF the picture, and the frame's own border would shift every one of them.
-function box(){return v.getBoundingClientRect()}
+// Without the shift a scroll gives the picture: the boxes move with it by their own transform.
+function box(){var sr=stage.getBoundingClientRect();return {left:sr.left+stage.clientLeft+v.offsetLeft,top:sr.top+stage.clientTop+v.offsetTop,width:v.offsetWidth,height:v.offsetHeight}}
 /** Put each native input over the site's box it matches, so an autofill of a pair lands in both. */
 function place(){
   var r=box(),sr=stage.getBoundingClientRect(),ox=r.left-sr.left,oy=r.top-sr.top,used={};
@@ -954,14 +1037,98 @@ function place(){
 }
 function at(nx,ny){for(var i=0;i<fields.length;i++){var f=fields[i];if(nx>=f.x-0.01&&nx<=f.x+f.w+0.01&&ny>=f.y-0.01&&ny<=f.y+f.h+0.01)return f}return null}
 
-// ---------- taps ----------
-var sx=0,sy=0,moved=false;
-stage.addEventListener('pointerdown',function(e){if(e.target!==v)return;sx=e.clientX;sy=e.clientY;moved=false},{passive:true});
-stage.addEventListener('pointermove',function(e){if(Math.abs(e.clientX-sx)>12||Math.abs(e.clientY-sy)>12)moved=true},{passive:true});
+// ---------- scrolling: the picture follows the finger, the browser catches up ----------
+// The last picture moves under the finger at once, every frame. What the finger did is added up
+// and sent once a frame at most (two on the way at a time); each scroll comes back with the
+// picture it made, and the shift still owed is whatever that picture does not show yet. A flick
+// carries on after the finger lifts and slows the way a phone's own scroll does.
+var pend={x:0,y:0},fly=[],sent=0,shownSq=0,drag=null,fling=null,raf=0;
+function scrolling(){return !!(drag||fling||fly.length||pend.x||pend.y)}
+function owed(){var x=pend.x,y=pend.y;for(var i=0;i<fly.length;i++){x+=fly[i].dx;y+=fly[i].dy}return {x:x,y:y}}
+function shift(){
+  var r=box(),o=owed(),k=r.width/V.width,tf=(o.x||o.y)?'translate('+(-o.x*k)+'px,'+(-o.y*k)+'px)':'';
+  v.style.transform=tf;document.getElementById('f').style.transform=tf;
+}
+function loop(){
+  raf=0;if(dead)return;
+  var now=performance.now();
+  if(fling){
+    var dt=Math.min(48,now-fling.t);fling.t=now;
+    pend.x+=fling.vx*dt;pend.y+=fling.vy*dt;
+    var decay=Math.pow(0.996,dt);fling.vx*=decay;fling.vy*=decay;
+    if(Math.abs(fling.vx)<0.03&&Math.abs(fling.vy)<0.03)fling=null;
+  }
+  // Less than a pixel left over once nothing is moving it is nothing: dropped, or the page would
+  // count as scrolling for good and never fetch the sharp picture again.
+  if(!fling&&!drag&&Math.abs(pend.x)<1&&Math.abs(pend.y)<1){pend.x=0;pend.y=0}
+  if(fly.length<2&&(Math.abs(pend.x)>=1||Math.abs(pend.y)>=1))sendScroll();
+  shift();
+  if(scrolling())raf=requestAnimationFrame(loop);
+  else kick();
+}
+function wake(){if(!raf)raf=requestAnimationFrame(loop)}
+function sendScroll(){
+  var dx=Math.max(-2000,Math.min(2000,Math.round(pend.x))),dy=Math.max(-2000,Math.min(2000,Math.round(pend.y)));
+  pend.x-=dx;pend.y-=dy;if(!dx&&!dy)return;
+  var q=++sent;fly.push({q:q,dx:dx,dy:dy});
+  var done=function(){for(var i=fly.length-1;i>=0;i--)if(fly[i].q<=q)fly.splice(i,1);wake()};
+  ask('/scroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dx:dx,dy:dy,q:q,h:hash})},9000).then(function(r){
+    var ct=r.headers.get('Content-Type')||'';
+    if(ct.indexOf('application/json')===0)return r.json().then(function(j){if(j&&j.over)over();done()});
+    return r.arrayBuffer().then(function(b){
+      return draw(b,function(meta,fresh){
+        var sq=meta.sq||q;if(sq<shownSq)return false;shownSq=sq;
+        // The page did not move: it is at its end (the server reads where the page is). What is still owed is dropped, so the picture
+        // does not slide off and snap back over and over.
+        if(meta.end){pend.x=pend.y=0;fling=null}
+        for(var i=fly.length-1;i>=0;i--)if(fly[i].q<=sq)fly.splice(i,1);
+        shift();
+      });
+    }).then(done,done);
+  },done);
+}
+var sx=0,sy=0,moved=false,pid=null,halt=false;
+function scale(){var r=box();return V.width/r.width}
+stage.addEventListener('pointerdown',function(e){
+  if(e.target!==v||!e.isPrimary)return;
+  sx=e.clientX;sy=e.clientY;moved=false;pid=e.pointerId;
+  // A finger on a moving page stops it, the way it does on the phone itself — and that touch is
+  // only a stop, never a tap on the site: the picture under it is not where the page is yet.
+  halt=scrolling();
+  fling=null;
+  drag={x:e.clientX,y:e.clientY,s:[{t:performance.now(),x:e.clientX,y:e.clientY}]};
+  try{v.setPointerCapture(e.pointerId)}catch(err){}
+},{passive:true});
+stage.addEventListener('pointermove',function(e){
+  if(!drag||e.pointerId!==pid)return;
+  if(!moved&&(Math.abs(e.clientX-sx)>10||Math.abs(e.clientY-sy)>10)){moved=true;blurAll();drag.x=e.clientX;drag.y=e.clientY}
+  if(!moved)return;
+  var k=scale(),now=performance.now();
+  pend.x+=(drag.x-e.clientX)*k;pend.y+=(drag.y-e.clientY)*k;
+  drag.x=e.clientX;drag.y=e.clientY;
+  drag.s.push({t:now,x:e.clientX,y:e.clientY});while(drag.s.length>2&&now-drag.s[0].t>100)drag.s.shift();
+  wake();
+},{passive:true});
+function release(e,flick){
+  if(!drag||e.pointerId!==pid)return false;
+  var d=drag;drag=null;pid=null;
+  if(!moved){wake();return false}
+  var a=d.s[0],b=d.s[d.s.length-1],dt=b.t-a.t,k=scale();
+  if(flick&&dt>0&&performance.now()-b.t<80){
+    var vx=(a.x-b.x)/dt*k,vy=(a.y-b.y)/dt*k,cap=8;
+    vx=Math.max(-cap,Math.min(cap,vx));vy=Math.max(-cap,Math.min(cap,vy));
+    if(Math.abs(vx)>0.15||Math.abs(vy)>0.15)fling={vx:vx,vy:vy,t:performance.now()};
+  }
+  wake();
+  return true;
+}
+stage.addEventListener('pointercancel',function(e){release(e,false)},{passive:true});
+// The paper page around the picture never scrolls under a finger that started on the picture.
+stage.addEventListener('touchmove',function(e){if(drag)e.preventDefault()},{passive:false});
 stage.addEventListener('pointerup',function(e){
-  if(e.target!==v)return;
+  if(e.pointerId!==pid)return;
+  if(release(e,true)||halt){halt=false;return}
   var r=box();
-  if(moved){post('scroll',{dx:Math.round((sx-e.clientX)*V.width/r.width),dy:Math.round((sy-e.clientY)*V.height/r.height)});blurAll();return}
   var nx=(e.clientX-r.left)/r.width,ny=(e.clientY-r.top)/r.height,f=at(nx,ny);
   // Focus happens HERE, in the tap itself. Anything after an await is too late for iOS.
   if(f&&slots[f.slot]){

@@ -367,11 +367,46 @@ test("a tap lands where they tapped, a drag scrolls, Back goes back", async () =
   await req(token, "tap", { method: "POST", cookie, body: { x: 0.5, y: 0.25 } });
   assert.deepEqual(b.did.at(-1), ["click", Math.round(0.5 * remote.VIEW.width), Math.round(0.25 * remote.VIEW.height)]);
   await req(token, "scroll", { method: "POST", cookie, body: { dy: 420 } });
-  assert.deepEqual(b.did.at(-1), ["wheel", 0, 420]);
+  assert.deepEqual(b.did.findLast(d => d[0] === "wheel"), ["wheel", 0, 420]);
   await req(token, "back", { method: "POST", cookie });
   assert.deepEqual(b.did.at(-1), ["back"]);
   await req(token, "key", { method: "POST", cookie, body: { key: "Enter" } });
   assert.deepEqual(b.did.at(-1), ["press", "Enter"]);
+});
+
+test("a scroll answers with the picture it made, in the same turn, and says which scroll it shows", async () => {
+  const { token, b } = make();
+  const { cookie } = await start(token);
+  const r = await req(token, "scroll", { method: "POST", cookie, body: { dy: 300, q: 7 } });
+  assert.equal(r.status, 200);
+  const { meta, jpeg } = unpack(r);
+  assert.equal(meta.sq, 7, "the phone's own count comes back, so it knows what the picture already shows");
+  assert.ok(jpeg.length > 0, "a picture rides with the scroll: no separate /view round trip");
+  assert.equal(meta.same, false);
+  assert.ok(Array.isArray(meta.fields), "and the form's shape, so a tap after the scroll lands right");
+  const wheel = b.did.findIndex(d => d[0] === "wheel");
+  const shot = b.did.findIndex((d, i) => i > wheel && d[0] === "screenshot");
+  assert.ok(wheel >= 0 && shot > wheel, "the picture is taken after the wheel, not before");
+  // At the end of the page the picture does not change: only the JSON travels, marked same.
+  const again = unpack(await req(token, "scroll", { method: "POST", cookie, body: { dy: 300, q: 8, h: meta.h } }));
+  assert.equal(again.meta.same, true);
+  assert.equal(again.meta.sq, 8);
+  assert.equal(again.jpeg.length, 0);
+  // A count that is not a count is not trusted either.
+  assert.equal(unpack(await req(token, "scroll", { method: "POST", cookie, body: { dy: 1, q: "x".repeat(20) } })).meta.sq, 0);
+});
+
+test("the live page moves the picture under the finger and keeps the paper page still", async () => {
+  const { token } = make();
+  const { cookie } = await start(token);
+  const page = await req(token, "", { cookie });
+  const html = String(page.body);
+  assert.match(html, /function shift\(\)/, "the last picture is shifted locally while the next one comes");
+  assert.match(html, /addEventListener\('touchmove',function\(e\)\{if\(drag/, "a drag on the picture never scrolls the page around it");
+  assert.match(html, /\{passive:false\}/);
+  assert.match(html, /fling=\{vx/, "a flick carries on after the finger lifts");
+  assert.match(html, /fly\.length<2/, "at most two scrolls on the way: coalesced, not one per touchmove");
+  assert.doesNotMatch(html, /post\('scroll'/, "a scroll is never a bare post followed by a separate /view");
 });
 
 test("what cannot be a tap, a key or a scroll is refused before the browser hears of it", async () => {
@@ -393,7 +428,7 @@ test("what cannot be a tap, a key or a scroll is refused before the browser hear
   assert.equal(b.did.length, before);
 
   await post("scroll", { dy: 999_999, dx: -999_999 });
-  assert.deepEqual(b.did.at(-1), ["wheel", -2000, 2000], "a scroll is clamped, not trusted");
+  assert.deepEqual(b.did.findLast(d => d[0] === "wheel"), ["wheel", -2000, 2000], "a scroll is clamped, not trusted");
   await post("type", { del: 999_999, text: "a" });
   assert.equal(b.did.filter(d => d[0] === "press" && d[1] === "Backspace").length, 500, "and so is a rubbing-out");
   const bad = await remote.remoteRequest({ token, action: "tap", method: "POST", headers: { cookie }, readBody: async () => "{not json" });
@@ -498,6 +533,45 @@ test("the site looking signed in finishes the session on its own, and the site i
   assert.deepEqual(checks, [[CONV, "amazon"]], "the account page was loaded and read, as at every other ending");
   assert.equal(b.closed, 1, "and the profile is free for errands again");
   assert.match(notes()[0], /they finished signing in to Amazon through the link you sent, and Amazon says they ARE signed in now/);
+});
+
+test("a flick never ends the sign-in: scroll answers are not readings of a page at rest", async () => {
+  // A flick that pushes the form off screen leaves a page with no box on it, and two scroll
+  // answers come back ~100 ms apart. Counted, that would be "signed in" twice and the end.
+  const { token, b, checks } = make({ frames: [AMAZON_SIGNED_IN] });
+  const { cookie } = await start(token);
+  clock.skip(20_000);
+  for (let q = 1; q <= 5; q++) {
+    const r = await req(token, "scroll", { method: "POST", cookie, body: { dy: 200, q } });
+    assert.equal(r.status, 200);
+    assert.equal(unpack(r).meta.sq, q, "a picture, not an ending");
+  }
+  assert.deepEqual(checks, [], "the account page was never asked");
+  assert.equal(b.closed, 0);
+  // At rest, the same page still finishes it the usual way: two /view readings.
+  assert.equal((await req(token, "view", { cookie })).status, 200);
+  assert.deepEqual(JSON.parse((await req(token, "view", { cookie })).body), { over: true, state: "signed_in" });
+});
+
+test("the end of the page is read off where the page is, not off the picture", async () => {
+  // A blinking cursor or an ad changes the picture at the bottom of a page; where the page is
+  // scrolled to does not. Only the page's own position says "this is the end".
+  let y = 0, max = 400;
+  const did = [];
+  const page = {
+    screenshot: async () => Buffer.from("jpeg-" + Math.random()), // never the same twice, like a blinking cursor
+    evaluate: async (fn) => typeof fn === "string" && fn.includes("scrollY") ? { x: 0, y, doc: true } : AMAZON_EMAIL_STEP,
+    mouse: { click: async () => {}, wheel: async (dx, dy) => { did.push(dy); y = Math.max(0, Math.min(max, y + dy)); } },
+    keyboard: { type: async () => {}, press: async () => {} },
+    goBack: async () => {},
+  };
+  const { token } = make({ launch: async () => ({ page, close: async () => {} }) });
+  const { cookie } = await start(token);
+  const step = async (dy, q) => unpack(await req(token, "scroll", { method: "POST", cookie, body: { dy, q } })).meta;
+  assert.equal((await step(300, 1)).end, false, "it moved");
+  assert.equal((await step(300, 2)).end, false, "it moved the last 100");
+  assert.equal((await step(300, 3)).end, true, "it could not move: the end, though the picture changed");
+  assert.equal((await step(-300, 4)).end, false, "and back up it goes");
 });
 
 test("nothing finishes itself in the first few seconds, or while a box is still asking for something", async () => {
