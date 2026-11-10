@@ -28,7 +28,7 @@ const CSS = `${PAPER_CSS}
 .ss-lv{padding-top:24px;display:flex;flex-direction:column;gap:14px;max-width:460px}
 .ss-lv .h1{font-size:clamp(2rem,8vw,3rem)}
 #stage{position:relative;width:100%;aspect-ratio:var(--ss-ar);border:1px solid var(--hair);border-radius:var(--radius);box-shadow:var(--sh2);overflow:hidden;background:var(--lifted)}
-#v{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#v{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;will-change:transform;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #veil{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;background:var(--lifted);color:var(--muted);font-size:15px;transition:opacity .2s}
 #veil.off{opacity:0;pointer-events:none}
 .spin{display:inline-block;width:18px;height:18px;margin-right:9px;border:2px solid var(--hair);border-top-color:var(--pen);border-radius:50%;animation:ss-sp .8s linear infinite;vertical-align:-4px}
