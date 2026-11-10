@@ -566,7 +566,13 @@ export const config = {
   remoteSigninSessionMs: Number(process.env.REASON_SIGNIN_SESSION_MS || 10 * 60_000),
   remoteSigninSettleMs: Number(process.env.REASON_SIGNIN_SETTLE_MS || 250),
   signinWindowMaxMs: Number(process.env.REASON_SIGNIN_WINDOW_MAX_MS || 15 * 60_000),
-  hearFallbackModel: process.env.REASON_HEAR_FALLBACK_MODEL || "gemini-3.5-flash-lite",
+  // Voice notes have their own model order, apart from videos (videoModel): the small model listens
+  // first and the big one is the fallback. Owner's call 2026-11-09: gemini-3.8-flash kept answering
+  // 503 "high demand" or hanging, and every voice note waited it out before the small one was asked.
+  hearModel: process.env.REASON_HEAR_MODEL || "gemini-3.5-flash-lite",
+  hearFallbackModel: process.env.REASON_HEAR_FALLBACK_MODEL || "gemini-3.8-flash",
+  // The longest one listening attempt may take (a long memo). A short note gets far less: see
+  // hearAttemptMs in src/voice.js.
   hearTimeoutMs: Number(process.env.REASON_HEAR_TIMEOUT_MS || 60_000),
   imageFetchTimeoutMs: Number(process.env.REASON_IMAGE_FETCH_TIMEOUT_MS || 20_000),
   // The outbox. Every outbound message on a real channel is a row before it is an attempt, so a

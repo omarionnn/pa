@@ -257,59 +257,87 @@ test("a voice note's link gets the same check a photo's does: https, and not thi
   assert.equal(asked, 0, "nothing was fetched from any of them");
 });
 
-test("a model that is briefly busy is asked once more, and only once", async () => {
-  const base = { url: CAF_URL, tmpDir: join(dir, "h4"), converter: AF, retryAfterMs: 0, convert: async (args) => { writeFileSync(args.at(-1), "RIFF"); return { ok: true }; } };
-  let asked = 0;
-  const second = await voice.hear({ ...base, fetchImpl: async (url) => (url === CAF_URL ? download() : (++asked === 1 ? json(503, { error: { message: "high demand" } }) : transcript("running late"))) });
-  assert.equal(second.text, "running late");
-  assert.equal(asked, 2);
-
-  // Busy both times: a second model listens instead, and the answer says which one did.
+// 2026-11-09, owner's call: the small model listens first and the big one is the fallback, because
+// the big one kept answering 503 "high demand" and every voice note waited it out first.
+test("a voice note goes to the small model first, the big one only as the fallback, and video keeps its own", async () => {
+  if (!process.env.REASON_HEAR_MODEL) assert.equal(config.hearModel, "gemini-3.5-flash-lite");
+  if (!process.env.REASON_HEAR_FALLBACK_MODEL) assert.equal(config.hearFallbackModel, "gemini-3.8-flash");
+  if (!process.env.REASON_VIDEO_MODEL) assert.equal(config.videoModel, "gemini-3.8-flash", "videos are not moved by the voice-note order");
+  assert.equal(voice.hearingStatus({ apiKey: "k", converter: AF }).model, config.hearModel);
+  const base = { url: CAF_URL, tmpDir: join(dir, "h3o"), converter: AF, retryAfterMs: 0, convert: async (args) => { writeFileSync(args.at(-1), "RIFF"); return { ok: true }; } };
   const urls = [];
-  const other = await voice.hear({ ...base, fetchImpl: async (url) => { if (url === CAF_URL) return download(); urls.push(url); return /3\.8-flash:/.test(url) ? json(503, { error: { message: "high demand" } }) : transcript("running late"); } });
-  assert.equal(other.text, "running late");
-  assert.equal(other.model, config.hearFallbackModel);
-  assert.equal(urls.length, 3, "the usual model twice, then the fallback once");
-
-  asked = 0;
-  const still = await voice.hear({ ...base, fallbackModel: "", fetchImpl: async (url) => (url === CAF_URL ? download() : (asked++, json(503, { error: { message: "high demand" } }))) });
-  assert.equal(still.ok, false);
-  assert.equal(asked, 2, "not a loop — somebody is waiting on a typing bubble");
-  assert.match(still.error, /503/);
+  const r = await voice.hear({ ...base, fetchImpl: async (url) => { if (url === CAF_URL) return download(); urls.push(url); return transcript("running late"); } });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.model, "gemini-3.5-flash-lite");
+  assert.equal(typeof r.ms, "number", "how long listening took is on the answer");
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /gemini-3\.5-flash-lite:generateContent/, "the first request is to the small model");
 });
 
-// 2026-10-06: a seven-second note "timed out" after a full minute and he was asked to type it. The
-// same audio sent again came back in 1.3 seconds.
-test("a model that does not answer in time is asked once more, then somebody else listens", async () => {
+test("a busy first model is not asked twice: the other model is the retry", async () => {
+  const base = { url: CAF_URL, tmpDir: join(dir, "h4"), converter: AF, retryAfterMs: 0, convert: async (args) => { writeFileSync(args.at(-1), "RIFF"); return { ok: true }; } };
+  for (const status of [503, 429, 500]) {
+    const urls = [];
+    const other = await voice.hear({ ...base, fetchImpl: async (url) => { if (url === CAF_URL) return download(); urls.push(url); return /flash-lite:/.test(url) ? json(status, { error: { message: "high demand" } }) : transcript("running late"); } });
+    assert.equal(other.text, "running late", String(status));
+    assert.equal(other.model, config.hearFallbackModel);
+    assert.equal(urls.length, 2, `${status}: the first model once, then the fallback once`);
+    assert.match(urls[0], /flash-lite:/);
+    assert.match(urls[1], /3\.8-flash:/);
+  }
+
+  // A bad request is the same refusal from any model: nobody else is asked.
+  const urls = [];
+  const bad = await voice.hear({ ...base, fetchImpl: async (url) => { if (url === CAF_URL) return download(); urls.push(url); return json(400, { error: { message: "bad audio" } }); } });
+  assert.equal(bad.ok, false);
+  assert.equal(urls.length, 1);
+
+  // Busy everywhere: the fallback gets its one retry on a 503, and then it stops.
+  let asked = 0;
+  const still = await voice.hear({ ...base, fetchImpl: async (url) => (url === CAF_URL ? download() : (asked++, json(503, { error: { message: "high demand" } }))) });
+  assert.equal(still.ok, false);
+  assert.equal(asked, 3, "not a loop — somebody is waiting on a typing bubble");
+  assert.match(still.error, /503/);
+
+  // With no other model, the only one keeps its one retry.
+  asked = 0;
+  const alone = await voice.hear({ ...base, fallbackModel: "", fetchImpl: async (url) => (url === CAF_URL ? download() : (++asked === 1 ? json(503, { error: { message: "high demand" } }) : transcript("running late"))) });
+  assert.equal(alone.text, "running late");
+  assert.equal(asked, 2);
+});
+
+// 2026-10-06: a seven-second note "timed out" after a full minute and he was asked to type it.
+// 2026-11-09: the same model was still waited out twice before the other was asked.
+test("a model that does not answer in time is not waited on again: somebody else listens", async () => {
   const base = { url: CAF_URL, tmpDir: join(dir, "h5"), converter: AF, retryAfterMs: 0, convert: async (args) => { writeFileSync(args.at(-1), "RIFF"); return { ok: true }; } };
   const hang = () => { const e = new Error("aborted"); e.name = "AbortError"; throw e; };
 
-  let asked = 0;
-  const second = await voice.hear({ ...base, fetchImpl: async (url) => (url === CAF_URL ? download() : (++asked === 1 ? hang() : transcript("check my most recent resume"))) });
-  assert.equal(second.ok, true, JSON.stringify(second));
-  assert.equal(second.text, "check my most recent resume");
-  assert.equal(asked, 2, "the same model, once more");
-
-  // Silent both times: the fallback listens, and the answer says which one did.
   const urls = [];
-  const other = await voice.hear({ ...base, fetchImpl: async (url) => { if (url === CAF_URL) return download(); urls.push(url); return /3\.8-flash:/.test(url) ? hang() : transcript("check my most recent resume"); } });
+  const other = await voice.hear({ ...base, fetchImpl: async (url) => { if (url === CAF_URL) return download(); urls.push(url); return /flash-lite:/.test(url) ? hang() : transcript("check my most recent resume"); } });
   assert.equal(other.text, "check my most recent resume");
   assert.equal(other.model, config.hearFallbackModel);
-  assert.equal(urls.length, 3, "the usual model twice, then the fallback once");
+  assert.equal(urls.length, 2, "the first model once, then the fallback once");
 
-  // Nobody answers at all: it stops, and says so in the words it always did.
-  asked = 0;
+  // Nobody answers at all: two attempts, not four, and it says so in the words it always did.
+  let asked = 0;
   const never = await voice.hear({ ...base, fetchImpl: async (url) => (url === CAF_URL ? download() : (asked++, hang())) });
   assert.equal(never.ok, false);
-  assert.equal(asked, 4, "two models, two tries each, and not a loop");
+  assert.equal(asked, 2, "two models, one try each, and not a loop");
   assert.match(never.error, /did not answer within/);
+
+  // Alone, a silent model is asked once more, as before.
+  asked = 0;
+  const alone = await voice.hear({ ...base, fallbackModel: "", fetchImpl: async (url) => (url === CAF_URL ? download() : (++asked === 1 ? hang() : transcript("ok"))) });
+  assert.equal(alone.text, "ok");
+  assert.equal(asked, 2);
 });
 
 test("a short note is not waited on for a minute", () => {
   assert.equal(voice.hearAttemptMs(3.3, 60_000), 16_600, "ten seconds, plus two for every second of audio");
   assert.equal(voice.hearAttemptMs(1, 60_000), 15_000, "never under fifteen");
   assert.equal(voice.hearAttemptMs(600, 60_000), 60_000, "never over the ceiling");
-  assert.equal(voice.hearAttemptMs(null, 60_000), 60_000, "and an unknown length keeps the ceiling");
+  assert.equal(voice.hearAttemptMs(null, 60_000), 20_000, "an unknown length is twenty seconds, not the minute");
+  assert.equal(voice.hearAttemptMs(null, 10_000), 10_000, "and still never over the ceiling");
 });
 
 test("what cannot be listened to at all is 'unavailable', which is different from 'failed'", async () => {
