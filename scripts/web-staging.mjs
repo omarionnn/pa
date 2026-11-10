@@ -202,7 +202,7 @@ const history = (query = {}) => wh.renderHistory({ account, query, now });
 let id = 0;
 const row = (role, channel, text, when, media = []) => ({ id: ++id, role, channel, text, media, at: when, external_id: null });
 const rows = [
-  row("user", "fake", "Something like this for my sister's birthday?", at(2, 18, 40), [{ mimeType: "image/jpeg", filename: "IMG_3307.JPG", url: "staging:photo" }]),
+  row("user", "fake", "Something like this for my sister's birthday?", at(2, 18, 40), [{ mimeType: "image/jpeg", filename: "IMG_3307.JPG", url: "staging:photo" }, { mimeType: "image/jpeg", filename: "IMG_3308.JPG", url: "staging:photo2" }]),
   row("assistant", "fake", "Lovely. I'll find a few like it under $80 that arrive before Saturday.", at(2, 18, 41)),
   row("user", "fake", "", at(1, 8, 2), [{ mimeType: "audio/x-caf", filename: "Audio Message.caf", url: "staging:voice", seconds: 7, transcript: "also flights to lisbon in march, nothing before 9am" }]),
   row("assistant", "fake", "On it. I'll keep the early ones out and hold the best two for you to look at.", at(1, 8, 3)),
@@ -263,7 +263,7 @@ const reply = wc.rowOut({ id: 9999, role: "assistant", channel: "web", text: REP
 // The person's own line as the live stream confirms it (prod sends this row before Reason starts).
 const MINE = wc.rowOut({ id: 9998, role: "user", channel: "web", text: "__T__", media: [], at: now, external_id: `${CONV}:__C__` }, { conversationId: CONV });
 const PIECES = REPLY.match(/[^.!?]+[.!?)]+\)?\s*/g).map(x => x).reduce((a, x) => [...a, (a.at(-1) ?? "") + x], []).map(t => wc.draftHtml(t.trim(), { conversationId: CONV, service: "iMessage" }));
-const MEDIA = { "staging:photo": "media/photo.svg", "staging:voice": "media/voice.wav", "staging:pdf": "media/lease-2026.pdf" };
+const MEDIA = { "staging:photo": "media/photo.svg", "staging:photo2": "media/photo2.svg", "staging:voice": "media/voice.wav", "staging:pdf": "media/lease-2026.pdf" };
 // The thread's media addresses (/web/media/m/<row>/<i>) point at the sample files written below.
 const mediaMap = {};
 for (const r of rows) r.media.forEach((m, i) => { mediaMap[`/web/media/m/${r.id}/${i}`] = MEDIA[m.url]; });
@@ -433,6 +433,9 @@ const S = [
   ["home", "Home and thread", "Home · in hand", "Greeting, composer, approval on paper, in-hand rows between dashed rules, pick up from iMessage.", home(), {}],
   ["home-new", "Home and thread", "Home · new", "Nothing in hand yet: start-with examples.", wc.renderHome({ account: emptyAccount, csrf: "staging", sendId: "staging", items: [], pick: "" }), {}],
   ["conversation", "Home and thread", "Conversation", "Photo, voice note (▶ plays), PDF slip, list, page card, approval in chat, Ongoing margin. Sending works here.", convo(), {}],
+  ["viewer-photo", "Home and thread", "Photo viewer", "A tap on a photo opens it over the thread: who and when, the words with it, ← → (keys, arrows, a swipe) through every photo, Download, × / Esc / tap beside / swipe down to close.", convo(), { state: after("var p=document.querySelector('.msg .photo');if(p)p.click()") }],
+  ["viewer-pdf", "Home and thread", "PDF viewer", "A PDF on a line previews in the viewer, with Open in a new tab and Download.", convo(), { state: after("var a=document.querySelector('.msg a.fchip[data-view=pdf]');if(a)a.click()") }],
+  ["viewer-file", "Home and thread", "File card", "A file the browser can't show (a .docx): its name, type and size, and Download.", convo(), { state: after("var a=document.querySelector('.msg a.fchip[data-view=file]');if(a)a.click()") }],
   ["conversation-empty", "Home and thread", "Conversation · empty", "No messages, nothing in hand.", wc.renderConversation({ account: emptyAccount, csrf: "staging", lines: [], more: false, sendId: "staging", items: [], approvals: [] }), {}],
 
   // The daily edition (REASON_WEB_DAILY): Home as a morning paper. Sample editions (scripts/web-daily-sample.mjs).
@@ -612,8 +615,8 @@ var k=/^image\\//.test(t)?'image':/^audio\\//.test(t)?'voice':'pdf';return ans({
 if(!o.method||o.method==='GET'){if(u.indexOf('/web/memory/history')===0)return f(/[?&]q=./.test(u)?'history-search.html':'history.html');if(u.indexOf('/web/memory')===0)return f(/[?&]q=./.test(u)?'memory-search.html':'memory.html')}
 if(u.indexOf('/web/memory/correct')===0){var q=new URLSearchParams(String(o.body||''));return ans({ok:true,html:GOT.split('__K__').join(esc(q.get('k'))).split('__T__').join(esc(q.get('text')))})}
 if(u.indexOf('/web/memory/')===0||u.indexOf('/web/ongoing/state')===0)return ans({ok:true});
-if(/^\/web\/api\/stamps\/\d+\/share\/revoke/.test(u))return ans({ok:true,revoked:true});
-if(/^\/web\/api\/stamps\/\d+\/share/.test(u))return ans({url:'https://heyreason.com/s/Sample12abcd'});
+if(/^\\/web\\/api\\/stamps\\/\\d+\\/share\\/revoke/.test(u))return ans({ok:true,revoked:true});
+if(/^\\/web\\/api\\/stamps\\/\\d+\\/share/.test(u))return ans({url:'https://heyreason.com/s/Sample12abcd'});
 var b={messages:[],more:false};if(sent){sent--;var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now()});b.messages=[m]}return ans(b)};
 try{window.EventSource=ES}catch(e){}})();</script>`;
 const LOADER = `<script>try{sessionStorage.removeItem('reason-web-loaded')}catch(e){}</script>`;
@@ -632,6 +635,8 @@ function stage(html, { signedOut = false, loader = false, state = "", head = "" 
 
 // ---------------------------------------------------------------- sample media
 const PHOTO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7cfae"/><stop offset="1" stop-color="#9a6a46"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><rect x="250" y="170" width="300" height="300" rx="14" fill="#f4ece0" stroke="#7a4f33" stroke-width="6"/><path d="M250 260h300M400 170v300" stroke="#9c3b2e" stroke-width="18"/><circle cx="400" cy="160" r="34" fill="none" stroke="#9c3b2e" stroke-width="12"/></svg>`;
+// A second, upright photo, so the thread's frames show their shape and the viewer has somewhere to go next.
+const PHOTO2_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="800" viewBox="0 0 600 800"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cfd8c4"/><stop offset="1" stop-color="#5f6f52"/></linearGradient></defs><rect width="600" height="800" fill="url(#g)"/><rect x="170" y="260" width="260" height="330" rx="10" fill="#f4ece0" stroke="#3f4a36" stroke-width="6"/><path d="M200 330h200M200 390h200M200 450h140" stroke="#9c3b2e" stroke-width="12" stroke-linecap="round"/></svg>`;
 /** One second of quiet, 8 kHz mono: enough for ▶ to play something. */
 function silentWav(seconds = 1, rate = 8000) {
   const n = seconds * rate, b = Buffer.alloc(44 + n);
@@ -658,6 +663,7 @@ try {
   for (const name of Object.keys(kit.WEB_FONTS)) writeFileSync(join(outDir, "web", "fonts", `${name}.woff2`), kit.WEB_FONTS[name]);
   for (const f of ["favicon.svg", "apple-touch-icon.png"]) copyFileSync(new URL(`assets/${f}`, root), join(outDir, f));
   writeFileSync(join(outDir, "media", "photo.svg"), PHOTO_SVG);
+  writeFileSync(join(outDir, "media", "photo2.svg"), PHOTO2_SVG);
   writeFileSync(join(outDir, "media", "voice.wav"), silentWav());
   writeFileSync(join(outDir, "media", "voice-reason.wav"), toneWav(9));
   writeFileSync(join(outDir, "media", "call.wav"), toneWav(154));

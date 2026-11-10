@@ -28,6 +28,7 @@ import { isLinkPreviewAttachment } from "./linkpreview.js";
 import { sentFile, mimeOf } from "./sentfiles.js";
 import { playable } from "./webaudio.js";
 import { fitPhoto, FIT_BYTES } from "./webshrink.js";
+import { toJpeg, sniff } from "./pictures.js";
 import { readCookie } from "./pages/access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount } from "./pages/websignin.js";
 
@@ -209,6 +210,7 @@ function serveUpload(m, opts) {
 }
 
 const AUDIO_MIME = { ".caf": "audio/x-caf", ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".aac": "audio/aac", ".amr": "audio/amr", ".webm": "audio/webm" };
+const VIDEO_MIME = { ".mov": "video/quicktime", ".mp4": "video/mp4", ".m4v": "video/x-m4v", ".webm": "video/webm", ".3gp": "video/3gpp" };
 const cache = new Map(); // url → { bytes, mime }, a few recent CDN fetches, at most CACHE_BYTES in all
 const CACHE_BYTES = 64 * 1024 * 1024;
 const remember = (url, v) => {
@@ -246,7 +248,8 @@ async function fetchRemote(a, { fetchImpl = globalThis.fetch } = {}) {
     const bytes = Buffer.concat(chunks);
     if (!bytes.length || bytes.length > uploads.MAX_UPLOAD_BYTES) return null;
     const ext = extname(String(a.filename || a.url).split("?")[0]).toLowerCase();
-    const mime = a.kind === "pdf" ? "application/pdf" : (AUDIO_MIME[ext] ?? mimeOf(a.filename || a.url, a.mimeType));
+    // A video texted in (.mov, .mp4) plays in the viewer as a video, never handed to the audio converter.
+    const mime = a.kind === "pdf" ? "application/pdf" : a.kind === "video" ? (VIDEO_MIME[ext] ?? "video/mp4") : (AUDIO_MIME[ext] ?? mimeOf(a.filename || a.url, a.mimeType));
     return remember(a.url, { bytes, mime });
   } catch { return null; }
 }
@@ -283,11 +286,51 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
   return bytesOut({ ...got, name: a.filename, headers, method });
 }
 
+// A HEIC (what an iPhone shoots, kept as it came when it was small enough) is a picture Chrome can't
+// draw. The thread and the viewer ask for `?as=jpeg` (src/pages/webviewer.js viewSrc): the same file,
+// turned into a JPEG here (heif-convert on the server, sips on a Mac). The plain address still gives
+// the original. A few recent ones are kept in memory; one this machine can't convert is the same 404,
+// and the page shows a file card with Download instead.
+const jpegs = new Map(); // `${conversation} ${file}` → jpeg bytes
+const JPEG_KEEP = 12, JPEG_KEEP_BYTES = 32 * 1024 * 1024;
+const converting = new Map(); // same key → the conversion already running, shared
+let lane = Promise.resolve(); // one conversion at a time on this machine
+/** The file a media path names, however it is spelled (`/m/0001/0` is `/m/1/0`; an upload's name is decoration). */
+export function fileKey(path) {
+  let m;
+  if ((m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/|$)/.exec(path))) return `u:${m[1]}`;
+  if ((m = /^\/web\/media\/m\/(\d{1,15})\/(\d{1,2})$/.exec(path))) return `m:${Number(m[1])}:${Number(m[2])}`;
+  return null;
+}
+async function heicAsJpeg(out, key, { convert = toJpeg } = {}) {
+  if (out.status !== 200 || out.headers["Content-Type"] !== "image/heic") return out;
+  let bytes = jpegs.get(key);
+  if (!bytes) {
+    const body = Buffer.isBuffer(out.body) ? out.body : Buffer.from(out.body ?? []);
+    if (sniff(body) !== "heic") return notFound();
+    let job = converting.get(key);
+    if (!job) {
+      job = lane.then(async () => {
+        try { const j = await convert({ bytes: body, kind: "heic" }); return j?.ok && j.bytes?.length ? j.bytes : null; } catch { return null; }
+      });
+      lane = job.catch(() => null);
+      converting.set(key, job);
+      job.finally(() => converting.delete(key)).catch(() => {});
+    }
+    bytes = await job;
+    if (!bytes) return notFound();
+    jpegs.set(key, bytes);
+    let total = 0; for (const b of jpegs.values()) total += b.length;
+    while (jpegs.size > 1 && (jpegs.size > JPEG_KEEP || total > JPEG_KEEP_BYTES)) { const k = jpegs.keys().next().value; total -= jpegs.get(k).length; jpegs.delete(k); }
+  }
+  return { status: 200, headers: { ...out.headers, "Content-Type": "image/jpeg", "Content-Length": bytes.length, "Content-Disposition": String(out.headers["Content-Disposition"]).replace(/\.hei[cf](?=["']|$)/gi, ".jpg") }, body: bytes };
+}
+
 /**
  * Everything under /web/upload and /web/media/, from src/http.js. `readBody(max)` reads the raw body
  * up to `max` bytes (null past it).
  */
-export async function webMediaRoute({ path, method, headers = {}, readBody, log = () => {}, fetchImpl }) {
+export async function webMediaRoute({ path, method, headers = {}, readBody, log = () => {}, fetchImpl, as = null, convert }) {
   const account = sessionAccount(headers);
   if (path === "/web/upload") {
     if (method !== "POST") return { ...json(405, { ok: false, error: "post_only" }), headers: { ...json(405, {}).headers, Allow: "POST" } };
@@ -296,6 +339,13 @@ export async function webMediaRoute({ path, method, headers = {}, readBody, log 
   }
   if (method !== "GET" && method !== "HEAD") return notFound();
   if (!account) return notFound();
+  if (as === "jpeg") {
+    // The whole file, then the JPEG of it (a range of a HEIC is no use to anybody).
+    const out = await webMediaRoute({ path, method: "GET", headers: { ...headers, range: undefined }, readBody, log, fetchImpl });
+    const j = await heicAsJpeg(out, `${account.conversation_id} ${fileKey(path)}`, { convert });
+    if (j.status === 200 && method === "HEAD") return { ...j, body: "" };
+    return j;
+  }
   let m;
   if ((m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/[^/]*)?$/.exec(path))) {
     const rec = uploads.meta(m[1]);

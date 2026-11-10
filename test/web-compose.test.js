@@ -202,7 +202,7 @@ test("a photo sent on Web goes through the texted-photo pipeline: router attachm
   const rows = db.messagesFor(KOFI_C);
   assert.deepEqual(rows.map(x => [x.role, x.channel]), [["user", "web"], ["assistant", "web"]]);
   const line = convo.rowOut(rows[0], { conversationId: KOFI_C });
-  assert.match(line.html, /<p class="lbl"><span>YOU · WEB · <\/span><time[^>]*>[^<]*<\/time><\/p><a class="photo" href="\/web\/media\/u\/[A-Za-z0-9_-]{22}\/listing\.png" target="_blank" rel="noopener"><img src="\/web\/media\/u\/[^"]+" alt="Photo you sent"[^>]*><\/a><div class="said">Is this the same place\?<\/div>/);
+  assert.match(line.html, /<p class="lbl"><span>YOU · WEB · <\/span><time[^>]*>[^<]*<\/time><\/p><a class="photo" href="\/web\/media\/u\/[A-Za-z0-9_-]{22}\/listing\.png" target="_blank" rel="noopener" data-view="image"[^>]*><img src="\/web\/media\/u\/[^"]+" alt="Photo you sent"[^>]*><\/a><div class="said">Is this the same place\?<\/div>/);
   assert.ok(!JSON.stringify(line).includes("files.heyreason.test"), "only the path leaves the server");
   assert.equal(h.fake.sent.length, 0, "nothing texted to the phone");
 });
@@ -222,7 +222,7 @@ test("a PDF sent on Web is read by the PDF reader from disk; the thread shows it
   assert.equal(read.ok, true);
   assert.ok(Buffer.compare(got, PDF) === 0, "the reader got the very bytes uploaded");
   const line = convo.rowOut(db.messagesFor(KOFI_C)[0], { conversationId: KOFI_C });
-  assert.match(line.html, /<a class="slip fslip fchip" href="\/web\/media\/u\/[^"]+\/lease\.pdf" target="_blank" rel="noopener" aria-label="Open lease\.pdf, \d+ B">.*<span class="fn">lease\.pdf<\/span><span class="fs">PDF · 4 PAGES · \d+ B · OPEN<\/span><\/span><\/a>/, "3D: the file slip, TAP TO OPEN");
+  assert.match(line.html, /<a class="slip fslip fchip" href="\/web\/media\/u\/[^"]+\/lease\.pdf" target="_blank" rel="noopener" data-view="pdf"[^>]* aria-label="Open lease\.pdf, \d+ B">.*<span class="fn">lease\.pdf<\/span><span class="fs">PDF · 4 PAGES · \d+ B · OPEN<\/span><\/span><\/a>/, "3D: the file slip, TAP TO OPEN");
 });
 
 test("somebody else's file never rides on a send; nor a made-up id; and an empty send with no files is refused", async () => {

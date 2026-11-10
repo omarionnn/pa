@@ -180,7 +180,7 @@ function readFormCookie(header) {
 // sign-in form was refused (10-26).
 const STREAM_ORIGIN = webStreamOrigin();
 export const SECURITY_HEADERS = {
-  "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'${STREAM_ORIGIN ? ` ${STREAM_ORIGIN}` : ""}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+  "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'${STREAM_ORIGIN ? ` ${STREAM_ORIGIN}` : ""}; form-action 'self'; base-uri 'none'; frame-src 'self'; frame-ancestors 'none'`,
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
   "X-Frame-Options": "DENY",

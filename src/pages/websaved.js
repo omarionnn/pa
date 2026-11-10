@@ -336,7 +336,8 @@ export const FRAME_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src
 
 // ---------------------------------------------------------------- routes
 
-const PAGE_HEADERS = { ...SECURITY_HEADERS, "Content-Security-Policy": SECURITY_HEADERS["Content-Security-Policy"].replace("frame-ancestors 'none'", "frame-src 'self'; frame-ancestors 'none'") };
+// frame-src 'self' is in SECURITY_HEADERS since the attachment viewer (src/pages/webviewer.js) shows PDFs.
+const PAGE_HEADERS = { ...SECURITY_HEADERS };
 const html = (status, body, headers = PAGE_HEADERS) => ({ status, headers: { "Content-Type": "text/html; charset=utf-8", ...headers, "Content-Length": Buffer.byteLength(body) }, body });
 const to = (location) => ({ status: 303, headers: { ...SECURITY_HEADERS, Location: location, "Content-Length": 0 }, body: "" });
 function same(a, b) {

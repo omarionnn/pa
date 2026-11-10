@@ -349,7 +349,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         let out;
         try {
           const { webMediaRoute, readRaw } = await import("./webmedia.js");
-          out = await webMediaRoute({ path: url.pathname, method: req.method, headers: req.headers, readBody: (max) => readRaw(req, max), log });
+          out = await webMediaRoute({ path: url.pathname, method: req.method, headers: req.headers, readBody: (max) => readRaw(req, max), log, as: url.searchParams.get("as") });
         } catch (e) {
           // An approval link's token is a bearer secret: never in the journal.
       log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
