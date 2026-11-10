@@ -105,12 +105,16 @@ async function realLaunch({ conversationId, url }) {
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
   // The picture straight from the browser's compositor: about half the time of page.screenshot.
-  const cdp = await context.newCDPSession(page).catch(() => null);
-  const shot = async (quality) => {
+  // One compositor session per page, made when that page is first shown: a popup the session follows
+  // (Notion's Google sign-in) is pictured itself, never the tab behind it (cold review, 2026-11-10).
+  const cdps = new WeakMap();
+  const shot = async (quality, pg = page) => {
+    if (!cdps.has(pg)) cdps.set(pg, await context.newCDPSession(pg).catch(() => null));
+    const cdp = cdps.get(pg);
     if (cdp) {
       try { return Buffer.from((await cdp.send("Page.captureScreenshot", { format: "jpeg", quality, optimizeForSpeed: true })).data, "base64"); } catch { /* the slower way below */ }
     }
-    return page.screenshot({ type: "jpeg", quality });
+    return pg.screenshot({ type: "jpeg", quality });
   };
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
   return { page, shot, close: () => context.close().catch(() => {}) };
@@ -184,15 +188,26 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
  * back to the tab that opened it. The popup is in the same browser context, so the private-network
  * guard on every request (guardContext) covers it too. Nothing is navigated here — only followed.
  */
+export const MAX_POPUPS = 4;
 export function followPopups(s, page) {
   if (!page || typeof page.on !== "function") return;
+  s.pages ??= [page];
+  s.popups ??= 0;
   page.on("popup", (pop) => {
-    if (s.ended || !s.browser) return;
-    const opener = s.browser.page;
+    if (s.ended || !s.browser) { pop.close?.().catch?.(() => {}); return; }
+    // A site that keeps opening windows does not get to keep taking the session over.
+    if (s.popups >= MAX_POPUPS) { pop.close?.().catch?.(() => {}); s.log({ signin_remote: "popup_refused", site: s.entry.site }); return; }
+    s.popups += 1;
+    s.pages.push(pop);
     s.browser.page = pop;
     s.log({ signin_remote: "popup_followed", site: s.entry.site });
     followPopups(s, pop);
-    pop.on("close", () => { if (s.browser && s.browser.page === pop) s.browser.page = opener; });
+    // Closed (Google handing back to the site): the newest page still open, never a closed one —
+    // the opener may have closed first.
+    pop.on("close", () => {
+      s.pages = s.pages.filter(p => p !== pop && !(typeof p.isClosed === "function" && p.isClosed()));
+      if (s.browser && s.browser.page === pop && s.pages.length) s.browser.page = s.pages.at(-1);
+    });
   });
 }
 
@@ -403,7 +418,7 @@ async function readView(s) {
 /** The same reading, for a caller already holding the browser's turn (a scroll and its picture are one turn). */
 async function takeView(s, { quality = 58 } = {}) {
   const page = s.browser.page;
-  const shot = s.browser.shot ? await s.browser.shot(quality) : await page.screenshot({ type: "jpeg", quality });
+  const shot = s.browser.shot ? await s.browser.shot(quality, page) : await page.screenshot({ type: "jpeg", quality });
   const raw = await page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
   // The shape of the last form the phone saw, so a typed code can be cleaned for the box it lands in.
   s.lastFields = Array.isArray(raw?.fields) ? raw.fields : [];

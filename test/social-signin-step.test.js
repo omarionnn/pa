@@ -123,3 +123,8 @@ test("Notion's real first page (email box AND a password box for password manage
   const raw = { url: "https://app.notion.com/login", text: "Log in to your Notion account Google Apple Microsoft Email Continue", buttons: ["Google", "Apple", "Microsoft", "Continue"] };
   assert.equal(social.stepOf(raw, { fields: [{ k: "email" }, { k: "password" }] }).step, "chooser");
 });
+
+test("a password box with a provider button but no email box is the password step, not the chooser", () => {
+  const raw = { url: "https://site.example/login/password", text: "Enter your password Continue with Google", buttons: ["Continue with Google", "Sign in"] };
+  assert.equal(social.stepOf(raw, { fields: [{ k: "password" }] }).step, "password");
+});

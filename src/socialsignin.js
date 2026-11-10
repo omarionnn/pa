@@ -263,8 +263,9 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   // the chooser, even with an email box on it: the person picks the provider or their own email.
   // Only off the providers' hosts — on Google's own page the box is Google's email step.
   const offered0 = onProvider ? [] : [...new Set([...providersOffered(t), ...(Array.isArray(raw?.buttons) ? providersOnPage(raw.buttons) : [])])];
-  // A password box does not stop it: Notion keeps one on its first page for password managers.
-  if (offered0.length && !has("otp")) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
+  // A password box alone does not stop it when an email box sits beside it (Notion keeps one on its
+  // first page for password managers); a password box with no email box is the password step.
+  if (offered0.length && !has("otp") && (!has("password") || has("email") || has("username") || has("tel"))) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
   if (prompt.kind === "code" || has("otp")) return { step: "code", provider: prov, number: "", say: `${name} sent a code. Send it to me as it came — I'll clean it up.` };
   if (prompt.kind === "password" || has("password")) return { step: "password", provider: prov, number: "", say: `${name} wants your password. Type it here on ${name}'s own page — it never reaches me.` };
   // An input box for the email/number comes before the account-picker words: "Email or phone" on
