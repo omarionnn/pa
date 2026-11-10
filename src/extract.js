@@ -181,8 +181,9 @@ const BACKFILL_LIMIT = 20;
  * extraction pass, which is already periodic, bounded per pass, and a no-op that costs one indexed
  * query when nothing is missing. Never throws: a failure here is retried on the next pass.
  */
-export async function backfillEmbeddings({ limit = BACKFILL_LIMIT, embedFn = embed, store = storeVector, log = () => {} } = {}) {
+export async function backfillEmbeddings({ limit = BACKFILL_LIMIT, embedFn = embed, store = storeVector, log = () => {}, now = Date.now() } = {}) {
   if (embedFn === embed && !config.openaiKey) return 0;
+  if (now < backfillPausedUntil) return 0;
   let rows;
   try {
     rows = db.factsMissingEmbedding({ limit });
@@ -198,10 +199,22 @@ export async function backfillEmbeddings({ limit = BACKFILL_LIMIT, embedFn = emb
     if (done) log(`embedded ${done} fact(s) that had no embedding`);
     return done;
   } catch (e) {
-    log(`embedding backfill failed (${rows?.length ?? 0} waiting): ${e.message}`);
+    // A key or billing refusal (401/403, or a 429 that is "no credits" rather than a rate limit) is
+    // not fixed by asking again on the next pass: 2026-11-09 an invalidated key made this loop send
+    // 220 refused calls in one hour, the bulk of the 277 OpenAI failures on the status page. Wait.
+    const keyRefused = /OpenAI embeddings (401|403)\b/.test(e.message)
+      || /OpenAI embeddings 429\b/.test(e.message) && /insufficient_quota|no credits/i.test(e.message);
+    if (keyRefused) backfillPausedUntil = now + BACKFILL_KEY_PAUSE_MS;
+    log(`embedding backfill failed (${rows?.length ?? 0} waiting)${keyRefused ? `, paused ${BACKFILL_KEY_PAUSE_MS / 60_000} min` : ""}: ${e.message}`);
     return 0;
   }
 }
+
+/** How long the backfill waits after OpenAI refused the key or the billing. A new key means a restart, which clears it. */
+const BACKFILL_KEY_PAUSE_MS = 30 * 60_000;
+let backfillPausedUntil = 0;
+/** For tests. */
+export function resetBackfillPause() { backfillPausedUntil = 0; }
 
 const storeVector = (conversationId, factId, vector) => embedAndStore(conversationId, factId, "", { vector });
 
