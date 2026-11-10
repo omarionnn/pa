@@ -17,12 +17,13 @@ const rc = d.restcrypt;
 // The disaster-recovery copy of the master: sealed with age to the owner's key (the same one env.age
 // uses), written beside it as <file>.age, which reason-offsite-backup uploads. Without one, losing the
 // box loses everyone's history. REASON_REST_MASTER_AGE_RECIPIENT = the owner's age public key.
+function ageSeal(from, to) {
+  childProcess.execFileSync("age", ["-r", process.env.REASON_REST_MASTER_AGE_RECIPIENT, "-o", to, from]);
+}
 function sealRecoveryCopy() {
-  const to = process.env.REASON_REST_MASTER_AGE_RECIPIENT;
-  if (!to) { console.error("REASON_REST_MASTER_AGE_RECIPIENT is not set: no recovery copy written. Losing this box would lose everyone's history."); process.exitCode = 3; return; }
-  const { execFileSync } = childProcess;
+  if (!process.env.REASON_REST_MASTER_AGE_RECIPIENT) { console.error("REASON_REST_MASTER_AGE_RECIPIENT is not set: no recovery copy written."); process.exit(3); }
   const f = rc.kekFilePath();
-  execFileSync("age", ["-r", to, "-o", f + ".age", f]);
+  ageSeal(f, f + ".age");
   console.log(`recovery copy: ${f}.age`);
 }
 const pause = () => new Promise(r => setTimeout(r, 50));
@@ -46,10 +47,16 @@ if (arg === "--status") {
   console.log(`install key now v${await rc.rotateInstallKey()}`);
 } else if (arg === "--move-master" || arg === "--rotate-master") {
   if (!process.argv.includes("--server-stopped")) { console.error(`Stop Reason first, then run with ${arg} --server-stopped.`); process.exit(2); }
-  console.log(arg === "--move-master" ? await rc.moveMaster() : await rc.rotateFileMaster());
-  if (arg === "--rotate-master") sealRecoveryCopy();
+  if (arg === "--rotate-master" && !process.env.REASON_REST_MASTER_AGE_RECIPIENT) {
+    console.error("REASON_REST_MASTER_AGE_RECIPIENT is not set: refusing to rotate without a recovery copy (losing this box would lose everyone's history).");
+    process.exit(2);
+  }
+  console.log(arg === "--move-master" ? await rc.moveMaster()
+    : await rc.rotateFileMaster({ sealRecovery: (from, to) => ageSeal(from, to) }));
+} else if (arg === "--finish-rotation") {
+  console.log(rc.finishRotation());
 } else if (arg === "--seal-recovery-copy") {
   sealRecoveryCopy();
 } else if (arg === "--prune-old-masters") {
   console.log(`removed ${rc.pruneOldMasters()} retired master key file(s) older than 3 days`);
-} else { console.error("usage: --status | --seal | --open | --rotate-install-key | --move-master | --rotate-master | --seal-recovery-copy | --prune-old-masters"); process.exit(2); }
+} else { console.error("usage: --status | --seal | --open | --rotate-install-key | --move-master | --rotate-master | --seal-recovery-copy | --finish-rotation | --prune-old-masters"); process.exit(2); }

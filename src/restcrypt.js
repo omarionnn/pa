@@ -23,7 +23,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, writeSync, fsyncSync, closeSync } from "node:fs";
 
 export const PREFIX = "enc:u1:";
 
@@ -59,6 +59,7 @@ function openKeystore(path) {
   k.exec(`
     PRAGMA busy_timeout = 5000;
     PRAGMA journal_mode = WAL; -- the server and scripts/encrypt-rest.mjs may both write
+    PRAGMA secure_delete = ON; -- a destroyed person key does not linger in free pages
     CREATE TABLE IF NOT EXISTS install_key (
       version INTEGER PRIMARY KEY, source TEXT NOT NULL, wrapped TEXT NOT NULL, created_at INTEGER NOT NULL, retired_at INTEGER);
     CREATE TABLE IF NOT EXISTS user_keys (
@@ -137,10 +138,11 @@ async function kmsCall(target, payload) {
 const KMS_CONTEXT = { app: "reason", purpose: "install-key" };
 
 // ---------- "file": the master key in its own root-owned file, outside .env and every backup ----------
-// REASON_REST_KEK_FILE (default /etc/reason/rest-master.key): 64 hex characters, mode 0640 root:reason.
+// REASON_REST_KEK_FILE (default /etc/reason/rest/master.key): 64 hex characters, mode 0640, in a directory of
+// its own (2770 root:reason) so Reason can rotate it without touching anything else in /etc/reason.
 // Rotation (rotateFileMaster) writes "<file>.next" first, then the keystore, then renames: a crash at
 // any point leaves a pair that opens (boot tries <file>, then <file>.next).
-export function kekFilePath() { return process.env.REASON_REST_KEK_FILE || "/etc/reason/rest-master.key"; }
+export function kekFilePath() { return process.env.REASON_REST_KEK_FILE || "/etc/reason/rest/master.key"; }
 function readKekFile(path) {
   const s = readFileSync(path, "utf8").trim();
   if (!/^[0-9a-f]{64}$/i.test(s)) throw new Error(`${path} must hold 64 hex characters (the master key).`);
@@ -148,7 +150,9 @@ function readKekFile(path) {
 }
 function fileKeks() {
   const p = kekFilePath(), out = [];
-  for (const f of [p, p + ".next"]) if (existsSync(f)) out.push(readKekFile(f));
+  if (existsSync(p)) out.push(readKekFile(p));
+  // A half-written <file>.next (power cut during a rotation) is skipped, never fatal.
+  if (existsSync(p + ".next")) { try { out.push(readKekFile(p + ".next")); } catch { /* torn write */ } }
   if (!out.length) throw new Error(`Master key file ${p} is missing. Encryption at rest cannot unlock without it.`);
   return out;
 }
@@ -203,13 +207,59 @@ export async function moveMaster() {
  * day's backup has run (so the newest backup is already under the new key by the next run).
  * Keeps the old file as <file>.prev-<ms> for `graceMs`, then removes it (pruneOldMasters).
  */
-export async function rotateFileMaster() {
+function durableWrite(path, text) {
+  const fd = openSync(path, "w", 0o640);
+  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  syncDir(dirname(path));
+}
+function syncDir(d) { const fd = openSync(d, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } }
+
+/** After the keystore commits to <file>.next: retire <file>, promote .next. Each step fsynced. */
+function promoteNext(p) {
+  if (existsSync(p)) renameSync(p, `${p}.prev-${Date.now()}`);
+  renameSync(p + ".next", p);
+  if (existsSync(p + ".next.age")) renameSync(p + ".next.age", p + ".age");
+  syncDir(dirname(p));
+}
+
+/** Which master opens the keystore's current install key: "main", "next" or null. */
+function keystoreOpensWith(p) {
+  const row = ks.prepare("SELECT wrapped FROM install_key WHERE retired_at IS NULL ORDER BY version DESC LIMIT 1").get();
+  if (!row) return null;
+  for (const [name, f] of [["main", p], ["next", p + ".next"]]) {
+    try { if (existsSync(f)) { gcmOpen(readKekFile(f), row.wrapped, "reason-ik"); return name; } } catch { /* not this one */ }
+  }
+  return null;
+}
+
+/**
+ * Finishes a rotation a crash interrupted, or clears a stale <file>.next. Safe to run any time;
+ * rotateFileMaster calls it first, so a retry never overwrites the only key that opens the keystore.
+ */
+export function finishRotation() {
+  const p = kekFilePath();
+  if (!existsSync(p + ".next")) return "clean";
+  const w = keystoreOpensWith(p);
+  if (w === "next") { promoteNext(p); return "finished"; }
+  if (w === "main") { rmSync(p + ".next", { force: true }); rmSync(p + ".next.age", { force: true }); syncDir(dirname(p)); return "stale-next-removed"; }
+  throw new Error(`Neither ${p} nor ${p}.next opens the keystore: restore the master from the age recovery copy.`);
+}
+
+/**
+ * Order, so that every crash or power cut leaves a pair that opens:
+ *   1. finish any earlier rotation
+ *   2. new master -> <file>.next, fsynced; its age recovery copy -> <file>.next.age (sealRecovery)
+ *   3. keystore re-wrapped under it, one transaction (SQLite makes it durable)
+ *   4. promote: <file> -> .prev-<ms>, .next -> <file>, .next.age -> .age, directory fsynced
+ *   5. checkpoint + VACUUM (best effort; failure here changes nothing above)
+ */
+export async function rotateFileMaster({ sealRecovery = null } = {}) {
   if (!ks || !iks.size) throw new Error("Not active.");
   const p = kekFilePath();
-  // A new master AND a new install key, and every older install key dropped: today's keys then open
-  // nothing in an older keys.db, so only the master files (kept 3 days) could, and they go too.
+  finishRotation();
   const freshMaster = randomBytes(32), freshIK = randomBytes(32);
-  writeFileSync(p + ".next", freshMaster.toString("hex") + "\n", { mode: 0o640 });
+  durableWrite(p + ".next", freshMaster.toString("hex") + "\n");
+  if (sealRecovery) sealRecovery(p + ".next", p + ".next.age");
   const next = Math.max(...iks.keys()) + 1;
   ks.exec("BEGIN IMMEDIATE");
   try {
@@ -217,16 +267,20 @@ export async function rotateFileMaster() {
       const dek = gcmOpen(ikFor(r.ik_version), r.wrapped, `dek:${r.id}`);
       ks.prepare("UPDATE user_keys SET wrapped = ?, ik_version = ? WHERE id = ?").run(gcmSeal(freshIK, dek, `dek:${r.id}`), next, r.id);
     }
+    // A new master AND a new install key, and every older install key dropped: today's keys open
+    // nothing in an older keys.db, and the old master file is pruned 3 days later.
     ks.prepare("DELETE FROM install_key").run();
     ks.prepare("INSERT INTO install_key (version, source, wrapped, created_at) VALUES (?, 'file', ?, ?)")
       .run(next, await wrapIK("file", freshIK, { fileKey: freshMaster }), Date.now());
     ks.exec("COMMIT");
-  } catch (e) { ks.exec("ROLLBACK"); rmSync(p + ".next", { force: true }); throw e; }
-  ks.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  ks.exec("VACUUM"); // the old wrapped rows leave the file's free pages too
-  if (existsSync(p)) renameSync(p, `${p}.prev-${Date.now()}`);
-  renameSync(p + ".next", p);
+  } catch (e) {
+    ks.exec("ROLLBACK");
+    rmSync(p + ".next", { force: true }); rmSync(p + ".next.age", { force: true });
+    throw e;
+  }
+  promoteNext(p);
   iks.clear(); iks.set(next, freshIK); ik = freshIK; ikVersion = next; deks.clear(); opened.clear();
+  try { ks.exec("PRAGMA wal_checkpoint(TRUNCATE)"); ks.exec("VACUUM"); } catch { /* free pages are zeroed by secure_delete anyway */ }
   return { file: p, installKeyVersion: next };
 }
 

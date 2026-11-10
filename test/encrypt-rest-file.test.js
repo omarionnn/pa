@@ -84,3 +84,35 @@ test("a crash after the keystore moved to the new master but before the rename s
   renameSync(join(dir, "x.tmp"), KEK);
   assert.ok(existsSync(KEK));
 });
+
+test("a torn <file>.next (power cut while writing it) is skipped at boot, never fatal", async () => {
+  const sealed = d.rawPrepare("SELECT content FROM event_log WHERE conversation_id = ?").get(C).content;
+  writeFileSync(KEK + ".next", "3f9a");
+  await boot();
+  assert.equal(rc.openAny(sealed), "said before any rotation");
+  assert.equal(rc.finishRotation(), "stale-next-removed");
+  assert.ok(!existsSync(KEK + ".next"));
+});
+
+test("a retry after a rotation that died past its commit finishes that one first, never overwriting the only working key", async () => {
+  const sealed = d.rawPrepare("SELECT content FROM event_log WHERE conversation_id = ?").get(C).content;
+  // State a crash leaves after COMMIT and before promote: keystore opens only with <file>.next.
+  await rc.rotateFileMaster();
+  const prev = readdirSync(dir).filter(f => f.startsWith("rest-master.key.prev-")).sort().pop();
+  renameSync(KEK, KEK + ".next");
+  renameSync(join(dir, prev), KEK);
+  await boot();
+  // The next rotation must adopt .next first; then rotate again; data still reads.
+  await rc.rotateFileMaster();
+  await boot();
+  assert.equal(rc.openAny(sealed), "said before any rotation");
+  assert.ok(!existsSync(KEK + ".next"));
+});
+
+test("the recovery copy of the new master is written before the keystore moves to it, and lands as <file>.age", async () => {
+  const seen = [];
+  await rc.rotateFileMaster({ sealRecovery: (from, to) => { seen.push(existsSync(from)); copyFileSync(from, to); } });
+  assert.deepEqual(seen, [true]);
+  const { readFileSync } = await import("node:fs");
+  assert.equal(readFileSync(KEK + ".age", "utf8"), readFileSync(KEK, "utf8"), "the .age copy is of the master now in use");
+});

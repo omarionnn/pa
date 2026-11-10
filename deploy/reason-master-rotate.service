@@ -1,7 +1,9 @@
 # Encryption at rest: monthly new master key + install key (scripts/encrypt-rest.mjs --rotate-master).
 # After it, every older keys.db (every older backup's) is sealed under a master that is gone once the
 # daily prune removes it 3 days later: a person deleted before then is unreadable in every backup.
-# Reason is stopped for the few seconds it takes (it holds the install key in memory).
+# Reason is stopped for the few seconds it takes (it holds the install key in memory); if stopping
+# fails, nothing rotates. The new master and its age recovery copy are written before the keystore
+# moves to it, so every crash point boots (scripts/encrypt-rest.mjs --finish-rotation tidies up).
 # Installed by hand on the server:
 #   cp deploy/reason-master-rotate.* deploy/reason-master-prune.* /etc/systemd/system/ && systemctl daemon-reload
 #   systemctl enable --now reason-master-rotate.timer reason-master-prune.timer
