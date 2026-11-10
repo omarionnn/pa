@@ -1,5 +1,5 @@
-// The link card (og/twitter tags) for the public pages the website proxies to this install: /web
-// signed out, /privacy and /terms. iMessage's LinkPresentation and facebookexternalhit fetch with no
+// The link card (og/twitter tags) for the public pages the website proxies to this install: /privacy
+// and /terms (signed-out /web carries the "Sign in to Reason" card from securedcard.js, owner 11-10). iMessage's LinkPresentation and facebookexternalhit fetch with no
 // cookies, so what they read is always the signed-out page; a signed-in page never calls this, so
 // nothing private can end up in a preview.
 //
@@ -13,13 +13,6 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 export const cardOrigin = () => (config.siteUrl || "https://heyreason.com").replace(/\/+$/, "");
 
 export const CARDS = {
-  web: {
-    title: "Reason on the web",
-    description: "Pick up your conversation with Reason from any browser.",
-    path: "/web",
-    image: "/og-web.png?v=1",
-    alt: "Reason on the web. Pick up the thread from any browser.",
-  },
   privacy: {
     title: "Reason · Privacy",
     description: "What Reason keeps, what leaves the machine, and how to get rid of all of it.",

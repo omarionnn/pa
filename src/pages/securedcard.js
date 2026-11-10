@@ -34,6 +34,7 @@ export const SECURED_CARDS = {
   spotify: { title: "Connect Spotify", eyebrow: "CONNECT SPOTIFY", description: "Connect your Spotify account. Secured by Reason." },
   x: { title: "Connect X", eyebrow: "CONNECT X", description: "Connect your X account. Secured by Reason." },
   uber: { title: "Connect Uber", eyebrow: "CONNECT UBER", description: "Connect your Uber account. Secured by Reason." },
+  web: { title: "Sign in to Reason", eyebrow: "SIGN IN TO REASON", description: "Pick up your conversation from any browser. Secured by Reason." },
   connect: { title: "Connect your account", eyebrow: "CONNECT AN ACCOUNT", description: "Connect an account to Reason. Secured by Reason." },
 };
 

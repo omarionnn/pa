@@ -32,7 +32,7 @@ import { eventActor } from "./event.js";
 import { qrSvg } from "./qr.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { webPage, wordmark, label, hand, action, typed, textReason, WEB_FONTS, webFont, accountThemed } from "./webkit.js";
-import { linkCardTags } from "./sitecard.js";
+import { securedCardTags } from "./securedcard.js";
 
 export { WEB_FONTS, webFont };
 
@@ -299,7 +299,7 @@ window.addEventListener('pageshow',function(e){if(e.persisted)location.replace(/
 
 // Signed-out pages carry the /web link card (src/pages/sitecard.js): it is what a crawler, with no
 // cookie, gets. Signed-in pages never do, so a preview can never show anything private.
-const signedOutPage = (title, body) => webPage({ title, header: "", body, css: SO_CSS, script: SO_JS, head: linkCardTags("web") });
+const signedOutPage = (title, body) => webPage({ title, header: "", body, css: SO_CSS, script: SO_JS, head: securedCardTags("web") });
 
 /**
  * The block for somebody new, shown to everybody so it says nothing about the number typed (desktop's
