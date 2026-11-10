@@ -630,7 +630,7 @@ export async function callPlaceGate(conversationId, { fetchImpl = globalThis.fet
     ok: false, blocked: "free_calls_used", status: "free_calls_used", pay_url: url,
     error: told
       ? `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used. They were ALREADY told this conversation — do not repeat the price, the line or the link. Say in a few words that you can't make calls right now, and carry on with anything else in words.`
-      : `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used up. Say ONE short warm line — the month's ${FREE_CALLS} free calls are used, they come back ${resetDay(st, conversationId)}, or unlimited calls and texts are ${PRICE_LINE}, cancel any time by text — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link to sign up in a bit"}. Never say "unlock" or "upgrade". Then carry on with anything else in words. Do not say this again this conversation.`,
+      : `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used up. Say ONE short warm line — the month's ${FREE_CALLS} free calls are used, they come back ${resetDay(st, conversationId)}, or unlimited calls and texts are ${PRICE_LINE}, cancel any time by text — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link to sign up in a bit"}. Never say "unlock", "upgrade" or "trial". Then carry on with anything else in words. Do not say this again this conversation.`,
   };
 }
 
@@ -779,7 +779,7 @@ export async function gate(conversationId, name, { fetchImpl = globalThis.fetch,
       ok: false, blocked: "trial_over", pay_url: url,
       error: told
         ? `Not done: they have used this month's free conversations. They were ALREADY told this conversation — do not repeat the price, the line or the link. Say plainly, in a few words, that you can't do that part right now.`
-        : `Not done: this month's ${FREE_CONVERSATIONS} free conversations are used up. Say ONE short warm line — unlimited is ${PRICE_LINE}, cancel any time by text, or the free ones come back ${when(status(conversationId, now).resets_at, conversationId)} — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link in a bit"}. Never say "unlock" or "upgrade". Do not say this again this conversation.`,
+        : `Not done: this month's ${FREE_CONVERSATIONS} free conversations are used up. Say ONE short warm line — the free ones come back ${when(status(conversationId, now).resets_at, conversationId)}, or unlimited is ${PRICE_LINE}, cancel any time by text — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link in a bit"}. Never say "unlock", "upgrade" or "trial". Do not say this again this conversation.`,
     };
   }
   return {
