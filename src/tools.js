@@ -450,7 +450,7 @@ export function invitesOpenFor(conversationId) {
   if (accounts.ownerOf(conversationId).isOperator) return true;
   // Under the paywall, only somebody free for good invites (owner, 2026-11-09: trial users get NO
   // invites) — an invite is the promise "free for you, for good", which only their invite keeps.
-  try { if (plan.appliesTo(conversationId) && !plan.grandfathered(conversationId)) return false; } catch { /* fall through */ }
+  try { if (plan.monthly() && plan.appliesTo(conversationId) && !plan.grandfathered(conversationId)) return false; } catch { /* fall through */ }
   return config.invitesOpen || db.invitesEnabledFor(conversationId);
 }
 
@@ -11340,9 +11340,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      // On the free tier a call runs up to its 5 minutes (FREE_CALL_SECONDS) plus the goodbye.
-      const freeCallS = plan.callLimitSeconds(c);
-      const maxSeconds = Math.min((input.max_minutes ?? config.callMaxMinutes) * 60, freeCallS ? freeCallS + plan.FREE_CALL_GRACE_SECONDS : Infinity);
+      // On the free tier a call to them runs up to its 5 minutes (FREE_CALL_SECONDS), goodbye included.
+      // Only a call to them: an errand call to a business is not cut at 5 (review 2026-11-10).
+      const freeCallS = toOwner ? plan.callLimitSeconds(c) : null;
+      const maxSeconds = Math.min((input.max_minutes ?? config.callMaxMinutes) * 60, freeCallS || Infinity);
 
       // What the call opens with — and what it will not do, whatever it is asked — is not the
       // model's to write, and not the model's to forget. Recording somebody without telling them

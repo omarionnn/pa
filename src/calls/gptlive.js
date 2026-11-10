@@ -1641,15 +1641,15 @@ export class GptLiveCall {
     // The platform ceiling (`callPlatformCapSeconds`), so a call
     // never outlives the lost-call sweep's window and is written off while it is still going.
     this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
-    // The monthly free tier's 5 minutes a call (src/plan.js): a wrap-up cue at 5:00, the line closed a
-    // minute later. Paying, free for good, or a stranger on the line: no limit here.
-    const freeS = this.persona ? null : plan.callLimitSeconds(this.call.conversation_id);
+    // The monthly free tier's 5 minutes a call (src/plan.js): a wrap-up cue 30 s before, the line closed
+    // at 5:00. Paying, free for good, a stranger on the line, or an errand call to a business: no limit.
+    const freeS = (this.persona || this.line) ? null : plan.callLimitSeconds(this.call.conversation_id);
     if (freeS) {
       this.freeWrapTimer = this.timers.setTimeout(() => {
-        this.log({ gptlive_free_call_wrap: this.call.id, after_s: freeS });
-        tellLive(this.call.id, `Time check: this is a free call and its ${Math.round(freeS / 60)} minutes are up. Wrap up NOW in one or two short sentences: finish the thought, say you'll pick the rest up by text, and say goodbye. Do not start anything new.`);
-      }, freeS * 1000);
-      this.freeEndTimer = this.timers.setTimeout(() => { this.endWhy = "free_call_limit"; this.end("free_call_limit").catch(() => {}); }, (freeS + plan.FREE_CALL_GRACE_SECONDS) * 1000);
+        this.log({ gptlive_free_call_wrap: this.call.id, after_s: freeS - plan.FREE_CALL_GRACE_SECONDS });
+        tellLive(this.call.id, `Time check: this is a free call and its ${Math.round(freeS / 60)} minutes are nearly up. Wrap up NOW in one or two short sentences: finish the thought, say you'll pick the rest up by text, and say goodbye. Do not start anything new.`);
+      }, Math.max(0, freeS - plan.FREE_CALL_GRACE_SECONDS) * 1000);
+      this.freeEndTimer = this.timers.setTimeout(() => { this.endWhy = "free_call_limit"; this.end("free_call_limit").catch(() => {}); }, freeS * 1000);
     }
     const w = this.warm;
     if (w && !w.closed && !w.call) return this.adopt(w);

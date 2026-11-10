@@ -67,7 +67,8 @@ export const FREE_CONVERSATIONS = Number(process.env.REASON_FREE_CONVERSATIONS |
 export const FREE_CALLS = Number(process.env.REASON_FREE_CALLS || 2);
 export const FREE_CALL_SECONDS = Math.round(Number(process.env.REASON_FREE_CALL_MINUTES || 5) * 60);
 /** After the wrap-up cue at FREE_CALL_SECONDS, how long the call has to say goodbye before the line closes. */
-export const FREE_CALL_GRACE_SECONDS = 60;
+// The goodbye comes 30 s before the 5:00 cut, so a free call never runs past its 5 minutes (review 2026-11-10).
+export const FREE_CALL_GRACE_SECONDS = 30;
 /** Is the monthly free tier the rule (REASON_FREE_TIER=monthly)? Read at call time. */
 export const monthly = () => String(process.env.REASON_FREE_TIER ?? "").trim().toLowerCase() === "monthly";
 /** How long one Checkout Session link is handed out again before a fresh one is made (Stripe's expire at 24h). */
@@ -197,7 +198,14 @@ export function grandfathered(conversationId, seen = new Set()) {
     if (!sponsor && a.joined_via_event != null) {
       try { sponsor = q("SELECT organizer_conversation_id AS o FROM events WHERE id = ?").get(a.joined_via_event)?.o ?? null; } catch { sponsor = null; }
     }
-    if (!sponsor || seen.has(sponsor) || seen.size > 16) return false;
+    // Only under the monthly tier (review 2026-11-10): with REASON_FREE_TIER unset, any invite or event
+    // is the way in, exactly as before. A sponsor whose account is gone, or made free by hand
+    // (plan.status = 'free'), still counts — the joiner keeps what they were promised.
+    if (!monthly()) return true;
+    if (!sponsor) return true;
+    if (seen.has(sponsor) || seen.size > 16) return false;
+    if (!db.getAccount(sponsor)) return true;
+    try { if (q("SELECT status FROM plan WHERE conversation_id = ?").get(planId(sponsor))?.status === "free") return true; } catch { /* no plan row */ }
     return grandfathered(sponsor, seen);
   };
   if (row?.address) {

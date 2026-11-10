@@ -249,15 +249,15 @@ test("over the 20 texts, a call in is refused the same way (conversations line)"
   assert.match(via.sent.find(m => m.to === num)?.text ?? "", /your 20 free conversations come back/);
 });
 
-test("a free call: wrap-up cue at 5:00, the line closed at 6:00; a payer's call has no such limit", async () => {
+test("a free call: wrap-up cue at 4:30, the line closed at 5:00; an errand call and a payer's call have no such limit", async () => {
   const { c } = newcomer();
   accounts.countUse(c, "turn");
   Object.assign(config, TWILIO);
-  const start = (conversationId) => {
+  const start = (conversationId, isOwner = true) => {
     let t = 1_000_000; let q = []; let id = 0;
     const timers = { now: () => t, setTimeout: (fn, ms) => { q.push({ id: ++id, at: t + ms, fn }); return id; }, clearTimeout: (x) => { q = q.filter(e => e.id !== x); },
       async advance(ms) { const end = t + ms; for (;;) { q.sort((a, b) => a.at - b.at); const nx = q[0]; if (!nx || nx.at > end) break; q.shift(); t = nx.at; nx.fn(); await new Promise(r => setImmediate(r)); } t = end; } };
-    const row = db.createCall(conversationId, { provider: "gptlive", toNumber: "+13470000000", isOwner: true, goal: "chat", facts: [], announcement: "hey", state: "placing" });
+    const row = db.createCall(conversationId, { provider: "gptlive", toNumber: "+13470000000", isOwner, goal: "chat", facts: [], announcement: "hey", state: "placing" });
     const sent = []; const h = { open: [], event: [], close: [] };
     const live = { send: (o) => sent.push(o), close: () => {}, on: (k, f) => h[k].push(f) };
     const twilio = { sent: [], open: () => true, send: () => {}, close: () => {}, onMessage: () => {}, onClose: () => {} };
@@ -267,14 +267,22 @@ test("a free call: wrap-up cue at 5:00, the line closed at 6:00; a payer's call 
     return { call, timers, lines };
   };
   const free = start(c);
-  await free.timers.advance(5 * 60_000 - 1000);
-  assert.ok(!free.lines.some(l => l.gptlive_free_call_wrap), "no cue before 5:00");
+  await free.timers.advance(4.5 * 60_000 - 1000);
+  assert.ok(!free.lines.some(l => l.gptlive_free_call_wrap), "no cue before 4:30");
   await free.timers.advance(2000);
-  assert.ok(free.lines.some(l => l.gptlive_free_call_wrap), "the cue at 5:00");
+  assert.ok(free.lines.some(l => l.gptlive_free_call_wrap), "the cue at 4:30");
   assert.ok(!free.call.done);
-  await free.timers.advance(60_000);
-  assert.ok(free.call.done, "the line closed a minute later");
+  await free.timers.advance(28_000);
+  assert.ok(!free.call.done, "still open just before 5:00");
+  await free.timers.advance(2000);
+  assert.ok(free.call.done, "the line closed at 5:00");
   assert.equal(free.call.endWhy, "free_call_limit");
+
+  // An errand call to a business for a free-tier person: not cut at 5, no plan talk to the business.
+  const errand = start(c, false);
+  await errand.timers.advance(10 * 60_000);
+  assert.ok(!errand.call.done && !errand.lines.some(l => l.gptlive_free_call_wrap), "errand call not limited");
+  await errand.call.end("test");
 
   await plan.markPaid(c, { customerId: "cus_3", subscriptionId: "sub_3" });
   const paid = start(c);
