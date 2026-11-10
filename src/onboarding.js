@@ -55,6 +55,7 @@ import { rulesNote } from "./rules.js";
 import { contactCardUrl, lineNumber, RETRY_AFTER_MS, cardName, nameCase, DEFAULT_CARD_NAME } from "./contact.js";
 import { zoneFor } from "./zone.js";
 import * as amazon from "./amazonconnect.js"; // AMAZON HOOK
+import * as setups from "./websetupstore.js";
 
 export const STATES = ["not_started", "awaiting_name", "awaiting_card_name", "awaiting_amazon", "complete"];
 const ACTIVE = new Set(["not_started", "awaiting_name", "awaiting_card_name", "awaiting_amazon"]);
@@ -188,12 +189,12 @@ Fields you have nothing for are "".`;
  * given inside a request): what the name means and one warm word. Null when it cannot be had; the
  * caller then says MET(name).
  */
-export async function nameLine({ name, ask = askStructured }) {
+export async function nameLine({ name, ask = askStructured, web = false }) {
   if (!name) return null;
   if (ask === askStructured && !sideAskAllowed()) return null;
   const r = await ask({
     prompt: `Their name: ${String(name).slice(0, 40)}`,
-    system: `Reason, an assistant that lives in someone's texts, is meeting a new person for the first time. Write one line meeting their name: ${NAME_RULE} A nickname or handle they go by is a name. If what they gave is not really a name (a joke, slang, "idk"), leave it out and just say nice to meet you.`,
+    system: `Reason, an assistant that lives in someone's texts, is meeting a new person for the first time. Write one line meeting their name: ${NAME_RULE} A nickname or handle they go by is a name. If what they gave is not really a name (a joke, slang, "idk"), leave it out and just say nice to meet you.${web ? WEB_LINE_RULE : ""}`,
     schema: { type: "object", properties: { line: { type: "string" } }, required: ["line"] },
     model: process.env.REASON_ONBOARDING_CLI_MODEL || "haiku",
     timeoutMs: Number(process.env.REASON_ONBOARDING_CLI_TIMEOUT_MS || 25_000),
@@ -201,6 +202,9 @@ export async function nameLine({ name, ask = askStructured }) {
   }).catch(() => null);
   return clean(r?.value?.line, 240) || null;
 }
+
+/** The web setup's page shows the line after "kofi — " (src/websetup.js webLine), so it never opens with the name. */
+const WEB_LINE_RULE = ` This line is shown on a web page right after their name and a dash (like "kofi — born on a friday. good start."), so do not start with their name or with nice to meet you: start with the meaning, then a short warm word. For a nickname or a name you have no sure meaning for, give only a few warm words about the name.`;
 
 // Markdown marks out; an underscore inside a word stays (a handle like Xx_Slayer_xX is their name).
 // A field the model filled with only quote marks or punctuation (the sealed CLI's haiku sent back the
@@ -384,8 +388,34 @@ function theCard(router, conversationId, picked) {
 
 // AMAZON HOOK: the optional offer after the card (src/amazonconnect.js), REASON_INTRO_AMAZON=on only.
 export const amazonOfferOn = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_INTRO_AMAZON ?? "").trim().toLowerCase());
-export const amazonCanOffer = (conversationId) => amazonOfferOn() && amazon.available(conversationId);
+// Never to somebody who already saw Amazon on the web setup (src/websetup.js): connected or skipped there, it is answered.
+export const amazonCanOffer = (conversationId) => amazonOfferOn() && amazon.available(conversationId) && !handledOnWeb(conversationId);
 const realAmazonLink = (conversationId, { log } = {}) => { const r = amazon.connectLink(conversationId, { via: "first_chat", log }); return r.ok ? r.url : null; };
+
+// ---------- the web setup's hand-off ----------
+
+/** Did this person do the setup on heyreason.com/start (src/websetup.js)? Read off the claim, REASON_WEB_SETUP only. */
+export const handledOnWeb = (conversationId) => /^(1|true|on|yes)$/i.test(String(process.env.REASON_WEB_SETUP ?? "").trim()) && !!setups.claimedBy(conversationId);
+
+/** The hello after a web setup: their name back to them, nothing asked. */
+export const WEB_HELLO = (user) => user ? `hey ${String(user).toLowerCase()}, good to meet you` : "hey, good to meet you";
+export const WEB_CARD = "here's my card, save it so you can always find me";
+
+/**
+ * Their first text came from the web setup, and the setup is claimed (router): their name and the
+ * name they gave Reason are already on the account, so the hello, the card under that name, and the
+ * one thing to try; done. Never the name question, the call-me question or the Amazon offer.
+ */
+function webHandoff(router, conversationId) {
+  const setup = setups.claimedBy(conversationId);
+  const account = db.getAccount(conversationId);
+  const name = account.contact_card_name || cardName(setup?.reason_name);
+  const url = cardUrl(router, account, name);
+  return {
+    bubbles: [WEB_HELLO(setup?.user_name || account.name), ...(url ? [{ text: WEB_CARD, mediaUrl: url }] : []), TRY_LINE],
+    next: "complete", name: url ? name : null,
+  };
+}
 
 const cardNote = (name) => `[sent them Reason's contact card under the name they chose for it: ${name}. Saving it is up to them; Reason cannot touch their phone. You are still Reason]`;
 
@@ -473,6 +503,14 @@ export async function handle({ router, conversationId, route, texts = [], attach
   const state = row.onboarding;
   db.cancelOnboardingNudges(conversationId);
   const text = texts.filter(Boolean).join("\n").trim();
+
+  // The web setup already asked everything this flow would (src/websetup.js): its hand-off, no read.
+  if (state === "not_started" && handledOnWeb(conversationId)) {
+    const step = webHandoff(router, conversationId);
+    log({ onboarding: conversationId, from: state, to: step.next, why: "web_setup" });
+    const said = await runStep({ router, conversationId, route, row, bubbles: step.bubbles, next: step.next, cardNamed: step.name, userLine: `[${stamp()}] ${row.name || "them"}: ${text}`, keyPart: ":web", sleep, log });
+    return { handled: true, step: step.next, said };
+  }
 
   // A voice note, a contact card or a link is words by now (heard / read upstream), so it is read
   // like text. A picture or a document is something real: the normal turn does it first.

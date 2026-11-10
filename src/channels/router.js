@@ -44,6 +44,7 @@ import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
+import * as websetup from "../websetup.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -224,7 +225,12 @@ export class Router {
       const claim = await this.#claimInvite(inbound, address);
       if (claim && !claim.joined) return claim.result;
       // Otherwise: auto-admit if configured, or ask the master.
-      const accessResult = claim?.joined ? { autoAdmitted: true } : await this.#askForAccess(inbound, address);
+      // A web setup's first text (src/websetup.js) keeps its code for the claim below, but a text
+      // that waits in the access queue instead is written down without it.
+      const forQueue = websetup.on() && websetup.codeInText(inbound.text)
+        ? { ...inbound, text: websetup.withoutCode(inbound.text), ...(typeof inbound.said === "string" ? { said: websetup.withoutCode(inbound.said) } : {}) }
+        : inbound;
+      const accessResult = claim?.joined ? { autoAdmitted: true } : await this.#askForAccess(forQueue, address);
       if (accessResult?.autoAdmitted) {
         // They were admitted on the spot — fall through to run a normal turn with their message.
         // With REASON_ONBOARDING covering them, the first-chat onboarding answers it instead
@@ -257,6 +263,20 @@ export class Router {
     // the card from it, after their name, with its own line.
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
+    // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
+    // its code: what they chose and connected on the page becomes theirs, and the intro asks none of
+    // it again (src/onboarding.js webHandoff). No code, or one that does not match: nothing changes.
+    if (arrivedNow && !isOperator) {
+      try {
+        const claim = websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log });
+        // The code has done its job: it is not stored with their words, and the model never reads it.
+        if (claim) {
+          inbound.text = claim.text;
+          if (typeof inbound.said === "string") inbound.said = websetup.withoutCode(inbound.said);
+        }
+      }
+      catch (e) { this.log({ websetup_claim_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+    }
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
