@@ -1,0 +1,711 @@
+// Food ordering: from a craving to food at the door in as few texts as possible (owner spec, 2026-11-10,
+// ~/Desktop/reason-food-1110/spec.txt). Behind REASON_FOOD (off | owner | on), default off.
+//
+// Almost all of the machinery already existed and this file does not copy any of it:
+//   - the checkout itself is a Crossmint agent checkout (src/shopconnect.js, store_checkout): it runs
+//     on the platform's own site, pauses at payment with Crossmint's exact amount, answers plain forms
+//     from the shipping record, and hands a sign-in wall to the person as one link;
+//   - nothing is paid without a yes pinned to that exact amount (src/tools.js confirmTargetFor →
+//     shop.payTarget), Face ID where they set it up (src/passkey.js), under the daily cap (src/spendcap.js);
+//   - a changed total is a new payment request, which is a new row, which is a new ask: a yes to the
+//     old one cannot pay it (the target carries the amount and the request id);
+//   - photos for a choice come only from tool results (src/choicecards.js photoFor, db.hasSeenUrl);
+//   - an inbound 👍 on a yes/no question is read as a yes by the model (src/threading.js).
+//
+// What this adds, and only this:
+//   1. One food order record per request (food_orders): the user's request message (for the status
+//      tapback), the cart as it was built (items, modifiers, fees, tip, ETA, address), and what
+//      happened. Its revision is part of the pay target, so a cart changed after the card went out
+//      cannot ride the yes to the old card.
+//   2. Status as an emoji tapback ON THEIR REQUEST MESSAGE: ⏳ ❓ ✅ ❌ 👍. Sendblue sends any single
+//      emoji as a reaction (src/expressive.js checkReaction); a phone older than iOS 18 shows it as
+//      "Reacted ⏳ to …". Results always go as words too.
+//   3. The allergy and diet check on EVERY item, the ones they picked included: a model reads their
+//      saved facts against the cart (meaning, never a word list) and the flag goes in the approval
+//      text before the question. A check that cannot run says so in the same place.
+//   4. The approval card: one picture (restaurant, each item with modifiers and price, fees, tax, tip,
+//      total, ETA, address, card brand and last four, never more of the number) and one line:
+//      "$31.42 to your Visa 4821, here by 8:15. Place it?". The total on both is Crossmint's amount.
+//   5. The 15-minute hold (instead of shopping's 30), a warning 15 minutes before the restaurant
+//      closes, and letting the cart go at the end of the hold with one line.
+//   6. The placed text (restaurant, items in short, total, ETA, the address it is going to; no order
+//      number unless asked), ✅ on their request, and the order kept as their food history: usual per
+//      restaurant, store page, addresses, tip, which card went with which address, what an order
+//      normally costs, places they turned down.
+//   7. One check 15 minutes after the latest arrival time: the model looks, and says nothing if it
+//      came; if not, it says how late and asks one question. Never a complaint or a cancel unasked.
+//   8. A numbered comparison of up to three dishes drawn as ONE picture.
+//
+// What it cannot do, said plainly to the model and in the notes: DoorDash and Uber Eats answer
+// Reason's own browser and plain fetches with 403, so menus and driver tracking are not readable from
+// here; only Crossmint's checkout agent reaches the platform. The payment card is the one saved for
+// Reason's checkouts (Crossmint), not a card saved on the platform: that is the existing hard rule.
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { join } from "node:path";
+import * as db from "./db.js";
+import * as accounts from "./accounts.js";
+import { config, clock } from "./config.js";
+import { zoneFor } from "./zone.js";
+import { esc } from "./pages/render.js";
+import { RENDER_TIMEOUT_MS, shootWithChromium } from "./pages/card.js";
+import { z } from "zod";
+import { sealCell, openAny } from "./restcrypt.js";
+
+// ---------------------------------------------------------------- the flag
+/** off | owner | on. Read on every call, so a restart is the only switch. */
+export function foodMode() {
+  const v = String(process.env.REASON_FOOD ?? "off").trim().toLowerCase();
+  if (v === "owner") return "owner";
+  return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
+}
+/** For the system prompt, which knows who it is for but not the conversation id. */
+export function foodOnFor({ isOperator = false, onCall = false } = {}) {
+  if (onCall) return false;
+  const m = foodMode();
+  return m === "on" || (m === "owner" && !!isOperator);
+}
+export function foodOn(conversationId) {
+  if (!conversationId) return false;
+  const m = foodMode();
+  if (m === "owner") { try { return !!accounts.ownerOf(conversationId).isOperator; } catch { return false; } }
+  return m === "on";
+}
+
+// ---------------------------------------------------------------- the platforms
+/** The food platforms, by the store key shopconnect gives their site. */
+export const PLATFORMS = {
+  doordash: { name: "DoorDash", url: "https://www.doordash.com/" },
+  ubereats: { name: "Uber Eats", url: "https://www.ubereats.com/" },
+  grubhub: { name: "Grubhub", url: "https://www.grubhub.com/" },
+};
+export const isPlatform = (store) => Object.hasOwn(PLATFORMS, String(store ?? ""));
+
+/** How long a checkout is held for their yes (spec: up to 15 minutes). */
+export const HOLD_MS = 15 * 60_000;
+/** Warned this long before the restaurant closes, once. */
+export const CLOSING_WARN_MS = 15 * 60_000;
+/** The one look after the latest quoted arrival. */
+export const LATE_CHECK_MS = 15 * 60_000;
+/** Status tapbacks, as Sendblue takes them (one emoji each, the picker form). */
+export const STATUS = { working: "⏳", needs: "❓", placed: "✅", failed: "❌", cancelled: "👍" };
+
+// ---------------------------------------------------------------- tables
+db.db.exec(`
+  CREATE TABLE IF NOT EXISTS food_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    request_handle TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    tapback TEXT NOT NULL DEFAULT '',
+    run_id TEXT,
+    platform TEXT NOT NULL DEFAULT '',
+    restaurant TEXT NOT NULL DEFAULT '',
+    store_url TEXT NOT NULL DEFAULT '',
+    items_json TEXT NOT NULL DEFAULT '[]',
+    lines_json TEXT NOT NULL DEFAULT '[]',
+    notes TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    address_label TEXT NOT NULL DEFAULT '',
+    tip TEXT NOT NULL DEFAULT '',
+    cart_total TEXT NOT NULL DEFAULT '',
+    eta_text TEXT NOT NULL DEFAULT '',
+    eta_latest_at INTEGER,
+    closes_at INTEGER,
+    revision INTEGER NOT NULL DEFAULT 0,
+    allergy_flag TEXT NOT NULL DEFAULT '',
+    allergy_checked INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    paid_amount TEXT NOT NULL DEFAULT '',
+    card_label TEXT NOT NULL DEFAULT '',
+    told TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    placed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS food_orders_conv ON food_orders (conversation_id, id);
+  CREATE INDEX IF NOT EXISTS food_orders_run ON food_orders (run_id);
+  CREATE TABLE IF NOT EXISTS food_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS food_notes_conv ON food_notes (conversation_id, id);
+`);
+const q = (sql) => db.db.prepare(sql);
+const seal = (col, c, v) => sealCell("food_orders", col, c, v);
+const open = (v) => { try { return openAny(v) ?? ""; } catch { return ""; } };
+const parse = (s, d) => { try { const v = JSON.parse(open(s) || ""); return v ?? d; } catch { return d; } };
+
+/** A row with its sealed columns opened. */
+function view(r) {
+  if (!r) return null;
+  return { ...r, restaurant: open(r.restaurant), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
+}
+export const orderRow = (id) => view(q("SELECT * FROM food_orders WHERE id = ?").get(id));
+/** Their order with this id, or null: another person's id reads as missing. */
+export const ownOrder = (c, id) => { const o = orderRow(id); return o && o.conversation_id === c ? o : null; };
+export const orderForRun = (runId) => (runId ? view(q("SELECT * FROM food_orders WHERE run_id = ? ORDER BY id DESC LIMIT 1").get(runId)) : null);
+/** The newest order still being worked on (not placed, failed or cancelled), or null. */
+export const openOrder = (c) => view(q("SELECT * FROM food_orders WHERE conversation_id = ? AND status IN ('draft', 'building', 'asked', 'needs') ORDER BY id DESC LIMIT 1").get(c));
+const toldOf = (o) => new Set(String(o?.told ?? "").split(",").filter(Boolean));
+function tellOnce(id, what) {
+  const o = q("SELECT told FROM food_orders WHERE id = ?").get(id);
+  if (!o) return false;
+  const t = toldOf(o);
+  if (t.has(what)) return false;
+  t.add(what);
+  q("UPDATE food_orders SET told = ? WHERE id = ?").run([...t].join(","), id);
+  return true;
+}
+function setStatusRow(id, status) { q("UPDATE food_orders SET status = ?, updated_at = ? WHERE id = ?").run(status, clock.now(), id); }
+
+// ---------------------------------------------------------------- the runtime's hands
+let sayFn = null, pictureFn = null, wakeFn = null, channelsFn = null, logFn = () => {};
+let timer = null;
+/** serve.js: how to text, send a picture, raise an event turn, reach the channels for a tapback. */
+export function attach({ say, picture, wake, channels, log, everyMs = 60_000 } = {}) {
+  sayFn = say ?? null; pictureFn = picture ?? null; wakeFn = wake ?? null; channelsFn = channels ?? null; logFn = log ?? (() => {});
+  if (timer) clearInterval(timer);
+  if (everyMs > 0) { timer = setInterval(() => { sweep().catch(() => {}); }, everyMs); timer.unref?.(); }
+}
+/** Tests: hands in, no timer. */
+export function _attach(h = {}) { attach({ ...h, everyMs: 0 }); }
+
+// ---------------------------------------------------------------- status tapbacks
+/**
+ * Put the status on THEIR request message. A phone shows one tapback per sender per message, so the
+ * new one replaces the old. Never throws, never texts: a refused tapback is logged and skipped.
+ */
+export async function setStatus(orderId, status) {
+  const o = orderRow(orderId);
+  const emoji = STATUS[status];
+  if (!o || !emoji) return { ok: false, error: "no_such_status" };
+  if (o.tapback === emoji) return { ok: true, same: true };
+  q("UPDATE food_orders SET tapback = ?, updated_at = ? WHERE id = ?").run(emoji, clock.now(), o.id);
+  if (!o.request_handle || !channelsFn) return { ok: false, error: "no_message" };
+  try {
+    const { sendTapback } = await import("./tapbacks.js");
+    const r = await sendTapback({ conversationId: o.conversation_id, channels: channelsFn(), reaction: emoji, messageHandle: o.request_handle });
+    logFn({ food_status: status, order: o.id, ok: !!r?.ok, ...(r?.ok ? {} : { why: r?.refused ?? "error" }) });
+    return r;
+  } catch (e) {
+    logFn({ food_status: status, order: o.id, ok: false, why: "threw" });
+    return { ok: false, error: String(e?.message ?? e).split("\n")[0] };
+  }
+}
+
+// ---------------------------------------------------------------- start, cart
+/** A new food request: the record, and ⏳ on the message that asked for it. */
+export async function startOrder(c, { requestHandle = null } = {}) {
+  const thread = db.getThread(c);
+  const handle = requestHandle && db.messageByHandle(c, requestHandle)?.from === "them" ? requestHandle : thread?.last_inbound_id ?? null;
+  const now = clock.now();
+  // One open order at a time: a new request supersedes the draft that was never sent to a checkout.
+  q("UPDATE food_orders SET status = 'cancelled', updated_at = ? WHERE conversation_id = ? AND status IN ('draft', 'building') AND run_id IS NULL").run(now, c);
+  const id = Number(q("INSERT INTO food_orders (conversation_id, request_handle, status, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?)").run(c, handle, now, now).lastInsertRowid);
+  await setStatus(id, "working");
+  return { ok: true, order_id: id };
+}
+
+/** Anything that reads like a card number (12+ digits, spaces or dashes between) becomes its last four. */
+export const maskCardNumbers = (s) => String(s ?? "").replace(/\b(?:\d[ -]?){11,18}\d\b/g, (m) => `••••${m.replace(/\D/g, "").slice(-4)}`);
+const clean = (s, n = 200) => maskCardNumbers(String(s ?? "").replace(/\s+/g, " ").trim()).slice(0, n);
+const MONEY = /^\$?\d{1,5}(\.\d{1,2})?$/;
+export const cents = (m) => (MONEY.test(String(m ?? "").trim()) ? Math.round(Number(String(m).replace("$", "")) * 100) : null);
+export const dollars = (n) => `$${(n / 100).toFixed(2)}`;
+
+/**
+ * The cart as built, for the approval card. Refused while a card for this order is out for a yes:
+ * a change then is a new checkout (the old one is let go by shopconnect's supersede), which brings a
+ * fresh card and a fresh ask. Every item, the ones they named included, is checked against their
+ * allergies and diet here.
+ */
+export async function recordCart(c, input, { check = checkAllergies } = {}) {
+  const o = ownOrder(c, input.order_id) ?? openOrder(c);
+  if (!o) return { ok: false, error: "no_order", say: "Start the food order first (food_order start)." };
+  if (["placed", "failed", "cancelled"].includes(o.status)) return { ok: false, error: "order_over", say: `That order is ${o.status}. Start a new one for a new request.` };
+  if (o.status === "asked") {
+    return { ok: false, error: "card_out", say: "The approval card for this order is already with them. To change anything (an item, the address, the card), start a new store_checkout with the change and food_order_id; the old one is let go and a fresh card goes out with the new total. Never edit it in place." };
+  }
+  const items = (input.items ?? []).slice(0, 20).map((it) => ({
+    name: clean(it.name, 80), qty: Math.max(1, Math.min(20, Math.round(Number(it.qty ?? 1)) || 1)),
+    modifiers: (it.modifiers ?? []).slice(0, 8).map((m) => clean(m, 60)).filter(Boolean),
+    price: cents(it.price) != null ? dollars(cents(it.price)) : "",
+  })).filter((it) => it.name);
+  if (!items.length) return { ok: false, error: "no_items", say: "A cart needs its items." };
+  const lines = (input.fees ?? []).slice(0, 8).map((f) => ({ label: clean(f.label, 40), amount: cents(f.amount) != null ? dollars(cents(f.amount)) : "" })).filter((l) => l.label && l.amount);
+  const tip = cents(input.tip) != null ? dollars(cents(input.tip)) : "";
+  const total = cents(input.total) != null ? dollars(cents(input.total)) : "";
+  const eta = Date.parse(String(input.eta_latest ?? ""));
+  const closes = Date.parse(String(input.closes_at ?? ""));
+  const platform = String(input.platform ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  const now = clock.now();
+  const rev = Number(o.revision ?? 0) + 1;
+  q(`UPDATE food_orders SET status = 'building', platform = ?, restaurant = ?, store_url = ?, items_json = ?, lines_json = ?, notes = ?, address = ?, address_label = ?, tip = ?, cart_total = ?,
+       eta_text = ?, eta_latest_at = ?, closes_at = ?, revision = ?, allergy_flag = '', allergy_checked = 0, updated_at = ? WHERE id = ?`).run(
+    isPlatform(platform) ? platform : (platform === "uber" ? "ubereats" : ""), seal("restaurant", c, clean(input.restaurant, 80)), clean(input.store_url, 500),
+    seal("items_json", c, JSON.stringify(items)), JSON.stringify(lines), seal("notes", c, clean(input.notes, 300)), seal("address", c, clean(input.address, 200)),
+    seal("address_label", c, clean(input.address_label, 40)), tip, total, clean(input.eta, 20), Number.isFinite(eta) ? eta : null, Number.isFinite(closes) ? closes : null, rev, now, o.id);
+  const checked = await check(c, items).catch(() => ({ ok: false }));
+  const flag = allergyFlag(checked);
+  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ? WHERE id = ?").run(flag, checked?.ok ? 1 : 0, o.id);
+  return {
+    ok: true, order_id: o.id, revision: rev,
+    ...(flag ? { allergy_flag: flag } : {}),
+    say: flag
+      ? `Recorded. ${flag} This goes in the approval text before the question, by code. If an item conflicts and they did not knowingly choose it, fix the cart before the checkout instead.`
+      : "Recorded. When the checkout reaches payment, the card and the one-line ask go out by code; don't write the total yourself.",
+  };
+}
+
+// ---------------------------------------------------------------- allergies (a model reads meaning)
+const ALLERGY_SCHEMA = {
+  type: "object",
+  properties: {
+    constraints: { type: "array", items: { type: "string" }, description: "Their allergies, intolerances, dietary rules and strong dislikes, from the facts. Empty if none." },
+    conflicts: { type: "array", items: { type: "object", properties: { item: { type: "string" }, constraint: { type: "string" }, why: { type: "string" } }, required: ["item", "constraint", "why"] } },
+  },
+  required: ["constraints", "conflicts"],
+};
+const ALLERGY_SYSTEM = `You check a food order against one person's allergies and diet before they approve it. You get facts saved about them and the cart: each item with its modifiers.
+First list every allergy, intolerance, dietary rule (vegetarian, halal, kosher, no pork, gluten-free...) and strong dislike the facts state about THEM (not about other people). Then, for every item including its modifiers, report a conflict when the item as normally made, or a modifier, contains or very likely contains what they must avoid (pad thai usually has peanuts; pesto has pine nuts and cheese; a cheeseburger is not vegetarian; most fried items share a fryer only matters for a severe allergy the facts call severe). One short "why" per conflict, in plain words, naming the item. No conflict when the item plainly avoids it (a "no peanuts" modifier, a vegan dish for a dairy allergy). When nothing applies, return empty lists.`;
+let allergyAsk = null;
+/** Tests: the model seam (same shape as side.askStructured). null puts the real one back. */
+export function _setAllergyAsk(fn) { allergyAsk = fn; }
+/** Their facts and food notes against the cart. { ok, constraints, conflicts } or { ok: false }. */
+export async function checkAllergies(c, items) {
+  const facts = [];
+  try { for (const f of db.listFacts(c, { limit: 200 })) if (!f.about || f.about === "me" || f.about === accounts.ownerOf(c).name) facts.push(String(f.fact)); } catch { /* none */ }
+  for (const n of q("SELECT kind, text FROM food_notes WHERE conversation_id = ? ORDER BY id DESC LIMIT 40").all(c)) facts.push(`(${n.kind}) ${open(n.text)}`);
+  if (!facts.length) return { ok: true, constraints: [], conflicts: [], none: true };
+  let ask = allergyAsk;
+  if (!ask) {
+    const side = await import("./backends/side.js");
+    if (!side.sideAskAllowed()) return { ok: false, skipped: true };
+    ask = side.askStructured;
+  }
+  const cart = items.map((it, i) => `${i + 1}. ${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}${it.modifiers?.length ? ` (${it.modifiers.join(", ")})` : ""}`).join("\n");
+  const prompt = `Facts about them:\n${facts.slice(0, 200).map((f) => `- ${String(f).slice(0, 300)}`).join("\n")}\n\nThe cart:\n${cart}`;
+  for (let i = 0; i < 2; i++) {
+    let out;
+    try { out = await ask({ prompt, system: ALLERGY_SYSTEM, schema: ALLERGY_SCHEMA, model: process.env.REASON_FOOD_CHECK_MODEL || "haiku", timeoutMs: 30_000, feature: "food_allergy" }); } catch { continue; }
+    let v = out?.value;
+    if (typeof v === "string") { try { v = JSON.parse(v); } catch { v = null; } }
+    if (v && Array.isArray(v.constraints) && Array.isArray(v.conflicts)) {
+      return { ok: true, constraints: v.constraints.map((x) => clean(x, 80)).filter(Boolean), conflicts: v.conflicts.map((x) => ({ item: clean(x?.item, 80), constraint: clean(x?.constraint, 60), why: clean(x?.why, 160) })).filter((x) => x.item) };
+    }
+  }
+  return { ok: false };
+}
+/** The words that go before the question: a conflict named, or that the check could not run. "" when clear. */
+export function allergyFlag(checked) {
+  if (!checked) return "";
+  if (!checked.ok) return "Heads up: I couldn't double-check this against your allergies and diet just now.";
+  if (!checked.conflicts?.length) return "";
+  const one = checked.conflicts.slice(0, 2).map((x) => (x.why ? x.why.replace(/[.\s]+$/, "") : `${x.item} may not fit ${x.constraint}`)).join("; ");
+  return `Heads up: ${one}.`;
+}
+
+// ---------------------------------------------------------------- linking checkouts
+/** store_checkout started a run for this order. */
+export function linkRun(c, orderId, runId) {
+  const o = ownOrder(c, orderId);
+  if (!o || !runId) return false;
+  q("UPDATE food_orders SET run_id = ?, status = CASE WHEN status IN ('draft', 'needs') THEN 'building' ELSE status END, updated_at = ? WHERE id = ?").run(runId, clock.now(), o.id);
+  return true;
+}
+/** Code started the same checkout again (a renewed hold, a sign-in retry): the order follows it. */
+export function relinkRun(fromRunId, toRunId, { address = "" } = {}) {
+  if (!fromRunId || !toRunId) return;
+  try {
+    const o = orderForRun(fromRunId);
+    if (!o || ["placed", "cancelled", "failed"].includes(o.status)) return;
+    // A corrected address is the card's address from now on; a changed card is a fresh card anyway.
+    q("UPDATE food_orders SET run_id = ?, status = 'building', address = CASE WHEN ? <> '' THEN ? ELSE address END, revision = revision + 1, updated_at = ? WHERE id = ?")
+      .run(toRunId, address, address ? seal("address", o.conversation_id, clean(address, 200)) : "", clock.now(), o.id);
+  } catch { /* no food */ }
+}
+/** Synchronous: is this checkout a food order's? (shopconnect's hold length reads it). */
+export const isFoodRun = (runId) => { try { return !!(runId && q("SELECT 1 AS x FROM food_orders WHERE run_id = ? LIMIT 1").get(runId)); } catch { return false; } };
+
+// ---------------------------------------------------------------- the approval card
+const brandName = (b) => { const s = String(b ?? "").trim(); if (!s) return "card"; const k = s.toLowerCase(); return { amex: "Amex", americanexpress: "Amex", mastercard: "Mastercard", visa: "Visa", discover: "Discover" }[k.replace(/[^a-z]/g, "")] ?? s.replace(/^./, (x) => x.toUpperCase()); };
+/** "Visa 4821": brand and last four, never more. */
+export function cardLabel(card) {
+  const last4 = String(card?.last4 ?? "").replace(/\D/g, "").slice(-4);
+  return last4 ? `${brandName(card?.brand)} ${last4}` : brandName(card?.brand);
+}
+function clockText(ms, c) {
+  let tz = config.tz;
+  try { tz = zoneFor(c) || tz; } catch { /* install zone */ }
+  try { return new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(ms).replace(/\s?[AP]M$/i, ""); } catch { return ""; }
+}
+const etaWords = (o) => (o.eta_latest_at ? clockText(o.eta_latest_at, o.conversation_id) : "") || o.eta_text || "";
+
+/**
+ * The one line, with the flag before the question:
+ *   "Heads up: the pad thai has peanuts. $31.42 to your Visa 4821, here by 8:15. Place it?"
+ * `amount` is Crossmint's, as the row holds it. `changed` is set when it differs from the cart's.
+ */
+export function approvalLine({ amount, card, eta = "", flag = "", changed = "" }) {
+  const head = [flag, changed].filter(Boolean).join(" ");
+  return `${head ? `${head} ` : ""}${amount} to your ${card}${eta ? `, here by ${eta}` : ""}. Place it?`;
+}
+
+/** The card's HTML: 1080 wide, the height its lines need. Everything on it is escaped; nothing is fetched. */
+export function approvalCardHtml({ restaurant, logo = "", items = [], lines = [], tip = "", total, eta = "", address = "", card = "", changed = false }) {
+  const row = (l, r, cls = "") => `<div class="r ${cls}"><span>${l}</span><span>${esc(r)}</span></div>`;
+  const itemRows = items.map((it) => `<div class="it"><div class="r"><span>${it.qty > 1 ? `${it.qty}× ` : ""}${esc(it.name)}</span><span>${esc(it.price)}</span></div>${it.modifiers?.length ? `<p class="mod">${it.modifiers.map(esc).join(" · ")}</p>` : ""}</div>`).join("");
+  const mono = esc(String(restaurant ?? "?").trim().charAt(0).toUpperCase() || "?");
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;box-sizing:border-box}
+html{zoom:3}
+body{width:360px;background:#f7f3ea;color:#1d1a16;font-family:Inter,system-ui,sans-serif;padding:18px 18px 16px;-webkit-font-smoothing:antialiased}
+.hd{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.lg{width:40px;height:40px;border-radius:10px;background:#9c3b2e;color:#fff;font:italic 400 26px/40px Georgia,serif;text-align:center;overflow:hidden;flex:none}
+.lg img{width:100%;height:100%;object-fit:cover;display:block}
+h1{font:italic 400 24px/1.1 Georgia,serif;letter-spacing:-.01em}
+.eb{font:600 9px/1 Inter,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#7b7266;margin-bottom:4px}
+.it{padding:6px 0;border-bottom:1px solid #e4dccd}
+.r{display:flex;justify-content:space-between;gap:10px;font:500 13px/1.3 Inter,sans-serif}
+.r span:last-child{white-space:nowrap}
+.mod{font:400 11px/1.3 Inter,sans-serif;color:#7b7266;margin-top:2px}
+.fees{padding:8px 0 4px}
+.fees .r{font-weight:400;color:#4a443c;padding:1px 0}
+.tot{border-top:1.5px solid #1d1a16;margin-top:6px;padding-top:8px;font:700 17px/1.2 Inter,sans-serif}
+.chg{font:500 11px/1.3 Inter,sans-serif;color:#9c3b2e;margin-top:4px}
+.ft{margin-top:12px;display:grid;gap:4px;font:400 12px/1.35 Inter,sans-serif;color:#4a443c}
+.ft b{font-weight:600;color:#1d1a16}
+</style></head><body>
+<div class="hd"><div class="lg">${logo ? `<img src="${logo}" alt="">` : mono}</div><div><p class="eb">Your order</p><h1>${esc(restaurant)}</h1></div></div>
+${itemRows}
+<div class="fees">${lines.map((l) => row(esc(l.label), l.amount)).join("")}${tip ? row("Tip", tip) : ""}</div>
+${row("Total", total, "tot")}${changed ? `<p class="chg">Total updated at checkout</p>` : ""}
+<div class="ft">${eta ? `<p><b>Here by</b> ${esc(eta)}</p>` : ""}${address ? `<p><b>To</b> ${esc(address)}</p>` : ""}${card ? `<p><b>Card</b> ${esc(card)}</p>` : ""}</div>
+</body></html>`;
+}
+
+const cardsDir = () => join(config.dataDir, "food-cards");
+/** Draw it (or read the same drawing back). The height follows the number of lines. */
+export async function drawApprovalCard(card, { shoot = shootWithChromium } = {}) {
+  const html = approvalCardHtml(card);
+  const key = createHash("sha256").update(html).digest("hex").slice(0, 20);
+  const file = join(cardsDir(), `${key}.jpg`);
+  if (existsSync(file) && readFileSync(file).length) return { file };
+  const h = Math.min(1600, 150 + card.items.length * 34 + card.items.filter((i) => i.modifiers?.length).length * 16 + (card.lines.length + (card.tip ? 1 : 0)) * 18 + 150);
+  let t;
+  const late = new Promise((_, rej) => { t = setTimeout(() => rej(new Error("drawing the order card took too long")), RENDER_TIMEOUT_MS); });
+  const pic = await Promise.race([shoot(html, { width: 1080, height: h * 3, type: "jpeg" }), late]).finally(() => clearTimeout(t));
+  if (!pic?.length) throw new Error("the renderer gave back an empty picture");
+  mkdirSync(cardsDir(), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, pic);
+  renameSync(tmp, file);
+  return { file };
+}
+
+/**
+ * The payment ask for a food checkout. shopconnect hands in the run, the payment row and the ask it
+ * would have sent (with the Face ID link where they have one); this returns the line to text and the
+ * card to send before it. The total is the row's — Crossmint's — never the cart's.
+ */
+let shootImpl = null;
+/** Tests: the renderer (never a real Chromium in the suite). null puts the real one back. */
+export function _setShoot(fn) { shootImpl = fn; }
+export async function approval({ run, row, card, passkeyTail = "", shoot = shootImpl } = {}) {
+  const o = orderForRun(run.run_id);
+  if (!o) return null;
+  const shop = await import("./shopconnect.js");
+  const amount = shop.amountText(row);
+  const label = cardLabel(card);
+  const changedFrom = o.cart_total && cents(o.cart_total) !== cents(row.amount) ? o.cart_total : "";
+  const changed = changedFrom ? `The total came to ${amount}, not the ${changedFrom} the cart showed.` : "";
+  const eta = etaWords(o);
+  const text = approvalLine({ amount, card: label, eta, flag: o.allergy_flag, changed }) + passkeyTail;
+  q("UPDATE food_orders SET status = 'asked', card_label = ?, updated_at = ? WHERE id = ?").run(label, clock.now(), o.id);
+  let file = null;
+  try {
+    const items = o.items.length ? o.items : [{ name: row.item || "Your order", qty: 1, modifiers: [], price: "" }];
+    ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip, total: amount, eta, address: o.address, card: label, changed: !!changedFrom }, shoot ? { shoot } : {}));
+  } catch (e) { logFn({ food_card_failed: o.id, why: String(e?.message ?? e).split("\n")[0] }); }
+  return { text, file, orderId: o.id };
+}
+/** What a yes to a food card is pinned to, on top of the payment's own target: the cart revision. */
+export function payTargetTail(runId) {
+  const o = orderForRun(runId);
+  return o ? ` food#${o.id} r${o.revision}` : "";
+}
+
+// ---------------------------------------------------------------- the end of a checkout
+/** The placed text: restaurant, items in short, total, ETA, the address it is going to. No order number. */
+export function placedLine(o, { amount = "" } = {}) {
+  const items = o.items.map((it) => `${it.qty > 1 ? `${it.qty} ` : ""}${it.name}`).slice(0, 4).join(", ");
+  const eta = etaWords(o);
+  const to = o.address_label && o.address ? `${o.address_label} (${o.address})` : o.address_label || o.address;
+  return `Placed: ${o.restaurant || "your order"}${items ? `, ${items}` : ""}. ${amount || o.cart_total} charged${eta ? `, here by ${eta}` : ""}.${to ? ` Going to ${to}.` : ""}`;
+}
+/** shopconnect: the checkout succeeded. The text it should send instead of shopping's, or null. */
+export async function placed(run) {
+  const o = orderForRun(run.run_id);
+  if (!o) return null;
+  const paid = q("SELECT amount, currency FROM shop_payments WHERE run_id = ? AND status IN ('paid', 'unknown') ORDER BY id DESC LIMIT 1").get(run.run_id);
+  const amount = paid ? (paid.currency === "USD" ? `$${paid.amount}` : `${paid.amount} ${paid.currency}`) : "";
+  q("UPDATE food_orders SET status = 'placed', paid_amount = ?, placed_at = ?, updated_at = ? WHERE id = ?").run(amount, clock.now(), clock.now(), o.id);
+  await setStatus(o.id, "placed");
+  return placedLine(o, { amount });
+}
+/**
+ * shopconnect: the checkout ended without placing. Cancelled → 👍. A failure the first time → ❓ and
+ * the model is woken to bring a fix (the same cart elsewhere, a swap, without the item); the second
+ * time (it looped) → ❌; shopconnect's end text says plainly what blocked it.
+ */
+export async function ended(run, status) {
+  const o = orderForRun(run.run_id);
+  if (!o || ["placed", "cancelled", "failed"].includes(o.status)) return null;
+  if (status === "cancelled" && !String(run.result ?? "").startsWith("renewed") && run.result !== "superseded") {
+    setStatusRow(o.id, "cancelled");
+    await setStatus(o.id, "cancelled");
+    return { cancelled: true };
+  }
+  const failures = Number(o.failures ?? 0) + 1;
+  q("UPDATE food_orders SET failures = ?, updated_at = ? WHERE id = ?").run(failures, clock.now(), o.id);
+  if (failures >= 2) {
+    setStatusRow(o.id, "failed");
+    await setStatus(o.id, "failed");
+    return { failed: true };
+  }
+  setStatusRow(o.id, "needs");
+  await setStatus(o.id, "needs");
+  if (wakeFn) {
+    try {
+      await wakeFn(o.conversation_id, `[food] The ${o.restaurant || "food"} checkout (order ${o.id}) ended without placing (${String(run.result || status).slice(0, 160)}). Nothing was charged. Their text about why already went. Bring ONE fix in one line with the likely answer offered: the same cart at another nearby open place, a swap for what was unavailable, or ordering without it. Never start it without their yes. If nothing fits, say so plainly.`, { key: `food:${o.id}:fail:${failures}` });
+    } catch { /* the end text already went */ }
+  }
+  return { needs: true };
+}
+/** shopconnect: a food checkout never moves on to another store by itself (never a silent substitute). */
+export const holdsMoveOn = (run) => !!orderForRun(run?.run_id);
+
+// ---------------------------------------------------------------- the sweep: hold, closing, late
+/** Every minute: the hold running out, the restaurant closing, an order running late. Never throws. */
+export async function sweep({ now = clock.now() } = {}) {
+  if (foodMode() === "off") return { looked: 0 };
+  const shop = await import("./shopconnect.js");
+  let looked = 0;
+  for (const o0 of q("SELECT id FROM food_orders WHERE status = 'asked' ORDER BY id").all()) {
+    const o = orderRow(o0.id);
+    if (!o || !foodOn(o.conversation_id)) continue;
+    looked++;
+    const pay = q("SELECT * FROM shop_payments WHERE run_id = ? AND status = 'asked' ORDER BY id DESC LIMIT 1").get(o.run_id ?? "");
+    if (!pay) continue;
+    if (o.closes_at && now >= o.closes_at - CLOSING_WARN_MS && now < o.closes_at && tellOnce(o.id, "closing")) {
+      await sayTo(o.conversation_id, `${o.restaurant || "The restaurant"} closes at ${clockText(o.closes_at, o.conversation_id)}, so it has to go in soon. Place it?`);
+    }
+    if (now > shop.askDeadline(pay) && tellOnce(o.id, `hold:${pay.id}`)) {
+      await shop.declinePayment({ conversationId: o.conversation_id, paymentId: pay.id }).catch(() => null);
+      setStatusRow(o.id, "needs");
+      await setStatus(o.id, "needs");
+      await sayTo(o.conversation_id, `I let the ${o.restaurant || "food"} cart go after 15 minutes, nothing charged. Want me to rebuild it?`);
+    }
+  }
+  for (const o0 of q("SELECT id FROM food_orders WHERE status = 'placed' AND eta_latest_at IS NOT NULL AND eta_latest_at <= ? AND told NOT LIKE '%late%' ORDER BY id").all(now - LATE_CHECK_MS)) {
+    const o = orderRow(o0.id);
+    if (!o || !foodOn(o.conversation_id) || !tellOnce(o.id, "late")) continue;
+    looked++;
+    const due = clockText(o.eta_latest_at, o.conversation_id);
+    if (wakeFn) {
+      try {
+        await wakeFn(o.conversation_id, `[food] Their ${o.restaurant || "food"} order (order ${o.id}, placed ${PLATFORMS[o.platform]?.name ? `on ${PLATFORMS[o.platform].name}` : ""}) was due by ${due}; it is now ${Math.round((now - o.eta_latest_at) / 60_000)} minutes past that. Check what you can (their email from the platform with gmail_read, if connected) for whether it was delivered. If it was, or they already said so, reply NO_REPLY and say nothing. If not, ONE text: how late it is, and ask: file a complaint for a refund, or just check where it is? Never file a complaint or cancel without their yes; a refund goes to the original card first, platform credit only if that is refused.`, { key: `food:${o.id}:late` });
+      } catch { /* once */ }
+    }
+  }
+  return { looked };
+}
+async function sayTo(c, text) { try { if (sayFn) await sayFn(c, text); } catch { /* said or not, once */ } }
+
+// ---------------------------------------------------------------- history and notes
+/** "not that place again", a favourite, a standing instruction: kept with their food history. */
+export function addNote(c, { kind, text }) {
+  const k = ["rejected", "liked", "disliked", "instructions", "allergy"].includes(kind) ? kind : "liked";
+  const t = clean(text, 300);
+  if (!t) return { ok: false, error: "empty" };
+  q("INSERT INTO food_notes (conversation_id, kind, text, created_at) VALUES (?, ?, ?, ?)").run(c, k, sealCell("food_notes", "text", c, t), clock.now());
+  return { ok: true, say: k === "allergy" ? "Kept with their food history. Also save it with remember so every part of Reason knows." : "Kept." };
+}
+/**
+ * Their food history for the model, from the records: the last orders, the usual per restaurant (its
+ * last two), the store pages, the addresses with the card used at each, the tip they leave, what an
+ * order normally costs them, and their notes. Theirs only.
+ */
+export function history(c, { now = clock.now() } = {}) {
+  const rows = q("SELECT * FROM food_orders WHERE conversation_id = ? AND status = 'placed' ORDER BY placed_at DESC LIMIT 30").all(c).map(view);
+  const byPlace = new Map();
+  for (const o of rows) { const k = o.restaurant.toLowerCase(); if (!byPlace.has(k)) byPlace.set(k, []); byPlace.get(k).push(o); }
+  const usual = [...byPlace.values()].slice(0, 8).map((os) => ({
+    restaurant: os[0].restaurant, platform: PLATFORMS[os[0].platform]?.name ?? os[0].platform, store_url: os[0].store_url, times: os.length,
+    last_two: os.slice(0, 2).map((o) => ({ items: o.items.map((it) => `${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}${it.modifiers?.length ? ` (${it.modifiers.join(", ")})` : ""}`), total: o.paid_amount || o.cart_total, notes: o.notes, when: new Date(o.placed_at).toISOString().slice(0, 10) })),
+  }));
+  const totals = rows.map((o) => cents(o.paid_amount || o.cart_total)).filter((x) => x != null).sort((a, b) => a - b);
+  const addresses = [];
+  for (const o of rows) { if (o.address && !addresses.some((a) => a.address === o.address)) addresses.push({ address: o.address, label: o.address_label, card: o.card_label }); }
+  const notes = q("SELECT kind, text, created_at FROM food_notes WHERE conversation_id = ? ORDER BY id DESC LIMIT 40").all(c).map((n) => ({ kind: n.kind, text: open(n.text) }));
+  const last = rows[0];
+  return {
+    ok: true,
+    orders: rows.length,
+    usual,
+    normal_cost: totals.length ? dollars(totals[Math.floor(totals.length / 2)]) : null,
+    tip_default: last?.tip || null,
+    addresses,
+    last_order_address: last?.address ?? null,
+    // After 10pm the address is re-confirmed even when it is the saved one (spec, intake).
+    late_night: localHour(now, c) >= 22 || localHour(now, c) < 5,
+    notes,
+    note: "Allergies and diet are in their saved facts too; the cart check reads both. 'My usual' = the last_two of that restaurant, proposed back in one line, added only after they confirm.",
+  };
+}
+function zoneSafe(c) { try { return zoneFor(c) || config.tz; } catch { return config.tz; } }
+function localHour(ms, c) { try { return Number(new Intl.DateTimeFormat("en-US", { timeZone: zoneSafe(c), hour: "numeric", hourCycle: "h23" }).format(ms)); } catch { return 12; } }
+
+// ---------------------------------------------------------------- the comparison picture
+/** One picture, up to three dishes side by side, numbered 1–3. `photos` are data: URIs already fetched. */
+export function comparisonHtml(options) {
+  const n = options.length;
+  const w = 360, colW = Math.floor((w - 12 - (n - 1) * 8) / n);
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;box-sizing:border-box}html{zoom:3}
+body{width:${w}px;height:260px;background:#f7f3ea;color:#1d1a16;font-family:Inter,system-ui,sans-serif;padding:6px;display:flex;gap:8px;-webkit-font-smoothing:antialiased}
+.c{width:${colW}px;display:flex;flex-direction:column}
+.ph{position:relative;height:${n === 1 ? 170 : 130}px;border-radius:10px;overflow:hidden;background:#e4dccd}
+.ph img{width:100%;height:100%;object-fit:cover;display:block}
+.n{position:absolute;left:0;top:0;width:30px;height:30px;border-bottom-right-radius:10px;background:#9c3b2e;color:#fff;font:italic 400 22px/30px Georgia,serif;text-align:center}
+h2{font:600 12px/1.2 Inter,sans-serif;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+p{font:400 10.5px/1.3 Inter,sans-serif;color:#4a443c;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style></head><body>${options.map((o, i) => `<div class="c"><div class="ph"><img src="${o.photo}" alt=""><div class="n">${i + 1}</div></div><h2>${esc(o.dish)}</h2><p>${esc(o.restaurant)}</p><p>${esc([o.price, o.eta].filter(Boolean).join(" · "))}</p></div>`).join("")}</body></html>`;
+}
+/** Image hosts that are Reason's own (generated pictures live there): never a dish photo. */
+const OWN_IMAGE_HOSTS = () => [config.filesHost, "files.heyreason.com", "files.reason.omarinyarko.com"].filter(Boolean).map((h) => String(h).replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase());
+export function ownImageHost(url) { try { return OWN_IMAGE_HOSTS().includes(new URL(url).hostname.toLowerCase()); } catch { return false; } }
+
+/**
+ * Up to three dishes as one numbered picture, sent after the reply line (choicecards' queue), and
+ * opened as a choice set so "2" or the dish name reads against it. Each photo must be one a tool
+ * returned in this conversation and not one of Reason's own generated pictures.
+ */
+export async function showOptions(c, options, { fetchPhoto, shoot = shootImpl ?? shootWithChromium } = {}) {
+  const cc = await import("./choicecards.js");
+  const asked = (options ?? []).slice(0, 3);
+  if (asked.length < 2) return { ok: false, error: "Two or three options. With one, just name it." };
+  const got = [];
+  for (const o of asked) {
+    if (ownImageHost(o.photo_url)) return { ok: false, error: `Option "${o.dish}": that picture is one Reason made. Only real photos from the restaurant's menu page.` };
+    const p = await cc.photoForOption(c, o.photo_url, fetchPhoto ? { fetchPhoto } : {}).catch(() => ({ ok: false, why: "it could not be fetched" }));
+    if (!p.ok) return { ok: false, error: `Option "${o.dish}": ${p.why}. Write the options as a short numbered list instead (dish, restaurant, price, ETA).`, fallback: "text" };
+    got.push({ ...o, photo: p.uri });
+  }
+  const clipped = got.map((o) => ({ ...o, dish: clean(o.dish, 60), restaurant: clean(o.restaurant, 40), price: clean(o.price, 12), eta: clean(o.eta, 16) }));
+  const html = comparisonHtml(clipped);
+  const key = createHash("sha256").update(html).digest("hex").slice(0, 20);
+  const dir = join(config.dataDir, "choice-cards");
+  const file = join(dir, `${key}.jpg`);
+  if (!(existsSync(file) && readFileSync(file).length)) {
+    const pic = await shoot(html, { width: 1080, height: 780, type: "jpeg" });
+    if (!pic?.length) return { ok: false, error: "The picture could not be drawn. Write the options as a short numbered list.", fallback: "text" };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${file}.${process.pid}.tmp`, pic);
+    renameSync(`${file}.${process.pid}.tmp`, file);
+  }
+  const set = db.openChoiceSet({
+    conversationId: c, kind: "places",
+    options: clipped.map((o, i) => ({ n: i + 1, name: o.dish, brand: o.restaurant, price: o.price, detail: o.eta, why: "", url: o.page_url ?? "", image_url: o.photo_url, card: `${key}.jpg` })),
+    state: "queued", expiresAt: clock.now() + cc.CHOICE_TTL_MS,
+  });
+  cc.queueCards(c, set.id, [{ file, name: `${key}.jpg` }]);
+  return { ok: true, set_id: set.id, note: `One picture with ${clipped.length} numbered options goes out right after your reply. Your reply is one short line above it (what these are, that they can answer with a number or the dish). Don't list them again.` };
+}
+
+// ---------------------------------------------------------------- the model's rules (system prompt)
+export const FOOD_RULES = `
+FOOD ORDERS (craving → food at the door, fewest texts; never money without a yes on the exact total):
+- Start every food request with food_order action "start" (it puts ⏳ on their message). Status after that is set by code; use food_order "status" only for ❓ (waiting on them), ❌ (gave up) or 👍 (they cancelled). Results always go in words too.
+- Intake, before searching: what (a craving or a place they named; a bare "order food" gets 3 picks from food_order "history" and their tastes — name, cuisine, ETA, rough price — never an open "what are you in the mood for?"), where (confirm the saved address in one line, "Home on Bruner Ave?"; re-confirm after 10pm or when their last order went elsewhere), when (now unless they say). "My usual" = the last two orders from that place (history), proposed back in one line; add only after they confirm.
+- One question per text, with the likely answer offered so they can reply in one word. Short, warm, confident: "Habibi's open till 2. Your usual chicken over rice, $18.40 all in?"
+- Platform: the one they're signed into (DoorDash, Uber Eats, Grubhub). Signed into several: the cheaper all-in total for the same order unless they prefer one. Check it's open and delivers to the address before building; closed → say so and offer the closest open alternative. Every constraint (dish, side, dietary flag) must exist on the menu; prefer items the menu flags. At most 4 restaurants per request; none fit → ask before searching more. DoorDash and Uber Eats refuse your own browser and fetches, so menus come from what web_search, places or the restaurant's own site show; the checkout itself runs through store_checkout.
+- Choosing: at most 3 options, as ONE numbered picture (food_order "options"), each a real photo a tool returned for that dish, never stock or a generated picture. No photo of something they already named.
+- Cart: exactly to spec. In store_checkout's "what": every item and modifier, uncheck pre-selected extras they didn't ask for, anything the app can't express in the restaurant notes, utensils only for soup, salad or drinks (not sandwiches, fries, wings), their standing tip, deliver to the confirmed address, stop at payment. Within a few dollars of a free-delivery or discount threshold: suggest ONE cheap add-on that fits their diet, once. Pass food_order_id. Record the cart with food_order "cart" before store_checkout (items with modifiers and prices, fees, tip, total, ETA, address, closing time if known): it checks every item against their allergies and diet.
+- Approval is by code: one card picture and one line ("$31.42 to your Visa 4821, here by 8:15. Place it?") with any allergy or diet flag before the question. Yes, place it, a 👍 or similar approves THAT card only; silence never does. Any change (item, address, card) or a new total → a new checkout and a fresh card, never a yes carried over. The hold is 15 minutes.
+- After placing: the confirmation goes by code. Never send the order number unless they ask. Tracking stays quiet; one check comes after the latest arrival time. Complaint, refund (original card first, platform credit only if refused) or cancel only on their yes. Missing or wrong item they report: file it on the platform when you can and tell them what support said.
+- Failures: an unavailable item → say which and offer the closest swap or ordering without it; never substitute silently. A restaurant that cancels → bring a fix (the same cart at another nearby place), not just the problem. A sign-in wall → the link goes by code; ask for a code in one line if one is needed. Anything that loops twice: stop, ❌, say plainly what blocked it.
+- After every order, and whenever they say it: keep allergies and dislikes with remember; places they turned down ("not that place again"), favourites and delivery instructions with food_order "note".`;
+export const foodRules = (me) => (foodOnFor({ isOperator: typeof me === "object" && !!me?.isOperator, onCall: !!me?.onCall }) ? FOOD_RULES : "");
+
+// ---------------------------------------------------------------- the tool
+export const FOOD_TOOLS = new Set(["food_order"]);
+export const foodToolVisible = (name, conversationId) => !FOOD_TOOLS.has(name) || foodOn(conversationId);
+export const FOOD_TOOL_DEFS = [{
+  name: "food_order",
+  description: "Food delivery orders. Nothing is charged by this tool. Actions: start (a new food request; ⏳ on their message), history (their past orders, usual per restaurant, addresses, tip, normal cost, notes), options (2–3 dishes as ONE numbered picture; real photo_url from a tool result each), cart (record the cart as built, before store_checkout: checks every item against their allergies and diet), status (needs | failed | cancelled, as a tapback on their request), note (rejected | liked | disliked | instructions | allergy).",
+  input_schema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["start", "history", "options", "cart", "status", "note"] },
+      order_id: { type: "integer", description: "From start. cart/status default to the open order." },
+      status: { type: "string", enum: ["needs", "failed", "cancelled"] },
+      note_kind: { type: "string", enum: ["rejected", "liked", "disliked", "instructions", "allergy"] },
+      note: { type: "string" },
+      options: { type: "array", maxItems: 3, items: { type: "object", properties: { dish: { type: "string" }, restaurant: { type: "string" }, price: { type: "string" }, eta: { type: "string" }, photo_url: { type: "string" }, page_url: { type: "string" } }, required: ["dish", "restaurant", "photo_url"] } },
+      platform: { type: "string", description: "doordash | ubereats | grubhub" },
+      restaurant: { type: "string" },
+      store_url: { type: "string", description: "The restaurant's page on the platform." },
+      items: { type: "array", items: { type: "object", properties: { name: { type: "string" }, qty: { type: "integer" }, modifiers: { type: "array", items: { type: "string" } }, price: { type: "string", description: "Line price, e.g. 12.50" } }, required: ["name"] } },
+      fees: { type: "array", items: { type: "object", properties: { label: { type: "string" }, amount: { type: "string" } }, required: ["label", "amount"] }, description: "Subtotal, each fee, tax: as the checkout shows them." },
+      tip: { type: "string" },
+      total: { type: "string", description: "The all-in total as the cart shows it. The approval uses the checkout's own number." },
+      notes: { type: "string", description: "Restaurant notes." },
+      address: { type: "string", description: "The confirmed delivery address, short: '3247 Bruner Ave, Apt 1'." },
+      address_label: { type: "string", description: "Home, Work..." },
+      eta: { type: "string", description: "As quoted, e.g. 7:55–8:15." },
+      eta_latest: { type: "string", description: "The latest quoted arrival, ISO 8601 with offset." },
+      closes_at: { type: "string", description: "When the restaurant closes, ISO 8601 with offset, if known." },
+    },
+    required: ["action"],
+  },
+}];
+
+const str = (n) => z.string().max(n).optional();
+export const FOOD_SCHEMAS = {
+  food_order: z.object({
+    action: z.enum(["start", "history", "options", "cart", "status", "note"]),
+    order_id: z.number().int().positive().optional(),
+    status: z.enum(["needs", "failed", "cancelled"]).optional(),
+    note_kind: z.enum(["rejected", "liked", "disliked", "instructions", "allergy"]).optional(),
+    note: str(300),
+    options: z.array(z.object({ dish: z.string().min(1).max(120), restaurant: z.string().min(1).max(80), price: str(20), eta: str(30), photo_url: z.string().min(1).max(2000), page_url: str(2000) })).max(3).optional(),
+    platform: str(30), restaurant: str(120), store_url: str(1000),
+    items: z.array(z.object({ name: z.string().min(1).max(120), qty: z.number().int().positive().max(50).optional(), modifiers: z.array(z.string().max(80)).max(12).optional(), price: str(20) })).max(30).optional(),
+    fees: z.array(z.object({ label: z.string().min(1).max(60), amount: z.string().max(20) })).max(10).optional(),
+    tip: str(20), total: str(20), notes: str(500), address: str(300), address_label: str(40), eta: str(30), eta_latest: str(40), closes_at: str(40),
+  }),
+};
+
+export async function runFoodTool(name, input, { conversationId: c, check, fetchPhoto, shoot } = {}) {
+  if (name !== "food_order" || !foodOn(c)) return { ok: false, error: "Not available." };
+  const a = input?.action;
+  if (a === "start") return await startOrder(c);
+  if (a === "history") return history(c);
+  if (a === "options") return await showOptions(c, input.options, { fetchPhoto, ...(shoot ? { shoot } : {}) });
+  if (a === "cart") return await recordCart(c, input, check ? { check } : {});
+  if (a === "note") return addNote(c, { kind: input.note_kind, text: input.note });
+  if (a === "status") {
+    const o = (input.order_id ? ownOrder(c, input.order_id) : null) ?? openOrder(c);
+    if (!o) return { ok: false, error: "no_order" };
+    if (input.status === "failed" || input.status === "cancelled") setStatusRow(o.id, input.status);
+    else setStatusRow(o.id, "needs");
+    const r = await setStatus(o.id, input.status);
+    return { ok: true, tapback: !!r?.ok, say: "Set on their request message. Still say the result in words." };
+  }
+  return { ok: false, error: "unknown action" };
+}

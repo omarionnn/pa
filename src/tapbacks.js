@@ -27,7 +27,7 @@ const WORDS = "Reply in words instead — do not say you reacted.";
  * with a sentence that can go straight to the model. Never throws for an expected failure: "the
  * line cannot do this" is information, not an exception.
  */
-export async function sendTapback({ conversationId: c, channels, reaction }) {
+export async function sendTapback({ conversationId: c, channels, reaction, messageHandle = null }) {
   const thread = db.getThread(c);
   const ch = channels?.get?.(thread?.channel ?? "");
   if (!channels || !ch) {
@@ -42,7 +42,11 @@ export async function sendTapback({ conversationId: c, channels, reaction }) {
   const check = checkReaction(reaction);
   if (!check.ok) return { ok: false, error: check.error };
 
-  if (!thread?.last_inbound_id) {
+  // A named message (a food order's status goes on the text that asked for it) has to be one of
+  // THEIRS in THIS conversation: db.messageByHandle only finds handles inside the thread it is given.
+  const target = messageHandle ? (db.messageByHandle(c, messageHandle)?.from === "them" ? String(messageHandle).replace(/_\d+$/, "") : null) : thread?.last_inbound_id;
+  if (messageHandle && !target) return { ok: false, error: "that message is not one of theirs in this conversation." };
+  if (!target) {
     return { ok: false, error: "there is no message of theirs to react to yet — a tapback goes on something they sent you. Reply in words." };
   }
   if (thread.service && !/^imessage$/i.test(thread.service)) {
@@ -54,7 +58,7 @@ export async function sendTapback({ conversationId: c, channels, reaction }) {
 
   let r;
   try {
-    r = await ch.react({ messageHandle: thread.last_inbound_id, reaction: check.value });
+    r = await ch.react({ messageHandle: target, reaction: check.value });
   } catch (e) {
     // An adapter that throws rather than returning a result is a bug, and it must not cost
     // anybody a reply. A tapback is the most skippable thing Reason does.
@@ -75,7 +79,7 @@ export async function sendTapback({ conversationId: c, channels, reaction }) {
   }
   if (!r.ok) return { ok: false, error: `${r.error} — reply in words instead, and do not say you reacted.` };
   return {
-    ok: true, reacted_to: thread.last_inbound_id, reaction: r.reaction ?? check.value, removed: !!check.removing,
+    ok: true, reacted_to: target, reaction: r.reaction ?? check.value, removed: !!check.removing,
     note: check.removing
       ? "That reaction is off their message now. Nothing else was sent."
       : "They can see that on their message now. Do NOT also send a text saying the same thing — the tapback was the reply.",

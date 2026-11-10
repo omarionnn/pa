@@ -202,6 +202,8 @@ const TABLES = [
   "shop_crossmint_subjects",
   // Their no to "want me to use your Google login?", held 30 days per provider (src/socialsignin.js).
   "social_declines",
+  // Their food orders and food notes (src/food.js): what they ordered, where it went, places turned down.
+  "food_orders", "food_notes",
   // The daily edition and their stamps (src/daily.js, src/stamps.js).
   "daily_editions", "daily_looks", "daily_questions", "stamps", "stamp_shares", "stamp_jobs", "stamp_step_times",
   // Calls made on their behalf: the errands, quotes, commitments and requests to call somebody.

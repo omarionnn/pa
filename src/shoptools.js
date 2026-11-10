@@ -21,6 +21,7 @@ import * as trust from "./trust.js";
 import { judgeReply } from "./judge.js";
 import * as shipping from "./shipping.js";
 import { askStructured, sideAskAllowed } from "./backends/side.js";
+import { clock } from "./config.js";
 
 export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card", "shop_status", "shop_answer", "spend_limit_set", "spend_limit_confirm"]);
 export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) || shop.connectAllowedFor(conversationId);
@@ -65,6 +66,7 @@ export const SHOP_TOOL_DEFS = [
         sign_in: { type: "boolean", description: "True when a guest checkout at this store was blocked because it needs an account." },
         their_need: { type: "string", description: "What they said it has to be or be for, in their words, when they said it: 'for dry skin', 'fits an iPhone 16', 'unscented', 'the 16 oz'. Empty when they named only the item." },
         variant_confirmed: { type: "boolean", description: "True ONLY after store_checkout refused with variant_mismatch and they then told you they want exactly this one anyway." },
+        food_order_id: { type: "integer", description: "A food delivery order: the order_id from food_order start (where food ordering is on)." },
       },
       required: ["store", "start_url", "what", "item", "max_usd"],
     },
@@ -135,7 +137,7 @@ export const SHOP_TOOL_DEFS = [
 ];
 
 export const SHOP_SCHEMAS = {
-  store_checkout: z.object({ store: z.string().min(1).max(80), start_url: z.string().url().max(1000), what: z.string().min(1).max(400), item: z.string().min(1).max(120), max_usd: z.number().positive().max(2000), sign_in: z.boolean().optional(), their_need: z.string().max(400).optional(), variant_confirmed: z.boolean().optional() }),
+  store_checkout: z.object({ store: z.string().min(1).max(80), start_url: z.string().url().max(1000), what: z.string().min(1).max(1000), item: z.string().min(1).max(120), max_usd: z.number().positive().max(2000), sign_in: z.boolean().optional(), their_need: z.string().max(400).optional(), variant_confirmed: z.boolean().optional(), food_order_id: z.number().int().positive().optional() }),
   shop_pay: z.object({ payment_id: z.number().int().positive(), confirmation_id: z.number().int().optional() }),
   shop_decline: z.object({ payment_id: z.number().int().positive() }),
   shop_card: z.object({ send_link: z.boolean().optional(), receipt_email: z.string().max(200).optional() }),
@@ -261,11 +263,15 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     shop.ensureIcon(store); // for the sign-in page, if it comes to that; never waited on
     const out = await shop.startCheckout({ conversationId: c, store, startUrl: input.start_url, what: input.what, item: input.item, maxUsd: input.max_usd, signIn: !!input.sign_in });
     if (!out.ok) return out;
+    if (input.food_order_id) { const food = await import("./food.js"); if (food.foodOn(c)) food.linkRun(c, input.food_order_id, out.runId); }
     shop.follow(out.runId);
     const how = out.plan === "guest" ? "as a guest" : out.plan === "signed" ? `signed in to their ${shop.storeName(store)} account` : `signing in to their ${shop.storeName(store)} account first (they get a link by text if it asks)`;
     return { ok: true, run_id: out.runId, plan: out.plan, say: `Started ${how}. Nothing is charged: when it reaches payment they get a text with Crossmint's exact total to approve. Tell them in one line you're on it; don't promise a time.` };
   }
   if (name === "shop_pay") {
+    // A food order's cart is held 15 minutes (src/food.js): past that, no yes pays it, whatever was said.
+    { const food = await import("./food.js"); const row = shop.paymentRow(input.payment_id);
+      if (row && row.conversation_id === c && row.status === "asked" && food.isFoodRun(row.run_id) && clock.now() > shop.askDeadline(row)) return { ok: false, error: "hold_lapsed", say: "The 15-minute hold on that cart passed, so nothing was placed or charged. Offer in one line to rebuild the same cart for a fresh total." }; }
     // Face ID set up (src/passkey.js): no yes typed here pays. They get a fresh link; the page pays.
     if (passkey.requiredFor(c)) {
       const row = shop.paymentRow(input.payment_id);

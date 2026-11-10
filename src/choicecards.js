@@ -584,6 +584,10 @@ export async function placePhoto(conversationId, o, { taken = new Set(), ...opts
 // A set drawn this turn, waiting for the reply line to go first. Per process and per turn only: a
 // set that is never sent (the turn said nothing) is dropped by sendQueued, never carried forward.
 const queued = new Map();
+/** Another module's drawn picture(s), sent after the reply line like a set of cards (src/food.js). */
+export function queueCards(conversationId, setId, cards) { queued.set(conversationId, { setId, cards }); }
+/** photoFor, for a module that draws its own picture: only an image a tool returned in this conversation. */
+export const photoForOption = (conversationId, url, opts = {}) => photoFor(conversationId, url, opts);
 
 /**
  * The line over a set of cards, checked in code (src/offers.js guardReply): "i couldn't confirm the prices
