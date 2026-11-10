@@ -92,14 +92,18 @@ function plain(s) {
 export function targetOf(conversationId, quoted, { self = null } = {}) {
   const q = plain(pointerOf(quoted));
   if (q.length < 3) return null;
-  const recent = db.recentMessages(conversationId).filter(m => m.handle && m.handle !== self);
+  // Never the tapback itself, nor an earlier tapback quoting the same words.
+  const recent = db.recentMessages(conversationId).filter(m => m.handle && m.handle !== self && !parseReaction(m.text));
   return recent.find(m => plain(m.text).startsWith(q)) ?? recent.find(m => plain(m.text).includes(q)) ?? null;
 }
 
+/** A tapback can share a turn with real texts (a burst), so it never silences the turn on its own. */
+const NOTHING_ELSE = "if nothing else they sent this turn needs an answer either, reply exactly NO_REPLY; otherwise answer the rest and say nothing about the tapback";
+
 export function reactionLine(conversationId, content, { self = null } = {}) {
   const r = parseReaction(content);
-  if (!r) return "[this arrived as a tapback, not a typed message, and its wording could not be read. a tapback needs no answer unless it plainly answers a yes/no question you just asked: otherwise reply exactly NO_REPLY]";
-  if (r.removed) return `[this is them taking a tapback back off a message, not a typed message. it needs no answer: reply exactly NO_REPLY]`;
+  if (!r) return `[this arrived as a tapback, not a typed message, and its wording could not be read. a tapback needs no answer unless it plainly answers a yes/no question you just asked. ${NOTHING_ELSE}]`;
+  if (r.removed) return `[this is them taking a tapback back off a message, not a typed message. it needs no answer. ${NOTHING_ELSE}]`;
   const hit = targetOf(conversationId, r.quoted, { self });
   const on = hit
     ? `${hit.from === "reason" ? "your" : "their own"} message "${snippet(hit.text)}"`
@@ -107,7 +111,7 @@ export function reactionLine(conversationId, content, { self = null } = {}) {
   return `[this is a tapback, not a typed message: they put a ${r.emoji} (${r.kind}) on ${on}.`
     + " if that message of yours asked them a yes/no question and nothing since has answered it, a 👍 like means yes and a 👎 dislike means no:"
     + " act on that answer exactly as if they had typed it, and say in a few words what you took it as. a ❤️ or ‼️ on such a question also reads as yes; a ❓ means they are unsure, so ask one short question."
-    + " a tapback on anything else needs no answer at all: reply exactly NO_REPLY]";
+    + ` a tapback on anything else needs no answer at all. ${NOTHING_ELSE}]`;
 }
 
 /** The base of a multi-part handle (H_1 → H). Sendblue only; see sendblue.js splitHandle. */
@@ -152,18 +156,20 @@ export function attachmentLine(rows) {
 /** Jobs still running, each with the text that started it. Empty with none open. */
 export function jobsLine(conversationId, { limit = 5 } = {}) {
   let tasks = [];
-  try { tasks = db.listTasks(conversationId).filter(t => t.open !== false).slice(0, limit); } catch { return ""; }
+  // listTasks is oldest first; the newest are the ones "is it done?" is most likely about.
+  try { tasks = db.listTasks(conversationId).filter(t => t.open !== false).slice(-limit); } catch { return ""; }
   if (!tasks.length) return "";
   const items = tasks.map(t => {
     const origin = t.origin_handle ? db.messageByHandle(conversationId, t.origin_handle) : null;
     const from = origin?.text ? ` — started by their "${snippet(origin.text, 70)}"` : "";
-    return `#${t.id} ${snippet(t.label || t.title || "job", 50)}${from}`;
+    return `${snippet(t.label || t.title || "job", 50)}${from}`;
   });
   return `[jobs still running, each with the text that started it: ${items.join(" / ")}. a result for one goes under the text that started it]`;
 }
 
 /** The prompt block, for the owner's thread (or everyone) when the flag says so. */
 export function threadingRules(me) {
+  if (typeof me === "object" && me?.onCall) return "";
   if (!threadingOn({ isOperator: typeof me === "object" ? me?.isOperator : false })) return "";
   return `
 - Which message a reply is about is never left for them to work out. The rules for that follow.

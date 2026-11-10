@@ -551,7 +551,8 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
 
   const lang = callLanguage(call);
   const parts = [
-    systemFor(me),
+    // `onCall`: the text-thread rules (src/threading.js) are about bubbles and pins, not a call.
+    systemFor({ ...me, onCall: true }),
     `--- you are ON A PHONE CALL right now, not texting ---`,
     VOICE_RULES,
     ownerLanguageRule(lang.language || "en"),

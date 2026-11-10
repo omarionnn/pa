@@ -113,6 +113,9 @@ test("the prompt changes only where the flag reaches", () => {
   assert.match(owner, /ask ONE short question that names both/);
   assert.match(owner, /later one wins/);
   assert.doesNotMatch(owner, /Tapbacks only go one way/);
+  const call = systemFor({ name: "Omari", isOperator: true, onCall: true });
+  assert.doesNotMatch(call, /Never "above"/, "a phone call gets none of the text-thread rules");
+  assert.match(call, /Tapbacks only go one way/);
   const other = systemFor({ name: "Sam", isOperator: false });
   assert.match(other, /Tapbacks only go one way/, "somebody else's thread is untouched");
   assert.doesNotMatch(other, /Never "above"/);
@@ -131,7 +134,7 @@ test("a tapback on Reason's yes/no question reaches the turn named, with what it
     assert.match(turns[0].text, /this is a tapback, not a typed message/);
     assert.match(turns[0].text, /👍 \(like\) on your message "found a table at carbone/);
     assert.match(turns[0].text, /a 👍 like means yes/);
-    assert.match(turns[0].text, /NO_REPLY/, "and anything else needs no answer");
+    assert.match(turns[0].text, /if nothing else they sent this turn needs an answer either, reply exactly NO_REPLY/, "silent only when nothing else in the turn needs an answer");
   } finally { await runtime.shutdown?.(); }
 });
 
@@ -183,6 +186,7 @@ test("one message with two photos is ONE text, and the photos are numbered in th
     assert.equal(turns.length, 1, "one turn");
     assert.match(turns[0].text, /one message from them with 2 attachments, numbered in the order they sent them: photo 1, photo 2/);
     assert.doesNotMatch(turns[0].text, /separate texts/, "parts of one send are not a burst of separate texts");
+    assert.equal(db.recentMessages("dm:owner")[0].handle, `${STEM}_2`, "the last part is the newest, so a reply to it right after is just a reply (answerTarget pins nothing)");
   } finally { await runtime.shutdown?.(); }
 });
 
@@ -222,6 +226,7 @@ test("a job still running is named with the text that started it", () => {
   db.createTask("dm:owner", { title: "Lisbon airbnb", goal: "find one", maxAttempts: 5, originHandle: "O-1" });
   const line = threading.jobsLine("dm:owner");
   assert.match(line, /Lisbon airbnb — started by their "find me an airbnb in lisbon/);
+  assert.doesNotMatch(line, /#\d/, "no database ids in front of the model");
   assert.equal(threading.jobsLine("dm:nobody"), "");
 });
 

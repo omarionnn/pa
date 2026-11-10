@@ -799,7 +799,7 @@ export class Router {
         reply = await this.runtime.inbound(conversationId, userText, {
           channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
           fromOwner: true, isOperator: !!last.is_operator,
-          ...(canPin ? { answering: { handle: fold.added.at(-1)?.handle ?? (threaded ? threading.baseOf(last.channel, last.external_id) : last.external_id), texts: textCount, ...(downSince ? { always: true } : {}) } } : {}),
+          ...(canPin ? { answering: { handle: fold.added.at(-1)?.handle ?? last.external_id, texts: textCount, ...(downSince ? { always: true } : {}) } } : {}),
           fold,
           attachments: held.flatMap(h => h.attachments ?? []),
           requests,
