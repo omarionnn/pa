@@ -169,7 +169,18 @@ async function end(s, how) {
   s.timers.clear(s.timer);
   const { conversationId: c, entry } = s;
   let note;
-  if (s.browser && how === "blocked") {
+  if (how === "refused") {
+    // The provider said no to Reason's browser. The account page is NOT asked and nothing is
+    // recorded: this sign-in did not happen, and a check could only guess.
+    const prov = s.refusal?.provider || s.provider;
+    s.ended.state = "refused";
+    s.ended.why = s.refusal?.why ?? "";
+    s.ended.provider = prov;
+    social.recordRefusal(c, entry.site, prov);
+    if (s.browser) { try { await s.browser.close(); } catch { /* the note still goes */ } s.browser = null; }
+    const a = social.refusalAnswer(entry, prov);
+    note = `the ${entry.label} sign-in through ${social.LABELS[prov] ?? prov} stopped: ${s.ended.why}. Nothing was saved and it will not be tried again. Say it in ONE plain line, like: "${a.say}" ${a.instead}`;
+  } else if (s.browser && how === "blocked") {
     // The site never showed its sign-in page: a bot check or a CDN refusal sat where the form
     // should have been. Asking the account page now would only say "signed out", which is true and
     // beside the point — the news is that this route does not reach this site from here.
@@ -569,6 +580,16 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     // A wall is read first, because a wall also reads as "no sign-in prompt on the page" — which
     // is exactly what `looksSignedIn` infers signed-in from. Uber's bot-check page has none of
     // Uber's sign-in words on it and no box, and the first version of this called that signed in.
+    // The provider's own refusal of this browser ("This browser or app may not be secure"): ended at
+    // once, nothing saved, nothing pressed again (src/socialsignin.js providerRefused).
+    if (s.provider || social.socialAllowedFor(s.conversationId)) {
+      const no = social.providerRefused(got.raw);
+      if (no.refused) {
+        s.refusal = no;
+        const ended = await end(s, "refused");
+        return json(200, { over: true, state: ended.state });
+      }
+    }
     const walled = looksBlocked(got.raw);
     if (!walled && looksSignedIn(s, got.raw) && settled) s.signedInRun += 1;
     else s.signedInRun = 0;

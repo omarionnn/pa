@@ -190,6 +190,73 @@ export function providerPrompt(raw = {}) {
   return { provider, kind: "", say: "" };
 }
 
+// ---------------------------------------------------------------- the provider says no
+/**
+ * Google, Apple and Microsoft refuse some automated browsers on their own sign-in page: Google's
+ * "Couldn't sign you in — This browser or app may not be secure", Apple's and Microsoft's "this
+ * browser is not supported". That screen is the provider's decision about Reason's browser, not a
+ * wrong password: nothing is saved, nothing is pressed again, and the person is told in one line,
+ * with the site's own email/password sign-in offered instead. Nothing here hides the automation or
+ * changes how the browser looks (the repo's rule): the refusal is read and believed.
+ * Pure: reads the page's url and words only.   { provider, refused, why } | { refused: false }
+ */
+const REFUSAL = {
+  google: /this browser or app may not be secure|try using a different browser/,
+  apple: /(this|your) browser (is not|isn[’']t) supported|browser not supported|use a supported browser/,
+  microsoft: /(this|your) browser (is not|isn[’']t) supported|browser not supported/,
+};
+export function providerRefused(raw = {}) {
+  const url = String(raw?.url ?? "").toLowerCase();
+  const t = String(raw?.text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!t) return { refused: false };
+  // Google's words are its own; Apple's and Microsoft's ("browser not supported") are only theirs on their own host.
+  const onGoogle = /accounts\.google\.com|google\.com\/(signin|o\/oauth|v3\/signin)/.test(url);
+  const onApple = /appleid\.apple\.com|idmsa\.apple\.com/.test(url);
+  const onMicrosoft = /login\.(microsoftonline|live|microsoft)\.com/.test(url);
+  let provider = "";
+  if ((onGoogle || /this browser or app may not be secure/.test(t)) && REFUSAL.google.test(t)) provider = "google";
+  else if (onApple && REFUSAL.apple.test(t)) provider = "apple";
+  else if (onMicrosoft && REFUSAL.microsoft.test(t)) provider = "microsoft";
+  if (!provider) return { refused: false };
+  return { provider, refused: true, why: `${LABELS[provider]} refused Reason's browser on its own sign-in page ("${provider === "google" ? "This browser or app may not be secure" : "this browser is not supported"}")` };
+}
+
+/** The one line for the person, and what to offer instead. */
+export function refusalAnswer(entry, provider) {
+  const name = LABELS[providerKey(provider)] ?? "The provider";
+  const ownForm = !!entry?.signin_url && !entry?.signin_blocked;
+  return {
+    say: `${name} refused my browser for ${entry?.label ?? "that site"}, so I couldn't sign you in through ${name} there.${ownForm ? ` I can send you a secure link to sign in with your ${entry.label} email and password instead.` : ""}`,
+    instead: ownForm
+      ? `Offer ${entry.label}'s own email/password sign-in: signin_link with site "${entry.site}" and NO provider. Do not try ${name} for ${entry.label} again.`
+      : `${entry?.label ?? "That site"} has no sign-in of its own Reason can open; do not try ${name} for it again, and finish the task another way if there is one.`,
+  };
+}
+
+const REFUSAL_DAYS = 7;
+db.db.exec(`
+  CREATE TABLE IF NOT EXISTS social_refusals (
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    refused_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, site, provider)
+  );
+`);
+/** The provider refused Reason's browser for this site: kept 7 days so no link, window or lapse re-try goes round again. */
+export function recordRefusal(conversationId, site, provider) {
+  const key = providerKey(provider);
+  if (!key || !site) return;
+  db.db.prepare("INSERT INTO social_refusals (conversation_id, site, provider, refused_at) VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id, site, provider) DO UPDATE SET refused_at = excluded.refused_at")
+    .run(conversationId, site, key, clock.now());
+}
+export function refusedRecently(conversationId, site, provider, now = clock.now()) {
+  const key = providerKey(provider);
+  if (!key) return false;
+  const row = db.db.prepare("SELECT refused_at FROM social_refusals WHERE conversation_id = ? AND site = ? AND provider = ?").get(conversationId, site, key);
+  return !!row && now - row.refused_at < REFUSAL_DAYS * 86_400_000;
+}
+
 // ---------------------------------------------------------------- the wall, asked live
 /**
  * Can Reason's browser reach a site's sign-in page from where it runs, today? Asked of the site
@@ -318,6 +385,7 @@ export const RULES = [
   `- A no is a no: finish the task another way if you can, and do not ask about that provider again for ${DECLINE_DAYS} days unless they bring it up. Record it with signin_provider action "declined", and check signin_provider action "ask_check" before any ask — it says whether the ${DECLINE_DAYS} days are up. Never pressure, never repeat a declined ask.`,
   `- HOW IT IS COLLECTED: never a password, a code or a card number in this chat. Send the secure sign-in link (signin_link, with the provider as its \`provider\`) and they sign in on the provider's own page inside it. The login is saved only once the site says they are signed in, and which provider each site uses is written down with it; you are told when that happens.`,
   `- TWO-STEP VERIFICATION: expect it. Least effort first: a Yes tap on their phone, then a code sent to an email you can read yourself (gmail_search, gmail_read — never "check your email"), then a texted code they forward to you. Tell them what to expect in one line: "Google will ping your phone. Tap Yes." A forwarded code is cleaned before it is typed (a "G-", spaces and dashes come off), so take it as they send it. If a code fails twice, switch methods once; if that fails too, stop and say plainly what blocked it. Sites often send a second code of their own after the provider approves: warn them one more may come.`,
+  `- REFUSED: Google (or Apple/Microsoft) sometimes refuses Reason's browser on its own page ("This browser or app may not be secure"). You are told when that happens. Then say it in one plain line — Google refused my browser for that site — never retry it, and offer that site's own email/password sign-in through the secure link (signin_link with no provider) if it has one.`,
   `- AFTER ACCESS: finish the task first. Then, once, say what it unlocked: "Now I can handle your DoorDash and Airbnb too, since they use the same Google sign-in." When a session lapses, sign back in yourself (signin_status with recheck tries the saved provider button for you); only involve them for an approval tap or a code.`,
   `- UBER: never ask for their Google (or any provider) login for Uber. Connecting their Uber account is the Uber connect card (uber_connect), only when they ask to connect it; a ride is uber_link, every time, as before.`,
   `- TRUST: use provider access only for tasks they asked for or approved — no curiosity browsing. Never change passwords, security settings, recovery emails or connected apps. Never grant a new third-party app access without asking. Money, a message sent as them, and anything permanent still need their go-ahead. If they ask what you can get into, answer honestly from signin_status and say how to revoke it (account_revoke, or the provider's own connected-apps page). Signing in with Google is not the same as reading their Gmail: it opens that site, nothing else.`,
@@ -345,7 +413,14 @@ export async function signInAgain(page, conversationId, entry, { provider = "", 
   } catch (e) {
     return { ok: false, tried: true, provider: key, pressed: "", why: `${entry.label}'s sign-in page did not load: ${(e?.message ?? String(e)).split("\n")[0]}` };
   }
+  if (refusedRecently(conversationId, entry.site, key)) return { ok: false, tried: false, provider: key, refused: true, why: `${LABELS[key]} refused Reason's browser for ${entry.label} recently; not tried again` };
   const { pressed } = await clickProviderButton(page, key, { settleMs });
+  // The provider's own "this browser may not be secure": never saved, never pressed again.
+  try {
+    const raw = { url: page.url ? page.url() : "", text: await page.evaluate(() => document.body?.innerText ?? "") };
+    const no = providerRefused(raw);
+    if (no.refused) { recordRefusal(conversationId, entry.site, no.provider); return { ok: true, tried: true, provider: key, pressed, refused: true, state: "signed_out", why: no.why }; }
+  } catch { /* unreadable: the site's own check answers */ }
   const recheck = check ?? (async (p, c, site) => (await import("./signin.js")).checkAndRecord(p, c, site, { provider: key }));
   const out = await recheck(page, conversationId, entry.site);
   return { ok: true, tried: true, provider: key, pressed, state: out?.state ?? "unknown", why: out?.why ?? out?.error ?? "" };

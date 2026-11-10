@@ -60,7 +60,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   remote.forgetAllRemoteSignins();
-  db.db.exec("DELETE FROM timers; DELETE FROM accounts; DELETE FROM threads; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines;");
+  db.db.exec("DELETE FROM timers; DELETE FROM accounts; DELETE FROM threads; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals;");
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
   config.publicUrl = "https://reason.example";
@@ -519,4 +519,94 @@ test("signInAgain on its own: no provider, no page, or a page that will not load
   assert.equal(out.tried, true);
   assert.match(out.why, /did not load/);
   assert.equal(out.ok, false);
+});
+
+// ---------- 8. the provider refuses Reason's browser ----------
+
+const GOOGLE_REFUSED = {
+  url: "https://accounts.google.com/v3/signin/rejected?continue=https%3A%2F%2Fwww.amazon.com",
+  text: "Google\nCouldn't sign you in\nThis browser or app may not be secure. Learn more\nTry using a different browser. If you're already using a supported browser, you can try again to sign in.\nTry again",
+  fields: [],
+};
+
+test("providerRefused: Google's 'may not be secure', Apple's and Microsoft's 'browser not supported' on their own hosts; nothing else", () => {
+  assert.equal(social.providerRefused(GOOGLE_REFUSED).provider, "google");
+  assert.match(social.providerRefused(GOOGLE_REFUSED).why, /Google refused Reason's browser/);
+  // Google's own words carry it even if the url was not read.
+  assert.equal(social.providerRefused({ url: "", text: "This browser or app may not be secure." }).provider, "google");
+  assert.equal(social.providerRefused({ url: "https://appleid.apple.com/auth/authorize?x", text: "Sign in with Apple\nYour browser is not supported." }).provider, "apple");
+  assert.equal(social.providerRefused({ url: "https://login.microsoftonline.com/common/oauth2", text: "Microsoft\nThis browser is not supported" }).provider, "microsoft");
+  // A site's own "browser not supported", or Google's ordinary steps, are not a provider refusal.
+  assert.equal(social.providerRefused({ url: "https://www.amazon.com/ap/signin", text: "Your browser is not supported" }).refused, false);
+  assert.equal(social.providerRefused({ url: "https://accounts.google.com/signin", text: "Sign in\nUse your Google Account\nEmail or phone" }).refused, false);
+  assert.equal(social.providerRefused({ url: "https://accounts.google.com/signin", text: "Couldn't find your Google Account" }).refused, false);
+  assert.equal(social.providerRefused({}).refused, false);
+  // Google's and Microsoft's ordinary failures are not a refusal of the browser.
+  assert.equal(social.providerRefused({ url: "https://accounts.google.com/v3/signin/challenge", text: "Couldn't sign you in\nOpen the Gmail app on your phone and approve the request. Too many failed attempts." }).refused, false);
+  assert.equal(social.providerRefused({ url: "https://login.microsoftonline.com/common", text: "We couldn't sign you in. Your browser is currently set to block cookies." }).refused, false);
+});
+
+test("a link that lands on Google's refusal ends at once: nothing checked or saved, one plain line, the site's own form offered, no retry", async () => {
+  const { token, did, checks } = makeLink({ provider: "google", frames: [GOOGLE_REFUSED] });
+  const cookie = await start(token);
+  const r = await req(token, "view", { cookie });
+  assert.equal(r.status, 200);
+  assert.deepEqual(JSON.parse(r.body), { over: true, state: "refused" });
+  assert.equal(checks.length, 0, "the account page is never asked, so nothing can be recorded");
+  assert.equal(row(CONV, "amazon"), undefined, "no saved login");
+  const note = notes().pop();
+  assert.match(note, /Google refused my browser for Amazon/);
+  assert.match(note, /sign in with your Amazon email and password instead/);
+  assert.match(note, /signin_link with site "amazon" and NO provider/);
+  assert.match(note, /will not be tried again/);
+  assert.equal(did.filter(d => d[0] === "press").length, 1, "pressed once, on Start, never again");
+  // A second ask for the Google route is refused without a link; the site's own form still works.
+  const made = [];
+  const seam = { createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/y", good_for_minutes: 10, reachable_from_a_phone: true }; } };
+  const again = await call("signin_link", { site: "amazon", provider: "google" }, CONV, seam);
+  assert.equal(again.ok, false);
+  assert.equal(again.refused, "google");
+  assert.match(again.say, /Google refused my browser for Amazon/);
+  assert.deepEqual(made, []);
+  const own = await call("signin_link", { site: "amazon" }, CONV, seam);
+  assert.equal(own.ok, true);
+  assert.equal(made[0].provider, "");
+  // Another provider, or another site, is not held against it.
+  assert.equal(social.refusedRecently(CONV, "amazon", "apple"), false);
+  assert.equal(social.refusedRecently(CONV, "opentable", "google"), false);
+  // Seven days later it may be tried again.
+  assert.equal(social.refusedRecently(CONV, "amazon", "google", clock.now() + 8 * 86_400_000), false);
+});
+
+test("a lapse whose Google button lands on the refusal: nothing saved, said plainly, not pressed again", async () => {
+  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "google" });
+  const page = fakePage({ button: "Continue with Google", signedIn: false });
+  let pressedOnce = false;
+  const inner = page.evaluate;
+  page.evaluate = async (js, arg) => { const out = await inner(js, arg); if (String(js).includes("findProviderButton")) pressedOnce = true; return pressedOnce && typeof js === "function" ? GOOGLE_REFUSED.text : out; };
+  page.url = () => (pressedOnce ? GOOGLE_REFUSED.url : amazon.signin_url);
+  const out = await call("signin_status", { site: "amazon", recheck: true }, CONV, { pageFor: async () => page });
+  assert.equal(out.state, "signed_out");
+  assert.equal(out.provider_refused, "google");
+  assert.match(out.say, /Google refused my browser for Amazon/);
+  assert.equal(social.refusedRecently(CONV, "amazon", "google"), true);
+  // Asked again: the button is not pressed a second time.
+  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "google" });
+  const before = page.did.filter(d => d[0] === "press").length;
+  await call("signin_status", { site: "amazon", recheck: true }, CONV, { pageFor: async () => page });
+  assert.equal(page.did.filter(d => d[0] === "press").length, before);
+});
+
+test("the page they land on says the provider said no, and offers the site's own sign-in", async () => {
+  const { setupResultPage } = await import("../src/pages/setupsignin.js");
+  const html = setupResultPage({ entry: amazon, ended: { how: "refused", state: "refused", provider: "google" }, thread: { reply: (r) => `sms:+14155550199&body=${encodeURIComponent(r)}` } });
+  assert.match(html, /body=Google%20refused%20the%20sign-in/);
+  assert.match(html, /Google said no to my browser\./);
+  assert.match(html, /email and password instead/);
+  assert.doesNotMatch(html, /Couldn&#39;t tell|Couldn't tell/);
+});
+
+test("the rules say what a refusal means", () => {
+  assert.match(social.RULES, /REFUSED: Google \(or Apple\/Microsoft\) sometimes refuses Reason's browser/);
+  assert.match(social.RULES, /never retry it, and offer that site's own email\/password sign-in/);
 });

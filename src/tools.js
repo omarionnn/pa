@@ -14511,6 +14511,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       const reach = trust.SITE_REACHABLE[entry.site];
       const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
+      if (provider && social.refusedRecently(c, entry.site, provider)) {
+        return { ok: false, refused: provider, ...social.refusalAnswer(entry, provider), error: `${social.LABELS[provider]} refused Reason's browser for ${entry.label} recently; not tried again.` };
+      }
       const out = await (ctx.openSigninWindow ?? signinWindow.openSigninWindow)({
         conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider,
       });
@@ -14554,6 +14557,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // pressed, and the saved login records it once the site says signed in. Dropped where the flag
       // does not reach this person.
       const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
+      if (provider && social.refusedRecently(c, entry.site, provider)) {
+        return { ok: false, refused: provider, ...social.refusalAnswer(entry, provider), error: `${social.LABELS[provider]} refused Reason's browser for ${entry.label} recently; no ${social.LABELS[provider]} link is made again.` };
+      }
       const out = (ctx.createRemoteSignin ?? signinRemote.createRemoteSignin)({
         conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider,
         // Their profile is busy while the window on the Mac is open on it.
@@ -14596,13 +14602,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (out.ok && out.state === "signed_out" && before) {
           again = await (ctx.signInAgain ?? social.signInAgain)(page, c, entry, { provider: before, check: ctx.checkAndRecord ?? null });
           if (again?.tried && again.state) out = { ...out, state: again.state, why: again.why || out.why, signed_in_again: again.state === "signed_in" };
+          if (again?.refused) out = { ...out, state: "signed_out", why: again.why };
         }
         trust.ledgerWrite({ conversationId: c, action: "signin_status", input, out: { ...out, ...(again ? { signin_again: { provider: again.provider, pressed: !!again.pressed, state: again.state ?? null } } : {}) }, target: `site:${entry.site}` });
         return {
           ok: true, site: entry.site, state: out.state, why: out.why,
           checked: out.checked_url, landed: out.landed, just_checked: true,
           ...(out.provider ? { provider: out.provider } : {}),
-          ...(again?.tried ? {
+          ...(again?.refused ? { provider_refused: again.provider, ...social.refusalAnswer(entry, again.provider) } : again?.tried ? {
             signed_in_again: again.state === "signed_in",
             signin_again: again.state === "signed_in"
               ? `The session had lapsed; you signed back in yourself through the ${social.LABELS[again.provider]} button, and ${entry.label} says they are signed in again. Nothing to tell them unless they ask.`
