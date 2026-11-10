@@ -248,3 +248,19 @@ test("the live read of a sign-in page never follows a redirect into this machine
   const ok = await social.signinWall(signin.genericEntry("https://www.notion.so/login"), { fetchImpl: async () => ({ status: 200, headers: { get: () => null }, text: async () => "<button>Continue with Google</button><button>Continue with Apple</button> Log in with email" }) });
   assert.deepEqual(ok.providers_offered, ["google", "apple"]);
 });
+
+test("buttons drawn by JavaScript: an empty plain read is followed by the rendered page, and the link offers what it shows", async () => {
+  const made = [];
+  const out = await call("signin_link", { site: "https://www.airbnb.com/login" }, CONV, {
+    ...linkSeam(made),
+    signinWall: async () => ({ in: true, status: 200, providers_offered: [] }),
+    readSigninPage: async (e) => { assert.equal(e.site, "airbnb.com"); return "Log in or sign up\nContinue with Google\nContinue with Apple\nContinue with email\nContinue with Facebook"; },
+  });
+  assert.equal(out.ok, true);
+  assert.deepEqual(made[0].offered, ["google", "apple", "facebook"]);
+  // A wall that said no is not rendered past.
+  const made2 = [];
+  let rendered = 0;
+  await call("signin_link", { site: "https://www.notion.so/login" }, CONV, { ...linkSeam(made2), signinWall: async () => ({ in: false, status: 0, providers_offered: [] }), readSigninPage: async () => { rendered++; return "Continue with Google"; } });
+  assert.equal(rendered, 0);
+});
