@@ -34,7 +34,7 @@ process.env.SENDBLUE_WEBHOOK_SECRET = "";
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { ConsoleChannel } = await import("../src/channels/console.js");
-const { SendblueChannel, PLAN_LIMITS, TYPING_DEFAULT_MS, canRetry } = await import("../src/channels/sendblue.js");
+const { SendblueChannel, PLAN_LIMITS, TYPING_DEFAULT_MS, canRetry, UPLOAD_RETRY_MS } = await import("../src/channels/sendblue.js");
 const { subscriptionBackendBlock } = await import("../src/backends/guard.js");
 const { capabilitiesNow } = await import("../src/tools.js");
 const db = await import("../src/db.js");
@@ -783,13 +783,14 @@ test("a file that is legal over iMessage but over the SMS ceiling says so on the
   } finally { unconfigure(); }
 });
 
-test("an upload that is rejected is reported, and no message is sent", async () => {
+test("an upload that keeps failing for a passing reason is tried 3 times, then reported, and no message is sent", async () => {
   configure();
   try {
-    const calls = [];
+    const calls = [], waits = [];
     const ch = new SendblueChannel({
       statFile: () => ({ size: 10 }),
       readFile: () => Buffer.alloc(10),
+      sleep: async (ms) => { waits.push(ms); },
       fetchImpl: async (url) => {
         calls.push(url);
         return { ok: false, status: 500, text: async () => JSON.stringify({ status: "ERROR", message: "Failed to upload file to storage" }) };
@@ -799,7 +800,74 @@ test("an upload that is rejected is reported, and no message is sent", async () 
     assert.equal(out.ok, false);
     assert.equal(out.supported, true);
     assert.match(out.error, /Failed to upload file to storage/);
-    assert.equal(calls.length, 1, "and nothing was sent claiming the file went");
+    assert.equal(out.upload_tries, 3);
+    assert.deepEqual(calls, Array(3).fill("https://api.sendblue.com/api/upload-file"), "only uploads; nothing was sent claiming the file went");
+    assert.deepEqual(waits, [...UPLOAD_RETRY_MS], "backoff between tries, none after the last");
+  } finally { unconfigure(); }
+});
+
+test("a one-off upload 500 (seen live 11-10) is tried again and the picture goes ONCE", async () => {
+  configure();
+  try {
+    const calls = [];
+    let ups = 0;
+    const ch = new SendblueChannel({
+      statFile: () => ({ size: 10 }),
+      readFile: () => Buffer.alloc(10, 3),
+      sleep: async () => {},
+      fetchImpl: async (url, init) => {
+        calls.push(url);
+        if (url.endsWith("/api/upload-file")) {
+          assert.equal(init.body.get("file").size, 10, "every try carries the whole file");
+          return ++ups === 1
+            ? { ok: false, status: 500, text: async () => JSON.stringify({ status: "ERROR", message: "Failed to upload file to storage" }) }
+            : { ok: true, status: 200, text: async () => JSON.stringify({ media_url: "https://storage.googleapis.com/inbound-file-store/order.jpg" }) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ status: "QUEUED", message_handle: "m9" }) };
+      },
+    });
+    const out = await ch.sendMedia({ to: STRANGER, text: "", file: "/tmp/order.jpg", mimeType: "image/jpeg" });
+    assert.equal(out.ok, true);
+    assert.equal(calls.filter(u => u.endsWith("/api/send-message")).length, 1, "one message, never two");
+    assert.equal(calls.length, 3);
+  } finally { unconfigure(); }
+});
+
+test("an upload that never got there (network error) is tried again too", async () => {
+  configure();
+  try {
+    let ups = 0, sends = 0;
+    const ch = new SendblueChannel({
+      statFile: () => ({ size: 10 }), readFile: () => Buffer.alloc(10), sleep: async () => {},
+      fetchImpl: async (url) => {
+        if (url.endsWith("/api/upload-file")) {
+          if (++ups < 3) throw new Error("socket hang up");
+          return { ok: true, status: 200, text: async () => JSON.stringify({ media_url: "https://x.example/a.jpg" }) };
+        }
+        sends++;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ status: "QUEUED", message_handle: "m10" }) };
+      },
+    });
+    const out = await ch.sendMedia({ to: STRANGER, text: "", file: "/tmp/a.jpg", mimeType: "image/jpeg" });
+    assert.equal(out.ok, true);
+    assert.equal(ups, 3);
+    assert.equal(sends, 1);
+  } finally { unconfigure(); }
+});
+
+test("an upload refused for a lasting reason (a 4xx) is not tried again", async () => {
+  configure();
+  try {
+    const calls = [], waits = [];
+    const ch = new SendblueChannel({
+      statFile: () => ({ size: 10 }), readFile: () => Buffer.alloc(10), sleep: async (ms) => { waits.push(ms); },
+      fetchImpl: async (url) => { calls.push(url); return { ok: false, status: 400, text: async () => JSON.stringify({ message: "bad file type" }) }; },
+    });
+    const out = await ch.sendMedia({ to: STRANGER, text: "", file: "/tmp/a.xyz", mimeType: "application/x-nope" });
+    assert.equal(out.ok, false);
+    assert.match(out.error, /HTTP 400.*bad file type/);
+    assert.equal(calls.length, 1);
+    assert.equal(waits.length, 0);
   } finally { unconfigure(); }
 });
 

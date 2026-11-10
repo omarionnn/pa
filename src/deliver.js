@@ -126,6 +126,9 @@ export function accountDay(conversationId, now = clock.now()) {
 /** The one line a text carries after their first switch from Web (decision 9), once per person ever: intent, not instructions. */
 export const WEB_HINT = "Our full conversation, the Web part included, is on Reason Web.";
 
+/** A food order's approval card that did not arrive: one plain line; the total is in the text right after it. */
+export const ORDER_CARD_FAILED = "(the picture of your order didn't come through, the total's in the next text)";
+
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
   return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null, fromTask = null, toMaster = false }) {
     // The silence marker never reaches a person, wherever in the reply it sits (src/plain.js
@@ -179,8 +182,12 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
       // Still trying, in the outbox, which owns it from here.
       if (r.queued) return { ...said, mediaOk: true, mediaQueued: true, error: said.error ?? r.error };
 
-      warn(`could not send the recording of call #${media.call_id} over ${name}: ${r.error}`);
-      const line = `(i couldn't get you the recording of that call here — ${r.error})`;
+      // Said about the thing that failed: a call's recording keeps its own line; any other picture
+      // (a food order's card, src/serve.js) brings its own `failLine`, else a plain one about a picture.
+      const isCall = media.call_id != null;
+      warn(`could not send ${isCall ? `the recording of call #${media.call_id}` : `a file (${media.filename ?? "picture"})`} over ${name}: ${r.error}`);
+      const line = isCall ? `(i couldn't get you the recording of that call here — ${r.error})`
+        : (media.failLine || "(that picture didn't come through)");
       // Its own key: this is a different message from the one with the file on it, and under the
       // same key the outbox would hand back the attempt that just failed instead of sending this.
       const t = target ? await target.send({ to, text: line }) : await router.send({ channel: name, to, text: line, chatId, ...durable, ...(idempotencyKey ? { idempotencyKey: `${idempotencyKey}:no-media` } : {}) });

@@ -231,6 +231,24 @@ test("when the recording cannot go, the words still go stripped, and a line says
   assert.ok(warned.some(l => /recording of call #7/.test(l)));
 });
 
+test("an order card that cannot go says the picture did not come through — never a call recording", async () => {
+  const { ORDER_CARD_FAILED } = await import("../src/deliver.js");
+  const { fake, deliver, warned } = harness({ channel: { mediaFailWith: "Sendblue would not take the file (HTTP 500)" } });
+  const r = await deliver({ conversationId: CONV, text: "", media: { file: RECORDING, mimeType: "image/jpeg", filename: "order.jpg", failLine: ORDER_CARD_FAILED } });
+  assert.equal(r.mediaOk, false);
+  assert.equal(fake.sent.length, 1, "no words of its own, so the one plain line is all");
+  assert.equal(fake.sent[0].text, ORDER_CARD_FAILED);
+  assert.match(fake.sent[0].text, /picture of your order didn't come through/);
+  assert.doesNotMatch(fake.sent[0].text, /recording|call/i);
+  assert.ok(warned.some(l => /order\.jpg/.test(l)) && !warned.some(l => /call #/.test(l)));
+});
+
+test("any other picture that cannot go gets a plain picture line, not the call one", async () => {
+  const { fake, deliver } = harness({ channel: { mediaFailWith: "nope" } });
+  await deliver({ conversationId: CONV, text: "", media: { file: RECORDING, mimeType: "image/jpeg", filename: "x.jpg" } });
+  assert.equal(fake.sent.at(-1).text, "(that picture didn't come through)");
+});
+
 test("a recording the outbox has queued counts as going, so it is not held back to ride on a later message", async () => {
   const sent = [];
   const router = {

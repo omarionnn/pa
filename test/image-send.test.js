@@ -91,7 +91,7 @@ function sendblueHarness({ uploadFails = false } = {}) {
   };
   const runtime = new Runtime({ runTurn: async () => "ok" });
   const router = new Router({ runtime });
-  const sb = router.register(new SendblueChannel({ fetchImpl }));
+  const sb = router.register(new SendblueChannel({ fetchImpl, sleep: async () => {} }));
   db.upsertThread({ conversationId: C, channel: sb.name, address: OWNER, chatId: null, service: "iMessage" });
   return { router, calls };
 }
@@ -140,7 +140,7 @@ test("a failed upload is an honest failure: nothing sent, no claim it was, no li
   assert.equal(out.ok, false);
   assert.equal(out.sent, false);
   assert.equal(out.sent_count, 0);
-  assert.deepEqual(calls.map(c => c.path), ["/api/upload-file"], "no send-message after a failed upload");
+  assert.deepEqual(calls.map(c => c.path), Array(3).fill("/api/upload-file"), "a 503 upload is tried 3 times, and no send-message after it still fails");
   assert.match(out.error, /would not take the file/);
   assert.match(out.note, /could not be sent/);
   assert.match(out.note, /Do not say you sent it/);

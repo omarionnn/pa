@@ -226,6 +226,19 @@ export function canRetry({ status = null, errorKey = null, errorCode = null } = 
  * there is no number to enforce — Sendblue's own refusal is what surfaces, in its own words.
  * (limits, getting-started)
  */
+/**
+ * How long to wait before each extra try of a file upload that failed for a passing reason (a 5xx,
+ * a 408/429, or the request never getting there). Two extra tries, then the honest failure. Seen
+ * live 2026-11-10: a one-off HTTP 500 "Failed to upload file to storage" cost a food order its card.
+ *
+ * Safe to repeat because nothing has been texted yet: the upload only stores the file and hands back
+ * an address, and the message carrying it (step 2) is posted once, after an upload that worked. The
+ * worst a repeat can leave is an unused file on Sendblue's side, never a second picture on a phone.
+ */
+export const UPLOAD_RETRY_MS = Object.freeze([1_000, 3_000]);
+/** One upload try that hangs this long counts as a passing failure (tried again), not a stall. */
+export const UPLOAD_TIMEOUT_MS = 90_000;
+
 export const PLAN_LIMITS = {
   free_shared_line: "a shared number: somebody has to text it once before Reason can message them",
   ai_agent_inbound_contacts_per_day: 1000,
@@ -242,12 +255,13 @@ export class SendblueChannel extends Channel {
    * adapter: an attachment test should not need a real file on disk, and no test should need a
    * network or a Sendblue account.
    */
-  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now(), statFile = plainStat, readFile = readPlain } = {}) {
+  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now(), statFile = plainStat, readFile = readPlain, sleep = (ms) => new Promise(r => setTimeout(r, ms)) } = {}) {
     super();
     this.fetch = fetchImpl;
     this.now = now;
     this.statFile = statFile;
     this.readFile = readFile;
+    this.sleep = sleep;
   }
 
   get keyId() { return config.sendblueKeyId; }
@@ -523,22 +537,32 @@ export class SendblueChannel extends Channel {
     }
     const name = filename ?? file.split("/").pop();
 
-    // Step 1: the bytes, as multipart with the field named `file`.
-    const form = new FormData();
-    form.append("file", new Blob([this.readFile(file)], { type: mimeType || "application/octet-stream" }), name);
-    let up;
-    try {
-      up = await this.fetch(`${this.base}/api/upload-file`, { method: "POST", headers: { ...this.#authHeaders }, body: form });
-    } catch (e) {
-      return { ok: false, supported: true, error: `the upload failed: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    // Step 1: the bytes, as multipart with the field named `file`. A passing failure is tried again
+    // here, in place (UPLOAD_RETRY_MS), before anything is texted — so a repeat can never double a picture.
+    const bytes = this.readFile(file);
+    let upJson = null, failed = null, tries = 0;
+    for (let attempt = 0; ; attempt++) {
+      tries = attempt + 1;
+      const form = new FormData();
+      form.append("file", new Blob([bytes], { type: mimeType || "application/octet-stream" }), name);
+      let passing;
+      try {
+        const up = await this.fetch(`${this.base}/api/upload-file`, { method: "POST", headers: { ...this.#authHeaders }, body: form, signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
+        const upText = await up.text();
+        upJson = null;
+        try { upJson = upText ? JSON.parse(upText) : null; } catch { /* reported as-is below */ }
+        if (up.ok && upJson?.media_url) { failed = null; break; }
+        const said = upJson?.message ?? upText?.slice(0, 200) ?? "no body";
+        failed = `Sendblue would not take the file (HTTP ${up.status}): ${said}`;
+        passing = up.status >= 500 || up.status === 408 || up.status === 429;
+      } catch (e) {
+        failed = `the upload failed: ${(e?.message ?? String(e)).split("\n")[0]}`;
+        passing = true;
+      }
+      if (!passing || attempt >= UPLOAD_RETRY_MS.length) break;
+      await this.sleep(UPLOAD_RETRY_MS[attempt]);
     }
-    const upText = await up.text();
-    let upJson = null;
-    try { upJson = upText ? JSON.parse(upText) : null; } catch { /* reported as-is below */ }
-    if (!up.ok || !upJson?.media_url) {
-      const said = upJson?.message ?? upText?.slice(0, 200) ?? "no body";
-      return { ok: false, supported: true, error: `Sendblue would not take the file (HTTP ${up.status}): ${said}` };
-    }
+    if (failed) return { ok: false, supported: true, error: failed, upload_tries: tries };
 
     // Step 2: one message, text and the uploaded file together.
     const r = await this.#postJson("/api/send-message", {
