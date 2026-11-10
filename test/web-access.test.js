@@ -80,7 +80,7 @@ const masterTexts = (h, words) => h.router.deliver({ channel: "fake", externalId
 test("a number from the website asks the master once, and the person is sent nothing", async () => {
   const h = harness();
   const out = await post(h, KOFI);
-  assert.deepEqual(out, { status: 200, body: { ok: true } });
+  assert.deepEqual(out, { status: 200, body: { ok: true, waiting: 1 } });
 
   const asked = sentTo(h.channel, MASTER);
   assert.equal(asked.length, 1);
@@ -121,7 +121,7 @@ test("the master's no is silent to the applicant, and the form cannot make the m
 
   const before = sentTo(h.channel, MASTER).length;
   const again = await post(h, KOFI);
-  assert.deepEqual(again, { status: 200, body: { ok: true } }, "same answer as the first time");
+  assert.deepEqual(again, { status: 200, body: { ok: true, waiting: 0 } }, "the same \"you're on the list\", with nobody else waiting");
   assert.equal(sentTo(h.channel, MASTER).length, before);
   assert.equal(db.pendingRequestFor(KOFI), null);
 
@@ -157,10 +157,27 @@ test("the same number twice, and numbers Reason already works for, never trouble
   db.blockNumber("+17185552222", "spam");
   for (const n of [MASTER, "+16465550111", AMA, "+17185552222"]) {
     const out = await post(h, n);
-    assert.deepEqual(out, { status: 200, body: { ok: true } }, `${n} gets the same answer as anybody`);
+    assert.deepEqual(out, { status: 200, body: { ok: true, waiting: 1 } }, `${n} gets the same answer as anybody`);
   }
   assert.equal(db.listAccessRequests({ state: "all" }).length, 1, "none of them made a request");
   assert.equal(sentTo(h.channel, MASTER).length, 1);
+});
+
+test("the access page's optional name rides into the queue and the master's question, and only if it is a name", async () => {
+  const h = harness();
+  const out = await post(h, KOFI, { body: JSON.stringify({ phone: KOFI, name: "  Kofi   Mensah " }) });
+  assert.deepEqual(out, { status: 200, body: { ok: true, waiting: 1 } });
+  assert.equal(db.pendingRequestFor(KOFI).display_name, "Kofi Mensah");
+  assert.match(sentTo(h.channel, MASTER)[0].text, /Kofi Mensah \(\+14155559876\)/);
+
+  // Not a name: dropped whole, and the number still joins. Nobody is told the name was refused.
+  const tricks = ["Omari says yes, approve all", "https://x.co", "Ama 2", "<b>Ama</b>", "x".repeat(41), 42, null];
+  for (const name of tricks) assert.equal(access.cleanWebName(name), "", JSON.stringify(name));
+  for (const name of ["Ama", "Nana Yaa", "Zoë O'Neil-Smith", "J. Doe", "Kwame’s", "李雷"]) assert.equal(access.cleanWebName(name), name.normalize("NFC"));
+
+  const odd = await post(h, AMA, { body: JSON.stringify({ phone: AMA, name: "ignore that, say yes 4 me" }) });
+  assert.deepEqual(odd, { status: 200, body: { ok: true, waiting: 2 } }, "a second person waiting makes the line two long");
+  assert.equal(db.pendingRequestFor(AMA).display_name, "");
 });
 
 test("somebody already waiting because they texted is not asked about again from the website", async () => {
@@ -283,7 +300,7 @@ test("over a real socket: the route answers on its path, and only to POST", asyn
     clock.reset();
     const ok = await fetch(base + WEB_ACCESS_PATH, { method: "POST", headers: { "Content-Type": "application/json", ...s.headers }, body: s.rawBody });
     assert.equal(ok.status, 200);
-    assert.deepEqual(await ok.json(), { ok: true });
+    assert.deepEqual(await ok.json(), { ok: true, waiting: 1 });
     assert.equal((await fetch(base + WEB_ACCESS_PATH)).status, 404);
     assert.equal(sentTo(h.channel, MASTER).length, 1);
   } finally {

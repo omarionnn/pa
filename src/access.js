@@ -134,6 +134,22 @@ export function validWebNumber(raw) {
 }
 
 /**
+ * The optional name from the website's access page, or "" when it is not plainly a name.
+ *
+ * It ends up in the question to the master ("give Kofi (+1…) their own Reason") and, on a yes, as
+ * the account's name, so it is held to the shape of a name and nothing more: letters (any
+ * alphabet), spaces, apostrophes, hyphens and full stops, at most 40 characters. Anything else —
+ * digits, links, punctuation that could dress it up as an instruction — and it is dropped whole
+ * rather than tidied, so the number still joins and the master just sees the number.
+ */
+export function cleanWebName(raw) {
+  if (typeof raw !== "string") return "";
+  const text = raw.normalize("NFC").replace(/\s+/g, " ").trim();
+  if (!text || text.length > 40) return "";
+  return /^[\p{L}\p{M}][\p{L}\p{M} .'\u2019-]*$/u.test(text) ? text : "";
+}
+
+/**
  * Somebody left their number on the website's "request access" form.
  *
  * The same queue and the same question to the master as a first text, with three differences that
@@ -150,7 +166,7 @@ export function validWebNumber(raw) {
  *
  * @returns {{ok: true, outcome: string, request?: object} | {ok: false, reason: string}}
  */
-export function handleWebRequest({ channel, address }) {
+export function handleWebRequest({ channel, address, name = "" }) {
   const addr = validWebNumber(address);
   if (!addr) return { ok: false, reason: "bad_number" };
 
@@ -175,7 +191,7 @@ export function handleWebRequest({ channel, address }) {
     return { ok: false, reason: "full_today" };
   }
 
-  const request = db.createAccessRequest({ channel, address: addr, firstMessage: "", source: "web" });
+  const request = db.createAccessRequest({ channel, address: addr, displayName: cleanWebName(name), firstMessage: "", source: "web" });
   return { ok: true, outcome: "queued", request };
 }
 
