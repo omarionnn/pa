@@ -374,7 +374,8 @@ const COMMON = new Set(["the", "and", "you", "your", "for", "was", "that", "this
 export function keywordHistory(conversationId, query, { limit = 5, chars = 220 } = {}) {
   const words = [...new Set(String(query ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3 && !COMMON.has(w)))].slice(0, 6);
   if (!words.length || !conversationId) return [];
-  const like = (cols) => `(${words.map(() => `(${cols.map(c => `LOWER(${c}) LIKE ?`).join(" OR ")})`).join(" + ")})`;
+  // pt(): sealed text (src/restcrypt.js) is opened before it is matched; plain text passes through.
+  const like = (cols) => `(${words.map(() => `(${cols.map(c => `LOWER(pt(${c})) LIKE ?`).join(" OR ")})`).join(" + ")})`;
   const args = (cols) => words.flatMap(w => cols.map(() => `%${w}%`));
   const found = [];
   const q = (table, cols, extraWhere = "") => db.prepare(`SELECT id, ${like(cols)} AS hits, ${table === "event_log" ? "at" : "created_at"} AS at FROM ${table}

@@ -61,6 +61,8 @@ test("every CREATE TABLE in src/ exists here, so the checks below see every tabl
   walk(new URL("../src", import.meta.url).pathname);
   // A rebuild's scratch table, renamed onto oauth_tokens in the same migration.
   made.delete("oauth_tokens_per_account");
+  // The keystore's own tables live in data/keys.db (src/restcrypt.js), deliberately not in reason.db.
+  for (const t of ["install_key", "user_keys", "shredded"]) made.delete(t);
   const have = new Set(tables());
   const missing = [...made].filter(t => !have.has(t));
   assert.deepEqual(missing, [], `tables made in src/ that this test never loaded — import their module above: ${missing.join(", ")}`);

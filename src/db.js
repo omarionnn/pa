@@ -1,6 +1,7 @@
 // Truth of state lives here, behind tools. The model may only claim what these functions returned.
 import { DatabaseSync } from "node:sqlite";
 import * as secretbox from "./secretbox.js";
+import * as restcrypt from "./restcrypt.js";
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { EventEmitter } from "node:events";
@@ -11,6 +12,39 @@ import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
+// Encryption at rest (src/restcrypt.js, REASON_ENCRYPT_REST): unlock the install key before any query,
+// so every read below stays synchronous. Rows from statements on a sensitive table open themselves.
+await restcrypt.init(config.dbPath, { hasSealed: () => restcrypt.anySealed(db.prepare.bind(db)) });
+/** The unwrapped prepare: sealed values come back as stored. Migration and tests only. */
+export const rawPrepare = restcrypt.wrapDatabase(db);
+// With sealing on, a re-written row must not leave its old plain text in the file's free pages.
+if (restcrypt.flagOn()) db.exec("PRAGMA secure_delete = ON");
+/** Seal a person_facts text for the person row's owner. */
+export function sealFact(personId, text) {
+  if (!restcrypt.flagOn()) return text;
+  const owner = db.prepare("SELECT conversation_id FROM people WHERE id = ?").get(personId)?.conversation_id;
+  return restcrypt.sealFor(owner, text);
+}
+export { restcrypt };
+
+/**
+ * The online migration (serve.js calls this on boot). Flag on: seal old plain rows, 200 at a time,
+ * every 2 s, so a turn never waits long on it. Flag off with sealed rows left (a rollback): nothing
+ * here; scripts/encrypt-rest.mjs --open writes them back as plain text.
+ */
+export function startRestMigration({ log = () => {}, everyMs = 2000, batch = 200 } = {}) {
+  if (!restcrypt.flagOn() || !restcrypt.active()) return null;
+  let total = 0;
+  const t = setInterval(() => {
+    try {
+      const n = restcrypt.migrateBatch(rawPrepare, "seal", batch);
+      total += n;
+      if (n === 0) { clearInterval(t); log({ encrypt_rest: "migration_done", sealed: total }); }
+    } catch (e) { clearInterval(t); log({ encrypt_rest: "migration_error", error: String(e?.message ?? e).slice(0, 200) }); }
+  }, everyMs);
+  t.unref?.();
+  return t;
+}
 
 /**
  * How long a write waits for another connection's lock before SQLite gives up with "database is
@@ -2037,12 +2071,13 @@ const PLAN_FIELDS = ["title", "kind", "when", "where", "who", "details", "open_q
 // ---------- conversations ----------
 export function loadConversation(id) {
   const row = db.prepare("SELECT messages FROM conversations WHERE id = ?").get(id);
-  return row ? JSON.parse(row.messages) : [];
+  // A destroyed key reads as "" (src/restcrypt.js): that thread is gone, which is an empty thread.
+  return row ? JSON.parse(row.messages || "[]") : [];
 }
 export function saveConversation(id, messages) {
   db.prepare(`INSERT INTO conversations (id, messages, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET messages = excluded.messages, updated_at = excluded.updated_at`)
-    .run(id, JSON.stringify(messages), clock.now());
+    .run(id, restcrypt.sealFor(id, JSON.stringify(messages)), clock.now());
 }
 export function clearConversation(id) {
   db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
@@ -2725,7 +2760,7 @@ export function remember(conversationId, about, fact, { source = "user_stated", 
     const now = clock.now();
     // Said again in their own words after a permanent forget (src/ios/memory.js): the row only holds
     // a fingerprint, so it gets the words back along with the active status.
-    if (stale && isForgottenMark(stale.fact)) db.prepare("UPDATE person_facts SET fact = ? WHERE id = ?").run(clean, stale.id);
+    if (stale && isForgottenMark(stale.fact)) db.prepare("UPDATE person_facts SET fact = ? WHERE id = ?").run(sealFact(person.id, clean), stale.id);
     if (stale) {
       db.prepare("UPDATE person_facts SET status = 'active', valid_from = ?, valid_to = NULL, superseded_by = NULL, confidence = ?, source = ?, source_message_ids = ?, category = ?, memory_group = ? WHERE id = ?")
         .run(now, confidence, source, JSON.stringify(sourceMessageIds), category, filed, stale.id);
@@ -2734,7 +2769,7 @@ export function remember(conversationId, about, fact, { source = "user_stated", 
       const r = db.prepare(
         `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category, memory_group)
          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
-      ).run(person.id, clean, now, now, confidence, source, JSON.stringify(sourceMessageIds), category, filed);
+      ).run(person.id, sealFact(person.id, clean), now, now, confidence, source, JSON.stringify(sourceMessageIds), category, filed);
       factId = Number(r.lastInsertRowid);
     }
   }
@@ -2943,7 +2978,8 @@ export function forgetFromRecall(conversationId, names = []) {
   const mark = db.prepare("INSERT OR IGNORE INTO recall_forgotten (conversation_id, source_table, row_id, at) VALUES (?, ?, ?, ?)");
   const at = clock.now();
   const sweep = (table, cols, where = "") => {
-    const like = needles.map(n => `(${cols.map(c => `LOWER(COALESCE(${c}, '')) LIKE ?`).join(" OR ")})`).join(" OR ");
+    // pt(): sealed text (src/restcrypt.js) is opened before it is matched; plain text passes through.
+    const like = needles.map(n => `(${cols.map(c => `LOWER(COALESCE(pt(${c}), '')) LIKE ?`).join(" OR ")})`).join(" OR ");
     const args = needles.flatMap(n => cols.map(() => `%${n[0]}%`));
     const hits = db.prepare(`SELECT id, ${cols.map(c => `COALESCE(${c}, '') AS "${c}"`).join(", ")} FROM ${table} WHERE conversation_id = ? ${where} AND (${like})`)
       .all(conversationId, ...args)
@@ -5559,6 +5595,7 @@ export function updateCallRequest(conversationId, id, fields) {
 }
 
 
+const CALL_SEALED = new Set(["transcript", "summary", "turn_log"]);
 export function updateCall(conversationId, id, fields) {
   const allowed = [
     "external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents",
@@ -5593,7 +5630,7 @@ export function updateCall(conversationId, id, fields) {
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
   for (const k of allowed) {
-    if (fields[k] !== undefined) { sets.push(`${k} = ?`); args.push(fields[k]); }
+    if (fields[k] !== undefined) { sets.push(`${k} = ?`); args.push(CALL_SEALED.has(k) ? restcrypt.sealFor(conversationId, fields[k]) : fields[k]); }
   }
   const ended = !!fields.state && !["placing", "ringing", "in_progress"].includes(fields.state);
   if (ended) {
@@ -9889,7 +9926,7 @@ export function correctFact(conversationId, id, { fact }) {
   const r = db.prepare(
     `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category, memory_group)
      VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
-  ).run(row.person_id, clean, now, now,
+  ).run(row.person_id, sealFact(row.person_id, clean), now, now,
     row.confidence ?? 1.0, row.source ?? "user_stated",
     row.source_message_ids ?? "[]", row.category ?? "", row.memory_group ?? "");
   const newId = Number(r.lastInsertRowid);
@@ -10947,7 +10984,7 @@ export function writeEvent({ conversationId, channel = "", messageId = "", threa
   const r = db.prepare(
     `INSERT INTO event_log (conversation_id, channel, message_id, thread_id, role, content, attachments, tool_calls, at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(conversationId, channel, messageId, threadId, role, String(content ?? ""), JSON.stringify(attachments), JSON.stringify(toolCalls), at);
+  ).run(conversationId, channel, messageId, threadId, role, restcrypt.sealFor(conversationId, String(content ?? "")), JSON.stringify(attachments), restcrypt.sealFor(conversationId, JSON.stringify(toolCalls)), at);
   return Number(r.lastInsertRowid);
 }
 
@@ -10984,10 +11021,10 @@ export const opsSourceOf = (idemKey) => OPS_KEY_PREFIXES.some(p => String(idemKe
   const base = (col) => `CASE WHEN ${col} GLOB '*#[0-9]*' THEN rtrim(rtrim(${col}, '0123456789'), '#') ELSE ${col} END`;
   const keyed = OPS_KEY_PREFIXES.map(() => "substr(o.idem_key, 1, ?) = ?").join(" OR ");
   db.prepare(`UPDATE messages SET source = 'ops' WHERE source IS NULL AND role = 'assistant' AND (
-      text LIKE '%/ops?k=%' OR text LIKE 'Reason check —%'
+      pt(text) LIKE '%/ops?k=%' OR pt(text) LIKE 'Reason check —%'
       OR outbox_id IN (SELECT o.id FROM outbox o WHERE ${keyed} OR ${base("o.idem_key")} IN (
         SELECT ${base("h.idem_key")} FROM outbox h JOIN messages hm ON hm.outbox_id = h.id
-        WHERE hm.text LIKE '%/ops?k=%' OR hm.text LIKE 'Reason check —%')))`)
+        WHERE pt(hm.text) LIKE '%/ops?k=%' OR pt(hm.text) LIKE 'Reason check —%')))`)
     .run(...OPS_KEY_PREFIXES.flatMap(p => [p.length, p]));
 }
 
@@ -11012,7 +11049,7 @@ export function writeMessage({ conversationId, role, channel, externalId = null,
   const ownChat = chat && webChatOwner(chat) === conversationId ? chat : null;
   const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at, chat_id, source)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, body, JSON.stringify(atts), at, ownChat, source === "ops" ? "ops" : null);
+    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, restcrypt.sealFor(conversationId, body), JSON.stringify(atts), at, ownChat, source === "ops" ? "ops" : null);
   if (!r.changes) return null;
   const id = Number(r.lastInsertRowid);
   if (ownChat) db.prepare("UPDATE web_chats SET last_at = ? WHERE id = ?").run(Math.max(at, clock.now()), ownChat);
@@ -11341,7 +11378,7 @@ export function supersedeFact(conversationId, oldId, newFact) {
   const r = db.prepare(
     `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category, memory_group)
      VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
-  ).run(old.person_id, newFact, now, now,
+  ).run(old.person_id, sealFact(old.person_id, newFact), now, now,
     old.confidence ?? 1.0, old.source ?? "user_stated",
     old.source_message_ids ?? "[]", old.category ?? "", old.memory_group ?? "");
   const newId = Number(r.lastInsertRowid);
@@ -13096,7 +13133,7 @@ export function scrubConversationText(conversationId, since, fn) {
     for (const row of db.prepare(`SELECT rowid AS rid, ${col} AS t FROM ${table} WHERE conversation_id = ? AND ${at} >= ?${extra}`).all(conversationId, since)) {
       if (typeof row.t !== "string") continue;
       const next = fn(row.t);
-      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`).run(next, row.rid); changed++; }
+      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`).run(restcrypt.sealCell(table, col, conversationId, next), row.rid); changed++; }
     }
   }
   const walk = (v) => typeof v === "string" ? fn(v) : Array.isArray(v) ? v.map(walk) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : v;
@@ -13105,7 +13142,7 @@ export function scrubConversationText(conversationId, since, fn) {
     const msgs = JSON.parse(before);
     const cut = Math.max(0, msgs.length - SCRUB_HISTORY_TAIL);
     const after = JSON.stringify([...msgs.slice(0, cut), ...walk(msgs.slice(cut))]);
-    if (after !== JSON.stringify(msgs)) { db.prepare("UPDATE conversations SET messages = ? WHERE id = ?").run(after, conversationId); changed++; }
+    if (after !== JSON.stringify(msgs)) { db.prepare("UPDATE conversations SET messages = ? WHERE id = ?").run(restcrypt.sealFor(conversationId, after), conversationId); changed++; }
   }
   return changed;
 }
@@ -13844,3 +13881,8 @@ export function setFactSources(conversationId, id, messageIds) {
   db.prepare("UPDATE person_facts SET source_message_ids = ? WHERE id = ?").run(JSON.stringify(messageIds), id);
   return true;
 }
+
+// Last, after every table exists.
+// REASON_ENCRYPT_STRICT=1 (tests, shadow copies): SQLite itself refuses plaintext in a sealed column.
+if (restcrypt.flagOn() && process.env.REASON_ENCRYPT_STRICT === "1") restcrypt.installStrictTriggers(db);
+else restcrypt.dropStrictTriggers(db);

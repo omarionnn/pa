@@ -113,6 +113,8 @@ startOps({ runtime, router, log });
 const server = createServer({ router, runtime, log });
 server.listen(config.port, config.host, () => {
   console.log(`Reason is up · ${stamp()}`);
+  // Encryption at rest (REASON_ENCRYPT_REST=on): old plain rows are sealed in the background, small batches.
+  import("./db.js").then((d) => d.startRestMigration({ log })).catch((e) => console.error("encrypt-rest migration:", e?.message ?? e));
   // A call whose summary and audio a restart cut off (call 57, 2026-10-31): sent now, once.
   import("./calls/postcall.js")
     .then(({ resumeSettles }) => resumeSettles({ runtime, log }))

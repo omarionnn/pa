@@ -493,7 +493,7 @@ test("a failure midway leaves the memory and its message as they were", async ()
   const ev = sourceMessage(A, "keep this. I fly Snarfwing");
   const f = db.remember(A.c, A.name, "Flies Snarfwing", { source: "inferred", sourceMessageIds: [ev] });
   setSpanReader(cutWords("I fly Snarfwing"));
-  db.db.exec("CREATE TRIGGER boom BEFORE UPDATE ON person_facts WHEN NEW.fact LIKE 'forgotten:%' BEGIN SELECT RAISE(ABORT, 'boom'); END");
+  db.db.exec("CREATE TRIGGER boom BEFORE UPDATE ON person_facts WHEN pt(NEW.fact) LIKE 'forgotten:%' BEGIN SELECT RAISE(ABORT, 'boom'); END");
   try { await assert.rejects(api(`/memories/fact-${f.factId}`, { method: "DELETE", token })); } finally { db.db.exec("DROP TRIGGER boom"); }
   assert.equal(db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(ev).content, "keep this. I fly Snarfwing");
   assert.ok(db.memoryFacts(A.c).some(x => x.id === f.factId));

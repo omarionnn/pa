@@ -1,0 +1,12 @@
+# Encryption at rest: delete retired master key files older than 3 days (scripts/encrypt-rest.mjs).
+[Unit]
+Description=Reason encryption at rest: prune retired master key files
+
+[Service]
+Type=oneshot
+User=reason
+Group=reason
+WorkingDirectory=/opt/reason
+Environment=REASON_DATA_DIR=/opt/reason/data
+ExecStart=/usr/bin/node --env-file=.env scripts/encrypt-rest.mjs --prune-old-masters
+TimeoutStartSec=60

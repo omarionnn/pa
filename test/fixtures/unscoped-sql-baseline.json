@@ -293,7 +293,7 @@
  "src/db.js | UPDATE UPDATE meal_entries SET active = 0 WHERE id = ?": 1,
  "src/db.js | UPDATE UPDATE media_items SET coverage = ?, detail = ?, bytes = COALESCE(?, bytes), seconds = COALESCE(?, seconds), transcript = COALESCE(?, transcript), reviewed_at =": 1,
  "src/db.js | UPDATE UPDATE media_items SET description = ?, description_from = ? WHERE id = ?": 1,
- "src/db.js | UPDATE UPDATE messages SET source = 'ops' WHERE source IS NULL AND role = 'assistant' AND ( text LIKE '%/ops?k=%' OR text LIKE 'Reason check —%' OR outbox_id IN (SELEC": 1,
+ "src/db.js | UPDATE UPDATE messages SET source = 'ops' WHERE source IS NULL AND role = 'assistant' AND ( pt(text) LIKE '%/ops?k=%' OR pt(text) LIKE 'Reason check —%' OR outbox_id I": 1,
  "src/db.js | UPDATE UPDATE notice_seen SET claimed_at = ?, urgent = ?, why_now = ?, what = ? WHERE id = ? AND said_at IS NULL AND claimed_at IS NULL": 1,
  "src/db.js | UPDATE UPDATE notice_seen SET claimed_at = NULL, held_at = ?, holds = holds + 1 WHERE id = ?": 1,
  "src/db.js | UPDATE UPDATE notice_seen SET dropped_at = ? WHERE id = ? AND said_at IS NULL": 1,

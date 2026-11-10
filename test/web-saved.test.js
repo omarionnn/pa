@@ -296,7 +296,7 @@ test("FIND IT IN THE CHAT opens the thread at that message; another person's mes
   const b = browser(OWNER_C);
   db.markWebNoticeSeen(OWNER_C);
   for (let i = 0; i < 60; i++) db.writeMessage({ conversationId: OWNER_C, role: i % 2 ? "assistant" : "user", channel: "fake", text: `line ${i}`, at: ago((60 - i) * 60_000) });
-  const target = db.db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND text = 'line 5'").get(OWNER_C).id;
+  const target = db.db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND pt(text) = 'line 5'").get(OWNER_C).id;
   const out = await call({ sub: null, b, query: { thread: "", at: String(target) } });
   assert.match(out.body, new RegExp(`<li class="msg [a-z]+" id="m-${target}"`));
   assert.match(out.body, new RegExp(`getElementById\\('m-${target}'\\)`));

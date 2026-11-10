@@ -143,20 +143,20 @@ function applyCuts(conv, cuts) {
     // The search vectors over this message go now; the run is indexed again from what is left.
     for (const r of spans.all(conv, c.id)) requeue.run(conv, r.from_id, r.to_id, at);
     db.db.prepare("DELETE FROM graph_mentions WHERE conversation_id = ? AND event_log_id = ?").run(conv, c.id);
-    if (keep || !noFiles) db.db.prepare("UPDATE event_log SET content = ? WHERE id = ? AND conversation_id = ?").run(keep ? kept : "", c.id, conv);
+    if (keep || !noFiles) db.db.prepare("UPDATE event_log SET content = ? WHERE id = ? AND conversation_id = ?").run(db.restcrypt.sealFor(conv, keep ? kept : ""), c.id, conv);
     else db.forgetEvent(c.id);
     // The same message's other copies: the same person, the same moment, holding the very words.
     const near = (table, col, time, extra = "") => (hasColumn(table, col) && hasColumn(table, time) ? ALL(`SELECT rowid AS rid, ${col} AS t, ${hasColumn(table, "media") ? "media" : "'[]'"} AS media FROM ${table} WHERE conversation_id = ? AND ${time} BETWEEN ? AND ?${extra}`, conv, c.at - WINDOW_MS, c.at + WINDOW_MS).filter(r => typeof r.t === "string" && r.t.length && (r.t.includes(c.content) || c.content.includes(r.t)) && c.spans.some(s => r.t.includes(s))) : []);
     for (const r of near("messages", "text", "at", ` AND role = '${c.role === "user" ? "user" : "assistant"}'`)) {
       const next = cutOut(r.t, c.spans);
-      if (anythingLeft(next)) db.db.prepare("UPDATE messages SET text = ? WHERE rowid = ?").run(next, r.rid);
+      if (anythingLeft(next)) db.db.prepare("UPDATE messages SET text = ? WHERE rowid = ?").run(db.restcrypt.sealFor(conv, next), r.rid);
       else if (String(r.media ?? "[]") === "[]") db.db.prepare("UPDATE messages SET text = '', deleted_at = ? WHERE rowid = ?").run(at, r.rid);
       else db.db.prepare("UPDATE messages SET text = '' WHERE rowid = ?").run(r.rid);
     }
     const copies = c.role === "user" ? [["inbound_messages", "text", "received_at", ""], ["inbound_parts", "text", "at", ""]] : [["outbox", "body", "created_at", " AND state = 'sent'"]];
     for (const [t, col, time, extra] of copies) for (const r of near(t, col, time, extra)) {
       const next = cutOut(r.t, c.spans);
-      db.db.prepare(`UPDATE ${t} SET ${col} = ? WHERE rowid = ?`).run(anythingLeft(next) ? next : "", r.rid);
+      db.db.prepare(`UPDATE ${t} SET ${col} = ? WHERE rowid = ?`).run(db.restcrypt.sealCell(t, col, conv, anythingLeft(next) ? next : ""), r.rid);
     }
   }
   // The thread Reason reads. A turn left with nothing keeps a marker, because the thread's turns must stay in shape.
@@ -201,7 +201,7 @@ function outOfReplies(conv, words) {
   const redact = (text) => String(text).replace(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[deleted at their request]");
   for (const [table, column] of [["event_log", "content"], ["messages", "text"]]) {
     const update = db.db.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`);
-    for (const r of ALL(`SELECT id, ${column} AS t FROM ${table} WHERE conversation_id = ? AND role != 'user' AND instr(lower(${column}), lower(?)) > 0`, conv, needle)) update.run(redact(r.t), r.id);
+    for (const r of ALL(`SELECT id, ${column} AS t FROM ${table} WHERE conversation_id = ? AND role != 'user' AND instr(lower(pt(${column})), lower(?)) > 0`, conv, needle)) update.run(db.restcrypt.sealCell(table, column, conv, redact(r.t)), r.id);
   }
 }
 
@@ -223,7 +223,7 @@ export async function forgetForever(conv, key, { log = () => {} } = {}) {
     if (id) sources = [id];
   } else {
     const said = String(ONE("SELECT said FROM whys WHERE id = ? AND conversation_id = ?", row.id, conv)?.said ?? "").trim();
-    if (said.length > 3) sources = ALL("SELECT id FROM event_log WHERE conversation_id = ? AND role = 'user' AND instr(content, ?) > 0", conv, said).map(r => r.id);
+    if (said.length > 3) sources = ALL("SELECT id FROM event_log WHERE conversation_id = ? AND role = 'user' AND instr(pt(content), ?) > 0", conv, said).map(r => r.id);
   }
   // Worked out first: if it can't be, nothing has changed and the person is told to try again.
   const cuts = await plannedCuts(conv, sources, wordings, log);
@@ -245,12 +245,12 @@ export async function forgetForever(conv, key, { log = () => {} } = {}) {
           db.scrubToolResults(conv, { tools: db.MEMORY_TOOL_NAMES, mentioning: [f.fact] });
           db.redactFromReplies(conv, [f.fact]);
           outOfReplies(conv, f.fact);
-          if (present("memories")) db.db.prepare("DELETE FROM memories WHERE conversation_id = ? AND fact = ?").run(conv, f.fact);
+          if (present("memories")) db.db.prepare("DELETE FROM memories WHERE conversation_id = ? AND pt(fact) = ?").run(conv, f.fact);
           db.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'").run(id);
           // One mark per subject and wording: the table allows no two alike, and one is all a refusal needs.
           const mark = db.forgottenMark(f.person_id, db.factKey(f.fact));
-          if (ONE("SELECT 1 AS x FROM person_facts WHERE person_id = ? AND fact = ?", f.person_id, mark)) db.db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
-          else db.db.prepare("UPDATE person_facts SET fact = ?, status = 'deleted', valid_to = COALESCE(valid_to, ?) WHERE id = ?").run(mark, clock.now(), id);
+          if (ONE("SELECT 1 AS x FROM person_facts WHERE person_id = ? AND pt(fact) = ?", f.person_id, mark)) db.db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
+          else db.db.prepare("UPDATE person_facts SET fact = ?, status = 'deleted', valid_to = COALESCE(valid_to, ?) WHERE id = ?").run(db.sealFact(f.person_id, mark), clock.now(), id);
         }
       } else if (row.kind === "rule") {
         // The row stays as 'deleted' with no words: a review refuses to re-derive a rule from that source message.
@@ -299,6 +299,9 @@ export async function forgetEverything(account, { log = () => {} } = {}) {
     } catch (e) { db.db.exec("ROLLBACK"); throw e; }
     db.clearConversation(conv);
   });
-  log({ ios_memory: "forgot_everything" });
+  // Encryption at rest: what stays is re-sealed under a new key and the old key is destroyed, so the
+  // deleted words are unreadable in every backup taken before today (src/restcrypt.js rotatePersonKey).
+  const key = db.restcrypt.rotatePersonKey(db.rawPrepare, conv);
+  log({ ios_memory: "forgot_everything", key_shredded: key.shredded });
   return { ok: true, removed: counts };
 }
