@@ -207,6 +207,15 @@ test("a nickname (Bubba): saved as given, met with a warm line and no meaning, t
   assert.equal(r.nameLine, "xx_slayer_xx, love that");
 });
 
+test("a field of only quote marks is empty: \"hey\" read as name `\"\"` is no name (cage drive 2026-11-10)", async () => {
+  const r = await ob.readText({ state: "not_started", text: "hey", ask: async () => ({ value: { kind: "greeting", name: '""', card_name: "''", reply: "", name_line: '""' } }) });
+  assert.equal(r.name, "");
+  assert.equal(r.cardName, "");
+  assert.equal(r.nameLine, "");
+  const q = await ob.readText({ state: "awaiting_name", text: "\"Kofi\"", ask: async () => ({ value: { kind: "answer", name: '"Kofi"', card_name: "", reply: "", name_line: "kofi, nice" } }) });
+  assert.equal(q.name, "Kofi");
+});
+
 test("the stand-alone name line: same rules, a non-name is left out, and it is cleaned to one line", async () => {
   let asked = null;
   const line = await ob.nameLine({ name: "Kofi", ask: async (a) => { asked = a; return { value: { line: "kofi is an akan name for a boy born on a friday.\n nice to meet you, *kofi*" } }; } });

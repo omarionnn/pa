@@ -193,7 +193,12 @@ export async function nameLine({ name, ask = askStructured }) {
 }
 
 // Markdown marks out; an underscore inside a word stays (a handle like Xx_Slayer_xX is their name).
-const clean = (s, max) => String(s ?? "").replace(/[*`#]|(?<!\w)_|_(?!\w)/g, "").replace(/\s+/g, " ").trim().slice(0, max);
+// A field the model filled with only quote marks or punctuation (the sealed CLI's haiku sent back the
+// two-character text `""` for "no name" on 2026-11-10) is empty, not a name.
+const clean = (s, max) => {
+  const v = String(s ?? "").replace(/[*`#]|(?<!\w)_|_(?!\w)/g, "").replace(/\s+/g, " ").trim().replace(/^["'“”‘’]+(.*?)["'“”‘’]+$/u, "$1").trim();
+  return /[\p{L}\p{N}]/u.test(v) ? v.slice(0, max) : "";
+};
 
 /** One read of their text for this step, or null when the read could not be had. */
 export async function readText({ state, text, ask = askStructured, conversationId = null }) {
