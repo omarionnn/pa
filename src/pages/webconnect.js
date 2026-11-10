@@ -247,7 +247,16 @@ const cardStandIn = () => `<div aria-label="Card form (staging stand-in)" class=
   + field({ id: "s-c", label: "CARD NUMBER", mono: true, attrs: ` value="4242 4242 4242 4242" readonly tabindex="-1"` })
   + `<div class="pf-g2">${field({ id: "s-e", label: "EXPIRES", mono: true, attrs: ` value="12 / 29" readonly tabindex="-1"` })}${field({ id: "s-s", label: "SECURITY CODE", mono: true, attrs: ` value="•••" readonly tabindex="-1"` })}</div></div>`;
 
-export function renderCard({ staging = false, card = null, faceId = false, passkey = false }) {
+export function renderCard({ staging = false, card = null, faceId = false, passkey = false, setupBack = "" }) {
+  if (card && setupBack) {
+    // Saved from the web setup (src/websetup.js): no thread yet, so the way on is back to the setup.
+    const main = headline("Card saved.", "Back to your setup.", "cx-h")
+      + lede("It's locked to you. When you want something, I'll text you the exact total first, and nothing is charged without your Face ID.")
+      + paper({ stamp: "SAVED", label: "ON FILE", big: `${brandOf(card)} •••• ${card.last4 || "····"}` })
+      + `<div class="cx-note">${actions(go("Back to your setup", { href: setupBack }))}</div>`;
+    const margin = label("I CAN SEE") + para("The brand and the last four digits.") + CARD_NEVER();
+    return page("Reason — card saved", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
+  }
   if (card) {
     // faceId: purchase approval by passkey is on for them and not set up yet (src/passkey.js).
     // passkey: it is set up, so their payments already go through Face ID.
@@ -402,16 +411,23 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
     return json(out.ok ? 200 : 400, out);
   }
   if (verb) return null;
+  const setupMod = link.kind === "card" && String(link.conversation_id).startsWith("websetup:") ? await import("../websetup.js") : null;
+  const setupBack = setupMod ? setupMod.backUrlFor(link.conversation_id, "card") : "";
+  // A setup's card form: its Crossmint JWT ends by the setup's 15-minute mark (src/websetup.js setupJwtSec).
+  const setupTtl = setupMod ? setupMod.setupJwtSec(link.conversation_id) : null;
+  if (setupMod && view.state === "card" && setupTtl < 60) return send(secured(renderEnded({ view: { state: "expired" } }), "card"));
   const card = view.kind === "card" && view.state === "connected" ? shop.cardOf(link.conversation_id) : null;
   const interactive = ["signin", "code", "wrongcode", "retry", "card"].includes(view.state);
   const boot = interactive || view.state === "checking"
     ? {
       token, state: view.state, watch: view.state !== "card", ...(view.state === "checking" ? { waited: view.waited } : {}),
-      ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
+      // A web setup's card page gets a short JWT: its Crossmint user can become an account's on the claim.
+      ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id, setupMod ? { ttlSec: setupTtl } : {}), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
-  const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
+  // A web setup's card (src/websetup.js): Face ID is set up later on Web, signed in; the page goes back to the setup.
+  const faceId = !setupBack && !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
   // Has a passkey, so every payment is approved with Face ID: the copy says so instead of "text yes".
-  const drawn = secured(renderView(view, { card, faceId, passkey: passkey.requiredFor(link.conversation_id) }), link.kind === "card" ? "card" : "store");
+  const drawn = secured(renderView(view, { card, faceId, setupBack, passkey: passkey.requiredFor(link.conversation_id) }), link.kind === "card" ? "card" : "store");
   return send(boot ? { ...drawn, html: withBoot(drawn.html, boot) } : drawn);
 }
 /** The screen is drawn once; a live page's boot data and script ride in their own tag at the end. */

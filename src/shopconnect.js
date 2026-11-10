@@ -214,6 +214,14 @@ db.db.exec(`
   );
 `);
 const q = (sql) => db.db.prepare(sql);
+// Whose Crossmint user an account acts as, when it is not the hash of its own conversation: a card
+// saved on the web setup (src/websetup.js) belongs to the setup's stand-in at Crossmint.
+db.db.exec(`CREATE TABLE IF NOT EXISTS shop_crossmint_subjects (
+  conversation_id TEXT PRIMARY KEY,
+  sub TEXT NOT NULL,
+  from_conversation TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+)`);
 // The checkout job (2026-10-31, after the 10:58 CeraVe run): a run is a persistent job with a stage,
 // kept moving by code across turns and restarts. A table already on live never gets a column from
 // CREATE TABLE IF NOT EXISTS, so each one is added here.
@@ -405,8 +413,60 @@ export async function ensureIcon(key, { ms = 4000 } = {}) {
 // ---------------------------------------------------------------- identity at Crossmint
 /** The person's Crossmint user: a hash of their conversation. Never their number, never their name. */
 export function crossmintUser(conversationId) {
-  return `reason-${createHash("sha256").update(`crossmint:${conversationId}`).digest("hex").slice(0, 24)}`;
+  // A card saved on the web setup was saved at Crossmint as the setup's stand-in (websetup:<id>); the
+  // claim hands that Crossmint user to the account (adoptSetupCard), so its card still pays.
+  const kept = q("SELECT sub FROM shop_crossmint_subjects WHERE conversation_id = ?").get(String(conversationId));
+  return kept?.sub ?? hashedCrossmintUser(conversationId);
 }
+const hashedCrossmintUser = (c) => `reason-${createHash("sha256").update(`crossmint:${c}`).digest("hex").slice(0, 24)}`;
+
+// ---------------------------------------------------------------- the web setup's card (src/websetup.js)
+const isSetupConversation = (c) => String(c ?? "").startsWith("websetup:");
+/** A setup's card page JWT lasts this long (not 30 minutes): its Crossmint user may become an account's. */
+export const SETUP_JWT_SEC = 10 * 60;
+/**
+ * A setup's card, made theirs on the claim: the card row and the Crossmint user it was saved under
+ * move to the account. Only onto an account with nothing at Crossmint yet (a brand-new one, which is
+ * the only kind that claims): one that somehow has a card, a profile, a payment or its own subject
+ * keeps those, and the setup's card is let go. Open card links on the stand-in are spent either way,
+ * so nobody can add a card under that Crossmint user afterwards. True when the card moved.
+ */
+export function adoptSetupCard(from, to) {
+  if (!isSetupConversation(from) || !to || isSetupConversation(to)) return false;
+  const card = q("SELECT * FROM shop_cards WHERE conversation_id = ?").get(from);
+  q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND state = 'open'").run(from);
+  if (!card) return false;
+  const busy = q("SELECT 1 FROM shop_cards WHERE conversation_id = ?").get(to)
+    || q("SELECT 1 FROM shop_profiles WHERE conversation_id = ?").get(to)
+    || q("SELECT 1 FROM shop_payments WHERE conversation_id = ?").get(to)
+    || q("SELECT 1 FROM shop_crossmint_subjects WHERE conversation_id = ?").get(to);
+  if (busy) { dropSetupCard(from); return false; }
+  db.atomically(() => {
+    q("INSERT INTO shop_crossmint_subjects (conversation_id, sub, from_conversation, created_at) VALUES (?, ?, ?, ?)").run(to, crossmintUser(from), from, clock.now());
+    // Registration is asked again at pay time (registerCard there), with this account's own emails;
+    // the setup could not text anyone, so nothing was asked yet.
+    q("UPDATE shop_cards SET conversation_id = ?, asked_email = 0 WHERE conversation_id = ?").run(to, from);
+    q("UPDATE shop_profiles SET conversation_id = ? WHERE conversation_id = ?").run(to, from);
+  });
+  return true;
+}
+/** A setup's card let go: removed at Crossmint (best effort, in the background), its row and links gone. */
+export function dropSetupCard(c) {
+  if (!isSetupConversation(c)) return;
+  if (cardOf(c)) removeCard(c).catch(() => {});
+  q("DELETE FROM shop_cards WHERE conversation_id = ?").run(c);
+  q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND state = 'open'").run(c);
+}
+/** A setup's card-entry link (Crossmint's own form on Reason's /web/connect page), and its address. */
+export function setupCardLink(c) {
+  if (!isSetupConversation(c) || !connectAllowedFor(c)) return { ok: false, why: "unavailable" };
+  if (!process.env.CROSSMINT_CLIENT_KEY || !process.env.CROSSMINT_SERVER_KEY) return { ok: false, why: "unavailable" };
+  // One open card link per setup: a new tap spends the old one.
+  q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND kind = 'card' AND state = 'open'").run(c);
+  return { ok: true, url: cardLinkUrl(c) };
+}
+/** Is a setup's card link still open (the page is waiting on them)? */
+export const setupCardPending = (c) => !!q("SELECT 1 FROM shop_links WHERE conversation_id = ? AND kind = 'card' AND state = 'open' AND expires_at > ?").get(c, clock.now());
 const b64url = (b) => Buffer.from(b).toString("base64url");
 function signingKey() {
   const pem = process.env.CROSSMINT_JWT_PRIVATE_KEY
@@ -856,7 +916,7 @@ export async function saveCard(token, { paymentMethodId, brand = "", last4 = "" 
     .run(link.conversation_id, paymentMethodId, String(brand).slice(0, 20), l4, clock.now());
   q("UPDATE shop_links SET state = 'connected' WHERE id = ?").run(link.id);
   const card = cardOf(link.conversation_id);
-  const reg = await registerCard(link.conversation_id);
+  const reg = await registerCard(link.conversation_id, { tell: !isSetupConversation(link.conversation_id) });
   // Set up at save time, and said only when it is: one line, naming the email when it was Reason's pick.
   if (reg.ok) await notify(link.conversation_id, `${cardName(card)} is set up to pay.${reg.inferred ? ` Receipts go to ${reg.email}.` : ""}`);
   // Refused for another reason: what happened and what Reason will do next, never silence.
@@ -1445,7 +1505,8 @@ export const cardLinkUrl = (conversationId) => `${linkBase()}/${cardLink(convers
 export function attach({ say, wake, base, log } = {}) { sayFn = say ?? null; wakeFn = wake ?? null; logFn = log ?? (() => {}); passkey.attach({ say }); if (base) linkBase = () => base; }
 /** serve.js's structured log line; silent until attached. Codes and statuses only, never a value. */
 let logFn = () => {};
-const notify = async (c, text) => { try { if (sayFn) await sayFn(c, text); } catch { /* paid or declined either way */ } };
+// A web setup's stand-in has no thread: nothing is ever texted to it.
+const notify = async (c, text) => { if (isSetupConversation(c)) return; try { if (sayFn) await sayFn(c, text); } catch { /* paid or declined either way */ } };
 /** An event turn for the model. True once it was raised; false when it could not be (tried again next look). */
 const wake = async (c, text, key) => { try { if (wakeFn) await wakeFn(c, text, { key }); return true; } catch { return false; } };
 

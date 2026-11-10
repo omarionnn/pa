@@ -198,6 +198,8 @@ const TABLES = [
   "agentcard_users", "shop_profiles", "shop_cards", "shop_stores", "shop_runs", "shop_run_asks", "shop_links",
   "shop_payments", "shop_shipping", "pay_passkeys", "pay_approvals", "pay_approval_log",
   "daily_caps", "cap_changes", "offers", "uber_rides", "spotify_join_requests",
+  // The Crossmint user a card saved on the web setup was saved under (src/shopconnect.js adoptSetupCard).
+  "shop_crossmint_subjects",
   // The daily edition and their stamps (src/daily.js, src/stamps.js).
   "daily_editions", "daily_looks", "daily_questions", "stamps", "stamp_shares", "stamp_jobs", "stamp_step_times",
   // Calls made on their behalf: the errands, quotes, commitments and requests to call somebody.
@@ -288,7 +290,7 @@ export const INSTALL_WIDE = {
 // and shopping profile's handles at Crossmint.
 const SECRET_COLUMNS = {
   oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
-  shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"],
+  shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
   pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
 };
 // What a redacted column says instead, when it is not a credential.

@@ -119,3 +119,16 @@ card name set, Google rows + Amazon check + browser profile moved, Amazon follow
 `onboarding.handle` (not_started) sends `WEB_HELLO`, the card (`WEB_CARD`), `TRY_LINE`; no model read, no
 name / call-me question, no Amazon offer (`amazonCanOffer` false via `handledOnWeb`). No/bad code or switch
 off → the normal intro. Event/invite joiners never claim. Proof: `test/websetup.test.js`.
+
+**Uber + Card (PR #440, 11-10).** Screen 3 order: Amazon, Uber, Email, Card. Uber = `uber.authorizeUrl`
+for the stand-in, handed out only when `uber.connectReady()` (reads Uber's own authorize 302: `/oauth/errors`
+= `redirect_uri_not_registered`; cached 10 min, unreachable 30 s) says ready, else `{ok:false, why:"not_ready"}`
+and `capabilities.uber:false`; Uber's callback for a setup 302s to `/start/connect?back=uber`
+(`websetup.uberCallbackDone`). Card = `shop.setupCardLink` → `heyreason.com/web/connect/<token>` (Crossmint's
+own fields; JWT `setupJwtSec` ≤10 min and never past created+15 min; no card link after 14 min → `too_late`);
+nothing texted to the stand-in; saved page shows "Back to your setup". Claim ≤15 min (`PAY_CLAIM_MS`):
+Uber token + `connected_accounts` uber + card move; the card keeps its Crossmint user via
+`shop_crossmint_subjects` (only onto an account with no Crossmint state). Later claims / sweep drop them
+(Crossmint DELETE best effort). Live 11-10: Uber `not_ready` until https://app.heyreason.com/uber/callback is
+added in the Uber dashboard. Check: `curl -s https://start--textreason.netlify.app/setup/api/capabilities`.
+Proof: `test/websetup-uber-card.test.js`.

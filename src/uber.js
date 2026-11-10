@@ -180,6 +180,47 @@ export function notConnected(extra = {}) {
   };
 }
 
+// ---------- is Uber's app ready to take a connect? ----------
+
+/**
+ * Whether Uber's own authorize page accepts this server's redirect address, read from Uber itself.
+ *
+ * The keys can be on the machine while the developer app still lists an old Redirect URI (11-10: it
+ * listed the dead Tailscale Funnel, the server sends app.heyreason.com). Then every link reaches
+ * Uber and stops on Uber's "not a valid redirect uri" page. Uber answers the authorize address with a
+ * 302 either way: to its sign-in for a good one, to /oauth/errors for a bad one. No state is made
+ * and nothing is signed in. Cached for ten minutes, so a page load never asks Uber twice.
+ * { ready, why } — why: "no_keys" | "redirect_uri_not_registered" | "uber_unreachable" | "".
+ */
+const READY_TTL_MS = 10 * 60_000;
+let readyCache = null;
+export function _resetReady() { readyCache = null; }
+export async function connectReady({ fetchImpl = fetch } = {}) {
+  const st = uberStatus();
+  if (!st.connected) return { ready: false, why: "no_keys", missing: st.missing };
+  if (readyCache && clock.now() - readyCache.at < READY_TTL_MS && readyCache.redirect === st.redirect_uri) return readyCache.out;
+  const q = new URLSearchParams({ client_id: config.uberClientId, response_type: "code", redirect_uri: st.redirect_uri, scope: "profile", state: "readiness" });
+  let out;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), config.uberTimeoutMs);
+  try {
+    const res = await fetchImpl(`${config.uberAuthBase}/oauth/v2/authorize?${q}`, { method: "GET", redirect: "manual", signal: ctl.signal, headers: { "User-Agent": "Mozilla/5.0 (Reason connect check)" } });
+    const to = String(res.headers?.get?.("location") ?? "");
+    // Only Uber's own error page counts: the sign-in it sends a good request to carries the whole
+    // authorize address (redirect_uri included) in next_url, so the address is read, not searched.
+    let path = "";
+    try { path = new URL(to, config.uberAuthBase).pathname; } catch { path = ""; }
+    if (path.startsWith("/oauth/errors")) out = { ready: false, why: "redirect_uri_not_registered", redirect_uri: st.redirect_uri };
+    else if (res.status >= 300 && res.status < 400 && to) out = { ready: true, why: "" };
+    else out = { ready: false, why: "uber_unreachable", status: res.status };
+  } catch {
+    out = { ready: false, why: "uber_unreachable" };
+  } finally { clearTimeout(timer); }
+  // A definite answer is kept ten minutes; an unreachable Uber thirty seconds (the page asks on every load).
+  readyCache = { at: clock.now() - (out.why === "uber_unreachable" ? READY_TTL_MS - 30_000 : 0), redirect: st.redirect_uri, out };
+  return out;
+}
+
 // ---------- connecting ----------
 
 /**

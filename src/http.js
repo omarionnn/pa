@@ -726,6 +726,9 @@ export function createServer({ router, runtime, log = () => {} }) {
             error: url.searchParams.get("error") ?? "",
           });
         log({ uber_callback: out.ok ? (out.can_book ? "ride_access" : "identity_only") : out.reason, conversation: out.conversationId ?? null });
+        // A web setup's Uber (src/websetup.js): no thread; back to the setup's connect screen.
+        const setupBack = websetup.uberCallbackDone(out);
+        if (setupBack) { res.writeHead(setupBack.status, setupBack.headers); return res.end(); }
         res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         return res.end(uber.callbackPage({
           ok: out.ok,
