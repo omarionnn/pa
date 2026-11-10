@@ -42,13 +42,16 @@ async function read(stream) {
 
 const body = (messages) => ({ model: "reason", messages, extra_body: { reason_kind: "stranger" } });
 
-test("the pitch prompt: Reason, heyreason.com spoken, the maker, public facts only, no price, and nobody's data", () => {
+test("the pitch prompt: Reason, heyreason.com spoken, the maker, public facts only, the real price, and nobody's data", () => {
   const p = sc.strangerPrompt();
   assert.match(p, /hey reason dot com/);
   assert.match(p, /Saafi Interactions Lab/);
-  assert.match(p, /does not list a price/);
+  // Pricing is live on heyreason.com/pricing (read 2026-11-10): the caller hears the real numbers.
+  assert.doesNotMatch(p, /does(?:n't| not) list (?:a price|one)/);
+  assert.match(p, /heyreason\.com\/pricing/);
+  assert.match(p, /\$24\.99 a month/);
+  assert.match(p, /20 conversations and 2 calls/);
   assert.match(p, /Never invent a price/);
-  assert.match(p, /Don't say or suggest anything is free/);
   assert.match(p, /Never mention any person, user, owner/);
   assert.doesNotMatch(p, /Omari|4471|2 and 5|Nyarko/);
 });
@@ -98,4 +101,9 @@ test("caps: past the turn limit, or the day's, the call is ended politely withou
 
 test("spoken output never carries another link, NO_REPLY, or a raw address", () => {
   assert.equal(sc.forSpeech("see https://heyreason.com/ and https://evil.example/x NO_REPLY"), "see hey reason dot com and");
+});
+
+test("the pricing page is said aloud as an address, not run together", () => {
+  assert.equal(sc.forSpeech("It's all at heyreason.com/pricing."), "It's all at hey reason dot com slash pricing.");
+  assert.equal(sc.forSpeech("Try heyreason.com/ today"), "Try hey reason dot com today");
 });

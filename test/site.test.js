@@ -379,3 +379,10 @@ test("the stranger-call facts sell signing up as one text, never 'no download' (
   assert.doesNotMatch(all, /no download|no app|nothing to install/i);
   assert.match(all, /signing up is one text/i);
 });
+
+test("no user-facing pa copy says the website lists no price or that Reason is free for now (pricing is live)", async () => {
+  const { PUBLIC_FACTS, strangerPrompt } = await import("../src/calls/stranger.js");
+  const all = [...PUBLIC_FACTS, strangerPrompt()].join(" ");
+  assert.doesNotMatch(all, /does(?:n't| not) list (?:a price|one)|no price|free for now/i);
+  assert.match(all, /heyreason\.com\/pricing/);
+});

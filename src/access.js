@@ -68,11 +68,17 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
   // (agent.js, placeholder path) asks their name, what they do, and shows use cases.
   //
   // Up to a ceiling (signupsPerHour, owner 2026-11-10: about 25 an hour). Past it a new number is put in
-  // the approval queue with one text pointing at the access list, exactly as if auto-admit were off; a
-  // number already in the queue gets in on its next text once the hour has room again.
+  // the approval queue with one text pointing at the access list, exactly as if auto-admit were off.
+  // A number already in the queue (an over-ceiling text, or the website's form) is the owner's call
+  // and only the owner's: room coming back in the hour never lets them in on their own text, they get
+  // at most the "still waiting" line below (owner, 2026-11-10). The same goes for a number the queue
+  // has already seen and not let in — the owner said no, or the request ran out unanswered (review
+  // 2026-11-10): neither is a yes, so it goes back to the owner rather than in on its own.
   const pending = db.pendingRequestFor(addr);
-  if (config.autoAdmit && !signupsFull()) {
-    const account = approve(pending ?? { id: null, channel, address: addr, display_name: displayName, source: "text" });
+  const last = db.lastDecisionFor(addr);
+  const queuedBefore = !!pending || last?.state === "declined" || last?.state === "expired";
+  if (config.autoAdmit && !queuedBefore && !signupsFull()) {
+    const account = approve({ id: null, channel, address: addr, display_name: displayName, source: "text" });
     return {
       action: "auto_admitted",
       account,
@@ -96,7 +102,6 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
   }
 
   // Declined recently: left alone, and the master is not troubled about them again yet.
-  const last = db.lastDecisionFor(addr);
   if (last?.state === "declined" && last.decided_at) {
     const coolOffMs = config.declineCoolOffDays * 24 * 60 * 60 * 1000;
     if (clock.now() - last.decided_at < coolOffMs) {
@@ -104,7 +109,8 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
     }
   }
 
-  const full = config.autoAdmit; // only reached with auto-admit on when the hour's ceiling is reached
+  // With auto-admit on, a number with no queue history only reaches here when the hour's ceiling is reached.
+  const full = config.autoAdmit && !queuedBefore;
   const request = db.createAccessRequest({
     channel, address: addr, displayName,
     // Quoted exactly. This is the one thing of theirs the master ever sees, so it is stored as

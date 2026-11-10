@@ -368,7 +368,7 @@ test("the hourly sign-up ceiling defaults to 25 (owner 2026-11-10)", () => {
   assert.equal(DEFAULT_SIGNUPS_PER_HOUR, 25);
 });
 
-test("auto-admit lets 25 an hour in; the 26th gets the access-list text and is queued; next hour their text lets them in", () => {
+test("auto-admit lets 25 an hour in; the 26th gets the access-list text and is queued; next hour their text still waits for the owner", () => {
   for (let i = 0; i < 25; i++) {
     const out = access.handleUnknown({ channel: "fake", address: newNumber(), text: "hey" });
     assert.equal(out.action, "auto_admitted", `#${i + 1}`);
@@ -383,11 +383,15 @@ test("auto-admit lets 25 an hour in; the 26th gets the access-list text and is q
   assert.equal(db.pendingRequestFor(late)?.state, "pending", "in the approval queue");
   // Texting again inside the hour: the queue's own "still waiting" line, at most once in a while.
   assert.equal(access.handleUnknown({ channel: "fake", address: late, text: "hello?" }).reason, "already_waiting");
-  // An hour on there is room again: their next text lets them in and closes their request.
+  // An hour on there is room again, but a queued number is the owner's call (owner, 2026-11-10): their
+  // next text does not let them in, and their request stays in the queue for the owner's yes.
   clock.skip(61 * MIN);
   const again = access.handleUnknown({ channel: "fake", address: late, text: "still there?" });
-  assert.equal(again.action, "auto_admitted");
-  assert.equal(db.pendingRequestFor(late), null);
+  assert.notEqual(again.action, "auto_admitted");
+  assert.equal(db.getAccount(conv(late)), null, "still no account");
+  assert.equal(db.pendingRequestFor(late)?.state, "pending", "still waiting for the owner");
+  // A brand-new number with room in the hour still gets in on its own.
+  assert.equal(access.handleUnknown({ channel: "fake", address: newNumber(), text: "hey" }).action, "auto_admitted");
   // 0 = no ceiling.
   config.signupsPerHour = 0;
   for (let i = 0; i < 40; i++) assert.equal(access.handleUnknown({ channel: "fake", address: newNumber(), text: "hey" }).action, "auto_admitted");

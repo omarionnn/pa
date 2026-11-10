@@ -84,3 +84,77 @@ test("over the ceiling the owner's no lets nobody in", async () => {
   assert.equal(db.getAccount(`dm:fake:${late}`), null);
   assert.ok(!sentTo(h, late).some(m => /^you.re in\./.test(m.text)), "no you-are-in text");
 });
+
+// Owner rule, 2026-11-10: a queued number is ALWAYS the owner's call. Room in the hour coming back
+// does not let a waiting person in on their own text — before this, their next text once the hour had
+// room auto-admitted them (#430) and the owner never decided.
+test("queued over the ceiling, texting again once the hour has room: still waiting, no account, only the owner's yes lets them in", async () => {
+  const h = harness("yes");
+  await fillTheHour(h);
+  const late = newNumber();
+  await texts(h, late, "hi is this reason?");
+  assert.equal(db.pendingRequestFor(late)?.state, "pending");
+
+  clock.skip(61 * 60_000); // the hour has room again
+  await texts(h, late, "hello? still there?");
+  assert.equal(db.getAccount(`dm:fake:${late}`), null, "room in the hour does not let a queued number in");
+  assert.equal(db.pendingRequestFor(late)?.state, "pending", "still in the queue");
+  assert.ok(!sentTo(h, late).some(m => /^you.re in\./.test(m.text)), "no you're-in text");
+  const after = sentTo(h, late).slice(1);
+  assert.ok(after.every(m => /still waiting/.test(m.text)), "a re-text gets at most the still-waiting line");
+
+  // A brand-new number while the hour has room still gets in on its own, as before.
+  const fresh = newNumber();
+  await texts(h, fresh, "hey");
+  assert.ok(db.getAccount(`dm:fake:${fresh}`), "new arrivals under the ceiling still auto-admit");
+
+  await texts(h, MASTER, "yes let them in");
+  assert.ok(db.getAccount(`dm:fake:${late}`), "the owner's yes made their account");
+  assert.ok(sentTo(h, late).some(m => /^you're in\./.test(m.text)));
+});
+
+test("a web-form sign-up is the owner's call too: texting in with room in the hour does not let them in", async () => {
+  const h = harness("yes");
+  const { handleWebRequest } = await import("../src/access.js");
+  const web = "+13475559876";
+  const out = handleWebRequest({ channel: "fake", address: web, name: "Kofi" });
+  assert.equal(out.outcome, "queued");
+  await texts(h, web, "hi i signed up on the site");
+  assert.equal(db.getAccount(`dm:fake:${web}`), null, "a queued web request is not auto-admitted by a text");
+  assert.equal(db.pendingRequestFor(web)?.state, "pending");
+  assert.ok(!sentTo(h, web).some(m => /^you.re in\.|you.re in\. i.m your own/.test(m.text)));
+});
+
+// Review 2026-11-10: the queue's own history is the owner's call too. A number the owner said no to, or
+// whose request ran out with no answer, is not let in by its next text just because the hour has room.
+test("declined over the ceiling: their next text, with room in the hour, lets nobody in (cool-off, then the owner is asked again)", async () => {
+  const h = harness("no");
+  await fillTheHour(h);
+  const late = newNumber();
+  await texts(h, late, "hello");
+  await texts(h, MASTER, "no");
+  assert.equal(db.lastDecisionFor(late)?.state, "declined");
+
+  clock.skip(61 * 60_000); // room in the hour again
+  await texts(h, late, "please?");
+  assert.equal(db.getAccount(`dm:fake:${late}`), null, "a declined number is not auto-admitted");
+
+  clock.skip(8 * 24 * 60 * 60_000); // past the cool-off
+  await texts(h, late, "trying again");
+  assert.equal(db.getAccount(`dm:fake:${late}`), null, "past the cool-off it is still the owner's call");
+  assert.equal(db.pendingRequestFor(late)?.state, "pending", "put to the owner again");
+});
+
+test("a request that ran out unanswered: their next text with room in the hour goes back to the owner, no account", async () => {
+  const h = harness("yes");
+  await fillTheHour(h);
+  const late = newNumber();
+  await texts(h, late, "hi");
+  const req = db.pendingRequestFor(late);
+  db.decideRequest(req.id, "expired");
+
+  clock.skip(61 * 60_000);
+  await texts(h, late, "hi again");
+  assert.equal(db.getAccount(`dm:fake:${late}`), null, "an expired request is not a yes");
+  assert.equal(db.pendingRequestFor(late)?.state, "pending", "back in the queue for the owner");
+});
