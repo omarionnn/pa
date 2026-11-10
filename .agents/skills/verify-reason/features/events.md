@@ -142,8 +142,9 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     LAST step is one "Text Reason to finish" `sms:` button prefilled with
     `Hi Reason, I'm joining <name> with code ABCD-EFGH`. Their text proves the phone (inbound-only
     line: Reason cannot text first) and `#claimEvent` → `db.redeemEventClaim` joins them: a new number
-    gets an account through the event (0 invites, `joined_via_event`), then welcome → contact card
-    (`EVENT_CARD_LINE`) → one question (`EVENT_QUESTION`), no model turn on the code; a number that
+    gets an account through the event (0 invites, `joined_via_event`), then welcome → the first-chat
+    onboarding (features/onboarding.md; switch off: contact card `EVENT_CARD_LINE` → `TRY_LINE`, never a
+    question about what they do), no model turn on the code; a number that
     already has an account is just joined (welcome only — the existing-user web route without a
     session). Claims live 24h, die on a password rotation, are single-use; a retried webhook is a no-op.
   - Wrong passwords count per browser (`ip:<addr>`) and per event. The address is Netlify's

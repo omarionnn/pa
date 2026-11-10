@@ -174,7 +174,7 @@ test("4. the morning greeting, on the API", async () => {
 
 test("5. onboarding reads a first text on the API (haiku tier)", async () => {
   const ob = await import("../src/onboarding.js");
-  const asks = fakeApi(() => ({ kind: "answer", name: "Kojo", occupation: "", reply: "", ideas: [] }));
+  const asks = fakeApi(() => ({ kind: "answer", name: "Kojo", card_name: "", reply: "" }));
   const r = await ob.readText({ state: "asked_name", text: "call me kojo" });
   assert.equal(r.kind, "answer");
   assert.equal(r.name, "Kojo");

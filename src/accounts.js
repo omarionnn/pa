@@ -127,6 +127,10 @@ export function ownerOf(conversationId) {
       // The first-chat onboarding already asked their name (src/onboarding.js), so the prompt does
       // not ask it again: somebody who would rather not say is not pushed a second time.
       nameAsked: !!row.onboarding_name_asked_at,
+      // In the first-chat onboarding, or through it: code's welcome asks their name and sends the
+      // card, so the prompt never runs an interview of its own on top of it.
+      // "active" while it runs, "done" after it (null: never in it).
+      firstChat: row.onboarding == null ? null : row.onboarding === "complete" ? (row.onboarding_at ? "done" : null) : "active",
       known: true,
     };
   }

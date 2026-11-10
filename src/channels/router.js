@@ -62,8 +62,6 @@ const EVENT_CLAIM_LINES = {
 };
 /** The card line a new guest gets, after the welcome. */
 export const EVENT_CARD_LINE = "save me as Reason so you can find me for event updates — and anything else you need.";
-/** The one question a new guest is asked: what they do, and what they could use a hand with. */
-export const EVENT_QUESTION = "quick one so i'm actually useful past this party: what do you do, and is there anything you could use a hand with?";
 
 /**
  * How long a message on this channel waits for the rest of its thought before its turn starts
@@ -197,8 +195,9 @@ export class Router {
     // the master to read, and that is all.
     const admitted = accounts.admit({ channel: admitAs, address });
     // Did THIS text just make their account, by itself — auto-admit, or a pre-approved number's
-    // first text? Those are the only people the first-chat onboarding is for (src/onboarding.js):
-    // an invite or event join already sent its own welcome, and the master's yes sent "you're in".
+    // first text, or an invite claim (after the inviter's welcome line)? Those are the people the
+    // first-chat onboarding starts for here (src/onboarding.js); an event join starts it from
+    // #claimEvent, after the organizer's welcome. The master's yes sent "you're in".
     let arrivedNow = inbound.channel !== web.WEB && admitted.allow && admitted.created && !admitted.isOperator;
     if (!admitted.allow) {
       if (admitted.reason === "blocked") {
@@ -229,9 +228,9 @@ export class Router {
       if (accessResult?.autoAdmitted) {
         // They were admitted on the spot — fall through to run a normal turn with their message.
         // With REASON_ONBOARDING covering them, the first-chat onboarding answers it instead
-        // (src/onboarding.js); otherwise the model's onboarding prompt asks their name, what they
-        // do, and shows use cases.
-        if (!claim?.joined) arrivedNow = inbound.channel !== web.WEB;
+        // (src/onboarding.js) — an invite's joiner too, right after the inviter's welcome line;
+        // otherwise the model's prompt asks their name once and offers one thing to try.
+        arrivedNow = inbound.channel !== web.WEB;
       } else {
         return accessResult;
       }
@@ -638,6 +637,18 @@ export class Router {
       this.log({ web_held_back: conversationId, messages: held.length, until: back.readyAt });
       return { ok: true, conversationId, messages: held.length, replied: false, webOff: true };
     }
+    // One turn, so one turn off the day's allowance, however many texts it was. Counted before anything
+    // else so the monthly free tier (src/plan.js) knows whether this is their 21st conversation.
+    accounts.countUse(conversationId, "turn");
+    // Over this month's free conversations (REASON_FREE_TIER=monthly): no turn at all — one line and the
+    // pay link, once a conversation; anything else they text in it is kept in their history and left.
+    try {
+      const over = await plan.answerOverCeiling({ conversationId, texts: held.map(h => h.text), router: this, log: this.log });
+      if (over) {
+        this.log({ free_tier_over: conversationId, did: over.did, messages: held.length });
+        return { ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator, messages: held.length, replied: over.did === "told", overCeiling: true };
+      }
+    } catch (e) { this.log({ free_tier_check_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
     // From the moment these texts are taken, a text that lands is read against them and can be
     // folded in (src/onethought.js) — while voice notes are heard and the screen runs, not only once
     // the model has started. The runtime adopts this for the turn; anything folded into a turn that
@@ -649,13 +660,14 @@ export class Router {
     });
     await bubble.start();
 
-    // One turn, so one turn off the day's allowance, however many texts it was.
-    accounts.countUse(conversationId, "turn");
     if (held.length > 1) this.log({ burst: conversationId, messages: held.length, spanned_ms: last.arrived_at - held[0].arrived_at });
 
     let reply;
     // Hoisted out of the turn so the put-back below can drop the rows this turn opened.
     let requests = [];
+    // A real request somebody made mid-way through the first-chat onboarding: the turn does it, and
+    // the step still pending follows its reply (src/onboarding.js afterTask).
+    let onboardAfter = null;
     try {
       // A voice note is listened to here, with the bubble already up, so the turn reads what was
       // said rather than a line saying sound arrived. Never allowed to cost the turn: if listening
@@ -698,8 +710,8 @@ export class Router {
       // so there is no call verification for a text to answer here any more.)
 
       // Somebody mid-way through the first-chat onboarding (src/onboarding.js): its own bubbles answer
-      // this step, before any request row is opened. Something real — a task, a picture, their to-do
-      // list — ends it and falls through to the normal turn below, which does the thing first.
+      // this step, before any request row is opened. Something real — a task, a picture, a to-do
+      // list — falls through to the normal turn below, which does the thing first; the step follows.
       let onboardFrame = "";
       if (last.channel !== web.WEB && !fold.webChat && onboarding.active(conversationId)) {
         const thread = db.loadConversation(conversationId);
@@ -713,6 +725,7 @@ export class Router {
         });
         if (ob.handled) return { ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator, messages: held.length, replied: true, onboarding: ob.step };
         onboardFrame = ob.frame ?? "";
+        if (ob.after) onboardAfter = { channel: last.channel, to: last.address, chatId: last.chat_id ?? null };
       }
 
       // A request record for each message, so the model can track what was asked and answer each
@@ -806,10 +819,16 @@ export class Router {
       await bubble.stop();
       this.bubbles.delete(conversationId);
     }
-    // After the turn: if this person now has a name and hasn't gotten their card, send it.
+    // After the turn: somebody in the first-chat onboarding who asked for something real gets the
+    // step still pending now that it is done; their card comes from the flow, under the name they pick.
+    if (onboardAfter && reply !== null) {
+      await onboarding.afterTask({ router: this, conversationId, route: onboardAfter, log: this.log, ...this.onboard })
+        .catch(e => this.log({ onboarding_after_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
+    }
+    // Otherwise: if this person now has a name and hasn't gotten their card, send it.
     // Fires here rather than before the turn so the card arrives after "nice to meet you" — and only
     // after a turn that actually said something, so it never follows a failure line or silence.
-    if (reply !== null) void this.#offerCardIfNamed(conversationId);
+    if (reply !== null && !onboarding.active(conversationId)) void this.#offerCardIfNamed(conversationId);
     // The free trial's 25th-session bubbles, after that session's reply has answered them, and the
     // hold once they have lapsed (src/plan.js). Nothing under REASON_PAYWALL=off; never throws here.
     await plan.afterTurn({ conversationId, router: this, log: this.log })
@@ -944,9 +963,9 @@ export class Router {
    * `conversationId` is the sender's when they already have an account, null when they do not. A new
    * guest's account is made in the same transaction that spends the code and puts them on the event
    * (db.redeemEventClaim); then, in this order: the organizer's welcome and the released details (a
-   * tracked event message), Reason's contact card, and one question — what they do, and what they
-   * could use a hand with. Somebody already on Reason gets the welcome and nothing else. No model
-   * turn runs on the code text itself.
+   * tracked event message), then the first-chat onboarding (src/onboarding.js startAfterEvent) — or,
+   * when it does not cover them, Reason's contact card and the one thing to try. Somebody already on
+   * Reason gets the welcome and nothing else. No model turn runs on the code text itself.
    */
   async #claimEvent(inbound, address, conversationId) {
     if (!events.eventsOn()) return null;
@@ -980,20 +999,51 @@ export class Router {
       // somebody else's text as if Reason had written it. event_info has the details on demand.
       said.push(`[sent them the welcome for the event "${out.event.name.slice(0, 80)}" and the details its organizer has released]`);
     }
+    // A new guest with the first-chat onboarding covering them: its steps, in place of the old card
+    // and question follow-up — who Reason is, their name (the one typed on the page, or asked), what
+    // they want to call Reason, the card under that name, the one thing to try (src/onboarding.js
+    // startAfterEvent). Their code text
+    // and the welcome go into the history first, so the flow's own lines follow them.
+    let written = false;
+    if (out.newAccount && inbound.channel !== web.WEB && onboarding.coversAddress(address)) {
+      this.#eventHistory(conv, inbound, said);
+      written = true;
+      said.length = 0;
+      const flow = await onboarding.startAfterEvent({
+        router: this, conversationId: conv, route: { channel: inbound.channel, to: address, chatId }, log: this.log,
+        ...this.onboard,
+      }).catch(e => {
+        // Out of the flow for good, so the old follow-up below is the only welcome they get.
+        onboarding.finish(conv);
+        this.log({ onboarding_event_failed: conv, why: (e?.message ?? String(e)).split("\n")[0] });
+        return null;
+      });
+      if (flow) {
+        this.log({ inbound: inbound.externalId, onboarding_started: conv, via: "event" });
+        return { ok: true, conversationId: conv, event: "joined", newAccount: true, replied: true, onboarding: flow.step };
+      }
+    }
     if (out.newAccount) {
       const card = await offerContactCard({ router: this, account: db.getAccount(conv), log: this.log, line: EVENT_CARD_LINE });
       if (card.outcome === "sent") said.push(EVENT_CARD_LINE);
-      await this.send({ channel: inbound.channel, to: address, text: EVENT_QUESTION, chatId, conversationId: conv, toOwner: true }).catch(() => {});
-      said.push(EVENT_QUESTION);
+      // No interview (owner 2026-11-06): the one thing to try, a call or an event, and nothing asked about them.
+      await this.send({ channel: inbound.channel, to: address, text: onboarding.TRY_LINE, chatId, conversationId: conv, toOwner: true }).catch(() => {});
+      said.push(onboarding.TRY_LINE);
     }
     // Their history starts with what actually happened, so the turn their answer starts knows the
     // question it is answering. The code text they sent is theirs, on the channel it came on; what
     // Reason sent back went through the outbox and is history from there.
+    if (!written) this.#eventHistory(conv, inbound, said);
+    else if (said.length) db.saveConversation(conv, [...db.loadConversation(conv), { role: "assistant", content: said.join("\n\n") }]);
+    return { ok: true, conversationId: conv, event: out.already ? "already" : "joined", newAccount: out.newAccount, replied: true };
+  }
+
+  /** An event join's start of history: the code text they sent, then what Reason sent back. */
+  #eventHistory(conv, inbound, said) {
     try { db.writeMessage({ conversationId: conv, role: "user", channel: inbound.channel, externalId: inbound.externalId, text: inbound.text ?? "", at: inbound.at ?? clock.now() }); } catch { /* best-effort */ }
     db.saveConversation(conv, [...db.loadConversation(conv),
       { role: "user", content: String(inbound.text ?? "") },
       ...(said.length ? [{ role: "assistant", content: said.join("\n\n") }] : [])]);
-    return { ok: true, conversationId: conv, event: out.already ? "already" : "joined", newAccount: out.newAccount, replied: true };
   }
 
   /**
