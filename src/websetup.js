@@ -80,6 +80,15 @@ export const CONNECT_CLAIM_MS = 60 * 60_000;
  * that quickly, and its card page's Crossmint access (SETUP_JWT_SEC) has mostly run out by then too.
  */
 export const PAY_CLAIM_MS = 15 * 60_000;
+/**
+ * How long a setup's card page may hand Crossmint access (its JWT) for: never past the setup's
+ * PAY_CLAIM_MS mark, so no token for a Crossmint user an account adopts outlives the window. 0 = too late.
+ */
+export function setupJwtSec(conversationId, now = clock.now()) {
+  const row = store.get(store.idOf(conversationId), now);
+  if (!row) return 0;
+  return Math.max(0, Math.min(shop.SETUP_JWT_SEC, Math.floor((row.created_at + PAY_CLAIM_MS - now) / 1000)));
+}
 
 // ---------- the claim ----------
 
@@ -422,6 +431,12 @@ export async function request({ method = "GET", path = "", query = {}, headers =
       return json(200, out?.ok && out.url ? { ok: true, url: out.url } : { ok: false, why: "unavailable" });
     }
     if (m[2] === "card") {
+      // Past the window a card would not move to them anyway: say so instead of taking it.
+      if (clock.now() - row.created_at > PAY_CLAIM_MS - 60_000) {
+        store.setConnectState(row.id, "card", "failed");
+        log({ websetup_connect: "card", setup: row.id, ok: false, why: "too_late" });
+        return json(200, { ok: false, why: "too_late" });
+      }
       const out = cardLink(c);
       store.setConnectState(row.id, "card", out?.ok ? "pending" : "failed");
       log({ websetup_connect: "card", setup: row.id, ok: !!out?.ok });

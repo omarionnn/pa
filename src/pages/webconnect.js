@@ -411,16 +411,20 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
     return json(out.ok ? 200 : 400, out);
   }
   if (verb) return null;
+  const setupMod = link.kind === "card" && String(link.conversation_id).startsWith("websetup:") ? await import("../websetup.js") : null;
+  const setupBack = setupMod ? setupMod.backUrlFor(link.conversation_id, "card") : "";
+  // A setup's card form: its Crossmint JWT ends by the setup's 15-minute mark (src/websetup.js setupJwtSec).
+  const setupTtl = setupMod ? setupMod.setupJwtSec(link.conversation_id) : null;
+  if (setupMod && view.state === "card" && setupTtl < 60) return send(secured(renderEnded({ view: { state: "expired" } }), "card"));
   const card = view.kind === "card" && view.state === "connected" ? shop.cardOf(link.conversation_id) : null;
   const interactive = ["signin", "code", "wrongcode", "retry", "card"].includes(view.state);
   const boot = interactive || view.state === "checking"
     ? {
       token, state: view.state, watch: view.state !== "card", ...(view.state === "checking" ? { waited: view.waited } : {}),
       // A web setup's card page gets a short JWT: its Crossmint user can become an account's on the claim.
-      ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id, String(link.conversation_id).startsWith("websetup:") ? { ttlSec: shop.SETUP_JWT_SEC } : {}), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
+      ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id, setupMod ? { ttlSec: setupTtl } : {}), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
   // A web setup's card (src/websetup.js): Face ID is set up later on Web, signed in; the page goes back to the setup.
-  const setupBack = link.kind === "card" && String(link.conversation_id).startsWith("websetup:") ? (await import("../websetup.js")).backUrlFor(link.conversation_id, "card") : "";
   const faceId = !setupBack && !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
   // Has a passkey, so every payment is approved with Face ID: the copy says so instead of "text yes".
   const drawn = secured(renderView(view, { card, faceId, setupBack, passkey: passkey.requiredFor(link.conversation_id) }), link.kind === "card" ? "card" : "store");

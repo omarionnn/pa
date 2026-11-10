@@ -226,6 +226,14 @@ test("a card saved from the setup: shown as connected (last four only), nothing 
   const jwt = /"jwt":"([^"]+)"/.exec(form.body)?.[1];
   const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString());
   assert.equal(claims.exp - claims.iat, shop.SETUP_JWT_SEC);
+  // Near the setup's fifteen-minute mark the token ends at the mark; past it, no card form and no new card link.
+  clock.skip(ws.PAY_CLAIM_MS - 5 * 60_000);
+  const near = await connectRequest({ sub: new URL(open.json.url).pathname.split("/").pop(), method: "GET" });
+  const c2 = JSON.parse(Buffer.from(/"jwt":"([^"]+)"/.exec(near.body)[1].split(".")[1], "base64url").toString());
+  assert.ok(c2.exp - c2.iat <= 5 * 60, "never past the mark");
+  clock.skip(5 * 60_000);
+  assert.doesNotMatch((await connectRequest({ sub: new URL(open.json.url).pathname.split("/").pop(), method: "GET" })).body, /"jwt":/);
+  assert.deepEqual((await api("POST", `/api/${s.id}/connect/card`, { cookie: s.cookie })).json, { ok: false, why: "too_late" });
   assert.equal(claims.sub, shop.crossmintUser(s.c));
 });
 
