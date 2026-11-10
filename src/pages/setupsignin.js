@@ -133,7 +133,10 @@ export function setupResultPage({ entry, ended, back = "", thread = null, card =
   } else {
     // A setup tries again from its connect screen; a thread asks Reason for a fresh link.
     const again = t ? "Ask Reason for a fresh link to try again." : "You can try again from your setup.";
-    const [h1, why, reply] = state === "blocked"
+    const prov = ended?.provider ? ({ google: "Google", apple: "Apple", microsoft: "Microsoft", facebook: "Facebook" })[ended.provider] ?? "The provider" : "The provider";
+    const [h1, why, reply] = state === "refused"
+      ? [`${prov} said no to my browser.`, `${prov} refused my browser for ${n}, so nothing was saved and I won't try it again. ${t ? `Reason will text you a secure link to sign in with your ${n} email and password instead.` : `You can sign in with your ${n} email and password from your setup.`}`, `${prov} refused the sign-in`]
+      : state === "blocked"
       ? [`${n} wouldn't let me in.`, `${n} stopped my browser with a bot check before its sign-in page loaded. That isn't something you did${t ? ", and a fresh link would hit the same wall. Reason will text you what works instead." : "."}`, `${n} blocked the sign-in`]
       : state === "signed_out"
         ? [`Not signed in to ${n}.`, `${n} still shows its sign-in page, so nothing was saved. ${again}`, `${n} didn't sign in`]

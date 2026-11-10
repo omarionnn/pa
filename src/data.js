@@ -202,6 +202,8 @@ const TABLES = [
   "shop_crossmint_subjects",
   // Their no to "want me to use your Google login?", held 30 days per provider (src/socialsignin.js).
   "social_declines",
+  // Google/Apple/Microsoft refusing Reason's browser for one of their sites, kept 7 days (src/socialsignin.js).
+  "social_refusals",
   // Their food orders and food notes (src/food.js): what they ordered, where it went, places turned down.
   "food_orders", "food_notes",
   // The daily edition and their stamps (src/daily.js, src/stamps.js).

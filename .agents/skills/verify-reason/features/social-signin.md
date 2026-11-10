@@ -44,6 +44,12 @@ Tests: `test/social-signin.test.js` (24, offline), `test/social-signin-rest.test
   / `UBER_ASK`; the rules carry "UBER: never ask for their Google (or any provider) login for Uber";
   `uber_connect` makes the card whatever the flag/wall/saved login; web setup Uber card = pre-social.
   Hosts: uber.com, m.uber.com, riders.uber.com, auth.uber.com.
+- **Provider refused** (`providerRefused`, `refusalAnswer`, `social_refusals` 7 days): Google's "Couldn't
+  sign you in / This browser or app may not be secure" (Apple/Microsoft "browser not supported" on their
+  own hosts) ends a link at once as state `refused` — no account check, nothing saved, one plain line +
+  the site's own email/password link (signin_link, no provider); signin_link/signin_open with that
+  provider for that site refuse for 7 days; a lapse re-sign-in reads the page after the press and stops.
+  No fingerprint evasion: the refusal is believed.
 - **The wall, live** (`signinWall`, `wallCached`, `_resetWalls`): a blocked site asked for with a
   provider is fetched from here first — 403 / "Just a moment" / "Performing security verification"
   is a wall (30 s), a loading page is open (10 min, `providers_offered`). `signin_link` / `signin_open`
