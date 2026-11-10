@@ -1,9 +1,10 @@
 // The web setup's Uber and card connects (src/websetup.js, 11-10): both bound to the setup's stand-in,
 // both moved to the account on the claim, both let go when the setup expires.
 //
-//   Uber: the card always shows; a connect is handed out only when Uber's own app takes this server's
-//     return address (uber.connectReady reads Uber's authorize answer), else the page is told "not ready"
-//     and nothing is made. Uber's return goes back to the connect screen, never a thread.
+//   Uber: OFF the page since 11-10 (with Amazon): capabilities say uber:false and the connect endpoint is
+//     refused with nothing made; uber.connectReady (Uber's authorize answer) is still read by the thread's
+//     own connect. Uber's return for an older setup's stand-in still goes back to the connect screen, and
+//     a grant one somehow holds still moves on the claim.
 //   Card: Crossmint's own form on /web/connect/<token> (no card number ever on the setup page); the saved
 //     card is the stand-in's at Crossmint, so the claim hands that Crossmint user to the account; the
 //     setup never texts anyone; an account that already has Crossmint state keeps its own.
@@ -154,29 +155,30 @@ test("Uber's readiness is read off Uber's own authorize answer: a bad return add
   assert.equal((await uber.connectReady({ fetchImpl: to("x") })).why, "no_keys");
 });
 
-test("Uber connect: bound to the stand-in when Uber is ready; 'not ready' when it isn't, with nothing made", async () => {
+test("Uber connect is off the page: refused whether Uber is ready or not, nothing made; capabilities say uber:false", async () => {
   const s = await newSetup();
-  const asked = [];
-  const uberLink = (c) => { asked.push(c); return { ok: true, url: "https://app.example/connect/start?state=st" }; };
-  const no = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: notReady, uberLink });
-  assert.deepEqual(no.json, { ok: false, why: "not_ready" });
-  assert.deepEqual(asked, [], "no link is made while Uber would refuse it");
-  assert.deepEqual((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber, { state: "failed", step: 1, of: 3, why: "not_ready" });
-  const yes = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, uberLink });
-  assert.deepEqual(yes.json, { ok: true, url: "https://app.example/connect/start?state=st" });
-  assert.deepEqual(asked, [s.c], "the setup's stand-in, never a real conversation");
-  assert.equal((await api("POST", `/api/${s.id}/connect/uber`, { uberReady: ready, uberLink })).status, 404, "not without the setup's cookie");
-  const caps = (await api("GET", "/api/capabilities", { uberReady: notReady })).json;
-  assert.equal(caps.uber, false);
-  assert.equal(caps.card, true);
-  assert.equal((await api("GET", "/api/capabilities", { uberReady: ready })).json.uber, true);
+  for (const uberReady of [notReady, ready]) {
+    const no = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady });
+    assert.equal(no.status, 404);
+    assert.deepEqual(no.json, { ok: false, why: "unavailable" });
+  }
+  assert.equal(q("SELECT COUNT(*) AS n FROM oauth_states WHERE provider = 'uber'").get().n, 0, "no link, no state");
+  assert.deepEqual((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber, { state: "none", step: 1, of: 3 }, "the setup untouched");
+  assert.equal((await api("POST", `/api/${s.id}/connect/uber`, { uberReady: ready })).status, 404, "not without the setup's cookie either");
+  for (const uberReady of [notReady, ready]) {
+    const caps = (await api("GET", "/api/capabilities", { uberReady })).json;
+    assert.equal(caps.uber, false, "false even when Uber's app would take a connect");
+    assert.equal(caps.amazon, false);
+    assert.equal(caps.card, true);
+  }
 });
 
-test("the real Uber link for a setup: a state on the stand-in; connecting while it is open; Uber's return goes back to the setup", async () => {
+test("an older setup's Uber state: connecting while it is open; Uber's return goes back to the setup", async () => {
   const s = await newSetup({ origin: "https://start--staging.example" });
-  const out = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, origin: "https://start--staging.example" });
-  assert.equal(out.json.ok, true);
-  assert.match(out.json.url, /\/connect\/start\?state=/);
+  // A state a stand-in made before Uber left the page (nothing on the page makes one now).
+  const out = uber.authorizeUrl(s.c);
+  assert.equal(out.ok, true);
+  store.setConnectState(s.id, "uber", "pending");
   assert.equal(q("SELECT conversation_id FROM oauth_states WHERE provider = 'uber'").get().conversation_id, s.c);
   assert.deepEqual((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber, { state: "connecting", step: 2, of: 3 });
   // A pending Google state on the same setup does not make Uber "connecting", nor the reverse.

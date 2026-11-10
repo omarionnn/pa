@@ -14,7 +14,9 @@
 //   awaiting_amazon     OPTIONAL, REASON_INTRO_AMAZON=on only (off by default): one Amazon connect
 //                       offer after the card (src/amazonconnect.js owns the step; this is only the
 //                       hook — remove the AMAZON HOOK lines to take it out). Yes → the link, then the
-//                       try line; anything else → the try line. Asked once, never nudged.
+//                       try line; anything else → the try line. Asked once, never nudged. The web
+//                       setup's hand-off (webHandoff) lands here too: the page no longer offers
+//                       Amazon, so the thread does, right after the card, the same way.
 //   complete            done; nobody ever goes back in
 //
 // Reason never says it saves itself in their phone or is in their contacts: it cannot touch their
@@ -157,7 +159,7 @@ const PENDING = {
   not_started: "Nothing yet — this is the very first text they have ever sent Reason.",
   awaiting_name: "Reason introduced itself and asked their name.",
   awaiting_card_name: "Reason asked what they want to call it — the name its contact card will carry (Reason, or anything they like).",
-  awaiting_amazon: "Reason sent its contact card, then offered (optional) to connect their Amazon account so it can keep an eye on their orders and help them reorder, and asked if they want the link.",
+  awaiting_amazon: "Reason sent its contact card (their name and the name they chose for Reason are already settled, whether in this chat or on Reason's website setup), then offered (optional) to connect their Amazon account so it can keep an eye on their orders and help them reorder, and asked if they want the link.",
 };
 
 /** How the model meets a name: shared by the read and the stand-alone line (nameLine). */
@@ -388,8 +390,9 @@ function theCard(router, conversationId, picked) {
 
 // AMAZON HOOK: the optional offer after the card (src/amazonconnect.js), REASON_INTRO_AMAZON=on only.
 export const amazonOfferOn = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_INTRO_AMAZON ?? "").trim().toLowerCase());
-// Never to somebody who already saw Amazon on the web setup (src/websetup.js): connected or skipped there, it is answered.
-export const amazonCanOffer = (conversationId) => amazonOfferOn() && amazon.available(conversationId) && !handledOnWeb(conversationId);
+// The web setup (src/websetup.js) does not offer Amazon any more (11-10), so a web-claimed account gets the
+// same offer in the thread; `amazon.available` still says no to anyone already connected, blocked or the operator.
+export const amazonCanOffer = (conversationId) => amazonOfferOn() && amazon.available(conversationId);
 const realAmazonLink = (conversationId, { log } = {}) => { const r = amazon.connectLink(conversationId, { via: "first_chat", log }); return r.ok ? r.url : null; };
 
 // ---------- the web setup's hand-off ----------
@@ -403,18 +406,21 @@ export const WEB_CARD = "here's my card, save it so you can always find me";
 
 /**
  * Their first text came from the web setup, and the setup is claimed (router): their name and the
- * name they gave Reason are already on the account, so the hello, the card under that name, and the
- * one thing to try; done. Never the name question, the call-me question or the Amazon offer.
+ * name they gave Reason are already on the account, so the hello, the card under that name, then
+ * the Amazon offer when it can go (the page never asks it; AMAZON HOOK, the awaiting_amazon step
+ * reads their yes or no), else the one thing to try; done. Never the name question or the call-me
+ * question: nothing the page already answered is asked again on the phone.
  */
 function webHandoff(router, conversationId) {
   const setup = setups.claimedBy(conversationId);
   const account = db.getAccount(conversationId);
   const name = account.contact_card_name || cardName(setup?.reason_name);
   const url = cardUrl(router, account, name);
-  return {
-    bubbles: [WEB_HELLO(setup?.user_name || account.name), ...(url ? [{ text: WEB_CARD, mediaUrl: url }] : []), TRY_LINE],
-    next: "complete", name: url ? name : null,
-  };
+  const hello = WEB_HELLO(setup?.user_name || account.name);
+  if (!url) return { bubbles: [hello, TRY_LINE], next: "complete", name: null };
+  const card = { text: WEB_CARD, mediaUrl: url };
+  if (amazonCanOffer(conversationId)) return { bubbles: [hello, card, amazon.OFFER], next: "awaiting_amazon", name }; // AMAZON HOOK
+  return { bubbles: [hello, card, TRY_LINE], next: "complete", name };
 }
 
 const cardNote = (name) => `[sent them Reason's contact card under the name they chose for it: ${name}. Saving it is up to them; Reason cannot touch their phone. You are still Reason]`;

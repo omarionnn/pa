@@ -133,6 +133,19 @@ export async function connectStartRequest({ state, method, headers, readBody, ru
   // The asker's own browser: straight on, nothing to type.
   if (browserConversation(headers) === row.conversation_id) return onward();
 
+  // A web setup's link (src/websetup.js, `websetup:<id>`) on a browser without the setup's cookie —
+  // another browser, a staging site whose cookie cannot reach this host, or a setup that has run
+  // out. There is no thread and no code was ever texted, so never the code gate: the way back to the
+  // setup's connect screen, and nothing sent or exchanged. (A callback for such a state is refused by
+  // refuseForeignBrowser and goes back to the setup too.) Loaded late: websetup.js reaches this module.
+  if (String(row.conversation_id).startsWith("websetup:")) {
+    log({ connect_setup_unproved: row.provider });
+    const { setupBackPage } = await import("./pages/setupsignin.js");
+    const ws = await import("./websetup.js");
+    const back = ws.backUrlFor(row.conversation_id, row.provider === "google" ? "email" : row.provider);
+    return { status: method === "POST" ? 403 : 200, headers: HTML, body: setupBackPage({ label: provider, back, card: providerKind(row.provider) }) };
+  }
+
   const page = gatePage(row);
   const locked = db.failedPageAttempts(page.id, ATTEMPT_WINDOW_MS) >= MAX_FAILED_ATTEMPTS;
   const lockedWords = `Too many wrong codes. Try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60000)} minutes.`;

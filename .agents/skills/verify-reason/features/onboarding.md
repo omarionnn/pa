@@ -105,20 +105,38 @@ Prove: `node --test test/onboarding.test.js` + `bin/onboarding-checks.cjs`.
 
 ## Web setup hand-off — `REASON_WEB_SETUP` on | off (default off)
 
-heyreason.com/start (site repo, `public/start/`) asks name → Reason's name → Amazon/Gmail connect, then
+heyreason.com/start (site repo, `public/start/`) asks name → Reason's name → Gmail / card connect, then
 opens Messages with `hey <reason name>, it's <name> · <code>` typed (`websetup.firstText`, lowercase,
 4-char code from `abcdefghjkmnpqrstuvwxyz23456789`). Server: `src/websetup.js` (+ rows in
 `src/websetupstore.js`), JSON under `/setup/api/*` via the site's signed `/setup/*` proxy; `rs_setup`
 cookie (HttpOnly, 24 h) owns the setup and is accepted by `connectgate.browserConversation` for the
-stand-in conversation `websetup:<id>` only. Connects: Amazon = `amazonconnect.setupConnectLink` (remote
-sign-in for the stand-in; its end lands on the setup via `onEnd`, never a timer); Gmail = Google's own
-connect for the stand-in, callback 302s to `/start/connect?back=email`. No Outlook (capabilities say
-`outlook:false`).
+stand-in conversation `websetup:<id>` only. Connects: Gmail = Google's own connect for the stand-in,
+callback 302s to `/start/connect?back=email`; card, below. No Outlook (capabilities say `outlook:false`).
+**Amazon and Uber are OFF the page (owner, 11-10):** `/api/capabilities` answers `amazon:false, uber:false`
+whatever the server could do, and `POST /api/<id>/connect/amazon|uber` is 404 `{ok:false, why:"unavailable"}`
+with nothing made and the setup untouched (the claim still moves an Amazon check / Uber grant an older
+stand-in holds, and finds nothing otherwise).
 Claim (router, own first text only): code at the end AND the setup's names in the text → account name +
-card name set, Google rows + Amazon check + browser profile moved, Amazon follow-up timer at +90 s. Then
-`onboarding.handle` (not_started) sends `WEB_HELLO`, the card (`WEB_CARD`), `TRY_LINE`; no model read, no
-name / call-me question, no Amazon offer (`amazonCanOffer` false via `handledOnWeb`). No/bad code or switch
-off → the normal intro. Event/invite joiners never claim. Proof: `test/websetup.test.js`.
+card name set, Google rows (+ any Amazon check / profile) moved, Amazon follow-up timer at +90 s only if an
+Amazon check moved. Then `onboarding.handle` (not_started) sends `WEB_HELLO`, the card (`WEB_CARD`), and —
+with `REASON_INTRO_AMAZON=on` and `amazon.available` (not connected, not blocked, not the operator) — the
+same `amazon.OFFER` the text intro makes, state `awaiting_amazon` (`webHandoff`, AMAZON HOOK); their yes →
+`LINK_LINE` + the `/s/` link + `TRY_LINE`, no → `NO_LINE. TRY_LINE` (the existing awaiting_amazon branch).
+Flag off or Amazon already connected → `TRY_LINE`, complete. No model read of the first text, no name /
+call-me question (nothing the page answered is asked on the phone). No/bad code or switch off → the normal
+intro. Event/invite joiners never claim. Proof: `test/websetup.test.js`.
+**No dead-end code gate for a setup (11-10):** a setup's Google/Uber start link (`connectgate.connectStartRequest`)
+or Amazon `/s/` link (`signin-remote.remoteRequest`) opened on a browser without the setup's cookie — another
+browser, a staging site whose host-only cookie cannot reach app.heyreason.com, or a setup that ran out — never
+shows "Enter the code Reason texted you" (there is no thread): paper page `setupsignin.setupBackPage`, one line +
+"Back to your setup" → `<setup origin>/start/connect?back=<which>` (`websetup.backUrlFor`; plain `/start/connect`
+when the setup is gone), nothing texted, nothing started. The setup's own browser passes straight through
+(302 to Google / the sign-in intro). Thread links keep their code gate.
+**Never stuck on "connecting" (11-10):** `websetup.connectState` reads a pending email/uber connect as
+`connecting` only while an unused `oauth_states` row for the stand-in is younger than `STALE_CONNECT_MS`
+(2 min), else `failed` (try again); Amazon: an untapped link older than 2 min is `failed`, a sign-in under way
+stays `connecting` while it runs. A new tap always starts fresh (`google.authorizeUrl` / `uber.authorizeUrl`
+clear the old state; a new Amazon link replaces the open session). Card: unchanged (its own link TTL).
 
 **Uber + Card (PR #440, 11-10).** Screen 3 order: Amazon, Uber, Email, Card. Uber = `uber.authorizeUrl`
 for the stand-in, handed out only when `uber.connectReady()` (reads Uber's own authorize 302: `/oauth/errors`
