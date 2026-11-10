@@ -1,0 +1,65 @@
+{
+ "data": {
+  "id": "aic_1",
+  "order_id": "ord_1",
+  "action_taken": null,
+  "available_actions": [
+   "accept",
+   "change",
+   "cancel"
+  ],
+  "removed": [
+   {
+    "id": "sli_1",
+    "segments": [
+     {
+      "origin": {
+       "iata_code": "JFK"
+      },
+      "destination": {
+       "iata_code": "LAX"
+      },
+      "departing_at": "2026-12-12T08:07:00",
+      "arriving_at": "2026-12-12T11:30:00",
+      "marketing_carrier": {
+       "iata_code": "DL",
+       "name": "Delta"
+      },
+      "marketing_carrier_flight_number": "123",
+      "passengers": [
+       {
+        "cabin_class_marketing_name": "Main Cabin"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "added": [
+   {
+    "segments": [
+     {
+      "origin": {
+       "iata_code": "JFK"
+      },
+      "destination": {
+       "iata_code": "LAX"
+      },
+      "departing_at": "2026-12-12T09:40:00",
+      "arriving_at": "2026-12-12T13:05:00",
+      "marketing_carrier": {
+       "iata_code": "DL",
+       "name": "Delta"
+      },
+      "marketing_carrier_flight_number": "123",
+      "passengers": [
+       {
+        "cabin_class_marketing_name": "Main Cabin"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

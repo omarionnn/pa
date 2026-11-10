@@ -196,6 +196,8 @@ const TABLES = [
   // conversation id pay with it.
   "agentcard_users", "shop_profiles", "shop_cards", "shop_stores", "shop_runs", "shop_run_asks", "shop_links",
   "shop_payments", "shop_shipping", "pay_passkeys", "pay_approvals", "pay_approval_log",
+  // Flights booked through Duffel and the Stripe customer made for them.
+  "flight_bookings", "flight_changes", "flight_airline_changes", "flight_card_customers",
   "daily_caps", "cap_changes", "offers", "uber_rides", "spotify_join_requests",
   // The daily edition and their stamps (src/daily.js, src/stamps.js).
   "daily_editions", "daily_looks", "daily_questions", "stamps", "stamp_shares", "stamp_jobs", "stamp_step_times",
@@ -248,6 +250,7 @@ export const KEPT_ON_DELETE = {
  * coverage test can tell "nobody's" from "forgotten". A whole-install delete leaves them, as before.
  */
 export const INSTALL_WIDE = {
+  duffel_events: "Duffel webhook ids and types, kept only so a repeat is not acted on twice; no person or trip in them.",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
   channel_limits: "what each channel refused, learned once for everyone",
   flight_provider_usage: "monthly search counts per flight provider",

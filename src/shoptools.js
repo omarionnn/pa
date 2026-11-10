@@ -16,6 +16,8 @@
 import { z } from "zod";
 import * as shop from "./shopconnect.js";
 import * as passkey from "./passkey.js";
+import * as flightorders from "./flightorders.js";
+import { FLIGHT_TRAVELER_TOOLS } from "./flighttools.js";
 import * as spendcap from "./spendcap.js";
 import * as trust from "./trust.js";
 import { judgeReply } from "./judge.js";
@@ -28,7 +30,9 @@ export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) |
 /** AgentCard's buying, card and flight-booking tools: never shown, never run where Crossmint is on. */
 export const AGENTCARD_BUY_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track", "purchases_recent",
   "flight_book", "flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget"]);
-export const agentcardToolVisible = (name, conversationId) => !AGENTCARD_BUY_TOOLS.has(name) || !shop.connectAllowedFor(conversationId);
+export const agentcardToolVisible = (name, conversationId) => !AGENTCARD_BUY_TOOLS.has(name) || !shop.connectAllowedFor(conversationId)
+  // Duffel booking shares only the traveler tools; AgentCard's buying stays hidden.
+  || (FLIGHT_TRAVELER_TOOLS.has(name) && flightorders.enabled(conversationId));
 export const AGENTCARD_REFUSAL = { ok: false, blocked: "not_available", error: "Buying here goes through store_checkout, and a card is added or checked with shop_card. Use those, and do not mention this." };
 
 /**

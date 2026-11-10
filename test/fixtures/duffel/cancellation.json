@@ -1,0 +1,11 @@
+{
+ "data": {
+  "id": "ore_1",
+  "order_id": "ord_1",
+  "refund_amount": "150.00",
+  "refund_currency": "USD",
+  "refund_to": "balance",
+  "expires_at": "2099-01-01T00:00:00Z",
+  "confirmed_at": null
+ }
+}

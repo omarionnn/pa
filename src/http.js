@@ -46,6 +46,7 @@
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
+//   POST /duffel/webhook              an airline changed a flight, or an order's outcome (REASON_FLIGHT_DUFFEL)
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
 // sign the body verbatim, so parsing and re-serialising here would break every one of them.
@@ -110,6 +111,7 @@ import * as stamps from "./stamps.js";
 // The free trial and the subscription (REASON_PAYWALL): Stripe's webhook and the two pages it sends people back to.
 import * as plan from "./plan.js";
 import * as stripeapi from "./stripe.js";
+import * as flightorders from "./flightorders.js";
 import { config, stamp, clock } from "./config.js";
 
 const MAX_BODY = 1_000_000;
@@ -788,6 +790,14 @@ export function createServer({ router, runtime, log = () => {} }) {
           url.pathname === "/pay/done"
             ? `<h1>You're all set.</h1><p>Thank you. Everything is back on.</p><p class="lead">Head back to Messages — Reason will text you there in a moment, and whatever you were in the middle of picks up right where it was.</p>`
             : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>`));
+      }
+
+      // ---------- Duffel pushing back: a schedule change, an order's outcome (src/flightorders.js) ----------
+      if (req.method === "POST" && url.pathname === "/duffel/webhook") {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await flightorders.webhookRequest({ rawBody, headers: req.headers, log });
+        return send(out.status, out.body);
       }
 
       // ---------- AgentCard pushing back: a card landed, a payment was approved ----------

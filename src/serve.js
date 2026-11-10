@@ -109,6 +109,15 @@ startOps({ runtime, router, log });
   }
 }
 
+// Flights booked through Duffel (src/flightorders.js): what a restart cut off, then the regular check.
+{
+  const flightorders = await import("./flightorders.js");
+  if (flightorders.mode() !== "off") {
+    flightorders.attach({ say: (c, text) => runtime.say(c, text), log });
+    flightorders.resume();
+  }
+}
+
 const server = createServer({ router, runtime, log });
 server.listen(config.port, config.host, () => {
   console.log(`Reason is up · ${stamp()}`);

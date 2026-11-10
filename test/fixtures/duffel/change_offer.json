@@ -1,0 +1,64 @@
+{
+ "data": {
+  "id": "oco_1",
+  "change_total_amount": "45.00",
+  "change_total_currency": "USD",
+  "penalty_total_amount": "20.00",
+  "expires_at": "2099-01-01T00:00:00Z",
+  "slices": {
+   "add": [
+    {
+     "segments": [
+      {
+       "origin": {
+        "iata_code": "JFK"
+       },
+       "destination": {
+        "iata_code": "LAX"
+       },
+       "departing_at": "2026-12-13T09:00:00",
+       "arriving_at": "2026-12-13T12:20:00",
+       "marketing_carrier": {
+        "iata_code": "DL",
+        "name": "Delta"
+       },
+       "marketing_carrier_flight_number": "123",
+       "passengers": [
+        {
+         "cabin_class_marketing_name": "Main Cabin"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "remove": [
+    {
+     "id": "sli_1",
+     "segments": [
+      {
+       "origin": {
+        "iata_code": "JFK"
+       },
+       "destination": {
+        "iata_code": "LAX"
+       },
+       "departing_at": "2026-12-12T08:07:00",
+       "arriving_at": "2026-12-12T11:30:00",
+       "marketing_carrier": {
+        "iata_code": "DL",
+        "name": "Delta"
+       },
+       "marketing_carrier_flight_number": "123",
+       "passengers": [
+        {
+         "cabin_class_marketing_name": "Main Cabin"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

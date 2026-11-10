@@ -1,0 +1,41 @@
+{
+ "data": {
+  "id": "ord_x",
+  "booking_reference": "ABC123",
+  "owner": {
+   "name": "Delta"
+  },
+  "total_amount": "200.00",
+  "total_currency": "USD",
+  "cancelled_at": null,
+  "slices": [
+   {
+    "id": "sli_1",
+    "segments": [
+     {
+      "origin": {
+       "iata_code": "JFK"
+      },
+      "destination": {
+       "iata_code": "LAX"
+      },
+      "departing_at": "2026-12-12T08:07:00",
+      "arriving_at": "2026-12-12T11:30:00",
+      "marketing_carrier": {
+       "iata_code": "DL",
+       "name": "Delta"
+      },
+      "marketing_carrier_flight_number": "123",
+      "passengers": [
+       {
+        "cabin_class_marketing_name": "Main Cabin"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "passengers": [],
+  "documents": []
+ }
+}
