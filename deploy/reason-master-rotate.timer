@@ -1,0 +1,9 @@
+[Unit]
+Description=Rotate Reason's master key on the 1st of each month, after the 4:30am NY off-site backup
+
+[Timer]
+OnCalendar=*-*-01 10:15:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

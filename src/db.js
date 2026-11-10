@@ -17,6 +17,8 @@ export const db = new DatabaseSync(config.dbPath);
 await restcrypt.init(config.dbPath, { hasSealed: () => restcrypt.anySealed(db.prepare.bind(db)) });
 /** The unwrapped prepare: sealed values come back as stored. Migration and tests only. */
 export const rawPrepare = restcrypt.wrapDatabase(db);
+// With sealing on, a re-written row must not leave its old plain text in the file's free pages.
+if (restcrypt.flagOn()) db.exec("PRAGMA secure_delete = ON");
 /** Seal a person_facts text for the person row's owner. */
 export function sealFact(personId, text) {
   if (!restcrypt.flagOn()) return text;

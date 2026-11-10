@@ -86,6 +86,7 @@ test("online migration seals old plain rows, and rollback opens them again", () 
   assert.ok(total >= 2);
   assert.ok(rc.status(d.rawPrepare).every(s => s.plain === 0));
   assert.ok(d.recentEvents(C, { limit: 20 }).some(e => e.content === old), "reads the same after sealing");
+  assert.equal(rawScan("an old plain message"), false, "secure_delete: the plain original is not left in free pages");
 
   // Rollback: everything written back as plain text, reads unchanged.
   while (rc.migrateBatch(d.rawPrepare, "open", 50) > 0);

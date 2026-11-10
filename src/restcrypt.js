@@ -23,7 +23,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, rmSync, readdirSync } from "node:fs";
 
 export const PREFIX = "enc:u1:";
 
@@ -136,18 +136,41 @@ async function kmsCall(target, payload) {
 }
 const KMS_CONTEXT = { app: "reason", purpose: "install-key" };
 
-async function wrapIK(source, raw) {
+// ---------- "file": the master key in its own root-owned file, outside .env and every backup ----------
+// REASON_REST_KEK_FILE (default /etc/reason/rest-master.key): 64 hex characters, mode 0640 root:reason.
+// Rotation (rotateFileMaster) writes "<file>.next" first, then the keystore, then renames: a crash at
+// any point leaves a pair that opens (boot tries <file>, then <file>.next).
+export function kekFilePath() { return process.env.REASON_REST_KEK_FILE || "/etc/reason/rest-master.key"; }
+function readKekFile(path) {
+  const s = readFileSync(path, "utf8").trim();
+  if (!/^[0-9a-f]{64}$/i.test(s)) throw new Error(`${path} must hold 64 hex characters (the master key).`);
+  return Buffer.from(s, "hex");
+}
+function fileKeks() {
+  const p = kekFilePath(), out = [];
+  for (const f of [p, p + ".next"]) if (existsSync(f)) out.push(readKekFile(f));
+  if (!out.length) throw new Error(`Master key file ${p} is missing. Encryption at rest cannot unlock without it.`);
+  return out;
+}
+
+async function wrapIK(source, raw, { fileKey = null } = {}) {
   if (source === "local") return gcmSeal(localKek(), raw, "reason-ik");
+  if (source === "file") return gcmSeal(fileKey ?? fileKeks()[0], raw, "reason-ik");
   if (source === "aws-kms") {
     const keyId = process.env.REASON_REST_KMS_KEY_ID;
     if (!keyId) throw new Error("REASON_REST_KMS_KEY_ID is not set.");
     const j = await kmsCall("Encrypt", { KeyId: keyId, Plaintext: raw.toString("base64"), EncryptionContext: KMS_CONTEXT });
     return j.CiphertextBlob;
   }
-  throw new Error(`Unknown REASON_REST_KEK_SOURCE "${source}" (aws-kms or local).`);
+  throw new Error(`Unknown REASON_REST_KEK_SOURCE "${source}" (file, aws-kms or local).`);
 }
 async function unwrapIK(source, wrapped) {
   if (source === "local") return gcmOpen(localKek(), wrapped, "reason-ik");
+  if (source === "file") {
+    let last;
+    for (const k of fileKeks()) { try { return gcmOpen(k, wrapped, "reason-ik"); } catch (e) { last = e; } }
+    throw new Error(`The master key file ${kekFilePath()} does not open this keystore (${last?.message ?? "no key"}).`);
+  }
   if (source === "aws-kms") {
     const j = await kmsCall("Decrypt", { CiphertextBlob: wrapped, EncryptionContext: KMS_CONTEXT, KeyId: process.env.REASON_REST_KMS_KEY_ID });
     return Buffer.from(j.Plaintext, "base64");
@@ -155,7 +178,68 @@ async function unwrapIK(source, wrapped) {
   throw new Error(`Unknown key source "${source}".`);
 }
 
-function sourceName() { return String(process.env.REASON_REST_KEK_SOURCE || "aws-kms").trim(); }
+function sourceName() { return String(process.env.REASON_REST_KEK_SOURCE || "file").trim(); }
+
+/**
+ * Re-wrap every install key under the master key source now configured (REASON_REST_KEK_SOURCE),
+ * e.g. file -> aws-kms. No data row and no person key changes. Run with Reason stopped.
+ */
+export async function moveMaster() {
+  if (!ks || !iks.size) throw new Error("Not active.");
+  const source = sourceName();
+  const rows = ks.prepare("SELECT version FROM install_key").all();
+  const next = [];
+  for (const r of rows) next.push([r.version, await wrapIK(source, iks.get(r.version))]);
+  ks.exec("BEGIN IMMEDIATE");
+  try { for (const [v, w] of next) ks.prepare("UPDATE install_key SET source = ?, wrapped = ? WHERE version = ?").run(source, w, v); ks.exec("COMMIT"); }
+  catch (e) { ks.exec("ROLLBACK"); throw e; }
+  return { source, versions: rows.length };
+}
+
+/**
+ * New master key file. Every keystore copy taken before (every old backup's keys.db) is then sealed
+ * under a key that no longer exists anywhere: a person deleted before this rotation is unreadable in
+ * every backup, even to someone who later gets root on the box. Run with Reason stopped, after the
+ * day's backup has run (so the newest backup is already under the new key by the next run).
+ * Keeps the old file as <file>.prev-<ms> for `graceMs`, then removes it (pruneOldMasters).
+ */
+export async function rotateFileMaster() {
+  if (!ks || !iks.size) throw new Error("Not active.");
+  const p = kekFilePath();
+  // A new master AND a new install key, and every older install key dropped: today's keys then open
+  // nothing in an older keys.db, so only the master files (kept 3 days) could, and they go too.
+  const freshMaster = randomBytes(32), freshIK = randomBytes(32);
+  writeFileSync(p + ".next", freshMaster.toString("hex") + "\n", { mode: 0o640 });
+  const next = Math.max(...iks.keys()) + 1;
+  ks.exec("BEGIN IMMEDIATE");
+  try {
+    for (const r of ks.prepare("SELECT id, wrapped, ik_version FROM user_keys").all()) {
+      const dek = gcmOpen(ikFor(r.ik_version), r.wrapped, `dek:${r.id}`);
+      ks.prepare("UPDATE user_keys SET wrapped = ?, ik_version = ? WHERE id = ?").run(gcmSeal(freshIK, dek, `dek:${r.id}`), next, r.id);
+    }
+    ks.prepare("DELETE FROM install_key").run();
+    ks.prepare("INSERT INTO install_key (version, source, wrapped, created_at) VALUES (?, 'file', ?, ?)")
+      .run(next, await wrapIK("file", freshIK, { fileKey: freshMaster }), Date.now());
+    ks.exec("COMMIT");
+  } catch (e) { ks.exec("ROLLBACK"); rmSync(p + ".next", { force: true }); throw e; }
+  ks.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  ks.exec("VACUUM"); // the old wrapped rows leave the file's free pages too
+  if (existsSync(p)) renameSync(p, `${p}.prev-${Date.now()}`);
+  renameSync(p + ".next", p);
+  iks.clear(); iks.set(next, freshIK); ik = freshIK; ikVersion = next; deks.clear(); opened.clear();
+  return { file: p, installKeyVersion: next };
+}
+
+/** Remove retired master files older than graceMs (default 3 days). Returns how many. */
+export function pruneOldMasters(graceMs = 3 * 86400_000, now = Date.now()) {
+  const p = kekFilePath(), dir = dirname(p), base = p.slice(dir.length + 1) + ".prev-";
+  let n = 0;
+  for (const f of readdirSync(dir)) {
+    if (!f.startsWith(base)) continue;
+    if (now - Number(f.slice(base.length)) > graceMs) { rmSync(join(dir, f), { force: true }); n++; }
+  }
+  return n;
+}
 
 /**
  * Opens the keystore and, when there is anything to read or the flag is on, unwraps the install key

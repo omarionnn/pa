@@ -5,6 +5,9 @@
 //   node --env-file=.env scripts/encrypt-rest.mjs --open           ROLLBACK: write every sealed row back as plain text
 //                                                                  (set REASON_ENCRYPT_REST=off and restart first)
 //   node --env-file=.env scripts/encrypt-rest.mjs --rotate-install-key --server-stopped   new install key, every person key re-wrapped (Reason stopped)
+//   ... --move-master --server-stopped        re-wrap install keys under REASON_REST_KEK_SOURCE (file -> aws-kms)
+//   ... --rotate-master --server-stopped      new master key file; old backups' keystores become unopenable
+//   ... --prune-old-masters                   delete retired master files older than 3 days
 // Batches of 500 with a short pause, so it can run beside the live server (WAL, busy_timeout).
 const arg = process.argv[2] ?? "--status";
 const d = await import("../src/db.js");
@@ -28,4 +31,9 @@ if (arg === "--status") {
   // The running server holds the install key in memory and would not see the new one: stop it first.
   if (!process.argv.includes("--server-stopped")) { console.error("Stop Reason first, then run with --rotate-install-key --server-stopped."); process.exit(2); }
   console.log(`install key now v${await rc.rotateInstallKey()}`);
-} else { console.error("usage: --status | --seal | --open | --rotate-install-key"); process.exit(2); }
+} else if (arg === "--move-master" || arg === "--rotate-master") {
+  if (!process.argv.includes("--server-stopped")) { console.error(`Stop Reason first, then run with ${arg} --server-stopped.`); process.exit(2); }
+  console.log(arg === "--move-master" ? await rc.moveMaster() : await rc.rotateFileMaster());
+} else if (arg === "--prune-old-masters") {
+  console.log(`removed ${rc.pruneOldMasters()} retired master key file(s) older than 3 days`);
+} else { console.error("usage: --status | --seal | --open | --rotate-install-key | --move-master | --rotate-master | --prune-old-masters"); process.exit(2); }
