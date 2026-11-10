@@ -158,7 +158,7 @@ that's both free calls this month, so i can't stay on. i'm texting you the link 
 back <Dec 9>.") + the link, once a day (`plan.call_link_day`). A call to them on the free tier: wrap-up cue at 4:30, closed at 5:00 (`free_call_limit`); errand calls to businesses are not cut.
 `call_place` past 2 calls is refused before the confirm gate. Trial users get no invites (`invitesOpenFor`),
 and an invite / event from anybody not free for good makes nobody free. Auto-admit: `REASON_SIGNUPS_PER_HOUR`
-(default 30) walk-in accounts a rolling hour; the next gets the access-list text (`REASON_ACCESS_LIST_URL`,
+(default 25) walk-in accounts a rolling hour; the next gets the access-list text (`REASON_ACCESS_LIST_URL`,
 default https://heyreason.com/access) and the approval queue.
 Prove: `node --test test/free-tier-monthly.test.js` (14) + `bin/free-tier-drive.mjs` (muted, real router +
 inbound TwiML, prints the texts; 7 ok + all ok on 11-09).

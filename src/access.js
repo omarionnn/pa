@@ -67,7 +67,7 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
   // Reason immediately — no waiting room, no approval queue. The model's onboarding prompt
   // (agent.js, placeholder path) asks their name, what they do, and shows use cases.
   //
-  // Up to a ceiling (signupsPerHour, owner 2026-11-09: about 30 an hour). Past it a new number is put in
+  // Up to a ceiling (signupsPerHour, owner 2026-11-10: about 25 an hour). Past it a new number is put in
   // the approval queue with one text pointing at the access list, exactly as if auto-admit were off; a
   // number already in the queue gets in on its next text once the hour has room again.
   const pending = db.pendingRequestFor(addr);
