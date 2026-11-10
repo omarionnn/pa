@@ -102,7 +102,7 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { imagenStatus, imagenProvider, openaiImageProvider } from "./imagen.js";
+import { imagenStatus, imageModelFor } from "./imagen.js";
 import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, verifyLink, UNDO_SAYS } from "./verify.js";
 import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
@@ -2863,7 +2863,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     }
   }
 
-  // Image generation, from whether the Gemini key is set. Uses the same key as video; a separate
+  // Image generation, from whether the OpenAI key is set (OpenAI is the one picture model). A separate
   // capability row because "can Reason draw a picture" is a different question from "can it watch
   // a video", and both must be answered honestly from what is actually connected.
   const imgCap = out.find(c => c.name === "image_generation");
@@ -11816,11 +11816,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const send = input.send !== false;
       const styledPrompt = `${input.prompt}. Style: minimal editorial illustration, warm cream and soft charcoal palette with a single brick-red accent (${BRAND_PEN}). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no people. Muted, sophisticated color palette leaning warm beige and stone grey.`;
       const opts = { aspectRatio: input.aspect_ratio ?? "1:1", count: input.count ?? 1 };
-      const provider = ctx.imagenProvider ?? imagenProvider();
-      let out = await provider.generate(styledPrompt, opts);
-      if (!out.ok && config.openaiKey) {
-        out = await openaiImageProvider().generate(styledPrompt, opts);
-      }
+      // OpenAI is the one picture model (owner, 2026-11-09): no first try anywhere else.
+      const provider = ctx.imagenProvider ?? imageModelFor();
+      if (!provider) return { ok: false, ...imagenStatus() };
+      const out = await provider.generate(styledPrompt, opts);
       if (!out.ok) return out;
       // Asked for a picture: it goes into the thread as an attachment, and nothing comes back that
       // could be texted instead of it.
