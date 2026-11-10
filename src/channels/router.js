@@ -261,7 +261,9 @@ export class Router {
     // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
     // its code: what they chose and connected on the page becomes theirs, and the intro asks none of
     // it again (src/onboarding.js webHandoff). No code, or one that does not match: nothing changes.
-    if (arrivedNow && !isOperator) {
+    // Only for somebody this backend serves: on the subscription a stranger gets one "not yet" line,
+    // and their setup should still be there when they can be answered.
+    if (arrivedNow && !isOperator && servesOnThisBackend(address).serves) {
       try {
         const claim = websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log });
         // The code has done its job: it is not stored with their words, and the model never reads it.
