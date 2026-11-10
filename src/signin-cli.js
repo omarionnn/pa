@@ -20,6 +20,7 @@
 import { config, stamp } from "./config.js";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
+import * as social from "./socialsignin.js";
 import { profileDirFor } from "./browser.js";
 import { SITES, siteNames } from "./sites.js";
 // Both registries: the errand sites and the services whose subscriptions cancel on the web. The
@@ -66,7 +67,7 @@ function printList(conversationId) {
   console.log(`\nNo password is ever typed into Reason, here or in a message. You sign in yourself in the window.`);
 }
 
-async function headlessProbe(conversationId, siteName) {
+async function headlessProbe(conversationId, siteName, { provider = "" } = {}) {
   const launcher = await chromium();
   const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), {
     headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
@@ -74,16 +75,17 @@ async function headlessProbe(conversationId, siteName) {
   try {
     const page = ctx.pages()[0] ?? await ctx.newPage();
     page.setDefaultTimeout(config.browserTimeoutMs);
-    return await signin.checkAndRecord(page, conversationId, siteName);
+    return await signin.checkAndRecord(page, conversationId, siteName, { provider });
   } finally {
     await ctx.close().catch(() => {});
   }
 }
 
-async function openForSignin(conversationId, entry) {
+async function openForSignin(conversationId, entry, { provider = "" } = {}) {
   const launcher = await chromium();
   const dir = profileDirFor(conversationId);
   console.log(`Opening ${entry.label} in a window. Profile: ${dir}`);
+  if (provider) console.log(`Pressing the "${social.LABELS[provider]}" button for you, if the page has one.`);
   console.log(`Sign in however you normally would, then CLOSE THE WINDOW. Nothing is typed for you.\n`);
 
   let ctx;
@@ -99,6 +101,10 @@ async function openForSignin(conversationId, entry) {
   const page = ctx.pages()[0] ?? await ctx.newPage();
   try {
     await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    if (provider) {
+      const { pressed } = await social.clickProviderButton(page, provider);
+      console.log(pressed ? `Pressed "${pressed}". Carry on on ${social.LABELS[provider]}'s page.\n` : `No ${social.LABELS[provider]} button on this page; sign in with the site's own form.\n`);
+    }
   } catch (e) {
     // Worth continuing rather than bailing: the window is open and the person can navigate it
     // themselves, which on a site that refuses an automated first request is the only way in.
@@ -186,12 +192,16 @@ if (!entry.urls_verified) {
     + ` (${entry.limits[0]}). The window will open anyway; you may have to navigate there yourself.\n`);
 }
 
-await openForSignin(conversationId, entry);
-const out = await headlessProbe(conversationId, entry.site);
+// Which button this account signs in through: `--provider google`, or REASON_SIGNIN_PROVIDER when the
+// window was opened by Reason (src/signin-window.js). Only where REASON_SOCIAL_SIGNIN reaches the owner.
+const provider = social.socialAllowedFor(conversationId) ? social.providerKey(flagValue("--provider") ?? process.env.REASON_SIGNIN_PROVIDER ?? "") : "";
+
+await openForSignin(conversationId, entry, { provider });
+const out = await headlessProbe(conversationId, entry.site, { provider });
 
 if (!out.ok) fail(out.error);
 if (out.state === "signed_in") {
-  console.log(`${entry.label}: signed in. Recorded.`);
+  console.log(`${entry.label}: signed in. Recorded${out.provider ? ` as a ${social.LABELS[out.provider]} sign-in` : ""}.`);
   console.log(`  ${out.why}`);
   if (out.inferred) {
     console.log(`  Read from what is NOT on the page rather than from anything positive on it — nobody has`);

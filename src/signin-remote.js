@@ -48,6 +48,7 @@
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
+import * as social from "./socialsignin.js";
 import { readSignedInState } from "./sites.js";
 import { profileDirFor } from "./browser.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
@@ -118,13 +119,18 @@ export function remoteSessionFor(conversationId) {
  * Make a link. Nothing is launched yet: the browser starts when somebody taps Start, so a link
  * nobody opens never holds the saved profile.
  */
-export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {} }) {
+export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "", pressProvider = social.clickProviderButton }) {
   const old = sessions.get(byConversation.get(conversationId));
   if (old) end(old, "replaced").catch(() => {});
 
   const token = newToken();
+  // `provider`: which button this site's account signs in through (google/apple/facebook/microsoft,
+  // src/socialsignin.js). Only where that flag reaches this person: the button is pressed for them
+  // when the page opens, and the provider goes on the saved-login row once the site says signed in.
+  const prov = social.socialAllowedFor(conversationId) ? social.providerKey(provider) : "";
   const s = {
     token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
+    provider: prov, pressProvider, pressed: "", lastFields: [],
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
     ended: null, startedAt: null, timer: null, signedInRun: 0,
   };
@@ -174,7 +180,7 @@ async function end(s, how) {
     note = `the ${entry.label} sign-in link you sent never got past ${entry.label}'s bot check: ${entry.label} blocks Reason's browser from its sign-in page, so nothing could be typed and nothing was saved, and a fresh link would hit the same wall. Say that plainly in one short line — it is ${entry.label}'s choice, not something they did — and offer what works instead${entry.deep_link ? ` (for a ride, uber_link opens Uber on their phone with the destination filled in)` : ""}.`;
   } else if (s.browser) {
     try {
-      const out = await inTurn(s, () => s.check(s.browser.page, c, entry.site));
+      const out = await inTurn(s, () => s.check(s.browser.page, c, entry.site, { provider: s.provider }));
       s.ended.state = out?.ok === false ? "unknown" : out.state;
       s.ended.why = out?.why ?? out?.error ?? "";
     } catch (e) {
@@ -187,8 +193,14 @@ async function end(s, how) {
       : how === "cancelled" ? " (they closed it without finishing)"
         : how === "replaced" ? " (a newer link replaced that one)"
           : " (the link timed out before they finished)";
+    // A sign-in that went through a provider button: the row now says which, so the same login can
+    // open the person's other sites through that provider (src/socialsignin.js RULES: say so once).
+    const unlocked = s.ended.state === "signed_in" && s.provider
+      ? ` Their ${entry.label} login is saved as a ${social.LABELS[s.provider]} sign-in${s.pressed ? "" : " (the site's own form had no such button, so this is what you were told rather than what was pressed)"}.`
+        + ` After the task is done, say once what else that unlocks: any site of theirs that signs in with ${social.LABELS[s.provider]} can be opened the same way now without asking again.`
+      : "";
     note = s.ended.state === "signed_in"
-      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}`
+      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}${unlocked}`
       : s.ended.state === "signed_out"
         ? `the ${entry.label} sign-in through the link you sent has ended${tail}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Say that plainly in one short line and offer a fresh link.`
         : `the ${entry.label} sign-in through the link you sent has ended${tail}, but whether they are signed in could not be read (${s.ended.why}). Nothing is recorded either way. Say that in one short line; signin_status with recheck asks the site again.`;
@@ -321,8 +333,25 @@ async function readView(s) {
   return inTurn(s, async () => {
     const shot = await page.screenshot({ type: "jpeg", quality: 58 });
     const raw = await page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
+    // The shape of the last form the phone saw, so a typed code can be cleaned for the box it lands in.
+    s.lastFields = Array.isArray(raw?.fields) ? raw.fields : [];
     return { shot, raw };
   });
+}
+
+/**
+ * What a typed text becomes when it is a code going into a code box. Anything else is typed as is.
+ * The box is the focused one from the last view, or — when this edit came with a tap — the one
+ * code box on the page, since the tap is what focuses it and the view has not caught up yet.
+ */
+export function cleanCodeFor(s, text, tapped = false) {
+  if (!social.looksLikeCode(text)) return text;
+  const fields = s?.lastFields ?? [];
+  const otp = fields.filter(f => fieldKind(f) === "otp");
+  const box = otp.find(f => f.focused) ?? (tapped && otp.length === 1 ? otp[0] : null);
+  if (!box) return text;
+  const numeric = box.type === "tel" || box.type === "number" || box.im === "numeric";
+  return social.normalizeCode(text, { accepts: numeric ? "digits" : "any", max: Number(box.ml) || 0 }) || text;
 }
 
 /**
@@ -489,6 +518,14 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         // The saved profile can be in one browser at a time, and this one needs it.
         await s.closeBrowser(s.conversationId);
         s.browser = await s.launch({ conversationId: s.conversationId, url: s.entry.signin_url });
+        // Their account on this site uses a provider: press that button so the page they see is the
+        // provider's own, not a username box they would have to skip. A page with no such button is
+        // left as it is — the person's form, as before — and nothing else is typed or pressed.
+        if (s.provider) {
+          const { pressed } = await inTurn(s, () => s.pressProvider(s.browser.page, s.provider)).catch(() => ({ pressed: "" }));
+          s.pressed = pressed || "";
+          s.log({ signin_remote: "provider_button", site: s.entry.site, provider: s.provider, pressed: !!s.pressed });
+        }
       } catch (e) {
         s.log({ signin_remote: "launch_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] });
         await end(s, "launch_failed");
@@ -590,8 +627,14 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       if (input.at !== undefined && !at) return json(400, { error: "at needs x and y between 0 and 1" });
       const all = input.all === true;
       const del = Math.max(0, Math.min(MAX_DEL, Math.trunc(Number(input.del) || 0)));
-      const text = typeof input.text === "string" ? input.text : "";
+      let text = typeof input.text === "string" ? input.text : "";
       if (text.length > MAX_TYPED) return json(400, { error: `type needs 1 to ${MAX_TYPED} characters` });
+      // A verification code pasted the way it arrived — "G-123 456" — into a code box: the "G-", the
+      // spaces and the dashes come off, and a numeric box gets digits only (src/socialsignin.js
+      // normalizeCode). Only a code box, only where the social sign-in flag reaches this person; the
+      // text is still never kept or logged. The last view's fields say which box is focused (or, when
+      // a tap landed with this edit, which box is the only code box on the page).
+      if (s.provider || social.socialAllowedFor(s.conversationId)) text = cleanCodeFor(s, text, !!at);
       if (!text && !del && !all && !at) return json(400, { error: `type needs 1 to ${MAX_TYPED} characters` });
       await inTurn(s, async () => {
         if (at) await page.mouse.click(at[0], at[1]);

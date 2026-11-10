@@ -75,9 +75,14 @@ export const SITES = [
     site: "uber",
     label: "Uber",
     what: "book a ride",
-    hosts: ["uber.com", "m.uber.com"],
+    // riders.uber.com (the account's own site) and auth.uber.com (where uber.com, m.uber.com and
+    // riders.uber.com all send a signed-out browser) are Uber's too: a page read on either is Uber.
+    hosts: ["uber.com", "m.uber.com", "riders.uber.com", "auth.uber.com"],
     entry: "https://m.uber.com",
     signin_url: "https://auth.uber.com/login",
+    // Most people's Uber is a Google sign-in (owner, 2026-11-10): the button on auth.uber.com is
+    // "Continue with Google" (also "Continue with Apple"). src/socialsignin.js uberSocialPath.
+    social: { likely: "google", buttons: ["Continue with Google", "Continue with Apple"] },
     urls_verified: true,
     needs_signin: "always",
     signed_in: {

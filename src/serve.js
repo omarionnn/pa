@@ -10,6 +10,7 @@
 // pretending. That is the point: an install with nothing configured should still run.
 import "./logmask-install.js"; // first: phone numbers out of every printed line (src/logmask.js)
 import { Runtime } from "./runtime.js";
+import { socialMode as socialSigninMode } from "./socialsignin.js";
 import { requireKey as requireTokenKey } from "./secretbox.js";
 import { Router } from "./channels/router.js";
 import { ConsoleChannel } from "./channels/console.js";
@@ -168,6 +169,8 @@ server.listen(config.port, config.host, () => {
     const who = (v) => v === "owner" ? "owner only" : v ? "everyone" : "off";
     console.log(`  call pre-open: outbound ${who(config.gptlivePrering)} · inbound ${who(config.gptliveInboundPreopen)} · greet ${config.gptlivePreringGreet} · inbound wait ${config.gptliveInboundWaitMs} ms`);
   }
+  // Signing in through a Google/Apple/Facebook/Microsoft account (src/socialsignin.js): said once, armed or not.
+  if (socialSigninMode() !== "off") console.log(`  social sign-in: ${socialSigninMode() === "owner" ? "owner only" : "everyone"} (REASON_SOCIAL_SIGNIN)`);
   console.log(`  listening on http://${config.host}:${config.port}`);
   for (const s of router.statuses()) {
     console.log(`  ${s.name}: ${s.status}${s.missing?.length ? ` (needs ${s.missing.join(", ")})` : ""}`);

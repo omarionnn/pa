@@ -427,6 +427,66 @@ probe; a Spotify developer app; and a decision about the six sites that refuse �
 official API where one exists, or leaving them.
 
 
+## Signing in through their Google, Apple, Facebook or Microsoft account (added 2026-11-10)
+
+**Built, behind `REASON_SOCIAL_SIGNIN`** (off by default; `owner` on live), from the owner's "Reason
+Social Sign-In Prompt" spec. One of those logins opens dozens of a person's accounts, so Reason treats
+getting it as a priority — and earns it through a real task, never a cold ask. Nothing about HOW a
+sign-in happens changed: the person still signs in themselves on the site's own page through the
+sign-in link, and Reason keeps the session the site gives the saved profile. What is new
+(`src/socialsignin.js`):
+
+- **The rules**, in the system prompt next to the never-a-password rule: ask the first time a real
+  task needs such a site, tied to that task, one line, "your Google login" (never "OAuth" or "social
+  provider" to the person); never during onboarding, mid-vent, late at night unless they are asking
+  for something right then, or when the task needs no sign-in. Unknown how they sign in somewhere:
+  `signin_provider infer` reads the site's sign-in page for its buttons, their welcome or receipt
+  email settles it, then confirm. A no is recorded (`signin_provider declined`) and holds for 30 days
+  per provider; `ask_check` says so before any ask. Never a password, code or card number in the
+  chat: the secure link. Two-step verification expected, least effort first (a Yes tap on their
+  phone, a code to an email Reason reads itself, a texted code they forward), one line on what to
+  expect ("Google will ping your phone. Tap Yes."), a warning that the site may send one more code,
+  and a code that fails twice switches method once, then stops and says what blocked it. After
+  access: finish the task, then say once what else it unlocked. A lapsed session is signed back in by
+  Reason itself. Trust: task-only use, never change passwords / security / recovery / connected apps,
+  never grant a new app, money and messages-as-them and anything permanent still need a yes, an honest
+  answer about what it can reach and how to revoke, and signing in with Google is not reading Gmail.
+- **Which button each site uses** goes on the saved login (`connected_accounts.provider`), written
+  only once the site says signed in, sealed at rest with the phase-2 columns.
+- **The button is pressed for them.** `signin_link` / `signin_open` take a `provider`; the page opens
+  on the provider's own page. A page with no such button is the site's form, as before.
+- **A forwarded code is cleaned** before it is typed: "G-123 456" → `123456` into a code box.
+- **A lapse is tried first.** `signin_status` with `recheck` reads the saved button before the probe
+  and, when the site says signed out, opens the sign-in page, presses it and asks again; only when
+  that lands on the provider's own page is the person sent a fresh link.
+- **Uber first** (the owner's scope addition, same day): most people's Uber is a Google sign-in,
+  through "Continue with Google" on auth.uber.com — where uber.com, m.uber.com and riders.uber.com
+  all send a signed-out browser (`src/sites.js` lists those hosts now). The rules carry the exact
+  ask — *"Uber signs in through your Google account. Want me to use it?"* — and on a yes it is
+  `signin_link` for `uber` with `provider: "google"`. That route **supersedes the Uber OAuth connect
+  card**: `uber_connect` answers with the Google route (the ask, or "already saved, nothing to
+  connect") whenever a Google-backed Uber login is saved or the social flow can get in, and makes
+  the card only with `fallback: true`; the web setup shows a saved Google-backed Uber as connected
+  `via: "google"`, and where the flag is on for everyone and Uber's page loads, `capabilities.uber`
+  is false and `connect/uber` says `superseded` (`src/websetup.js`). A walled Uber keeps the card.
+- **The wall is asked live.** Uber's `signin_blocked` in `src/sites.js` is a dated finding, so with a
+  provider the link and the window ask the site first (`signinWall`: the sign-in page fetched from
+  where Reason runs; a 403 / "Just a moment" / "Performing security verification" is a wall, kept
+  30 s; a page that loads is kept 10 min and says which buttons it offers). A wall still up is said
+  plainly with the connect card named as the fallback and no link made; a wall that has lifted lets
+  the Google button be pressed. Without a provider, or where the flag does not reach them, the dated
+  finding answers as before.
+- **The finder is a real function now.** The draft sent Playwright a string, which it evaluates as
+  an expression and never calls — so nothing would ever have been pressed on a real page. A hand-made
+  Uber sign-in page (`test/fixtures/uber-login.html`) in real Chromium is what showed it; the finder
+  presses the visible "Continue with Google" there and not the phone box, the hidden copy or the
+  footer's "Google Privacy Policy" link (`test/social-signin-uber.test.js`, 7 tests).
+
+**Not proved:** no real site has been signed in to through a real provider button here, and Uber's
+real sign-in page still bot-walls Reason's browser from the live box (2026-11-10), so the Google
+step on Uber has not been reached (see `docs/unverified.md`).
+
+
 ## Telling people what's new (added 2026-10-05)
 
 **Built.** When something lands, the people already texting Reason are told — casually, in passing,
