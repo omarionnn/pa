@@ -622,9 +622,13 @@ attachment handle) is about that one message and is **not** remembered.
 
 **Coming the other way:** a voice note you send is listened to. It is downloaded, turned into
 plain audio, transcribed, and reaches Reason as the words in it — so you can talk instead of type.
-A model that is busy, or that does not answer in time, is asked once more and then a second model
-listens; and one attempt waits ten seconds plus two for each second of audio (never under fifteen,
-never over `REASON_HEAR_TIMEOUT_MS`), so a three-second note is not waited on for a minute.
+The small model (`REASON_HEAR_MODEL`, gemini-3.5-flash-lite) listens first and the big one
+(`REASON_HEAR_FALLBACK_MODEL`, gemini-3.8-flash) is the fallback; videos keep `REASON_VIDEO_MODEL`.
+A first model that is busy, over its limit, broken, or does not answer in time is not asked again:
+the other model is the retry. One attempt waits ten seconds plus two for each second of audio
+(never under fifteen, twenty when the length is unknown, never over `REASON_HEAR_TIMEOUT_MS`).
+The usual case is one quick answer from the small model; a short note that neither model can
+hear is given up on after two attempts (about 30–40 s), where it used to be four.
 When one cannot be heard, the turn is told exactly why (the download failed, the model was busy)
 and Reason says that instead of guessing at what you said. With no model that takes audio it is
 described as a voice memo Reason has not heard.
