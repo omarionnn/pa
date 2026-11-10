@@ -29,6 +29,18 @@ export function sealFact(personId, text) {
   return restcrypt.sealFor(owner, text);
 }
 export { restcrypt, restfiles };
+/** Seal a phase-3 column (an account's own name, card name or address); unchanged unless REASON_ENCRYPT_REST3=on. */
+export const seal3 = (conversationId, text) => restcrypt.sealFor3(conversationId, text);
+/**
+ * Exact match on an account's own address, sealed or not: the plain value (rows from before phase 3,
+ * or phase 3 off) or its blind index. `${ACCOUNT_ADDR_MATCH}` takes `accountAddrArgs(address)`.
+ */
+export const accountAddrMatch = (alias = "") => `(${alias}address IN (?, ?) OR ${alias}address_bi = ?)`;
+export const ACCOUNT_ADDR_MATCH = accountAddrMatch();
+export function accountAddrArgs(address) {
+  const raw = String(address ?? "");
+  return [raw, restcrypt.normalizeAddress(raw), restcrypt.addressIndexes(raw)[0] ?? null];
+}
 /** Seal a phase-2 column (restcrypt.SENSITIVE2) for its owner; unchanged unless REASON_ENCRYPT_REST2=on. */
 export const seal2 = (conversationId, text) => restcrypt.sealFor2(conversationId, text);
 /**
@@ -1823,6 +1835,11 @@ addColumnIfMissing("accounts", "contact_card_tried_at", "INTEGER");
 // random token their card's address carries so the server can draw that one card (src/http.js).
 // The token names nothing about them; the card it draws holds only the name they picked and the line.
 addColumnIfMissing("accounts", "contact_card_name", "TEXT");
+// Phase 3 encryption at rest (restcrypt SENSITIVE3): accounts.address is sealed per person, so its
+// exact match (routing, the signup cap, "stopped", web claims) goes through this keyed HMAC instead.
+addColumnIfMissing("accounts", "address_bi", "TEXT");
+try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS accounts_channel_address_bi ON accounts(channel, address_bi) WHERE address_bi IS NOT NULL"); }
+catch { db.exec("CREATE INDEX IF NOT EXISTS accounts_address_bi ON accounts(address_bi)"); }
 addColumnIfMissing("accounts", "contact_card_token", "TEXT");
 // Reason's line moved on 2026-10-23 (src/linechange.js). One row per person who has been told —
 // with the card or without it — claimed before the send, so nobody is told twice. The owner had
@@ -2079,9 +2096,9 @@ function seedOperatorAccount() {
   const id = config.ownerConversation;
   if (db.prepare("SELECT 1 FROM accounts WHERE conversation_id = ?").get(id)) return;
   const address = config.operatorNumbers[0] ?? "console";
-  db.prepare(`INSERT OR IGNORE INTO accounts (conversation_id, channel, address, name, is_operator, created_at)
-    VALUES (?, ?, ?, ?, 1, ?)`)
-    .run(id, config.operatorNumbers.length ? "linq" : "console", address, config.ownerName, clock.now());
+  db.prepare(`INSERT OR IGNORE INTO accounts (conversation_id, channel, address, address_bi, name, is_operator, created_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?)`)
+    .run(id, config.operatorNumbers.length ? "linq" : "console", seal3(id, address), restcrypt.addressIndex(address), seal3(id, config.ownerName ?? ""), clock.now());
 }
 seedOperatorAccount();
 
@@ -3604,7 +3621,7 @@ export function getAccount(conversationId) {
 }
 
 export function accountByAddress(channel, address) {
-  return db.prepare("SELECT * FROM accounts WHERE channel = ? AND address = ?").get(channel, address) ?? null;
+  return db.prepare(`SELECT * FROM accounts WHERE channel = ? AND ${ACCOUNT_ADDR_MATCH}`).get(channel, ...accountAddrArgs(address)) ?? null;
 }
 
 /**
@@ -3625,7 +3642,7 @@ export function accountByAddress(channel, address) {
 export function accountByNumber(address) {
   const addr = String(address ?? "").trim();
   if (!addr) return null;
-  return db.prepare("SELECT * FROM accounts WHERE address = ? ORDER BY last_seen_at DESC LIMIT 1").get(addr) ?? null;
+  return db.prepare(`SELECT * FROM accounts WHERE ${ACCOUNT_ADDR_MATCH} ORDER BY last_seen_at DESC LIMIT 1`).get(...accountAddrArgs(addr)) ?? null;
 }
 
 /**
@@ -3644,8 +3661,10 @@ export function markToldCallsRecorded(conversationId) {
 
 export function upsertAccount({ conversationId, channel, address, name = "", isOperator = false }) {
   const now = clock.now();
-  db.prepare(`INSERT INTO accounts (conversation_id, channel, address, name, is_operator, created_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+  // Phase 3: name and address sealed, address_bi beside it. An unchanged address (same index) keeps
+  // its stored value rather than re-writing new ciphertext on every text.
+  db.prepare(`INSERT INTO accounts (conversation_id, channel, address, address_bi, name, is_operator, created_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(conversation_id) DO UPDATE SET
       last_seen_at = excluded.last_seen_at,
       name = CASE WHEN excluded.name != '' THEN excluded.name ELSE accounts.name END,
@@ -3653,8 +3672,12 @@ export function upsertAccount({ conversationId, channel, address, name = "", isO
       -- while they are actually texting over something else is a row Reason cannot reach them on,
       -- which is how the master silently stopped getting their own access questions.
       channel = excluded.channel,
-      address = CASE WHEN excluded.address != '' THEN excluded.address ELSE accounts.address END`)
-    .run(conversationId, channel, address, name, isOperator ? 1 : 0, now, now);
+      address = CASE WHEN excluded.address = '' THEN accounts.address
+                     WHEN excluded.address_bi IS NOT NULL AND accounts.address_bi IS excluded.address_bi
+                          AND substr(accounts.address, 1, 7) = 'enc:u1:' THEN accounts.address
+                     ELSE excluded.address END,
+      address_bi = CASE WHEN excluded.address = '' THEN accounts.address_bi ELSE excluded.address_bi END`)
+    .run(conversationId, channel, seal3(conversationId, address), restcrypt.addressIndex(address), seal3(conversationId, name), isOperator ? 1 : 0, now, now);
   return getAccount(conversationId);
 }
 
@@ -3662,7 +3685,7 @@ export function upsertAccount({ conversationId, channel, address, name = "", isO
 export function setAccountName(conversationId, name) {
   const n = String(name ?? "").trim().slice(0, 80);
   if (!n) return null;
-  const r = db.prepare("UPDATE accounts SET name = ? WHERE conversation_id = ?").run(n, conversationId);
+  const r = db.prepare("UPDATE accounts SET name = ? WHERE conversation_id = ?").run(seal3(conversationId, n), conversationId);
   if (!r.changes) return null;
   // Anything saved about them before they gave their name went under a label rather than a name
   // (`SELF_SUBJECTS`) — there was nothing better to file it under. Now there is, and leaving it
@@ -3764,7 +3787,7 @@ export function setContactCardName(conversationId, name) {
   const row = getAccount(conversationId);
   if (!row) return null;
   const token = row.contact_card_token || randomBytes(12).toString("base64url");
-  db.prepare("UPDATE accounts SET contact_card_name = ?, contact_card_token = ? WHERE conversation_id = ?").run(name, token, conversationId);
+  db.prepare("UPDATE accounts SET contact_card_name = ?, contact_card_token = ? WHERE conversation_id = ?").run(seal3(conversationId, name), token, conversationId);
   return { name, token };
 }
 
@@ -3923,7 +3946,7 @@ export function listBlocked() {
 export function stoppedStateOf(address) {
   const addr = String(address ?? "").trim();
   if (!addr) return null;
-  const rows = db.prepare("SELECT state FROM accounts WHERE address = ? AND is_operator = 0 AND state IN ('paused', 'removed')").all(addr);
+  const rows = db.prepare(`SELECT state FROM accounts WHERE ${ACCOUNT_ADDR_MATCH} AND is_operator = 0 AND state IN ('paused', 'removed')`).all(...accountAddrArgs(addr));
   if (rows.some(r => r.state === "removed")) return "removed";
   return rows.length ? "paused" : null;
 }
@@ -6528,7 +6551,7 @@ export function pageSessionCount(conversationId, maxAgeMs) {
 
 /** Every account with this phone number, on any channel: who a number typed into a page belongs to. */
 export function accountsByAddress(address) {
-  return db.prepare("SELECT * FROM accounts WHERE address = ? ORDER BY created_at").all(String(address ?? ""));
+  return db.prepare(`SELECT * FROM accounts WHERE ${ACCOUNT_ADDR_MATCH} ORDER BY created_at`).all(...accountAddrArgs(address));
 }
 
 // ---------- page choices ----------
@@ -12441,7 +12464,7 @@ addColumnIfMissing("event_attendees", "role", "TEXT NOT NULL DEFAULT 'guest'");
 /** Give every event its organizer's membership row, once. Idempotent: UNIQUE (event_id, conversation_id). */
 export function backfillOrganizerMemberships() {
   return Number(db.prepare(`INSERT OR IGNORE INTO event_attendees (event_id, conversation_id, display_name, in_directory, via, token, joined_at, updated_at, role)
-    SELECT e.id, e.organizer_conversation_id, COALESCE((SELECT name FROM accounts WHERE conversation_id = e.organizer_conversation_id), ''), 0,
+    SELECT e.id, e.organizer_conversation_id, COALESCE((SELECT pt(name) FROM accounts WHERE conversation_id = e.organizer_conversation_id), ''), 0,
       'organizer', lower(hex(randomblob(24))), e.created_at, e.created_at, 'organizer'
     FROM events e`).run().changes);
 }

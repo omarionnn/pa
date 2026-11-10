@@ -72,8 +72,17 @@ export const SENSITIVE2 = [
   // the bytes back, not the base64.
   { table: "fact_embeddings", cols: ["embedding"], owner: "conversation_id", blob: true },
 ];
-/** Every sealed column of both phases, each entry tagged with its phase. */
-export const ALL_SENSITIVE = [...SENSITIVE.map(s => ({ ...s, phase: 1 })), ...SENSITIVE2.map(s => ({ ...s, phase: 2 }))];
+/**
+ * Phase 3 (11-10), behind REASON_ENCRYPT_REST3=on, which needs phase 1 on. A person's own name, the
+ * name on Reason's contact card, and their own number or email (accounts.address). Exact-match lookups
+ * on the number go through accounts.address_bi (`addressIndex`), written beside the sealed value.
+ * `bi`: the blind-index column the migration fills when it seals that column.
+ */
+export const SENSITIVE3 = [
+  { table: "accounts", cols: ["name", "contact_card_name", "address"], owner: "conversation_id", bi: { address: "address_bi" } },
+];
+/** Every sealed column of all phases, each entry tagged with its phase. */
+export const ALL_SENSITIVE = [...SENSITIVE.map(s => ({ ...s, phase: 1 })), ...SENSITIVE2.map(s => ({ ...s, phase: 2 })), ...SENSITIVE3.map(s => ({ ...s, phase: 3 }))];
 const TABLE_RE = new RegExp(`\\b(${[...new Set(ALL_SENSITIVE.map(s => s.table))].join("|")})\\b`, "i");
 /** A column name as SQL: quoted, because guesses."use" is a keyword. */
 const qc = c => `"${c}"`;
@@ -81,7 +90,8 @@ const qc = c => `"${c}"`;
 export function flagOn() { return String(process.env.REASON_ENCRYPT_REST ?? "off").trim().toLowerCase() === "on"; }
 /** Phase 2 seals only on top of phase 1. */
 export function flag2On() { return flagOn() && String(process.env.REASON_ENCRYPT_REST2 ?? "off").trim().toLowerCase() === "on"; }
-function phaseOn(phase) { return phase === 1 ? flagOn() : flag2On(); }
+export function flag3On() { return flagOn() && String(process.env.REASON_ENCRYPT_REST3 ?? "off").trim().toLowerCase() === "on"; }
+function phaseOn(phase) { return phase === 1 ? flagOn() : phase === 2 ? flag2On() : flag3On(); }
 export function isSealed(v) { return typeof v === "string" && v.startsWith(PREFIX); }
 const passThrough = v => v === null || v === undefined || v === "" || v === "[]";
 
@@ -367,7 +377,7 @@ export async function init(dbPath, { hasSealed = () => false } = {}) {
     ks.prepare("INSERT INTO install_key (version, source, wrapped, created_at) VALUES (1, ?, ?, ?)").run(source, wrapped, Date.now());
     ik = raw; ikVersion = 1; iks.set(1, raw);
   }
-  if (flag2On()) ensureIndexKey();
+  if (flag2On() || flag3On()) ensureIndexKey();
   return { active: true };
 }
 let ikVersion = 0;
@@ -431,7 +441,13 @@ const SEALED_CELLS = new Map(ALL_SENSITIVE.flatMap(s => s.cols.map(c => [`${s.ta
 export function sealCell(table, col, conversationId, plain) {
   const phase = SEALED_CELLS.get(`${table}.${col}`);
   if (!phase) return plain;
-  return phase === 1 ? sealFor(conversationId, plain) : sealFor2(conversationId, plain);
+  return phase === 1 ? sealFor(conversationId, plain) : phase === 2 ? sealFor2(conversationId, plain) : sealFor3(conversationId, plain);
+}
+
+/** Phase 3 columns (SENSITIVE3: a person's own name and number): seals only with REASON_ENCRYPT_REST3=on. */
+export function sealFor3(conversationId, plain) {
+  if (!flag3On() || passThrough(plain) || isSealed(plain)) return plain;
+  return forceSeal(conversationId, plain);
 }
 
 /** Phase 2 columns (SENSITIVE2): seals only with REASON_ENCRYPT_REST2=on (and phase 1 on). */
@@ -722,6 +738,32 @@ export function blindIndexes(kind, value) {
   return k ? [v, hmacOf(k, kind, v)] : [v];
 }
 
+/**
+ * An account's own address (phone or email) in the one form both writing and looking up use:
+ * E.164-ish digits for a number, lower case for an email, anything else trimmed. The blind index is
+ * taken of this, so "+1 (555) 010-0000" and "+15550100000" find the same account.
+ */
+export function addressKind(address) { return String(address ?? "").includes("@") ? "email" : "phone"; }
+export function normalizeAddress(address) {
+  const a = String(address ?? "").trim();
+  if (a.includes("@")) return a.toLowerCase();
+  if (/^\+?[\d\s().-]{7,}$/.test(a)) return (a.startsWith("+") ? "+" : "") + a.replace(/\D/g, "");
+  return a;
+}
+/** accounts.address_bi to store: the keyed HMAC with phase 3 on, else null (lookups match the plain address). */
+export function addressIndex(address) {
+  const v = normalizeAddress(address);
+  if (!v || !flag3On()) return null;
+  return hmacOf(readIndexKey({ create: true }), addressKind(v), v);
+}
+/** The address_bi forms a lookup must match (none without an index key: rows then hold the plain address). */
+export function addressIndexes(address) {
+  const v = normalizeAddress(address);
+  if (!v) return [];
+  const k = readIndexKey({ create: false });
+  return k ? [hmacOf(k, addressKind(v), v)] : [];
+}
+
 // ---------- transparent reads ----------
 function openRow(row) {
   if (!row || typeof row !== "object") return row;
@@ -758,7 +800,7 @@ export function installStrictTriggers(db) {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(s.table)) continue;
     const n = `NEW.${qc(col)}`;
     const cond = `${n} IS NOT NULL AND ${n} <> '' AND ${n} <> '[]' AND substr(${n}, 1, ${PREFIX.length}) <> '${PREFIX}'`;
-    const msg = `plaintext write to ${s.table}.${col} with REASON_ENCRYPT_REST${s.phase === 2 ? "2" : ""}=on`;
+    const msg = `plaintext write to ${s.table}.${col} with REASON_ENCRYPT_REST${s.phase === 1 ? "" : s.phase}=on`;
     db.exec(`
       CREATE TRIGGER IF NOT EXISTS rest_strict_${s.table}_${col}_i BEFORE INSERT ON ${s.table} WHEN ${cond} BEGIN SELECT RAISE(ABORT, '${msg}'); END;
       CREATE TRIGGER IF NOT EXISTS rest_strict_${s.table}_${col}_u BEFORE UPDATE OF ${qc(col)} ON ${s.table} WHEN ${cond} BEGIN SELECT RAISE(ABORT, '${msg}'); END;`);
@@ -814,12 +856,15 @@ export function migrateBatch(rawPrepare, direction = "seal", batch = 200, phases
       if (!rows.length) continue;
       cursors.set(ck, rows[rows.length - 1].k);
       const upd = rawPrepare(`UPDATE OR IGNORE ${s.table} SET ${col} = ? WHERE ${pk} = ? AND ${col} = ?`);
+      // A sealed column with a blind index (accounts.address): the index is written in the same update.
+      const biCol = direction === "seal" && s.bi?.[c] && cols.has(s.bi[c]) ? s.bi[c] : null;
+      const updBi = biCol && rawPrepare(`UPDATE OR IGNORE ${s.table} SET ${col} = ?, ${qc(biCol)} = ? WHERE ${pk} = ? AND ${col} = ?`);
       rawPrepare("SAVEPOINT rest_mig").run();
       try {
         for (const r of rows) {
           if (direction === "seal" && !r.owner) continue; // orphan fact with no person: left for --status
           const next = direction === "seal" ? forceSeal(r.owner, r.v) : (s.blob ? Buffer.from(openAny(r.v), "base64") : openAny(r.v));
-          changed += Number(upd.run(next, r.k, r.v).changes);
+          changed += Number((updBi ? updBi.run(next, addressIndex(r.v), r.k, r.v) : upd.run(next, r.k, r.v)).changes);
         }
         rawPrepare("RELEASE rest_mig").run();
       } catch (e) { rawPrepare("ROLLBACK TO rest_mig").run(); rawPrepare("RELEASE rest_mig").run(); throw e; }
@@ -846,6 +891,13 @@ export function status(rawPrepare) {
         SUM(CASE WHEN ${col} IS NOT NULL AND ${col} <> '' AND ${col} <> '[]' AND substr(${col},1,${PREFIX.length}) <> '${PREFIX}' THEN 1 ELSE 0 END) AS plain
         FROM ${s.table}`).get();
       out.push({ column: `${s.table}.${c}`, phase: s.phase, sealed: Number(r.sealed ?? 0), plain: Number(r.plain ?? 0) });
+      // Its blind index: "sealed" = rows with one, "plain" = a value with no index yet (not findable once sealed).
+      const bi = s.bi?.[c];
+      if (bi && hasCol(rawPrepare, s.table, bi)) {
+        const b = rawPrepare(`SELECT SUM(CASE WHEN ${qc(bi)} IS NOT NULL THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN ${qc(bi)} IS NULL AND ${col} IS NOT NULL AND ${col} <> '' THEN 1 ELSE 0 END) AS wo FROM ${s.table}`).get();
+        out.push({ column: `${s.table}.${bi}`, phase: s.phase, sealed: Number(b.w ?? 0), plain: Number(b.wo ?? 0) });
+      }
     }
   }
   return out;

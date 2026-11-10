@@ -141,7 +141,7 @@ export function signupsFull(now = clock.now()) {
   if (limit <= 0) return false;
   const n = db.db.prepare(`SELECT COUNT(*) AS n FROM accounts WHERE created_at >= ? AND COALESCE(is_operator, 0) = 0
                            AND invited_by IS NULL AND joined_via_event IS NULL
-                           AND (address IS NULL OR NOT EXISTS (SELECT 1 FROM accounts b WHERE b.address = accounts.address
+                           AND (address IS NULL OR NOT EXISTS (SELECT 1 FROM accounts b WHERE (b.address = accounts.address OR b.address_bi = accounts.address_bi)
                                                                 AND b.created_at < accounts.created_at))`).get(now - 60 * 60_000)?.n ?? 0;
   return n >= limit;
 }
