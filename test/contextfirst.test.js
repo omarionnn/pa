@@ -49,7 +49,7 @@ test("flag off: the rules are an empty string and nothing of them is in the prom
   const p = systemFor(OWNER);
   assert.doesNotMatch(p, MARK);
   assert.doesNotMatch(p, /numbered menu/);
-  assert.doesNotMatch(p, /your usual/);
+  assert.doesNotMatch(p, /best concierge/);
 });
 
 test("owner: present for the owner's thread, absent for everybody else and on a call", () => {
@@ -86,7 +86,8 @@ test("the rules carry every part of the spec, in the prompt's own voice", () => 
   assert.match(r, /never more than two questions in a row/);
   // Use it quietly.
   assert.match(r, /"your usual", never "your nov 3 uber eats receipt says"/);
-  assert.match(r, /Never say where you learned it/);
+  assert.match(r, /Never say where you learned a fact about them/);
+  assert.match(r, /research result they might act on still gets its source/);
   assert.match(r, /at most one thing you found per reply/);
   // Confirm what is inferred.
   assert.match(r, /still at bruner ave\?/);
