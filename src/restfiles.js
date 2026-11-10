@@ -16,7 +16,7 @@
 // left plain: they exist for seconds. Shared caches that are nobody's (product photos mirrored by
 // URL, choice cards, invite cards, the cached pickup opener) are not sealed.
 import { readFileSync, mkdirSync, rmSync, existsSync, readdirSync, statSync, copyFileSync, openSync, readSync, closeSync } from "node:fs";
-import { join, extname, dirname } from "node:path";
+import { join, extname, dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
 import * as rc from "./restcrypt.js";
@@ -73,8 +73,13 @@ export function plainStat(path) {
   return keyIdOfFile(path) == null ? st : Object.assign(Object.create(Object.getPrototypeOf(st)), st, { size: st.size - rc.FILE_OVERHEAD });
 }
 
-/** Any sealed file at all (boot: the keystore must unlock to read them even with the flags off). */
+/**
+ * Any sealed file of this database's (boot: the keystore must unlock to read them even with the flags
+ * off). Only when the data directory is the database's own (live: data/ and data/reason.db): a
+ * database elsewhere (a test's, a restore drill's) is not answerable for the files under data/.
+ */
 export function anySealedFile() {
+  if (resolve(config.dataDir) !== dirname(resolve(config.dbPath))) return false;
   for (const root of fileRoots()) for (const p of walk(abs(root))) if (keyIdOfFile(p) != null) return true;
   return false;
 }
