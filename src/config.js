@@ -1077,10 +1077,9 @@ export const config = {
   shotRoot: process.env.REASON_SHOT_ROOT || `${DATA_DIR}/shots`,
   browserHeaded: process.env.REASON_BROWSER_HEADED === "1",
   browserTimeoutMs: Number(process.env.REASON_BROWSER_TIMEOUT_MS || 20_000),
-  // Image generation via the Gemini API's Imagen model (src/imagen.js). Uses the same
-  // GEMINI_API_KEY; the model default is imagen-3.0-generate-002, the cheapest production model
-  // with good quality. Generated images land under the data dir and are served as page content.
-  imagenModel: process.env.REASON_IMAGEN_MODEL || "imagen-3.0-generate-002",
+  // Image generation (src/imagen.js): OpenAI gpt-image-2 only, on OPENAI_API_KEY (owner, 2026-11-09 —
+  // Google retired the Imagen model that used to go first). Generated images land under the data dir
+  // and are served as page content.
   imagenTimeoutMs: Number(process.env.REASON_IMAGEN_TIMEOUT_MS || 60_000),
   imagenOutputDir: process.env.REASON_IMAGEN_OUTPUT || `${DATA_DIR}/images`,
   extractionModel: process.env.REASON_EXTRACTION_MODEL || "claude-haiku-5-5",
