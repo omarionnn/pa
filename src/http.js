@@ -94,6 +94,7 @@ import { madeKind, renderMadePage, callAudio, notYoursFor, archivedFor, privateH
 import { previewRequest } from "./pages/preview.js";
 import { securedImageRequest } from "./pages/securedcard.js";
 import { mimeForKind } from "./documents/store.js";
+import * as websetup from "./websetup.js";
 import { isContactPath, contactPathParts, vcard, lineNumber, liveLineNumber, cardName } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
@@ -539,6 +540,15 @@ export function createServer({ router, runtime, log = () => {} }) {
           res.writeHead(out.status, out.headers);
           return res.end(req.method === "HEAD" ? "" : out.body);
         }
+      }
+      // ---------- the web setup (heyreason.com/start, src/websetup.js; REASON_WEB_SETUP) ----------
+      if (websetup.on() && url.pathname.startsWith(`${websetup.PATH}/`)) {
+        const out = await websetup.request({
+          method: req.method, path: url.pathname.slice(websetup.PATH.length), query: Object.fromEntries(url.searchParams),
+          headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), router, log,
+        });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
       }
       if (url.pathname.startsWith(`${SIGNIN_PATH}/`)) {
         const m = /^\/s\/([A-Za-z0-9_-]{32,64})(?:\/([a-z]+))?$/.exec(url.pathname);
@@ -1563,6 +1573,10 @@ export async function googleCallbackRequest({ code, state, error = "", headers =
   const out = refuseForeignBrowser({ provider: "google", state, error, headers })
     ?? await google.completeConnect({ code, state, error, ...(fetchImpl ? { fetchImpl } : {}) });
   log({ google_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
+
+  // A web setup's grant (src/websetup.js): no thread to tell; back to the setup's connect screen.
+  const setupBack = websetup.googleCallbackDone(out);
+  if (setupBack) return setupBack;
 
   if (out.ok && runtime?.say) {
     try {

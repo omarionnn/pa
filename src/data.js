@@ -210,7 +210,7 @@ const TABLES = [
   // too, in deleteData), the album note they agreed to, the claim a join page made for them, and
   // their ride offers, asks and the matches made of them. The event itself, when they organised it,
   // is shared with its guests: see KEPT_ON_DELETE.
-  "event_attendees", "event_checkins", "event_deliveries", "event_photos", "album_consents", "event_claims",
+  "event_attendees", "event_checkins", "event_deliveries", "event_photos", "album_consents", "event_claims", "web_setups",
   "ride_offers", "ride_asks", "ride_matches",
   // What an organiser scheduled for their guests (src/eventschedule.js): their own words, waiting to
   // go, and the record of which reminders went. Deleted, a waiting message never goes.
@@ -288,7 +288,7 @@ export const INSTALL_WIDE = {
 const SECRET_COLUMNS = {
   oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
   shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"],
-  pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"],
+  pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
 };
 // What a redacted column says instead, when it is not a credential.
 const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger details stay sealed on this machine; ask Reason for flight_travelers to read them]" };
@@ -354,6 +354,8 @@ const CHILD_SCOPE = {
     + " OR rider_offer_id IN (SELECT id FROM ride_offers WHERE conversation_id = ?)", 2],
   // A join claim is theirs once their own text spent it; an unspent one ages out with the event.
   event_claims: ["used_by = ?", 1],
+  // A web setup is theirs once their first text claimed it (src/websetup.js); an unclaimed one ages out in a day.
+  web_setups: ["claimed_by = ?", 1],
 };
 
 /**
