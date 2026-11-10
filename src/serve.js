@@ -24,6 +24,7 @@ import { withGptLive } from "./calls/gptlive.js";
 import { makeDeliver, ORDER_CARD_FAILED } from "./deliver.js";
 import { backfillContactCards } from "./contact.js";
 import { endAllRemoteSignins } from "./signin-remote.js";
+import { resetBusy } from "./busy.js";
 import { subscriptionBackendBlock } from "./backends/guard.js";
 import { retentionSays } from "./privacy.js";
 import { startOps, watchFetch } from "./ops.js";
@@ -126,6 +127,8 @@ startOps({ runtime, router, log });
 }
 
 const server = createServer({ router, runtime, log });
+// The restart gate reads data/busy.json for this pid; written at once so an idle process says so.
+resetBusy();
 server.listen(config.port, config.host, () => {
   console.log(`Reason is up · ${stamp()}`);
   // Encryption at rest (REASON_ENCRYPT_REST=on): old plain rows are sealed in the background, small batches.
