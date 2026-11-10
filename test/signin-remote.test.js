@@ -150,8 +150,12 @@ test("opening the link shows what it is and waits for a tap — a link preview t
     const page = await req(token);
     assert.equal(page.status, 200);
     assert.match(page.body, /Sign in to Amazon/);
-    assert.match(page.body, /It is not saved, logged, or shown to the assistant/);
-    assert.match(page.body, /Face ID and passkeys do not/);
+    // The paper store sign-in (src/pages/setupsignin.js), the same page a web setup gets.
+    assert.match(page.body, /Sign in to Amazon\.<br><em>Just this once\.<\/em>/);
+    assert.match(page.body, /never your password/);
+    assert.match(page.body, /passkeys and Face ID on Amazon don(&#39;|')t/);
+    assert.match(page.body, /class="pf-hd"/);
+    assert.doesNotMatch(page.body, /class="sheet"/, "not the plain page any more (owner, 2026-11-10: the paper one everywhere)");
     assert.match(page.body, new RegExp(`action="/s/${token}/start"`));
     assert.equal(page.headers["Cache-Control"], "no-store");
     // The phone's preview of the link: "Secured by Reason", the action only. Amazon's link carries its own card (owner, 2026-11-10); other sites keep "Sign in securely" (test/secured-card.test.js).
@@ -168,9 +172,8 @@ test("the start page says plainly that a saved login will not come up on its own
   // site's own address, and this page is not on it, so the login is two taps away and not none.
   const { token } = make();
   const page = await req(token);
-  assert.match(page.body, /filed under Amazon's own address, not this one/);
-  assert.match(page.body, /will not come up by itself/);
-  assert.match(page.body, /tap <b>Passwords<\/b> above the keyboard/);
+  assert.match(page.body, /your saved Amazon login won(&#39;|')t pop up by itself/);
+  assert.match(page.body, /tap Passwords above the keyboard and pick Amazon/);
 });
 
 test("Start launches the person's own profile on the site's sign-in page and hands that device the session", async () => {
@@ -256,7 +259,7 @@ test("the picture is the shape of the browser behind it, and says so before it h
   const { token } = make();
   const { cookie } = await start(token);
   const body = (await req(token, "", { cookie })).body;
-  assert.match(body, new RegExp(`aspect-ratio:${remote.VIEW.width}/${remote.VIEW.height}`), "filled to the width, never stretched");
+  assert.match(body, new RegExp(`--ss-ar:${remote.VIEW.width}/${remote.VIEW.height}`), "filled to the width, never stretched");
   assert.match(body, /id="veil"/);
   assert.match(body, /Opening Amazon…/, "a loading state, not an empty rectangle");
 });
@@ -622,7 +625,10 @@ test("a browser that will not start ends the link cleanly", async () => {
   const { token, logs } = make({ launch: async () => { throw new Error("Executable doesn't exist"); } });
   const r = await req(token, "start", { method: "POST", cookie: provedCookie(CONV) });
   assert.equal(r.status, 500);
-  assert.match(r.body, /The browser would not open\. Nothing was changed/);
+  assert.match(r.body, /Amazon isn(&#39;|')t answering\./);
+  assert.match(r.body, /Nothing was lost\./);
+  assert.match(r.body, /Ask Reason for a fresh link in a minute/);
+  assert.match(r.body, /body=the%20Amazon%20sign-in%20link%20ended"/, "the way back names what happened");
   assert.ok(logs.some(l => l.signin_remote === "launch_failed"));
   assert.equal(remote.remoteSessionFor(CONV), null);
 });
@@ -767,8 +773,8 @@ test("a bot check that never clears ends the session as blocked, and nobody is t
   assert.match(note, /uber_link/);
   assert.doesNotMatch(note, /still NOT signed in/);
   const page = await req(token, "", { cookie });
-  assert.match(page.body, /wouldn't let Reason's browser in/);
-  assert.match(page.body, /isn't something you did/);
+  assert.match(page.body, /Uber wouldn(&#39;|')t let me in\./);
+  assert.match(page.body, /isn(&#39;|')t something you did, and a fresh link would hit the same wall\. Reason will text you what works instead/);
   assert.doesNotMatch(page.body, /still shows its sign-in page/);
 });
 
@@ -810,11 +816,16 @@ test("the result page ends with the way back to the thread, not with 'close this
   const { cookie } = await start(token);
   await req(token, "done", { method: "POST", cookie });
   const page = (await req(token)).body;
-  assert.match(page, />Back to Reason</);
-  assert.match(page, /href="sms:\+14155550199&amp;body=signed%20in%20to%20Amazon%2C%20keep%20going"/,
+  assert.match(page, /href="sms:\+14155550199&amp;body=signed%20in%20to%20Amazon%2C%20keep%20going"[^>]*id="ss-back">Back to Reason </,
     "the reply names the site, so a turn an hour later knows what finished");
   assert.match(page, /Reason will text you/);
+  assert.match(page, /opens Messages with your reply typed/);
   assert.doesNotMatch(page, /You can close this page/);
+  // On paper, like the setup's (src/pages/setupsignin.js), but the way on is the thread, and nothing moves on its own.
+  assert.match(page, /class="pf-stamp">CONNECTED</);
+  assert.match(page, /You&#39;re signed in to Amazon\.<br><em>Back to Reason\.<\/em>/);
+  assert.doesNotMatch(page, /Back to setup|\/start\/connect/);
+  assert.doesNotMatch(page, /location\.href=a\.href/, "no auto-return: there is no setup to return to");
   assert.ok(b);
 });
 

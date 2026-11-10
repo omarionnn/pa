@@ -1,14 +1,20 @@
-// The web setup's store sign-in (src/websetup.js → src/amazonconnect.js setupConnectLink), drawn on
-// paper like the store sign-in people get in texts (src/pages/webconnect.js, the card and store
-// sign-in design handoff: StoreSignIn, StoreConnected, StoreCantConnect).
+// The remote store sign-in (src/signin-remote.js, the /s/<token> pages), drawn on paper like the
+// store sign-in in the card and store sign-in design handoff (StoreSignIn, StoreConnected,
+// StoreCantConnect; the same kit as src/pages/webconnect.js).
 //
-// Only sessions whose conversation is a setup's stand-in (`websetup:<id>`) get these pages; a sign-in
-// link from a text thread keeps the plain pages in src/signin-remote.js. The live browser itself is
-// the same picture and the same script; only the frame around it is paper.
+// Every sign-in link gets these pages (owner, 2026-11-10: he saw the plain one from a text and the
+// paper one from the web setup, and wants the paper one everywhere). The live browser itself is the
+// same picture and the same script; only the frame around it is paper. The one thing that differs
+// by where the link came from is the way on at the end:
+//
+//   - a web setup's stand-in (`websetup:<id>`, src/websetup.js): "Back to setup", to the setup's
+//     connect screen, and signed in goes back on its own after a moment;
+//   - a text thread: "Back to Reason" (Messages, the reply typed: src/pages/render.js backToReason),
+//     and nothing moves on its own — the person taps, and Reason texts them either way.
 import { esc } from "./render.js";
 import { webPage } from "./webkit.js";
 import { securedCardTags } from "./securedcard.js";
-import { PAPER_CSS, header, frame, headline, lede, label, para, note, sealed, go, two, actions, paper, live, LIVE_JS } from "./paperkit.js";
+import { PAPER_CSS, header, frame, headline, lede, label, para, note, sealed, go, two, actions, paper, live, LIVE_JS, codeInput, CODE_JS } from "./paperkit.js";
 
 const CSS = `${PAPER_CSS}
 .ss-facts{margin:28px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px;max-width:480px}
@@ -37,8 +43,9 @@ const CSS = `${PAPER_CSS}
 
 const upper = (s) => String(s ?? "").toUpperCase();
 
-function page(title, body, { entry, script = "", card = "signin" } = {}) {
-  return webPage({ title, body: `${header({ right: `${upper(entry?.label || "STORE")} ACCOUNT` })}<main class="pf" id="ss-main">${body}</main>`, css: CSS, script: `${LIVE_JS}${script}`, head: securedCardTags(card) });
+function page(title, body, { entry, script = "", card = "signin", right } = {}) {
+  const eyebrow = right === undefined ? `${upper(entry?.label || "STORE")} ACCOUNT` : right;
+  return webPage({ title, body: `${header({ right: eyebrow })}<main class="pf" id="ss-main">${body}</main>`, css: CSS, script: `${LIVE_JS}${script}`, head: securedCardTags(card) });
 }
 
 /** What signing in lets Reason do, beside the sign-in. Amazon's own words; a store with none gets a plain line. */
@@ -94,38 +101,78 @@ export function setupLivePage({ entry, view, script, card = "signin" }) {
 }
 
 /**
- * How it ended (StoreConnected, or StoreCantConnect's place), with the way back to the setup.
- * Signed in goes back on its own after a moment; anything else waits for the tap.
+ * How it ended (StoreConnected, or StoreCantConnect's place), with the way on.
+ *
+ * A setup (`back`, the setup's connect screen): "Back to setup"; signed in goes back on its own after
+ * a moment, anything else waits for the tap. A text thread (`thread.reply(text)`, the sms: link that
+ * opens Messages with that reply typed, or "" with no number to text from): "Back to Reason", and
+ * nothing moves on its own. "Reason will text you" stays true either way: the thread is woken by
+ * the ending itself (src/signin-remote.js end), and the tap is only the faster of the two.
  */
-export function setupResultPage({ entry, ended, back, card = "signin" }) {
+export function setupResultPage({ entry, ended, back = "", thread = null, card = "signin" }) {
   const n = entry.label;
   const state = ended?.state ?? null;
   const ok = state === "signed_in";
+  const t = !!thread;
+  /** The way on: the setup's link, or Messages with the reply that says how it went. */
+  const way = (reply) => {
+    if (!t) return `<div class="ss-form">${actions(go("Back to setup", { href: back, attrs: ` id="ss-back"` }))}</div>`;
+    const href = thread.reply(reply);
+    return href ? `<div class="ss-form">${actions(go("Back to Reason", { href, attrs: ` id="ss-back"` }))}${note("opens Messages with your reply typed. just hit send.")}</div>` : "";
+  };
   let main, side;
   if (ok) {
-    main = headline(`You're signed in to ${n}.`, "Back to your setup.")
-      + lede(entry.site === "amazon" ? `${n} confirmed it. I'll keep an eye on your orders, and nothing is bought without your Face ID.` : `${n} confirmed it. Nothing is bought without your Face ID.`)
+    main = headline(`You're signed in to ${n}.`, t ? "Back to Reason." : "Back to your setup.")
+      + lede(t
+        ? (entry.site === "amazon" ? `${n} confirmed it. Reason will text you. I'll keep an eye on your orders, and nothing is bought without your Face ID.` : `${n} confirmed it. Reason will text you. Nothing is bought without your Face ID.`)
+        : (entry.site === "amazon" ? `${n} confirmed it. I'll keep an eye on your orders, and nothing is bought without your Face ID.` : `${n} confirmed it. Nothing is bought without your Face ID.`))
       + paper({ stamp: "CONNECTED", label: upper(n), big: "Signed in.", mono: false })
-      + `<div class="ss-form">${actions(go("Back to setup", { href: back, attrs: ` id="ss-back"` }))}</div>`;
+      + way(`signed in to ${n}, keep going`);
     side = label("SIGNED IN, I CAN") + para(entry.site === "amazon" ? "See your orders and help you reorder." : `Help with your ${esc(n)} account.`)
       + label("AND", { sp: true }) + para(`Sign me out of ${esc(n)} anytime.`);
   } else {
-    const [h1, why] = state === "blocked"
-      ? [`${n} wouldn't let me in.`, `${n} stopped my browser with a bot check before its sign-in page loaded. That isn't something you did.`]
+    // A setup tries again from its connect screen; a thread asks Reason for a fresh link.
+    const again = t ? "Ask Reason for a fresh link to try again." : "You can try again from your setup.";
+    const [h1, why, reply] = state === "blocked"
+      ? [`${n} wouldn't let me in.`, `${n} stopped my browser with a bot check before its sign-in page loaded. That isn't something you did${t ? ", and a fresh link would hit the same wall. Reason will text you what works instead." : "."}`, `${n} blocked the sign-in`]
       : state === "signed_out"
-        ? [`Not signed in to ${n}.`, `${n} still shows its sign-in page, so nothing was saved. You can try again from your setup.`]
+        ? [`Not signed in to ${n}.`, `${n} still shows its sign-in page, so nothing was saved. ${again}`, `${n} didn't sign in`]
         : ended?.how === "launch_failed"
-          ? [`${n} isn't answering.`, `My browser couldn't open ${n} just now. It's usually a hiccup, and it usually passes.`]
+          ? [`${n} isn't answering.`, t ? `My browser couldn't open ${n} just now. It's usually a hiccup. Ask Reason for a fresh link in a minute.` : `My browser couldn't open ${n} just now. It's usually a hiccup, and it usually passes.`, `the ${n} sign-in link ended`]
           : ended?.how === "link_expired" || ended?.how === "replaced"
-            ? ["This link has ended.", `Sign-in links work once and only for a few minutes. Tap ${n} on your setup for a fresh one.`]
+            ? ["This link has ended.", t ? "Sign-in links work once and only for a few minutes. Ask Reason for a fresh one." : `Sign-in links work once and only for a few minutes. Tap ${n} on your setup for a fresh one.`, `the ${n} sign-in link ended`]
             : state
-              ? [`Couldn't tell with ${n}.`, `The sign-in ended, but ${n}'s page couldn't be read to confirm it. You can try again from your setup.`]
-              : [`${n} didn't connect.`, "The sign-in was closed before it finished. You can try again from your setup."];
-    main = headline(h1, "Nothing was lost.") + lede(why)
-      + `<div class="ss-form">${actions(go("Back to setup", { href: back, attrs: ` id="ss-back"` }))}</div>`;
+              ? [`Couldn't tell with ${n}.`, t ? `The sign-in ended, but ${n}'s page couldn't be read to confirm it. Ask Reason to check.` : `The sign-in ended, but ${n}'s page couldn't be read to confirm it. You can try again from your setup.`, `${n} sign-in ended, not sure if it worked`]
+              : [`${n} didn't connect.`, `The sign-in was closed before it finished. ${again}`, `the ${n} sign-in link ended`];
+    main = headline(h1, "Nothing was lost.") + lede(why) + way(reply);
     side = label("WHAT YOU TYPED") + para("Wasn't kept. You'll sign in fresh next time.") + note("it's fine to skip it for now.", { sp: true });
   }
-  // Signed in: back to the setup on its own after a moment (the setup reads the new state itself).
-  const script = ok ? `(function(){var a=document.getElementById('ss-back');if(a)setTimeout(function(){location.href=a.href},1500)})();` : "";
+  // Signed in from a setup: back to it on its own after a moment (the setup reads the new state itself).
+  const script = ok && !t ? `(function(){var a=document.getElementById('ss-back');if(a)setTimeout(function(){location.href=a.href},1500)})();` : "";
   return page(ok ? `Reason — ${n} connected` : `Reason — ${n} sign-in`, frame({ main, margin: side }), { entry, script, card });
+}
+
+/**
+ * The code step, for a browser that is not the person's own proved one (src/signin-remote.js
+ * codePage): the code went to their own thread first. Two posts to the same Start: the code, or
+ * `send=1` for a fresh one.
+ */
+export function setupCodePage({ entry, action, error = "", card = "signin" }) {
+  const n = entry.label;
+  const main = headline("Enter the code Reason texted you.", "Just this once.")
+    + lede(`This browser isn't signed in to Reason yet, so Reason texted you a code first. That keeps a forwarded link from opening your ${n} sign-in. After this once, Reason remembers this browser and its links open straight away.`)
+    + `<form class="ss-form" id="ss-code" method="post" action="${esc(action)}">${codeInput({ name: "code", legend: "THE CODE", error })}${actions(go("Sign in"))}</form>`
+    + `<form class="ss-form" method="post" action="${esc(action)}"><input type="hidden" name="send" value="1">${actions(two("TEXT ME A NEW CODE", { type: "submit" }))}</form>`
+    + note("didn't ask Reason for this? close the page. nothing happens without the code.", { sp: true });
+  const side = label("WHY A CODE") + para("A sign-in link opens your saved logins, so only a browser you've proved as yours may start one.")
+    + label("I NEVER", { pen: true, sp: true }) + para("Keep what you type here.");
+  return page(`Reason — sign in to ${n}`, frame({ main, margin: side }), { entry, script: CODE_JS, card });
+}
+
+/** A link that is not good any more: unknown, used up, or somebody else's. The same words for all three. */
+export function setupGonePage() {
+  const main = headline("This link is no longer good.", "Nothing was lost.")
+    + lede("Sign-in links work once and only for a few minutes. Ask Reason for a fresh one.");
+  const side = label("WHAT YOU TYPED") + para("Wasn't kept. You'll sign in fresh next time.");
+  return page("Reason — sign-in link", frame({ main, margin: side }), { right: "", card: "signin" });
 }
