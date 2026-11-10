@@ -38,7 +38,7 @@ db.db.exec(`
   CREATE INDEX IF NOT EXISTS web_setups_claimed ON web_setups (claimed_by);
 `);
 // Columns added after the table first shipped to a test DB (harmless when already there).
-for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0"]) {
+for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0", "uber_state TEXT NOT NULL DEFAULT ''", "card_state TEXT NOT NULL DEFAULT ''"]) {
   try { db.db.exec(`ALTER TABLE web_setups ADD COLUMN ${col}`); } catch { /* exists */ }
 }
 // Once claimed, a setup keeps no name and no phone (encryption at rest, #425/#438): both names are
@@ -126,8 +126,10 @@ export function save(id, { user, reasonName } = {}) {
   if (reasonName !== undefined) db.db.prepare("UPDATE web_setups SET reason_name = ? WHERE id = ?").run(String(reasonName), id);
 }
 
+const STATE_COL = { email: "email_state", amazon: "amazon_state", uber: "uber_state", card: "card_state" };
 export function setConnectState(id, which, state) {
-  const col = which === "email" ? "email_state" : "amazon_state";
+  const col = STATE_COL[which];
+  if (!col) throw new Error(`unknown connect: ${which}`);
   db.db.prepare(`UPDATE web_setups SET ${col} = ? WHERE id = ?`).run(String(state ?? ""), id);
 }
 

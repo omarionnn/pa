@@ -7,7 +7,8 @@
 // and their first text claims it by its code:
 //
 //   - their name goes on the account, the name they gave Reason on the contact card;
-//   - what they connected (a Google grant, an Amazon sign-in in Reason's browser) moves to them;
+//   - what they connected (a Google grant, an Amazon sign-in in Reason's browser, an Uber grant, a
+//     card saved in Crossmint's own form) moves to them;
 //   - the text intro's questions are skipped: never ask on the phone what was answered on the page
 //     (src/onboarding.js webHandoff), and the Amazon offer is not made to them (the AMAZON HOOK).
 //
@@ -31,6 +32,8 @@ import { cardName, nameCase, vcard, liveLineNumber, DEFAULT_CARD_NAME } from "./
 import { nameLine } from "./onboarding.js";
 import * as amazon from "./amazonconnect.js";
 import * as google from "./google.js";
+import * as uber from "./uber.js";
+import * as shop from "./shopconnect.js";
 import { profilePath } from "./browser.js";
 import { cookieDomain } from "./pages/siteproxy.js";
 import { clientIp } from "./opspassword.js";
@@ -76,7 +79,7 @@ export const CONNECT_CLAIM_MS = 60 * 60_000;
 
 /**
  * Their first text, from an account it just made: claim the setup its code names. Returns what was
- * claimed (`{ setupId, user, reasonName, amazon, email }`) or null — no code, no open setup with it,
+ * claimed (`{ setupId, user, reasonName, amazon, email, uber, card }`) or null — no code, no open setup with it,
  * or a text that does not carry the setup's names (then nothing is touched and the intro runs).
  */
 export function claimFromText({ conversationId, text, log = () => {} }) {
@@ -94,28 +97,42 @@ export function claimFromText({ conversationId, text, log = () => {} }) {
   db.setAccountName(conversationId, nameCase(row.user_name));
   db.setContactCardName(conversationId, cardName(row.reason_name || DEFAULT_CARD_NAME));
   const fresh = clock.now() - row.created_at <= CONNECT_CLAIM_MS;
-  const moved = fresh ? moveConnections(from, conversationId) : (dropConnections(from), { email: false, amazon: false });
+  const moved = fresh ? moveConnections(from, conversationId) : (dropConnections(from), { email: false, amazon: false, uber: false, card: false });
   // Amazon signed in on the page: the follow-up the text intro would have run after its link (read
   // their orders, bring back one or two real things), a little after the hello.
   if (moved.amazon) db.createTimer(conversationId, { fireAt: clock.now() + 90_000, note: amazon.followUpNote() });
-  log({ websetup_claim: "claimed", setup: row.id, amazon: moved.amazon, email: moved.email, ...(fresh ? {} : { connections: "dropped_late" }) });
+  log({ websetup_claim: "claimed", setup: row.id, amazon: moved.amazon, email: moved.email, uber: moved.uber, card: moved.card, ...(fresh ? {} : { connections: "dropped_late" }) });
   return { setupId: row.id, user: row.user_name, reasonName: row.reason_name || DEFAULT_CARD_NAME, text: withoutCode(text), ...moved };
 }
 
-/** What the stand-in holds, moved to the real conversation: Google rows, the Amazon check, the saved browser profile. */
+/**
+ * What the stand-in holds, moved to the real conversation: Google and Uber grants, the Amazon check,
+ * the saved browser profile, the card (and the Crossmint user it was saved under).
+ */
 export function moveConnections(from, to) {
-  let email = false, amazonOk = false;
+  let email = false, amazonOk = false, uberOk = false;
   db.atomically(() => {
-    // A grant this conversation already has for the same address stays; the setup's copy is dropped.
+    // A grant this conversation already has for the same provider and address stays; the setup's copy is dropped.
     for (const t of db.db.prepare("SELECT id, provider, account_label FROM oauth_tokens WHERE conversation_id = ?").all(from)) {
       const clash = db.db.prepare("SELECT 1 FROM oauth_tokens WHERE conversation_id = ? AND provider = ? AND account_label = ?").get(to, t.provider, t.account_label);
-      if (clash) db.db.prepare("DELETE FROM oauth_tokens WHERE id = ?").run(t.id);
-      else { db.db.prepare("UPDATE oauth_tokens SET conversation_id = ? WHERE id = ?").run(to, t.id); email = true; }
+      if (clash) { db.db.prepare("DELETE FROM oauth_tokens WHERE id = ?").run(t.id); continue; }
+      db.db.prepare("UPDATE oauth_tokens SET conversation_id = ? WHERE id = ?").run(to, t.id);
+      if (t.provider === "google") email = true;
+      if (t.provider === "uber") uberOk = true;
     }
-    const rows = db.db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ?").run(to, from);
-    if (rows.changes) amazonOk = amazon.connected(to);
+    // One connected-accounts row per provider: the account's own wins over the setup's.
+    const movedNames = new Set();
+    for (const { name } of db.db.prepare("SELECT DISTINCT name FROM connected_accounts WHERE conversation_id = ?").all(from)) {
+      if (db.db.prepare("SELECT 1 FROM connected_accounts WHERE conversation_id = ? AND name = ?").get(to, name)) db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ? AND name = ?").run(from, name);
+      else { db.db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ? AND name = ?").run(to, from, name); movedNames.add(name); }
+    }
+    amazonOk = movedNames.has("amazon") && amazon.connected(to);
     db.db.prepare("DELETE FROM oauth_states WHERE conversation_id = ?").run(from);
+    // Receipts email the card's registration may have learned on the page.
+    if (!db.db.prepare("SELECT 1 FROM shop_shipping WHERE conversation_id = ?").get(to)) db.db.prepare("UPDATE shop_shipping SET conversation_id = ? WHERE conversation_id = ?").run(to, from);
+    else db.db.prepare("DELETE FROM shop_shipping WHERE conversation_id = ?").run(from);
   });
+  const card = shop.adoptSetupCard(from, to);
   // The Amazon sign-in lives in the browser profile it was made in. A brand-new account has none, so
   // the setup's becomes theirs; one that somehow does keeps its own, and the Amazon check goes with it.
   const src = profilePath(from), dst = profilePath(to);
@@ -123,7 +140,7 @@ export function moveConnections(from, to) {
     if (!existsSync(dst)) { try { renameSync(src, dst); } catch { amazonOk = false; } }
     else { rmSync(src, { recursive: true, force: true }); if (amazonOk) { db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ? AND name = 'amazon'").run(to); amazonOk = false; } }
   }
-  return { email, amazon: amazonOk };
+  return { email, amazon: amazonOk, uber: uberOk, card };
 }
 
 /** Did this conversation do the setup on the web? Then the text intro asks none of it again. */
@@ -133,6 +150,8 @@ export function handledOnWeb(conversationId) {
 
 /** Everything a setup's stand-in holds, let go. */
 export function dropConnections(c) {
+  shop.dropSetupCard(c);
+  db.db.prepare("DELETE FROM shop_shipping WHERE conversation_id = ?").run(c);
   db.db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ?").run(c);
   db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ?").run(c);
   db.db.prepare("DELETE FROM oauth_states WHERE conversation_id = ?").run(c);
@@ -161,16 +180,30 @@ export function connectState(row, which, { remoteSession = null } = {}) {
     if (row.amazon_state === "failed") return { state: "failed", step: 1, of: STEPS };
     return { state: row.amazon_state === "pending" ? "failed" : "none", step: 1, of: STEPS };
   }
+  if (which === "uber") {
+    if (db.db.prepare("SELECT 1 FROM oauth_tokens WHERE conversation_id = ? AND provider = 'uber'").get(c)) return { state: "connected", step: STEPS, of: STEPS };
+    if (row.uber_state === "failed" || row.uber_state === "not_ready") return { state: "failed", step: 1, of: STEPS, ...(row.uber_state === "not_ready" ? { why: "not_ready" } : {}) };
+    if (row.uber_state === "pending" && db.db.prepare("SELECT 1 FROM oauth_states WHERE conversation_id = ? AND provider = 'uber'").get(c)) return { state: "connecting", step: 2, of: STEPS };
+    return { state: "none", step: 1, of: STEPS };
+  }
+  if (which === "card") {
+    const card = shop.cardOf(c);
+    // The brand and last four are all the page is ever told, the same as Reason's own card screen.
+    if (card) return { state: "connected", step: STEPS, of: STEPS, ...(card.last4 ? { last4: card.last4 } : {}) };
+    if (row.card_state === "failed") return { state: "failed", step: 1, of: STEPS };
+    if (row.card_state === "pending" && shop.setupCardPending(c)) return { state: "connecting", step: 2, of: STEPS };
+    return { state: "none", step: 1, of: STEPS };
+  }
   if (db.db.prepare("SELECT 1 FROM oauth_tokens WHERE conversation_id = ? AND provider = 'google'").get(c)) return { state: "connected", step: STEPS, of: STEPS, provider: "gmail" };
   if (row.email_state === "failed") return { state: "failed", step: 1, of: STEPS, provider: "gmail" };
-  if (row.email_state === "pending" && db.db.prepare("SELECT 1 FROM oauth_states WHERE conversation_id = ?").get(c)) return { state: "connecting", step: 2, of: STEPS, provider: "gmail" };
+  if (row.email_state === "pending" && db.db.prepare("SELECT 1 FROM oauth_states WHERE conversation_id = ? AND provider = 'google'").get(c)) return { state: "connecting", step: 2, of: STEPS, provider: "gmail" };
   return { state: "none", step: 1, of: STEPS };
 }
 
 export function view(row, opts = {}) {
   return {
     id: row.id, code: row.code, user: row.user_name, reasonName: row.reason_name,
-    connections: { amazon: connectState(row, "amazon", opts), email: connectState(row, "email", opts) },
+    connections: { amazon: connectState(row, "amazon", opts), uber: connectState(row, "uber", opts), email: connectState(row, "email", opts), card: connectState(row, "card", opts) },
   };
 }
 
@@ -241,6 +274,11 @@ function sameSite(headers = {}) {
 }
 
 const back = (row, which, ok) => `${originFor(row)}/start/connect?back=${which}${ok ? "" : "&failed=1"}`;
+/** The setup's connect screen, on the site the setup was made on, for a page that has no thread to go back to. */
+export function backUrlFor(conversationId, which) {
+  const row = store.get(store.idOf(conversationId));
+  return row ? back(row, which, true) : `${siteBase()}/start/connect`;
+}
 
 /** Where a Google callback for a setup sends the person: back to the connect screen, never a thread. */
 export function googleCallbackDone(out) {
@@ -251,15 +289,27 @@ export function googleCallbackDone(out) {
   return { status: 302, headers: { Location: back(store.get(id), "email", out.ok), "Cache-Control": "no-store" }, body: "" };
 }
 
+/** The same for Uber's return: back to the connect screen, never Uber's "you're connected" page. */
+export function uberCallbackDone(out) {
+  const id = store.idOf(out?.conversationId);
+  if (!id || !store.get(id)) return null;
+  store.setConnectState(id, "uber", out.ok ? "connected" : "failed");
+  return { status: 302, headers: { Location: back(store.get(id), "uber", out.ok), "Cache-Control": "no-store" }, body: "" };
+}
+
 /**
  * One request under /setup. `path` is what follows /setup. Returns `{ status, headers, body }`.
  * Seams: `nameLineFor` (the model's line), `amazonLink` (the setup's Connect Amazon link),
- * `googleLink` (the setup's Google link), `remoteSession` (is an Amazon sign-in live).
+ * `googleLink` (the setup's Google link), `uberLink` (the setup's Uber link, after Uber's app is
+ * checked ready), `cardLink` (the setup's card-entry link), `remoteSession` (is an Amazon sign-in live).
  */
 export async function request({ method = "GET", path = "", query = {}, headers = {}, remoteAddress = "", readBody = async () => "", router = null, log = () => {},
   nameLineFor = (name) => nameLine({ name, web: true }),
   amazonLink = (c) => amazon.setupConnectLink(c, { via: "web_setup", log }),
   googleLink = (c) => google.authorizeUrl(c),
+  uberReady = () => uber.connectReady(),
+  uberLink = (c) => uber.authorizeUrl(c),
+  cardLink = (c) => shop.setupCardLink(c),
   remoteSession = null } = {}) {
   if (!on()) return json(404, { error: "not found" });
   const ip = clientIp(headers, remoteAddress);
@@ -268,7 +318,13 @@ export async function request({ method = "GET", path = "", query = {}, headers =
   const session = remoteSession ?? (await import("./signin-remote.js")).remoteSessionFor;
 
   if (method === "GET" && path === "/api/capabilities") {
-    return json(200, { amazon: !!config.publicUrl && amazon.setupAvailable(), gmail: google.googleStatus().connected === true, outlook: false });
+    // uber: the card always shows; `ready` says whether Uber's app takes a connect today (src/uber.js connectReady).
+    let ub = { ready: false };
+    try { ub = await uberReady(); } catch { ub = { ready: false }; }
+    return json(200, {
+      amazon: !!config.publicUrl && amazon.setupAvailable(), gmail: google.googleStatus().connected === true, outlook: false,
+      uber: !!ub?.ready, card: shop.connectMode() === "on" && !!process.env.CROSSMINT_CLIENT_KEY && !!process.env.CROSSMINT_SERVER_KEY,
+    });
   }
 
   if (method === "GET" && path === "/api/name-line") {
@@ -305,7 +361,7 @@ export async function request({ method = "GET", path = "", query = {}, headers =
     return json(201, { id: s.id, code: s.code, expiresAt: s.expiresAt }, { "Set-Cookie": setupCookie(s.secret, headers) });
   }
 
-  const m = /^\/api\/([A-Za-z0-9_-]{16})(?:\/connect\/(amazon|email))?$/.exec(path);
+  const m = /^\/api\/([A-Za-z0-9_-]{16})(?:\/connect\/(amazon|email|uber|card))?$/.exec(path);
   if (!m) return json(404, { error: "not found" });
   const row = store.owned(m[1], secret);
   if (!row) return json(404, { error: "not found" });
@@ -334,6 +390,27 @@ export async function request({ method = "GET", path = "", query = {}, headers =
       store.setConnectState(row.id, "amazon", out?.ok ? "pending" : "failed");
       log({ websetup_connect: "amazon", setup: row.id, ok: !!out?.ok });
       return json(200, out?.ok ? { ok: true, url: out.url } : { ok: false, why: out?.why || "unavailable" });
+    }
+    if (m[2] === "uber") {
+      // Honest first: Uber's own app must take this server's return address, or the link would only
+      // reach Uber's error page. Not ready → the card says so; nothing is made.
+      let ready = { ready: false, why: "uber_unreachable" };
+      try { ready = await uberReady(); } catch { /* not ready */ }
+      if (!ready?.ready) {
+        store.setConnectState(row.id, "uber", "not_ready");
+        log({ websetup_connect: "uber", setup: row.id, ok: false, why: ready?.why || "not_ready" });
+        return json(200, { ok: false, why: "not_ready" });
+      }
+      const out = uberLink(c);
+      store.setConnectState(row.id, "uber", out?.ok ? "pending" : "failed");
+      log({ websetup_connect: "uber", setup: row.id, ok: !!out?.ok });
+      return json(200, out?.ok && out.url ? { ok: true, url: out.url } : { ok: false, why: "unavailable" });
+    }
+    if (m[2] === "card") {
+      const out = cardLink(c);
+      store.setConnectState(row.id, "card", out?.ok ? "pending" : "failed");
+      log({ websetup_connect: "card", setup: row.id, ok: !!out?.ok });
+      return json(200, out?.ok && out.url ? { ok: true, url: out.url } : { ok: false, why: out?.why || "unavailable" });
     }
     const b = (await body()) ?? {};
     if (String(b.provider ?? "gmail") !== "gmail") return json(200, { ok: false, why: "unavailable" });
