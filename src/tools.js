@@ -14600,7 +14600,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // web. Signing in is the same act either way — the person does it themselves on the site's
       // own page and the session lands in their own profile — so there is one door, not two.
       // Where the social flag reaches them, any site by its web address too (signinSite).
-      const entry = signinSite(c, input.site);
+      let entry = signinSite(c, input.site);
       if (!entry) return noSigninSite(c, input.site);
       const offNet = await genericSiteRefused(entry, ctx);
       if (offNet) return offNet;
@@ -14658,6 +14658,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const reader = ctx.readSigninPage ?? (process.env.NODE_TEST_CONTEXT ? null : (e) => renderedSigninText(c, e));
       if (social.socialAllowedFor(c) && !live.length && liveWall?.in !== false && reader) {
         try { live = social.providersOffered(String(await reader(entry) ?? "")); } catch {}
+        // A site named by its bare domain opens on its front page, where the buttons often sit behind
+        // a "Log in" modal (Airbnb). Its /login is tried once; when that page has them, the link
+        // opens there instead.
+        if (!live.length && entry.generic && entry.signin_url === entry.entry) {
+          const atLogin = signin.genericEntry(`${entry.entry}login`);
+          try {
+            const there = atLogin && !(await genericSiteRefused(atLogin, ctx)) ? social.providersOffered(String(await reader(atLogin) ?? "")) : [];
+            if (there.length) { live = there; entry = atLogin; }
+          } catch {}
+        }
       }
       const offered = social.offeredFor(c, entry, { asked: provider, live });
       const choice = social.choiceLine(entry, offered, recorded);

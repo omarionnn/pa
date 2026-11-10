@@ -264,3 +264,23 @@ test("buttons drawn by JavaScript: an empty plain read is followed by the render
   await call("signin_link", { site: "https://www.notion.so/login" }, CONV, { ...linkSeam(made2), signinWall: async () => ({ in: false, status: 0, providers_offered: [] }), readSigninPage: async () => { rendered++; return "Continue with Google"; } });
   assert.equal(rendered, 0);
 });
+
+test("a bare domain whose front page hides the buttons: its /login is tried, and the link opens there when it has them", async () => {
+  const made = [];
+  const asked = [];
+  const out = await call("signin_link", { site: "airbnb.com" }, CONV, {
+    ...linkSeam(made),
+    signinWall: async () => ({ in: true, status: 200, providers_offered: [] }),
+    readSigninPage: async (e) => { asked.push(e.signin_url); return e.signin_url.endsWith("/login") ? "Log in or sign up\nContinue with Google\nContinue with Apple" : "Where to?\nLog in\nSign up"; },
+  });
+  assert.equal(out.ok, true);
+  assert.deepEqual(asked, ["https://airbnb.com/", "https://airbnb.com/login"]);
+  assert.equal(made[0].entry.signin_url, "https://airbnb.com/login");
+  assert.equal(made[0].entry.site, "airbnb.com");
+  assert.deepEqual(made[0].offered, ["google", "apple"]);
+  // No buttons there either: the front page stays the link's page.
+  const made2 = [];
+  await call("signin_link", { site: "example-shop.com" }, CONV, { ...linkSeam(made2), signinWall: async () => ({ in: true, status: 200, providers_offered: [] }), readSigninPage: async () => "Email\nPassword" });
+  assert.equal(made2[0].entry.signin_url, "https://example-shop.com/");
+  assert.deepEqual(made2[0].offered, []);
+});
