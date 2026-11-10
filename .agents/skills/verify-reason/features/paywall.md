@@ -141,3 +141,18 @@ Stripe test mode: a recurring $24.99/month price (`STRIPE_PRICE_ID`), a secret k
 pricing page. Then `REASON_PAYWALL=owner`, a restart, and 25 of his own sessions (or
 `scripts/plan-set.js dm:owner trial --sessions 24 --last-inbound none --apply`, so his very next text is
 the 25th; the output's `win` says whether the bubbles go then or the trial runs on) to see the bubbles for real.
+
+## The monthly free tier (REASON_FREE_TIER=monthly, branch trial-rules, 2026-11-09, NOT live)
+
+Replaces the 25 / 30-without-a-win trial when `REASON_FREE_TIER=monthly` (unset = the old trial, untouched).
+Walk-ins get 20 conversations (the 30-minute session) + 2 calls of up to 5 minutes a month, from the day
+they first texted (`plan.period_start/period_sessions/period_calls`, added in place). The 21st conversation's
+first text: no model turn, ONE line + the pay link (router `#drainHeld` → `plan.answerOverCeiling`), the rest
+of that conversation left. A call in over the 20 or past 2 calls: one `<Say>` + `<Hangup/>`, link texted once
+a day (`plan.call_link_day`). A free call: wrap-up cue at 5:00, closed at 6:00 (`free_call_limit`).
+`call_place` past 2 calls is refused before the confirm gate. Trial users get no invites (`invitesOpenFor`),
+and an invite / event from anybody not free for good makes nobody free. Auto-admit: `REASON_SIGNUPS_PER_HOUR`
+(default 30) walk-in accounts a rolling hour; the next gets the access-list text (`REASON_ACCESS_LIST_URL`,
+default https://heyreason.com/access) and the approval queue.
+Prove: `node --test test/free-tier-monthly.test.js` (13) + `bin/free-tier-drive.mjs` (muted, real router +
+inbound TwiML, prints the texts; 7 ok + all ok on 11-09).

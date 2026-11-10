@@ -129,8 +129,11 @@ test("flip on: a pre-flip person whose number moves to another channel after the
 
 // Owner, 2026-11-05: anybody who joins through an invite is free for good, whenever they join; only
 // people who come in on their own (ads, website, texting the number) get the trial after the flip.
+// Owner, 2026-11-09: only when the inviter / organizer is free for good themselves (test/free-tier-monthly.test.js
+// has the trial inviter's case).
 test("flip on: invited after the flip → free; joined via a member's event after the flip → free; uninvited after the flip → trial", async () => {
   const inviter = person("Inviter");
+  db.db.prepare("UPDATE accounts SET created_at = 1 WHERE conversation_id = ?").run(inviter); // here before the flip: free for good
   process.env.REASON_PAYWALL = "on";
   try {
     clock.skip(MIN);
@@ -152,8 +155,12 @@ test("flip on: invited after the flip → free; joined via a member's event afte
     db.upsertAccount({ conversationId: moved, channel: "other", address: invitedNum, name: "Invited", isOperator: false });
     assert.equal(plan.status(moved).status, "free");
 
+    // An event made by somebody free for good (the inviter, here before the flip): its guests are free.
+    const evAt = Date.now();
+    const evId = db.db.prepare(`INSERT INTO events (public_id, organizer_conversation_id, name, name_key, tz, password_hash, organizer_token, created_at, updated_at)
+      VALUES (?, ?, 'Party', 'party', 'America/New_York', 'x', ?, ?, ?)`).run(`pf-${evAt}`, inviter, `tok-${evAt}`, evAt, evAt).lastInsertRowid;
     const guest = person("Guest");
-    db.db.prepare("UPDATE accounts SET joined_via_event = 1 WHERE conversation_id = ?").run(guest);
+    db.db.prepare("UPDATE accounts SET joined_via_event = ? WHERE conversation_id = ?").run(evId, guest);
     assert.equal(plan.status(guest).status, "free");
 
     const walkIn = person("WalkIn");         // texted the number from an ad: no invite, no event

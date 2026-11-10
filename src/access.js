@@ -66,8 +66,13 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
   // Auto-admit: anyone who has this number was given it by the owner. They get their own
   // Reason immediately — no waiting room, no approval queue. The model's onboarding prompt
   // (agent.js, placeholder path) asks their name, what they do, and shows use cases.
-  if (config.autoAdmit) {
-    const account = approve({ id: null, channel, address: addr, display_name: displayName, source: "text" });
+  //
+  // Up to a ceiling (signupsPerHour, owner 2026-11-09: about 30 an hour). Past it a new number is put in
+  // the approval queue with one text pointing at the access list, exactly as if auto-admit were off; a
+  // number already in the queue gets in on its next text once the hour has room again.
+  const pending = db.pendingRequestFor(addr);
+  if (config.autoAdmit && !signupsFull()) {
+    const account = approve(pending ?? { id: null, channel, address: addr, display_name: displayName, source: "text" });
     return {
       action: "auto_admitted",
       account,
@@ -75,7 +80,6 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
     };
   }
 
-  const pending = db.pendingRequestFor(addr);
   if (pending) {
     // Already waiting. One reminder every so often, so somebody texting six times gets one reply.
     const gapMs = config.waitingGapMin * 60_000;
@@ -100,6 +104,7 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
     }
   }
 
+  const full = config.autoAdmit; // only reached with auto-admit on when the hour's ceiling is reached
   const request = db.createAccessRequest({
     channel, address: addr, displayName,
     // Quoted exactly. This is the one thing of theirs the master ever sees, so it is stored as
@@ -112,9 +117,24 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
   return {
     action: "ask_master",
     requestId: request.id,
-    toThem: `hey, it's Reason — i've asked for you to be set up with your own. i'll text you either way.`,
+    toThem: full
+      ? `hey, it's Reason — lots of people are joining right now, so you're on the list and i'll text you the moment you're in. more here: ${config.accessListUrl}`
+      : `hey, it's Reason — i've asked for you to be set up with your own. i'll text you either way.`,
     request,
+    ...(full ? { signupsFull: true } : {}),
   };
+}
+
+/**
+ * Has the last hour already let in `signupsPerHour` people who came in on their own? The operator and
+ * anybody who came by invite or event are not counted (they never pass through here).
+ */
+export function signupsFull(now = clock.now()) {
+  const limit = Number(config.signupsPerHour) || 0;
+  if (limit <= 0) return false;
+  const n = db.db.prepare(`SELECT COUNT(*) AS n FROM accounts WHERE created_at >= ? AND COALESCE(is_operator, 0) = 0
+                           AND invited_by IS NULL AND joined_via_event IS NULL`).get(now - 60 * 60_000)?.n ?? 0;
+  return n >= limit;
 }
 
 /**

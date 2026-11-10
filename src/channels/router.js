@@ -638,6 +638,18 @@ export class Router {
       this.log({ web_held_back: conversationId, messages: held.length, until: back.readyAt });
       return { ok: true, conversationId, messages: held.length, replied: false, webOff: true };
     }
+    // One turn, so one turn off the day's allowance, however many texts it was. Counted before anything
+    // else so the monthly free tier (src/plan.js) knows whether this is their 21st conversation.
+    accounts.countUse(conversationId, "turn");
+    // Over this month's free conversations (REASON_FREE_TIER=monthly): no turn at all — one line and the
+    // pay link, once a conversation; anything else they text in it is kept in their history and left.
+    try {
+      const over = await plan.answerOverCeiling({ conversationId, texts: held.map(h => h.text), router: this, log: this.log });
+      if (over) {
+        this.log({ free_tier_over: conversationId, did: over.did, messages: held.length });
+        return { ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator, messages: held.length, replied: over.did === "told", overCeiling: true };
+      }
+    } catch (e) { this.log({ free_tier_check_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
     // From the moment these texts are taken, a text that lands is read against them and can be
     // folded in (src/onethought.js) — while voice notes are heard and the screen runs, not only once
     // the model has started. The runtime adopts this for the turn; anything folded into a turn that
@@ -649,8 +661,6 @@ export class Router {
     });
     await bubble.start();
 
-    // One turn, so one turn off the day's allowance, however many texts it was.
-    accounts.countUse(conversationId, "turn");
     if (held.length > 1) this.log({ burst: conversationId, messages: held.length, spanned_ms: last.arrived_at - held[0].arrived_at });
 
     let reply;

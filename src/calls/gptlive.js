@@ -25,6 +25,7 @@ import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
+import * as plan from "../plan.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
@@ -1640,6 +1641,16 @@ export class GptLiveCall {
     // The platform ceiling (`callPlatformCapSeconds`), so a call
     // never outlives the lost-call sweep's window and is written off while it is still going.
     this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
+    // The monthly free tier's 5 minutes a call (src/plan.js): a wrap-up cue at 5:00, the line closed a
+    // minute later. Paying, free for good, or a stranger on the line: no limit here.
+    const freeS = this.persona ? null : plan.callLimitSeconds(this.call.conversation_id);
+    if (freeS) {
+      this.freeWrapTimer = this.timers.setTimeout(() => {
+        this.log({ gptlive_free_call_wrap: this.call.id, after_s: freeS });
+        tellLive(this.call.id, `Time check: this is a free call and its ${Math.round(freeS / 60)} minutes are up. Wrap up NOW in one or two short sentences: finish the thought, say you'll pick the rest up by text, and say goodbye. Do not start anything new.`);
+      }, freeS * 1000);
+      this.freeEndTimer = this.timers.setTimeout(() => { this.endWhy = "free_call_limit"; this.end("free_call_limit").catch(() => {}); }, (freeS + plan.FREE_CALL_GRACE_SECONDS) * 1000);
+    }
     const w = this.warm;
     if (w && !w.closed && !w.call) return this.adopt(w);
     this.openFresh();
@@ -3443,6 +3454,8 @@ export class GptLiveCall {
     this.endedAt = this.now();
     this.endWhy = this.endWhy || why;
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
+    if (this.freeWrapTimer) this.timers.clearTimeout(this.freeWrapTimer);
+    if (this.freeEndTimer) this.timers.clearTimeout(this.freeEndTimer);
     if (this.replyFloorTimer) this.timers.clearTimeout(this.replyFloorTimer);
     if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
     this.byeReaderWanted = false;
@@ -3897,12 +3910,22 @@ function routeInbound({ params, router, log, away, openLive = openLiveSocket }) 
   }
   const capped = overCallCap(who.conversationId, { log });
   if (capped) return twiml(sayAndHangUp(capped.line));
+  // The monthly free tier (src/plan.js): over this month's free conversations, or both free calls used —
+  // one short line, the line closes, and the pay link goes by text straight after.
+  const overFree = plan.callGate(who.conversationId);
+  if (overFree) {
+    log({ gptlive_inbound_free_tier_over: who.conversationId, why: overFree.why });
+    void plan.textCallLink({ conversationId: who.conversationId, why: overFree.why, router, log })
+      .catch(e => log({ free_tier_call_link_failed: who.conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
+    return twiml(sayAndHangUp(overFree.line));
+  }
   const row = db.createCall(who.conversationId, {
     provider: PROVIDER, toNumber: address, isOwner: true,
     goal: `${accounts.ownerOf(who.conversationId).name} called Reason`, facts: [],
     direction: "in", externalId: `${EXT}${callSid || randomUUID()}`, state: "in_progress", announcement: "",
   });
   accounts.countUse(who.conversationId, "call");
+  try { plan.noteCall(who.conversationId); } catch { /* the call goes ahead either way */ }
   recordingNoteFor({ conversationId: who.conversationId, row, log });
   log({ gptlive_inbound: who.conversationId, call: row.id });
   // They rang: their prompt goes into the model's cache while the stream connects and the voice greets.

@@ -179,7 +179,9 @@ test("an event join on the other line by a number that already walked in does no
 });
 
 test("unchanged: a number that came in by invite stays free on a line it adds later; a single-line walk-in is on the trial", () => {
+  // The inviter is free for good (owner, 2026-11-09: a trial user's invite makes nobody free).
   const { c: inviter } = newcomer("Inviter2");
+  db.db.prepare("UPDATE accounts SET created_at = 1 WHERE conversation_id = ?").run(inviter); // here before the flip: free for good
   const made = db.createInvite(inviter);
   const num = newNumber();
   const out = db.redeemInvite({ claimCode: made.invite.claim_code, channel: "fake", address: num, name: "Inv" });
