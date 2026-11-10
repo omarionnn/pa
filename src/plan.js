@@ -501,25 +501,44 @@ export function askBubbles({ counts, url, name = "", sessions = TRIAL_SESSIONS }
 /** "Dec 9" — when this month's free conversations and calls come back. */
 const resetDay = (st, conversationId) => when(st.resets_at, conversationId);
 
-/** Over the 20: the one line, then the link on its own. No link to be had: the line says it is coming. */
-export function overTextBubbles({ url, resets }) {
-  const line = `hey — you've used this month's ${FREE_CONVERSATIONS} free conversations. it's ${PRICE_LINE} for unlimited (cancel any time by texting me), or your free ${FREE_CONVERSATIONS} conversations and ${FREE_CALLS} calls come back ${resets}.`;
-  return url ? [line, url] : [`${line} i'll text you the link to sign up in a bit.`];
+/** Their first name for a bubble, from the account; "" when there is none. */
+const nameFor = (conversationId) => {
+  try { const a = db.getAccount(conversationId); return a?.name ? firstName(a.name) : ""; } catch { return ""; }
+};
+
+/**
+ * Over the 20 (owner-approved copy, 2026-11-09): about them first, never the price — what Reason did
+ * for them, counted from the record (recapLine, the 25-session wording), or owning that it has not
+ * yet; then when the free ones come back BEFORE the price; then the link alone. Never "unlock",
+ * "upgrade" or "trial". No link to be had: the second bubble says it is coming.
+ */
+export function overTextBubbles({ url, resets, counts = {}, name = "" }) {
+  const did = recapLine(counts);
+  const who = name ? `, ${name}` : "";
+  const first = did
+    ? `that's ${FREE_CONVERSATIONS} conversations between us this month${who}. so far i've ${did}.`
+    : `that's ${FREE_CONVERSATIONS} conversations between us${who}. i haven't pulled off something real for you yet, and i'd like the chance to.`;
+  const ask = `the free ones come back ${resets}. or it's ${PRICE_LINE} for unlimited texts and calls. everything stays exactly as it is, what i remember, your reminders, all of it, and you can cancel any time just by telling me.`;
+  return url ? [first, ask, url] : [first, `${ask} i'll text you the link in a bit.`];
 }
 
 const SPOKEN = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 const spoken = (n) => SPOKEN[n] ?? String(n);
 
 /** What a call over the allowance hears before the line closes (a call has no link to read out). */
-export function overCallLine(why) {
-  const used = why === "calls" ? `this month's ${spoken(FREE_CALLS)} free calls` : `this month's free conversations`;
-  return `hey, it's Reason. you've used ${used}, so i can't stay on — i'm texting you the link to keep going right now. talk soon.`;
+export function overCallLine(why, name = "") {
+  const who = name ? ` ${name}` : "";
+  const used = why === "calls"
+    ? (FREE_CALLS === 2 ? "that's both free calls this month" : `that's all ${spoken(FREE_CALLS)} free calls this month`)
+    : `that's all ${FREE_CONVERSATIONS} free conversations this month`;
+  return `hey${who}, it's Reason. ${used}, so i can't stay on. i'm texting you the link right now. talk soon.`;
 }
 
-/** The text after that call: what the link is for, then the link on its own. */
-export function callLinkBubbles({ url, resets, why }) {
-  const used = why === "calls" ? `your ${FREE_CALLS} free calls` : `your ${FREE_CONVERSATIONS} free conversations`;
-  const line = `here's that link — ${PRICE_LINE} for unlimited texts and calls, cancel any time by texting me. otherwise ${used} come back ${resets}.`;
+/** The text after that call: what Reason did for them (if anything), the price, when the free ones come back, then the link alone. */
+export function callLinkBubbles({ url, resets, why, counts = {} }) {
+  const did = recapLine(counts);
+  const back = why === "calls" ? `your ${FREE_CALLS} calls` : `your ${FREE_CONVERSATIONS} conversations`;
+  const line = `here's that link.${did ? ` so far i've ${did}.` : ""} ${PRICE_LINE} for unlimited texts and calls, cancel any time by texting me. otherwise ${back} come back ${resets}.`;
   return url ? [line, url] : [`${line} the link itself is on its way in a bit.`];
 }
 
@@ -541,7 +560,8 @@ export async function overTextReply(conversationId, { fetchImpl = globalThis.fet
   }
   const url = await payLink(conversationId, { fetchImpl, log, now });
   log({ free_tier_over: conversationId, conversations: st.sessions_used, link: !!url });
-  return { bubbles: overTextBubbles({ url, resets: resetDay(st, conversationId) }) };
+  const counts = await recapCounts(conversationId);
+  return { bubbles: overTextBubbles({ url, resets: resetDay(st, conversationId), counts, name: nameFor(conversationId) }) };
 }
 
 /**
@@ -569,7 +589,7 @@ export function callGate(conversationId, now = clock.now()) {
   if (!onFreeTier(conversationId, now)) return null;
   const st = status(conversationId, now);
   const why = st.status === "lapsed" ? "conversations" : st.calls_left <= 0 ? "calls" : null;
-  return why ? { line: overCallLine(why), why } : null;
+  return why ? { line: overCallLine(why, nameFor(conversationId)), why } : null;
 }
 
 /** After callGate's line: the link by text, once a day (a caller ringing five times gets one). */
@@ -584,7 +604,7 @@ export async function textCallLink({ conversationId, why, router = null, sleep =
     return { bubbles: [], sent: 0, already: true };
   }
   const url = await payLink(conversationId, { fetchImpl, log, now });
-  const bubbles = callLinkBubbles({ url, resets: resetDay(st, conversationId), why });
+  const bubbles = callLinkBubbles({ url, resets: resetDay(st, conversationId), why, counts: await recapCounts(conversationId) });
   const sent = await sayBubbles({ conversationId, router, bubbles, key: `plan:call-over:${planId(conversationId)}:${day}`, sleep, log });
   log({ free_tier_call_link: conversationId, why, sent, link: !!url });
   return { bubbles, sent };
@@ -610,7 +630,7 @@ export async function callPlaceGate(conversationId, { fetchImpl = globalThis.fet
     ok: false, blocked: "free_calls_used", status: "free_calls_used", pay_url: url,
     error: told
       ? `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used. They were ALREADY told this conversation — do not repeat the price, the line or the link. Say in a few words that you can't make calls right now, and carry on with anything else in words.`
-      : `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used up. Say ONE short warm line — the month's ${FREE_CALLS} free calls are used, unlimited calls and texts are ${PRICE_LINE}, cancel any time by text, and the free calls come back ${resetDay(st, conversationId)} — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link to sign up in a bit"}. Never say "unlock" or "upgrade". Then carry on with anything else in words. Do not say this again this conversation.`,
+      : `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used up. Say ONE short warm line — the month's ${FREE_CALLS} free calls are used, they come back ${resetDay(st, conversationId)}, or unlimited calls and texts are ${PRICE_LINE}, cancel any time by text — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link to sign up in a bit"}. Never say "unlock" or "upgrade". Then carry on with anything else in words. Do not say this again this conversation.`,
   };
 }
 

@@ -149,23 +149,25 @@ test("over the 20: the 21st conversation gets ONE line + the link and no model t
   await router.deliver(text("can you find me a dentist"));
   assert.equal(turns.length, 21, "no model turn for the 21st conversation");
   const out = channel.sent.slice(before).filter(m => m.to === num).map(m => m.text);
-  assert.equal(out.length, 2, JSON.stringify(out));
+  assert.equal(out.length, 3, JSON.stringify(out));
   const resets = plan.when(plan.status(c).resets_at, c);
-  assert.equal(out[0], `hey — you've used this month's 20 free conversations. it's $24.99 a month for unlimited (cancel any time by texting me), or your free 20 conversations and 2 calls come back ${resets}.`);
-  assert.match(out[1], /^https:\/\/buy\.stripe\.test\/reason\?client_reference_id=/);
-  assert.ok(!/unlock|upgrade/i.test(out.join(" ")));
+  const name = db.getAccount(c)?.name ? `, ${String(db.getAccount(c).name).split(/\s+/)[0]}` : "";
+  assert.equal(out[0], `that's 20 conversations between us${name}. i haven't pulled off something real for you yet, and i'd like the chance to.`);
+  assert.equal(out[1], `the free ones come back ${resets}. or it's $24.99 a month for unlimited texts and calls. everything stays exactly as it is, what i remember, your reminders, all of it, and you can cancel any time just by telling me.`);
+  assert.match(out[2], /^https:\/\/buy\.stripe\.test\/reason\?client_reference_id=/);
+  assert.ok(!/unlock|upgrade|trial/i.test(out.join(" ")));
 
   // Same conversation, another text: nothing at all.
   clock.skip(2 * MIN); await router.deliver(text("hello??"));
   assert.equal(turns.length, 21);
-  assert.equal(channel.sent.slice(before).filter(m => m.to === num).length, 2, "said once a conversation");
+  assert.equal(channel.sent.slice(before).filter(m => m.to === num).length, 3, "said once a conversation");
   // Their texts are kept, so the turn after they pay knows what they asked.
   assert.match(JSON.stringify(db.loadConversation(c)), /find me a dentist/);
 
   // A new conversation while still over: the line once more.
   clock.skip(31 * MIN); await router.deliver(text("hi again"));
   assert.equal(turns.length, 21);
-  assert.equal(channel.sent.slice(before).filter(m => m.to === num).length, 4);
+  assert.equal(channel.sent.slice(before).filter(m => m.to === num).length, 6);
 
   // Paid: unlimited, the turn runs again.
   await plan.markPaid(c, { customerId: "cus_1", subscriptionId: "sub_1" });
@@ -227,11 +229,11 @@ test("2 calls a month: the 3rd call in hears one line, the line closes, and the 
   assert.equal(plan.status(c).calls_used, 2);
   const third = ring(num, via);
   assert.doesNotMatch(third.body, /<Stream/);
-  assert.match(third.body, /<Say[^>]*>hey, it's Reason\. you've used this month's two free calls, so i can't stay on — i'm texting you the link to keep going right now\. talk soon\.<\/Say><Hangup\/>/);
+  assert.match(third.body, /<Say[^>]*>hey Kofi, it's Reason\. that's both free calls this month, so i can't stay on\. i'm texting you the link right now\. talk soon\.<\/Say><Hangup\/>/);
   await tick(via, num);
   const texts = via.sent.filter(m => m.to === num).map(m => m.text);
   assert.equal(texts.length, 2, JSON.stringify(texts));
-  assert.match(texts[0], /^here's that link — \$24\.99 a month for unlimited texts and calls, cancel any time by texting me\. otherwise your 2 free calls come back /);
+  assert.match(texts[0], /^here's that link\. \$24\.99 a month for unlimited texts and calls, cancel any time by texting me\. otherwise your 2 calls come back [A-Z][a-z]{2} \d{1,2}\.$/);
   assert.match(texts[1], /^https:\/\/buy\.stripe\.test\/reason\?client_reference_id=/);
   // A 4th ring the same day: the line again, but the link is not texted twice.
   ring(num, via); await tick(via, num, 3);
@@ -243,10 +245,10 @@ test("over the 20 texts, a call in is refused the same way (conversations line)"
   conversations(c, 21);
   const via = liveRouter();
   const out = ring(num, via);
-  assert.match(out.body, /you've used this month's free conversations, so i can't stay on/);
+  assert.match(out.body, /it's Reason\. that's all 20 free conversations this month, so i can't stay on/);
   assert.match(out.body, /<Hangup\/>/);
   await tick(via, num, 2);
-  assert.match(via.sent.find(m => m.to === num)?.text ?? "", /your 20 free conversations come back/);
+  assert.match(via.sent.find(m => m.to === num)?.text ?? "", /otherwise your 20 conversations come back /);
 });
 
 test("a free call: wrap-up cue at 4:30, the line closed at 5:00; an errand call and a payer's call have no such limit", async () => {
@@ -405,4 +407,26 @@ test("subscription_show and the turn note speak the new numbers", async () => {
   const r = fakeRouter();
   assert.equal((await plan.afterTurn({ conversationId: c, router: r, sleep: noSleep })).did, "nothing", "no 25th-session bubbles under the monthly rule");
   assert.equal(r.sent.length, 0);
+});
+
+test("the approved over-ceiling words: wins counted first, the reset date before the price, the link alone", () => {
+  const counts = { calls: 2, tasks: 11, orders: 0, reminders: 0, events: 0 };
+  const b = plan.overTextBubbles({ url: "https://pay.test/x", resets: "Dec 9", counts, name: "Ama" });
+  assert.deepEqual(b, [
+    "that's 20 conversations between us this month, Ama. so far i've made 2 calls that got answers and finished 11 things you asked for.",
+    "the free ones come back Dec 9. or it's $24.99 a month for unlimited texts and calls. everything stays exactly as it is, what i remember, your reminders, all of it, and you can cancel any time just by telling me.",
+    "https://pay.test/x",
+  ]);
+  assert.ok(b[1].indexOf("Dec 9") < b[1].indexOf("$24.99"), "reset date before the price");
+  const none = plan.overTextBubbles({ url: "https://pay.test/x", resets: "Dec 9" });
+  assert.equal(none[0], "that's 20 conversations between us. i haven't pulled off something real for you yet, and i'd like the chance to.");
+  assert.match(plan.overTextBubbles({ url: null, resets: "Dec 9" })[1], /i'll text you the link in a bit\.$/);
+  assert.equal(plan.overCallLine("calls", "Ama"), "hey Ama, it's Reason. that's both free calls this month, so i can't stay on. i'm texting you the link right now. talk soon.");
+  assert.deepEqual(plan.callLinkBubbles({ url: "https://pay.test/x", resets: "Dec 9", why: "calls", counts }), [
+    "here's that link. so far i've made 2 calls that got answers and finished 11 things you asked for. $24.99 a month for unlimited texts and calls, cancel any time by texting me. otherwise your 2 calls come back Dec 9.",
+    "https://pay.test/x",
+  ]);
+  for (const line of [...b, ...none, plan.overCallLine("calls"), plan.overCallLine("conversations"), ...plan.callLinkBubbles({ url: "u", resets: "Dec 9", why: "calls" })]) {
+    assert.ok(!/unlock|upgrade|trial/i.test(line), line);
+  }
 });
