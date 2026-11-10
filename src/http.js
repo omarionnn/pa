@@ -93,7 +93,7 @@ import { pageCard, shootWithChromium } from "./pages/card.js";
 import { madeKind, renderMadePage, callAudio, notYoursFor, archivedFor, privateHead, privateOgPng, PRIVATE_OG_VERSION } from "./pages/madedata.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
-import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
+import { isContactPath, contactPathParts, vcard, lineNumber, liveLineNumber, cardName } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
@@ -914,16 +914,20 @@ export function assetRequest({ pathname, router = null }) {
   if (isContactPath(pathname)) {
     // With two live lines, the card whose hash is in the address (a Linq person's card carries the
     // Linq number); an old hash or /reason.vcf gets the first live line's.
+    // A token in the address is one person's card under the name they chose for Reason in their
+    // first chat (src/onboarding.js): only that name changes, and an unknown token gets the plain card.
+    const { hash: want, token } = contactPathParts(pathname);
+    const name = cardName(db.contactCardNameByToken(token));
     const cards = (router?.list?.() ?? []).filter(ch => ch.name !== "console" && ch.status?.().status === "live")
-      .map(ch => vcard({ number: lineNumber(router, ch.name), callNumber: config.twilioFrom })).filter(Boolean);
-    const want = /^\/reason-([0-9a-f]{8})\.vcf$/.exec(pathname)?.[1];
+      .map(ch => vcard({ number: lineNumber(router, ch.name), callNumber: config.twilioFrom, name })).filter(Boolean);
     const card = cards.find(c => createHash("sha256").update(c).digest("hex").slice(0, 8) === want) ?? cards[0] ?? null;
     if (!card) return { status: 404, headers: HTML(), body: renderNotFound() };
+    const file = name.replace(/[^A-Za-z0-9 ._-]/g, "").trim() || "Reason";
     return {
       status: 200,
       headers: {
         "Content-Type": "text/vcard; charset=utf-8",
-        "Content-Disposition": 'inline; filename="Reason.vcf"',
+        "Content-Disposition": `inline; filename="${file}.vcf"`,
         "Content-Length": Buffer.byteLength(card),
         // No long cache: the address is what changes with the card, and an old hash still answers.
         "Cache-Control": "no-cache",

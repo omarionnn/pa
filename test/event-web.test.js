@@ -27,7 +27,8 @@ delete process.env.REASON_AUTO_ADMIT;
 const events = await import("../src/events.js");
 const { eventRequestFor } = await import("../src/http.js");
 const { Runtime } = await import("../src/runtime.js");
-const { Router, EVENT_CARD_LINE, EVENT_QUESTION } = await import("../src/channels/router.js");
+const { Router, EVENT_CARD_LINE } = await import("../src/channels/router.js");
+const { TRY_LINE } = await import("../src/onboarding.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { ConsoleChannel } = await import("../src/channels/console.js");
 const { makeDeliver } = await import("../src/deliver.js");
@@ -45,6 +46,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   config.events = "owner";
+  config.onboarding = "on";
   db.db.exec(`DELETE FROM accounts; DELETE FROM events; DELETE FROM event_attendees; DELETE FROM event_messages; DELETE FROM event_deliveries;
     DELETE FROM event_join_attempts; DELETE FROM event_claims; DELETE FROM outbox; DELETE FROM threads; DELETE FROM conversations;
     DELETE FROM inbound_messages; DELETE FROM access_requests; DELETE FROM invite_allowances; DELETE FROM page_sessions;`);
@@ -133,7 +135,8 @@ test("a wrong password on the page is refused, and a browser guessing is held ba
 
 // ---------- a new guest ----------
 
-test("a new guest: everything on the page, one text to finish; then welcome (released only), card, one question — in that order, no turn", async () => {
+test("a new guest: everything on the page, one text to finish; then welcome (released only), card, the one thing to try — in that order, no question about them, no turn (REASON_ONBOARDING=off)", async () => {
+  config.onboarding = "off";
   const h = harness();
   const ev = ownerEvent();
   const page = await req(h, ev, { sub: "join", method: "POST", body: form({ password: "Pumpkin", display_name: "Esi", instagram: "@esi.b", in_directory: "1" }) });
@@ -162,8 +165,9 @@ test("a new guest: everything on the page, one text to finish; then welcome (rel
   const all = got.map(m => m.text).join("\n---\n");
   const iWelcome = got.findIndex(m => /so glad you're coming/.test(m.text));
   const iCard = got.findIndex(m => m.text === EVENT_CARD_LINE);
-  const iQuestion = got.findIndex(m => m.text === EVENT_QUESTION);
-  assert.ok(iWelcome >= 0 && iCard > iWelcome && iQuestion > iCard, `order welcome → card → question: ${all}`);
+  const iTry = got.findIndex(m => m.text === TRY_LINE);
+  assert.ok(iWelcome >= 0 && iCard > iWelcome && iTry > iCard, `order welcome → card → one thing to try: ${all}`);
+  assert.doesNotMatch(all, /what do you do/, "no interview");
   assert.ok(/\/reason-[0-9a-f]{8}\.vcf$/.test(got[iCard].media?.url ?? ""), "the card is the contact card");
   assert.match(all, /when: Sat, Oct 31/);
   assert.ok(!/Elm/.test(all), "the hidden address is not sent");
@@ -180,7 +184,39 @@ test("a new guest: everything on the page, one text to finish; then welcome (rel
   assert.equal(h.turns.length, 1);
   assert.equal(db.attendeeRow(ev.id, acct.conversation_id).state, "joined");
   const history = JSON.stringify(db.loadConversation(acct.conversation_id));
-  assert.match(history, /what do you do/, "the turn their answer starts knows the question");
+  assert.match(history, /set up and run an event/, "the turn their answer starts knows what was offered");
+});
+
+test("a new guest with the first-chat onboarding on: welcome, then who Reason is, their name met, what to call Reason — no old card line, no 'what do you do'; their pick gets the card under that name, then the one thing to try", async () => {
+  const h = harness();
+  const meaning = "Esi is an akan name for a girl born on sunday. calm sunday energy, i like it";
+  h.router.onboard = { sleep: async () => {}, ask: async ({ prompt }) => /jarvis/i.test(prompt) ? { value: { kind: "answer", name: "", card_name: "Jarvis", reply: "" } } : /Their name: Esi/.test(prompt) ? { value: { line: meaning } } : { error: "no read" } };
+  const ev = ownerEvent();
+  const page = await req(h, ev, { sub: "join", method: "POST", body: form({ password: "Pumpkin", display_name: "Esi" }) });
+  const href = /href="(sms:[^"]+)"/.exec(page.body)[1].replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+  const r = await h.router.deliver(texts(NEW1, decodeURIComponent(href.split("body=")[1])));
+  assert.equal(r.event, "joined");
+  assert.equal(r.onboarding, "awaiting_card_name", "the name from the page is their name: straight to the card's name");
+  assert.equal(h.turns.length, 0);
+  const ob = await import("../src/onboarding.js");
+  let got = sentTo(h.channel, NEW1).map(m => m.text);
+  const iWelcome = got.findIndex(t => /so glad you're coming/.test(t));
+  assert.ok(iWelcome >= 0, got.join(" | "));
+  assert.deepEqual(got.slice(iWelcome + 1).filter(t => !/when: |\/e\//.test(t)).slice(-3), [ob.INTRO, meaning, "what do you want to call me?"], got.join(" | "));
+  assert.ok(!got.includes(EVENT_CARD_LINE) && !got.some(t => /what do you do/.test(t)), "the old follow-up is gone");
+  assert.ok(!sentTo(h.channel, NEW1).some(m => m.media), "no card before they name it");
+  const conv = db.accountByAddress("fake", NEW1).conversation_id;
+  const history = JSON.stringify(db.loadConversation(conv));
+  assert.ok(history.indexOf("Halloween Party") < history.indexOf("what do you want to call me"), "their code text and the welcome come first in the history");
+
+  await h.router.deliver(texts(NEW1, "jarvis lol"));
+  const last = sentTo(h.channel, NEW1).filter(m => m.media).at(-1);
+  assert.equal(last.text, ob.CARD_SENT("Jarvis", true));
+  assert.equal(sentTo(h.channel, NEW1).at(-1).text, ob.TRY_LINE);
+  assert.match(last.media?.url ?? "", /\/reason-[0-9a-f]{8}-[A-Za-z0-9_-]{16}\.vcf$/);
+  assert.equal(db.getAccount(conv).onboarding, "complete");
+  assert.equal(db.getAccount(conv).contact_card_name, "Jarvis");
+  assert.equal(h.turns.length, 0);
 });
 
 test("a code from before a password rotation, a used code and a full event are refused in a line, and nothing is made", async () => {
@@ -221,7 +257,7 @@ test("existing user with a page session: joined on the spot as their own account
   assert.equal(att.via, "web");
   assert.equal(att.display_name, "Ama");
   const got = sentTo(h.channel, AMA).map(m => m.text);
-  assert.ok(!got.some(t => t === EVENT_QUESTION || t === EVENT_CARD_LINE), "the welcome only: no card, no question");
+  assert.ok(!got.some(t => t === TRY_LINE || t === EVENT_CARD_LINE), "the welcome only: no card, no follow-up");
   assert.match(got.join("\n"), /so glad you're coming/);
   assert.equal(events.deliveryReport(ev).filter(m => m.kind === "welcome").length, 1);
   assert.equal((await req(h, ev, { cookie })).body.includes("You're in"), true, "opening it again shows they're in");
@@ -241,7 +277,7 @@ test("existing user without a page session: the same one text finds their accoun
   assert.equal(sansSeen(db.getAccount(AMA_C)), acct, "their account untouched (beyond being seen)");
   const got = sentTo(h.channel, AMA).map(m => m.text);
   assert.match(got.join("\n"), /so glad you're coming/, "the welcome");
-  assert.ok(!got.some(t => t === EVENT_QUESTION || t === EVENT_CARD_LINE));
+  assert.ok(!got.some(t => t === TRY_LINE || t === EVENT_CARD_LINE));
   assert.equal(db.attendeeRow(ev.id, AMA_C).display_name, "Ama B", "the name they picked on the page, for this event only");
 });
 

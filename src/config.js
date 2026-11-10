@@ -340,10 +340,12 @@ export const config = {
   // When true, anyone who texts the number gets their own Reason instantly — no master approval.
   // For when every number that has the line was given it by the owner personally.
   autoAdmit: process.env.REASON_AUTO_ADMIT === "1",
-  // The first-chat onboarding (src/onboarding.js): off | test | on, off by default. Only a person whose
-  // account a text of theirs just made ever starts it; everybody else is exempt. "test": only the
-  // numbers in REASON_ONBOARDING_NUMBERS (comma list). The owner's own number never gets it.
-  onboarding: (v => ["1", "true", "on", "yes"].includes(v) ? "on" : v === "test" ? "test" : "off")(String(process.env.REASON_ONBOARDING ?? "").trim().toLowerCase()),
+  // The first-chat onboarding (src/onboarding.js): on | test | off, ON by default since 2026-11-06
+  // (name → what Reason is → what to save it as → the card under that name). Only a person whose
+  // account a text of theirs, or an event join, just made ever starts it; every existing account is
+  // exempt (src/db.js). "test": only the numbers in REASON_ONBOARDING_NUMBERS (comma list). "off"
+  // (or 0/false/no) turns it off. The owner's own number never gets it.
+  onboarding: (v => ["0", "false", "off", "no"].includes(v) ? "off" : v === "test" ? "test" : "on")(String(process.env.REASON_ONBOARDING ?? "").trim().toLowerCase()),
   onboardingNumbers: (process.env.REASON_ONBOARDING_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
   // The pause between two of its bubbles (plus up to 600 ms of jitter, so it reads like typing).
   onboardingGapMs: Number(process.env.REASON_ONBOARDING_GAP_MS ?? 1100),

@@ -1766,6 +1766,11 @@ addColumnIfMissing("accounts", "pause_prior_mode", "TEXT");
 // is what stops a failing line from meaning a card attempt on every text.
 addColumnIfMissing("accounts", "contact_card_sent_at", "INTEGER");
 addColumnIfMissing("accounts", "contact_card_tried_at", "INTEGER");
+// The name a new person chose to save Reason under in their first chat (src/onboarding.js), and the
+// random token their card's address carries so the server can draw that one card (src/http.js).
+// The token names nothing about them; the card it draws holds only the name they picked and the line.
+addColumnIfMissing("accounts", "contact_card_name", "TEXT");
+addColumnIfMissing("accounts", "contact_card_token", "TEXT");
 // Reason's line moved on 2026-10-23 (src/linechange.js). One row per person who has been told —
 // with the card or without it — claimed before the send, so nobody is told twice. The owner had
 // already moved over by hand, so he is done from the start. `sent_at` is when they were told.
@@ -3696,9 +3701,30 @@ export function resetContactCard(conversationId) {
   db.prepare("UPDATE accounts SET contact_card_sent_at = NULL, contact_card_tried_at = NULL WHERE conversation_id = ?").run(conversationId);
 }
 
-/** Everybody who has an account and has not had the card. Oldest account first. */
+/**
+ * The name this person chose for Reason's card, with the token their card's address carries (made
+ * once, kept). Returns { name, token }.
+ */
+export function setContactCardName(conversationId, name) {
+  const row = getAccount(conversationId);
+  if (!row) return null;
+  const token = row.contact_card_token || randomBytes(12).toString("base64url");
+  db.prepare("UPDATE accounts SET contact_card_name = ?, contact_card_token = ? WHERE conversation_id = ?").run(name, token, conversationId);
+  return { name, token };
+}
+
+/** The name on the card a token's address draws, or null for a token nobody holds. */
+export function contactCardNameByToken(token) {
+  if (!token) return null;
+  return db.prepare("SELECT contact_card_name FROM accounts WHERE contact_card_token = ?").get(token)?.contact_card_name ?? null;
+}
+
+/**
+ * Everybody who has an account and has not had the card. Oldest account first. Not somebody still
+ * in the first-chat onboarding: their card comes from it, under the name they pick.
+ */
 export function accountsWithoutContactCard() {
-  return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL ORDER BY created_at ASC").all();
+  return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL AND COALESCE(onboarding, '') NOT IN ('not_started', 'awaiting_name', 'awaiting_card_name') ORDER BY created_at ASC").all();
 }
 
 export function listAccountsOfPeople() {
