@@ -103,6 +103,17 @@ test("flag 2 on: every phase-2 write path seals, and reads back as written", () 
   strangerId = s.id;
   stranger.noteTurn({ id: s.id, token: s.token, messages: [{ role: "user", content: `call me back on ${FRIEND_PHONE}, ${SECRET}` }] });
 
+  // Other people's numbers and emails: who was called, texted, saved as a contact, invited.
+  const toFriend = d.createCall(C, { provider: "twilio", toNumber: FRIEND_PHONE, isOwner: false, goal: "book a table", facts: [] });
+  assert.equal(d.getCall(C, toFriend.id).to_number, FRIEND_PHONE);
+  d.enqueueOutbound({ idemKey: "o-friend", conversationId: C, channel: "sendblue", address: FRIEND_PHONE, body: "hi from Reason" });
+  d.createCallRequest(C, { askedOnCallId: toFriend.id, toNumber: FRIEND_PHONE, name: "Kofi", goal: "ask about Friday" });
+  d.addImportantPerson(C, { who: "Kofi", why: "best friend", contact: FRIEND_EMAIL });
+  assert.deepEqual(d.getImportantPerson(C, "kofi").contacts, [FRIEND_EMAIL]);
+  d.addSpotifyJoinRequest(C, FRIEND_EMAIL);
+  assert.equal(d.pendingSpotifyJoins().find(r => r.conversation_id === C).email, FRIEND_EMAIL);
+  d.putNoticeEvents(C, "work", [{ id: "e1", summary: "standup", start: "2026-11-10T10:00", end: "2026-11-10T10:15", attendees: [FRIEND_EMAIL] }]);
+
   for (const st of phase2()) assert.equal(st.plain, 0, `${st.column} has plain rows`);
   assert.ok(phase2().reduce((n, st) => n + st.sealed, 0) >= 25);
   const raw = d.rawPrepare("SELECT said FROM stranger_calls WHERE id = ?").get(s.id).said;
@@ -139,6 +150,11 @@ test("exact-match lookups on sealed columns still work", () => {
   assert.equal(stranger.pendingFor(later)?.id, strangerId, "found by keyed hash, never by the stored number");
   assert.match(d.rawPrepare("SELECT phone FROM stranger_calls WHERE id = ?").get(strangerId).phone, /^bi1:/);
   assert.equal(stranger.pendingFor(C), null, "another number matches nothing");
+  // Exact matches on a sealed number still find the call / the request.
+  assert.ok(d.liveCallTo(FRIEND_PHONE), "a live call to that number is found");
+  assert.equal(d.liveCallTo("+19995550000"), null);
+  assert.ok(d.callsToNumber(C, { toNumber: FRIEND_PHONE }).length >= 1);
+  assert.ok(d.openCallRequests(C, { toNumber: FRIEND_PHONE }).length >= 1);
 });
 
 test("strict mode refuses a plain write to a phase-2 column", { skip: scanOnly }, () => {

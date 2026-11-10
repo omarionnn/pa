@@ -579,7 +579,7 @@ test("a stranger's GPT-Live call keeps its audio on their row (as the intro says
   const ended = call.end("caller hung up");
   await timers.advance(3500);
   await ended;
-  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone = ?").get("+14155550177");
+  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone IN (SELECT value FROM json_each(?))").get(JSON.stringify(db.restcrypt.blindIndexes("phone", "+14155550177")));
   assert.ok(kept.recording_path, "the audio is kept");
   assert.match(kept.recording_path, /stranger-\d+\.wav$/);
   assert.ok(existsSync(kept.recording_path));

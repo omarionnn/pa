@@ -60,6 +60,7 @@ const { documentFilename, mimeForKind } = await import("../src/documents/store.j
 const { exportData, deleteData } = await import("../src/data.js");
 const { sweepRetention } = await import("../src/privacy.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const { clock, config } = await import("../src/config.js");
 
 const C = config.ownerConversation;
@@ -228,8 +229,8 @@ test("document_create writes the file, sends it as an attachment, and says so", 
   assert.equal(row.kind, "docx");
   assert.equal(row.title, "Back and shoulders");
   assert.ok(existsSync(row.path), "the file is really on disk");
-  assert.equal(statSync(row.path).size, row.bytes, "the size on the row is the size on disk");
-  assert.equal(createHash("sha256").update(readFileSync(row.path)).digest("hex"), row.sha256, "and so is the checksum");
+  assert.equal(readPlain(row.path).length, row.bytes, "the size on the row is the size on disk");
+  assert.equal(createHash("sha256").update(readPlain(row.path)).digest("hex"), row.sha256, "and so is the checksum");
   assert.ok(row.sent_at, "sent_at is written because the channel took it");
 
   // ONE message, carrying the words and the file together.

@@ -39,16 +39,26 @@ export const SENSITIVE = [
 /**
  * Phase 2 (11-10), behind REASON_ENCRYPT_REST2=on, which needs phase 1 on. Message copies, call
  * details, saved addresses, rules and preferences, pages and documents. Same keys, same format.
- * Ids, times, channels, phone numbers and conversation ids stay plain (design doc: why).
+ * Numbers and emails of other people (who was called or texted, contacts, attendees) are sealed;
+ * ids, times, channels and conversation ids stay plain, and so do the copies of a person's own number
+ * (accounts.address and the like): their conversation id is that number (design doc: why).
  * A stranger who rings with no Reason of their own gets a key of their own, "stranger:<row id>".
  */
 export const SENSITIVE2 = [
   { table: "inbound_messages", cols: ["text"], owner: "conversation_id" },
   { table: "inbound_parts", cols: ["text"], owner: "conversation_id" },
   { table: "pending_inbound", cols: ["text"], owner: "conversation_id" },
-  { table: "outbox", cols: ["body"], owner: "conversation_id" },
+  // address: who it went to, often someone other than them (texting a friend for them).
+  { table: "outbox", cols: ["body", "address"], owner: "conversation_id" },
   { table: "stranger_calls", cols: ["said", "summary"], owner: "('stranger:' || stranger_calls.id)" },
-  { table: "calls", cols: ["goal", "facts"], owner: "conversation_id" },
+  // to_number: the number called, usually a business or a person they know.
+  { table: "calls", cols: ["goal", "facts", "to_number"], owner: "conversation_id" },
+  { table: "call_requests", cols: ["to_number"], owner: "conversation_id" },
+  { table: "call_quotes", cols: ["to_number"], owner: "conversation_id" },
+  { table: "important_people", cols: ["contacts"], owner: "conversation_id" },
+  { table: "spotify_join_requests", cols: ["email"], owner: "conversation_id" },
+  { table: "notice_events", cols: ["attendees"], owner: "conversation_id" },
+  { table: "agentcard_purchases", cols: ["address_json"], owner: "conversation_id" },
   { table: "shop_shipping", cols: ["first_name", "last_name", "address1", "address2", "city", "state", "zip", "phone", "email"], owner: "conversation_id" },
   { table: "saved_places", cols: ["address", "route_description"], owner: "conversation_id" },
   { table: "treat_rules", cols: ["rule", "rule_key", "why"], owner: "conversation_id" },

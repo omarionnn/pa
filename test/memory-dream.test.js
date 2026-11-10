@@ -250,7 +250,7 @@ test("(f) past the 8-rule cap the review consolidates", async () => {
   const live = db.activeRules(C);
   assert.equal(live.length, 8);
   assert.ok(live.some(r => r.rule === "Rules 0-2 together"));
-  const folded = db.db.prepare("SELECT status, superseded_by FROM treat_rules WHERE conversation_id = ? AND rule = 'Rule 0'").get(C);
+  const folded = db.db.prepare("SELECT status, superseded_by FROM treat_rules WHERE conversation_id = ? AND pt(rule) = 'Rule 0'").get(C);
   assert.equal(folded.status, "superseded");
   assert.equal(folded.superseded_by, live.find(r => r.rule === "Rules 0-2 together").id);
 });

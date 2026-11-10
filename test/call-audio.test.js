@@ -44,6 +44,7 @@ const { storeRecording, deleteRecordingFile, mimeFor } = await import("../src/ca
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 const { findConverter } = await import("../src/expressive.js");
@@ -138,7 +139,7 @@ test("a finished call's audio is saved as a file Reason owns", async () => {
   assert.equal(row.recording_state, "stored");
   assert.ok(row.recording_file, "there should be a file path on the row");
   assert.ok(existsSync(row.recording_file), `${row.recording_file} should exist`);
-  assert.equal(statSync(row.recording_file).size, statSync(FIXTURE_RECORDING).size);
+  assert.equal(readPlain(row.recording_file).length, statSync(FIXTURE_RECORDING).size);
   assert.equal(row.recording_format, "wav");
   assert.ok(row.recording_bytes > 0);
   assert.match(row.recording_sha256, /^[0-9a-f]{64}$/);
@@ -473,7 +474,7 @@ test("storeRecording fetches a URL when that is all the provider gives", async (
   assert.equal(r.ok, true);
   assert.equal(r.seconds, 7);
   assert.equal(r.bytes, wav.length);
-  assert.deepEqual(readFileSync(r.file), wav);
+  assert.deepEqual(readPlain(r.file), wav);
   deleteRecordingFile(r.file);
 });
 

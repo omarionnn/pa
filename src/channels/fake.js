@@ -9,6 +9,7 @@ import { statSync } from "node:fs";
 import { basename } from "node:path";
 import { Channel } from "./channel.js";
 import { clock } from "../config.js";
+import { readPlain } from "../restfiles.js";
 
 export class FakeChannel extends Channel {
   name = "fake";
@@ -117,7 +118,7 @@ export class FakeChannel extends Channel {
     // Read the bytes rather than trusting the path: a test that asserts audio arrived should fail
     // when the file is missing or empty, not when somebody later notices.
     let bytes = 0;
-    try { bytes = statSync(file).size; } catch { return { ok: false, supported: true, error: `no such file: ${file}` }; }
+    try { bytes = readPlain(file).length; } catch (e) { return { ok: false, supported: true, error: `no such file: ${file} (${e.message})` }; }
     if (!bytes) return { ok: false, supported: true, error: `the file is empty: ${file}` };
 
     const delivered = {

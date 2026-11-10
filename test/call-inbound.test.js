@@ -181,7 +181,7 @@ test("an unknown caller gets the stranger's stream, kept against their number, a
   assert.equal(callCount(), 0);
   const kept = db.db.prepare("SELECT * FROM stranger_calls").all();
   assert.equal(kept.length, 1);
-  assert.equal(kept[0].phone, STRANGER);
+  assert.ok(db.restcrypt.blindIndexes("phone", STRANGER).includes(kept[0].phone));
   assert.equal(kept[0].external_id, "gptlive:CA_cold");
 });
 
@@ -366,7 +366,7 @@ test("a call that was already settled is not reopened by a ring back", () => {
   // Rung anyway: a stranger, with no call row opened on the operator's conversation.
   ring(RESTAURANT);
   assert.equal(lastInbound(), undefined);
-  assert.equal(db.db.prepare("SELECT phone FROM stranger_calls").get()?.phone, RESTAURANT);
+  assert.ok(db.restcrypt.blindIndexes("phone", RESTAURANT).includes(db.db.prepare("SELECT phone FROM stranger_calls").get()?.phone));
 });
 
 test("a ring back about something from last month is not that errand continuing", () => {

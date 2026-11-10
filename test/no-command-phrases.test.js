@@ -33,7 +33,9 @@ test("no user-facing string or prompt coaches an exact phrase to send", () => {
 });
 
 test("the prompt tells the model never to coach exact words", async () => {
-  process.env.REASON_DB_PATH ||= join((await import("node:os")).tmpdir(), `ncp-${process.pid}.db`);
+  // Its own directory: the keystore (keys.db) sits beside the database, and a shared tmpdir keeps one
+  // from an earlier run under another key.
+  process.env.REASON_DB_PATH ||= join((await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "ncp-")), "reason.db");
   const { SYSTEM } = await import("../src/agent.js");
   assert.match(SYSTEM, /Never give them words to type/);
 });

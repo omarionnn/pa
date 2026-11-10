@@ -4925,7 +4925,7 @@ export function enqueueOutbound({ idemKey, conversationId, channel, address, cha
   const r = db.prepare(`INSERT INTO outbox
     (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, after_id, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
-    .run(idemKey, conversationId, channel, address, chatId, seal2(conversationId, String(body ?? "")),
+    .run(idemKey, conversationId, channel, seal2(conversationId, address), chatId, seal2(conversationId, String(body ?? "")),
       media ? JSON.stringify(media) : null, sendStyle, replyTo, afterId, maxAttempts, now, toOwner ? 1 : 0, now, now);
   return { fresh: true, row: rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(r.lastInsertRowid)) };
 }
@@ -5283,7 +5283,7 @@ export function createCall(conversationId, {
     (conversation_id, provider, external_id, to_number, is_owner, goal, facts, state, direction,
      confirmation_id, announcement, webhook_token, task_id, timer_id, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, provider, externalId, toNumber, isOwner ? 1 : 0, seal2(conversationId, goal), seal2(conversationId, JSON.stringify(facts ?? [])),
+    .run(conversationId, provider, externalId, seal2(conversationId, toNumber), isOwner ? 1 : 0, seal2(conversationId, goal), seal2(conversationId, JSON.stringify(facts ?? [])),
          state, direction === "in" ? "in" : "out", confirmationId,
          announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), taskId, timerId, now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
@@ -5447,8 +5447,8 @@ export function taskCallLive(conversationId, taskId, { now = clock.now(), within
  */
 export function liveCallTo(toNumber, { now = clock.now(), withinMs = 75 * 60_000 } = {}) {
   if (!toNumber) return null;
-  const r = db.prepare("SELECT * FROM calls WHERE to_number = ? AND state IN ('placing','ringing','in_progress') AND created_at >= ? ORDER BY id DESC LIMIT 1")
-    .get(toNumber, now - withinMs);
+  const r = db.prepare("SELECT * FROM calls WHERE state IN ('placing','ringing','in_progress') AND created_at >= ? AND pt(to_number) = ? ORDER BY id DESC LIMIT 1")
+    .get(now - withinMs, toNumber);
   return r ? { ...r, facts: safeJson(r.facts, []) } : null;
 }
 
@@ -5461,8 +5461,8 @@ export function liveErrandCalls(conversationId, errandId) {
 /** Every attempt at one number on one errand, for the retry limit and the no-second-voicemail rule. */
 export function callsToNumber(conversationId, { errandId = null, toNumber = "" } = {}) {
   const sql = errandId
-    ? "SELECT * FROM calls WHERE conversation_id = ? AND to_number = ? AND errand_id = ? ORDER BY id ASC"
-    : "SELECT * FROM calls WHERE conversation_id = ? AND to_number = ? ORDER BY id ASC";
+    ? "SELECT * FROM calls WHERE conversation_id = ? AND pt(to_number) = ? AND errand_id = ? ORDER BY id ASC"
+    : "SELECT * FROM calls WHERE conversation_id = ? AND pt(to_number) = ? ORDER BY id ASC";
   const args = errandId ? [conversationId, toNumber, errandId] : [conversationId, toNumber];
   return db.prepare(sql).all(...args).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
 }
@@ -5478,7 +5478,7 @@ export function addQuote(conversationId, { errandId, callId, place = "", toNumbe
     (errand_id, call_id, conversation_id, place, to_number, price_cents, fees_cents, total_cents,
      currency, firmness, holds_until, earliest, included, excluded, said_by, notes, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(errandId, callId, conversationId, place, toNumber, priceCents, feesCents, totalCents,
+    .run(errandId, callId, conversationId, place, seal2(conversationId, toNumber), priceCents, feesCents, totalCents,
          currency, firmness, holdsUntil, earliest, JSON.stringify(included ?? []),
          JSON.stringify(excluded ?? []), saidBy, notes, clock.now());
   return quoteRow(db.prepare("SELECT * FROM call_quotes WHERE id = ?").get(Number(r.lastInsertRowid)));
@@ -5548,7 +5548,7 @@ export function errandCommitments(conversationId, errandId) {
  */
 export function commitmentsAtNumber(conversationId, toNumber) {
   return db.prepare(`SELECT c.* FROM call_commitments c JOIN calls k ON k.id = c.call_id
-    WHERE c.conversation_id = ? AND k.to_number = ? ORDER BY c.id ASC`)
+    WHERE c.conversation_id = ? AND pt(k.to_number) = ? ORDER BY c.id ASC`)
     .all(conversationId, toNumber).map(commitRow);
 }
 
@@ -5571,7 +5571,7 @@ export function createCallRequest(conversationId, {
   const r = db.prepare(`INSERT INTO call_requests
     (conversation_id, asked_on_call_id, task_id, to_number, name, goal, brief, state, review, review_hash, reviewed_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'preparing', ?, ?, ?, ?, ?)`)
-    .run(conversationId, askedOnCallId, taskId, toNumber, name, goal, JSON.stringify(brief ?? {}),
+    .run(conversationId, askedOnCallId, taskId, seal2(conversationId, toNumber), name, goal, JSON.stringify(brief ?? {}),
          review, reviewHash, review ? now : null, now, now);
   return getCallRequest(conversationId, Number(r.lastInsertRowid));
 }
@@ -5590,7 +5590,7 @@ export function callRequestForCall(conversationId, placedCallId) {
 export function openCallRequests(conversationId, { toNumber = null } = {}) {
   const marks = CALL_REQUEST_OPEN.map(() => "?").join(", ");
   const rows = toNumber
-    ? db.prepare(`SELECT * FROM call_requests WHERE conversation_id = ? AND to_number = ? AND state IN (${marks}) ORDER BY id DESC`)
+    ? db.prepare(`SELECT * FROM call_requests WHERE conversation_id = ? AND pt(to_number) = ? AND state IN (${marks}) ORDER BY id DESC`)
       .all(conversationId, toNumber, ...CALL_REQUEST_OPEN)
     : db.prepare(`SELECT * FROM call_requests WHERE conversation_id = ? AND state IN (${marks}) ORDER BY id DESC`)
       .all(conversationId, ...CALL_REQUEST_OPEN);
@@ -7269,7 +7269,7 @@ export function clearOauthStates(conversationId, provider) {
 export function addSpotifyJoinRequest(conversationId, email) {
   return db.prepare(
     "INSERT INTO spotify_join_requests (conversation_id, email, created_at) VALUES (?, ?, ?)"
-  ).run(conversationId, email, clock.now());
+  ).run(conversationId, seal2(conversationId, email), clock.now());
 }
 
 export function pendingSpotifyJoins() {
@@ -8373,7 +8373,7 @@ export function markAgentcardPurchase(buyConversationId, patch = {}) {
   if (!row) return null;
   const sets = [];
   const vals = [];
-  const put = (col, v) => { if (v !== undefined && v !== null) { sets.push(`${col} = ?`); vals.push(v); } };
+  const put = (col, v) => { if (v !== undefined && v !== null) { sets.push(`${col} = ?`); vals.push(restcrypt.sealCell("agentcard_purchases", col, row.conversation_id, v)); } };
   put("status", patch.status);
   put("cart_hash", patch.cartHash);
   put("order_id", patch.orderId);
@@ -8712,7 +8712,7 @@ export function putNoticeEvents(conversationId, account, events, at = clock.now(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const e of events) {
     ins.run(conversationId, account, String(e.id), String(e.summary ?? ""), String(e.start ?? ""),
-      String(e.end ?? ""), String(e.status ?? ""), JSON.stringify(e.attendees ?? []), String(e.time_zone ?? ""), at);
+      String(e.end ?? ""), String(e.status ?? ""), seal2(conversationId, JSON.stringify(e.attendees ?? [])), String(e.time_zone ?? ""), at);
   }
   return events.length;
 }
@@ -9387,11 +9387,11 @@ export function addImportantPerson(conversationId, { who, why = "", contact = ""
   if (add && !contacts.some(c => c.toLowerCase() === add.toLowerCase())) contacts.push(add);
   if (existing) {
     db.prepare("UPDATE important_people SET who = ?, why = ?, contacts = ? WHERE id = ?")
-      .run(String(who).trim(), why ? String(why).trim() : existing.why, JSON.stringify(contacts), existing.id);
+      .run(String(who).trim(), why ? String(why).trim() : existing.why, seal2(conversationId, JSON.stringify(contacts)), existing.id);
     return { ...getImportantPerson(conversationId, key), already_there: true };
   }
   db.prepare("INSERT INTO important_people (conversation_id, who, who_key, why, contacts, added_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(conversationId, String(who).trim(), key, String(why ?? "").trim(), JSON.stringify(contacts), clock.now());
+    .run(conversationId, String(who).trim(), key, String(why ?? "").trim(), seal2(conversationId, JSON.stringify(contacts)), clock.now());
   return { ...getImportantPerson(conversationId, key), already_there: false };
 }
 
@@ -11236,7 +11236,7 @@ export function latestMessagesFor(conversationId, { before = Number.MAX_SAFE_INT
  */
 export function webMessageSent({ address, text, since, until }) {
   return db.prepare(`SELECT m.external_id, m.at FROM messages m JOIN outbox o ON o.id = m.outbox_id
-    WHERE m.channel = 'web' AND o.address = ? AND pt(o.body) = ? AND m.at >= ? AND m.at <= ?
+    WHERE m.channel = 'web' AND pt(o.address) = ? AND pt(o.body) = ? AND m.at >= ? AND m.at <= ?
     ORDER BY m.at DESC LIMIT 1`).get(address, text, since, until) ?? null;
 }
 

@@ -158,7 +158,7 @@ export function readDocument(file) {
 export function documentOnDisk(doc) {
   try {
     if (!doc?.path || !existsSync(doc.path)) return { there: false, bytes: 0 };
-    return { there: true, bytes: statSync(doc.path).size };
+    return { there: true, bytes: readPlain(doc.path).length };
   } catch {
     return { there: false, bytes: 0 };
   }

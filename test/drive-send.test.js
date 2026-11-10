@@ -56,6 +56,7 @@ const { runTool } = await import("../src/tools.js");
 const google = await import("../src/google.js");
 const drive = await import("../src/drive.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const { exportData } = await import("../src/data.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -151,7 +152,7 @@ test("their own resume, a .docx, comes back as a real PDF in the thread", async 
   assert.ok(doc, "there is a row");
   assert.equal(doc.kind, "pdf");
   assert.match(doc.filename, /^omari-nyarko-resume\.pdf$/, "named from their file, not 'document.pdf'");
-  const bytes = readFileSync(doc.path);
+  const bytes = readPlain(doc.path);
   assert.equal(bytes.toString("latin1", 0, 5), "%PDF-");
   assert.equal(bytes.length, doc.bytes, "the row's size is the file's size");
   assert.ok(doc.sent_at, "sent_at is written only after the channel came back ok");
@@ -229,7 +230,7 @@ test("something that is already a PDF goes over untouched — the same bytes, no
   const theirs = fake.state.driveReads[0];
   assert.equal(theirs.id, "f-resume");
   const doc = db.listDocuments(C)[0];
-  assert.equal(readFileSync(doc.path).toString("latin1", 0, 5), "%PDF-");
+  assert.equal(readPlain(doc.path).toString("latin1", 0, 5), "%PDF-");
   assert.ok(doc.bytes > 100, "a real PDF, not a stub");
 });
 
@@ -244,7 +245,7 @@ test("a Google Doc asked for as a Word file is exported as one", async () => {
   const msg = attachment();
   assert.equal(msg.media.mimeType, DOCX);
   assert.match(msg.media.filename, /\.docx$/);
-  assert.equal(readFileSync(db.listDocuments(C)[0].path).toString("latin1", 0, 2), "PK", "a .docx is a zip");
+  assert.equal(readPlain(db.listDocuments(C)[0].path).toString("latin1", 0, 2), "PK", "a .docx is a zip");
 });
 
 test("a .docx asked for as a Word file is sent as it is — no pointless round trip through Drive", async () => {
