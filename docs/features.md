@@ -427,6 +427,43 @@ probe; a Spotify developer app; and a decision about the six sites that refuse �
 official API where one exists, or leaving them.
 
 
+## Signing in through their Google, Apple, Facebook or Microsoft account (added 2026-11-10)
+
+**Built, behind `REASON_SOCIAL_SIGNIN`** (off by default; `owner` on live), from the owner's "Reason
+Social Sign-In Prompt" spec. One of those logins opens dozens of a person's accounts, so Reason treats
+getting it as a priority — and earns it through a real task, never a cold ask. Nothing about HOW a
+sign-in happens changed: the person still signs in themselves on the site's own page through the
+sign-in link, and Reason keeps the session the site gives the saved profile. What is new
+(`src/socialsignin.js`):
+
+- **The rules**, in the system prompt next to the never-a-password rule: ask the first time a real
+  task needs such a site, tied to that task, one line, "your Google login" (never "OAuth" or "social
+  provider" to the person); never during onboarding, mid-vent, late at night unless they are asking
+  for something right then, or when the task needs no sign-in. Unknown how they sign in somewhere:
+  `signin_provider infer` reads the site's sign-in page for its buttons, their welcome or receipt
+  email settles it, then confirm. A no is recorded (`signin_provider declined`) and holds for 30 days
+  per provider; `ask_check` says so before any ask. Never a password, code or card number in the
+  chat: the secure link. Two-step verification expected, least effort first (a Yes tap on their
+  phone, a code to an email Reason reads itself, a texted code they forward), one line on what to
+  expect ("Google will ping your phone. Tap Yes."), a warning that the site may send one more code,
+  and a code that fails twice switches method once, then stops and says what blocked it. After
+  access: finish the task, then say once what else it unlocked. A lapsed session is signed back in by
+  Reason itself. Trust: task-only use, never change passwords / security / recovery / connected apps,
+  never grant a new app, money and messages-as-them and anything permanent still need a yes, an honest
+  answer about what it can reach and how to revoke, and signing in with Google is not reading Gmail.
+- **Which button each site uses** goes on the saved login (`connected_accounts.provider`), written
+  only once the site says signed in, sealed at rest with the phase-2 columns.
+- **The button is pressed for them.** `signin_link` / `signin_open` take a `provider`; the page opens
+  on the provider's own page. A page with no such button is the site's form, as before.
+- **A forwarded code is cleaned** before it is typed: "G-123 456" → `123456` into a code box.
+- **A lapse is tried first.** `signin_status` with `recheck` reads the saved button before the probe
+  and, when the site says signed out, opens the sign-in page, presses it and asks again; only when
+  that lands on the provider's own page is the person sent a fresh link.
+
+**Not proved:** no real site has been signed in to through a real provider button here (see
+`docs/unverified.md`).
+
+
 ## Telling people what's new (added 2026-10-05)
 
 **Built.** When something lands, the people already texting Reason are told — casually, in passing,

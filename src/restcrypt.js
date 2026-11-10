@@ -67,6 +67,9 @@ export const SENSITIVE2 = [
   { table: "whys", cols: ["about", "why", "said"], owner: "conversation_id" },
   { table: "pages", cols: ["title", "content", "subtitle", "closing"], owner: "conversation_id" },
   { table: "documents", cols: ["title", "subtitle", "closing", "content"], owner: "conversation_id" },
+  // Which button a site's saved login uses (google/apple/facebook/microsoft, src/socialsignin.js): a
+  // fact about how they sign in, kept with the other login data rather than beside it in the clear.
+  { table: "connected_accounts", cols: ["provider"], owner: "conversation_id" },
   // Search vectors: inversion attacks recover part of a short text from its embedding. Sealed as the
   // base64 of the float32 bytes; embedding.js blobToFloat32 reads either form. `blob`: --open writes
   // the bytes back, not the base64.

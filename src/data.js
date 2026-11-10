@@ -200,6 +200,8 @@ const TABLES = [
   "daily_caps", "cap_changes", "offers", "uber_rides", "spotify_join_requests",
   // The Crossmint user a card saved on the web setup was saved under (src/shopconnect.js adoptSetupCard).
   "shop_crossmint_subjects",
+  // Their no to "want me to use your Google login?", held 30 days per provider (src/socialsignin.js).
+  "social_declines",
   // The daily edition and their stamps (src/daily.js, src/stamps.js).
   "daily_editions", "daily_looks", "daily_questions", "stamps", "stamp_shares", "stamp_jobs", "stamp_step_times",
   // Calls made on their behalf: the errands, quotes, commitments and requests to call somebody.

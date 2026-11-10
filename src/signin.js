@@ -180,11 +180,17 @@ export async function probeSignedIn(page, siteName, { entry: given = null } = {}
   return { ok: true, site: entry.site, checked_url: entry.signed_in.url, landed, status, ...read };
 }
 
-/** Probe, then write the result down. The only way a sign-in state gets recorded. */
-export async function checkAndRecord(page, conversationId, siteName, { entry = null } = {}) {
+/**
+ * Probe, then write the result down. The only way a sign-in state gets recorded.
+ *
+ * `provider` is which button the sign-in went through (google/apple/facebook/microsoft,
+ * src/socialsignin.js), when the caller knows; it reaches the row only with a signed-in reading.
+ */
+export async function checkAndRecord(page, conversationId, siteName, { entry = null, provider = "" } = {}) {
   const out = await probeSignedIn(page, siteName, { entry });
   if (!out.ok) return out;
-  db.recordSiteSignin(conversationId, out.site, { state: out.state, evidence: out.why });
+  const row = db.recordSiteSignin(conversationId, out.site, { state: out.state, evidence: out.why, provider });
+  if (row?.provider && out.state === "signed_in") out.provider = row.provider;
   return out;
 }
 
@@ -307,6 +313,9 @@ export function savedSignins(conversationId) {
       last_checked: row?.checked_at ? stamp(row.checked_at) : null,
       checked_minutes_ago: row?.checked_at ? Math.round((clock.now() - row.checked_at) / 60_000) : null,
       evidence: row?.evidence || "",
+      // Which button that login went through ("google"…), or "" for the site's own form. Only on a
+      // live sign-in: a revoked row's provider is history, not a way in.
+      ...(live && row?.provider ? { provider: row.provider } : {}),
       // A site whose sign-in page refuses this browser has no "how to sign in": offering one is
       // how the owner ended up staring at a bot-check spinner. The finding travels instead.
       ...(live ? {} : s.signin_blocked ? { signin_blocked: s.signin_blocked } : { how_to_sign_in: signinCommand(s.site) }),

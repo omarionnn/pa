@@ -28,6 +28,7 @@ import * as flightSearch from "./flightsearch.js";
 import { flightProviders } from "./flightproviders.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
+import * as social from "./socialsignin.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
 import * as uber from "./uber.js";
@@ -390,11 +391,20 @@ export function toolsFor(conversationId) {
     && directionsToolVisible(t.name, conversationId)
     && choiceToolVisible(t.name, conversationId)
     && shopToolVisible(t.name, conversationId)
+    && socialToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+}
+
+// Signing in through a Google/Apple/Facebook/Microsoft account (src/socialsignin.js,
+// REASON_SOCIAL_SIGNIN): the provider tool is only shown where the flag reaches this person. The
+// `provider` argument on signin_link / signin_open is ignored for everybody else.
+export const SOCIAL_TOOLS = new Set(["signin_provider"]);
+export function socialToolVisible(name, conversationId) {
+  return !SOCIAL_TOOLS.has(name) || social.socialAllowedFor(conversationId);
 }
 
 // Reason's own plan (src/plan.js, REASON_PAYWALL): shown only where the paywall reaches this person and
@@ -5205,8 +5215,25 @@ export const tools = [
     description: "Make a private link the person opens on their phone to sign in to one site themselves. The page shows them your own browser, live, on that site's real sign-in page: they tap and type there, tap Done, and you are told what the site says. This is the way to sign in for anyone who is not sitting at the machine you run on, and the default when someone asks to sign in to a site. Send the link whole, on its own line, with one short line saying what it is. Say honestly how it works if asked: what they type is passed to the site through you and is never saved, logged or shown to you — do not claim it never passes through anything. A password or a code by text works; Face ID and passkeys do not, because the browser is not on their phone. The link works once, on one device, for a few minutes, and a new link cancels the old one. Until you are told the result you do not know whether they are signed in.",
     input_schema: {
       type: "object",
-      properties: { site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+      properties: {
+        site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" },
+        provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form." },
+      },
       required: ["site"],
+    },
+  },
+  {
+    name: "signin_provider",
+    description: "A site that signs in through their Google, Apple, Facebook or Microsoft account. `ask_check` (with provider) BEFORE you ask to use one of those logins: says whether they said no inside the last 30 days — a no means do not ask, finish another way — and which of their sites already go through it. `declined` (with provider) the moment they say no, so you will not ask again for 30 days. `infer` (with site, or with text pasted from a welcome or receipt email) reads which buttons the site's sign-in page offers, for when they do not know how they sign in somewhere — then you confirm with them in one line. `unlocks` (with provider): which of their saved logins go through it, for the one mention after a task of what else it opens.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["ask_check", "declined", "infer", "unlocks"] },
+        provider: { type: "string", enum: social.PROVIDERS },
+        site: { type: "string", description: "For infer: the site whose sign-in page to read." },
+        text: { type: "string", description: "For infer: words to read instead of a page — a welcome or receipt email's body." },
+      },
+      required: ["action"],
     },
   },
   {
@@ -5214,7 +5241,10 @@ export const tools = [
     description: "Open the sign-in window for one site, on the Mac you run on, so the person can sign in themselves. Use it when they ask to sign in to a site, or when an errand needs an account that signin_status says is not signed in — and only after they have said they want to. A real browser window opens on that site's own sign-in page; they sign in there however they normally do and close it, and you are told afterwards what the site says. You never see or type a password. The window appears on the Mac's screen, NOT on their phone: say so plainly, because someone away from the Mac has to wait until they are back at it. Only for the person whose machine this is; for anybody else it says there is no safe way yet.",
     input_schema: {
       type: "object",
-      properties: { site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+      properties: {
+        site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" },
+        provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these; the window presses it for them. Omit for the site's own form." },
+      },
       required: ["site"],
     },
   },
@@ -7204,8 +7234,14 @@ const S = {
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
   account_revoke: z.object({ name: z.string().min(1).max(40) }),
   signin_status: z.object({ site: z.string().max(40).optional(), recheck: z.boolean().optional() }),
-  signin_open: z.object({ site: z.string().min(1).max(40) }),
-  signin_link: z.object({ site: z.string().min(1).max(40) }),
+  signin_open: z.object({ site: z.string().min(1).max(40), provider: z.enum(social.PROVIDERS).optional() }),
+  signin_link: z.object({ site: z.string().min(1).max(40), provider: z.enum(social.PROVIDERS).optional() }),
+  signin_provider: z.object({
+    action: z.enum(["ask_check", "declined", "infer", "unlocks"]),
+    provider: z.enum(social.PROVIDERS).optional(),
+    site: z.string().max(40).optional(),
+    text: z.string().max(20_000).optional(),
+  }),
   site_playbook: z.object({ site: z.string().max(40).optional() }),
   uber_link: z.object({
     address: z.string().max(300).optional(), latitude: z.number().optional(), longitude: z.number().optional(),
@@ -14439,14 +14475,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, error: "They are in the middle of signing in through a link, and their saved profile can be in one browser at a time. Wait for that to finish." };
       }
       const reach = trust.SITE_REACHABLE[entry.site];
+      const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
       const out = await (ctx.openSigninWindow ?? signinWindow.openSigninWindow)({
-        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}),
+        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider,
       });
       trust.ledgerWrite({ conversationId: c, action: "signin_open", input, out, target: `site:${entry.site}` });
       if (!out.ok) return { ...out, never_a_password: signin.refuseAPassword() };
       return {
         ok: true, site: entry.site, window: "open on the Mac",
-        say: `A browser window is open on the Mac now, on ${entry.label}'s own sign-in page. They sign in there themselves and close the window; nothing is typed for them and you never see a password.`,
+        ...(provider ? { provider, expect: social.expectLine(provider), second_code: "The site may send a code of its own after the provider approves: warn them one more may come." } : {}),
+        say: `A browser window is open on the Mac now, on ${entry.label}'s own sign-in page${provider ? `, with the ${social.LABELS[provider]} button pressed for them` : ""}. They sign in there themselves and close the window; nothing is typed for them and you never see a password.`,
         where: "On the Mac's screen, not on their phone. If they are not at the Mac it will sit there, and it closes itself after a while.",
         next: "You will be told what the site says once the window closes. Until then you do not know whether they are signed in — do not say they are, and do not start the errand.",
         ...(reach && !reach.loads ? { warning: `${entry.label} refuses an automated browser (${reach.why}), so the page may not load in that window either. Say so; they can try typing the address themselves in it.` } : {}),
@@ -14472,15 +14510,24 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       const by = signin.linkSignin();
       const reach = trust.SITE_REACHABLE[entry.site];
+      // Which button their account signs in through (src/socialsignin.js): the page opens with it
+      // pressed, and the saved login records it once the site says signed in. Dropped where the flag
+      // does not reach this person.
+      const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
       const out = (ctx.createRemoteSignin ?? signinRemote.createRemoteSignin)({
-        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}),
+        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider,
         // Their profile is busy while the window on the Mac is open on it.
         busy: (conv) => (signinWindow.openWindowFor(conv) ? "A sign-in window is already open on the Mac for this account. Close it first, then tap Start again." : null),
       });
-      trust.ledgerWrite({ conversationId: c, action: "signin_link", input, out: { ok: out.ok, site: entry.site, reachable_from_a_phone: out.reachable_from_a_phone }, target: `site:${entry.site}` });
+      trust.ledgerWrite({ conversationId: c, action: "signin_link", input, out: { ok: out.ok, site: entry.site, reachable_from_a_phone: out.reachable_from_a_phone, ...(provider ? { provider } : {}) }, target: `site:${entry.site}` });
       return {
         ok: true, site: entry.site, link: out.url, good_for_minutes: out.good_for_minutes,
-        say: `Send them this link whole. It opens ${entry.label}'s own sign-in page inside your browser; they sign in there themselves and tap Done.`,
+        ...(provider ? {
+          provider,
+          expect: `Tell them what to expect in one line: "${social.expectLine(provider)}"`,
+          second_code: `${entry.label} may send a code of its own after ${social.LABELS[provider]} approves: warn them one more may come. A code they forward is cleaned before it is typed (a "G-", spaces and dashes come off). If a code fails twice, switch methods once; if that fails, stop and say plainly what blocked it.`,
+        } : {}),
+        say: `Send them this link whole. It opens ${entry.label}'s own sign-in page inside your browser${provider ? ` with the ${social.LABELS[provider]} button pressed, so they land on ${social.LABELS[provider]}'s own page` : ""}; they sign in there themselves and tap Done.`,
         what_passes_through: by.what_passes_through ?? "What they type is relayed to the site through you and is never saved, logged or shown to you.",
         limits: by.limits ?? "A password or a code by text works. Face ID and passkeys do not.",
         next: "You will be told what the site says when they finish. Until then you do not know whether they are signed in — do not say they are, and do not start the errand.",
@@ -14497,12 +14544,30 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const entry = signin.entryFor(input.site);
         if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
         const reach = trust.SITE_REACHABLE[entry.site];
-        const page = await browser.pageFor(c);
-        const out = await signin.checkAndRecord(page, c, entry.site);
-        trust.ledgerWrite({ conversationId: c, action: "signin_status", input, out, target: `site:${entry.site}` });
+        // Which button the last live sign-in went through, read BEFORE the probe: a signed-out
+        // reading revokes the row, and the provider on it is what a sign-in-again presses.
+        const before = social.socialAllowedFor(c) ? social.providerOf(c, entry.site) : "";
+        const page = await (ctx.pageFor ?? browser.pageFor)(c);
+        let out = await (ctx.checkAndRecord ?? signin.checkAndRecord)(page, c, entry.site, { provider: before });
+        // A session that lapsed on a site whose login goes through a provider: sign back in yourself
+        // first — open the sign-in page, press that button, ask the site again — and only involve the
+        // person when that lands on a page waiting for them (src/socialsignin.js signInAgain).
+        let again = null;
+        if (out.ok && out.state === "signed_out" && before) {
+          again = await (ctx.signInAgain ?? social.signInAgain)(page, c, entry, { provider: before, check: ctx.checkAndRecord ?? null });
+          if (again?.tried && again.state) out = { ...out, state: again.state, why: again.why || out.why, signed_in_again: again.state === "signed_in" };
+        }
+        trust.ledgerWrite({ conversationId: c, action: "signin_status", input, out: { ...out, ...(again ? { signin_again: { provider: again.provider, pressed: !!again.pressed, state: again.state ?? null } } : {}) }, target: `site:${entry.site}` });
         return {
           ok: true, site: entry.site, state: out.state, why: out.why,
           checked: out.checked_url, landed: out.landed, just_checked: true,
+          ...(out.provider ? { provider: out.provider } : {}),
+          ...(again?.tried ? {
+            signed_in_again: again.state === "signed_in",
+            signin_again: again.state === "signed_in"
+              ? `The session had lapsed; you signed back in yourself through the ${social.LABELS[again.provider]} button, and ${entry.label} says they are signed in again. Nothing to tell them unless they ask.`
+              : `The session lapsed and pressing the ${social.LABELS[again.provider]} button did not get back in on its own (${again.why || "the page is waiting for them"}): ${social.LABELS[again.provider]} wants them. Send a fresh signin_link with provider '${again.provider}' and say in one line what to expect: "${social.expectLine(again.provider)}"`,
+          } : {}),
           ...(out.inferred ? { inferred: "Read from the absence of a sign-in prompt rather than from anything positive on the page. Nobody has loaded a signed-in page on this site here to learn what one looks like." } : {}),
           ...(reach ? { site_loads_for_reason: reach.loads, site_note: reach.why } : {}),
           ...(entry.ride_access ? { ride_access: entry.ride_access } : {}),
@@ -14541,6 +14606,82 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         never_a_password: never,
         note: "These are from the last check, not from right now — `last_checked` says when. A session can expire quietly, so before an errand that depends on being signed in, call this again with recheck: true.",
       };
+    }
+
+    /**
+     * The provider side of a saved login (src/socialsignin.js): may I ask, they said no, which button
+     * does this site offer, what else does one login open. Only reachable where REASON_SOCIAL_SIGNIN
+     * reaches this person (toolsFor hides it otherwise).
+     */
+    case "signin_provider": {
+      if (!social.socialAllowedFor(c)) return { ok: false, error: "Not available." };
+      const provider = social.providerKey(input.provider);
+      if (input.action === "declined") {
+        if (!provider) return { ok: false, error: "declined needs the provider they said no to: google | apple | facebook | microsoft." };
+        const d = social.recordDecline(c, provider);
+        trust.ledgerWrite({ conversationId: c, action: "signin_provider", input, out: { declined: provider, until: d.until }, target: `provider:${provider}` });
+        return {
+          ok: true, provider, declined_until: stamp(d.until), days: social.DECLINE_DAYS,
+          say: `Finish the task another way if you can. Do not ask about ${social.loginWords(provider)} again for ${social.DECLINE_DAYS} days unless they bring it up; never pressure, never repeat a declined ask.`,
+        };
+      }
+      if (input.action === "ask_check") {
+        const list = provider ? [provider] : social.PROVIDERS;
+        const providers = Object.fromEntries(list.map(p => {
+          const st = social.askState(c, p);
+          return [p, {
+            ask_allowed: st.ask_allowed,
+            ...(st.declined_at ? { declined_at: stamp(st.declined_at), until: stamp(st.until), days_left: st.days_left } : {}),
+            sites_through_it: social.sitesThrough(c, p),
+          }];
+        }));
+        const blocked = list.filter(p => !providers[p].ask_allowed);
+        return {
+          ok: true, providers,
+          rule: `Ask only the first time a real task needs a site whose account uses one of these — tied to that task, one line, "${social.loginWords(provider || "google")}" — never during onboarding, mid-vent, late at night unless they are asking you to do something right then, or when the task can be done without signing in.`,
+          ...(blocked.length ? { do_not_ask: `They said no to ${blocked.map(p => social.LABELS[p]).join(" and ")} inside the last ${social.DECLINE_DAYS} days: do not ask; finish another way.` } : {}),
+          collecting: "Never a password, code or card number in the chat: signin_link with the provider makes the secure page they sign in on. The login is saved only once the site says signed in.",
+        };
+      }
+      if (input.action === "unlocks") {
+        if (!provider) return { ok: false, error: "unlocks needs a provider." };
+        const sitesThrough = social.sitesThrough(c, provider);
+        return {
+          ok: true, provider, sites_through_it: sitesThrough,
+          say: sitesThrough.length
+            ? `Once, after the task is done: that ${social.LABELS[provider]} login also opens ${sitesThrough.join(", ")} — and any other site of theirs that signs in with ${social.LABELS[provider]} — without asking again.`
+            : `Nothing else is saved through ${social.LABELS[provider]} yet. After the task, say once that any site of theirs that signs in with ${social.LABELS[provider]} can be opened the same way now.`,
+        };
+      }
+      if (input.action === "infer") {
+        if (input.text) {
+          const offered = social.providersOffered(input.text);
+          return { ok: true, read: "the text you gave", providers_offered: offered, ...(offered.length ? { say: `Confirm in one line before using it: "looks like you sign in to that with ${social.loginWords(offered[0])} — want me to use it?"` } : { say: "Nothing in that text names a provider. Read the site's sign-in page (infer with site) or ask them." }) };
+        }
+        const entry = signin.entryFor(input.site ?? "");
+        if (!entry) return { ok: false, error: `infer needs a site (or text). Known: ${signin.signinNames().join(", ")}.` };
+        if (entry.signin_blocked) return signinBlockedAnswer(entry);
+        const read = ctx.readSigninPage ?? (async (e) => {
+          const page = await browser.pageFor(c);
+          await page.goto(e.signin_url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+          if (page.waitForTimeout) await page.waitForTimeout(1500).catch(() => {});
+          return await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+        });
+        let text = "";
+        try { text = String(await read(entry) ?? ""); } catch (e) {
+          return { ok: false, site: entry.site, error: `${entry.label}'s sign-in page could not be read: ${(e?.message ?? String(e)).split("\n")[0]}` };
+        }
+        const offered = social.providersOffered(text);
+        const known = social.providerOf(c, entry.site);
+        return {
+          ok: true, site: entry.site, read: entry.signin_url, providers_offered: offered,
+          ...(known ? { saved_login_uses: known } : {}),
+          say: offered.length
+            ? `${entry.label} offers ${offered.map(p => social.LABELS[p]).join(", ")} sign-in${offered.length > 1 ? "s" : ""} as well as its own form. Which one THEIR account uses is not on the page: a welcome or receipt email from ${entry.label} in their mail (gmail_search) usually says, and then confirm in one line — "looks like you sign in to ${entry.label} with ${social.loginWords(offered[0])}, want me to use it?"`
+            : `${entry.label}'s sign-in page offers no Google, Apple, Facebook or Microsoft button that could be read, so their account there uses the site's own form. signin_link without a provider.`,
+        };
+      }
+      return { ok: false, error: "action is ask_check | declined | infer | unlocks" };
     }
 
     case "site_playbook": {

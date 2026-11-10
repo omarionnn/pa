@@ -59,7 +59,7 @@ export function closedNote({ conversationId, site, label, startedAt, timedOut = 
  */
 export async function openSigninWindow({
   conversationId, entry, closeBrowser = async () => {}, spawnImpl = spawn,
-  timers = { set: setTimeout, clear: clearTimeout }, log = () => {},
+  timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "",
 }) {
   const already = windows.get(conversationId);
   if (already) {
@@ -71,7 +71,11 @@ export async function openSigninWindow({
 
   let child;
   try {
-    child = spawnImpl(process.execPath, [CLI, entry.site], { env: process.env, stdio: "ignore" });
+    // `provider` (google/apple/facebook/microsoft, src/socialsignin.js): the window presses that
+    // button on the sign-in page for them, and the site's "signed in" afterwards records which
+    // button it was. The CLI reads it from its environment so the argument list stays one site name.
+    const env = provider ? { ...process.env, REASON_SIGNIN_PROVIDER: provider } : process.env;
+    child = spawnImpl(process.execPath, [CLI, entry.site], { env, stdio: "ignore" });
   } catch (e) {
     return { ok: false, error: `The sign-in window could not be opened: ${(e?.message ?? String(e)).split("\n")[0]}` };
   }

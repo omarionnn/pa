@@ -5252,3 +5252,22 @@ The checkout end text after a payment is code-written and pinned offline (`test/
 "pinned 11-08"). What the model does with the new unknown-outcome instructions and the system-prompt
 rule (search the mail with `gmail_search` / `gmail_read` and report, never "check your email") has
 not been run against the real model: no live lane exists for it, and none was run (no API credit).
+
+## 2026-11-10: social sign-in (REASON_SOCIAL_SIGNIN) — nothing real has been signed in to
+
+`src/socialsignin.js` and its hooks are proved offline only (`test/social-signin.test.js`,
+`test/social-signin-rest.test.js`: 25 tests, every page and browser a fake). What has not run:
+
+- **No real Google / Apple / Facebook / Microsoft button has been pressed on a real site.** The finder
+  (`PROVIDER_BUTTON_JS`) was written from how those buttons are usually labelled and has only met the
+  test's fakes. Which real sites it finds the button on, and whether pressing it from Reason's
+  headless browser reaches the provider's page or a bot wall, is unknown.
+- **The provider's own page inside the sign-in link** — Google's account chooser, the "Tap Yes on your
+  phone" step, a code box — has not been seen through the link. The one-line expectations are what the
+  spec says to say, not what was observed.
+- **Signing back in on a lapse** (`signInAgain`) assumes the provider's own session is still good in
+  the same profile; nobody has watched a real site come back that way.
+- **The rules against the real model** — the ask tied to a task, the 30-day no, the "what it unlocked"
+  line said once — have not been run on `claude-cli` (no API credit; no live lane written for it).
+- **Live** carries the flag as `owner`; the owner has not yet asked Reason for a task on a site that
+  signs in through one of these.

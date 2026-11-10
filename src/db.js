@@ -6925,6 +6925,12 @@ addColumnIfMissing("connected_accounts", "checked_at", "INTEGER");
 // whole reason this column exists. Empty for every other provider, which is every row that was
 // here before: a provider with one account per person has nothing to tell apart.
 addColumnIfMissing("connected_accounts", "account_label", "TEXT NOT NULL DEFAULT ''");
+// Which button a site's saved login uses — google, apple, facebook, microsoft — or '' for the site's
+// own form (src/socialsignin.js, 2026-11-10). Written only by a probe that found the site signed in,
+// sealed at rest (restcrypt SENSITIVE2), so a lapsed session can be signed in again by pressing the
+// same button rather than by asking the person how they sign in.
+addColumnIfMissing("connected_accounts", "provider", "TEXT NOT NULL DEFAULT ''");
+const SIGNIN_PROVIDERS = new Set(["google", "apple", "facebook", "microsoft"]);
 
 // Several Google accounts for one person, on an install that already has rows.
 //
@@ -7059,17 +7065,24 @@ for (const row of db.prepare(`SELECT ca.id AS id, ca.conversation_id AS conv FRO
  * therefore every status anybody reads) stops saying connected the moment the site stops agreeing.
  * The row is kept with its state and evidence, so "why does it think I am signed out" is answerable.
  */
-export function recordSiteSignin(conversationId, site, { state, evidence = "", scopes = ["signed_in"] }) {
+export function recordSiteSignin(conversationId, site, { state, evidence = "", scopes = ["signed_in"], provider = "" }) {
   const now = clock.now();
   const row = liveAccount(conversationId, site);
+  // The provider is written only with a signed-in state — "save the login only after it successfully
+  // signs in" — and only when it names a real provider; a check that found the site signed out, or
+  // that could not read the page, never puts a provider on the row. A signed-in check that did not
+  // say which button keeps whatever was known.
+  const prov = SIGNIN_PROVIDERS.has(String(provider ?? "").trim().toLowerCase()) ? String(provider).trim().toLowerCase() : "";
   if (state === "signed_in") {
     if (row) {
-      db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ? WHERE id = ?")
+      if (prov) db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ?, provider = ? WHERE id = ? AND conversation_id = ?")
+        .run(state, evidence, now, seal2(conversationId, prov), row.id, conversationId);
+      else db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ? WHERE id = ?")
         .run(state, evidence, now, row.id);
       return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(row.id);
     }
-    const r = db.prepare(`INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, state, evidence, checked_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(conversationId, site, JSON.stringify(scopes), now, state, evidence, now);
+    const r = db.prepare(`INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, state, evidence, checked_at, provider)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(conversationId, site, JSON.stringify(scopes), now, state, evidence, now, seal2(conversationId, prov));
     return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(r.lastInsertRowid));
   }
   // `unknown` is a page that could not be read, not a site that said "signed out" — so it never
@@ -7099,6 +7112,12 @@ export function lastAccountCheck(conversationId, name, { account } = {}) {
 
 /** The last thing a probe said about this site, live row or not. Same question, site wording. */
 export const lastSigninCheck = lastAccountCheck;
+
+/** Every site this person is signed in to right now (live rows whose state a probe set to signed_in). */
+export function liveSigninsFor(conversationId) {
+  return db.prepare("SELECT * FROM connected_accounts WHERE conversation_id = ? AND revoked_at IS NULL AND state = 'signed_in' ORDER BY name ASC")
+    .all(conversationId);
+}
 
 /**
  * An OAuth grant the provider will not renew any more.
