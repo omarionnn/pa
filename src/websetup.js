@@ -435,9 +435,10 @@ export async function request({ method = "GET", path = "", query = {}, headers =
     if (!limits.connect(ip)) return json(429, { ok: false, why: "slow_down" });
     if (m[2] === "amazon") {
       // The store sign-in through Crossmint (shop.setupStoreLink): the link is Reason's /web/connect page,
-      // keyed by its token alone, so it opens on any browser; no setup cookie, no code. Past the window
-      // the sign-in would not move to them anyway: say so instead of starting one.
-      if (clock.now() - row.created_at > PAY_CLAIM_MS - 60_000) {
+      // keyed by its token alone, so it opens on any browser; no setup cookie, no code. Near the window's
+      // end the sign-in would not move to them anyway (and its form's JWT ends at the mark): say so
+      // instead of starting one.
+      if (clock.now() - row.created_at > PAY_CLAIM_MS - 2 * 60_000) {
         store.setConnectState(row.id, "amazon", "failed");
         log({ websetup_connect: "amazon", setup: row.id, ok: false, why: "too_late" });
         return json(200, { ok: false, why: "too_late" });

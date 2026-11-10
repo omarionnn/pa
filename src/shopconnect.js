@@ -446,8 +446,9 @@ export function adoptSetup(from, to) {
   const card = q("SELECT * FROM shop_cards WHERE conversation_id = ?").get(from);
   const stores = q("SELECT store FROM shop_stores WHERE conversation_id = ? AND status = 'connected'").all(from).map((r) => r.store);
   q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND state = 'open'").run(from);
-  for (const r of q("SELECT run_id FROM shop_runs WHERE conversation_id = ? AND status = 'running'").all(from)) letGo(r.run_id, "the setup was claimed").catch(() => {});
-  if (!card && !stores.length) return none;
+  endSetupRuns(from, "the setup was claimed");
+  // Nothing to move: a profile a failed sign-in attempt made would otherwise sit at Crossmint for good.
+  if (!card && !stores.length) { if (profileOf(from)) eraseProfile(from).catch(() => {}); return none; }
   const busy = q("SELECT 1 FROM shop_cards WHERE conversation_id = ?").get(to)
     || q("SELECT 1 FROM shop_profiles WHERE conversation_id = ?").get(to)
     || q("SELECT 1 FROM shop_payments WHERE conversation_id = ?").get(to)
@@ -477,10 +478,25 @@ export function dropSetupCard(c) {
   if (cardOf(c)) removeCard(c).catch(() => {});
   q("DELETE FROM shop_cards WHERE conversation_id = ?").run(c);
   q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND state = 'open'").run(c);
-  for (const r of q("SELECT run_id FROM shop_runs WHERE conversation_id = ? AND status = 'running'").all(c)) letGo(r.run_id, "the setup is over").catch(() => {});
+  endSetupRuns(c, "the setup is over");
   q("DELETE FROM shop_stores WHERE conversation_id = ?").run(c);
   if (profileOf(c)) eraseProfile(c).catch(() => {});
 }
+/**
+ * A stand-in's running sign-in runs, over now: marked at once (so no further `step` tick can mark a
+ * store connected or mint a link for a conversation that is being moved or dropped), then cancelled at
+ * Crossmint in the background, best effort.
+ */
+function endSetupRuns(c, why) {
+  const now = clock.now();
+  for (const r of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND status = 'running'").all(c)) {
+    tellOnce(r.run_id, "end");
+    q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, progress_at = ?, result = ? WHERE run_id = ? AND status = 'running'").run(now, now, now, `setup: ${why}`.slice(0, 300), r.run_id);
+    cancelAtCrossmint(r).catch(() => {});
+  }
+}
+/** At most this many setup sign-in runs at once across every setup: a public page must not fan out Crossmint agent runs. */
+export const SETUP_RUNS_MAX = 5;
 /**
  * A setup's store sign-in (owner 11-10: Amazon on the setup page through the store sign-in Reason's
  * checkouts use, never Reason's own browser). Crossmint only signs in to a store inside a checkout
@@ -497,7 +513,11 @@ export async function setupStoreLink(c, store = "amazon") {
   if (!isSetupConversation(c) || !connectAllowedFor(c)) return { ok: false, why: "unavailable" };
   if (!process.env.CROSSMINT_CLIENT_KEY || !process.env.CROSSMINT_SERVER_KEY) return { ok: false, why: "unavailable" };
   if (isConnected(c, store)) return { ok: false, why: "connected" };
-  for (const r of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND store = ? AND status = 'running'").all(c, store)) await endQuietly(r, "started again from the setup");
+  for (const r of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND store = ? AND status = 'running'").all(c, store)) await endQuietly(r, "setup: started again");
+  if (q("SELECT COUNT(*) AS n FROM shop_runs WHERE conversation_id LIKE 'websetup:%' AND status = 'running'").get().n >= SETUP_RUNS_MAX) {
+    logFn({ setup_store_signin: store, ok: false, why: "busy" });
+    return { ok: false, why: "busy" };
+  }
   q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND kind = 'signin' AND state = 'open'").run(c);
   const name = storeName(store) || store;
   let out;
@@ -818,6 +838,9 @@ export function linkView(link) {
 export function failReason(run) {
   if (!run) return "";
   const r = String(run.result ?? "").toLowerCase();
+  // A web setup's sign-in-only run Reason ended itself (setupStoreLink / step): the store stopped it, as
+  // far as the page is concerned, unless a newer tap replaced it.
+  if (/^setup:/.test(r)) return /started again/.test(r) ? "replaced" : "stopped";
   if (run.status === "cancelled" || /superseded|started again/.test(r)) return "replaced";
   if (/input_expired|expired|timed? ?out/.test(r)) return "timeout";
   if (/^lost\b/.test(r)) return "lost";
@@ -2073,7 +2096,7 @@ export async function step(runId) {
       if (link || run.mode === "sign_in") finishSignin(run, link);
       // A setup's sign-in-only run (setupStoreLink) that reached a payment: signed in, so done; nothing to buy.
       if (isSetupConversation(run.conversation_id)) {
-        await endQuietly(run, "setup sign-in done; nothing to buy");
+        await endQuietly(run, "setup: signed in; nothing to buy");
         return { done: true, status: "cancelled", said };
       }
       const row = recordPayment({ conversationId: run.conversation_id, runId, request: rq, item: run.item });
@@ -2120,7 +2143,7 @@ export async function step(runId) {
       // A setup's sign-in-only run (setupStoreLink): nobody to wake, no record to answer from, no other
       // store to move on to. Let go, quietly; the page says the sign-in didn't go through.
       if (isSetupConversation(run.conversation_id)) {
-        await endQuietly(run, "setup sign-in: the store asked something only a person could answer");
+        await endQuietly(run, "setup: the store asked something only a person could answer");
         return { done: true, status: "cancelled", said };
       }
       const pub = publicRequest(rq);
