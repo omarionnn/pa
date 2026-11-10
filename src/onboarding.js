@@ -194,10 +194,12 @@ export async function nameLine({ name, ask = askStructured }) {
 
 // Markdown marks out; an underscore inside a word stays (a handle like Xx_Slayer_xX is their name).
 // A field the model filled with only quote marks or punctuation (the sealed CLI's haiku sent back the
-// two-character text `""` for "no name" on 2026-11-10) is empty, not a name.
-const clean = (s, max) => {
-  const v = String(s ?? "").replace(/[*`#]|(?<!\w)_|_(?!\w)/g, "").replace(/\s+/g, " ").trim().replace(/^["'“”‘’]+(.*?)["'“”‘’]+$/u, "$1").trim();
-  return /[\p{L}\p{N}]/u.test(v) ? v.slice(0, max) : "";
+// two-character text `""` for "no name" on 2026-11-10) is empty. A name in quotes loses the quotes;
+// a line keeps its own.
+const clean = (s, max, { name = false } = {}) => {
+  let v = String(s ?? "").replace(/[*`#]|(?<!\w)_|_(?!\w)/g, "").replace(/\s+/g, " ").trim();
+  if (name) v = v.replace(/^["'“”‘’]+([^"“”]*?)["'“”‘’]+$/u, "$1").trim();
+  return /[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(v) ? v.slice(0, max) : "";
 };
 
 /** One read of their text for this step, or null when the read could not be had. */
@@ -217,8 +219,8 @@ export async function readText({ state, text, ask = askStructured, conversationI
   if (!v || !SCHEMA.properties.kind.enum.includes(v.kind)) return null;
   return {
     kind: v.kind,
-    name: clean(v.name, 40),
-    cardName: clean(v.card_name, 40),
+    name: clean(v.name, 40, { name: true }),
+    cardName: clean(v.card_name, 40, { name: true }),
     reply: clean(v.reply, 220),
     nameLine: clean(v.name_line, 240),
   };

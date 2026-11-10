@@ -214,6 +214,10 @@ test("a field of only quote marks is empty: \"hey\" read as name `\"\"` is no na
   assert.equal(r.nameLine, "");
   const q = await ob.readText({ state: "awaiting_name", text: "\"Kofi\"", ask: async () => ({ value: { kind: "answer", name: '"Kofi"', card_name: "", reply: "", name_line: "kofi, nice" } }) });
   assert.equal(q.name, "Kofi");
+  // A line keeps its own quotes; an emoji name is a name.
+  const l = await ob.readText({ state: "awaiting_name", text: "🔥", ask: async () => ({ value: { kind: "answer", name: "🔥", card_name: "", reply: "", name_line: "\"🔥\" it is, I'll call you \"fire\"" } }) });
+  assert.equal(l.name, "🔥");
+  assert.equal(l.nameLine, "\"🔥\" it is, I'll call you \"fire\"");
 });
 
 test("the stand-alone name line: same rules, a non-name is left out, and it is cleaned to one line", async () => {
