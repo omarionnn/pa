@@ -104,7 +104,7 @@ export function setupResultPage({ entry, ended, back, card = "signin" }) {
   let main, side;
   if (ok) {
     main = headline(`You're signed in to ${n}.`, "Back to your setup.")
-      + lede(`${n} confirmed it. I'll keep an eye on your orders, and nothing is bought without your Face ID.`)
+      + lede(entry.site === "amazon" ? `${n} confirmed it. I'll keep an eye on your orders, and nothing is bought without your Face ID.` : `${n} confirmed it. Nothing is bought without your Face ID.`)
       + paper({ stamp: "CONNECTED", label: upper(n), big: "Signed in.", mono: false })
       + `<div class="ss-form">${actions(go("Back to setup", { href: back, attrs: ` id="ss-back"` }))}</div>`;
     side = label("SIGNED IN, I CAN") + para(entry.site === "amazon" ? "See your orders and help you reorder." : `Help with your ${esc(n)} account.`)

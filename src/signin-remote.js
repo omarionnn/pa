@@ -690,7 +690,7 @@ header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}
 export const isSetup = (s) => String(s?.conversationId ?? "").startsWith("websetup:");
 /** The setup's connect screen on the site it was made on (loaded late: websetup.js reaches back here through amazonconnect.js). */
 async function setupBack(s) {
-  try { const ws = await import("./websetup.js"); return ws.backUrlFor(s.conversationId, s.entry.site); } catch { return "/start/connect"; }
+  try { const ws = await import("./websetup.js"); return ws.backUrlFor(s.conversationId, s.entry.site); } catch { return `${(config.siteUrl || config.publicUrl || "").replace(/\/+$/, "")}/start/connect`; }
 }
 
 function startPage(s) {
