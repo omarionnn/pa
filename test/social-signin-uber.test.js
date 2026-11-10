@@ -7,16 +7,13 @@
 //      phone box, not the hidden copy, not the footer's "Google Privacy Policy" link.
 //   2. **The wall is asked live.** `signinWall` reads the sign-in page from here: Cloudflare's "Just a
 //      moment" / 403 is a wall (kept 30 s); a page that loads says which buttons it offers (kept 10 min).
-//   3. **A Google-backed Uber supersedes the OAuth connect card.** `uber_connect` answers with the
-//      Google route (the one-line ask, then signin_link with provider google) when a Google-backed
-//      Uber login is saved or the social flow can get in; the card is the fallback only
-//      (`fallback: true`), and the only answer where the flag does not reach them.
-//   4. **signin_link for Uber with provider google** asks the wall instead of trusting the dated
-//      finding: blocked → said plainly with the connect card named as the fallback, no link made;
-//      clear → the link, with the Google button to be pressed.
-//   5. **The web setup's Uber card** is shown connected via Google when such a login is saved on the
-//      stand-in, and is not offered (capabilities.uber false, connect/uber "superseded") where the
-//      flag is on for everyone and Uber's page loads; a walled Uber keeps the card.
+//   3. **The Uber connect card is the Uber route (owner, 2026-11-10, reversing "Uber first").**
+//      `uber_connect` makes the card whatever the flag, the wall or a saved login says; the rules
+//      never ask for a Google login for Uber.
+//   4. **signin_link for Uber with provider google** (only if asked for) asks the wall instead of
+//      trusting the dated finding: blocked → said plainly with the connect card named instead.
+//   5. **The web setup's Uber card** is exactly as before the social sign-in: offered when Uber's
+//      app takes a connect, whatever the flag or a saved Google login says.
 // No real Uber, Google or network is touched: every page is the fixture or a fake, every fetch a fake.
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
@@ -111,15 +108,19 @@ test("the finder presses Continue with Google on an Uber sign-in page and nothin
   } finally { await page.close(); }
 });
 
-test("Uber's hosts cover the rider site and the sign-in host; the registry says Google is likely", () => {
+test("Uber's hosts cover the rider site and the sign-in host; the rules send Uber to the connect card, never a Google ask", () => {
   assert.deepEqual(entry.hosts, ["uber.com", "m.uber.com", "riders.uber.com", "auth.uber.com"]);
-  assert.equal(sites.site("uber").social.likely, "google");
-  assert.ok(sites.site("uber").social.buttons.includes("Continue with Google"));
+  assert.deepEqual(social.UBER_SIGNIN_HOSTS, entry.hosts);
+  assert.equal(sites.site("uber").social, undefined, "no provider hint for Uber");
   assert.equal(entry.signin_url, "https://auth.uber.com/login");
-  assert.match(social.RULES, /UBER FIRST: most people's Uber signs in through Google/);
-  assert.match(social.RULES, /Uber signs in through your Google account\. Want me to use it\?/);
-  assert.match(social.RULES, /signin_link with site "uber" and provider "google"/);
-  assert.match(social.RULES, /BEFORE the Uber connect card \(uber_connect\)/);
+  assert.doesNotMatch(social.RULES, /UBER FIRST/);
+  assert.doesNotMatch(social.RULES, /Uber signs in through your Google account/);
+  assert.doesNotMatch(social.RULES, /site "uber" and provider "google"/);
+  assert.match(social.RULES, /UBER: never ask for their Google \(or any provider\) login for Uber/);
+  assert.match(social.RULES, /Uber connect card \(uber_connect\), only when they ask to connect it; a ride is uber_link/);
+  assert.equal(social.uberSocialPath, undefined);
+  assert.equal(social.uberRoute, undefined);
+  assert.equal(social.UBER_ASK, undefined);
 });
 
 // ---------- 2. the wall, asked live ----------
@@ -154,43 +155,9 @@ test("signinWall: a bot check is a wall (kept 30 s); a page that loads names its
 
 // ---------- 3. which way into Uber ----------
 
-test("uberSocialPath: saved Google beats everything; else the live wall, then the 30-day no; off → the card", async () => {
-  // Nobody has asked Uber's page yet: the dated finding (signin_blocked) answers.
-  let p = social.uberSocialPath(CONV, entry);
-  assert.equal(p.supersedes, false);
-  assert.equal(p.walled, true);
-  assert.match(p.why, /refuses Reason's browser/);
-  // Asked live and open: the Google route supersedes the card.
-  p = await social.uberRoute(CONV, entry, { wall: wallIn });
-  assert.deepEqual([p.supersedes, p.can_try, p.saved], [true, true, false]);
-  assert.match(p.why, /sign-in link with provider google, not the connect card/);
-  // A no to Google inside 30 days: the card again, even with Uber's page open.
-  social.recordDecline(CONV, "google");
-  p = social.uberSocialPath(CONV, entry, { live: await wallIn() });
-  assert.equal(p.supersedes, false);
-  assert.match(p.why, /said no to their Google login/);
-  social.clearDecline(CONV, "google");
-  // Walled live: the card, and the live words.
-  social._resetWalls();
-  p = await social.uberRoute(CONV, entry, { wall: wallUp });
-  assert.equal(p.supersedes, false);
-  assert.match(p.why, /HTTP 403/);
-  // A saved Google-backed Uber login: supersedes regardless of the wall, and the wall is not asked.
-  db.recordSiteSignin(CONV, "uber", { state: "signed_in", evidence: "t", provider: "google" });
-  let asked = 0;
-  p = await social.uberRoute(CONV, entry, { wall: async () => { asked++; return wallUp(); } });
-  assert.deepEqual([p.supersedes, p.saved, asked], [true, true, 0]);
-  // Where the flag does not reach them: never the Google route, unless one is already saved.
-  assert.equal(social.uberSocialPath(THEIRS, entry).supersedes, false);
-  assert.match(social.uberSocialPath(THEIRS, entry).why, /does not reach them/);
-  delete process.env.REASON_SOCIAL_SIGNIN;
-  assert.equal(social.uberSocialPath(CONV, entry).supersedes, true, "a saved Google sign-in is still what it is with the flag off");
-  assert.equal(social.uberSocialPath(CONV, sites.site("amazon")).why, "not Uber");
-});
-
 // ---------- 4. signin_link for Uber with provider google ----------
 
-test("signin_link uber + google: the wall is asked; up → said plainly with the card as fallback, no link; down → the link", async () => {
+test("signin_link uber + google: the wall is asked; up → said plainly with the card named instead, no link; down → the link", async () => {
   const made = [];
   const seam = { createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example.test/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; } };
   const up = await call("signin_link", { site: "uber", provider: "google" }, CONV, { ...seam, signinWall: wallUp });
@@ -200,7 +167,8 @@ test("signin_link uber + google: the wall is asked; up → said plainly with the
   assert.equal(up.provider, "google");
   assert.match(up.error, /Google button cannot be pressed for them and no link is made/);
   assert.match(up.say, /bot check before the Google button even loads/);
-  assert.match(up.fallback, /uber_connect with they_asked_to_connect true and fallback true/);
+  assert.match(up.instead, /Uber is the Uber connect card: uber_connect with they_asked_to_connect true/);
+  assert.equal(up.fallback, undefined);
   assert.match(up.handoff, /uber_link/);
   assert.deepEqual(made, [], "no link while the wall is up");
 
@@ -234,39 +202,28 @@ test("signin_link uber + google: the wall is asked; up → said plainly with the
   assert.deepEqual(opened, []);
 });
 
-// ---------- 5. the connect card is the fallback ----------
+// ---------- 5. the connect card is the Uber route ----------
 
-test("uber_connect: a Google-backed Uber supersedes the card; the card only as fallback; off → as before", async () => {
-  // The social flow can get in: the one-line ask, then the link — not the card.
-  let out = await call("uber_connect", { they_asked_to_connect: true }, CONV, { uberRoute: async () => ({ supersedes: true, saved: false, can_try: true, why: "can get in" }) });
-  assert.equal(out.ok, false);
-  assert.equal(out.superseded, "google");
-  assert.equal(out.ask, "Uber signs in through your Google account. Want me to use it?");
-  assert.match(out.then, /signin_link with site "uber" and provider "google"/);
-  assert.match(out.then, /Google will ping your phone\. Tap Yes\./);
-  assert.match(out.fallback, /uber_connect again with fallback true/);
-  // Saved already: nothing to connect.
-  db.recordSiteSignin(CONV, "uber", { state: "signed_in", evidence: "t", provider: "google" });
-  out = await call("uber_connect", { they_asked_to_connect: true }, CONV);
-  assert.equal(out.superseded, "google");
-  assert.match(out.say, /saved as a Google sign-in already: nothing to connect/);
-  // The fallback, when they ask for it: the card is made.
-  out = await call("uber_connect", { they_asked_to_connect: true, fallback: true }, CONV);
-  assert.equal(out.superseded, undefined);
+test("uber_connect: the card, whatever the flag, the wall or a saved Google-backed Uber login says", async () => {
+  let asked = 0;
+  const counting = async () => { asked++; return wallIn(); };
+  // Flag on for the owner, Uber's page open: still the card, and the wall is never asked.
+  let out = await call("uber_connect", { they_asked_to_connect: true }, CONV, { signinWall: counting });
   assert.equal(out.ok, true);
+  assert.equal(out.superseded, undefined);
+  assert.equal(out.ask, undefined);
   assert.match(out.url, /\/connect\/start\?state=/);
-  // Walled live, nothing saved: the card, as before.
-  db.db.exec("DELETE FROM connected_accounts");
-  out = await call("uber_connect", { they_asked_to_connect: true }, CONV, { uberRoute: async () => ({ supersedes: false, why: "walled" }) });
+  // A Google-backed Uber login saved: still the card.
+  db.recordSiteSignin(CONV, "uber", { state: "signed_in", evidence: "t", provider: "google" });
+  out = await call("uber_connect", { they_asked_to_connect: true }, CONV, { signinWall: counting });
   assert.equal(out.ok, true);
   assert.equal(out.superseded, undefined);
   // A ride is still not a connect.
-  out = await call("uber_connect", { they_asked_to_connect: false }, CONV, { uberRoute: async () => ({ supersedes: false }) });
+  out = await call("uber_connect", { they_asked_to_connect: false }, CONV);
   assert.equal(out.blocked, "not_for_rides");
-  // Flag off: the wall is never asked and the card is the answer.
+  // Flag off: the same card.
   delete process.env.REASON_SOCIAL_SIGNIN;
-  let asked = 0;
-  out = await call("uber_connect", { they_asked_to_connect: true }, CONV, { signinWall: async () => { asked++; return wallIn(); } });
+  out = await call("uber_connect", { they_asked_to_connect: true }, CONV, { signinWall: counting });
   assert.equal(out.ok, true);
   assert.equal(asked, 0);
 });
@@ -287,41 +244,20 @@ async function newSetup() {
 }
 const ready = async () => ({ ready: true, why: "" });
 
-test("web setup: a Google-backed Uber login on the stand-in shows connected via Google; the card is not offered where the Google route can get in; a walled Uber keeps the card", async () => {
-  // Owner-only: a setup's stand-in is nobody's owner, so the card is as it was.
-  let caps = (await api("GET", "/api/capabilities", { uberReady: ready, uberWall: wallIn })).json;
+test("web setup: the Uber card is as before the social sign-in — offered and made with the flag on, and a saved Google-backed Uber login is not a connection", async () => {
+  process.env.REASON_SOCIAL_SIGNIN = "on";
+  const caps = (await api("GET", "/api/capabilities", { uberReady: ready })).json;
   assert.equal(caps.uber, true);
   assert.equal(caps.uber_via, undefined);
   const s = await newSetup();
   assert.deepEqual((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber, { state: "none", step: 1, of: 3 });
-
-  // On for everyone, Uber's page loads: the card is not offered, the connect says so, nothing is made.
-  process.env.REASON_SOCIAL_SIGNIN = "on";
-  caps = (await api("GET", "/api/capabilities", { uberReady: ready, uberWall: wallIn })).json;
-  assert.equal(caps.uber, false);
-  assert.equal(caps.uber_via, "google");
   const asked = [];
   const uberLink = (c) => { asked.push(c); return { ok: true, url: "https://app.example/connect/start?state=st" }; };
-  const no = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, uberLink, uberWall: wallIn });
-  assert.deepEqual(no.json, { ok: false, why: "superseded", via: "google" });
-  assert.deepEqual(asked, []);
-  assert.deepEqual((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber, { state: "none", step: 1, of: 3 }, "not 'failed': nothing failed");
-
-  // Walled: the card is offered and made, exactly as before.
-  caps = (await api("GET", "/api/capabilities", { uberReady: ready, uberWall: wallUp })).json;
-  assert.equal(caps.uber, true);
-  const yes = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, uberLink, uberWall: wallUp });
+  const yes = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, uberLink });
   assert.deepEqual(yes.json, { ok: true, url: "https://app.example/connect/start?state=st" });
   assert.deepEqual(asked, [s.c]);
-
-  // A Google-backed Uber login saved on the stand-in: connected, via Google, whatever the wall says.
   db.recordSiteSignin(s.c, "uber", { state: "signed_in", evidence: "t", provider: "google" });
-  assert.deepEqual((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber, { state: "connected", step: 3, of: 3, via: "google" });
-  assert.deepEqual((await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie, uberReady: ready, uberLink, uberWall: wallUp })).json, { ok: false, why: "superseded", via: "google" });
-  assert.equal(asked.length, 1);
-
-  // Flag off: the saved Google sign-in still reads as connected (it is one), and the card is offered.
-  delete process.env.REASON_SOCIAL_SIGNIN;
-  assert.equal((await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber.via, "google");
-  assert.equal((await api("GET", "/api/capabilities", { uberReady: ready, uberWall: wallIn })).json.uber, true);
+  const after = (await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections.uber;
+  assert.notEqual(after.state, "connected");
+  assert.equal(after.via, undefined);
 });

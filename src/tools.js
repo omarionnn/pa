@@ -5286,7 +5286,6 @@ export const tools = [
       properties: {
         they_asked_to_connect: { type: "boolean", description: "True only when they asked, in their own words, to connect or link their Uber account. A ride request is not that." },
         scopes: { type: "array", items: { type: "string" }, description: "Which permissions to ask for. Omit for all of them: profile, places, offline_access, request, request_receipt. Fewer is better if they only want one thing." },
-        fallback: { type: "boolean", description: "True only after the Google route into Uber was found blocked (signin_link said so), or when they ask to connect the account itself. Without it, an Uber that signs in through their Google login is answered with that route instead of this card." },
       },
       required: ["they_asked_to_connect"],
     },
@@ -7253,7 +7252,7 @@ const S = {
     pickup_latitude: z.number().min(-90).max(90).optional(), pickup_longitude: z.number().min(-180).max(180).optional(),
     pickup_address: z.string().max(300).optional(),
   }),
-  uber_connect: z.object({ they_asked_to_connect: z.boolean().optional(), scopes: z.array(z.string().max(40)).max(10).optional(), fallback: z.boolean().optional() }),
+  uber_connect: z.object({ they_asked_to_connect: z.boolean().optional(), scopes: z.array(z.string().max(40)).max(10).optional() }),
   // `home` and `work` are the only two values Uber's own docs accept for a place id, so the enum is
   // Uber's list rather than a free string that would come back as a 422 nobody could explain.
   uber_options: z.object({
@@ -9224,7 +9223,7 @@ function signinBlockedAnswer(entry) {
  * A blocked site asked for with a provider button, where the social flag reaches this person: ask
  * the site live (src/socialsignin.js signinWall) instead of trusting the dated finding. `in` when
  * the page loads now; otherwise `answer` is the blocked answer with the provider's words on it —
- * and for Uber, the connect card named as the fallback.
+ * and for Uber, the connect card named instead.
  */
 async function socialWallFor(c, entry, provider, ctx) {
   const prov = social.socialAllowedFor(c) ? social.providerKey(provider) : "";
@@ -9239,7 +9238,7 @@ async function socialWallFor(c, entry, provider, ctx) {
       ...base, provider: prov, checked_live: true,
       error: `${entry.label}'s sign-in page refuses Reason's browser from here right now, so the ${social.LABELS[prov]} button cannot be pressed for them and no link is made. ${wall?.why ?? base.error}`,
       say: `${entry.label} won't let my browser onto its sign-in page — it stops it with a bot check before the ${social.LABELS[prov]} button even loads. That's ${entry.label}'s call, not something you did.`,
-      ...(entry.site === "uber" ? { fallback: "The Uber connect card is the fallback: uber_connect with they_asked_to_connect true and fallback true makes it, if they want their account connected; for a ride, uber_link needs no sign-in at all." } : {}),
+      ...(entry.site === "uber" ? { instead: "Uber is the Uber connect card: uber_connect with they_asked_to_connect true, if they want their account connected; for a ride, uber_link needs no sign-in at all." } : {}),
     },
   };
 }
@@ -14776,21 +14775,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- Uber, on Uber's own API ----------
     case "uber_connect": {
-      // Uber through their Google login comes first (src/socialsignin.js uberSocialPath): a saved
-      // Google-backed Uber login, or a social flow that can still get in, supersedes this card. The
-      // card stays as the fallback — `fallback: true` makes it once the Google route has been found
-      // blocked, or when they would rather connect the account itself.
-      const uberEntry = signin.entryFor("uber");
-      const path = await (ctx.uberRoute ?? social.uberRoute)(c, uberEntry);
-      if (path.supersedes && input.fallback !== true) {
-        return {
-          ok: false, superseded: "google", why: path.why,
-          ...(path.saved
-            ? { say: "Their Uber login is saved as a Google sign-in already: nothing to connect. Use it — signin_status says whether it is still good, and a recheck signs back in through the Google button by itself." }
-            : { ask: social.UBER_ASK, then: `On a yes: signin_link with site "uber" and provider "google", and the one line "${social.expectLine("google")}". Check signin_provider ask_check first.` }),
-          fallback: "Only if the Google route is blocked (signin_link says so) or they ask to connect the account itself: uber_connect again with fallback true.",
-        };
-      }
       // A ride is uber_link (2026-10-23). Connecting Uber cannot book a ride for anybody Uber has not
       // listed, so starting it for a ride request stalled that ride on a sign-in that leads nowhere.
       if (input.they_asked_to_connect !== true) {

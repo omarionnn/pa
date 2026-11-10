@@ -459,16 +459,11 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
 - **A lapse is tried first.** `signin_status` with `recheck` reads the saved button before the probe
   and, when the site says signed out, opens the sign-in page, presses it and asks again; only when
   that lands on the provider's own page is the person sent a fresh link.
-- **Uber first** (the owner's scope addition, same day): most people's Uber is a Google sign-in,
-  through "Continue with Google" on auth.uber.com — where uber.com, m.uber.com and riders.uber.com
-  all send a signed-out browser (`src/sites.js` lists those hosts now). The rules carry the exact
-  ask — *"Uber signs in through your Google account. Want me to use it?"* — and on a yes it is
-  `signin_link` for `uber` with `provider: "google"`. That route **supersedes the Uber OAuth connect
-  card**: `uber_connect` answers with the Google route (the ask, or "already saved, nothing to
-  connect") whenever a Google-backed Uber login is saved or the social flow can get in, and makes
-  the card only with `fallback: true`; the web setup shows a saved Google-backed Uber as connected
-  `via: "google"`, and where the flag is on for everyone and Uber's page loads, `capabilities.uber`
-  is false and `connect/uber` says `superseded` (`src/websetup.js`). A walled Uber keeps the card.
+- **Uber is the connect card, not a social sign-in** (owner, 2026-11-10 — the same day's "Uber
+  first", where a Google route superseded the Uber OAuth connect card, is reversed). The rules say
+  never to ask for a Google login for Uber; connecting an Uber account is `uber_connect` (only when
+  they ask to connect it), a ride is `uber_link`; the web setup's Uber card is as it was before the
+  social sign-in. `src/sites.js` still lists uber.com, m.uber.com, riders.uber.com, auth.uber.com.
 - **The wall is asked live.** Uber's `signin_blocked` in `src/sites.js` is a dated finding, so with a
   provider the link and the window ask the site first (`signinWall`: the sign-in page fetched from
   where Reason runs; a 403 / "Just a moment" / "Performing security verification" is a wall, kept
