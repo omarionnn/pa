@@ -4938,7 +4938,9 @@ export function markOutboundFailed(id, { error, errorKey = null, errorCode = nul
     last_error = ?, last_error_key = ?, last_error_code = ?, updated_at = ? WHERE id = ?`)
     .run(now, String(error ?? ""), errorKey, errorCode === null ? null : String(errorCode), now, id);
   for (const r of db.prepare("SELECT id FROM outbox WHERE after_id = ? AND state IN ('queued','unknown')").all(id)) {
-    markOutboundFailed(r.id, { error: `the message it goes with never arrived, so this was not sent on its own: ${String(error ?? "")}` });
+    // The head's key travels with it: a follow-up dead because its head was refused for the person's
+    // own reasons (opted out, never texted the line) is that same refusal, not a fault of Reason's.
+    markOutboundFailed(r.id, { error: `the message it goes with never arrived, so this was not sent on its own: ${String(error ?? "")}`, errorKey, errorCode });
   }
   return getOutbound(id);
 }
