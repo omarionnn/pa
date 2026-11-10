@@ -23,6 +23,7 @@
 import { db } from "./db.js";
 import * as dbm from "./db.js";
 import { clock, config } from "./config.js";
+import { socialAllowedFor } from "./socialsignin.js";
 
 const OFF = ["0", "off", "false", "no"];
 /** off (the default) | owner | on. Off: every tool loaded, exactly as before. Unset is off, so a deploy
@@ -88,6 +89,10 @@ export const PACKS = {
   pages: ["page_create", "page_update", "page_list"],
   meals: ["meal_estimate", "meal_query", "meal_correct"],
   subscriptions: ["subscription_list", "subscription_record", "subscription_update", "subscription_cancel_start", "subscription_cancel_commit"],
+  // The secure sign-in link and the provider tool, loaded whole wherever the Google/Apple/Facebook/
+  // Microsoft rules are in the prompt (src/socialsignin.js): those rules name them, and on 2026-11-10
+  // the owner's Notion task never reached signin_link — Reason said it could not get in instead.
+  signin: ["signin_link", "signin_status", "signin_provider"],
 };
 const PACK_OF = new Map();
 for (const [k, names] of Object.entries(PACKS)) for (const n of names) if (!PACK_OF.has(n)) PACK_OF.set(n, k);
@@ -143,6 +148,8 @@ export function statePacks(conversationId, { now = clock.now() } = {}) {
   const c = conversationId;
   const out = [];
   const one = (sql, ...a) => db.prepare(sql).get(...a);
+  // First, so a heavy user's other packs never push it past the cap: the rules in their prompt name these.
+  if (safe(() => socialAllowedFor(c))) out.push("signin");
   if (safe(() => one("SELECT 1 FROM shop_runs WHERE conversation_id = ? AND updated_at >= ? LIMIT 1", c, now - 7 * DAY))
     || safe(() => one("SELECT 1 FROM agentcard_purchases WHERE conversation_id = ? AND created_at >= ? LIMIT 1", c, now - 7 * DAY))) out.push("shopping");
   if (safe(() => dbm.eventsOrganizedBy(c).some(e => e.status !== "cancelled"))) out.push("events_host");

@@ -50,7 +50,7 @@ import * as db from "./db.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
 import { readSignedInState } from "./sites.js";
-import { profileDirFor } from "./browser.js";
+import { profileDirFor, guardContext } from "./browser.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
@@ -92,6 +92,8 @@ async function realLaunch({ conversationId, url }) {
     headless: true, viewport: VIEW, deviceScaleFactor: 2,
     // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
   });
+  // Never this machine's own network, on every request — a link can name any site by its address.
+  await guardContext(context);
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
