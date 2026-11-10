@@ -92,3 +92,10 @@ card route), `src/db.js` (`contact_card_name`, `contact_card_token`, `setContact
   phone-control wording. Needs `claude` logged in on this Mac (on 2026-11-06 it said "OAuth session
   expired", so the name-card PR was proved in-process: stated reads, real router/outbox/card route).
 - Never on live until deployed; `REASON_ONBOARDING=off` in `.env` turns it off.
+
+## Names get a capital on each word (#426, 2026-11-10)
+
+`nameCase` (`src/contact.js:62`) upper-cases the first letter of each word (after a space or a hyphen) and
+changes nothing else: "kwame mensah" → "Kwame Mensah", "anne-marie" → "Anne-Marie"; "KWAME" stays "KWAME",
+"mcKenzie" stays as typed. Used by the greeting (`MET`, `src/onboarding.js`), the card name (`cardName`) and its line.
+Prove: `node --test test/onboarding.test.js` + `bin/onboarding-checks.cjs`.
