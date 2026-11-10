@@ -355,7 +355,8 @@ const CHILD_SCOPE = {
   // A join claim is theirs once their own text spent it; an unspent one ages out with the event.
   event_claims: ["used_by = ?", 1],
   // A web setup is theirs once their first text claimed it (src/websetup.js); an unclaimed one ages out in a day.
-  web_setups: ["claimed_by = ?", 1],
+  // claimed_by is the conversation's blind index (src/websetupstore.js), or the plain id from before phase 2.
+  web_setups: ["claimed_by IN (?, websetup_owner(?))", 2],
 };
 
 /**

@@ -41,6 +41,23 @@ db.db.exec(`
 for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0"]) {
   try { db.db.exec(`ALTER TABLE web_setups ADD COLUMN ${col}`); } catch { /* exists */ }
 }
+// Once claimed, a setup keeps no name and no phone (encryption at rest, #425/#438): both names are
+// blanked (the account holds its own copies) and `claimed_by` is the conversation's keyed blind index
+// (restcrypt.blindIndex, phase 2; the plain id when phase 2 is off), matched, never read back.
+const owner = (conversationId) => db.restcrypt.blindIndex("conversation", String(conversationId ?? ""));
+const ownerForms = (conversationId) => db.restcrypt.blindIndexes("conversation", String(conversationId ?? ""));
+// The export/delete scope (src/data.js CHILD_SCOPE) matches a conversation id against this column.
+try { db.db.function("websetup_owner", { deterministic: true }, (c) => owner(c)); } catch { /* registered */ }
+/** Rows claimed before this: names blanked, owners hashed (idempotent, every boot). */
+export function scrubClaimed() {
+  db.db.prepare("UPDATE web_setups SET user_name = '', reason_name = '' WHERE claimed_by IS NOT NULL AND (user_name != '' OR reason_name != '')").run();
+  for (const r of db.db.prepare("SELECT id, claimed_by FROM web_setups WHERE claimed_by IS NOT NULL AND claimed_by NOT LIKE 'bi1:%'").all()) {
+    const h = owner(r.claimed_by);
+    if (h !== r.claimed_by) db.db.prepare("UPDATE web_setups SET claimed_by = ? WHERE id = ?").run(h, r.id);
+  }
+}
+scrubClaimed();
+
 /** A code whose text came with the wrong names this many times is shut: guessing a code is not enough. */
 export const MAX_MISSES = 5;
 
@@ -120,13 +137,14 @@ export function miss(id) {
 }
 
 export function markClaimed(id, conversationId, now = clock.now()) {
-  return db.db.prepare("UPDATE web_setups SET claimed_by = ?, claimed_at = ? WHERE id = ? AND claimed_by IS NULL").run(conversationId, now, id).changes === 1;
+  return db.db.prepare("UPDATE web_setups SET claimed_by = ?, claimed_at = ?, user_name = '', reason_name = '' WHERE id = ? AND claimed_by IS NULL").run(owner(conversationId), now, id).changes === 1;
 }
 
 /** The setup this conversation claimed, if any. */
 export function claimedBy(conversationId) {
   if (!conversationId) return null;
-  return db.db.prepare("SELECT * FROM web_setups WHERE claimed_by = ? ORDER BY claimed_at DESC LIMIT 1").get(conversationId) ?? null;
+  const forms = ownerForms(conversationId);
+  return db.db.prepare(`SELECT * FROM web_setups WHERE claimed_by IN (${forms.map(() => "?").join(", ")}) ORDER BY claimed_at DESC LIMIT 1`).get(...forms) ?? null;
 }
 
 /** Setups past their day that nobody claimed: their ids, for the sweep to drop what they hold. */
