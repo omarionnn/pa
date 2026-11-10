@@ -6,20 +6,20 @@ The contract for the Swift client. The app holds no logic: every state, word and
 - **Owner mode** (what is live now): everyone but the signed-in owner gets that flat 404 on every route. That includes `POST /auth/code` even when a code was sent, so the answer never says which number is the owner's. While in this mode the app goes to the code screen whatever that call answers, and treats a flat 404 from any later route (no `"ok"` field) as signed out or a wrong code.
 - JSON, UTF-8, `snake_case`. Times are Unix milliseconds. Money is integer cents with a `currency`.
 - Successful answers carry `"ok": true`. Failures carry `"ok": false` and an `error` code.
-- Every response is `Cache-Control: no-store`. Anything marked `"private": true` is the app's to frost until Face ID.
+- Every JSON response from a route is `Cache-Control: no-store` (the flat 404 for an unknown path and a 500 that escapes a route don't carry it; never cache either). Anything marked `"private": true` is the app's to frost until Face ID.
 - A breaking change gets `/ios/v2`. New fields may appear in v1 at any time, so ignore fields you don't know.
 
 | Status | `error` | Meaning |
 |---|---|---|
 | 400 | `bad_request`, `bad_id`, `confirm_required`, `empty` | Malformed, or the required confirmation is missing. `bad_id` is a `POST /messages` id outside 8–64 of `A-Z a-z 0-9 -` |
-| 403 | `refused` | `POST /messages`: this account can't be served |
+| 403 | `refused` | `POST /messages`: this account can't be served, or Reason Web is off or not on for this person (the app's messages run on Web's path) |
 | 401 | `signed_out` | No valid session on this device. Clear the token and show sign-in |
 | 401 | `wrong_code` | The code didn't open anything. Same for every kind of miss |
 | 404 | `not_found` | Not there, or not yours. The two are deliberately identical |
 | 405 | `method_not_allowed` | |
 | 409 | `same_as_another`, `not_corrected` | A correction that couldn't be applied |
 | 413 | `too_long` | Over 500 characters for a memory correction, 4,000 for a message |
-| 429 | `rate_limited`, `slow_down` | This device is asking too often (`slow_down`: sending messages too fast) |
+| 429 | `rate_limited`, `slow_down` | `rate_limited`: sign-in only (`/auth/code`, `/auth/verify`). `slow_down`: more than 20 messages a minute from this person, app and Web together |
 | 500 | `server_error`, `failed` | `failed`: a message couldn't be handed to Reason |
 | 503 | `try_again`, `unavailable` | `try_again`: a forget couldn't be worked out yet; nothing changed, offer it again. `unavailable`: the service isn't ready to take messages |
 
@@ -31,7 +31,7 @@ Sign-in is by phone number, against the Reason account that number already has. 
 
 Generate `challenge` randomly per attempt, keep it in memory, and send the same value to `/auth/verify`.
 
-**`POST /auth/verify`** `{ "phone", "challenge", "code": "123456", "device_name": "Ama's iPhone" }` → `200 { "ok": true, "token": "…", "expires_in_s": 7776000, "first_name": "Ama" }`
+**`POST /auth/verify`** `{ "phone", "challenge", "code": "123456", "device_name": "Ama's iPhone" }` → `200 { "ok": true, "token": "…", "expires_in_s": 7776000, "first_name": "Ama" }`. `first_name` is `null` when the account has no name
 
 Store `token` in the Keychain. Send it as `Authorization: Bearer <token>` on every other route; it is never accepted in a URL. A session lasts a flat 90 days from sign-in, however long it goes unused, and can be revoked at any time. After that every route answers `401 signed_out`.
 
@@ -50,7 +50,7 @@ App sessions also appear under "signed-in browsers" in Reason Web Settings and c
   "sections": { "in_progress": [Item], "done": [Item], "failed": [Item], "open_offers": [Item] } }
 ```
 
-`empty: true` means there is nothing real to show. Draw the quiet page; never fill it in. `done` and `failed` hold the last 72 hours, newest first.
+`empty: true` means there is nothing real to show. A standalone call still marked live 2 hours after it started is left off the Page. Draw the quiet page; never fill it in. `done` and `failed` hold the last 72 hours, newest first.
 
 Every `Item` has `id`, `kind` (`task`, `timer`, `series`, `approval`, `call`, `purchase`, `checkout`), `state`, `title`, `at`, `started_at` and `private`. `id` is the kind and the record's id (`"task-12"`, `"call-7"`), except a checkout's, which is `run-` and the checkout run's own id (`"run-r_8f2a"`), not a number. Treat ids as opaque strings. By `state`:
 
@@ -90,18 +90,18 @@ For a task, timer, series or approval, a `Receipt` is the `Item` plus:
   "artifacts": [ Artifact ] }
 ```
 
-A call, purchase or checkout receipt is its own shape, not the Page's `Item`: `id`, `kind`, `state` (`working`, `ready` or `failed` only), `title`, `private`, `at`, `started_at`, `finished_at`, `summary`, plus `as_of`, `steps` (always `[]`), `cost` and `artifacts`. A call adds `duration_s`; a purchase adds `items: [{ "name", "qty" }]`. They don't carry the Page's state extras (`result`, `failure`, `nothing_charged`, `calling`, `amount_cents`). A purchase waiting on approval is `waiting` on the Page and `working` here. `at` is the same moment the Page item shows: when a live call started, else when the call, purchase or checkout last changed.
+A call, purchase or checkout receipt is its own shape, not the Page's `Item`: `id`, `kind`, `state` (`working`, `ready` or `failed` only), `title`, `private`, `at`, `started_at`, `finished_at`, `summary`, plus `as_of`, `steps` (always `[]`), `cost` and `artifacts`. A call adds `duration_s`; a purchase adds `items: [{ "name", "qty" }]`. A call receipt's `finished_at` is `null` when no end time was recorded, even where its Page item shows one. They don't carry the Page's state extras (`result`, `failure`, `nothing_charged`, `calling`, `amount_cents`). A purchase waiting on approval is `waiting` on the Page and `working` here. `at` is the same moment the Page item shows: when a live call started, else when the call ended (or last changed), or when the purchase or checkout last changed. Like every time in this API it is epoch milliseconds; these three receipts also carry `at_iso`, the same moment as an ISO 8601 UTC string (`"2026-11-09T20:15:03.120Z"`), `null` only when `at` is.
 
 `cost` is money charged to the person, not what the work cost Reason to run. `charged_cents` is `null` and `charged_known` is `false` when an outcome is unknown; never show a number then. `log` is on tasks only.
 
 | `Artifact.type` | Fields |
 |---|---|
-| `recording` | `url`, `seconds`, and on a task `call_id`, `call_title` |
+| `recording` | `url` (a path on this host, `/ios/v1/calls/7/recording`), `seconds` (may be `null`), and on a task `call_id`, `call_title` |
 | `transcript` | `text`, and on a task `call_id`, `call_title` |
 | `confirmation` | `order_id`, `delivery_window` |
 | `approval` | `summary`, `approved_at`, `you_said` |
 
-**`GET /calls/{id}/recording`** (or `HEAD`) returns audio bytes playable on iPhone, with `Range` support, under the same bearer token.
+**`GET /calls/{id}/recording`** (or `HEAD`), `{id}` the bare call number (`7`, not `call-7`), returns audio bytes playable on iPhone, with `Range` support, under the same bearer token.
 
 ## Live updates
 
@@ -109,11 +109,12 @@ A call, purchase or checkout receipt is its own shape, not the Page's `Item`: `i
 
 | Event | Data |
 |---|---|
-| `page` | The full `/page` body. Always sent first, then on every change |
+| `page` | The `/page` body without `ok` (`as_of`, `empty`, `sections`). Always sent first, then on every change |
 | `ping` | `{}` every 15 s. A connection silent for 40 s is dead: reconnect |
 | `message` | A `Message`, as it's written, with an SSE `id` (the message id) |
 | `done` | `{ "reply_to": 41, "answers": [40, 41], "last_reply": 43, "at": 0 }`. A turn ended. Sent after the `message` events for its replies |
-| `typing` | `{ "on": true, "until": 0 }` while Reason works on a message from the app |
+| `progress` | `{ "reply_to": 41, "text": "Checking Ulta and Target for CeraVe", "tool": "web_search", "at": 0 }`. Reason started a step of a turn. See below |
+| `typing` | `{ "on": true, "until": 0 }` while Reason works on a message from the app: `until` is the epoch-ms moment to stop showing it unless renewed; `{ "on": false, "until": 0 }` when it stops |
 | `signedout` | `{}`. This device was revoked. The stream ends; clear the token |
 
 A change reaches the stream within 1 second. The stream closes every 30 minutes; reconnect after the `retry:` hint (1.5 s). The Page needs no resume because each connection starts with the whole Page. Messages resume from `Last-Event-ID` (or `?after={id}`); a fresh connection starts from now, so load history with `GET /messages`. Each person gets 3 streams at once, and a fourth closes the oldest.
@@ -130,7 +131,7 @@ A message from the app is the same as a text. It runs the same turn, so reminder
 
 Make `id` a fresh UUID per message and reuse it on a retry: a repeated `id` is not run twice (`duplicate: true`). `200` means Reason took it, not that it has answered. Up to 4,000 characters. `429 slow_down` when sending too fast, `403 refused` when this account can't be served, `503 unavailable` when the service isn't ready.
 
-**`GET /messages`** newest 50, oldest of them first. `?before={id}` pages back, `?after={id}` catches up, `?limit=` up to 100.
+**`GET /messages`** → `{ "ok": true, "messages": [Message] }`, newest 50, oldest of them first. `?before={id}` pages back, `?after={id}` catches up (it wins when both are sent), `?limit=` up to 100 (anything not a number means 50).
 
 `Message` is `{ "id", "role": "user|reason", "text", "at", "via": "app_or_web|text", "client_id", "attachments": [{ "name" }], "reply_to", "turn_done", "turn_done_at" }`. `client_id` is your `id`, so an optimistic line can be matched. Texts appear too, since it's one conversation. Attachment bytes aren't served by this API yet.
 
@@ -139,13 +140,28 @@ Make `id` a fresh UUID per message and reuse it on a retry: a repeated `id` is n
 One message (or several sent close together) gets one turn, and a turn can send several replies.
 
 - **`reply_to`**, on Reason's messages: the `id` of the person's message it answers. Every reply the turn sends to this person carries it. Several messages answered by one turn: it names the newest of them at the moment that reply was sent. `null` when the message answers nobody: a reminder going off, a call's outcome, anything Reason says unprompted, and anything Reason wrote before this field existed (2026-11-10).
-- **`turn_done`**, on Reason's messages: `true` on the last reply of a turn that has ended. While the turn runs every reply is `false`, so a live `message` event always says `false`; the `done` event says which one was last.
+- **`turn_done`**, on Reason's messages: `true` on the last reply of a turn that has ended. While the turn runs every reply is `false`, so a `message` event sent as the reply is written says `false` (one replayed after a reconnect may say `true`); the `done` event says which one was last.
 - **`turn_done_at`**, on the person's messages: when the turn answering it ended, `null` while it runs. A turn that ends with no reply at all still sets it. `null` too on messages from before this field existed, and while the message is waiting for Reason to be back after an outage.
 - **`done`** on `/live`: `reply_to` is the message the turn last answered, `answers` every message it answered (its `turn_done_at` is now set), `last_reply` the `id` of its last reply or `null` when it sent none.
 
 So the app shows Reason as working on a message from the moment it's sent until `done` names it (or `turn_done_at` is set), with no quiet timer. A `done` missed while disconnected isn't replayed: after a reconnect, read `turn_done_at` on the pending message from `GET /messages`.
 
 A reply sent after its turn ended (a retry of a text that failed to go out) still carries `reply_to`, but the `done` has already gone and names an earlier reply as last.
+
+The link is the server's own, never a guess from timing: a turn takes the person's messages, everything it queues to them while it runs is stamped with the one it answers, and that stamp is what `reply_to` reads. Work a turn leaves running after it ends (a call placed, a checkout) answers nobody when it reports back, so its message is `reply_to: null`.
+
+### What Reason is doing
+
+**`progress`** on `/live`, while a turn runs: one short line each time Reason starts a step (a tool), built from that step and what it was given. Show it under the message it names, in place of a canned "thinking" line, until the next `progress`, a reply, or `done`.
+
+- **`reply_to`**: the message the turn is answering, the same id its replies carry. Sent after that message's own `message` event.
+- **`text`**: the line, at most 60 characters, sentence case, no trailing ellipsis. Built from the real step: `"Checking Ulta and Target for CeraVe"`, `"Looking at Thursday's calendar"`, `"Searching flights from JFK to LAX for tomorrow"`, `"Checking out CeraVe cleanser at Ulta"`.
+- **`tool`**: the step's name (`web_search`, `calendar_events`). For logs; don't show it.
+- **`at`**: when the step started, epoch ms.
+
+When it's sent: as a step starts, after Reason's safety check and its input check pass, so a step that is refused says nothing. Only inside a turn answering the person: a reminder going off or work left running after a turn says nothing. A step with nothing worth saying (writing a note to itself, the reply itself) sends no `progress`; the same line twice in a row is sent once. It isn't stored or replayed: a reconnect hears only what starts after it.
+
+Privacy: the line goes only to this person's own signed-in devices, and never carries anyone else's details. A step whose input can name or reach another person (a text, email or call to someone, a memory or contact lookup, a guest list, a calendar entry's title or guests, a search of their mail or Drive, a location or an address) gets a fixed line for that step, such as `"Writing the message"`, `"Getting the call ready"`, `"Going through your email"`, `"Checking what I know"`. Words that do go in (a search, a store, a product) have phone numbers, email addresses and web addresses taken out.
 
 ## What Reason knows
 
@@ -161,9 +177,9 @@ A reply sent after its turn ended (a retry of a text that failed to go out) stil
 
 `Source` is `{ "kind", "label", "at", "quote" }`. `label` is the line to show ("You told me"). `quote` is their own words that it came from, when Reason still has them.
 
-- **`POST /memories/{id}/correct`** `{ "text": "…" }` → `{ "ok": true, "id": "fact-13" }`. Correcting issues a new `id`.
+- **`POST /memories/{id}/correct`** `{ "text": "…" }` → `{ "ok": true, "id": "fact-13" }`. Correcting issues a new `id`, except when the text is unchanged: then the same `id` comes back.
 - **`DELETE /memories/{id}`** forgets one memory for good, including from the message it came from. May answer `503 try_again`.
-- **`POST /memories/guess-{n}`** `{ "answer": "yes" | "no" }`. Yes saves it as a fact (`id` returned); no dismisses it for good.
+- **`POST /memories/guess-{n}`** `{ "answer": "yes" | "no" }`. → `{ "ok": true, "id" }`. Yes saves it as a fact and `id` is that fact's (`null` if no fact row was made); no dismisses it for good and `id` is `null`.
 - **`POST /memories/forget-everything`** `{ "confirm": "FORGET EVERYTHING" }` → `{ "ok": true, "removed": { "person_facts": 12, … } }`
 
 Face ID for this screen is the app's to enforce. The server can't observe it, so these routes rely on the device session and, for forget-everything, the confirmation string.

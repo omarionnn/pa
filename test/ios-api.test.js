@@ -784,5 +784,127 @@ test("receipts: a call, a purchase and a checkout carry `at`, the same moment th
     const item = (await api(`/items/${id}`, { token })).json.item;
     assert.equal(item.at, at, id);
     assert.equal(onPage[id], at, `${id} on the Page`);
+    assert.equal(item.at_iso, new Date(at).toISOString(), `${id} at_iso, ISO 8601 UTC`);
+    assert.match(item.at_iso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   }
+});
+
+// ---------------------------------------------------------------- progress lines (2026-11-09)
+const progress = await import("../src/progress.js");
+const { runTool } = await import("../src/tools.js");
+const { AsyncResource } = await import("node:async_hooks");
+// Made here, outside any turn: running inside it is how a CLI tool call arrives (its own HTTP request).
+const outsideAnyTurn = new AsyncResource("cli-tool-call");
+
+test("progress: the line is built from the real tool and its arguments, never a filler", () => {
+  const mon = Date.parse("2026-11-09T15:00:00Z"); // a Monday in New York
+  const o = { now: mon, tz: "America/New_York" };
+  assert.equal(progress.phraseFor("web_search", { query: "CeraVe", sites: ["ulta.com", "https://www.target.com/s"] }), "Checking Ulta and Target for CeraVe");
+  assert.equal(progress.phraseFor("web_search", { query: "best running shoes for flat feet" }), "Searching for best running shoes for flat feet");
+  assert.equal(progress.phraseFor("calendar_events", { from: "2026-11-12T00:00:00-05:00", to: "2026-11-13T00:00:00-05:00" }, o), "Looking at Thursday's calendar");
+  assert.equal(progress.phraseFor("calendar_events", { from: "2026-11-09" }, o), "Looking at today's calendar");
+  assert.equal(progress.phraseFor("store_checkout", { store: "Ulta", item: "CeraVe cleanser" }), "Checking out CeraVe cleanser at Ulta");
+  assert.equal(progress.phraseFor("flight_search", { origin: "JFK", destination: "LAX", depart_date: "2026-11-10" }, o), "Searching flights from JFK to LAX for tomorrow");
+  assert.equal(progress.phraseFor("offer_check", { url: "https://www.sephora.com/product/x" }), "Checking the price on Sephora");
+  assert.equal(progress.phraseFor("weather", { place: "Accra" }), "Checking the weather in Accra");
+  // Nothing honest to say: nothing at all, not "Reading that…" or "Still working through it."
+  for (const [name, input] of [["task_update", { note: "x" }], ["remember", { fact: "x" }], ["confirm_request", {}], ["message_send", { to: "owner", text: "hi" }], ["no_such_tool", {}]]) {
+    assert.equal(progress.phraseFor(name, input), null, name);
+  }
+  for (const t of ["web_search", "research", "calendar_events", "gmail_search", "call_place", "nothing"]) {
+    assert.doesNotMatch(String(progress.phraseFor(t, {}) ?? ""), /reading that|still working|one moment|thinking/i, t);
+  }
+  assert.ok(progress.phraseFor("research", { question: "x".repeat(400) }).length <= 60, "short");
+});
+
+test("progress privacy: anything that can name or reach someone else gets a neutral line, never its arguments", () => {
+  const secret = /kofi|elm|555|@|maame|dentist|lunch/i;
+  const cases = [
+    ["message_send", { to: "+14155550000", text: "Kofi, your address is 12 Elm St" }, "Writing the message"],
+    ["message_send", { to: "Kofi", text: "hi" }, "Writing the message"],
+    ["voice_note_send", { to: "Maame", text: "hi" }, "Sending the voice note"],
+    ["call_place", { to: "+14155550000", goal: "Ask Dr Kofi the dentist about Maame's results" }, "Getting the call ready"],
+    ["gmail_search", { query: "from:kofi@example.com lunch" }, "Going through your email"],
+    ["gmail_send", { to: "kofi@example.com", subject: "Lunch", body: "x" }, "Sending the email"],
+    ["calendar_create", { summary: "Lunch with Kofi", attendees: ["kofi@example.com"], start: "2026-11-12T12:00:00Z" }, "Adding it to your calendar"],
+    ["memory_search", { query: "Kofi's address" }, "Checking what I know"],
+    ["graph_lookup", { entity: "Maame" }, "Checking what I know"],
+    ["get_location", { action: "get" }, "Checking where you are"],
+    ["directions", { to: "12 Elm St", place_name: "Kofi's house" }, "Working out the route"],
+    ["event_guests", { event_named: "Maame's birthday" }, "Checking the guest list"],
+    ["drive_search", { query: "Kofi lease" }, "Looking through your Drive"],
+    ["timer_set", { note: "call Kofi at 555-0101" }, "Setting the reminder"],
+  ];
+  for (const [name, input, want] of cases) {
+    const got = progress.phraseFor(name, input);
+    assert.equal(got, want, name);
+    assert.doesNotMatch(got, secret, name);
+  }
+  // Free text that does go in loses phone numbers, emails and web addresses.
+  const q = progress.phraseFor("web_search", { query: "CeraVe +1 (415) 555-0000 kofi@example.com https://evil.example/x" });
+  assert.equal(q, "Searching for CeraVe");
+  assert.equal(progress.clean("+233 24 123 4567"), "");
+});
+
+test("progress: said only inside an open turn of theirs, once per line in a row", async () => {
+  const heard = [];
+  const on = (e) => heard.push(e);
+  progress.progressEvents.on("say", on);
+  try {
+    assert.equal(progress.say(null, "web_search", { query: "x" }), null, "outside a turn (a reminder, a sweep): nothing");
+    const { turn, result } = turnlink.run({ conversationId: A.c, to: A.phone, held: [{ external_id: "in-p1" }] }, async () => {});
+    await result;
+    progress.say(turn, "web_search", { query: "CeraVe" }, { answering: "in-p1" });
+    progress.say(turn, "web_search", { query: "CeraVe" }, { answering: "in-p1" }); // the same line again: once
+    progress.say(turn, "task_update", {}, { answering: "in-p1" }); // nothing to say
+    turnlink.close(turn);
+    progress.say(turn, "weather", { place: "Accra" }); // turn over: nothing
+    assert.deepEqual(heard.map(e => [e.conversationId, e.handle, e.text]), [[A.c, "in-p1", "Searching for CeraVe"]]);
+  } finally { progress.progressEvents.off("say", on); }
+});
+
+test("progress end to end: a CLI-style tool call outside the turn's scope says its line on the stream, naming the message; nobody else's stream hears it", async () => {
+  const token = await signIn(A);
+  const tokenB = await signIn(B);
+  let foundTurn = null;
+  const h = realPipeline("Here are your flights");
+  h.runtime.runTurn = async (a) => {
+    // The CLI backend's tool calls arrive as their own requests, outside the turn's async scope; they carry the fold token.
+    await outsideAnyTurn.runInAsyncScope(async () => {
+      foundTurn = turnlink.ofCall(A.c, a.foldToken);
+      assert.equal(turnlink.ofCall(A.c, "fold-nope"), null, "a token that isn't this turn's finds nothing");
+      assert.equal(turnlink.ofCall(B.c, a.foldToken), null, "another conversation's call finds nothing");
+      await runTool("flight_list", {}, { conversationId: A.c, foldToken: a.foldToken, log: () => {} });
+      await runTool("flight_list", {}, { conversationId: B.c, foldToken: a.foldToken, log: () => {} }); // someone else's: no line
+    });
+    return "Here are your flights";
+  };
+  const a = sink(), b = sink();
+  try {
+    liveRequest({ account: db.getAccount(A.c), token, headers: { authorization: `Bearer ${token}` }, router: h.router }).stream(a.res, new EventEmitter());
+    liveRequest({ account: db.getAccount(B.c), token: tokenB, headers: { authorization: `Bearer ${tokenB}` }, router: h.router }).stream(b.res, new EventEmitter());
+    assert.equal((await api("/messages", { method: "POST", token, router: h.router, body: { id: "pppppppp-1", text: "what flights do I have" } })).status, 200);
+    assert.ok(await until(() => sse(a.chunks).some(e => e.event === "done")), "a done event");
+    assert.ok(foundTurn, "the out-of-scope call found its turn by the fold token");
+    assert.equal(foundTurn.open, false, "and the turn is closed once it ends");
+    const evs = sse(a.chunks).filter(e => ["message", "progress", "done"].includes(e.event));
+    assert.deepEqual(evs.map(e => e.event), ["message", "progress", "message", "done"]);
+    const [mine, prog, reply] = evs.map(e => e.data);
+    assert.deepEqual({ ...prog, at: 0 }, { reply_to: mine.id, text: "Checking your flights", tool: "flight_list", at: 0 });
+    assert.equal(typeof prog.at, "number");
+    assert.equal(reply.reply_to, mine.id);
+    assert.ok(!sse(b.chunks).some(e => e.event === "progress"), "B's stream hears nothing of A's turn");
+  } finally { a.res.emit("close"); b.res.emit("close"); config.web = false; }
+});
+
+test("reply labels: a text a CLI tool call queues from outside the turn's scope is still a reply", async () => {
+  const { turn, result } = turnlink.run({ conversationId: A.c, to: A.phone, held: [{ external_id: "in-cli" }] }, async (t) => { t.fold = { token: "fold-cli-1", added: [] }; });
+  await result;
+  const row = await outsideAnyTurn.runInAsyncScope(() => turnlink.enter(turnlink.ofCall(A.c, "fold-cli-1"),
+    () => db.enqueueOutbound({ idemKey: "cli:1", conversationId: A.c, channel: "fake", address: A.phone, body: "Found it", toOwner: true }).row));
+  turnlink.close(turn);
+  assert.equal(db.db.prepare("SELECT answers_handle FROM outbox WHERE id = ?").get(row.id).answers_handle, "in-cli");
+  const after = await outsideAnyTurn.runInAsyncScope(() => turnlink.enter(turnlink.ofCall(A.c, "fold-cli-1"),
+    () => db.enqueueOutbound({ idemKey: "cli:2", conversationId: A.c, channel: "fake", address: A.phone, body: "Later", toOwner: true }).row));
+  assert.equal(db.db.prepare("SELECT answers_handle FROM outbox WHERE id = ?").get(after.id).answers_handle, null, "after the turn: answers nobody");
 });

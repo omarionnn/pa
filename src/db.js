@@ -11338,7 +11338,8 @@ function historyFromOutbound(row) {
 }
 
 /** The history row id of the person's message with this inbound handle, in this conversation only. */
-function userRowIdOf(conversationId, handle) {
+export function userRowIdOf(conversationId, handle) {
+  if (!conversationId || handle == null || handle === "") return null;
   return db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' AND external_id = ? ORDER BY id DESC LIMIT 1")
     .get(conversationId, String(handle))?.id ?? null;
 }

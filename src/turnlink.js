@@ -8,14 +8,36 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const scope = new AsyncLocalStorage();
+/** Every turn still open, so a tool call that arrives outside the turn's async scope can find it (ofCall). */
+const openTurns = new Set();
 
 /**
  * Run one turn. `held` are the inbound rows it took (oldest first); `to` is where its reply goes. The
  * fold (src/onethought.js) is attached once the router has it, so texts folded in mid-turn count too.
  */
 export function run({ conversationId, to, held }, fn) {
-  const turn = { conversationId, to: String(to ?? ""), handles: held.map(h => String(h.external_id ?? "")).filter(Boolean), fold: null, open: true };
+  const turn = { conversationId, to: String(to ?? ""), handles: held.map(h => String(h.external_id ?? "")).filter(Boolean), fold: null, open: true, said: null };
+  openTurns.add(turn);
   return { turn, result: scope.run(turn, () => fn(turn)) };
+}
+
+/**
+ * The open turn a tool call belongs to, or null. Inside the turn's own async scope (the API backend) that
+ * is the scope. The CLI backend's tool calls arrive as their own HTTP requests (src/backends/mcp-http.js),
+ * outside it, carrying the turn's fold token (src/runtime.js toolCtx.foldToken): that token names exactly
+ * one turn, so nothing is guessed from the time or from which conversation happens to be busy.
+ */
+export function ofCall(conversationId, foldToken = null) {
+  const s = scope.getStore();
+  if (s) return s.open && s.conversationId === conversationId ? s : null;
+  if (!foldToken) return null;
+  for (const t of openTurns) if (t.conversationId === conversationId && t.fold?.token === foldToken) return t;
+  return null;
+}
+
+/** Run `fn` inside this turn's scope (a CLI tool call found by ofCall), so what it sends is a reply too. */
+export function enter(turn, fn) {
+  return turn && scope.getStore() !== turn ? scope.run(turn, fn) : fn();
 }
 
 /** Every message this turn answers: the ones it took, then the ones folded into it, in that order. */
@@ -41,4 +63,4 @@ export function answeringFor(conversationId, address) {
 }
 
 /** The turn is over: nothing sent from its scope after this is a reply. */
-export function close(turn) { if (turn) turn.open = false; }
+export function close(turn) { if (turn) { turn.open = false; openTurns.delete(turn); } }
