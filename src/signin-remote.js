@@ -724,13 +724,48 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     }
     if (action === "provider") {
       // The native chooser: press the site's own "Continue with <provider>" for them. Only the four
-      // providers, only on a page that is theirs (checked above), and nothing else is pressed.
+      // providers, only on a page that is theirs (checked above), only while the real page is still
+      // the chooser, and nothing else is pressed.
       const p = social.providerKey(input.p);
       if (!p || !nativeOn(s)) return json(400, { error: "not a provider" });
-      const { pressed } = await inTurn(s, () => s.pressProvider(page, p)).catch(() => ({ pressed: "" }));
+      const { pressed, moved } = await inTurn(s, async () => {
+        if (stepNow(s, await readRaw(page)).step !== "chooser") return { pressed: "", moved: true };
+        return s.pressProvider(page, p);
+      }).catch(() => ({ pressed: "" }));
+      if (moved) return json(409, { moved: true });
       if (pressed) { s.provider = p; s.pressed = pressed; }
       s.log({ signin_remote: "provider_button", site: s.entry.site, provider: p, pressed: !!pressed, native: true });
       return json(200, { ok: true, pressed: !!pressed });
+    }
+    if (action === "relay") {
+      // What was typed in Reason's own panel, into the real page's matching box, then Enter — all in
+      // one turn of the browser, and only while the real page is still on the step the panel showed:
+      // read before the click and again before Enter, so a page that moved on (a grant screen, "stay
+      // signed in?") is never pressed by a relay. Only the person's own tap answers those (cold review,
+      // 2026-11-10). The text goes to the page and nowhere else: not logged, not kept, not returned.
+      const want = String(input.step ?? "");
+      if (!nativeOn(s) || !RELAY_KINDS[want]) return json(400, { error: "not a relay step" });
+      let text = typeof input.text === "string" ? input.text : "";
+      if (!text || text.length > MAX_TYPED) return json(400, { error: `relay needs 1 to ${MAX_TYPED} characters` });
+      const out = await inTurn(s, async () => {
+        const raw = await readRaw(page);
+        if (stepNow(s, raw).step !== want) return { moved: true };
+        const f = (raw.fields ?? []).find(x => RELAY_KINDS[want].includes(fieldKind(x)));
+        if (!f) return { nobox: true };
+        if (want === "code") { s.lastFields = [{ ...f, focused: true }]; text = cleanCodeFor(s, text, true); }
+        await page.mouse.click(Math.round((f.x + f.w / 2) * VIEW.width), Math.round((f.y + f.h / 2) * VIEW.height));
+        await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
+        await page.keyboard.type(text);
+        text = "";
+        await new Promise(r => setTimeout(r, Math.min(config.remoteSigninSettleMs, 400)));
+        if (stepNow(s, await readRaw(page)).step !== want) return { sent: true, entered: false };
+        await page.keyboard.press("Enter");
+        await new Promise(r => setTimeout(r, config.remoteSigninSettleMs));
+        return { sent: true, entered: true };
+      });
+      if (out.moved) return json(409, { moved: true });
+      if (out.nobox) return json(409, { nobox: true });
+      return json(200, { ok: true, entered: out.entered });
     }
     if (action === "back") {
       await inTurn(s, async () => { await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {}); await settle(); });
@@ -874,6 +909,13 @@ async function resultPage(s) {
  * These inputs are a window onto the site's form, never a form of Reason's own: they only ever
  * appear on top of a box the site itself drew, they have no action, and they submit nowhere.
  */
+/** The panel's relay steps → the kinds of box (fieldKind) each one types into. */
+const RELAY_KINDS = { email: ["email", "username", "tel"], password: ["password"], code: ["otp"] };
+/** The real page's shape and words, read in the browser's turn (no picture). Carries no field value. */
+const readRaw = (page) => page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
+/** The step the real page is on now, the same reading /view gives the panel. */
+const stepNow = (s, raw) => social.stepOf(raw, { provider: s.provider, fields: (raw?.fields ?? []).map(f => ({ k: fieldKind(f) })) });
+
 /** Reason's own page for this person? Where the social sign-in flag reaches them (owner first). */
 const nativeOn = (s) => social.socialAllowedFor(s.conversationId);
 
@@ -906,8 +948,11 @@ function relay(){
   if(!f){openPage(true,'Finish this step on the page below');msg.textContent="I can't see that box on the page yet — use the page below.";return}
   inp.value='';inp.blur();var g=document.getElementById('np-go');if(g)g.setAttribute('aria-busy','true');
   msg.textContent='Sending it on…';
-  send('type',{at:{x:f.x+f.w/2,y:f.y+f.h/2},all:true,text:v}).then(function(){
-    setTimeout(function(){send('key',{key:'Enter'}).then(function(){msg.textContent='Sent. Waiting for the next step…'})},250)});
+  send('relay',{step:step,text:v}).then(function(j){v='';
+    if(j&&j.moved){msg.textContent='The page moved on — here is where it is now.';return}
+    if(j&&j.nobox){openPage(true);msg.textContent="I can't see that box on the page right now — use the page below.";return}
+    msg.textContent=j&&j.entered===false?'Typed it in. The page changed before I pressed Continue — check below.':'Sent. Waiting for the next step…';
+    if(j&&j.entered===false)openPage(true)});
 }
 function wire(){
   var c=panel.querySelectorAll('[data-via]');
@@ -915,7 +960,7 @@ function wire(){
     var p=b.getAttribute('data-via');
     if(!p){openPage(true,'Sign in with your email on the page below');return}
     b.setAttribute('aria-busy','true');msg.textContent='Opening '+b.textContent.replace('Continue with ','')+'…';
-    send('provider',{p:p}).then(function(j){if(!j||!j.pressed){msg.textContent="That button isn't on the page right now — use the page below.";openPage(true)}})})})(c[i]);
+    send('provider',{p:p}).then(function(j){if(j&&j.moved){msg.textContent='The page moved on.';return}if(!j||!j.pressed){msg.textContent="That button isn't on the page right now — use the page below.";openPage(true)}})})})(c[i]);
   var g=document.getElementById('np-go');if(g)g.addEventListener('click',relay);
   var inp=document.getElementById('np-in');if(inp)inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();relay()}});
 }

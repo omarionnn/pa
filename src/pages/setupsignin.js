@@ -137,7 +137,8 @@ export const STEP_NEEDS_PAGE = new Set(["account", "consent", "captcha", "unknow
 
 /** The one branded control block for a step. Pure HTML; the live script swaps it as the step changes. */
 export function nativeStepPanel(step = {}, { entry } = {}) {
-  const n = esc(entry?.label ?? "the site");
+  // Raw: every helper below (headline, lede, go, two, eyebrow) escapes once itself.
+  const n = String(entry?.label ?? "the site");
   const prov = step.provider || "";
   const pname = PROVIDER_NAME2[prov] || "";
   const mark = PROVIDER_MARKS[prov] || "";

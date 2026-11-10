@@ -1106,7 +1106,7 @@ const NOTION_CHOOSER = { url: "https://www.notion.so/login", text: "Log in to No
 test("native page: where the flag reaches them the panel follows the real page step by step, the chooser presses the real button, and nothing typed comes back", async () => {
   process.env.REASON_SOCIAL_SIGNIN = "owner";
   try {
-    const b = fakeBrowser({ frames: [NOTION_CHOOSER, NOTION_CHOOSER, GOOGLE_EMAIL, GOOGLE_EMAIL] });
+    const b = fakeBrowser({ frames: [NOTION_CHOOSER, NOTION_CHOOSER, NOTION_CHOOSER, GOOGLE_EMAIL, GOOGLE_EMAIL] });
     const pressed = [];
     const out = remote.createRemoteSignin({
       conversationId: CONV, entry: sites.site("amazon"), launch: b.launch, log: () => {},
@@ -1145,4 +1145,40 @@ test("native page: without the flag the picture page is unchanged and /view carr
   assert.doesNotMatch((await req(token, "", { cookie })).body, /id="np-panel"/);
   assert.equal((await view(token, cookie)).meta.np, undefined);
   assert.equal((await req(token, "provider", { method: "POST", cookie, body: { p: "google" } })).status, 400);
+});
+
+test("native relay: types into the real box and presses Enter only while the real page is still on that step; a page that moved on is never pressed", async () => {
+  process.env.REASON_SOCIAL_SIGNIN = "owner";
+  try {
+    const CONSENT = { url: "https://accounts.google.com/signin/oauth/id", text: "Sign in to Notion. By continuing, Google will share your name and email address with Notion. Cancel Continue", fields: [] };
+    // email page for the read before the click, then consent by the read before Enter
+    const b = fakeBrowser({ frames: [GOOGLE_EMAIL, CONSENT, CONSENT] });
+    const out = remote.createRemoteSignin({ conversationId: CONV, entry: sites.site("amazon"), launch: b.launch, log: () => {}, timers: { set: () => ({}), clear: () => {} }, check: async () => ({ ok: true, state: "signed_out", why: "x" }) });
+    const token = out.url.split("/").pop();
+    const { cookie } = await start(token);
+    const r = JSON.parse((await req(token, "relay", { method: "POST", cookie, body: { step: "email", text: "nobody@example.com" } })).body);
+    assert.equal(r.entered, false, "typed, but Enter was not pressed on the grant screen");
+    assert.ok(b.did.some(d => d[0] === "type" && d[1] === "nobody@example.com"));
+    assert.ok(!b.did.some(d => d[0] === "press" && d[1] === "Enter"), "no Enter reached the consent page");
+    // already on consent: nothing is typed or pressed at all
+    const n0 = b.did.length;
+    assert.equal((await req(token, "relay", { method: "POST", cookie, body: { step: "email", text: "x@example.com" } })).status, 409);
+    assert.ok(!b.did.slice(n0).some(d => d[0] === "type" || d[0] === "click" || (d[0] === "press" && d[1] === "Enter")));
+    assert.equal((await req(token, "relay", { method: "POST", cookie, body: { step: "consent", text: "x" } })).status, 400, "consent is never a relay step");
+    await req(token, "cancel", { method: "POST", cookie });
+  } finally { delete process.env.REASON_SOCIAL_SIGNIN; }
+});
+test("native relay: a pasted Google code is cleaned for the code box and entered", async () => {
+  process.env.REASON_SOCIAL_SIGNIN = "owner";
+  try {
+    const CODE = { url: "https://accounts.google.com/v3/signin/challenge/ipp", text: "2-Step Verification Enter the code A text message with a 6-digit verification code was just sent", fields: [{ x: 0.1, y: 0.4, w: 0.8, h: 0.07, tag: "input", type: "tel", ac: "one-time-code", name: "Pin", id: "idvPin", label: "Enter code", im: "numeric", ml: 6, len: 0, focused: false }] };
+    const b = fakeBrowser({ frames: [CODE, CODE, CODE] });
+    const out = remote.createRemoteSignin({ conversationId: CONV, entry: sites.site("amazon"), launch: b.launch, log: () => {}, timers: { set: () => ({}), clear: () => {} }, check: async () => ({ ok: true, state: "signed_out", why: "x" }) });
+    const token = out.url.split("/").pop();
+    const { cookie } = await start(token);
+    const r = JSON.parse((await req(token, "relay", { method: "POST", cookie, body: { step: "code", text: "G-123 456" } })).body);
+    assert.equal(r.entered, true);
+    assert.ok(b.did.some(d => d[0] === "type" && d[1] === "123456"), "G- and the space came off");
+    await req(token, "cancel", { method: "POST", cookie });
+  } finally { delete process.env.REASON_SOCIAL_SIGNIN; }
 });

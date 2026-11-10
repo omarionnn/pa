@@ -253,6 +253,12 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
     return { step: "number_match", provider: prov, number, say: `${name} sent a prompt to your phone. Tap the number ${number || "shown"} there.` };
   }
   if (prompt.kind === "phone_tap") return { step: "phone_tap", provider: prov, number: "", say: prompt.say };
+  // The site's OWN sign-in page offering Continue-with buttons (Notion: buttons above an email box) is
+  // the chooser, even with an email box on it: the person picks the provider or their own email.
+  // Only off the providers' hosts — on Google's own page the box is Google's email step.
+  const onProvider = /accounts\.google\.com|appleid\.apple\.com|idmsa\.apple\.com|login\.(microsoftonline|live|microsoft)\.com|(^|\.)facebook\.com/.test(String(raw?.url ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0]);
+  const offered0 = onProvider ? [] : providersOffered(t);
+  if (offered0.length && !has("password") && !has("otp")) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
   if (prompt.kind === "code" || has("otp")) return { step: "code", provider: prov, number: "", say: `${name} sent a code. Send it to me as it came — I'll clean it up.` };
   if (prompt.kind === "password" || has("password")) return { step: "password", provider: prov, number: "", say: `${name} wants your password. Type it here on ${name}'s own page — it never reaches me.` };
   // An input box for the email/number comes before the account-picker words: "Email or phone" on

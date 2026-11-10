@@ -91,3 +91,11 @@ test("Google's own email page ('Sign in to continue to Notion') is the email ste
   const c = social.stepOf({ url: "https://accounts.google.com/signin/oauth/id", text: "Sign in to Notion. By continuing, Google will share your name, email address and profile picture with Notion. Cancel Continue" }, { provider: "google", fields: [] });
   assert.equal(c.step, "consent");
 });
+
+test("the site's own page with buttons AND an email box is the chooser; Google's own page with a box is its email step", () => {
+  const n = social.stepOf({ url: "https://www.notion.so/login", text: "Log in to Notion Continue with Google Continue with Apple Continue with Microsoft Email Continue" }, { fields: [{ k: "email" }] });
+  assert.equal(n.step, "chooser");
+  assert.deepEqual(n.offered, ["google", "apple", "microsoft"]);
+  const g = social.stepOf({ url: "https://accounts.google.com/v3/signin/identifier", text: "Sign in with Google Continue to Notion Email or phone" }, { provider: "google", fields: [{ k: "email" }] });
+  assert.equal(g.step, "email");
+});
