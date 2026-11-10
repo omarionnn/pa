@@ -292,7 +292,7 @@ test("the terms page answers like the other two: public, indexable, cached, HEAD
   assert.match(out.type, /text\/html/);
   assert.match(out.body, /<meta name="robots" content="index,follow">/);
   assert.match(out.headers.get("cache-control") ?? "", /public/);
-  assert.match(out.body, /MIT licence/);
+  assert.match(out.body, /Saafi Interactions Lab/);
   assert.match(out.body, /stops and asks you first/i);
   assert.match(out.body, /without warranty/i);
   assert.match(out.body, /13 or older/);
@@ -336,4 +336,33 @@ test("the token is kept to the characters Google's tokens use, so it can never b
   const clean = (v) => v.trim().replace(/[^A-Za-z0-9_-]/g, "");
   assert.equal(clean(' "><script>alert(1)</script>Ab_1-'), "scriptalert1scriptAb_1-");
   assert.equal(clean("AbC123_-xyz "), "AbC123_-xyz");
+});
+
+// ---------- identity (security run-3, 2026-11-10) ----------
+//
+// The maker appears only as Saafi Interactions Lab. The public pages (served on heyreason.com through the
+// site's proxy) and the user-agent Reason sends to every website it reads carry no personal name, GitHub
+// handle or repo link, and do not claim the code is public (the repo is private).
+test("public pages and the web-lookup user-agent carry no personal name, handle or 'the code is public'", async () => {
+  const { readFileSync } = await import("node:fs");
+  const personal = /omari|nyarko|omarionnn|omariij|github\.com/i;
+  for (const p of ["/", "/privacy", "/terms"]) {
+    const out = await get(p);
+    assert.equal(out.status, 200, p);
+    assert.doesNotMatch(out.body, personal, p);
+    assert.doesNotMatch(out.body, /free software|which is public|whole of it can be read|read the code|MIT licen/i, p);
+    assert.match(out.body, /Saafi Interactions Lab/, p);
+  }
+  const src = readFileSync(new URL("../src/weblookup.js", import.meta.url), "utf8");
+  assert.doesNotMatch(src, personal);
+  assert.match(src, /ReasonBot\/1\.0 \(\+https:\/\/heyreason\.com\)/);
+});
+
+// The owner's status page can't be framed by another site (security run-3 hardening, 2026-11-10).
+test("/ops and /ops.json refuse to be framed, signed in or not", async () => {
+  for (const p of ["/ops", "/ops.json"]) {
+    const out = await get(p);
+    assert.equal(out.headers.get("x-frame-options"), "DENY", p);
+    assert.match(out.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/, p);
+  }
 });

@@ -51,7 +51,7 @@ export function homePage() {
       "It is one person's assistant at a time. Everyone who texts it gets their own: their own memory, their own connected accounts, their own history. Nobody can see anybody else's.",
       "It only connects to something when you connect it yourself. If you want it to work with your email, your calendar or your Drive, you ask, it sends you a link, and you agree on Google's own page. Each of those is its own permission and its own tap — connecting your email does not give it your files. It never asks for a password, for anything.",
       "Anything that spends money or reaches another person stops and asks you first, and shows you exactly what it is about to do. A yes covers that one thing.",
-      "It is free software, MIT licensed, and the whole of it can be read: github.com/omarionnn/pa",
+      "Reason is made by Saafi Interactions Lab.",
     ],
     sections: [
       {
@@ -80,12 +80,12 @@ export function privacyPage() {
   return renderNotice({
     title: "Privacy",
     kicker: "What Reason keeps, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-10-05`,
+    meta: `Reason at ${where()} · last changed 2026-11-10`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
     lines: [
-      "Reason is your personal concierge, over text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code, which is public: github.com/omarionnn/pa",
+      "Reason is your personal concierge, over text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code Reason actually runs. Reason is made by Saafi Interactions Lab.",
     ],
     sections: [
       {
@@ -152,7 +152,7 @@ export function privacyPage() {
         title: "Changes, and who to ask",
         lines: [
           "If what Reason does with your data changes, this page changes with it, and the date at the top moves.",
-          "This is one person's assistant, run by the person who gave you the number. Ask them, or read the code: github.com/omarionnn/pa",
+          "Reason is made by Saafi Interactions Lab. Text Reason with any question about your data and it will answer from what it actually holds, or delete it if you ask.",
         ],
       },
     ],
@@ -168,12 +168,12 @@ export function termsPage() {
   return renderNotice({
     title: "Terms",
     kicker: "What Reason is, what it promises, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-10-06`,
+    meta: `Reason at ${where()} · last changed 2026-11-10`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("terms")].filter(Boolean).join("\n")}`,
     links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Home", href: "/" }],
     lines: [
-      "Reason is your personal concierge, over text. It is free software under the MIT licence, and this install of it is run by one person, who gave you the number. These terms are between you and that person.",
+      "Reason is your personal concierge, over text. It is made by Saafi Interactions Lab, and these terms are between you and Saafi Interactions Lab.",
     ],
     sections: [
       {
@@ -194,7 +194,7 @@ export function termsPage() {
       {
         title: "What it does not promise",
         lines: [
-          "It can be wrong, late or unavailable. It is provided as is, without warranty of any kind, and the person running it is not liable for what you do with it or for a missed reminder, a wrong answer, or a booking that did not happen.",
+          "It can be wrong, late or unavailable. It is provided as is, without warranty of any kind, and Saafi Interactions Lab is not liable for what you do with it or for a missed reminder, a wrong answer, or a booking that did not happen.",
           "Other services it reaches — Google, a phone carrier, a restaurant's website — have their own terms, and those apply to what happens there.",
         ],
       },
@@ -202,7 +202,7 @@ export function termsPage() {
         title: "Your data, and leaving",
         lines: [
           "How your data is handled is on the privacy page, and that page is part of these terms: /privacy",
-          "You can disconnect any account, export everything, or have everything deleted at any time by asking. The person running it can pause or remove your access at any time; your data is kept until you ask for it to go.",
+          "You can disconnect any account, export everything, or have everything deleted at any time by asking. Saafi Interactions Lab can pause or remove your access at any time; your data is kept until you ask for it to go.",
         ],
       },
       {

@@ -253,7 +253,9 @@ export function createServer({ router, runtime, log = () => {} }) {
           router,
           log,
         });
-        res.writeHead(out.status, out.headers);
+        // Never framed by another site (security run-3 hardening): the page is the owner's control panel.
+        // Only frame-ancestors, so the page's inline CSS and script are untouched.
+        res.writeHead(out.status, { ...out.headers, "X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'" });
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
 

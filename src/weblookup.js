@@ -118,7 +118,7 @@ export async function plainFetch(href, { maxChars, timeoutMs }) {
     // Never this machine's own network, on any hop (src/netguard.js).
     const got = await guardedFetch(href, {
       signal: ac.signal,
-      headers: { "user-agent": "Reason/0.1 (+https://github.com/omarionnn)", accept: "text/html,text/plain,*/*" },
+      headers: { "user-agent": "ReasonBot/1.0 (+https://heyreason.com)", accept: "text/html,text/plain,*/*" },
     });
     if (!got.ok) return { ok: false, refused: true, error: `Not read: ${got.why}.` };
     const res = got.res;

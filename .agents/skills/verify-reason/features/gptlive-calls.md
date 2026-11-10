@@ -119,9 +119,10 @@ Never: drive the live service's routes, or place a real call to test it (that ri
 is the one answer for texts (`systemFor`), onboarding and both voices, for every user, not gated. The
 "he built you, smart guy" deflection is gone: probed further, Reason says it's still the company and
 invents nothing. Test: no string literal under src/ or assets/ says Omarion/Nyarko, and the built
-prompts (text, ElevenLabs own/third-party, GPT-Live) don't either. Left on purpose: the repo address
-`github.com/omarionnn/pa` on /privacy and /terms and in the web-lookup user-agent (a real link, not a
-credit), code comments, test fixtures, drives' throwaway "Omari" operator, `config.ownerName` default,
+prompts (text, ElevenLabs own/third-party, GPT-Live) don't either. Since security run-3 (2026-11-10) the
+home, /privacy and /terms pages name only Saafi Interactions Lab (no repo link, no "the code is public") and
+the web-lookup user-agent is `ReasonBot/1.0 (+https://heyreason.com)` (test/site.test.js). Left on purpose:
+code comments, test fixtures, drives' throwaway "Omari" operator, `config.ownerName` default,
 LICENSE copyright, docs/usecases.json (internal).
 
 ## Call 56 fixes (2026-10-31)
