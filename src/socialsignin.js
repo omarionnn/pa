@@ -28,6 +28,7 @@
 import { clock, config } from "./config.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
+import { guardedFetch } from "./netguard.js";
 
 // ---------------------------------------------------------------- the flag
 const OFF = ["", "0", "off", "false", "no"];
@@ -138,6 +139,16 @@ export function providerButtonMatches(label, provider) {
   const txt = String(label ?? "").replace(/\s+/g, " ").trim().toLowerCase();
   if (!want || !txt || !txt.includes(want) || txt.length > 80) return false;
   return /(continue|sign|log|use|with|account|via)/.test(txt) || txt === want;
+}
+
+/**
+ * Which providers a rendered sign-in page offers, from its controls' own labels (text, aria-label,
+ * title) — the same match that presses one, so a bare "Google" button counts (Notion) and a word in
+ * a paragraph does not. `read` is either those labels (an array) or a page's text.
+ */
+export function providersOnPage(read) {
+  if (!Array.isArray(read)) return providersOffered(String(read ?? ""));
+  return PROVIDERS.filter(p => read.some(l => providerButtonMatches(l, p)));
 }
 
 /**
@@ -342,7 +353,11 @@ export async function signinWall(entry, { fetchImpl = fetch, timeoutMs = 15_000 
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   const label = entry.label ?? site;
   try {
-    const res = await fetchImpl(url, { method: "GET", redirect: "follow", signal: ctl.signal, headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36", Accept: "text/html" } });
+    // Through the network guard (src/netguard.js): since #454 the page can be any site the model
+    // named by its address, so neither it nor a redirect from it may reach this machine's network.
+    const got = await guardedFetch(url, { signal: ctl.signal, fetchImpl, httpsOnly: true, headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36", Accept: "text/html" } });
+    if (!got.ok) return { in: false, status: 0, why: `${label}'s sign-in page was not fetched: ${got.why}`, providers_offered: [], checked_at: clock.now() };
+    const res = got.res;
     const status = Number(res?.status ?? 0);
     const html = String((await res.text().catch(() => "")) ?? "").slice(0, 400_000);
     const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");

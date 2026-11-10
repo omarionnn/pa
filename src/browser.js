@@ -299,3 +299,32 @@ export async function guardContext(context) {
     return route.continue();
   });
 }
+
+/**
+ * One page's button and link labels, read in a throwaway headless browser — no profile, no cookies,
+ * nobody's errand page — under the same private-network guard. For reading which "Continue with"
+ * buttons a site's sign-in page draws (src/tools.js signin_link, signin_provider infer). Bounded:
+ * never longer than `timeoutMs` in all, and always closed.
+ */
+export async function readPageLabels(url, { timeoutMs = 20_000, settleMs = 2000 } = {}) {
+  const launcher = await chromium();
+  const b = await launcher.launch({ headless: true });
+  let timer;
+  try {
+    const work = (async () => {
+      const ctx = await b.newContext({ viewport: { width: 430, height: 900 } });
+      await guardContext(ctx);
+      const page = await ctx.newPage();
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      await page.waitForTimeout(settleMs);
+      return await page.evaluate(() => [...document.querySelectorAll("button, a, [role=button], input[type=submit]")]
+        .map(e => [(e.innerText || e.value || "").trim(), e.getAttribute("aria-label") || "", e.getAttribute("title") || ""].filter(Boolean).join(" | "))
+        .filter(Boolean).slice(0, 200));
+    })();
+    const cap = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`no answer in ${Math.round(timeoutMs / 1000)}s`)), timeoutMs); });
+    return await Promise.race([work, cap]);
+  } finally {
+    clearTimeout(timer);
+    await b.close().catch(() => {});
+  }
+}

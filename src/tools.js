@@ -415,6 +415,14 @@ export function socialToolVisible(name, conversationId) {
  * Microsoft login opens sites no list will ever hold; on 2026-11-10 the owner asked for his Notion
  * notes and Reason said it could not get in, because only registry names resolved here.
  */
+/**
+ * A site's sign-in page as a person sees it: the labels of its buttons and links (text, aria-label,
+ * title), rendered in a throwaway guarded browser (src/browser.js readPageLabels) — never their own
+ * profile or a page an errand is on. Notion's buttons say only "Google"; Airbnb's are not in the
+ * page's visible text at all (seen live 2026-11-10); the labels have both.
+ */
+const renderedSigninText = (_c, entry) => browser.readPageLabels(entry.signin_url);
+
 function signinSite(c, site) {
   return social.socialAllowedFor(c) ? signin.anyEntryFor(site) : signin.entryFor(site);
 }
@@ -14592,7 +14600,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // web. Signing in is the same act either way — the person does it themselves on the site's
       // own page and the session lands in their own profile — so there is one door, not two.
       // Where the social flag reaches them, any site by its web address too (signinSite).
-      const entry = signinSite(c, input.site);
+      let entry = signinSite(c, input.site);
       if (!entry) return noSigninSite(c, input.site);
       const offNet = await genericSiteRefused(entry, ctx);
       if (offNet) return offNet;
@@ -14643,7 +14651,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // The "Continue with" choices the link's page shows: their saved login's provider, the one
       // asked for, then what the site's sign-in page names. Empty without the flag.
       const recorded = social.socialAllowedFor(c) ? social.providerOf(c, entry.site) : "";
-      const offered = social.offeredFor(c, entry, { asked: provider, live: liveWall?.providers_offered ?? [] });
+      // Notion, Airbnb, Figma… draw their "Continue with" buttons with JavaScript, so the plain read
+      // above finds none (seen live 2026-11-10). Then the page is rendered in Reason's own (guarded)
+      // browser and read the way a person sees it. Under test only a handed-in reader runs.
+      let live = liveWall?.providers_offered ?? [];
+      const reader = ctx.readSigninPage ?? (process.env.NODE_TEST_CONTEXT ? null : (e) => renderedSigninText(c, e));
+      // Only for a site named by its address: a registry site's buttons are known from its static read.
+      if (social.socialAllowedFor(c) && entry.generic && !live.length && liveWall?.in !== false && reader) {
+        try { live = social.providersOnPage(await reader(entry)); } catch {}
+        // A site named by its bare domain opens on its front page, where the buttons often sit behind
+        // a "Log in" modal (Airbnb). Its /login is tried once; when that page has them, the link
+        // opens there instead.
+        if (!live.length && entry.generic && entry.signin_url === entry.entry) {
+          const atLogin = signin.genericEntry(`${entry.entry}login`);
+          try {
+            const there = atLogin && !(await genericSiteRefused(atLogin, ctx)) ? social.providersOnPage(await reader(atLogin)) : [];
+            if (there.length) { live = there; entry = atLogin; }
+          } catch {}
+        }
+      }
+      const offered = social.offeredFor(c, entry, { asked: provider, live });
       const choice = social.choiceLine(entry, offered, recorded);
       const out = (ctx.createRemoteSignin ?? signinRemote.createRemoteSignin)({
         conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider, offered,
@@ -14802,17 +14829,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const offNet = await genericSiteRefused(entry, ctx);
         if (offNet) return offNet;
         if (entry.signin_blocked) return signinBlockedAnswer(entry);
-        const read = ctx.readSigninPage ?? (async (e) => {
-          const page = await browser.pageFor(c);
-          await page.goto(e.signin_url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-          if (page.waitForTimeout) await page.waitForTimeout(1500).catch(() => {});
-          return await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
-        });
+        const read = ctx.readSigninPage ?? ((e) => renderedSigninText(c, e));
         let text = "";
-        try { text = String(await read(entry) ?? ""); } catch (e) {
+        try { text = await read(entry) ?? ""; } catch (e) {
           return { ok: false, site: entry.site, error: `${entry.label}'s sign-in page could not be read: ${(e?.message ?? String(e)).split("\n")[0]}` };
         }
-        const offered = social.providersOffered(text);
+        const offered = social.providersOnPage(text);
         const known = social.providerOf(c, entry.site);
         return {
           ok: true, site: entry.site, read: entry.signin_url, providers_offered: offered,

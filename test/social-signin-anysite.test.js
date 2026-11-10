@@ -229,3 +229,81 @@ test("tool diet: the sign-in tools are loaded whole wherever the rules are in th
   process.env.REASON_SOCIAL_SIGNIN = "";
   assert.ok(!diet.statePacks(CONV).includes("signin"));
 });
+
+test("the live read of a sign-in page never follows a redirect into this machine's network", async () => {
+  social._resetWalls();
+  const seen = [];
+  // Behaves like the platform's fetch: with redirect "follow" it goes on to the Location itself.
+  const fetchImpl = async (url, opts = {}) => {
+    seen.push(url);
+    if (url.includes("169.254")) return { status: 200, headers: { get: () => null }, text: async () => "Continue with Google" };
+    const loc = "http://169.254.169.254/latest/meta-data/";
+    if (opts.redirect === "follow") return fetchImpl(loc, opts);
+    return { status: 302, headers: { get: (h) => (h === "location" ? loc : null) }, text: async () => "" };
+  };
+  const out = await social.signinWall(signin.genericEntry("https://evil-redirect.example.com/login"), { fetchImpl });
+  assert.equal(out.in, false);
+  assert.deepEqual(out.providers_offered, []);
+  assert.equal(seen.length, 1, "the private hop is never fetched");
+  const ok = await social.signinWall(signin.genericEntry("https://www.notion.so/login"), { fetchImpl: async () => ({ status: 200, headers: { get: () => null }, text: async () => "<button>Continue with Google</button><button>Continue with Apple</button> Log in with email" }) });
+  assert.deepEqual(ok.providers_offered, ["google", "apple"]);
+});
+
+test("buttons drawn by JavaScript: an empty plain read is followed by the rendered page, and the link offers what it shows", async () => {
+  const made = [];
+  const out = await call("signin_link", { site: "https://www.airbnb.com/login" }, CONV, {
+    ...linkSeam(made),
+    signinWall: async () => ({ in: true, status: 200, providers_offered: [] }),
+    // What the real reader returns: the page's button labels (Notion-style bare names included).
+    readSigninPage: async (e) => { assert.equal(e.site, "airbnb.com"); return ["Skip to content", "Continue with Google", "Apple", "Continue with email", "Continue with Facebook", "Get it on Google Play"]; },
+  });
+  assert.equal(out.ok, true);
+  assert.deepEqual(made[0].offered, ["google", "apple", "facebook"]);
+  // A wall that said no is not rendered past.
+  const made2 = [];
+  let rendered = 0;
+  await call("signin_link", { site: "https://www.notion.so/login" }, CONV, { ...linkSeam(made2), signinWall: async () => ({ in: false, status: 0, providers_offered: [] }), readSigninPage: async () => { rendered++; return "Continue with Google"; } });
+  assert.equal(rendered, 0);
+});
+
+test("a bare domain whose front page hides the buttons: its /login is tried, and the link opens there when it has them", async () => {
+  const made = [];
+  const asked = [];
+  const out = await call("signin_link", { site: "airbnb.com" }, CONV, {
+    ...linkSeam(made),
+    signinWall: async () => ({ in: true, status: 200, providers_offered: [] }),
+    readSigninPage: async (e) => { asked.push(e.signin_url); return e.signin_url.endsWith("/login") ? ["Continue", "Continue with Google", "Continue with Apple"] : ["Where to?", "Log in", "Sign up"]; },
+  });
+  assert.equal(out.ok, true);
+  assert.deepEqual(asked, ["https://airbnb.com/", "https://airbnb.com/login"]);
+  assert.equal(made[0].entry.signin_url, "https://airbnb.com/login");
+  assert.equal(made[0].entry.site, "airbnb.com");
+  assert.deepEqual(made[0].offered, ["google", "apple"]);
+  // No buttons there either: the front page stays the link's page.
+  const made2 = [];
+  await call("signin_link", { site: "example-shop.com" }, CONV, { ...linkSeam(made2), signinWall: async () => ({ in: true, status: 200, providers_offered: [] }), readSigninPage: async () => "Email\nPassword" });
+  assert.equal(made2[0].entry.signin_url, "https://example-shop.com/");
+  assert.deepEqual(made2[0].offered, []);
+});
+
+test("the rendered page is read by its buttons' labels: Notion's bare 'Google', Airbnb's aria-only buttons", () => {
+  assert.deepEqual(social.providersOnPage(["Skip to content", "Continue", "Google", "ChatGPT", "Apple", "Microsoft", "Passkey", "SSO", "Sign up"]), ["google", "apple", "microsoft"]);
+  assert.deepEqual(social.providersOnPage(["Privacy Policy", "Continue", "Continue with Google", "Continue with Apple", "Log in"]), ["google", "apple"]);
+  assert.deepEqual(social.providersOnPage(["Get it on Google Play", "Download on the Apple App Store", "Log in"]), [], "app-store badges are not sign-in buttons");
+  assert.deepEqual(social.providersOnPage("Continue with Google"), ["google"]);
+});
+
+test("the rendered read never runs without the flag, nor for a registry site", async () => {
+  let rendered = 0;
+  const reader = async () => { rendered++; return ["Continue with Google"]; };
+  const wall = async () => ({ in: true, status: 200, providers_offered: [] });
+  const made = [];
+  await call("signin_link", { site: "amazon" }, CONV, { ...linkSeam(made), signinWall: wall, readSigninPage: reader });
+  assert.equal(rendered, 0, "registry site: its static read stands");
+  assert.deepEqual(made[0].offered, []);
+  process.env.REASON_SOCIAL_SIGNIN = "";
+  await call("signin_link", { site: "amazon" }, CONV, { ...linkSeam(made), signinWall: wall, readSigninPage: reader });
+  const off = await call("signin_link", { site: "notion.so" }, CONV, { ...linkSeam(made), signinWall: wall, readSigninPage: reader });
+  assert.equal(off.ok, false);
+  assert.equal(rendered, 0, "flag off: nothing rendered");
+});
