@@ -172,6 +172,19 @@ test("delete my data (src/data.js deleteData) destroys their key: a backup copy 
   assert.equal(rc.openAny(before), rc.SHREDDED, "the old ciphertext, as a backup holds it, opens to nothing");
 });
 
+test("a key destroyed by another process is never used for a new write (data:delete from the CLI)", () => {
+  const conv = "dm:sendblue:+15550005555";
+  d.writeEvent({ conversationId: conv, role: "user", content: "before the delete" });
+  // Another process destroys the key: simulate by deleting the row straight from keys.db.
+  const { DatabaseSync } = d;
+  rc.keystore().prepare("DELETE FROM user_keys WHERE conversation_id = ?").run(conv);
+  d.writeEvent({ conversationId: conv, role: "user", content: "after the delete, returning user" });
+  const sealed = d.rawPrepare("SELECT content FROM event_log WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conv).content;
+  // A fresh process (restart) must still read it: it was sealed under a NEW key, not the destroyed one.
+  const id = Number(sealed.slice(rc.PREFIX.length).split(":")[0]);
+  assert.ok(rc.keystore().prepare("SELECT 1 FROM user_keys WHERE id = ?").get(id), "the new write is under a key that exists");
+});
+
 test("AWS SigV4 matches the published get-vanilla vector", () => {
   // aws-sig-v4-test-suite/get-vanilla: GET / on example.amazonaws.com, service "service", us-east-1.
   const h = rc.sigv4({ method: "GET", host: "example.amazonaws.com", path: "/", query: "", headers: {}, body: "",

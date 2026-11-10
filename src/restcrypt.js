@@ -352,8 +352,12 @@ function loadDek(keyId) {
 function keyIdFor(conversationId, create) {
   const c = String(conversationId ?? "");
   if (!c) throw new Error("sealFor needs the owner's conversation id.");
-  if (deks.has("c:" + c)) return deks.get("c:" + c);
+  // Always asked of the keystore, never only the cache: another process (data:delete, forget run from
+  // a script) may have destroyed or replaced this person's key, and a write sealed under a destroyed
+  // key would read as blank after the next restart. One indexed lookup per write.
   const row = ks.prepare("SELECT id FROM user_keys WHERE conversation_id = ?").get(c);
+  const cached = deks.get("c:" + c);
+  if (cached !== undefined && (!row || row.id !== cached)) { deks.delete(cached); deks.delete("c:" + c); opened.clear(); }
   if (row) { loadDek(row.id); return row.id; }
   if (!create) return null;
   if (!ik) throw new Error("Encryption at rest is on but the install key is not unlocked.");
