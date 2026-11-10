@@ -1610,7 +1610,7 @@ async function sayPayment(run, row, it, say) {
     if (a) {
       if (a.file && pictureFn) { try { await pictureFn(run.conversation_id, a.file); } catch { /* the line still goes */ } }
       await say(a.text);
-      await food.setStatus(a.orderId, "needs");
+      await food.setStatus(a.order, "needs");
       return;
     }
   }

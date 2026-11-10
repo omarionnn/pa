@@ -256,7 +256,7 @@ test("never the full card number: the card and line show brand + last 4, and dig
   }
   assert.equal(food.maskCardNumbers("pay with 4111-1111-1111-1111 please"), "pay with ••••1111 please");
   assert.equal(food.cardLabel({ brand: "mastercard", last4: "5555555555554444" }), "Mastercard 4444");
-  const o = food.openOrder(OMARI) ?? food.orderRow(q("SELECT id FROM food_orders ORDER BY id DESC").get().id);
+  const o = food.orderRow(q("SELECT id FROM food_orders ORDER BY id DESC").get().id, OMARI);
   assert.doesNotMatch(JSON.stringify(o.items) + o.notes, /4242424242424821|4242 4242 4242 4821/);
 });
 
@@ -302,7 +302,7 @@ test("a failed checkout never moves to another restaurant by itself: ❓ and one
   runs[b.runId] = { status: "failed", result: { code: "merchant.error", summary: "page errored" }, revision: 4 };
   await shop.step(b.runId);
   assert.equal(reacts.at(-1).reaction, "❌");
-  assert.equal(food.orderRow(st.order_id).status, "failed");
+  assert.equal(food.orderRow(st.order_id, OMARI).status, "failed");
 });
 
 test("a status tapback only goes on their own message in their own conversation", async () => {

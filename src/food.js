@@ -144,23 +144,23 @@ function view(r) {
   if (!r) return null;
   return { ...r, restaurant: open(r.restaurant), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
 }
-export const orderRow = (id) => view(q("SELECT * FROM food_orders WHERE id = ?").get(id));
+export const orderRow = (id, c) => view(q("SELECT * FROM food_orders WHERE id = ? AND conversation_id = ?").get(id, c));
 /** Their order with this id, or null: another person's id reads as missing. */
-export const ownOrder = (c, id) => { const o = orderRow(id); return o && o.conversation_id === c ? o : null; };
+export const ownOrder = (c, id) => (c && id ? orderRow(id, c) : null);
 export const orderForRun = (runId) => (runId ? view(q("SELECT * FROM food_orders WHERE run_id = ? ORDER BY id DESC LIMIT 1").get(runId)) : null);
 /** The newest order still being worked on (not placed, failed or cancelled), or null. */
 export const openOrder = (c) => view(q("SELECT * FROM food_orders WHERE conversation_id = ? AND status IN ('draft', 'building', 'asked', 'needs') ORDER BY id DESC LIMIT 1").get(c));
 const toldOf = (o) => new Set(String(o?.told ?? "").split(",").filter(Boolean));
-function tellOnce(id, what) {
-  const o = q("SELECT told FROM food_orders WHERE id = ?").get(id);
+function tellOnce(o0, what) {
+  const o = q("SELECT told FROM food_orders WHERE id = ? AND conversation_id = ?").get(o0.id, o0.conversation_id);
   if (!o) return false;
   const t = toldOf(o);
   if (t.has(what)) return false;
   t.add(what);
-  q("UPDATE food_orders SET told = ? WHERE id = ?").run([...t].join(","), id);
+  q("UPDATE food_orders SET told = ? WHERE id = ? AND conversation_id = ?").run([...t].join(","), o0.id, o0.conversation_id);
   return true;
 }
-function setStatusRow(id, status) { q("UPDATE food_orders SET status = ?, updated_at = ? WHERE id = ?").run(status, clock.now(), id); }
+function setStatusRow(o, status) { q("UPDATE food_orders SET status = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(status, clock.now(), o.id, o.conversation_id); }
 
 // ---------------------------------------------------------------- the runtime's hands
 let sayFn = null, pictureFn = null, wakeFn = null, channelsFn = null, logFn = () => {};
@@ -179,12 +179,12 @@ export function _attach(h = {}) { attach({ ...h, everyMs: 0 }); }
  * Put the status on THEIR request message. A phone shows one tapback per sender per message, so the
  * new one replaces the old. Never throws, never texts: a refused tapback is logged and skipped.
  */
-export async function setStatus(orderId, status) {
-  const o = orderRow(orderId);
+export async function setStatus(order, status) {
+  const o = order?.id ? orderRow(order.id, order.conversation_id) : null;
   const emoji = STATUS[status];
   if (!o || !emoji) return { ok: false, error: "no_such_status" };
   if (o.tapback === emoji) return { ok: true, same: true };
-  q("UPDATE food_orders SET tapback = ?, updated_at = ? WHERE id = ?").run(emoji, clock.now(), o.id);
+  q("UPDATE food_orders SET tapback = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(emoji, clock.now(), o.id, o.conversation_id);
   if (!o.request_handle || !channelsFn) return { ok: false, error: "no_message" };
   try {
     const { sendTapback } = await import("./tapbacks.js");
@@ -206,7 +206,7 @@ export async function startOrder(c, { requestHandle = null } = {}) {
   // One open order at a time: a new request supersedes the draft that was never sent to a checkout.
   q("UPDATE food_orders SET status = 'cancelled', updated_at = ? WHERE conversation_id = ? AND status IN ('draft', 'building') AND run_id IS NULL").run(now, c);
   const id = Number(q("INSERT INTO food_orders (conversation_id, request_handle, status, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?)").run(c, handle, now, now).lastInsertRowid);
-  await setStatus(id, "working");
+  await setStatus({ id, conversation_id: c }, "working");
   return { ok: true, order_id: id };
 }
 
@@ -245,13 +245,13 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   const now = clock.now();
   const rev = Number(o.revision ?? 0) + 1;
   q(`UPDATE food_orders SET status = 'building', platform = ?, restaurant = ?, store_url = ?, items_json = ?, lines_json = ?, notes = ?, address = ?, address_label = ?, tip = ?, cart_total = ?,
-       eta_text = ?, eta_latest_at = ?, closes_at = ?, revision = ?, allergy_flag = '', allergy_checked = 0, updated_at = ? WHERE id = ?`).run(
+       eta_text = ?, eta_latest_at = ?, closes_at = ?, revision = ?, allergy_flag = '', allergy_checked = 0, updated_at = ? WHERE id = ? AND conversation_id = ?`).run(
     isPlatform(platform) ? platform : (platform === "uber" ? "ubereats" : ""), seal("restaurant", c, clean(input.restaurant, 80)), clean(input.store_url, 500),
     seal("items_json", c, JSON.stringify(items)), JSON.stringify(lines), seal("notes", c, clean(input.notes, 300)), seal("address", c, clean(input.address, 200)),
-    seal("address_label", c, clean(input.address_label, 40)), tip, total, clean(input.eta, 20), Number.isFinite(eta) ? eta : null, Number.isFinite(closes) ? closes : null, rev, now, o.id);
+    seal("address_label", c, clean(input.address_label, 40)), tip, total, clean(input.eta, 20), Number.isFinite(eta) ? eta : null, Number.isFinite(closes) ? closes : null, rev, now, o.id, c);
   const checked = await check(c, items).catch(() => ({ ok: false }));
   const flag = allergyFlag(checked);
-  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ? WHERE id = ?").run(flag, checked?.ok ? 1 : 0, o.id);
+  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, o.id, c);
   return {
     ok: true, order_id: o.id, revision: rev,
     ...(flag ? { allergy_flag: flag } : {}),
@@ -314,7 +314,7 @@ export function allergyFlag(checked) {
 export function linkRun(c, orderId, runId) {
   const o = ownOrder(c, orderId);
   if (!o || !runId) return false;
-  q("UPDATE food_orders SET run_id = ?, status = CASE WHEN status IN ('draft', 'needs') THEN 'building' ELSE status END, updated_at = ? WHERE id = ?").run(runId, clock.now(), o.id);
+  q("UPDATE food_orders SET run_id = ?, status = CASE WHEN status IN ('draft', 'needs') THEN 'building' ELSE status END, updated_at = ? WHERE id = ? AND conversation_id = ?").run(runId, clock.now(), o.id, c);
   return true;
 }
 /** Code started the same checkout again (a renewed hold, a sign-in retry): the order follows it. */
@@ -324,8 +324,8 @@ export function relinkRun(fromRunId, toRunId, { address = "" } = {}) {
     const o = orderForRun(fromRunId);
     if (!o || ["placed", "cancelled", "failed"].includes(o.status)) return;
     // A corrected address is the card's address from now on; a changed card is a fresh card anyway.
-    q("UPDATE food_orders SET run_id = ?, status = 'building', address = CASE WHEN ? <> '' THEN ? ELSE address END, revision = revision + 1, updated_at = ? WHERE id = ?")
-      .run(toRunId, address, address ? seal("address", o.conversation_id, clean(address, 200)) : "", clock.now(), o.id);
+    q("UPDATE food_orders SET run_id = ?, status = 'building', address = CASE WHEN ? <> '' THEN ? ELSE address END, revision = revision + 1, updated_at = ? WHERE id = ? AND conversation_id = ?")
+      .run(toRunId, address, address ? seal("address", o.conversation_id, clean(address, 200)) : "", clock.now(), o.id, o.conversation_id);
   } catch { /* no food */ }
 }
 /** Synchronous: is this checkout a food order's? (shopconnect's hold length reads it). */
@@ -425,13 +425,13 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
   const changed = changedFrom ? `The total came to ${amount}, not the ${changedFrom} the cart showed.` : "";
   const eta = etaWords(o);
   const text = approvalLine({ amount, card: label, eta, flag: o.allergy_flag, changed }) + passkeyTail;
-  q("UPDATE food_orders SET status = 'asked', card_label = ?, updated_at = ? WHERE id = ?").run(label, clock.now(), o.id);
+  q("UPDATE food_orders SET status = 'asked', card_label = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(label, clock.now(), o.id, o.conversation_id);
   let file = null;
   try {
     const items = o.items.length ? o.items : [{ name: row.item || "Your order", qty: 1, modifiers: [], price: "" }];
     ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip, total: amount, eta, address: o.address, card: label, changed: !!changedFrom }, shoot ? { shoot } : {}));
   } catch (e) { logFn({ food_card_failed: o.id, why: String(e?.message ?? e).split("\n")[0] }); }
-  return { text, file, orderId: o.id };
+  return { text, file, orderId: o.id, order: o };
 }
 /** What a yes to a food card is pinned to, on top of the payment's own target: the cart revision. */
 export function payTargetTail(runId) {
@@ -451,10 +451,10 @@ export function placedLine(o, { amount = "" } = {}) {
 export async function placed(run) {
   const o = orderForRun(run.run_id);
   if (!o) return null;
-  const paid = q("SELECT amount, currency FROM shop_payments WHERE run_id = ? AND status IN ('paid', 'unknown') ORDER BY id DESC LIMIT 1").get(run.run_id);
+  const paid = q("SELECT amount, currency FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status IN ('paid', 'unknown') ORDER BY id DESC LIMIT 1").get(run.run_id, o.conversation_id);
   const amount = paid ? (paid.currency === "USD" ? `$${paid.amount}` : `${paid.amount} ${paid.currency}`) : "";
-  q("UPDATE food_orders SET status = 'placed', paid_amount = ?, placed_at = ?, updated_at = ? WHERE id = ?").run(amount, clock.now(), clock.now(), o.id);
-  await setStatus(o.id, "placed");
+  q("UPDATE food_orders SET status = 'placed', paid_amount = ?, placed_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(amount, clock.now(), clock.now(), o.id, o.conversation_id);
+  await setStatus(o, "placed");
   return placedLine(o, { amount });
 }
 /**
@@ -466,19 +466,19 @@ export async function ended(run, status) {
   const o = orderForRun(run.run_id);
   if (!o || ["placed", "cancelled", "failed"].includes(o.status)) return null;
   if (status === "cancelled" && !String(run.result ?? "").startsWith("renewed") && run.result !== "superseded") {
-    setStatusRow(o.id, "cancelled");
-    await setStatus(o.id, "cancelled");
+    setStatusRow(o, "cancelled");
+    await setStatus(o, "cancelled");
     return { cancelled: true };
   }
   const failures = Number(o.failures ?? 0) + 1;
-  q("UPDATE food_orders SET failures = ?, updated_at = ? WHERE id = ?").run(failures, clock.now(), o.id);
+  q("UPDATE food_orders SET failures = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(failures, clock.now(), o.id, o.conversation_id);
   if (failures >= 2) {
-    setStatusRow(o.id, "failed");
-    await setStatus(o.id, "failed");
+    setStatusRow(o, "failed");
+    await setStatus(o, "failed");
     return { failed: true };
   }
-  setStatusRow(o.id, "needs");
-  await setStatus(o.id, "needs");
+  setStatusRow(o, "needs");
+  await setStatus(o, "needs");
   if (wakeFn) {
     try {
       await wakeFn(o.conversation_id, `[food] The ${o.restaurant || "food"} checkout (order ${o.id}) ended without placing (${String(run.result || status).slice(0, 160)}). Nothing was charged. Their text about why already went. Bring ONE fix in one line with the likely answer offered: the same cart at another nearby open place, a swap for what was unavailable, or ordering without it. Never start it without their yes. If nothing fits, say so plainly.`, { key: `food:${o.id}:fail:${failures}` });
@@ -495,25 +495,25 @@ export async function sweep({ now = clock.now() } = {}) {
   if (foodMode() === "off") return { looked: 0 };
   const shop = await import("./shopconnect.js");
   let looked = 0;
-  for (const o0 of q("SELECT id FROM food_orders WHERE status = 'asked' ORDER BY id").all()) {
-    const o = orderRow(o0.id);
+  for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'asked' ORDER BY id").all()) {
+    const o = orderRow(o0.id, o0.conversation_id);
     if (!o || !foodOn(o.conversation_id)) continue;
     looked++;
-    const pay = q("SELECT * FROM shop_payments WHERE run_id = ? AND status = 'asked' ORDER BY id DESC LIMIT 1").get(o.run_id ?? "");
+    const pay = q("SELECT * FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status = 'asked' ORDER BY id DESC LIMIT 1").get(o.run_id ?? "", o.conversation_id);
     if (!pay) continue;
-    if (o.closes_at && now >= o.closes_at - CLOSING_WARN_MS && now < o.closes_at && tellOnce(o.id, "closing")) {
+    if (o.closes_at && now >= o.closes_at - CLOSING_WARN_MS && now < o.closes_at && tellOnce(o, "closing")) {
       await sayTo(o.conversation_id, `${o.restaurant || "The restaurant"} closes at ${clockText(o.closes_at, o.conversation_id)}, so it has to go in soon. Place it?`);
     }
-    if (now > shop.askDeadline(pay) && tellOnce(o.id, `hold:${pay.id}`)) {
+    if (now > shop.askDeadline(pay) && tellOnce(o, `hold:${pay.id}`)) {
       await shop.declinePayment({ conversationId: o.conversation_id, paymentId: pay.id }).catch(() => null);
-      setStatusRow(o.id, "needs");
-      await setStatus(o.id, "needs");
+      setStatusRow(o, "needs");
+      await setStatus(o, "needs");
       await sayTo(o.conversation_id, `I let the ${o.restaurant || "food"} cart go after 15 minutes, nothing charged. Want me to rebuild it?`);
     }
   }
-  for (const o0 of q("SELECT id FROM food_orders WHERE status = 'placed' AND eta_latest_at IS NOT NULL AND eta_latest_at <= ? AND told NOT LIKE '%late%' ORDER BY id").all(now - LATE_CHECK_MS)) {
-    const o = orderRow(o0.id);
-    if (!o || !foodOn(o.conversation_id) || !tellOnce(o.id, "late")) continue;
+  for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'placed' AND eta_latest_at IS NOT NULL AND eta_latest_at <= ? AND told NOT LIKE '%late%' ORDER BY id").all(now - LATE_CHECK_MS)) {
+    const o = orderRow(o0.id, o0.conversation_id);
+    if (!o || !foodOn(o.conversation_id) || !tellOnce(o, "late")) continue;
     looked++;
     const due = clockText(o.eta_latest_at, o.conversation_id);
     if (wakeFn) {
@@ -587,7 +587,8 @@ p{font:400 10.5px/1.3 Inter,sans-serif;color:#4a443c;margin-top:2px;white-space:
 </style></head><body>${options.map((o, i) => `<div class="c"><div class="ph"><img src="${o.photo}" alt=""><div class="n">${i + 1}</div></div><h2>${esc(o.dish)}</h2><p>${esc(o.restaurant)}</p><p>${esc([o.price, o.eta].filter(Boolean).join(" · "))}</p></div>`).join("")}</body></html>`;
 }
 /** Image hosts that are Reason's own (generated pictures live there): never a dish photo. */
-const OWN_IMAGE_HOSTS = () => [config.filesHost, "files.heyreason.com", "files.reason.omarinyarko.com"].filter(Boolean).map((h) => String(h).replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase());
+// Reason's own file host, where generated pictures are served.
+const OWN_IMAGE_HOSTS = () => [config.filesHost, "files.heyreason.com"].filter(Boolean).map((h) => String(h).replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase());
 export function ownImageHost(url) { try { return OWN_IMAGE_HOSTS().includes(new URL(url).hostname.toLowerCase()); } catch { return false; } }
 
 /**
@@ -702,9 +703,9 @@ export async function runFoodTool(name, input, { conversationId: c, check, fetch
   if (a === "status") {
     const o = (input.order_id ? ownOrder(c, input.order_id) : null) ?? openOrder(c);
     if (!o) return { ok: false, error: "no_order" };
-    if (input.status === "failed" || input.status === "cancelled") setStatusRow(o.id, input.status);
-    else setStatusRow(o.id, "needs");
-    const r = await setStatus(o.id, input.status);
+    if (input.status === "failed" || input.status === "cancelled") setStatusRow(o, input.status);
+    else setStatusRow(o, "needs");
+    const r = await setStatus(o, input.status);
     return { ok: true, tapback: !!r?.ok, say: "Set on their request message. Still say the result in words." };
   }
   return { ok: false, error: "unknown action" };
