@@ -84,3 +84,10 @@ test("the native page renders for every step the machine can return", () => {
     assert.equal(/id="np-page"[^>]* open/.test(body), forced, `${step}: page ${forced ? "open" : "tucked away"}`);
   }
 });
+
+test("Google's own email page ('Sign in to continue to Notion') is the email step, never consent", () => {
+  const s = social.stepOf({ url: "https://accounts.google.com/v3/signin/identifier", text: "Sign in to continue to Notion Email or phone Forgot email? Next" }, { provider: "google", fields: [{ k: "email" }] });
+  assert.equal(s.step, "email");
+  const c = social.stepOf({ url: "https://accounts.google.com/signin/oauth/id", text: "Sign in to Notion. By continuing, Google will share your name, email address and profile picture with Notion. Cancel Continue" }, { provider: "google", fields: [] });
+  assert.equal(c.step, "consent");
+});

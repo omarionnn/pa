@@ -147,7 +147,7 @@ export function nativeStepPanel(step = {}, { entry } = {}) {
   switch (step.step) {
     case "chooser":
       return eyebrow(`SIGN IN TO ${upper(n)}`) + headline("How do you sign in?")
-        + `<div class="ss-pv" id="np-choose">${Object.keys(PROVIDER_MARKS).map(p => `<button type="button" data-via="${p}">${PROVIDER_MARKS[p]}<span>Continue with ${PROVIDER_NAME2[p]}</span></button>`).join("")}</div>`
+        + `<div class="ss-pv" id="np-choose">${((step.offered ?? []).filter(p => PROVIDER_MARKS[p]).length ? step.offered.filter(p => PROVIDER_MARKS[p]) : Object.keys(PROVIDER_MARKS)).map(p => `<button type="button" data-via="${p}">${PROVIDER_MARKS[p]}<span>Continue with ${PROVIDER_NAME2[p]}</span></button>`).join("")}</div>`
         + `<p class="pf-l ss-or">OR</p>` + actions(two(`Use my ${n} email`, { attrs: ` data-via=""` }));
     case "email":
       return provLine + eyebrow(`${upper(pname || n)} · YOUR EMAIL`) + say
@@ -160,7 +160,7 @@ export function nativeStepPanel(step = {}, { entry } = {}) {
         + actions(go("Sign in", { type: "button", attrs: ` id="np-go"` }));
     case "code":
       return provLine + eyebrow(`${upper(pname || n)} · CODE`) + say
-        + codeInput({ name: "code", legend: "THE CODE", id: "np-code" })
+        + `<label class="np-field"><span>The code</span><input id="np-in" type="text" inputmode="numeric" autocomplete="one-time-code" enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456"></label>`
         + note("send it however it came — \"G-123 456\" is fine, I'll clean it up.", { sp: true })
         + actions(go("Continue", { type: "button", attrs: ` id="np-go"` }));
     case "number_match":
@@ -191,6 +191,8 @@ export function nativeStepPanel(step = {}, { entry } = {}) {
     case "captcha":
       return eyebrow(`${upper(n)} · QUICK CHECK`) + headline(`${n} wants to check you're human.`)
         + lede("finish this step on the page below — it's a quick check only you can do. I'll take it from there.");
+    case "loading":
+      return eyebrow(`SIGN IN TO ${upper(n)}`) + say + `<p class="np-wait"><span class="spin"></span>reading the page…</p>`;
     default:
       return eyebrow(`${upper(n)}`) + say + note("finish this step on the page below; I'll pick back up when it moves on.", { sp: true });
   }
@@ -242,8 +244,8 @@ export function setupNativePage({ entry, step = {}, view = { width: 430, height:
   const body = `<div class="np" id="np" style="--ss-ar:${view.width}/${view.height}">`
     + `<div id="np-panel">${nativeStepPanel(step, { entry })}</div>`
     + pageBlock
-    + `<p class="ss-small" id="msg" role="status"></p>`
-    + actions(two("BACK A PAGE", { attrs: ` id="back"` }), two("CANCEL", { attrs: ` id="stop"` }))
+    + `<p class="ss-small" id="msg" role="status"></p><p class="ss-small" id="tip" hidden></p>`
+    + actions(two("I'M SIGNED IN", { attrs: ` id="done"` }), two("BACK A PAGE", { attrs: ` id="back"` }), two("CANCEL", { attrs: ` id="stop"` }))
     + label("SEALED · NOTHING YOU TYPE IS KEPT", { pen: true })
     + `</div>`;
   return page(`Reason — sign in to ${entry?.label ?? "site"}`, body, { entry, script, card });

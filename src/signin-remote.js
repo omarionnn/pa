@@ -59,7 +59,7 @@ import { backToReasonHref, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
-import { setupStartPage, setupLivePage, setupResultPage, setupCodePage, setupGonePage, setupNoticePage, setupBackPage } from "./pages/setupsignin.js";
+import { setupStartPage, setupLivePage, setupNativePage, nativeStepPanel, STEP_NEEDS_PAGE, setupResultPage, setupCodePage, setupGonePage, setupNoticePage, setupBackPage } from "./pages/setupsignin.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -641,6 +641,18 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     const hash = createHash("sha1").update(got.shot).digest("hex").slice(0, 16);
     const unchanged = String(query?.h ?? "") === hash;
     const meta = { ...frameFor(got.raw), h: hash, same: unchanged };
+    // Reason's own page (owner, 2026-11-10): which step the real page is on, and the branded panel
+    // for it, so the phone shows native controls and a plain line rather than only the picture. Only
+    // where the social sign-in flag reaches this person. Built from the step's own templates and the
+    // page's words — never from anything typed: no field value is ever read (FRAME_JS carries none).
+    if (nativeOn(s)) {
+      const st = social.stepOf(got.raw, { provider: s.provider, fields: meta.fields });
+      const key = `${st.step}:${st.provider}:${st.number}:${(st.offered ?? []).join(",")}`;
+      meta.np = { step: st.step, key, page: STEP_NEEDS_PAGE.has(st.step), say: st.say,
+        ...(key === s.npKey ? {} : { html: nativeStepPanel(st, { entry: s.entry }) }) };
+      if (key !== s.npKey) s.log({ signin_remote: "step", site: s.entry.site, step: st.step, provider: st.provider || "" });
+      s.npKey = key;
+    }
     const head = Buffer.alloc(4);
     const body = Buffer.from(JSON.stringify(meta), "utf8");
     head.writeUInt32BE(body.length, 0);
@@ -709,6 +721,16 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       const dx = Math.max(-2000, Math.min(2000, Number(input.dx) || 0));
       await inTurn(s, async () => { await page.mouse.wheel(dx, dy); await settle(); });
       return json(200, { ok: true });
+    }
+    if (action === "provider") {
+      // The native chooser: press the site's own "Continue with <provider>" for them. Only the four
+      // providers, only on a page that is theirs (checked above), and nothing else is pressed.
+      const p = social.providerKey(input.p);
+      if (!p || !nativeOn(s)) return json(400, { error: "not a provider" });
+      const { pressed } = await inTurn(s, () => s.pressProvider(page, p)).catch(() => ({ pressed: "" }));
+      if (pressed) { s.provider = p; s.pressed = pressed; }
+      s.log({ signin_remote: "provider_button", site: s.entry.site, provider: p, pressed: !!pressed, native: true });
+      return json(200, { ok: true, pressed: !!pressed });
     }
     if (action === "back") {
       await inTurn(s, async () => { await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {}); await settle(); });
@@ -852,8 +874,57 @@ async function resultPage(s) {
  * These inputs are a window onto the site's form, never a form of Reason's own: they only ever
  * appear on top of a box the site itself drew, they have no action, and they submit nowhere.
  */
+/** Reason's own page for this person? Where the social sign-in flag reaches them (owner first). */
+const nativeOn = (s) => social.socialAllowedFor(s.conversationId);
+
 function livePage(s) {
+  // A fresh page load starts the panel over (the first /view sends its HTML again).
+  s.npKey = "";
+  if (nativeOn(s)) return setupNativePage({ entry: s.entry, view: VIEW, step: { step: "loading", say: `Opening ${s.entry.label}…` }, script: liveScript(s) + nativeScript(), card: cardKind(s.entry) });
   return setupLivePage({ entry: s.entry, view: VIEW, script: liveScript(s), card: cardKind(s.entry) });
+}
+
+/**
+ * Reason's own page, on top of the live script: swaps the branded panel as the real page moves (the
+ * /view answer's `np`), and relays what is typed in the panel into the real page's matching box —
+ * the same /type and /key the picture uses, so the same promise holds: the text goes to the page and
+ * nowhere else, and the panel's box is emptied as soon as it is sent. Consent, the account picker,
+ * a captcha and anything unknown open the picture ("Finish this step on the page below").
+ */
+function nativeScript() {
+  return `(function(){
+var B=location.pathname.replace(/\\/+$/,''),panel=document.getElementById('np-panel'),det=document.getElementById('np-page'),
+    sum=det&&det.querySelector('summary'),msg=document.getElementById('msg'),key='',step='',fields=[];
+var WANT={email:['email','username','tel'],password:['password'],code:['otp']};
+function send(a,b){return fetch(B+'/'+a,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})
+  .then(function(r){if(r.status===404||r.status===410)location.reload();return r.json().catch(function(){return{}})})}
+function openPage(on,why){if(!det)return;det.open=!!on;det.classList.toggle('forced',!!on);if(sum)sum.textContent=on?(why||'Finish this step on the page below'):'Show me the page'}
+function box(){var ks=WANT[step]||[];for(var i=0;i<fields.length;i++)if(ks.indexOf(fields[i].k)>=0)return fields[i];return null}
+function relay(){
+  var inp=document.getElementById('np-in');if(!inp)return;var v=inp.value;if(!v)return;
+  var f=box();
+  if(!f){openPage(true,'Finish this step on the page below');msg.textContent="I can't see that box on the page yet — use the page below.";return}
+  inp.value='';inp.blur();var g=document.getElementById('np-go');if(g)g.setAttribute('aria-busy','true');
+  msg.textContent='Sending it on…';
+  send('type',{at:{x:f.x+f.w/2,y:f.y+f.h/2},all:true,text:v}).then(function(){
+    setTimeout(function(){send('key',{key:'Enter'}).then(function(){msg.textContent='Sent. Waiting for the next step…'})},250)});
+}
+function wire(){
+  var c=panel.querySelectorAll('[data-via]');
+  for(var i=0;i<c.length;i++)(function(b){b.addEventListener('click',function(){
+    var p=b.getAttribute('data-via');
+    if(!p){openPage(true,'Sign in with your email on the page below');return}
+    b.setAttribute('aria-busy','true');msg.textContent='Opening '+b.textContent.replace('Continue with ','')+'…';
+    send('provider',{p:p}).then(function(j){if(!j||!j.pressed){msg.textContent="That button isn't on the page right now — use the page below.";openPage(true)}})})})(c[i]);
+  var g=document.getElementById('np-go');if(g)g.addEventListener('click',relay);
+  var inp=document.getElementById('np-in');if(inp)inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();relay()}});
+}
+window.npStep=function(np,fl){
+  fields=fl||[];
+  if(np.html!==undefined&&np.key!==key){key=np.key;step=np.step;panel.innerHTML=np.html;wire();msg.textContent='';openPage(np.page)}
+  var say=document.getElementById('np-say');if(say&&np.say)say.textContent=np.say;
+};
+})();`;
 }
 
 /** The live page's script: the same for both frames, driving the ids both draw. */
@@ -917,6 +988,7 @@ function pull(){
 function draw(buf){
   var d=new DataView(buf),n=d.getUint32(0),meta=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,n)));
   hash=meta.h||hash;fields=meta.fields||[];blank=!!meta.blank;
+  if(meta.np&&window.npStep)window.npStep(meta.np,fields);
   if(buf.byteLength>4+n){
     var old=v.src,u=URL.createObjectURL(new Blob([new Uint8Array(buf,4+n)],{type:'image/jpeg'}));
     v.src=u;if(old&&old.indexOf('blob:')===0)setTimeout(function(){URL.revokeObjectURL(old)},600);

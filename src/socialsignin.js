@@ -237,7 +237,10 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   const name = LABELS[prov] || "The site";
   // The grant screen: "<app> wants access to…", "Continue to <app>?", "<app> will be able to…". Only
   // the person's own tap grants it (the rule: never auto-grant a new third-party access).
-  if (/(wants? access to|will be able to|is requesting access|allow .{1,40} to access|continue to .{1,40}\?|grant .{1,30} permission|share your .{1,30} with)/.test(low)
+  // A consent screen is buttons only: a page with somewhere to type is a sign-in step, whatever it
+  // says ("Sign in to continue to Notion" is Google's email page, not a grant).
+  const typing = ["email", "username", "tel", "password", "otp"].some(has);
+  if (!typing && /(wants? (to )?access|will be able to|is requesting access|allow .{1,40} to access|grant .{1,30} permission|will share your|share your .{1,30} with)/.test(low)
       && /(allow|continue|authori[sz]e|accept|grant)/.test(low)) {
     return { step: "consent", provider: prov, number: "", say: `${name} is asking if you allow access. Read it and tap to allow — I won't grant it for you.` };
   }
@@ -259,7 +262,8 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
     return { step: "account", provider: prov, number: "", say: `${name} is asking which account. Pick yours.` };
   }
   // No field, no prompt, but the page offers providers: the chooser.
-  if (providersOffered(t).length) return { step: "chooser", provider: prov, number: "", say: `Pick how you sign in.` };
+  const offered = providersOffered(t);
+  if (offered.length) return { step: "chooser", provider: prov, number: "", offered, say: `Pick how you sign in.` };
   if (SIGNED.test(low)) return { step: "signed_in", provider: prov, number: "", say: `Signed in.` };
   return { step: "unknown", provider: prov, number: "", say: `Working on the ${entryName(provider)} page…` };
 }

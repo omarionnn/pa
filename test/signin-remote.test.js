@@ -1099,3 +1099,50 @@ test("a sign-in in progress is on the busy file from the link to its end, with n
   await req(token, "done", { method: "POST", cookie });
   assert.deepEqual(read().items, [], "ended: released");
 });
+
+// ---------- Reason's own page (native panel), owner 2026-11-10 ----------
+const GOOGLE_EMAIL = { url: "https://accounts.google.com/v3/signin/identifier?client_id=x", text: "Sign in\nto continue to Notion\nEmail or phone\nForgot email?\nNext", fields: [{ x: 0.1, y: 0.4, w: 0.8, h: 0.07, tag: "input", type: "email", ac: "username", name: "identifier", id: "identifierId", label: "Email or phone", im: "", ml: 0, len: 0, focused: true }] };
+const NOTION_CHOOSER = { url: "https://www.notion.so/login", text: "Log in to Notion\nContinue with Google\nContinue with Apple\nContinue with Microsoft\nContinue with email", fields: [] };
+test("native page: where the flag reaches them the panel follows the real page step by step, the chooser presses the real button, and nothing typed comes back", async () => {
+  process.env.REASON_SOCIAL_SIGNIN = "owner";
+  try {
+    const b = fakeBrowser({ frames: [NOTION_CHOOSER, NOTION_CHOOSER, GOOGLE_EMAIL, GOOGLE_EMAIL] });
+    const pressed = [];
+    const out = remote.createRemoteSignin({
+      conversationId: CONV, entry: sites.site("amazon"), launch: b.launch, log: () => {},
+      timers: { set: () => ({}), clear: () => {} }, check: async () => ({ ok: true, state: "signed_in", why: "x" }),
+      pressProvider: async (_page, p) => { pressed.push(p); return { pressed: `Continue with ${p}` }; },
+    });
+    const token = out.url.split("/").pop();
+    const { cookie } = await start(token);
+    const live = await req(token, "", { cookie });
+    assert.match(live.body, /id="np-panel"/, "the native page, not only the picture");
+    assert.match(live.body, /Show me the page/, "the streamed page stays as the fallback");
+    let v = await view(token, cookie);
+    assert.equal(v.meta.np.step, "chooser");
+    assert.match(v.meta.np.html, /Continue with Google/);
+    assert.doesNotMatch(v.meta.np.html, /Continue with Facebook/, "only the providers the site offers");
+    v = await view(token, cookie, v.meta.h);
+    assert.equal(v.meta.np.html, undefined, "an unchanged step does not resend the panel");
+    const r = await req(token, "provider", { method: "POST", cookie, body: { p: "google" } });
+    assert.equal(JSON.parse(r.body).pressed, true);
+    assert.deepEqual(pressed, ["google"], "the real page's own button was pressed, nothing else");
+    assert.equal((await req(token, "provider", { method: "POST", cookie, body: { p: "evil.com" } })).status, 400, "only the four providers");
+    v = await view(token, cookie);
+    assert.equal(v.meta.np.step, "email");
+    assert.equal(v.meta.np.page, false, "the email step is native; the picture stays tucked away");
+    await req(token, "type", { method: "POST", cookie, body: { at: { x: 0.5, y: 0.43 }, all: true, text: SECRET_TYPED } });
+    v = await view(token, cookie);
+    assert.ok(!JSON.stringify(v.meta).includes(SECRET_TYPED), "what was typed never travels back in the panel");
+    assert.ok(b.did.some(d => d[0] === "type" && d[1] === SECRET_TYPED), "it went to the real page");
+    await req(token, "cancel", { method: "POST", cookie });
+  } finally { delete process.env.REASON_SOCIAL_SIGNIN; }
+});
+test("native page: without the flag the picture page is unchanged and /view carries no panel", async () => {
+  delete process.env.REASON_SOCIAL_SIGNIN;
+  const { token } = make();
+  const { cookie } = await start(token);
+  assert.doesNotMatch((await req(token, "", { cookie })).body, /id="np-panel"/);
+  assert.equal((await view(token, cookie)).meta.np, undefined);
+  assert.equal((await req(token, "provider", { method: "POST", cookie, body: { p: "google" } })).status, 400);
+});
