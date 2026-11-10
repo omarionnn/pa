@@ -160,5 +160,5 @@ back <Dec 9>.") + the link, once a day (`plan.call_link_day`). A call to them on
 and an invite / event from anybody not free for good makes nobody free. Auto-admit: `REASON_SIGNUPS_PER_HOUR`
 (default 25) walk-in accounts a rolling hour; the next gets the access-list text (`REASON_ACCESS_LIST_URL`,
 default https://heyreason.com/access) and the approval queue.
-Prove: `node --test test/free-tier-monthly.test.js` (14) + `bin/free-tier-drive.mjs` (muted, real router +
+Prove: `node --test test/free-tier-monthly.test.js` (15) + `bin/free-tier-drive.mjs` (muted, real router +
 inbound TwiML, prints the texts; 7 ok + all ok on 11-09).
