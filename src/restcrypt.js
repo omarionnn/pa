@@ -58,6 +58,7 @@ function openKeystore(path) {
   const k = new DatabaseSync(path);
   k.exec(`
     PRAGMA busy_timeout = 5000;
+    PRAGMA journal_mode = WAL; -- the server and scripts/encrypt-rest.mjs may both write
     CREATE TABLE IF NOT EXISTS install_key (
       version INTEGER PRIMARY KEY, source TEXT NOT NULL, wrapped TEXT NOT NULL, created_at INTEGER NOT NULL, retired_at INTEGER);
     CREATE TABLE IF NOT EXISTS user_keys (
@@ -330,6 +331,14 @@ export function rotatePersonKey(rawPrepare, conversationId) {
   } catch (e) { ks.exec("ROLLBACK"); throw e; }
   deks.delete(old.id); deks.set("c:" + c, nid); opened.clear();
   return { resealed, shredded: true };
+}
+
+/** Whole-install delete: every person key destroyed. Returns how many. */
+export function destroyAllKeys() {
+  if (!ks) return 0;
+  const ids = ks.prepare("SELECT id, conversation_id FROM user_keys").all();
+  for (const r of ids) destroyKey(r.conversation_id);
+  return ids.length;
 }
 
 /** Rotate the install key: new IK, every person key re-wrapped. No data row is touched. */

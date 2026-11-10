@@ -27,7 +27,7 @@
 // had cleared.
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { db, recordingFiles, documentFiles } from "./db.js";
+import { db, recordingFiles, documentFiles, rawPrepare, restcrypt } from "./db.js";
 import { config } from "./config.js";
 // Creates stranger_calls if this runs before anything else has (npm run data:*).
 import "./strangercalls.js";
@@ -668,8 +668,15 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     else documents.already_gone++;
   }
 
+  // Encryption at rest (src/restcrypt.js): their key goes too, so every backup taken before today
+  // holds their words with no key. What a scoped delete keeps (KEPT_ON_DELETE) is re-sealed first.
+  const sealedKey = conversation
+    ? restcrypt.rotatePersonKey(rawPrepare, conversation)
+    : { shredded: restcrypt.destroyAllKeys() > 0 };
+
   return {
     deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds, event_photos: eventPhotos,
+    key_destroyed: !!sealedKey.shredded,
     google: {
       ...googleGrants,
       // Said out loud rather than quietly dropped: whoever runs a delete is entitled to know whether

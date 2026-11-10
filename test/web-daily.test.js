@@ -152,7 +152,7 @@ test("4. overnight: decision, update, done; answers are not news; newest first; 
   assert.match(form, /class="dd-s" type="submit" name="text" value="Not now\.">Not now</);
   assert.doesNotMatch(form, /name="chat"/, "a decision answers in the one thread");
   // update: into the thread at that message
-  const msg = db.db.prepare("SELECT id FROM messages WHERE text LIKE 'The farmhouse%'").get().id;
+  const msg = db.db.prepare("SELECT id FROM messages WHERE pt(text) LIKE 'The farmhouse%'").get().id;
   assert.match(html, new RegExp(`<h2 class="dd-h">The farmhouse inn near Hudson wrote back\\.</h2><p class="dd-d">The room with the wood stove is open the 14th to the 16th\\.</p><a class="dd-l" href="/web\\?at=${msg}">Read it in the thread</a>`));
   // done: the stamp and one line
   assert.match(html, /<span class="dd-stamp">DONE<\/span><p>Dentist confirmed for Thursday, 10:30\. It&#39;s on your calendar\.<\/p>/);

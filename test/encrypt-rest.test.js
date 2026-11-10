@@ -160,6 +160,17 @@ test("a person key wrapped under a retired install key still opens (a process th
   assert.equal(rc.openAny(sealed), "made before the rotation");
 });
 
+test("delete my data (src/data.js deleteData) destroys their key: a backup copy taken before is unreadable", async () => {
+  const conv = "dm:sendblue:+15550004444";
+  d.writeEvent({ conversationId: conv, role: "user", content: "the words a deleted person said" });
+  const before = d.rawPrepare("SELECT content FROM event_log WHERE conversation_id = ?").get(conv).content;
+  assert.ok(rc.isSealed(before));
+  const { deleteData } = await import("../src/data.js");
+  const res = await deleteData({ conversation: conv, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) });
+  assert.equal(res.key_destroyed, true);
+  assert.equal(rc.openAny(before), rc.SHREDDED, "the old ciphertext, as a backup holds it, opens to nothing");
+});
+
 test("AWS SigV4 matches the published get-vanilla vector", () => {
   // aws-sig-v4-test-suite/get-vanilla: GET / on example.amazonaws.com, service "service", us-east-1.
   const h = rc.sigv4({ method: "GET", host: "example.amazonaws.com", path: "/", query: "", headers: {}, body: "",
