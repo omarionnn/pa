@@ -201,6 +201,80 @@ export function providerPrompt(raw = {}) {
   return { provider, kind: "", say: "" };
 }
 
+// ---------------------------------------------------------------- the one step a page is on
+/**
+ * Which screen the sign-in is on right now, read off the page, so Reason's own branded page can show
+ * the right native control and a plain live line instead of a streamed picture (owner, 2026-11-10:
+ * "your own page with native controls while you drive the real pages behind, and say plainly what's
+ * happening"). The fast, deterministic screens for the providers that matter are named here; a screen
+ * this cannot place comes back `unknown` and the page falls back to the streamed view for that step.
+ *
+ * Pure. Reads the page's url + text (`raw`), the form shape the reader already found (`fields`, as
+ * src/signin-remote.js fieldKind names them), and which provider this account signs in through.
+ * Order is by how sure the words are: a refusal and a captcha are read before anything that could be
+ * mistaken for a form.
+ *
+ *   { step, provider, number, say }
+ *     step: refused | captcha | consent | number_match | phone_tap | code | account | password
+ *           | email | chooser | signed_in | unknown
+ *     number: the match number to tap, when step is number_match (a short string, else "")
+ *     say: the live line for the person, plain words, honest about what is happening behind
+ */
+const CAPTCHA = /i'?m not a robot|are you a human|verify you(?:'re| are) (?:a )?human|select all (?:images|squares)|press (?:and hold|& hold)|slide to|unusual traffic|recaptcha|hcaptcha|cloudflare|verify it'?s you|help us keep your account safe|confirm it'?s really you|prove you'?re not a robot/;
+const SIGNED = /you(?:'re| are) signed in|signed in successfully|you can close this|signed in to/;
+export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
+  const t = String(raw?.text ?? "").replace(/\s+/g, " ").trim();
+  const low = t.toLowerCase();
+  const kinds = (Array.isArray(fields) ? fields : []).map(f => String(f?.k ?? f?.kind ?? "").toLowerCase());
+  const has = (k) => kinds.includes(k);
+  const no = providerRefused(raw);
+  if (no.refused) return { step: "refused", provider: no.provider, number: "", say: `${LABELS[no.provider]} refused my browser.` };
+  // A bot wall / "verify it's you" / a slider: nothing native can answer it, the person finishes it
+  // on the streamed page. Read before the form screens, since a captcha page often has a stray box.
+  if (CAPTCHA.test(low)) return { step: "captcha", provider, number: "", say: `${entryName(provider)} wants to check you're human.` };
+  const prompt = providerPrompt({ ...raw, text: t });
+  const prov = providerKey(provider) || prompt.provider || "";
+  const name = LABELS[prov] || "The site";
+  // The grant screen: "<app> wants access to…", "Continue to <app>?", "<app> will be able to…". Only
+  // the person's own tap grants it (the rule: never auto-grant a new third-party access).
+  // A consent screen is buttons only: a page with somewhere to type is a sign-in step, whatever it
+  // says ("Sign in to continue to Notion" is Google's email page, not a grant).
+  const typing = ["email", "username", "tel", "password", "otp"].some(has);
+  if (!typing && /(wants? (to )?access|will be able to|is requesting access|allow .{1,40} to access|grant .{1,30} permission|will share your|share your .{1,30} with)/.test(low)
+      && /(allow|continue|authori[sz]e|accept|grant)/.test(low)) {
+    return { step: "consent", provider: prov, number: "", say: `${name} is asking if you allow access. Read it and tap to allow — I won't grant it for you.` };
+  }
+  // Google's / Microsoft's number match: a 1–3 digit number to tap on the phone. The number is shown
+  // on its own, big; "2-Step" and "6-digit code" are NOT it, so only standalone digit groups count
+  // and the last one wins (the prompt's number sits below its instructions).
+  if (/(tap|choose|select|enter|press) (?:the )?number|number (?:shown|match|you see)|match the number/.test(low)) {
+    const nums = [...t.matchAll(/(?:^|[\s.:>])(\d{1,3})(?=$|[\s.<])/g)].map(m => m[1]);
+    const number = nums.at(-1) ?? "";
+    return { step: "number_match", provider: prov, number, say: `${name} sent a prompt to your phone. Tap the number ${number || "shown"} there.` };
+  }
+  if (prompt.kind === "phone_tap") return { step: "phone_tap", provider: prov, number: "", say: prompt.say };
+  // The site's OWN sign-in page offering Continue-with buttons (Notion: buttons above an email box) is
+  // the chooser, even with an email box on it: the person picks the provider or their own email.
+  // Only off the providers' hosts — on Google's own page the box is Google's email step.
+  const onProvider = /accounts\.google\.com|appleid\.apple\.com|idmsa\.apple\.com|login\.(microsoftonline|live|microsoft)\.com|(^|\.)facebook\.com/.test(String(raw?.url ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0]);
+  const offered0 = onProvider ? [] : providersOffered(t);
+  if (offered0.length && !has("password") && !has("otp")) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
+  if (prompt.kind === "code" || has("otp")) return { step: "code", provider: prov, number: "", say: `${name} sent a code. Send it to me as it came — I'll clean it up.` };
+  if (prompt.kind === "password" || has("password")) return { step: "password", provider: prov, number: "", say: `${name} wants your password. Type it here on ${name}'s own page — it never reaches me.` };
+  // An input box for the email/number comes before the account-picker words: "Email or phone" on
+  // Google's identifier page reads as a picker to the word test, but it is the email step.
+  if (has("email") || has("username") || has("tel")) return { step: "email", provider: prov, number: "", say: `${name} wants your ${has("tel") ? "number or email" : "email"}.` };
+  if (prompt.kind === "account" || /choose an account|use another account|pick an account|which account/.test(low)) {
+    return { step: "account", provider: prov, number: "", say: `${name} is asking which account. Pick yours.` };
+  }
+  // No field, no prompt, but the page offers providers: the chooser.
+  const offered = providersOffered(t);
+  if (offered.length) return { step: "chooser", provider: prov, number: "", offered, say: `Pick how you sign in.` };
+  if (SIGNED.test(low)) return { step: "signed_in", provider: prov, number: "", say: `Signed in.` };
+  return { step: "unknown", provider: prov, number: "", say: `Working on the ${entryName(provider)} page…` };
+}
+const entryName = (p) => LABELS[providerKey(p)] || "the";
+
 // ---------------------------------------------------------------- the provider says no
 /**
  * Google, Apple and Microsoft refuse some automated browsers on their own sign-in page: Google's
