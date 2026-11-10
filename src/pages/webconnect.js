@@ -416,7 +416,8 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
   const boot = interactive || view.state === "checking"
     ? {
       token, state: view.state, watch: view.state !== "card", ...(view.state === "checking" ? { waited: view.waited } : {}),
-      ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
+      // A web setup's card page gets a short JWT: its Crossmint user can become an account's on the claim.
+      ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id, String(link.conversation_id).startsWith("websetup:") ? { ttlSec: shop.SETUP_JWT_SEC } : {}), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
   // A web setup's card (src/websetup.js): Face ID is set up later on Web, signed in; the page goes back to the setup.
   const setupBack = link.kind === "card" && String(link.conversation_id).startsWith("websetup:") ? (await import("../websetup.js")).backUrlFor(link.conversation_id, "card") : "";

@@ -74,6 +74,12 @@ export function withoutCode(text) {
  * sent that fast. Later claims still take the names; the connections are dropped.
  */
 export const CONNECT_CLAIM_MS = 60 * 60_000;
+/**
+ * Uber (where they are picked up and dropped off) and a card (what pays) move on a tighter clock: a
+ * claim within fifteen minutes of the setup. A setup planted on somebody else would have to be texted
+ * that quickly, and its card page's Crossmint access (SETUP_JWT_SEC) has mostly run out by then too.
+ */
+export const PAY_CLAIM_MS = 15 * 60_000;
 
 // ---------- the claim ----------
 
@@ -97,6 +103,7 @@ export function claimFromText({ conversationId, text, log = () => {} }) {
   db.setAccountName(conversationId, nameCase(row.user_name));
   db.setContactCardName(conversationId, cardName(row.reason_name || DEFAULT_CARD_NAME));
   const fresh = clock.now() - row.created_at <= CONNECT_CLAIM_MS;
+  if (fresh && clock.now() - row.created_at > PAY_CLAIM_MS) dropRidesAndCard(from);
   const moved = fresh ? moveConnections(from, conversationId) : (dropConnections(from), { email: false, amazon: false, uber: false, card: false });
   // Amazon signed in on the page: the follow-up the text intro would have run after its link (read
   // their orders, bring back one or two real things), a little after the hello.
@@ -146,6 +153,14 @@ export function moveConnections(from, to) {
 /** Did this conversation do the setup on the web? Then the text intro asks none of it again. */
 export function handledOnWeb(conversationId) {
   return on() && !!store.claimedBy(conversationId);
+}
+
+/** A stand-in's Uber grant and card, let go (a claim past PAY_CLAIM_MS keeps only Gmail and Amazon). */
+export function dropRidesAndCard(c) {
+  shop.dropSetupCard(c);
+  db.db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ? AND provider = 'uber'").run(c);
+  db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ? AND name = 'uber'").run(c);
+  db.db.prepare("DELETE FROM oauth_states WHERE conversation_id = ? AND provider = 'uber'").run(c);
 }
 
 /** Everything a setup's stand-in holds, let go. */

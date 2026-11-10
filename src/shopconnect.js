@@ -422,6 +422,8 @@ const hashedCrossmintUser = (c) => `reason-${createHash("sha256").update(`crossm
 
 // ---------------------------------------------------------------- the web setup's card (src/websetup.js)
 const isSetupConversation = (c) => String(c ?? "").startsWith("websetup:");
+/** A setup's card page JWT lasts this long (not 30 minutes): its Crossmint user may become an account's. */
+export const SETUP_JWT_SEC = 10 * 60;
 /**
  * A setup's card, made theirs on the claim: the card row and the Crossmint user it was saved under
  * move to the account. Only onto an account with nothing at Crossmint yet (a brand-new one, which is

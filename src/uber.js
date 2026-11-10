@@ -206,14 +206,18 @@ export async function connectReady({ fetchImpl = fetch } = {}) {
   try {
     const res = await fetchImpl(`${config.uberAuthBase}/oauth/v2/authorize?${q}`, { method: "GET", redirect: "manual", signal: ctl.signal, headers: { "User-Agent": "Mozilla/5.0 (Reason connect check)" } });
     const to = String(res.headers?.get?.("location") ?? "");
-    if (/\/oauth\/errors/.test(to) || /redirect_uri/.test(to)) out = { ready: false, why: "redirect_uri_not_registered", redirect_uri: st.redirect_uri };
+    // Only Uber's own error page counts: the sign-in it sends a good request to carries the whole
+    // authorize address (redirect_uri included) in next_url, so the address is read, not searched.
+    let path = "";
+    try { path = new URL(to, config.uberAuthBase).pathname; } catch { path = ""; }
+    if (path.startsWith("/oauth/errors")) out = { ready: false, why: "redirect_uri_not_registered", redirect_uri: st.redirect_uri };
     else if (res.status >= 300 && res.status < 400 && to) out = { ready: true, why: "" };
     else out = { ready: false, why: "uber_unreachable", status: res.status };
   } catch {
     out = { ready: false, why: "uber_unreachable" };
   } finally { clearTimeout(timer); }
-  // An unreachable Uber is asked again next time; a definite answer is kept.
-  if (out.why !== "uber_unreachable") readyCache = { at: clock.now(), redirect: st.redirect_uri, out };
+  // A definite answer is kept ten minutes; an unreachable Uber thirty seconds (the page asks on every load).
+  readyCache = { at: clock.now() - (out.why === "uber_unreachable" ? READY_TTL_MS - 30_000 : 0), redirect: st.redirect_uri, out };
   return out;
 }
 

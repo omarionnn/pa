@@ -136,9 +136,19 @@ test("Uber's readiness is read off Uber's own authorize answer: a bad return add
   await uber.connectReady({ fetchImpl: to("https://auth.uber.com/v2/?next_url=x") });
   assert.equal(asked, 1, "a definite answer is kept ten minutes");
   uber._resetReady();
-  assert.deepEqual(await uber.connectReady({ fetchImpl: to("https://auth.uber.com/v2/?next_url=x") }), { ready: true, why: "" });
+  // Uber's real answer to a good request (11-10, from the live server): its sign-in, whose next_url
+  // carries the whole authorize address, redirect_uri and all.
+  const real = "https://auth.uber.com/v2/?next_url=https%3A%2F%2Fauth.uber.com%2Foauth%2Fv2%2Fauthorize%3Fanalytics_session_id%3D60c1%26client_id%3Duber-client-id%26redirect_uri%3Dhttps%253A%252F%252Freason.example.test%252Fuber%252Fcallback%26response_type%3Dcode%26scope%3Dprofile%26state%3Dreadiness";
+  assert.deepEqual(await uber.connectReady({ fetchImpl: to(real) }), { ready: true, why: "" });
   uber._resetReady();
-  assert.equal((await uber.connectReady({ fetchImpl: async () => { throw new Error("ECONNRESET"); } })).why, "uber_unreachable");
+  let tries = 0;
+  const down = async () => { tries++; throw new Error("ECONNRESET"); };
+  assert.equal((await uber.connectReady({ fetchImpl: down })).why, "uber_unreachable");
+  await uber.connectReady({ fetchImpl: down });
+  assert.equal(tries, 1, "an unreachable Uber is kept thirty seconds");
+  clock.skip(31_000);
+  await uber.connectReady({ fetchImpl: down });
+  assert.equal(tries, 2);
   config.uberClientSecret = "";
   uber._resetReady();
   assert.equal((await uber.connectReady({ fetchImpl: to("x") })).why, "no_keys");
@@ -210,6 +220,13 @@ test("a card saved from the setup: shown as connected (last four only), nothing 
   assert.match(page.body, /Back to your setup/);
   assert.match(page.body, /href="https:\/\/start--staging\.example\/start\/connect\?back=card"/);
   assert.doesNotMatch(page.body, /Set up Face ID/, "Face ID is set up later, signed in on Web");
+  // The card form's Crossmint JWT for a setup is short (its Crossmint user can become an account's).
+  const open = await api("POST", `/api/${s.id}/connect/card`, { cookie: s.cookie });
+  const form = await connectRequest({ sub: new URL(open.json.url).pathname.split("/").pop(), method: "GET" });
+  const jwt = /"jwt":"([^"]+)"/.exec(form.body)?.[1];
+  const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString());
+  assert.equal(claims.exp - claims.iat, shop.SETUP_JWT_SEC);
+  assert.equal(claims.sub, shop.crossmintUser(s.c));
 });
 
 test("the claim moves Uber and the card: the card keeps its Crossmint user, its links are spent, email is not claimed", async () => {
@@ -253,6 +270,23 @@ test("an account that already has Crossmint state keeps its own; the setup's car
   await new Promise(r => setTimeout(r, 10));
   assert.ok(calls.some(c => c.method === "DELETE" && c.path.endsWith("/pm_4242") && c.sub === shop.crossmintUser(s.c)), "removed at Crossmint as the stand-in");
   assert.equal(shop.adoptSetupCard("dm:fake:+1", me), false, "only a setup's stand-in ever hands a card over");
+});
+
+test("Uber and the card move only on a claim within fifteen minutes; Gmail still moves up to the hour", async () => {
+  const s = await newSetup();
+  db.saveOauthTokens(s.c, "google", { accessToken: "g", refreshToken: "r", scope: "gmail", accountLabel: "kofi@example.com" });
+  db.saveOauthTokens(s.c, "uber", { accessToken: "a", refreshToken: "r", scope: "profile", accountLabel: "Kofi" });
+  db.connectAccount(s.c, "uber", ["profile"], { account: "Kofi" });
+  await saveSetupCard(s, "4242");
+  clock.skip(ws.PAY_CLAIM_MS + 60_000);
+  const me = conv(newNumber());
+  const claim = ws.claimFromText({ conversationId: me, text: `hey jarvis, it's kofi · ${s.code}` });
+  assert.deepEqual([claim.email, claim.uber, claim.card], [true, false, false]);
+  assert.equal(db.listOauthTokens(me, "uber").length, 0);
+  assert.equal(q("SELECT COUNT(*) AS n FROM connected_accounts WHERE conversation_id = ? AND name = 'uber'").get(me).n, 0);
+  assert.equal(shop.cardOf(me), null);
+  assert.equal(shop.crossmintUser(me), shop.crossmintUser(me + ""), "no Crossmint user handed over");
+  assert.equal(q("SELECT COUNT(*) AS n FROM shop_crossmint_subjects").get().n, 0);
 });
 
 test("a late claim drops Uber and the card; an expired setup's Uber and card are swept", async () => {
