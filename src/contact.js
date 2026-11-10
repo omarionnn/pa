@@ -54,8 +54,17 @@ export function contactPathParts(pathname) {
 
 /** What a card's name may be: their words, one line, no vCard-breaking or invisible characters, short. */
 export const DEFAULT_CARD_NAME = "Reason";
+/**
+ * A name with a capital first letter on each word (Omari, 2026-11-09): "kofi mensah" \u2192 "Kofi Mensah",
+ * "jean-luc" \u2192 "Jean-Luc". Only a lowercase letter that starts a word is raised; nothing is ever
+ * lowered ("McKenna", "JJ" stay), and a word that starts with an emoji or a digit stays as typed.
+ */
+export function nameCase(raw) {
+  return String(raw ?? "").replace(/(^|[\s-])(\p{Ll})/gu, (_, at, ch) => at + ch.toLocaleUpperCase());
+}
+
 export function cardName(raw) {
-  const n = String(raw ?? "").replace(/[\u0000-\u001f\u007f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g, " ").replace(/[*_`#<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 40).trim();
+  const n = nameCase(String(raw ?? "").replace(/[\u0000-\u001f\u007f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g, " ").replace(/[*_`#<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 40).trim());
   return n || DEFAULT_CARD_NAME;
 }
 

@@ -47,7 +47,7 @@ import * as outbox from "./outbox.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
 import { askStructured, sideAskAllowed } from "./backends/side.js";
 import { rulesNote } from "./rules.js";
-import { contactCardUrl, lineNumber, RETRY_AFTER_MS, cardName, DEFAULT_CARD_NAME } from "./contact.js";
+import { contactCardUrl, lineNumber, RETRY_AFTER_MS, cardName, nameCase, DEFAULT_CARD_NAME } from "./contact.js";
 import { zoneFor } from "./zone.js";
 
 export const STATES = ["not_started", "awaiting_name", "awaiting_card_name", "complete"];
@@ -67,7 +67,7 @@ export const NAME_ASK = [BY_THE_WAY, NAME_Q];
  * word about it, or for a nickname just a warm word about loving it); this is only what is said
  * when that line could not be had, or they passed.
  */
-export const MET = (name) => name ? `nice to meet you, ${name}` : "all good, nice to meet you anyway";
+export const MET = (name) => name ? `nice to meet you, ${nameCase(name)}` : "all good, nice to meet you anyway";
 /** The ask for the name on the card: exactly this, nothing else in the bubble (owner wording). */
 export const CARD_NAME_ASK = "what do you want to call me?";
 /** The line on the card's own message: the card is theirs to save. Never a claim it is saved. */
@@ -219,7 +219,8 @@ export async function readText({ state, text, ask = askStructured, conversationI
   if (!v || !SCHEMA.properties.kind.enum.includes(v.kind)) return null;
   return {
     kind: v.kind,
-    name: clean(v.name, 40, { name: true }),
+    // Their name is kept with a capital on each word (Omari, 2026-11-09); the card's name gets it in cardName.
+    name: nameCase(clean(v.name, 40, { name: true })),
     cardName: clean(v.card_name, 40, { name: true }),
     reply: clean(v.reply, 220),
     nameLine: clean(v.name_line, 240),
