@@ -225,7 +225,12 @@ export class Router {
       const claim = await this.#claimInvite(inbound, address);
       if (claim && !claim.joined) return claim.result;
       // Otherwise: auto-admit if configured, or ask the master.
-      const accessResult = claim?.joined ? { autoAdmitted: true } : await this.#askForAccess(inbound, address);
+      // A web setup's first text (src/websetup.js) keeps its code for the claim below, but a text
+      // that waits in the access queue instead is written down without it.
+      const forQueue = websetup.on() && websetup.codeInText(inbound.text)
+        ? { ...inbound, text: websetup.withoutCode(inbound.text), ...(typeof inbound.said === "string" ? { said: websetup.withoutCode(inbound.said) } : {}) }
+        : inbound;
+      const accessResult = claim?.joined ? { autoAdmitted: true } : await this.#askForAccess(forQueue, address);
       if (accessResult?.autoAdmitted) {
         // They were admitted on the spot — fall through to run a normal turn with their message.
         // With REASON_ONBOARDING covering them, the first-chat onboarding answers it instead
@@ -261,9 +266,7 @@ export class Router {
     // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
     // its code: what they chose and connected on the page becomes theirs, and the intro asks none of
     // it again (src/onboarding.js webHandoff). No code, or one that does not match: nothing changes.
-    // Only for somebody this backend serves: on the subscription a stranger gets one "not yet" line,
-    // and their setup should still be there when they can be answered.
-    if (arrivedNow && !isOperator && servesOnThisBackend(address).serves) {
+    if (arrivedNow && !isOperator) {
       try {
         const claim = websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log });
         // The code has done its job: it is not stored with their words, and the model never reads it.

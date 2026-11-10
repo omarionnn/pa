@@ -389,3 +389,19 @@ test("a setup made on a listed staging site: host-only cookie, Google return and
     delete process.env.REASON_SETUP_ORIGINS;
   }
 });
+
+test("a setup's first text that waits for the owner's yes is queued without its code", async () => {
+  config.autoAdmit = false;
+  const s = await newSetup();
+  const h = harness();
+  const num = newNumber();
+  await h.router.deliver(text(num, `hey jarvis, it's kofi · ${s.code}`));
+  const tables = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'web_setups'").all().map(r => r.name);
+  for (const t of tables) {
+    let rows = [];
+    try { rows = db.db.prepare(`SELECT * FROM "${t}"`).all(); } catch { continue; }
+    assert.ok(!JSON.stringify(rows).includes(`· ${s.code}`), `the code is in ${t}`);
+  }
+  assert.ok(JSON.stringify(db.db.prepare("SELECT * FROM access_requests").all()).includes("hey jarvis, it's kofi"), "their words are queued");
+  assert.equal(store.get(s.id).claimed_by, null, "not claimed while they wait");
+});
