@@ -28,6 +28,23 @@
 //     (pause.resumeAll) and one line says they're all set. Cancelling is a tool (subscription_cancel):
 //     at the period's end, with the date access stops said back.
 //
+// THE MONTHLY FREE TIER (owner, 2026-11-09), REASON_FREE_TIER=monthly. Replaces the 25 / 30-without-a-win
+// trial above for everybody it reaches (unset keeps the old trial, so a deploy that forgets the line
+// changes nothing):
+//   - People who came in on their own get, every month: 20 CONVERSATIONS (a conversation is the session
+//     above — a new one after 30 quiet minutes) and 2 PHONE CALLS of up to 5 minutes each. The month runs
+//     from the day they first texted (a monthly anniversary), and both counts start again at its end.
+//   - Soft: the 20th conversation runs to its natural end; the 21st's first text is where it stops. A
+//     call's 5 minutes are a wrap-up cue, then the line closes a minute later.
+//   - Over the 20: no model turn at all. Code sends ONE friendly line and the link (overTextReply), once a
+//     conversation; anything else they text in that conversation is left. Reason starts nothing for them
+//     (blocked(): no check-ins, their timers wait) until they pay or the month turns.
+//   - Over the 2 calls (or over the 20): a call they place in is answered with one short line, hung up,
+//     and the link is texted (callGate / callLinkBubbles); a call they ask Reason to place is refused with
+//     the line and the link (callPlaceGate).
+//   - No 25th-session ask bubbles, no win rule, no paywall hold (pause.pauseAll): the month turning
+//     restores everything on its own. Paying ($24.99) is unlimited.
+//
 // REASON_PAYWALL (off | owner | on). Off is the default and what live runs until the owner flips it
 // (2026-11-05: Reason is free for everyone for now): nothing is counted, nothing is ever said, no tool
 // is ever refused or shown, the /pay pages are not served and Stripe's webhook acts on nothing. `owner`: the operator's own thread only — and HIS
@@ -45,6 +62,15 @@ export const TRIAL_MAX_SESSIONS = Math.max(TRIAL_SESSIONS, Number(process.env.RE
 export const SESSION_GAP_MS = Number(process.env.REASON_PAYWALL_GAP_MIN || 30) * 60_000;
 export const PRICE = "$24.99";
 export const PRICE_LINE = `${PRICE} a month`;
+/** The monthly free tier's allowance (REASON_FREE_TIER=monthly). */
+export const FREE_CONVERSATIONS = Number(process.env.REASON_FREE_CONVERSATIONS || 20);
+export const FREE_CALLS = Number(process.env.REASON_FREE_CALLS || 2);
+export const FREE_CALL_SECONDS = Math.round(Number(process.env.REASON_FREE_CALL_MINUTES || 5) * 60);
+/** After the wrap-up cue at FREE_CALL_SECONDS, how long the call has to say goodbye before the line closes. */
+// The goodbye comes 30 s before the 5:00 cut, so a free call never runs past its 5 minutes (review 2026-11-10).
+export const FREE_CALL_GRACE_SECONDS = 30;
+/** Is the monthly free tier the rule (REASON_FREE_TIER=monthly)? Read at call time. */
+export const monthly = () => String(process.env.REASON_FREE_TIER ?? "").trim().toLowerCase() === "monthly";
 /** How long one Checkout Session link is handed out again before a fresh one is made (Stripe's expire at 24h). */
 const CHECKOUT_REUSE_MS = 20 * 3_600_000;
 
@@ -79,6 +105,11 @@ db.db.exec(`
   );
 `);
 const q = (sql) => db.db.prepare(sql);
+// The monthly free tier's counts (2026-11-09): which month they are for (its start, ms), and the
+// conversations and calls used in it. A row whose period_start is not the current month's reads as zero.
+for (const [col, decl] of [["period_start", "INTEGER"], ["period_sessions", "INTEGER NOT NULL DEFAULT 0"], ["period_calls", "INTEGER NOT NULL DEFAULT 0"], ["call_link_day", "TEXT"]]) {
+  if (!q("PRAGMA table_info(plan)").all().some(c => c.name === col)) db.db.exec(`ALTER TABLE plan ADD COLUMN ${col} ${decl}`);
+}
 
 // ---------------------------------------------------------------- the switch
 
@@ -143,7 +174,7 @@ export function appliesTo(conversationId) {
 }
 
 /** Free for good: the operator, a test number, anybody who came in by invite or event, or an account from before the flip. */
-export function grandfathered(conversationId) {
+export function grandfathered(conversationId, seen = new Set()) {
   const row = db.getAccount(conversationId);
   if (mode() === "owner" && isOperator(conversationId, row)) return false; // so he can try it on himself
   if (isOperator(conversationId, row)) return true;
@@ -157,10 +188,31 @@ export function grandfathered(conversationId) {
   // One decision per number (security, 2026-11-08): the invite or event counts only when it is how the
   // number first came in — its earliest account. A number that already walked in on one line does not
   // become free by redeeming an invite or joining an event from another line.
+  // And only from somebody who is free for good themselves (owner, 2026-11-09: trial users get no
+  // invites): an invite from, or an event made by, somebody on the trial / free tier or paying does not
+  // make a free-forever account — the joiner is on the free tier like anybody who came in on their own.
+  // Followed up the chain (inviter's inviter…), each account once.
+  seen.add(conversationId);
+  const viaFree = (a) => {
+    let sponsor = a.invited_by || null;
+    if (!sponsor && a.joined_via_event != null) {
+      try { sponsor = q("SELECT organizer_conversation_id AS o FROM events WHERE id = ?").get(a.joined_via_event)?.o ?? null; } catch { sponsor = null; }
+    }
+    // Only under the monthly tier (review 2026-11-10): with REASON_FREE_TIER unset, any invite or event
+    // is the way in, exactly as before. A sponsor whose account is gone, or made free by hand
+    // (plan.status = 'free'), still counts — the joiner keeps what they were promised.
+    if (!monthly()) return true;
+    if (!sponsor) return true;
+    if (seen.has(sponsor) || seen.size > 16) return false;
+    if (!db.getAccount(sponsor)) return true;
+    try { if (q("SELECT status FROM plan WHERE conversation_id = ?").get(planId(sponsor))?.status === "free") return true; } catch { /* no plan row */ }
+    return grandfathered(sponsor, seen);
+  };
   if (row?.address) {
-    if (q(`SELECT 1 FROM accounts WHERE address = ? AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL)
-             AND created_at <= (SELECT MIN(created_at) FROM accounts WHERE address = ?) LIMIT 1`).get(row.address, row.address)) return true;
-  } else if (row?.invited_by || row?.joined_via_event) return true;
+    const ways = q(`SELECT conversation_id, invited_by, joined_via_event FROM accounts WHERE address = ? AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL)
+             AND created_at <= (SELECT MIN(created_at) FROM accounts WHERE address = ?)`).all(row.address, row.address);
+    if (ways.some(viaFree)) return true;
+  } else if ((row?.invited_by || row?.joined_via_event != null) && viaFree(row)) return true;
   const ship = shipTs();
   if (row?.created_at && ship && row.created_at < ship) return true;
   // The same number moved channel after the cut-off (a new `dm:<channel>:<number>` account, made later):
@@ -200,7 +252,7 @@ function ensure(conversationId, now = clock.now()) {
   return row(conversationId);
 }
 
-const COLUMNS = new Set(["sessions_used", "last_inbound_at", "status", "stripe_customer_id", "stripe_subscription_id", "paid_until", "ask_due", "asked_at", "told_session", "held_at", "checkout_url", "checkout_at"]);
+const COLUMNS = new Set(["sessions_used", "last_inbound_at", "status", "stripe_customer_id", "stripe_subscription_id", "paid_until", "ask_due", "asked_at", "told_session", "held_at", "checkout_url", "checkout_at", "period_start", "period_sessions", "period_calls", "call_link_day"]);
 function write(conversationId, fields, now = clock.now()) {
   ensure(conversationId, now);
   const keys = Object.keys(fields).filter(k => COLUMNS.has(k));
@@ -208,6 +260,34 @@ function write(conversationId, fields, now = clock.now()) {
   q(`UPDATE plan SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE conversation_id = ?`)
     .run(...keys.map(k => fields[k]), now, planId(conversationId));
   return row(conversationId);
+}
+
+// ---------------------------------------------------------------- the month (REASON_FREE_TIER=monthly)
+
+/** `ms` moved on by `k` calendar months (UTC), the day kept or clamped to the month's last (Jan 31 → Feb 28). */
+export function addMonths(ms, k) {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear(), m = d.getUTCMonth() + k;
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return Date.UTC(y, m, Math.min(d.getUTCDate(), last), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds());
+}
+
+/** The free month `now` falls in, anchored on the day they first texted: `{ start, end }` (ms). */
+export function periodOf(anchor, now = clock.now()) {
+  const a = Number(anchor) || now;
+  if (now < a) return { start: a, end: addMonths(a, 1) };
+  const d0 = new Date(a), d1 = new Date(now);
+  let k = (d1.getUTCFullYear() - d0.getUTCFullYear()) * 12 + (d1.getUTCMonth() - d0.getUTCMonth());
+  while (k > 0 && addMonths(a, k) > now) k--;
+  while (addMonths(a, k + 1) <= now) k++;
+  return { start: addMonths(a, k), end: addMonths(a, k + 1) };
+}
+
+/** This month's counts off a plan row: a row last written in an earlier month reads as zero. */
+function monthOf(r, now = clock.now()) {
+  const p = periodOf(r?.first_seen_at ?? now, now);
+  const current = !!r && r.period_start === p.start;
+  return { ...p, current, conversations: current ? (r.period_sessions ?? 0) : 0, calls: current ? (r.period_calls ?? 0) : 0 };
 }
 
 /**
@@ -223,14 +303,36 @@ export function status(conversationId, now = clock.now()) {
   const base = { sessions_used: used, left: Math.max(0, TRIAL_SESSIONS - used), paid_until: r?.paid_until ?? null, trial_sessions: TRIAL_SESSIONS, extended: false };
   if (!appliesTo(conversationId)) return { status: "off", applies: false, ...base };
   if (grandfathered(conversationId) || r?.status === "free") return { status: "free", applies: true, ...base };
-  if (!r) return { status: "trial", applies: true, ...base };
+  if (!r) return monthly() ? freeTierStatus(null, now) : { status: "trial", applies: true, ...base };
   if (r.status === "paid") return { status: "paid", applies: true, ...base };
-  if (r.status === "cancelled") return { status: r.paid_until && r.paid_until > now ? "cancelled" : "lapsed", applies: true, ...base };
+  if (r.status === "cancelled" && r.paid_until && r.paid_until > now) return { status: "cancelled", applies: true, ...base };
+  // The monthly free tier: everybody not paying — on the trial, a subscription that ended, or lapsed under
+  // the old rule — has this month's 20 conversations and 2 calls. "lapsed" here means over the 20 this
+  // month, and lifts by itself when the month turns.
+  if (monthly()) return freeTierStatus(r, now);
+  if (r.status === "cancelled") return { status: "lapsed", applies: true, ...base };
   // Lapsed is written by noteTurn (a new session after the ask has gone), never inferred from the
   // count alone: somebody past 25 who was never asked is still on the trial until they have been.
   if (r.status === "lapsed") return { status: "lapsed", applies: true, ...base };
   if (extended) return { status: "trial", applies: true, ...base, left: Math.max(0, TRIAL_MAX_SESSIONS - used), trial_sessions: TRIAL_MAX_SESSIONS, extended: true };
   return { status: "trial", applies: true, ...base };
+}
+
+function freeTierStatus(r, now) {
+  const m = monthOf(r, now);
+  return {
+    status: m.conversations > FREE_CONVERSATIONS ? "lapsed" : "trial", applies: true, monthly: true,
+    sessions_used: m.conversations, left: Math.max(0, FREE_CONVERSATIONS - m.conversations), trial_sessions: FREE_CONVERSATIONS,
+    calls_used: m.calls, calls_left: Math.max(0, FREE_CALLS - m.calls), free_calls: FREE_CALLS,
+    resets_at: m.end, paid_until: r?.paid_until ?? null, extended: false,
+  };
+}
+
+/** On the monthly free tier, under the paywall and not free for good or paying (REASON_FREE_TIER=monthly)? */
+export function onFreeTier(conversationId, now = clock.now()) {
+  if (!monthly()) return false;
+  const st = status(conversationId, now);
+  return !!st.monthly && (st.status === "trial" || st.status === "lapsed");
 }
 
 /** Is this person past their trial and unpaid — the state in which acting tools are refused? */
@@ -252,6 +354,16 @@ export function noteTurn(conversationId, now = clock.now()) {
   const fields = { last_inbound_at: now };
   let used = r.sessions_used;
   if (fresh) { used += 1; fields.sessions_used = used; }
+  if (monthly()) {
+    // This month's conversations: a new month starts the count again, and the conversation that is
+    // going on when it turns is the new month's first.
+    const m = monthOf(r, now);
+    const conversations = !m.current ? 1 : m.conversations + (fresh ? 1 : 0);
+    Object.assign(fields, { period_start: m.start, period_sessions: conversations, ...(m.current ? {} : { period_calls: 0 }) });
+    write(conversationId, fields, now);
+    const st = status(conversationId, now);
+    return { session_started: fresh, sessions_used: used, conversations, monthly: true, over: st.status === "lapsed", lapsed: st.status === "lapsed" };
+  }
   const subject = appliesTo(conversationId) && !grandfathered(conversationId) && r.status === "trial";
   // The ask comes before any lapse, always: a session at or past the 25th with the ask never sent owes
   // it (this covers somebody whose sessions were counted while the switch was off), and only a NEW
@@ -384,6 +496,159 @@ export function askBubbles({ counts, url, name = "", sessions = TRIAL_SESSIONS }
   return url ? [first, ask, url] : [first, ask];
 }
 
+// ---------------------------------------------------------------- the monthly free tier's words
+
+/** "Dec 9" — when this month's free conversations and calls come back. */
+const resetDay = (st, conversationId) => when(st.resets_at, conversationId);
+
+/** Their first name for a bubble, from the account; "" when there is none. */
+const nameFor = (conversationId) => {
+  try { const a = db.getAccount(conversationId); return a?.name ? firstName(a.name) : ""; } catch { return ""; }
+};
+
+/**
+ * Over the 20 (owner-approved copy, 2026-11-09): about them first, never the price — what Reason did
+ * for them, counted from the record (recapLine, the 25-session wording), or owning that it has not
+ * yet; then when the free ones come back BEFORE the price; then the link alone. Never "unlock",
+ * "upgrade" or "trial". No link to be had: the second bubble says it is coming.
+ */
+export function overTextBubbles({ url, resets, counts = {}, name = "" }) {
+  const did = recapLine(counts);
+  const who = name ? `, ${name}` : "";
+  const first = did
+    ? `that's ${FREE_CONVERSATIONS} conversations between us this month${who}. so far i've ${did}.`
+    : `that's ${FREE_CONVERSATIONS} conversations between us${who}. i haven't pulled off something real for you yet, and i'd like the chance to.`;
+  const ask = `the free ones come back ${resets}. or it's ${PRICE_LINE} for unlimited texts and calls. everything stays exactly as it is, what i remember, your reminders, all of it, and you can cancel any time just by telling me.`;
+  return url ? [first, ask, url] : [first, `${ask} i'll text you the link in a bit.`];
+}
+
+const SPOKEN = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+const spoken = (n) => SPOKEN[n] ?? String(n);
+
+/** What a call over the allowance hears before the line closes (a call has no link to read out). */
+export function overCallLine(why, name = "") {
+  const who = name ? ` ${name}` : "";
+  const used = why === "calls"
+    ? (FREE_CALLS === 2 ? "that's both free calls this month" : `that's all ${spoken(FREE_CALLS)} free calls this month`)
+    : `that's all ${FREE_CONVERSATIONS} free conversations this month`;
+  return `hey${who}, it's Reason. ${used}, so i can't stay on. i'm texting you the link right now. talk soon.`;
+}
+
+/** The text after that call: what Reason did for them (if anything), the price, when the free ones come back, then the link alone. */
+export function callLinkBubbles({ url, resets, why, counts = {} }) {
+  const did = recapLine(counts);
+  const back = why === "calls" ? `your ${FREE_CALLS} calls` : `your ${FREE_CONVERSATIONS} conversations`;
+  const line = `here's that link.${did ? ` so far i've ${did}.` : ""} ${PRICE_LINE} for unlimited texts and calls, cancel any time by texting me. otherwise ${back} come back ${resets}.`;
+  return url ? [line, url] : [`${line} the link itself is on its way in a bit.`];
+}
+
+/**
+ * Over the 20 this month (REASON_FREE_TIER=monthly): what to send INSTEAD of a turn. Null when the turn
+ * should run. `{ bubbles }` the first time in a conversation (claimed before the link is made, so two
+ * drains never both say it); `{ silent: true }` for anything else they text in that same conversation.
+ */
+export async function overTextReply(conversationId, { fetchImpl = globalThis.fetch, log = () => {}, now = clock.now() } = {}) {
+  if (!monthly() || !conversationId) return null;
+  const st = status(conversationId, now);
+  if (!st.monthly || st.status !== "lapsed") return null;
+  const r = row(conversationId);
+  if (!r) return null;
+  if (q("UPDATE plan SET told_session = ?, updated_at = ? WHERE conversation_id = ? AND (told_session IS NULL OR told_session != ?)")
+    .run(r.sessions_used, now, planId(conversationId), r.sessions_used).changes !== 1) {
+    log({ free_tier_over_silent: conversationId, conversations: st.sessions_used });
+    return { silent: true };
+  }
+  const url = await payLink(conversationId, { fetchImpl, log, now });
+  log({ free_tier_over: conversationId, conversations: st.sessions_used, link: !!url });
+  const counts = await recapCounts(conversationId);
+  return { bubbles: overTextBubbles({ url, resets: resetDay(st, conversationId), counts, name: nameFor(conversationId) }) };
+}
+
+/**
+ * The router's side of overTextReply (Router #drainHeld, before any model turn): their texts into the
+ * history, the line and the link out, nothing else. Null when the turn should run.
+ */
+export async function answerOverCeiling({ conversationId, texts = [], router = null, sleep = realSleep, fetchImpl = globalThis.fetch, log = () => {}, now = clock.now() } = {}) {
+  const out = await overTextReply(conversationId, { fetchImpl, log, now });
+  if (!out) return null;
+  try {
+    const said = texts.map(t => String(t ?? "").trim()).filter(Boolean);
+    if (said.length) db.saveConversation(conversationId, [...db.loadConversation(conversationId), { role: "user", content: said.join("\n") }]);
+  } catch { /* the line still goes */ }
+  if (out.silent) return { did: "silent" };
+  const sent = await sayBubbles({ conversationId, router, bubbles: out.bubbles, key: `plan:over:${planId(conversationId)}:${row(conversationId)?.sessions_used ?? 0}`, sleep, log });
+  return { did: "told", bubbles: out.bubbles, sent };
+}
+
+/**
+ * A call they place in to Reason (calls/gptlive.js routeInbound): `{ line, why }` to say and hang up on
+ * when they are over the 20 or have used the 2 calls this month; null when the call goes ahead. The
+ * link goes by text (textCallLink).
+ */
+export function callGate(conversationId, now = clock.now()) {
+  if (!onFreeTier(conversationId, now)) return null;
+  const st = status(conversationId, now);
+  const why = st.status === "lapsed" ? "conversations" : st.calls_left <= 0 ? "calls" : null;
+  return why ? { line: overCallLine(why, nameFor(conversationId)), why } : null;
+}
+
+/** After callGate's line: the link by text, once a day (a caller ringing five times gets one). */
+export async function textCallLink({ conversationId, why, router = null, sleep = realSleep, fetchImpl = globalThis.fetch, log = () => {}, now = clock.now() } = {}) {
+  const st = status(conversationId, now);
+  const day = new Date(now).toISOString().slice(0, 10);
+  // Claimed in the row before anything is made or sent, so a second ring (or two at once) texts nothing.
+  ensure(conversationId, now);
+  if (q("UPDATE plan SET call_link_day = ?, updated_at = ? WHERE conversation_id = ? AND (call_link_day IS NULL OR call_link_day != ?)")
+    .run(day, now, planId(conversationId), day).changes !== 1) {
+    log({ free_tier_call_link_already: conversationId, why, day });
+    return { bubbles: [], sent: 0, already: true };
+  }
+  const url = await payLink(conversationId, { fetchImpl, log, now });
+  const bubbles = callLinkBubbles({ url, resets: resetDay(st, conversationId), why, counts: await recapCounts(conversationId) });
+  const sent = await sayBubbles({ conversationId, router, bubbles, key: `plan:call-over:${planId(conversationId)}:${day}`, sleep, log });
+  log({ free_tier_call_link: conversationId, why, sent, link: !!url });
+  return { bubbles, sent };
+}
+
+/**
+ * A call they ask Reason to place (call_place): refused once the month's 2 calls are used, with the line
+ * and the link for the model to say — once a conversation, then only that it can't call.
+ */
+export async function callPlaceGate(conversationId, { fetchImpl = globalThis.fetch, log = () => {}, now = clock.now() } = {}) {
+  if (!onFreeTier(conversationId, now)) return null;
+  const st = status(conversationId, now);
+  if (st.calls_left > 0) return null;
+  const r = row(conversationId);
+  const told = !!r && r.told_session === r.sessions_used;
+  let url = null;
+  if (!told) {
+    url = await payLink(conversationId, { fetchImpl, log, now });
+    write(conversationId, { told_session: r?.sessions_used ?? 0 }, now);
+  }
+  log({ free_tier_call_refused: conversationId, calls: st.calls_used, told_before: told });
+  return {
+    ok: false, blocked: "free_calls_used", status: "free_calls_used", pay_url: url,
+    error: told
+      ? `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used. They were ALREADY told this conversation — do not repeat the price, the line or the link. Say in a few words that you can't make calls right now, and carry on with anything else in words.`
+      : `Not done, nobody's phone rang: this month's ${FREE_CALLS} free calls are used up. Say ONE short warm line — the month's ${FREE_CALLS} free calls are used, they come back ${resetDay(st, conversationId)}, or unlimited calls and texts are ${PRICE_LINE}, cancel any time by text — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link to sign up in a bit"}. Never say "unlock", "upgrade" or "trial". Then carry on with anything else in words. Do not say this again this conversation.`,
+  };
+}
+
+/** A call on the free tier: counted against the month's 2. Paying or free for good: nothing. */
+export function noteCall(conversationId, now = clock.now()) {
+  if (!conversationId || !onFreeTier(conversationId, now)) return null;
+  const r = ensure(conversationId, now);
+  const m = monthOf(r, now);
+  const calls = m.calls + 1;
+  write(conversationId, { period_start: m.start, period_calls: calls, ...(m.current ? {} : { period_sessions: 0 }) }, now);
+  return { calls, left: Math.max(0, FREE_CALLS - calls) };
+}
+
+/** How long a call may run, in seconds, before it is wrapped up: FREE_CALL_SECONDS on the free tier, else null. */
+export function callLimitSeconds(conversationId, now = clock.now()) {
+  try { return conversationId && onFreeTier(conversationId, now) ? FREE_CALL_SECONDS : null; } catch { return null; }
+}
+
 // ---------------------------------------------------------------- after a turn
 
 const realSleep = (ms) => new Promise(r => setTimeout(r, ms).unref?.());
@@ -401,6 +666,13 @@ export async function afterTurn({ conversationId, router = null, sleep = realSle
   // No longer lapsed but still held by us — set free or paid by hand (scripts/plan-set.js), or
   // grandfathered after the fact: their things come back on this turn.
   if (st.status !== "lapsed" && r.held_at > 0) { await release(conversationId, { log, now }); return { did: "released" }; }
+  // The monthly free tier asks nothing after a turn and holds nothing: over the 20, the turn never ran
+  // (overTextReply said the line instead), and the month turning restores everything by itself. A hold
+  // the old trial left on somebody is released, whatever they stand at now.
+  if (monthly()) {
+    if (r.held_at > 0) { await release(conversationId, { log, now }); return { did: "released" }; }
+    return { did: "nothing" };
+  }
   if (!st.applies || st.status === "free" || st.status === "off") return { did: "nothing" };
   if (st.status === "lapsed" && !r.held_at) {
     await hold(conversationId, { log, now });
@@ -502,6 +774,14 @@ export async function gate(conversationId, name, { fetchImpl = globalThis.fetch,
     write(conversationId, { told_session: r?.sessions_used ?? 0 }, now);
   }
   log({ paywall_refused: conversationId, tool: name, told_before: !!told });
+  if (monthly()) {
+    return {
+      ok: false, blocked: "trial_over", pay_url: url,
+      error: told
+        ? `Not done: they have used this month's free conversations. They were ALREADY told this conversation — do not repeat the price, the line or the link. Say plainly, in a few words, that you can't do that part right now.`
+        : `Not done: this month's ${FREE_CONVERSATIONS} free conversations are used up. Say ONE short warm line — the free ones come back ${when(status(conversationId, now).resets_at, conversationId)}, or unlimited is ${PRICE_LINE}, cancel any time by text — then ${url ? "the link on its own line as the last thing in the message, untouched: " + url : "that you'll text the link in a bit"}. Never say "unlock", "upgrade" or "trial". Do not say this again this conversation.`,
+    };
+  }
   return {
     ok: false, blocked: "trial_over", pay_url: url,
     error: told
@@ -514,6 +794,13 @@ export async function gate(conversationId, name, { fetchImpl = globalThis.fetch,
 export function note(conversationId, now = clock.now()) {
   const st = status(conversationId, now);
   if (!st.applies || st.status === "free" || st.status === "off") return "";
+  if (st.monthly) {
+    // Over the 20 the turn never runs (overTextReply), so only a reminder or a call of theirs gets here.
+    if (st.status === "lapsed") return `PLAN: this month's ${FREE_CONVERSATIONS} free conversations are used up and they have not subscribed (${PRICE_LINE}, unlimited). Anything that acts is refused by the tool itself, which says what to say. Never "unlock" or "upgrade".`;
+    const calls = st.calls_left <= 0 ? ` Their ${FREE_CALLS} free calls this month are used: call_place will refuse and tell you what to say.` : "";
+    if (st.left <= 0) return `PLAN: this is their last free conversation this month (free tier: ${FREE_CONVERSATIONS} conversations and ${FREE_CALLS} calls of up to ${Math.round(FREE_CALL_SECONDS / 60)} minutes a month; unlimited is ${PRICE_LINE}). Do not bring it up unless they ask (subscription_show has the facts); never push, never "unlock" or "upgrade".${calls}`;
+    return calls ? `PLAN:${calls} Do not bring up a plan or price otherwise.` : "";
+  }
   if (st.status === "lapsed") {
     return `PLAN: their ${TRIAL_SESSIONS} free sessions are used up and they have not subscribed (${PRICE_LINE}). Keep talking and answer questions as always.`
       + ` Anything that ACTS — a call, an order, a reminder or series, research, directions, an event, a message to somebody — is refused by the tool itself, and the refusal says exactly what to say (once a session, then only that you can't do that part).`
@@ -560,6 +847,7 @@ function conversationFor(obj, log = () => {}) {
 
 const PAID_LINE = "you're all set — thank you. everything's back on, and i'm here whenever you need me.";
 const ENDED_LINE = "your plan's ended, so i've paused the things i was doing for you. text me any time to pick it back up.";
+const ENDED_LINE_MONTHLY = `your plan's ended, so you're back on the free one: ${FREE_CONVERSATIONS} conversations and ${FREE_CALLS} calls a month. text me any time to start it again.`;
 
 /**
  * One verified Stripe event. Idempotent on its id (stripe_events). Returns what it did, for the log.
@@ -642,7 +930,8 @@ async function actOn(event, { say, log, now }) {
       const dead = ["canceled", "unpaid", "incomplete_expired"].includes(String(obj.status));
       if (dead) {
         write(conversationId, { ...fields, status: "lapsed" }, now);
-        await hold(conversationId, { log, now });
+        // The monthly free tier: an ended subscription is back on this month's free allowance, nothing held.
+        if (!monthly()) await hold(conversationId, { log, now });
       } else if (obj.cancel_at_period_end) {
         write(conversationId, { ...fields, status: "cancelled" }, now);
       } else if (["active", "trialing", "past_due"].includes(String(obj.status))) {
@@ -656,8 +945,8 @@ async function actOn(event, { say, log, now }) {
     case "customer.subscription.deleted": {
       const before = row(conversationId)?.status;
       write(conversationId, { status: "lapsed", paid_until: obj.current_period_end ? Number(obj.current_period_end) * 1000 : row(conversationId)?.paid_until ?? null }, now);
-      await hold(conversationId, { log, now });
-      if (before === "paid" || before === "cancelled") tell(ENDED_LINE);
+      if (!monthly()) await hold(conversationId, { log, now });
+      if (before === "paid" || before === "cancelled") tell(monthly() ? ENDED_LINE_MONTHLY : ENDED_LINE);
       log({ stripe_webhook: type, conversation: conversationId, lapsed: true });
       return { ok: true, matched: true, conversationId, lapsed: true };
     }
@@ -689,6 +978,13 @@ export function view(conversationId, now = clock.now()) {
   const r = row(conversationId);
   const out = { status: st.status, sessions_used: st.sessions_used, trial_sessions: st.trial_sessions, price: PRICE_LINE };
   if (st.status === "trial") { out.sessions_left = st.left; if (st.extended) out.extended = true; }
+  if (st.monthly) {
+    Object.assign(out, {
+      free_tier: `${FREE_CONVERSATIONS} conversations and ${FREE_CALLS} calls (up to ${Math.round(FREE_CALL_SECONDS / 60)} minutes each) a month`,
+      conversations_used: st.sessions_used, conversations_left: st.left, calls_used: st.calls_used, calls_left: st.calls_left,
+      resets: when(st.resets_at, conversationId), resets_at: st.resets_at, monthly: true,
+    });
+  }
   if (st.status === "paid") { out.next_bill = st.paid_until ? when(st.paid_until, conversationId) : "unknown yet"; out.next_bill_at = st.paid_until; }
   if (st.status === "cancelled") { out.access_until = when(st.paid_until, conversationId); out.access_until_at = st.paid_until; }
   out.has_subscription = !!r?.stripe_subscription_id;
@@ -719,6 +1015,9 @@ export function opsLabel(conversationId, now = clock.now()) {
   if (mode() === "off") return null;
   const st = status(conversationId, now);
   if (st.status === "off") return null;
+  if (st.monthly) return st.status === "lapsed"
+    ? `free ${st.sessions_used}/${FREE_CONVERSATIONS} · over until ${when(st.resets_at, conversationId)}`
+    : `free ${st.sessions_used}/${FREE_CONVERSATIONS} · calls ${st.calls_used}/${FREE_CALLS}`;
   if (st.status === "trial") return st.extended ? `trial ${st.sessions_used}/${TRIAL_MAX_SESSIONS} (no win yet)` : `trial ${st.sessions_used}/${TRIAL_SESSIONS}`;
   if (st.status === "cancelled") return `cancelled · until ${when(st.paid_until, conversationId)}`;
   return st.status;

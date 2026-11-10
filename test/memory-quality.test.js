@@ -210,3 +210,34 @@ test("an active fact with no embedding is embedded on the next pass; a dropped o
   assert.equal(await extract.backfillEmbeddings({ embedFn, limit: 500 }), 0);
   assert.equal(asked.length, 0);
 });
+
+test("a refused key or billing pauses the backfill instead of asking again every pass; a rate limit does not", async () => {
+  const C = "c-embed-pause";
+  db.remember(C, "Kwame", "Keeps bees");
+  let calls = 0;
+  const refuse = (msg) => async () => { calls++; throw new Error(msg); };
+  const t0 = 1_000_000;
+  extract.resetBackfillPause();
+
+  // 2026-11-09: an invalidated key, retried on every extraction pass, made 220 refused calls in an hour.
+  await extract.backfillEmbeddings({ embedFn: refuse('OpenAI embeddings 401: {"error":{"code":"token_invalidated"}}'), now: t0 });
+  await extract.backfillEmbeddings({ embedFn: refuse("OpenAI embeddings 401"), now: t0 + 15_000 });
+  await extract.backfillEmbeddings({ embedFn: refuse("OpenAI embeddings 401"), now: t0 + 29 * 60_000 });
+  assert.equal(calls, 1, "paused after the first refusal");
+  const ok = async texts => { calls++; return texts.map(() => new Float32Array([1, 0, 0])); };
+  assert.ok(await extract.backfillEmbeddings({ embedFn: ok, now: t0 + 31 * 60_000 }) >= 1, "back after the pause");
+
+  // Out of credits is billing, not a rate limit: paused too.
+  extract.resetBackfillPause(); calls = 0;
+  db.remember(C, "Kwame", "Sells honey");
+  await extract.backfillEmbeddings({ embedFn: refuse('OpenAI embeddings 429: {"error":{"message":"You have no credits remaining.","type":"insufficient_quota"}}'), now: t0 });
+  await extract.backfillEmbeddings({ embedFn: refuse("x"), now: t0 + 15_000 });
+  assert.equal(calls, 1);
+
+  // A plain rate limit or a timeout clears on its own: the next pass tries again.
+  extract.resetBackfillPause(); calls = 0;
+  await extract.backfillEmbeddings({ embedFn: refuse('OpenAI embeddings 429: {"error":{"type":"rate_limit_exceeded"}}'), now: t0 });
+  await extract.backfillEmbeddings({ embedFn: refuse("The operation was aborted"), now: t0 + 15_000 });
+  assert.equal(calls, 2);
+  extract.resetBackfillPause();
+});

@@ -16,6 +16,8 @@
 //
 //   - when the master says yes to somebody (router.js, after the welcome line);
 //   - when a pre-approved number's first text makes their account (router.js);
+//   - for somebody new in the first-chat onboarding (src/onboarding.js), at its last step, under the
+//     name they chose to save Reason as (/reason-<sha8>-<token>.vcf) — the startup pass skips them;
 //   - once at startup, to everybody who already had an account before this existed — "those that
 //     already have it, just send them their contact card right now".
 //
@@ -34,9 +36,36 @@ import { config, clock, normalizeNumber } from "./config.js";
  */
 export const CONTACT_PATH = "/reason.vcf";
 
-/** /reason.vcf, or /reason-<8 hex>.vcf. Any hash serves the current card (Sendblue fetches at once). */
+/**
+ * /reason.vcf, /reason-<8 hex>.vcf, or /reason-<8 hex>-<token>.vcf — the last is one person's card
+ * under the name they chose for Reason in their first chat (src/onboarding.js); the token is random
+ * and names nothing about them. Any hash serves the current card (Sendblue fetches at once).
+ */
+const CARD_PATH = /^\/reason-([0-9a-f]{8})(?:-([A-Za-z0-9_-]{16}))?\.vcf$/;
 export function isContactPath(pathname) {
-  return pathname === CONTACT_PATH || /^\/reason-[0-9a-f]{8}\.vcf$/.test(pathname ?? "");
+  return pathname === CONTACT_PATH || CARD_PATH.test(pathname ?? "");
+}
+
+/** The hash and the token in a card's address (either may be null). */
+export function contactPathParts(pathname) {
+  const m = CARD_PATH.exec(pathname ?? "");
+  return { hash: m?.[1] ?? null, token: m?.[2] ?? null };
+}
+
+/** What a card's name may be: their words, one line, no vCard-breaking or invisible characters, short. */
+export const DEFAULT_CARD_NAME = "Reason";
+/**
+ * A name with a capital first letter on each word (Omari, 2026-11-09): "kofi mensah" \u2192 "Kofi Mensah",
+ * "jean-luc" \u2192 "Jean-Luc". Only a lowercase letter that starts a word is raised; nothing is ever
+ * lowered ("McKenna", "JJ" stay), and a word that starts with an emoji or a digit stays as typed.
+ */
+export function nameCase(raw) {
+  return String(raw ?? "").replace(/(^|[\s-])(\p{Ll})/gu, (_, at, ch) => at + ch.toLocaleUpperCase());
+}
+
+export function cardName(raw) {
+  const n = nameCase(String(raw ?? "").replace(/[\u0000-\u001f\u007f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g, " ").replace(/[*_`#<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 40).trim());
+  return n || DEFAULT_CARD_NAME;
 }
 
 /** The card's REV: line. Bump it whenever the photo or the card's fields change. */
@@ -62,18 +91,22 @@ function photo() {
  * router (or no line number) the card is hashed without its number, which still changes with the
  * photo.
  */
-export function cardHash({ router = null, channel = null } = {}) {
+export function cardHash({ router = null, channel = null, name = DEFAULT_CARD_NAME } = {}) {
   const number = (router && channel && lineNumber(router, channel)) || "+10000000000";
-  const card = vcard({ number, callNumber: config.twilioFrom }) ?? "";
+  const card = vcard({ number, callNumber: config.twilioFrom, name }) ?? "";
   return createHash("sha256").update(card).digest("hex").slice(0, 8);
 }
 
-/** Where the card lives, by content, or null when this install has no public address. */
-export function contactCardUrl({ router = null, channel = null } = {}) {
+/**
+ * Where the card lives, by content, or null when this install has no public address. With a
+ * `token` (and the `name` it stands for), one person's card under the name they chose.
+ */
+export function contactCardUrl({ router = null, channel = null, name = DEFAULT_CARD_NAME, token = null } = {}) {
   if (!config.publicUrl && !config.pagesUrl) return null;
   // The files domain when there is one (files.heyreason.com serves /reason-*.vcf straight through,
   // 2026-11-01), so nothing a person receives names the server's own address.
-  return `${config.pagesUrl || config.publicUrl}/reason-${cardHash({ router, channel })}.vcf`;
+  const hash = cardHash({ router, channel, name: token ? name : DEFAULT_CARD_NAME });
+  return `${config.pagesUrl || config.publicUrl}/reason-${hash}${token ? `-${token}` : ""}.vcf`;
 }
 
 /**
@@ -104,16 +137,18 @@ function vEsc(v) {
  * never from the model. A card with no number would be a contact nobody can save against the
  * thread, so it is refused rather than made.
  */
-export function vcard({ number, callNumber, name = "Reason", note = "Your personal concierge", url = config.siteUrl || config.publicUrl || "" } = {}) {
+export function vcard({ number, callNumber, name = DEFAULT_CARD_NAME, note = "Your personal concierge", url = config.siteUrl || config.publicUrl || "" } = {}) {
   const tel = normalizeNumber(number);
   if (!tel) return null;
   const call = normalizeNumber(callNumber);
+  name = cardName(name);
   const lines = [
     "BEGIN:VCARD",
     "VERSION:3.0",
     `N:${vEsc(name)};;;;`,
     `FN:${vEsc(name)}`,
-    `ORG:${vEsc(name)}`,
+    // The company line stays Reason whatever they named it, so "Jarvis" still reads as Reason's card.
+    `ORG:${vEsc(DEFAULT_CARD_NAME)}`,
     `TEL;TYPE=CELL,VOICE,pref:${tel}`,
     ...(call ? [`item1.TEL:${call}`, `item1.X-ABLabel:call me`] : []),
     ...(url ? [`URL:${url}`] : []),
@@ -159,7 +194,8 @@ export async function offerContactCard({ router, account, log = () => {}, line =
   if (!account) return { outcome: "skipped", why: "no account" };
   if (account.contact_card_sent_at) return { outcome: "already" };
   if (!account.channel || account.channel === "console" || !account.address) return { outcome: "skipped", why: "no texting channel" };
-  const url = contactCardUrl({ router, channel: account.channel });
+  // A name they chose in their first chat (src/onboarding.js) stays on any later try of the card.
+  const url = contactCardUrl({ router, channel: account.channel, ...(account.contact_card_token ? { name: account.contact_card_name || DEFAULT_CARD_NAME, token: account.contact_card_token } : {}) });
   if (!url) return { outcome: "skipped", why: "REASON_PUBLIC_URL is not set, so there is no address to serve the card from" };
   const now = clock.now();
   if (account.contact_card_tried_at && now - account.contact_card_tried_at < RETRY_AFTER_MS) {

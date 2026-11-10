@@ -33,6 +33,7 @@ const { Router } = await import("../src/channels/router.js");
 const { Runtime } = await import("../src/runtime.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { ConsoleChannel } = await import("../src/channels/console.js");
+const { makeDeliver } = await import("../src/deliver.js");
 const { vcard, contactCardUrl, offerContactCard, backfillContactCards, CARD_LINE, CONTACT_PATH, RETRY_AFTER_MS } = await import("../src/contact.js");
 const { assetRequest, cardRequest, pageRequest } = await import("../src/http.js");
 const { cardHtml, cardPath, pageCard, cardFilename, illustrationPath } = await import("../src/pages/card.js");
@@ -58,10 +59,10 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 const fakeShoot = async () => PNG;
 const fakeDraw = (page, opts) => pageCard(page, { ...opts, shoot: fakeShoot });
 
-function harness({ verdict = "yes", live = true } = {}) {
+function harness({ verdict = "yes", live = true, answer = () => "ok" } = {}) {
   const turns = [];
   const logs = [];
-  const runtime = new Runtime({ runTurn: async ({ conversationId, text, kind }) => { turns.push({ conversationId, text, kind }); return "ok"; } });
+  const runtime = new Runtime({ runTurn: async ({ conversationId, text, kind }) => { turns.push({ conversationId, text, kind }); return answer({ conversationId, text }); } });
   const judge = async () => ({ verdict });
   const router = new Router({ runtime, judge, log: (e) => logs.push(e), timers: { set: (fn) => { fn(); return 0; }, clear: () => {} } });
   const channel = router.register(new FakeChannel({ number: LINE, live }));
@@ -163,19 +164,81 @@ test("yes sends the welcome, then the card to save — once", async () => {
   assert.equal(cards(h.channel, KOFI).length, 1);
 });
 
-test("a pre-approved number's first text makes the account and sends the card once", async () => {
+// A new person's turns: a hello that asks their name, then "nice to meet you" once they give it
+// (the model's my_name, stood in for by writing the name where the tool does).
+const newcomer = () => {
+  const h = harness({
+    answer: ({ conversationId, text }) => {
+      if (/kofi/i.test(text)) { db.setAccountName(conversationId, "Kofi"); return "nice to meet you, Kofi"; }
+      return "hey, i'm Reason. what's your name?";
+    },
+  });
+  // The turn's reply out over the real channel, so the order a phone sees is the order here.
+  h.runtime.turnExtras.channels = h.router;
+  h.runtime.deliver = makeDeliver({ router: h.router, consoleChannel: new ConsoleChannel({ write: () => {} }), log: () => {} });
+  return h;
+};
+const settle = () => new Promise(r => setTimeout(r, 20));
+
+// 11-09: a brand-new number's very first text from Reason was "one more thing — save me as a
+// contact" with no hello before it. The pre-turn card's "not auto-admitted" check read a field
+// accounts.admit never sets, so every account made by its own first text got the card at once —
+// and a nameless person's next text got it ahead of the answer again.
+async function cardWaitsForHello(h) {
+  await h.router.deliver(texts(KOFI, "hey", "a"));
+  await settle();
+  let toKofi = h.channel.sent.filter(m => m.to === KOFI);
+  assert.ok(toKofi.length >= 1, "answered");
+  assert.ok(!toKofi[0].media, "the first thing they get is the hello, never the card");
+  assert.equal(toKofi[0].text, "hey, i'm Reason. what's your name?");
+  assert.equal(cards(h.channel, KOFI).length, 0, "no card while Reason has no name for them");
+
+  await h.router.deliver(texts(KOFI, "wait what are you", "b"));
+  await settle();
+  assert.equal(cards(h.channel, KOFI).length, 0, "still nameless: still no card, on any text");
+
+  await h.router.deliver(texts(KOFI, "kofi", "c"));
+  await settle();
+  toKofi = h.channel.sent.filter(m => m.to === KOFI);
+  const metAt = toKofi.findIndex(m => m.text === "nice to meet you, Kofi");
+  const cardAt = toKofi.findIndex(m => m.media?.url);
+  assert.ok(metAt >= 0 && cardAt > metAt, "the card follows \"nice to meet you\"");
+
+  await h.router.deliver(texts(KOFI, "u there", "d"));
+  await settle();
+  assert.equal(cards(h.channel, KOFI).length, 1, "one card, ever");
+  assert.ok(db.getAccount(`dm:fake:${KOFI}`).contact_card_sent_at);
+}
+
+test("a pre-approved number's first text gets the hello first; the card follows their name, once", async () => {
   const before = config.testNumbers.slice();
   config.testNumbers.push(KOFI);
   try {
-    const h = harness();
-    await h.router.deliver(texts(KOFI, "yo", "a"));
-    await h.router.deliver(texts(KOFI, "u there", "b"));
-    assert.equal(cards(h.channel, KOFI).length, 1, "one card across two texts");
-    assert.ok(db.getAccount(`dm:fake:${KOFI}`).contact_card_sent_at);
+    await cardWaitsForHello(newcomer());
   } finally {
     config.testNumbers.length = 0;
     config.testNumbers.push(...before);
   }
+});
+
+test("an auto-admitted stranger's first text gets the hello first; the card follows their name, once", async () => {
+  const was = config.autoAdmit;
+  config.autoAdmit = true;
+  try {
+    await cardWaitsForHello(newcomer());
+  } finally {
+    config.autoAdmit = was;
+  }
+});
+
+test("somebody with a name and no card yet gets it after their next answer, never ahead of it", async () => {
+  db.upsertAccount({ conversationId: `dm:fake:${KOFI}`, channel: "fake", address: KOFI, name: "Kofi", isOperator: false });
+  const h = newcomer();
+  await h.router.deliver(texts(KOFI, "yo", "a"));
+  await settle();
+  const toKofi = h.channel.sent.filter(m => m.to === KOFI);
+  assert.equal(cards(h.channel, KOFI).length, 1);
+  assert.ok(!toKofi[0].media && toKofi.at(-1).media, "the answer, then the card");
 });
 
 test("everybody who already had an account gets the card at startup, and never again", async () => {

@@ -13,6 +13,9 @@ process.env.REASON_PAGES_URL = process.env.REASON_PAGES_URL || "https://files.ex
 process.env.REASON_CADDY_SECRET = process.env.REASON_CADDY_SECRET || "verify-caddy"; // what Caddy adds beside its marker
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_BURST_QUIET_MS = "0";
+// The events path with the first-chat onboarding off (no model read in this drive): welcome → card →
+// the one thing to try. The onboarding path for event joiners is test/event-web.test.js + features/onboarding.md.
+process.env.REASON_ONBOARDING ??= "off";
 // A throwaway database only: a new file in a temp directory. Never a real one.
 {
   const { resolve, dirname } = await import("node:path");
@@ -102,9 +105,9 @@ step("stranger: everything on the page, last step is one text", !!sms && sms.sta
 const code = decodeURIComponent(sms.split("body=")[1]);
 const joinedNew = await router.deliver({ channel: "fake", externalId: "web-1", from: NEW, text: code });
 const newGot = toNum(NEW);
-const iW = newGot.findIndex(t => /so glad you're coming/.test(t)), iC = fake.sent.filter(m => m.to === NEW).findIndex(m => m.media?.url), iQ = newGot.findIndex(t => /what do you do/.test(t));
+const iW = newGot.findIndex(t => /so glad you're coming/.test(t)), iC = fake.sent.filter(m => m.to === NEW).findIndex(m => m.media?.url), iQ = newGot.findIndex(t => /set up and run an event/.test(t));
 step("stranger's text proves the phone: account made through the event, 0 invites", joinedNew.newAccount === true && db.accountByAddress("fake", NEW)?.joined_via_event === ev.id && db.inviteAllowance(`dm:fake:${NEW}`) === 0);
-step("then welcome → card → one question, released details only", iW >= 0 && iC > iW && iQ > iC && !newGot.some(t => /Elm/.test(t)), JSON.stringify([iW, iC, iQ]));
+step("then welcome → card → one thing to try (a call or an event), no question about them, released details only", iW >= 0 && iC > iW && iQ > iC && !newGot.some(t => /Elm|what do you do/.test(t)), JSON.stringify([iW, iC, iQ]));
 db.startPageSession("drive-page", "drive-session-token-kwame-0001", { conversationId: `dm:fake:${KWAME}` });
 const cookie = "reason_page=drive-session-token-kwame-0001";
 const signed = await web({ headers: { cookie } });

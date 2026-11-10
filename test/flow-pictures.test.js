@@ -22,9 +22,12 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_UNDO_SECONDS = "0";
 process.env.REASON_PUBLIC_URL = "https://reason.example.ts.net";
-// The capability row reads this to say pictures are possible; the provider below is what draws.
-process.env.GEMINI_API_KEY = "flow-test-not-a-real-key";
-process.env.OPENAI_API_KEY = "";
+// The capability row reads this to say pictures are possible (OpenAI is the one picture model since
+// 2026-11-09); the provider below is what draws. The base is a closed loopback port, so nothing else
+// that reads the key (embeddings) can reach OpenAI with it.
+process.env.GEMINI_API_KEY = "";
+process.env.OPENAI_API_KEY = "flow-test-not-a-real-key";
+process.env.OPENAI_API_BASE = "http://127.0.0.1:9";
 
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
