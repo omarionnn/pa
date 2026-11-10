@@ -102,8 +102,24 @@ export const DIRECT_HOSTS = [
   { via: "storefront", name: "the restaurant's storefront", hosts: ["order.online"] },
 ];
 const PLATFORM_HOSTS = { doordash: ["doordash.com"], ubereats: ["ubereats.com", "postmates.com"], grubhub: ["grubhub.com", "seamless.com"] };
+// Other apps and marketplaces that sit between the person and the restaurant: never "direct".
+const OTHER_APPS = {
+  caviar: { name: "Caviar", hosts: ["trycaviar.com", "caviar.com"] },
+  slice: { name: "Slice", hosts: ["slicelife.com"] },
+  google: { name: "Google", hosts: ["food.google.com", "google.com"] },
+  yelp: { name: "Yelp", hosts: ["yelp.com"] },
+  deliverycom: { name: "Delivery.com", hosts: ["delivery.com"] },
+  ezcater: { name: "ezCater", hosts: ["ezcater.com"] },
+  beyondmenu: { name: "BeyondMenu", hosts: ["beyondmenu.com"] },
+  menupages: { name: "MenuPages", hosts: ["menupages.com"] },
+  waitr: { name: "Waitr", hosts: ["waitrapp.com", "waitr.com"] },
+  gopuff: { name: "Gopuff", hosts: ["gopuff.com"] },
+  instacart: { name: "Instacart", hosts: ["instacart.com"] },
+};
+/** An app's display name: DoorDash, Uber Eats, Grubhub, Caviar… */
+export const appName = (key) => PLATFORMS[key]?.name ?? OTHER_APPS[key]?.name ?? "the app";
 const under = (host, base) => host === base || host.endsWith(`.${base}`);
-const hostOfUrl = (u) => { try { const x = new URL(String(u ?? "").trim()); return /^https?:$/.test(x.protocol) ? x.hostname.toLowerCase().replace(/\.$/, "") : ""; } catch { return ""; } };
+const hostOfUrl = (u) => { try { const x = new URL(String(u ?? "").trim()); return /^https?:$/.test(x.protocol) ? x.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\d?\./, "") : ""; } catch { return ""; } };
 /**
  * Where an ordering link really orders: { route: "direct", via, via_name } for a restaurant's own
  * ordering (a known ordering host, or its own site), { route: "platform", platform } for a delivery
@@ -113,8 +129,28 @@ export function orderingRoute(url) {
   const host = hostOfUrl(url);
   if (!host) return null;
   for (const [platform, bases] of Object.entries(PLATFORM_HOSTS)) if (bases.some((b) => under(host, b))) return { route: "platform", platform, host };
+  for (const [platform, a] of Object.entries(OTHER_APPS)) if (a.hosts.some((b) => under(host, b))) return { route: "platform", platform, host };
   for (const d of DIRECT_HOSTS) if (d.hosts.some((b) => under(host, b))) return { route: "direct", via: d.via, via_name: d.name, host };
   return { route: "direct", via: "own_site", via_name: "its own site", host };
+}
+/**
+ * Which restaurant's ordering a link is: its host, plus the restaurant's part of the path on a host
+ * many restaurants share (order.toasttab.com/online/<place>, ordering.chownow.com/order/<id>…), so a
+ * cart built at one place is never checked out at another, and www or a menu sub-page is the same place.
+ */
+export function orderingPlaceKey(url) {
+  const r = orderingRoute(url);
+  if (!r) return "";
+  let path = [];
+  try { path = new URL(String(url).trim()).pathname.toLowerCase().split("/").filter(Boolean); } catch { return ""; }
+  if (r.route === "platform") { try { return `${r.host}/${new URL(String(url).trim()).pathname.toLowerCase().split("/").filter(Boolean).slice(0, 2).join("/")}`; } catch { return r.host; } }
+  if (r.via === "toast") {
+    const i = path.indexOf("online") >= 0 ? path.indexOf("online") : path.indexOf("order");
+    return `toast:${i >= 0 ? path[i + 1] ?? "" : path[0] ?? ""}`;
+  }
+  // ChowNow, Clover and DoorDash's storefront put every restaurant on one host; the path says which.
+  const shared = ["chownow", "clover", "storefront"].includes(r.via) && (r.host.split(".").length <= 2 || /^(?:order|ordering|direct|online)$/.test(r.host.split(".")[0]));
+  return shared ? `${r.host}/${path.slice(0, 2).join("/")}` : r.host;
 }
 /** A host many restaurants share (order.toasttab.com/online/<place>): its store key is per restaurant. */
 export const sharedOrderingHost = (url) => { const r = orderingRoute(url); return !!(r && r.route === "direct" && r.via !== "own_site"); };
@@ -235,6 +271,8 @@ function tellOnce(o0, what) {
 function tellPersonOnce(c, what) {
   return q("INSERT OR IGNORE INTO food_told (conversation_id, what, at) VALUES (?, ?, ?)").run(c, what, clock.now()).changes > 0;
 }
+/** shopconnect: the ask with the once-only line went out. */
+export const markTold = (c, what) => { try { tellPersonOnce(c, what); } catch { /* said; a lost mark only means it could be said again */ } };
 export const toldPerson = (c, what) => !!q("SELECT 1 AS x FROM food_told WHERE conversation_id = ? AND what = ?").get(c, what);
 
 // ---------------------------------------------------------------- their places' own ordering links
@@ -266,10 +304,10 @@ export function notePlace(c, { restaurant, url = "", noDirect = false, menuCheck
   if (!r) return { ok: false, error: "bad_url", say: "Give the ordering page's full link (https://…)." };
   if (r.route === "platform") {
     return { ok: false, error: "platform_link", platform: r.platform,
-      say: `That is ${PLATFORMS[r.platform].name}, not ${name}'s own ordering. Look for its own first: the Order Online link on its website or in the places result, or web_search "${name} order online" for a page on Toast, Square, ChowNow, Olo, Clover, BentoBox, Owner.com or its own site. Only if it has none, call place again with no_direct true.` };
+      say: `That is ${appName(r.platform)}, not ${name}'s own ordering. Look for its own first: the Order Online link on its website or in the places result, or web_search "${name} order online" for a page on Toast, Square, ChowNow, Olo, Clover, BentoBox, Owner.com or its own site. Only if it has none, call place again with no_direct true.` };
   }
   const link = clean(url, 500);
-  const checked = menuChecked ? now : (was && open(was.direct_url) === link ? was.menu_checked_at : null);
+  const checked = menuChecked ? now : (was?.direct_url && orderingPlaceKey(was.direct_url) === orderingPlaceKey(link) ? was.menu_checked_at : null);
   put([sealCell("food_places", "restaurant", c, name), sealCell("food_places", "direct_url", c, link), r.via, 0, checked]);
   return { ok: true, route: "direct", via: r.via_name,
     say: `Kept: ${name} orders direct at this link (${r.via_name}).${checked ? "" : " Read its menu, hours, prices and photos on that page before building the cart."} Its prices are the ones charged; build the cart and the checkout there.` };
@@ -351,16 +389,16 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
     const place = placeFor(c, name);
     if (place?.direct_url) {
       return { ok: false, error: "direct_exists", direct_url: place.direct_url,
-        say: `${name} has its own ordering (${place.direct_url}). Build the cart there, not on ${PLATFORMS[route.platform].name}: no app markup or service fee, and its menu is the one paid. Only if they asked for ${PLATFORMS[route.platform].name} themselves, record it again with their_choice true. Nothing was recorded.` };
+        say: `${name} has its own ordering (${place.direct_url}). Build the cart there, not on ${appName(route.platform)}: no app markup or service fee, and its menu is the one paid. Only if they asked for ${appName(route.platform)} themselves, record it again with their_choice true. Nothing was recorded.` };
     }
     if (!place?.no_direct) {
       return { ok: false, error: "check_direct_first",
-        say: `Look for ${name || "the restaurant"}'s own ordering first (its website's Order Online link, the places result, or web_search "${name} order online": Toast, Square, ChowNow, Olo, Clover, BentoBox, Owner.com or its own site) and keep what you find with food_order place. If it has none, food_order place with no_direct true, then record this cart again. If they asked for ${PLATFORMS[route.platform].name} themselves, record it again with their_choice true. Nothing was recorded.` };
+        say: `Look for ${name || "the restaurant"}'s own ordering first (its website's Order Online link, the places result, or web_search "${name} order online": Toast, Square, ChowNow, Olo, Clover, BentoBox, Owner.com or its own site) and keep what you find with food_order place. If it has none, food_order place with no_direct true, then record this cart again. If they asked for ${appName(route.platform)} themselves, record it again with their_choice true. Nothing was recorded.` };
     }
   }
   if (route.route === "direct" && name) {
     const place = placeFor(c, name);
-    if (!place || place.no_direct || open(place.direct_url) !== clean(input.store_url, 500)) notePlace(c, { restaurant: name, url: input.store_url, menuChecked: !!place?.menu_checked_at && open(place.direct_url) === clean(input.store_url, 500) });
+    if (!place || place.no_direct || orderingPlaceKey(place.direct_url) !== orderingPlaceKey(input.store_url)) notePlace(c, { restaurant: name, url: input.store_url });
   }
   // A change once a checkout is running (or its card is out) lets that checkout go, quietly: its
   // payment is declined and nothing it asked can be approved. The new cart is checked again and
@@ -394,7 +432,7 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   const flag = allergyFlag(checked);
   q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ?, route = ?, via = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, route.route, route.route === "direct" ? route.via : route.platform, o.id, c);
   return {
-    ok: true, order_id: o.id, revision: rev, route: route.route === "direct" ? `direct (${route.via_name})` : PLATFORMS[route.platform].name,
+    ok: true, order_id: o.id, revision: rev, route: route.route === "direct" ? `direct (${route.via_name})` : appName(route.platform),
     ...(letGo || o.run_id ? { previous_checkout: "let go, nothing charged; start store_checkout again with food_order_id" } : {}),
     ...(flag ? { allergy_flag: flag } : {}),
     say: flag
@@ -468,7 +506,7 @@ export function checkoutGate(c, orderId, startUrl = null) {
   // The checkout runs where the cart was built: a direct cart is never paid on an app, or the reverse.
   if (startUrl != null && o.store_url) {
     const a = orderingRoute(o.store_url), b = orderingRoute(startUrl);
-    if (!b || a?.host !== b.host) return { ok: false, error: "start_url_elsewhere", say: `This cart was built on ${a?.host ?? "another page"}; start the checkout there (start_url on that site), or record the cart again where it is really being ordered. Nothing was started.` };
+    if (!b || !a || orderingPlaceKey(o.store_url) !== orderingPlaceKey(startUrl)) return { ok: false, error: "start_url_elsewhere", say: `This cart was built on ${a?.host ?? "another page"}; start the checkout there (start_url on that site), or record the cart again where it is really being ordered. Nothing was started.` };
   }
   if (o.run_id) return { ok: false, error: "checkout_running", say: "A checkout is already running for this order. To change it, record the changed cart with food_order cart (that lets the old checkout go), then start again." };
   return null;
@@ -598,7 +636,7 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
     const items = o.items.length ? o.items : [{ name: row.item || "Your order", qty: 1, modifiers: [], price: "" }];
     ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip, total: amount, eta, address: o.address, card: label, changed: !!changedFrom }, shoot ? { shoot } : {}));
   } catch (e) { logFn({ food_card_failed: o.id, why: String(e?.message ?? e).split("\n")[0] }); }
-  return { text, file, orderId: o.id, order: o };
+  return { text, file, orderId: o.id, order: o, why: !!why };
 }
 /**
  * The "why it's cheaper" line for this ask, or "": only when this order really is direct (its cart was
@@ -607,9 +645,10 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
 function whyNowFor(o, run) {
   if (o.route !== "direct") return "";
   const start = q("SELECT start_url FROM shop_run_asks WHERE run_id = ?").get(run.run_id)?.start_url;
-  const here = orderingRoute(start), built = orderingRoute(o.store_url);
-  if (!here || here.route !== "direct" || here.host !== built?.host) return "";
-  return tellPersonOnce(o.conversation_id, "why_direct") ? whyDirectLine(o.restaurant) : "";
+  const here = orderingRoute(start);
+  if (!here || here.route !== "direct" || orderingPlaceKey(start) !== orderingPlaceKey(o.store_url)) return "";
+  // Marked as said by shopconnect once the text went (markTold), never before.
+  return toldPerson(o.conversation_id, "why_direct") ? "" : whyDirectLine(o.restaurant);
 }
 /**
  * They ask why not DoorDash, or suggest an app: the line, from the record. asked → always (they asked);
@@ -619,7 +658,9 @@ export function whyDirect(c, { restaurant = "", reason = "asked" } = {}) {
   const o = openOrder(c);
   const name = clean(restaurant, 80) || o?.restaurant || "";
   const place = name ? placeFor(c, name) : null;
-  const direct = (o && o.route === "direct" && (!restaurant || nameKey(o.restaurant) === nameKey(name))) || !!place?.direct_url;
+  // The order being built decides; a saved link only speaks when there is no order for that place.
+  const sameOrder = o && (!restaurant || nameKey(o.restaurant) === nameKey(name)) && o.route;
+  const direct = sameOrder ? o.route === "direct" : !!place?.direct_url;
   if (!direct) return { ok: true, direct: false, say: "This one isn't ordered direct, so there is nothing to say about it being cheaper. Never claim a saving or an app's price you didn't see." };
   const first = tellPersonOnce(c, "why_direct");
   if (reason !== "asked" && !first) return { ok: true, direct: true, already_told: true, say: "You told them why once already: don't repeat it. If they want the app, respect it: build it there (food_order cart with their_choice true)." };
@@ -719,7 +760,7 @@ async function sweepOnce(now) {
     if (wakeFn) {
       try {
         // Not awaited: a whole model turn must not hold up another person's hold running out.
-        Promise.resolve(wakeFn(o.conversation_id, `[food] Their ${o.restaurant || "food"} order (order ${o.id}, placed ${o.route === "direct" ? "direct with the restaurant" : PLATFORMS[o.platform]?.name ? `on ${PLATFORMS[o.platform].name}` : ""}) was due by ${due}; it is now ${Math.round((now - o.eta_latest_at) / 60_000)} minutes past that. Check what you can (their email from the restaurant or the platform with gmail_read, if connected) for whether it was delivered. If it was, or they already said so, reply NO_REPLY and say nothing. If not, ONE text: how late it is, and ask: file a complaint for a refund, or just check where it is? Never file a complaint or cancel without their yes; a refund goes to the original card first, platform credit only if that is refused.`, { key: `food:${o.id}:late` })).catch(() => {});
+        Promise.resolve(wakeFn(o.conversation_id, `[food] Their ${o.restaurant || "food"} order (order ${o.id}, placed ${o.route === "direct" ? "direct with the restaurant" : o.platform ? `on ${appName(o.platform)}` : ""}) was due by ${due}; it is now ${Math.round((now - o.eta_latest_at) / 60_000)} minutes past that. Check what you can (their email from the restaurant or the platform with gmail_read, if connected) for whether it was delivered. If it was, or they already said so, reply NO_REPLY and say nothing. If not, ONE text: how late it is, and ask: file a complaint for a refund, or just check where it is? Never file a complaint or cancel without their yes; a refund goes to the original card first, platform credit only if that is refused.`, { key: `food:${o.id}:late` })).catch(() => {});
       } catch { /* once */ }
     }
   }
@@ -754,7 +795,7 @@ export function history(c, { now = clock.now() } = {}) {
   const byPlace = new Map();
   for (const o of rows) { const k = o.restaurant.toLowerCase(); if (!byPlace.has(k)) byPlace.set(k, []); byPlace.get(k).push(o); }
   const usual = [...byPlace.values()].slice(0, 8).map((os) => ({
-    restaurant: os[0].restaurant, ordered_on: os[0].route === "direct" ? "direct" : PLATFORMS[os[0].platform]?.name ?? os[0].platform, store_url: os[0].store_url, times: os.length,
+    restaurant: os[0].restaurant, ordered_on: os[0].route === "direct" ? "direct" : os[0].platform ? appName(os[0].platform) : "", store_url: os[0].store_url, times: os.length,
     last_two: os.slice(0, 2).map((o) => ({ items: o.items.map((it) => `${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}${it.modifiers?.length ? ` (${it.modifiers.join(", ")})` : ""}`), total: o.paid_amount || o.cart_total, notes: o.notes, when: new Date(o.placed_at).toISOString().slice(0, 10) })),
   }));
   const totals = rows.map((o) => cents(o.paid_amount || o.cart_total)).filter((x) => x != null).sort((a, b) => a - b);

@@ -148,6 +148,13 @@ test("ordering links: the restaurant's own ordering hosts are direct, the apps a
   for (const [url, p] of [[STORE, "doordash"], ["https://www.ubereats.com/store/habibi/abc", "ubereats"], ["https://www.grubhub.com/restaurant/habibi/1", "grubhub"], ["https://www.seamless.com/menu/x", "grubhub"], ["https://postmates.com/store/x", "ubereats"]]) {
     assert.deepEqual([food.orderingRoute(url).route, food.orderingRoute(url).platform], ["platform", p], url);
   }
+  // Other apps and marketplaces are never "the restaurant's own site".
+  for (const url of ["https://www.trycaviar.com/store/habibi", "https://slicelife.com/restaurants/ny/habibi", "https://food.google.com/chooseprovider?restaurantId=1", "https://www.yelp.com/biz/habibi"]) assert.equal(food.orderingRoute(url).route, "platform", url);
+  // Which restaurant a link is: www and a sub-page are the same place; another Toast place is not.
+  assert.equal(food.orderingPlaceKey("https://www.toasttab.com/local/order/habibi-halal-bronx/r-1"), food.orderingPlaceKey(TOAST));
+  assert.notEqual(food.orderingPlaceKey(TOAST2), food.orderingPlaceKey(TOAST));
+  assert.equal(food.orderingPlaceKey("https://doordash.com/store/habibi-halal-bronx-123/"), food.orderingPlaceKey(STORE));
+  assert.notEqual(food.orderingPlaceKey("https://ordering.chownow.com/order/1/locations"), food.orderingPlaceKey("https://ordering.chownow.com/order/2/locations"));
   assert.equal(food.orderingRoute("habibi halal"), null);
   assert.equal(food.orderingRoute("javascript:alert(1)"), null);
 });
@@ -205,11 +212,14 @@ test("the checkout runs where the cart was built, and a shared ordering host is 
   const elsewhere = await runTool("store_checkout", { store: "DoorDash", start_url: STORE, what: "Chicken over rice. Stop at payment.", item: "Habibi Halal order", max_usd: 60, food_order_id: st.order_id }, { ...ctx, messages: asked([]) });
   assert.equal(elsewhere.error, "start_url_elsewhere");
   assert.equal(calls.filter((c) => c.path === "/api/unstable/agent-checkouts" && c.method === "POST").length, 0, "nothing started");
-  const ok = await runTool("store_checkout", { store: "Habibi Halal", start_url: TOAST, what: "Chicken over rice. Stop at payment.", item: "Habibi Halal order", max_usd: 60, food_order_id: st.order_id }, { ...ctx, messages: asked([]) });
+  // Another restaurant's page on the same host is elsewhere too.
+  const other = await runTool("store_checkout", { store: "Habibi Halal", start_url: TOAST2, what: "Chicken over rice. Stop at payment.", item: "Habibi Halal order", max_usd: 60, food_order_id: st.order_id }, { ...ctx, messages: asked([]) });
+  assert.equal(other.error, "start_url_elsewhere");
+  const ok = await runTool("store_checkout", { store: "Toast", start_url: "https://www.toasttab.com/local/order/habibi-halal-bronx", what: "Chicken over rice. Stop at payment.", item: "Habibi Halal order", max_usd: 60, food_order_id: st.order_id }, { ...ctx, messages: asked([]) });
   assert.equal(ok.ok, true, JSON.stringify(ok));
   assert.equal(ok.plan, "guest", "a restaurant's own ordering checks out as a guest");
   const run = q("SELECT store FROM shop_runs WHERE run_id = ?").get(ok.run_id);
-  assert.equal(run.store, "habibihalaltoast");
+  assert.equal(run.store, "habibihalaltoast", "keyed by the order's restaurant, not the model's store word");
   assert.equal(shop.storeName(run.store), "Habibi Halal");
   // A second Toast restaurant is its own store, with its own name.
   assert.equal(food.directStoreKey("Tacos El Gordo", TOAST2), "tacoselgordotoast");
@@ -269,6 +279,37 @@ test("they ask why not DoorDash: the line from the record, every time they ask; 
   // Once told by the tool, the first direct card doesn't say it again.
   await directToPayment();
   assert.equal(said.at(-1).t, "$31.42 to your Visa 4821, here by 8:15. Place it?");
+});
+
+test("asked why during an app order they chose: no 'straight from' claim, even with a saved direct link", async () => {
+  await runTool("food_order", { action: "place", restaurant: "Habibi Halal", store_url: TOAST }, ctx);
+  const st = await runTool("food_order", { action: "start" }, ctx);
+  const ct = await runTool("food_order", { action: "cart", order_id: st.order_id, ...CART, their_choice: true }, ctx);
+  assert.equal(ct.ok, true);
+  for (const restaurant of [undefined, "Habibi Halal"]) {
+    const why = await runTool("food_order", { action: "why_direct", restaurant, why_reason: "asked" }, ctx);
+    assert.equal(why.direct, false, JSON.stringify(why));
+    assert.equal(why.line, undefined);
+  }
+  assert.equal(food.toldPerson(OMARI, "why_direct"), false);
+});
+
+test("an ask that never went out does not use up the once-only line", async () => {
+  let fail = true;
+  shop.attach({ say: (c, t) => { if (fail) { fail = false; throw new Error("line down"); } said.push({ c, t }); }, wake: () => {}, picture: async (c, file) => pictures.push({ c, file, at: said.length }), base: "https://heyreason.test/web/connect" });
+  try {
+    await directToPayment().catch(() => null);
+    assert.equal(food.toldPerson(OMARI, "why_direct"), false, "not marked: the text never went");
+  } finally {
+    shop.attach({ say: (c, t) => said.push({ c, t }), wake: () => {}, picture: async (c, file) => pictures.push({ c, file, at: said.length }), base: "https://heyreason.test/web/connect" });
+  }
+});
+
+test("a Caviar or Slice cart is an app cart: refused until direct was looked for, and never the cheaper line", async () => {
+  const st = await runTool("food_order", { action: "start" }, ctx);
+  const out = await runTool("food_order", { action: "cart", order_id: st.order_id, ...CART, store_url: "https://www.trycaviar.com/store/habibi-halal", their_choice: undefined }, ctx);
+  assert.equal(out.error, "check_direct_first");
+  assert.match(out.say, /Caviar/);
 });
 
 // ---------------------------------------------------------------- the model's rules and tool
