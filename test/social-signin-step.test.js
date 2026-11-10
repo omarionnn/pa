@@ -99,3 +99,32 @@ test("the site's own page with buttons AND an email box is the chooser; Google's
   const g = social.stepOf({ url: "https://accounts.google.com/v3/signin/identifier", text: "Sign in with Google Continue to Notion Email or phone" }, { provider: "google", fields: [{ k: "email" }] });
   assert.equal(g.step, "email");
 });
+
+// Seen live on the server, 2026-11-10: Notion's own login page (bare "Google" / "Apple" / "Microsoft"
+// buttons, an email box, the word "password" in its small print) was read as GOOGLE's password step.
+test("a site's own login page that names Google and 'password' is the chooser, never a provider step", () => {
+  const raw = {
+    url: "https://www.notion.so/login",
+    text: "Think it. Make it. Log in to your Notion account Google Apple Microsoft Single sign-on (SSO) Email Enter your email address... Continue You can also continue with SAML SSO. By continuing, you acknowledge that you understand and agree to the Terms & Conditions and Privacy Policy. Forgot password?",
+    buttons: ["Google", "Apple", "Microsoft", "Single sign-on (SSO)", "Continue"],
+  };
+  const s = social.stepOf(raw, { provider: "google", fields: [{ k: "email" }] });
+  assert.equal(s.step, "chooser");
+  assert.deepEqual(s.offered, ["google", "apple", "microsoft"]);
+  // and with nothing to go on off the provider's host: never Google's password/code/phone step
+  for (const text of ["Check your phone and tap Yes", "Enter your password to sign in", "Enter the verification code"]) {
+    const x = social.stepOf({ url: "https://www.notion.so/login", text }, { provider: "google", fields: [] });
+    assert.ok(!["password", "code", "phone_tap", "number_match"].includes(x.step), `${text} → ${x.step}`);
+  }
+  assert.doesNotMatch(social.stepOf({ url: "https://x.example/", text: "hello there" }, {}).say, /the the/);
+});
+
+test("Notion's real first page (email box AND a password box for password managers, bare provider buttons) is the chooser", () => {
+  const raw = { url: "https://app.notion.com/login", text: "Log in to your Notion account Google Apple Microsoft Email Continue", buttons: ["Google", "Apple", "Microsoft", "Continue"] };
+  assert.equal(social.stepOf(raw, { fields: [{ k: "email" }, { k: "password" }] }).step, "chooser");
+});
+
+test("a password box with a provider button but no email box is the password step, not the chooser", () => {
+  const raw = { url: "https://site.example/login/password", text: "Enter your password Continue with Google", buttons: ["Continue with Google", "Sign in"] };
+  assert.equal(social.stepOf(raw, { fields: [{ k: "password" }] }).step, "password");
+});

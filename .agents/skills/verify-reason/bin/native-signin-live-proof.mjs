@@ -37,7 +37,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 // 1. The real model picks the call, from Reason's own sign-in rules and the tool's own description.
 const tools = (await import(`${root}/src/tools.js`)).tools ?? [];
 const desc = (n) => JSON.stringify((tools.find?.(t => t.name === n)) ?? { name: n });
-const prompt = `You are Reason, a texting assistant. Rules for sign-in:\n${social.RULES.join("\n")}\n\nTools you can call:\n${desc("signin_link")}\n\nThe person texts: "find my notes on the Q4 launch plan in Notion — I log into notion with google"\n\nReply with ONLY a JSON object {"tool": "<name>", "input": {...}} for the one tool call you make first. No prose.`;
+const prompt = `You are Reason, a texting assistant. Rules for sign-in:\n${String(social.RULES)}\n\nTools you can call:\n${desc("signin_link")}\n\nThe person texts: "find my notes on the Q4 launch plan in Notion — I log into notion with google"\n\nReply with ONLY a JSON object {"tool": "<name>", "input": {...}} for the one tool call you make first. No prose.`;
 const cli = spawnSync("claude", ["-p", prompt, "--output-format", "text"], { encoding: "utf8", timeout: 120_000, env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "" } });
 const said = String(cli.stdout ?? "").trim();
 const call = JSON.parse(said.slice(said.indexOf("{"), said.lastIndexOf("}") + 1));

@@ -231,8 +231,14 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   if (no.refused) return { step: "refused", provider: no.provider, number: "", say: `${LABELS[no.provider]} refused my browser.` };
   // A bot wall / "verify it's you" / a slider: nothing native can answer it, the person finishes it
   // on the streamed page. Read before the form screens, since a captcha page often has a stray box.
-  if (CAPTCHA.test(low)) return { step: "captcha", provider, number: "", say: `${entryName(provider)} wants to check you're human.` };
-  const prompt = providerPrompt({ ...raw, text: t });
+  if (CAPTCHA.test(low)) return { step: "captcha", provider, number: "", say: providerKey(provider) ? `${LABELS[providerKey(provider)]} wants to check you're human.` : "The page wants to check you're human." };
+  // Which provider's OWN page this is, by its host — the only place a provider's wording ("enter your
+  // password", "check your phone") is believed. A site's own page that merely names Google in a button
+  // is not Google's page (seen live on Notion's login, 2026-11-10: read as Google's password step).
+  const host = String(raw?.url ?? "").toLowerCase().replace(/^[a-z]+:\/\//, "").split(/[/?#]/)[0];
+  const onProvider = /(^|\.)(accounts\.google\.com|appleid\.apple\.com|idmsa\.apple\.com|login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com|facebook\.com)$/.test(host);
+  const prompt0 = providerPrompt({ ...raw, text: t });
+  const prompt = onProvider ? prompt0 : { provider: "", kind: "", say: "" };
   const prov = providerKey(provider) || prompt.provider || "";
   const name = LABELS[prov] || "The site";
   // The grant screen: "<app> wants access to…", "Continue to <app>?", "<app> will be able to…". Only
@@ -247,7 +253,7 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   // Google's / Microsoft's number match: a 1–3 digit number to tap on the phone. The number is shown
   // on its own, big; "2-Step" and "6-digit code" are NOT it, so only standalone digit groups count
   // and the last one wins (the prompt's number sits below its instructions).
-  if (/(tap|choose|select|enter|press) (?:the )?number|number (?:shown|match|you see)|match the number/.test(low)) {
+  if (onProvider && /(tap|choose|select|enter|press) (?:the )?number|number (?:shown|match|you see)|match the number/.test(low)) {
     const nums = [...t.matchAll(/(?:^|[\s.:>])(\d{1,3})(?=$|[\s.<])/g)].map(m => m[1]);
     const number = nums.at(-1) ?? "";
     return { step: "number_match", provider: prov, number, say: `${name} sent a prompt to your phone. Tap the number ${number || "shown"} there.` };
@@ -256,9 +262,10 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   // The site's OWN sign-in page offering Continue-with buttons (Notion: buttons above an email box) is
   // the chooser, even with an email box on it: the person picks the provider or their own email.
   // Only off the providers' hosts — on Google's own page the box is Google's email step.
-  const onProvider = /accounts\.google\.com|appleid\.apple\.com|idmsa\.apple\.com|login\.(microsoftonline|live|microsoft)\.com|(^|\.)facebook\.com/.test(String(raw?.url ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0]);
-  const offered0 = onProvider ? [] : providersOffered(t);
-  if (offered0.length && !has("password") && !has("otp")) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
+  const offered0 = onProvider ? [] : [...new Set([...providersOffered(t), ...(Array.isArray(raw?.buttons) ? providersOnPage(raw.buttons) : [])])];
+  // A password box alone does not stop it when an email box sits beside it (Notion keeps one on its
+  // first page for password managers); a password box with no email box is the password step.
+  if (offered0.length && !has("otp") && (!has("password") || has("email") || has("username") || has("tel"))) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
   if (prompt.kind === "code" || has("otp")) return { step: "code", provider: prov, number: "", say: `${name} sent a code. Send it to me as it came — I'll clean it up.` };
   if (prompt.kind === "password" || has("password")) return { step: "password", provider: prov, number: "", say: `${name} wants your password. Type it here on ${name}'s own page — it never reaches me.` };
   // An input box for the email/number comes before the account-picker words: "Email or phone" on
@@ -271,9 +278,8 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   const offered = providersOffered(t);
   if (offered.length) return { step: "chooser", provider: prov, number: "", offered, say: `Pick how you sign in.` };
   if (SIGNED.test(low)) return { step: "signed_in", provider: prov, number: "", say: `Signed in.` };
-  return { step: "unknown", provider: prov, number: "", say: `Working on the ${entryName(provider)} page…` };
+  return { step: "unknown", provider: prov, number: "", say: prov ? `Working on the ${LABELS[prov]} page…` : "Working on the page…" };
 }
-const entryName = (p) => LABELS[providerKey(p)] || "the";
 
 // ---------------------------------------------------------------- the provider says no
 /**

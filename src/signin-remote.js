@@ -105,12 +105,16 @@ async function realLaunch({ conversationId, url }) {
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
   // The picture straight from the browser's compositor: about half the time of page.screenshot.
-  const cdp = await context.newCDPSession(page).catch(() => null);
-  const shot = async (quality) => {
+  // One compositor session per page, made when that page is first shown: a popup the session follows
+  // (Notion's Google sign-in) is pictured itself, never the tab behind it (cold review, 2026-11-10).
+  const cdps = new WeakMap();
+  const shot = async (quality, pg = page) => {
+    if (!cdps.has(pg)) cdps.set(pg, await context.newCDPSession(pg).catch(() => null));
+    const cdp = cdps.get(pg);
     if (cdp) {
       try { return Buffer.from((await cdp.send("Page.captureScreenshot", { format: "jpeg", quality, optimizeForSpeed: true })).data, "base64"); } catch { /* the slower way below */ }
     }
-    return page.screenshot({ type: "jpeg", quality });
+    return pg.screenshot({ type: "jpeg", quality });
   };
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
   return { page, shot, close: () => context.close().catch(() => {}) };
@@ -175,6 +179,36 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
     good_for_minutes: Math.round(config.remoteSigninLinkTtlMs / 60_000),
     reachable_from_a_phone: st.reachable_from_a_phone, ...(st.why ? { why: st.why } : {}),
   };
+}
+
+/**
+ * A site that opens its provider's page in a popup (Notion's "Continue with Google", seen live
+ * 2026-11-10): the session follows it, so the picture and Reason's own panel show Google's page and
+ * what is typed lands there; when the popup closes (Google hands back to the site), the session goes
+ * back to the tab that opened it. The popup is in the same browser context, so the private-network
+ * guard on every request (guardContext) covers it too. Nothing is navigated here — only followed.
+ */
+export const MAX_POPUPS = 4;
+export function followPopups(s, page) {
+  if (!page || typeof page.on !== "function") return;
+  s.pages ??= [page];
+  s.popups ??= 0;
+  page.on("popup", (pop) => {
+    if (s.ended || !s.browser) { pop.close?.().catch?.(() => {}); return; }
+    // A site that keeps opening windows does not get to keep taking the session over.
+    if (s.popups >= MAX_POPUPS) { pop.close?.().catch?.(() => {}); s.log({ signin_remote: "popup_refused", site: s.entry.site }); return; }
+    s.popups += 1;
+    s.pages.push(pop);
+    s.browser.page = pop;
+    s.log({ signin_remote: "popup_followed", site: s.entry.site });
+    followPopups(s, pop);
+    // Closed (Google handing back to the site): the newest page still open, never a closed one —
+    // the opener may have closed first.
+    pop.on("close", () => {
+      s.pages = s.pages.filter(p => p !== pop && !(typeof p.isClosed === "function" && p.isClosed()));
+      if (s.browser && s.browser.page === pop && s.pages.length) s.browser.page = s.pages.at(-1);
+    });
+  });
 }
 
 /** One thing at a time per browser: a tap and a screenshot racing each other is how a click lands on the wrong page. */
@@ -297,7 +331,16 @@ const FRAME_JS = `(() => {
       focused: el === document.activeElement
     });
   }
-  return { fields: out, url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
+  // The labels of the visible buttons (a site's bare "Google" button), for the native chooser. Words
+  // the site drew on its buttons, never anything in a box.
+  var bl = [], bs = document.querySelectorAll('button,a[href],[role="button"]');
+  for (var j = 0; j < bs.length && bl.length < 24; j++) {
+    var b = bs[j], br = b.getBoundingClientRect();
+    if (br.width < 20 || br.height < 14 || br.bottom <= 0 || br.top >= H) continue;
+    var bt = String((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).replace(/\\s+/g, ' ').trim();
+    if (bt && bt.length <= 60) bl.push(bt);
+  }
+  return { fields: out, buttons: bl, url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
 })()`;
 
 /**
@@ -375,7 +418,7 @@ async function readView(s) {
 /** The same reading, for a caller already holding the browser's turn (a scroll and its picture are one turn). */
 async function takeView(s, { quality = 58 } = {}) {
   const page = s.browser.page;
-  const shot = s.browser.shot ? await s.browser.shot(quality) : await page.screenshot({ type: "jpeg", quality });
+  const shot = s.browser.shot ? await s.browser.shot(quality, page) : await page.screenshot({ type: "jpeg", quality });
   const raw = await page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
   // The shape of the last form the phone saw, so a typed code can be cleaned for the box it lands in.
   s.lastFields = Array.isArray(raw?.fields) ? raw.fields : [];
@@ -578,6 +621,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         // The saved profile can be in one browser at a time, and this one needs it.
         await s.closeBrowser(s.conversationId);
         s.browser = await s.launch({ conversationId: s.conversationId, url: s.entry.signin_url });
+        followPopups(s, s.browser.page);
         // Their account on this site uses a provider: press that button so the page they see is the
         // provider's own, not a username box they would have to skip. A page with no such button is
         // left as it is — the person's form, as before — and nothing else is typed or pressed.
@@ -830,7 +874,12 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
  */
 function npFor(s, raw) {
   if (!nativeOn(s)) return {};
-  const st = stepNow(s, raw);
+  // A page still drawing is "opening", not a step to hand over to the picture.
+  const blank = frameFor(raw).blank;
+  const st = blank ? { step: "loading", provider: "", number: "", say: s.npSeen ? "Loading the next page…" : `Opening ${s.entry.label}…` } : stepNow(s, raw);
+  if (!blank) s.npSeen = true;
+  // Off a provider's page the machine says "The site"; the person knows it by its name.
+  st.say = String(st.say ?? "").replace(/\bThe site\b/g, s.entry.label);
   const key = `${st.step}:${st.provider}:${st.number}:${(st.offered ?? []).join(",")}`;
   const np = { step: st.step, key, page: STEP_NEEDS_PAGE.has(st.step), say: st.say,
     ...(key === s.npKey ? {} : { html: nativeStepPanel(st, { entry: s.entry }) }) };
