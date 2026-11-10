@@ -90,9 +90,14 @@ test("Spotify's join page and a remote sign-in page carry their cards, naming no
   const join = spotify.joinPage({ token: "tok123", ownerName: "Omari" });
   assert.equal(tag(headOf(join), "og:title"), "Connect Spotify");
   assert.doesNotMatch(headOf(join), /Omari|tok123/);
-  const page = remote.shell("Sign in to Amazon", "<p>hi</p>");
+  const page = remote.shell("Sign in to Uber", "<p>hi</p>");
   assert.equal(tag(headOf(page), "og:title"), "Sign in securely");
-  assert.doesNotMatch(headOf(page), /Amazon/);
+  assert.doesNotMatch(headOf(page), /Uber/);
+  // Amazon's sign-in pages carry their own card (owner, 2026-11-10: "Connect Amazon"); every other site the plain one.
+  assert.equal(remote.cardKind({ site: "amazon" }), "amazon");
+  assert.equal(remote.cardKind({ site: "uber" }), "signin");
+  assert.equal(remote.cardKind(null), "signin");
+  assert.equal(tag(headOf(remote.shell("Sign in to Amazon", "<p>hi</p>", { card: "amazon" })), "og:title"), "Connect Amazon");
 });
 
 test("the card link and an unknown connect link carry their cards", async () => {

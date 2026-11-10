@@ -85,7 +85,7 @@ function fakeBrowser({ frames = [AMAZON_EMAIL_STEP], shot = null } = {}) {
   return b;
 }
 
-function make({ conversationId = CONV, entry = amazon, said = { ok: true, state: "signed_in", why: "the order history page loaded" }, busy = () => null, launch = null, frames } = {}) {
+function make({ conversationId = CONV, entry = amazon, afterSignedIn = "", said = { ok: true, state: "signed_in", why: "the order history page loaded" }, busy = () => null, launch = null, frames } = {}) {
   const b = fakeBrowser(frames ? { frames } : {});
   const logs = [];
   const booked = [];
@@ -93,7 +93,7 @@ function make({ conversationId = CONV, entry = amazon, said = { ok: true, state:
   const timers = { set: (fn, ms) => { const h = { fn, ms, cleared: false }; booked.push(h); return h; }, clear: (h) => { if (h) h.cleared = true; } };
   const checks = [];
   const out = remote.createRemoteSignin({
-    conversationId, entry, launch: launch ?? b.launch, timers, busy, log: (e) => logs.push(e),
+    conversationId, entry, afterSignedIn, launch: launch ?? b.launch, timers, busy, log: (e) => logs.push(e),
     closeBrowser: async (c) => { released.push(c); },
     check: async (page, c, site) => { checks.push([c, site]); return said; },
   });
@@ -154,10 +154,10 @@ test("opening the link shows what it is and waits for a tap — a link preview t
     assert.match(page.body, /Face ID and passkeys do not/);
     assert.match(page.body, new RegExp(`action="/s/${token}/start"`));
     assert.equal(page.headers["Cache-Control"], "no-store");
-    // The phone's preview of the link: "Secured by Reason", the action only, not the site.
-    assert.match(page.body, /<meta property="og:title" content="Sign in securely">/);
-    assert.match(page.body, /<meta property="og:image" content="[^"]+\/web\/og\/secured\/signin\.png\?v=\d+">/);
-    assert.doesNotMatch(page.body.slice(0, page.body.indexOf("<title>")), /Amazon/, "the card names no site");
+    // The phone's preview of the link: "Secured by Reason", the action only. Amazon's link carries its own card (owner, 2026-11-10); other sites keep "Sign in securely" (test/secured-card.test.js).
+    assert.match(page.body, /<meta property="og:title" content="Connect Amazon">/);
+    assert.match(page.body, /<meta property="og:image" content="[^"]+\/web\/og\/secured\/amazon\.png\?v=\d+">/);
+    assert.doesNotMatch(page.body.slice(0, page.body.indexOf("<title>")), /Omari|12025551234|og:url/, "the card names nobody");
   }
   assert.equal(b.launched.length, 0, "three fetches and still no browser, and nobody owns the session");
   assert.equal((await req(token, "view")).status, 404, "and nothing can be driven before Start");
@@ -511,6 +511,21 @@ test("nothing finishes itself in the first few seconds, or while a box is still 
   clock.skip(20_000);
   for (let i = 0; i < 4; i++) assert.equal((await req(stillAsking.token, "view", { cookie: c2 })).status, 200);
   assert.deepEqual(stillAsking.checks, [], "a page with a password box on it is a page mid-sign-in");
+});
+
+test("a link made with its own follow-up (afterSignedIn): signed in → that note; still signed out → the ordinary words", async () => {
+  const { token } = make({ afterSignedIn: "READ THEIR ORDERS NOTE" });
+  const { cookie } = await start(token);
+  await req(token, "done", { method: "POST", cookie });
+  assert.match(notes()[0], /Amazon says they ARE signed in now \(the order history page loaded\)\. READ THEIR ORDERS NOTE$/);
+  assert.doesNotMatch(notes()[0], /pick up whatever they wanted/);
+  remote.forgetAllRemoteSignins();
+  db.db.exec("DELETE FROM timers");
+  const out = make({ afterSignedIn: "READ THEIR ORDERS NOTE", said: { ok: true, state: "signed_out", why: "the account page redirected to sign-in" } });
+  const c2 = (await start(out.token)).cookie;
+  await req(out.token, "done", { method: "POST", cookie: c2 });
+  assert.match(notes()[0], /still NOT signed in/);
+  assert.doesNotMatch(notes()[0], /READ THEIR ORDERS/);
 });
 
 test("Done asks the SITE, records what it says, frees the profile and tells Reason", async () => {

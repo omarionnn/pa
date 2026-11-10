@@ -117,13 +117,13 @@ export function remoteSessionFor(conversationId) {
  * Make a link. Nothing is launched yet: the browser starts when somebody taps Start, so a link
  * nobody opens never holds the saved profile.
  */
-export function createRemoteSignin({ conversationId, entry, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {} }) {
+export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {} }) {
   const old = sessions.get(byConversation.get(conversationId));
   if (old) end(old, "replaced").catch(() => {});
 
   const token = newToken();
   const s = {
-    token, conversationId, entry, launch, check, closeBrowser, busy, timers, log,
+    token, conversationId, entry, afterSignedIn, launch, check, closeBrowser, busy, timers, log,
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
     ended: null, startedAt: null, timer: null, signedInRun: 0,
   };
@@ -187,7 +187,7 @@ async function end(s, how) {
         : how === "replaced" ? " (a newer link replaced that one)"
           : " (the link timed out before they finished)";
     note = s.ended.state === "signed_in"
-      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`
+      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}`
       : s.ended.state === "signed_out"
         ? `the ${entry.label} sign-in through the link you sent has ended${tail}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Say that plainly in one short line and offer a fresh link.`
         : `the ${entry.label} sign-in through the link you sent has ended${tail}, but whether they are signed in could not be read (${s.ended.why}). Nothing is recorded either way. Say that in one short line; signin_status with recheck asks the site again.`;
@@ -385,7 +385,7 @@ const gateFor = (s) => proofPage(s.conversationId, `${s.entry.label} sign-in`);
 /** Text the person a code to their own thread, at most MAX_CODES_SENT in the window, and ask for it. */
 function sendCode(s, tell) {
   if (typeof tell !== "function") {
-    return { status: 403, headers: HTML(), body: shell("Open this on your own browser", `<p class="lead">This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.</p>`) };
+    return { status: 403, headers: HTML(), body: shell("Open this on your own browser", `<p class="lead">This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.</p>`, { card: cardKind(s.entry) }) };
   }
   const page = gateFor(s);
   if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
@@ -468,13 +468,13 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         if (typed === null || form.has("send")) return sendCode(s, tell);
         // Busy first, so a right code is not used up on a Start that cannot open anything.
         const busyNow = s.busy(s.conversationId);
-        if (busyNow) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(busyNow)}</p>`) };
+        if (busyNow) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(busyNow)}</p>`, { card: cardKind(s.entry) }) };
         const tried = tryCode(s, typed, headers);
         if (!tried.ok) return codePage(s, { status: tried.status, error: tried.error });
         remember = tried.cookie;
       }
       const blocked = s.busy(s.conversationId);
-      if (blocked) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(blocked)}</p>`) };
+      if (blocked) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(blocked)}</p>`, { card: cardKind(s.entry) }) };
       s.secret = newToken();
       s.startedAt = clock.now();
       s.timers.clear(s.timer);
@@ -487,7 +487,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       } catch (e) {
         s.log({ signin_remote: "launch_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] });
         await end(s, "launch_failed");
-        return { status: 500, headers: HTML(), body: shell("That did not start", `<p class="lead">The browser would not open. Nothing was changed. Ask Reason for a fresh link in a minute.</p>`) };
+        return { status: 500, headers: HTML(), body: shell("That did not start", `<p class="lead">The browser would not open. Nothing was changed. Ask Reason for a fresh link in a minute.</p>`, { card: cardKind(s.entry) }) };
       }
       s.log({ signin_remote: "started", site: s.entry.site, conversation: s.conversationId });
     }
@@ -630,12 +630,16 @@ export function forgetAllRemoteSignins() { sessions.clear(); byConversation.clea
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-export function shell(title, inner, { script = "" } = {}) {
+/** The link card a session's pages carry: a site with its own card (Amazon: "Connect Amazon"), else the plain sign-in one. */
+export const cardKind = (entry) => (entry?.site && SITE_CARDS.has(entry.site) ? entry.site : "signin");
+const SITE_CARDS = new Set(["amazon"]);
+
+export function shell(title, inner, { script = "", card = "signin" } = {}) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 ${iconLinks()}
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="robots" content="noindex">
-${securedCardTags("signin")}
+${securedCardTags(card)}
 <title>${esc(title)}</title>
 <script>${THEME.head}</script>
 <style>
@@ -687,7 +691,7 @@ function startPage(s) {
 <li>This link works once, on this device, for a few minutes.</li>
 </ul></div>
 <form method="post" action="${PATH}/${s.token}/start"><button class="go" type="submit" data-busy="Starting…">Start</button></form>
-<p class="small">Did not ask Reason for this? Close the page. Nothing happens unless you tap Start.</p>`);
+<p class="small">Did not ask Reason for this? Close the page. Nothing happens unless you tap Start.</p>`, { card: cardKind(s.entry) });
 }
 
 /** The code step, for a browser that is not the person's own proved one. The code went to their own thread. */
@@ -704,7 +708,7 @@ ${error ? `<p class="lead"><b>${esc(error)}</b></p>` : ""}
 <div class="row"><button class="go" type="submit" data-busy="Starting…">Start</button></div>
 </form>
 <form method="post" action="${PATH}/${s.token}/start"><input type="hidden" name="send" value="1"><button type="submit">Text me a new code</button></form>
-<p class="small">Didn't ask Reason for this? Close the page. Nothing happens without the code.</p>`),
+<p class="small">Didn't ask Reason for this? Close the page. Nothing happens without the code.</p>`, { card: cardKind(s.entry) }),
   };
 }
 
@@ -732,7 +736,7 @@ function resultPage(s) {
           `${name} sign-in ended, not sure if it worked`]
         : [`<h1>This link has ended</h1><p class="lead">Ask Reason for a fresh one.</p>`,
           `the ${name} sign-in link ended`];
-  return shell(`${s.entry.label} sign-in`, `${body}${backToReason({ text: back })}`);
+  return shell(`${s.entry.label} sign-in`, `${body}${backToReason({ text: back })}`, { card: cardKind(s.entry) });
 }
 
 /**
@@ -778,7 +782,7 @@ function livePage(s) {
   <div id="veil"><span><span class="spin"></span>Opening ${label}…</span></div>
 </div>
 <p class="small" id="msg"></p>
-<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { script: `<script>
+<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { card: cardKind(s.entry), script: `<script>
 (function(){
 var B=${JSON.stringify(base)},V=${JSON.stringify(VIEW)};
 var v=document.getElementById('v'),stage=document.getElementById('stage'),veil=document.getElementById('veil'),
