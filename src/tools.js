@@ -3046,10 +3046,13 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     // Where the social flag reaches them, the secure link reaches ANY site by its address
     // (src/signin.js genericEntry) — said first, because on 2026-11-10 this list read as "nothing
     // signed in, Mac window only" and Reason told the owner it could not get into his Notion.
-    const anySite = social.socialAllowedFor(conversationId)
-      ? `sign in to ANY site for a real task, Notion and Airbnb included, not only a listed one: signin_link makes a private secure link that opens the site's own sign-in page (by its web address when it is not on signin_link's list), with their Google, Apple, Facebook or Microsoft button pressed when that is how they sign in; they sign in themselves and Reason keeps the session. Ask in one line first, per the sign-in rules. Also: `
-      : "";
-    signins.what = anySite + (route.can_sign_in
+    const anySite = social.socialAllowedFor(conversationId);
+    const savedAny = anySite ? [...saved, ...signin.savedGenericSignins(conversationId).filter(s => s.state === "signed_in")] : saved;
+    signins.what = anySite
+      ? `sign in to ANY site for a real task, Notion and Airbnb included, not only a listed one: signin_link makes a private secure link they open on their phone, on the site's own sign-in page (by its web address when it is not on signin_link's list), with their Google, Apple, Facebook or Microsoft button pressed when that is how they sign in; they sign in themselves and Reason keeps the session in their own browser profile for later errands. Ask in one line first, per the sign-in rules.`
+        + ` Signed in right now: ${savedAny.length ? savedAny.map(s => s.site).join(", ") : "nothing"}.`
+        + ` Reason never takes a password — not in a message, not anywhere — and says so rather than storing one`
+      : (route.can_sign_in
       ? `${who} signs in to a site themselves, once, in a window on the Mac (npm run signin -- <site>), and Reason keeps that session in their own browser profile for later errands.`
         + ` Signed in right now: ${saved.length ? saved.map(s => s.site).join(", ") : "nothing"}.`
         + ` Reason never takes a password — not in a message, not anywhere — and says so rather than storing one`
@@ -14477,7 +14480,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A site signed in to through a link by its web address (signinSite → src/signin.js
       // genericEntry): same revoke as a registry site — its cookies and storage out of the profile,
       // the row revoked, and the pages read there while signed in scrubbed by host.
-      const loose = !provider && social.socialAllowedFor(c) && !signin.entryFor(input.name) ? signin.genericEntry(input.name) : null;
+      const loose = !provider && social.socialAllowedFor(c) && signin.anyEntryFor(input.name)?.generic ? signin.anyEntryFor(input.name) : null;
       if (loose) {
         const offNet = await genericSiteRefused(loose, ctx);
         if (offNet) return offNet;
@@ -14711,8 +14714,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           never_a_password: never,
         };
       }
-      const all = signin.savedSignins(c);
-      let rows = input.site ? all.filter(s => s.site === input.site) : all;
+      const all = [...signin.savedSignins(c), ...(social.socialAllowedFor(c) ? signin.savedGenericSignins(c) : [])];
+      const key = input.site ? (signinSite(c, input.site)?.site ?? input.site) : "";
+      let rows = key ? all.filter(s => s.site === key) : all;
       // A subscription service asked about by name. `savedSignins` lists the ten errand sites and
       // deliberately still does — that list is what "what's signed in" has always meant — so a
       // cancel-route service is answered as one row built the same way rather than by widening it.
@@ -14727,7 +14731,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           needs_signin: also.needs_signin,
           last_checked: last?.checked_at ? stamp(last.checked_at) : null,
           evidence: last?.evidence || "",
-          for_cancelling_a_subscription: true,
+          ...(also.generic ? { by_address: true } : { for_cancelling_a_subscription: true }),
           ...(live ? {} : { how_to_sign_in: `signin_link with site '${also.site}', which they open on their phone` }),
         }];
       }

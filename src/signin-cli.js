@@ -21,7 +21,7 @@ import { config, stamp } from "./config.js";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
-import { profileDirFor } from "./browser.js";
+import { profileDirFor, guardContext } from "./browser.js";
 import { SITES, siteNames } from "./sites.js";
 // Both registries: the errand sites and the services whose subscriptions cancel on the web. The
 // window this command opens is the same window either way — the person signs in themselves and the
@@ -74,6 +74,7 @@ async function headlessProbe(conversationId, siteName, { provider = "" } = {}) {
   const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), {
     headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
   });
+  await guardContext(ctx);
   try {
     const page = ctx.pages()[0] ?? await ctx.newPage();
     page.setDefaultTimeout(config.browserTimeoutMs);
@@ -100,6 +101,8 @@ async function openForSignin(conversationId, entry, { provider = "" } = {}) {
     throw e;
   }
 
+  // Never this machine's own network, on every request — the window can be any site by its address.
+  await guardContext(ctx);
   const page = ctx.pages()[0] ?? await ctx.newPage();
   try {
     await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 60_000 });

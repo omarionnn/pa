@@ -78,6 +78,12 @@ export function entryFor(name) {
  * machine's own network is never opened.
  */
 const SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu", "ne", "or"]);
+/** The registrable part of a host: "app.notion.so" → "notion.so", "www.bbc.co.uk" → "bbc.co.uk". */
+function registrable(host) {
+  const parts = host.split(".");
+  const twoLevel = parts.length >= 3 && parts.at(-1).length === 2 && SECOND_LEVEL.has(parts.at(-2));
+  return parts.slice(twoLevel ? -3 : -2).join(".");
+}
 export function genericEntry(raw) {
   let s = String(raw ?? "").trim();
   if (!s || s.length > 300 || /\s/.test(s)) return null;
@@ -88,18 +94,22 @@ export function genericEntry(raw) {
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
   const labels = host.split(".");
   if (labels.length < 2 || labels.some(l => !/^[a-z0-9-]+$/.test(l)) || /^\d+$/.test(labels.at(-1))) return null;
-  const bare = host.replace(/^www\./, "");
-  const parts = bare.split(".");
-  if (parts.length < 2) return null;
-  const word = parts.length > 2 && parts.at(-1).length === 2 && SECOND_LEVEL.has(parts.at(-2)) ? parts.at(-3) : parts.at(-2);
+  // A bare public suffix ("co.uk") is not a site.
+  if (labels.length === 2 && labels[1].length === 2 && SECOND_LEVEL.has(labels[0])) return null;
+  // Keyed by the registrable domain, so app.notion.so and notion.so are one site, and a revoke
+  // clears the cookies the whole site shares (they sit on .notion.so, not on a sub-host).
+  const bare = registrable(host);
+  const word = bare.split(".")[0];
   const label = word.charAt(0).toUpperCase() + word.slice(1);
   const front = `https://${bare}/`;
-  const page = u.pathname && u.pathname !== "/" ? `${u.origin}${u.pathname}${u.search}` : front;
+  // The query string is dropped: a sign-in URL can carry an email, a token or a redirect, and the
+  // entry is logged and written to the ledger. The page itself is all the link needs.
+  const page = u.pathname && u.pathname !== "/" ? `${u.origin}${u.pathname}` : front;
   return {
     site: bare,
     label,
     what: `do what they ask on ${label}`,
-    hosts: [bare],
+    hosts: host === bare || host === `www.${bare}` ? [bare] : [bare, host],
     entry: front,
     signin_url: page,
     urls_verified: false,
@@ -126,7 +136,46 @@ export function anyEntryFor(name) {
   if (known) return known;
   const g = genericEntry(name);
   if (!g) return null;
-  return siteFor(g.signin_url) ?? g;
+  return siteFor(g.signin_url) ?? registryByHost(new URL(g.signin_url).hostname) ?? g;
+}
+
+/** A cancel-route service or an airline whose own hosts this is: its entry, never a second row. */
+function registryByHost(hostname) {
+  const h = String(hostname ?? "").toLowerCase().replace(/^www\./, "");
+  const on = (e) => (e?.hosts ?? []).some(x => h === x || h.endsWith(`.${x}`));
+  for (const n of cancelRoutes.routeNames()) { const e = cancelRoutes.signinEntry(n); if (on(e)) return e; }
+  for (const n of airlines.airlineNames()) { const e = airlines.signinEntry(n); if (on(e)) return e; }
+  return null;
+}
+
+/**
+ * Sites signed in to by their address (genericEntry), as savedSignins rows: the registry list is
+ * what "what's signed in" always meant, and a Notion signed in through the link belongs on it too.
+ */
+export function savedGenericSignins(conversationId) {
+  const out = [];
+  const seen = new Set(signinNames());
+  for (const r of db.accountHistory(conversationId)) {
+    if (seen.has(r.name) || !String(r.name).includes(".")) continue;
+    seen.add(r.name);
+    const e = genericEntry(r.name);
+    if (!e) continue;
+    const row = db.lastSigninCheck(conversationId, e.site);
+    if (!row) continue;
+    const live = !row.revoked_at && row.state === "signed_in";
+    out.push({
+      site: e.site, label: e.label, what: e.what,
+      state: live ? "signed_in" : (row.state || "never_signed_in"),
+      needs_signin: e.needs_signin,
+      last_checked: row.checked_at ? stamp(row.checked_at) : null,
+      checked_minutes_ago: row.checked_at ? Math.round((clock.now() - row.checked_at) / 60_000) : null,
+      evidence: row.evidence || "",
+      ...(live && row.provider ? { provider: row.provider } : {}),
+      ...(live ? {} : { how_to_sign_in: `signin_link with site '${e.site}', which they open on their phone` }),
+      by_address: true,
+    });
+  }
+  return out;
 }
 
 /** Every name `entryFor` will resolve, for an error message that is actually useful. */
@@ -330,7 +379,8 @@ export async function forgetSite(context, conversationId, siteName) {
   const page = await context.newPage().catch(() => null);
   if (page) {
     for (const host of entry.hosts) {
-      const origin = `https://${host.startsWith("www.") ? host : `www.${host}`}`;
+      // A site known only by its address is opened as it is named; it follows its own redirect.
+      const origin = `https://${entry.generic || host.startsWith("www.") ? host : `www.${host}`}`;
       try {
         await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 15_000 });
         const gone = await page.evaluate(clearOriginInPage);

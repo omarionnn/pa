@@ -79,15 +79,7 @@ export async function pageFor(conversationId) {
   // No request this browser makes reaches this machine's own network: a page (or a redirect, or a
   // script on it) pointing at 127.0.0.1, 169.254.169.254 or a name that resolves there is refused.
   // Every request by name; a page load also by its resolved addresses (security audit 2026-11-06).
-  await context.route("**/*", async (route) => {
-    const req = route.request();
-    let u;
-    try { u = new URL(req.url()); } catch { return route.continue(); }
-    if (allowPrivate() || !/^(https?|wss?):$/.test(u.protocol)) return route.continue();
-    if (isPrivateHost(u.hostname)) return route.abort("blockedbyclient");
-    if (req.isNavigationRequest() && !(await publicUrl(u.href)).ok) return route.abort("blockedbyclient");
-    return route.continue();
-  });
+  await guardContext(context);
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
   sessions.set(conversationId, { context, page });
@@ -287,4 +279,23 @@ export async function describeRef(page, ref) {
 
 export function locate(page, ref) {
   return page.locator(`[data-reason-ref="${ref}"]`);
+}
+
+/**
+ * The private-network guard, on any browser context Reason launches: no request reaches this
+ * machine's own network — a page, a redirect or a script pointing at 127.0.0.1, 169.254.169.254 or
+ * a name that resolves there is refused. Every request by name; a page load also by its resolved
+ * addresses (security audit 2026-11-06). Shared with the sign-in browsers (src/signin-remote.js,
+ * src/signin-cli.js), which since 2026-11-10 can be pointed at any site by its address.
+ */
+export async function guardContext(context) {
+  await context.route("**/*", async (route) => {
+    const req = route.request();
+    let u;
+    try { u = new URL(req.url()); } catch { return route.continue(); }
+    if (allowPrivate() || !/^(https?|wss?):$/.test(u.protocol)) return route.continue();
+    if (isPrivateHost(u.hostname)) return route.abort("blockedbyclient");
+    if (req.isNavigationRequest() && !(await publicUrl(u.href)).ok) return route.abort("blockedbyclient");
+    return route.continue();
+  });
 }

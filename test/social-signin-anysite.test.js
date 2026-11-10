@@ -75,8 +75,12 @@ test("genericEntry: a domain or https URL is a site, keyed by its domain; the si
   assert.equal(bare.label, "Airbnb");
   assert.equal(bare.signin_url, "https://airbnb.com/");
   assert.equal(signin.genericEntry("www.bbc.co.uk").label, "Bbc");
-  assert.equal(signin.genericEntry("app.figma.com/login").site, "app.figma.com");
-  for (const no of ["notion", "", "http://notion.so", "https://127.0.0.1/login", "https://user:pw@notion.so", "https://notion.so:8443/", "ftp://notion.so", "not a site.com", "https://localhost/"]) {
+  const figma = signin.genericEntry("app.figma.com/login?email=a@b.c&token=x");
+  assert.equal(figma.site, "figma.com", "keyed by the registrable domain");
+  assert.deepEqual(figma.hosts, ["figma.com", "app.figma.com"]);
+  assert.equal(figma.signin_url, "https://app.figma.com/login", "no query string kept");
+  assert.equal(signin.genericEntry("www.bbc.co.uk").site, "bbc.co.uk");
+  for (const no of ["co.uk", "notion", "", "http://notion.so", "https://127.0.0.1/login", "https://user:pw@notion.so", "https://notion.so:8443/", "ftp://notion.so", "not a site.com", "https://localhost/"]) {
     assert.equal(signin.genericEntry(no), null, no);
   }
 });
@@ -88,6 +92,9 @@ test("anyEntryFor: a registry name or a URL on a registry site keeps the registr
   assert.ok(!a.generic);
   assert.equal(signin.anyEntryFor("notion.so").site, "notion.so");
   assert.equal(signin.anyEntryFor("notion"), null);
+  // A cancel-route service's own host keeps its registry entry rather than a second, weaker row.
+  const nf = signin.anyEntryFor("https://www.netflix.com/login");
+  assert.ok(nf && !nf.generic, "netflix.com resolves to the cancel-route entry");
 });
 
 test("owner: signin_link to Notion by its address makes the secure link with the Google button", async () => {
@@ -177,6 +184,25 @@ test("revoking a site signed in to by its address clears it by its domain", asyn
   assert.ok(cleared.includes(".notion.so") && cleared.includes("www.notion.so"));
   const friend = await call("account_revoke", { name: "notion.so" }, THEIRS);
   assert.equal(friend.ok, false);
+  // A URL on a registry site is that site: never a loose generic revoke that leaves its row signed in.
+  const amz = [];
+  await call("account_revoke", { name: "amazon.com" }, CONV, { pageFor: async () => ({ context: () => ({ clearCookies: async (o) => { amz.push(o); }, newPage: async () => null }) }) });
+  assert.equal(amz.length, 0);
+});
+
+test("a site signed in to by its address is listed with the rest, by its key", async () => {
+  db.recordSiteSignin(CONV, "notion.so", { state: "signed_in", evidence: "t", provider: "google" });
+  const all = await call("signin_status", {});
+  const n = all.sites.find(r => r.site === "notion.so");
+  assert.equal(n.state, "signed_in");
+  assert.equal(n.provider, "google");
+  assert.ok(n.by_address);
+  const one = await call("signin_status", { site: "https://www.notion.so/login" });
+  assert.equal(one.sites.length, 1);
+  assert.equal(one.sites[0].site, "notion.so");
+  assert.match(capabilitiesNow({ conversationId: CONV }).find(c => c.name === "saved_signins").what, /Signed in right now: notion\.so/);
+  const theirs = await call("signin_status", {}, THEIRS);
+  assert.ok(!theirs.sites.some(r => r.site === "notion.so"));
 });
 
 test("the model is told: any site by its address, never 'can't get in' — only where the flag reaches", () => {
@@ -190,6 +216,7 @@ test("the model is told: any site by its address, never 'can't get in' — only 
   const saved = capabilitiesNow({ conversationId: CONV }).find(c => c.name === "saved_signins");
   assert.match(saved.what, /ANY site/);
   assert.match(saved.what, /Notion/);
+  assert.doesNotMatch(saved.what, /cannot be done from here/);
   const theirs = capabilitiesNow({ conversationId: THEIRS }).find(c => c.name === "saved_signins");
   assert.doesNotMatch(theirs.what, /ANY site/);
 });
