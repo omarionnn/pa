@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { dirname } from "node:path";
 import { config, clock } from "./config.js";
 import * as zonescope from "./zonescope.js";
+import * as turnlink from "./turnlink.js";
 import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
@@ -1742,6 +1743,10 @@ addColumnIfMissing("threads", "last_location", "TEXT");
 // cascade inside markOutboundFailed, so it holds through a retry an hour later and through a
 // restart, not just on the happy path.
 addColumnIfMissing("outbox", "after_id", "INTEGER");
+// The inbound handle (its external_id) of the message this one answers, stamped when it is queued inside
+// that turn (src/turnlink.js); NULL for anything sent outside a turn. Carried onto the history row as
+// messages.reply_to_id, which is what the iPhone app reads (docs/ios-api.md).
+addColumnIfMissing("outbox", "answers_handle", "TEXT");
 // A voice note's own words, and how long it was. The spec this came from asks for timing or a
 // transcript reference to be kept so a specific claim can be checked later, and the conversation
 // cannot do that: its history is trimmed to the last sixty messages, so a note from three days ago
@@ -4964,11 +4969,12 @@ export function enqueueOutbound({ idemKey, conversationId, channel, address, cha
   const existing = db.prepare("SELECT * FROM outbox WHERE idem_key = ?").get(idemKey);
   if (existing) return { fresh: false, row: rowToOut(existing) };
   const now = clock.now();
+  const answers = turnlink.answeringFor(conversationId, address);
   const r = db.prepare(`INSERT INTO outbox
-    (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, after_id, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
+    (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, after_id, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at, answers_handle)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`)
     .run(idemKey, conversationId, channel, seal2(conversationId, address), chatId, seal2(conversationId, String(body ?? "")),
-      media ? JSON.stringify(media) : null, sendStyle, replyTo, afterId, maxAttempts, now, toOwner ? 1 : 0, now, now);
+      media ? JSON.stringify(media) : null, sendStyle, replyTo, afterId, maxAttempts, now, toOwner ? 1 : 0, now, now, answers);
   return { fresh: true, row: rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(r.lastInsertRowid)) };
 }
 
@@ -11074,6 +11080,12 @@ db.exec("CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (conversation_i
 // alerts and other operator notices (OPS_KEY_PREFIXES, tagged by their sender's outbox key). They stay
 // in the thread; Home's Overnight lists only what Reason did for the person (src/daily.js, 10-27).
 addColumnIfMissing("messages", "source", "TEXT");
+// …and, for the iPhone app (2026-11-09): on Reason's rows, the id of the person's row it answers (from the
+// outbox's answers_handle; NULL when it answered nobody), and 1 on the last reply of a finished turn; on the
+// person's rows, when the turn answering them ended (NULL while it runs, or for rows older than this).
+addColumnIfMissing("messages", "reply_to_id", "INTEGER");
+addColumnIfMissing("messages", "turn_last", "INTEGER");
+addColumnIfMissing("messages", "turn_done_at", "INTEGER");
 
 
 // Temporal columns on person_facts
@@ -11162,7 +11174,7 @@ export function setWebChatReplyHook(f) { webChatReplyHook = typeof f === "functi
  * outbox_id for Reason's, so a retried webhook or a second markOutboundSent writes nothing twice.
  * Returns the row id, or null when nothing was written (switch off, duplicate, empty).
  */
-export function writeMessage({ conversationId, role, channel, externalId = null, outboxId = null, text = "", media = [], at = clock.now(), chatId = null, source = null }) {
+export function writeMessage({ conversationId, role, channel, externalId = null, outboxId = null, text = "", media = [], at = clock.now(), chatId = null, source = null, replyToId = null }) {
   if (!historyOn()) return null;
   if (!conversationId || !role || !channel) return null;
   const body = String(text ?? "");
@@ -11172,9 +11184,10 @@ export function writeMessage({ conversationId, role, channel, externalId = null,
   // chat this conversation owns. Anything else is the shared thread's.
   const chat = channel === "web" ? webChatOf(chatId) : null;
   const ownChat = chat && webChatOwner(chat) === conversationId ? chat : null;
-  const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at, chat_id, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, restcrypt.sealFor(conversationId, body), JSON.stringify(atts), at, ownChat, source === "ops" ? "ops" : null);
+  const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at, chat_id, source, reply_to_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, restcrypt.sealFor(conversationId, body), JSON.stringify(atts), at, ownChat, source === "ops" ? "ops" : null,
+      role === "assistant" && Number.isInteger(replyToId) ? replyToId : null);
   if (!r.changes) return null;
   const id = Number(r.lastInsertRowid);
   if (ownChat) db.prepare("UPDATE web_chats SET last_at = ? WHERE id = ?").run(Math.max(at, clock.now()), ownChat);
@@ -11320,7 +11333,33 @@ function historyFromOutbound(row) {
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
     externalId: row.message_id ?? null, outboxId: row.id, text: row.body || (row.media?.fallbackText ? `(picture) ${row.media.fallbackText}` : row.media?.historyText ?? ""), media, at: row.sent_at ?? clock.now(),
     chatId: row.chat_id ?? null, source: opsSourceOf(row.idem_key),
+    replyToId: row.answers_handle ? userRowIdOf(row.conversation_id, row.answers_handle) : null,
   });
+}
+
+/** The history row id of the person's message with this inbound handle, in this conversation only. */
+function userRowIdOf(conversationId, handle) {
+  return db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' AND external_id = ? ORDER BY id DESC LIMIT 1")
+    .get(conversationId, String(handle))?.id ?? null;
+}
+
+/**
+ * A turn ended (src/channels/router.js): the person's rows it answered get `turn_done_at`, and the newest of
+ * Reason's rows answering any of them gets `turn_last`. Told on historyBus as `turn` { conversationId, ids,
+ * replyTo, lastReply, at } so an open app stream says so at once. Returns that event, or null when none of
+ * the handles has a history row (history off, or a turn that wrote none).
+ */
+export function finishTurn(conversationId, handles, { at = clock.now() } = {}) {
+  if (!conversationId || !handles?.length) return null;
+  const ids = handles.map(h => userRowIdOf(conversationId, h)).filter(id => id != null);
+  if (!ids.length) return null;
+  const marks = ids.map(() => "?").join(",");
+  db.prepare(`UPDATE messages SET turn_done_at = ? WHERE conversation_id = ? AND role = 'user' AND turn_done_at IS NULL AND id IN (${marks})`).run(at, conversationId, ...ids);
+  const last = db.prepare(`SELECT MAX(id) AS id FROM messages WHERE conversation_id = ? AND role = 'assistant' AND deleted_at IS NULL AND reply_to_id IN (${marks})`).get(conversationId, ...ids)?.id ?? null;
+  if (last != null) db.prepare("UPDATE messages SET turn_last = 1 WHERE id = ? AND conversation_id = ?").run(last, conversationId);
+  const event = { conversationId, ids, replyTo: ids.at(-1), lastReply: last, at };
+  try { historyBus.emit("turn", event); } catch { /* a listener never costs a write */ }
+  return event;
 }
 
 /** This conversation's history, oldest first, after a row id. Scoped by conversation: never anybody else's. */

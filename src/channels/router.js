@@ -39,6 +39,7 @@ import { tellNewLine, isReturning, LINE_CHANGE_CHANNEL } from "../linechange.js"
 import { clock, config, normalizeNumber, normalizeHandle, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
+import * as turnlink from "../turnlink.js";
 import { withoutNoReply } from "../plain.js";
 import { effectPartIndex } from "../links.js";
 import * as web from "../web.js";
@@ -693,6 +694,24 @@ export class Router {
       this.log({ web_held_back: conversationId, messages: held.length, until: back.readyAt });
       return { ok: true, conversationId, messages: held.length, replied: false, webOff: true };
     }
+    // Everything this turn sends is a reply to these texts (src/turnlink.js). When it ends, the texts it
+    // answered are marked done — unless they went back on the pile (an outage, a restart), in which case
+    // the turn that really answers them marks them.
+    const { turn, result } = turnlink.run({ conversationId, to: last.address, held }, (t) => this.#turn(conversationId, held, last, t));
+    let out;
+    try { out = await result; }
+    finally {
+      turnlink.close(turn);
+      if (!out?.down && !out?.interrupted) {
+        try { db.finishTurn(conversationId, turnlink.handlesOf(turn)); }
+        catch (e) { this.log({ turn_done_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
+      }
+    }
+    return out;
+  }
+
+  /** The turn itself, inside its turnlink scope (#drainHeld). */
+  async #turn(conversationId, held, last, turn) {
     // One turn, so one turn off the day's allowance, however many texts it was. Counted before anything
     // else so the monthly free tier (src/plan.js) knows whether this is their 21st conversation.
     accounts.countUse(conversationId, "turn");
@@ -710,6 +729,7 @@ export class Router {
     // the model has started. The runtime adopts this for the turn; anything folded into a turn that
     // never ran goes back on the pile in the `finally` below.
     const fold = onethought.begin(conversationId, { text: held.map(h => h.text).join("\n") });
+    turn.fold = fold;
     fold.webChat = last.channel === web.WEB ? db.webChatOf(last.chat_id) : null;
     const bubble = this.#bubble(conversationId, {
       channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,

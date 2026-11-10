@@ -11,16 +11,17 @@ The contract for the Swift client. The app holds no logic: every state, word and
 
 | Status | `error` | Meaning |
 |---|---|---|
-| 400 | `bad_request`, `confirm_required`, `empty` | Malformed, or the required confirmation is missing |
+| 400 | `bad_request`, `bad_id`, `confirm_required`, `empty` | Malformed, or the required confirmation is missing. `bad_id` is a `POST /messages` id outside 8–64 of `A-Z a-z 0-9 -` |
+| 403 | `refused` | `POST /messages`: this account can't be served |
 | 401 | `signed_out` | No valid session on this device. Clear the token and show sign-in |
 | 401 | `wrong_code` | The code didn't open anything. Same for every kind of miss |
 | 404 | `not_found` | Not there, or not yours. The two are deliberately identical |
 | 405 | `method_not_allowed` | |
 | 409 | `same_as_another`, `not_corrected` | A correction that couldn't be applied |
-| 413 | `too_long` | Over 500 characters |
-| 429 | `rate_limited` | This device is asking too often |
-| 500 | `server_error` | |
-| 503 | `try_again` | A forget couldn't be worked out yet. Nothing changed; offer it again |
+| 413 | `too_long` | Over 500 characters for a memory correction, 4,000 for a message |
+| 429 | `rate_limited`, `slow_down` | This device is asking too often (`slow_down`: sending messages too fast) |
+| 500 | `server_error`, `failed` | `failed`: a message couldn't be handed to Reason |
+| 503 | `try_again`, `unavailable` | `try_again`: a forget couldn't be worked out yet; nothing changed, offer it again. `unavailable`: the service isn't ready to take messages |
 
 ## Signing in
 
@@ -51,7 +52,7 @@ App sessions also appear under "signed-in browsers" in Reason Web Settings and c
 
 `empty: true` means there is nothing real to show. Draw the quiet page; never fill it in. `done` and `failed` hold the last 72 hours, newest first.
 
-Every `Item` has `id` (`"task-12"`), `kind` (`task`, `timer`, `series`, `approval`, `call`, `purchase`, `checkout`), `state`, `title`, `at`, `started_at` and `private`. By `state`:
+Every `Item` has `id`, `kind` (`task`, `timer`, `series`, `approval`, `call`, `purchase`, `checkout`), `state`, `title`, `at`, `started_at` and `private`. `id` is the kind and the record's id (`"task-12"`, `"call-7"`), except a checkout's, which is `run-` and the checkout run's own id (`"run-r_8f2a"`), not a number. Treat ids as opaque strings. By `state`:
 
 | `state` | Section | Extra fields |
 |---|---|---|
@@ -63,6 +64,12 @@ Every `Item` has `id` (`"task-12"`), `kind` (`task`, `timer`, `series`, `approva
 | `failed` | failed | `finished_at`, `failure{why,did_next}`, `nothing_charged` |
 | `needs_you` | open_offers | `ask{summary,detail,total,rows[[label,value]],money,asked_at}` |
 
+The extra fields above are a task's. A call, purchase or checkout with no task behind it carries fewer:
+
+- **Call:** `working` has `summary: null` and `calling: true`, no steps. `ready` has `result` with `headline: null`, `facts: []` and the call's summary as `note`. `failed` has `nothing_charged: true`.
+- **Purchase:** `ready` and `waiting` also carry `amount_cents` and `currency`. A purchase waiting on approval is `waiting` with `summary`.
+- **Checkout:** `working` has `summary: null` only. `ready` has an empty `result`.
+
 Step `state` is `todo`, `doing` or `done`. `steps_recorded` is false when the steps were rebuilt from Reason's log rather than kept as a checklist.
 
 `failure.did_next` is what Reason recorded it did or will do next. It is `null` when nothing was recorded, which is true today for failed standalone calls, purchases and checkouts. Show that honestly; don't write a next step on the client.
@@ -73,7 +80,7 @@ Step `state` is `todo`, `doing` or `done`. `steps_recorded` is false when the st
 
 **`GET /items/{id}`** → `{ "ok": true, "item": Receipt }`
 
-A `Receipt` is the `Item` plus:
+For a task, timer, series or approval, a `Receipt` is the `Item` plus:
 
 ```json
 { "as_of": 0, "steps": [{ "text": "", "state": "done", "at": 0 }],
@@ -82,6 +89,8 @@ A `Receipt` is the `Item` plus:
             "lines": [{ "label": "Walmart", "amount_cents": 1200, "charged": true, "status": "placed" }] },
   "artifacts": [ Artifact ] }
 ```
+
+A call, purchase or checkout receipt is its own shape, not the Page's `Item`: `id`, `kind`, `state` (`working`, `ready` or `failed` only), `title`, `private`, `at`, `started_at`, `finished_at`, `summary`, plus `as_of`, `steps` (always `[]`), `cost` and `artifacts`. A call adds `duration_s`; a purchase adds `items: [{ "name", "qty" }]`. They don't carry the Page's state extras (`result`, `failure`, `nothing_charged`, `calling`, `amount_cents`). A purchase waiting on approval is `waiting` on the Page and `working` here. `at` is the same moment the Page item shows: when a live call started, else when the call, purchase or checkout last changed.
 
 `cost` is money charged to the person, not what the work cost Reason to run. `charged_cents` is `null` and `charged_known` is `false` when an outcome is unknown; never show a number then. `log` is on tasks only.
 
@@ -92,7 +101,7 @@ A `Receipt` is the `Item` plus:
 | `confirmation` | `order_id`, `delivery_window` |
 | `approval` | `summary`, `approved_at`, `you_said` |
 
-**`GET /calls/{id}/recording`** returns audio bytes playable on iPhone, with `Range` support, under the same bearer token.
+**`GET /calls/{id}/recording`** (or `HEAD`) returns audio bytes playable on iPhone, with `Range` support, under the same bearer token.
 
 ## Live updates
 
@@ -103,6 +112,7 @@ A `Receipt` is the `Item` plus:
 | `page` | The full `/page` body. Always sent first, then on every change |
 | `ping` | `{}` every 15 s. A connection silent for 40 s is dead: reconnect |
 | `message` | A `Message`, as it's written, with an SSE `id` (the message id) |
+| `done` | `{ "reply_to": 41, "answers": [40, 41], "last_reply": 43, "at": 0 }`. A turn ended. Sent after the `message` events for its replies |
 | `typing` | `{ "on": true, "until": 0 }` while Reason works on a message from the app |
 | `signedout` | `{}`. This device was revoked. The stream ends; clear the token |
 
@@ -122,7 +132,20 @@ Make `id` a fresh UUID per message and reuse it on a retry: a repeated `id` is n
 
 **`GET /messages`** newest 50, oldest of them first. `?before={id}` pages back, `?after={id}` catches up, `?limit=` up to 100.
 
-`Message` is `{ "id", "role": "user|reason", "text", "at", "via": "app_or_web|text", "client_id", "attachments": [{ "name" }] }`. `client_id` is your `id`, so an optimistic line can be matched. Texts appear too, since it's one conversation. Attachment bytes aren't served by this API yet.
+`Message` is `{ "id", "role": "user|reason", "text", "at", "via": "app_or_web|text", "client_id", "attachments": [{ "name" }], "reply_to", "turn_done", "turn_done_at" }`. `client_id` is your `id`, so an optimistic line can be matched. Texts appear too, since it's one conversation. Attachment bytes aren't served by this API yet.
+
+### Which message a reply answers
+
+One message (or several sent close together) gets one turn, and a turn can send several replies.
+
+- **`reply_to`**, on Reason's messages: the `id` of the person's message it answers. Every reply the turn sends to this person carries it. Several messages answered by one turn: it names the newest of them at the moment that reply was sent. `null` when the message answers nobody: a reminder going off, a call's outcome, anything Reason says unprompted, and anything Reason wrote before this field existed (2026-11-10).
+- **`turn_done`**, on Reason's messages: `true` on the last reply of a turn that has ended. While the turn runs every reply is `false`, so a live `message` event always says `false`; the `done` event says which one was last.
+- **`turn_done_at`**, on the person's messages: when the turn answering it ended, `null` while it runs. A turn that ends with no reply at all still sets it. `null` too on messages from before this field existed, and while the message is waiting for Reason to be back after an outage.
+- **`done`** on `/live`: `reply_to` is the message the turn last answered, `answers` every message it answered (its `turn_done_at` is now set), `last_reply` the `id` of its last reply or `null` when it sent none.
+
+So the app shows Reason as working on a message from the moment it's sent until `done` names it (or `turn_done_at` is set), with no quiet timer. A `done` missed while disconnected isn't replayed: after a reconnect, read `turn_done_at` on the pending message from `GET /messages`.
+
+A reply sent after its turn ended (a retry of a text that failed to go out) still carries `reply_to`, but the `done` has already gone and names an earlier reply as last.
 
 ## What Reason knows
 

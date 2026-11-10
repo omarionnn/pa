@@ -666,3 +666,123 @@ test("no route takes a person: a client naming someone else's conversation chang
   const r = await api("/memories", { token: b, headers: { "x-conversation-id": A.c, cookie: `reason_page=${"x".repeat(43)}` } });
   assert.ok(!r.body.includes("Omari secret line"));
 });
+
+// ---------------------------------------------------------------- which message a reply answers (2026-11-09)
+const turnlink = await import("../src/turnlink.js");
+const sse = (chunks) => chunks.map(c => c.s).join("").split("\n\n").filter(Boolean).map(block => ({
+  event: /^event: (.*)$/m.exec(block)?.[1] ?? null, data: (() => { const d = /^data: (.*)$/m.exec(block)?.[1]; return d ? JSON.parse(d) : null; })(),
+}));
+
+test("reply labels end to end: the stream's reply names the message it answers, then `done`; GET /messages says the same", async () => {
+  const token = await signIn(A);
+  const h = realPipeline("Reminder set for 9");
+  const { res, chunks } = sink();
+  try {
+    liveRequest({ account: db.getAccount(A.c), token, headers: { authorization: `Bearer ${token}` }, router: h.router }).stream(res, new EventEmitter());
+    assert.equal((await api("/messages", { method: "POST", token, router: h.router, body: { id: "bbbbbbbb-1", text: "remind me at 9" } })).status, 200);
+    assert.ok(await until(() => sse(chunks).some(e => e.event === "done")), "a done event");
+    const evs = sse(chunks).filter(e => e.event === "message" || e.event === "done");
+    assert.deepEqual(evs.map(e => e.event), ["message", "message", "done"], "done comes after the reply it names");
+    const [mine, reply, done] = evs.map(e => e.data);
+    assert.equal(mine.client_id, "bbbbbbbb-1");
+    assert.equal(mine.reply_to, null);
+    assert.equal(mine.turn_done_at, null, "while the turn ran");
+    assert.equal(reply.reply_to, mine.id, "the reply names the person's message by its id");
+    assert.equal(reply.turn_done, false, "live, the turn hadn't ended yet");
+    assert.deepEqual(done, { reply_to: mine.id, answers: [mine.id], last_reply: reply.id, at: done.at });
+    assert.equal(typeof done.at, "number");
+    // Old fields and names unchanged.
+    for (const k of ["id", "role", "text", "at", "via", "client_id", "attachments"]) assert.ok(k in reply, k);
+
+    const list = (await api("/messages", { token })).json.messages;
+    const u = list.find(m => m.id === mine.id), r = list.find(m => m.id === reply.id);
+    assert.equal(u.turn_done_at, done.at);
+    assert.equal(r.reply_to, mine.id);
+    assert.equal(r.turn_done, true, "the last reply of a finished turn");
+    assert.equal(r.turn_done_at, null);
+  } finally { res.emit("close"); config.web = false; }
+});
+
+test("reply labels: every reply in the turn names its message, only the last is turn_done; nothing outside the turn answers anybody", async () => {
+  config.web = true;
+  try {
+    const token = await signIn(A);
+    const u1 = db.writeMessage({ conversationId: A.c, role: "user", channel: "fake", externalId: "in-1", text: "find me a table" });
+    const u2 = db.writeMessage({ conversationId: A.c, role: "user", channel: "fake", externalId: "in-2", text: "for four" });
+    let n = 0;
+    const say = (address, text) => { const { row } = db.enqueueOutbound({ idemKey: `t:${++n}`, conversationId: A.c, channel: "fake", address, body: text, toOwner: address === A.phone }); db.markOutboundSent(row.id); return row; };
+    say(A.phone, "Morning, a reminder"); // before any turn: unprompted
+    let late;
+    const { turn, result } = turnlink.run({ conversationId: A.c, to: A.phone, held: [{ external_id: "in-1" }] }, async (t) => {
+      say(A.phone, "On it");
+      say("+14155550000", "Hi, a table for four?"); // somebody else: answers nothing of theirs
+      t.fold = { added: [{ handle: "in-2" }] }; // "for four" folded in mid-turn
+      say(A.phone, "Booked for four at 8");
+      late = () => say(A.phone, "Left running after the turn");
+    });
+    await result;
+    turnlink.close(turn);
+    late(); // still inside the turn's async scope, but the turn is over
+    const done = db.finishTurn(A.c, turnlink.handlesOf(turn));
+    say(A.phone, "Your call went through"); // after: unprompted
+
+    const list = (await api("/messages", { token })).json.messages;
+    const by = Object.fromEntries(list.map(m => [m.text, m]));
+    assert.equal(by["Morning, a reminder"].reply_to, null);
+    assert.equal(by["On it"].reply_to, u1);
+    assert.equal(by["Hi, a table for four?"]?.reply_to ?? null, null);
+    assert.equal(db.db.prepare("SELECT answers_handle FROM outbox WHERE body = 'Hi, a table for four?'").get().answers_handle, null, "a text to somebody else answers nothing");
+    assert.equal(db.db.prepare("SELECT answers_handle FROM outbox WHERE body = 'On it'").get().answers_handle, "in-1");
+    assert.equal(by["Booked for four at 8"].reply_to, u2, "after a fold, the reply answers the newest message");
+    assert.equal(by["Left running after the turn"].reply_to, null);
+    assert.equal(by["Your call went through"].reply_to, null);
+    assert.deepEqual(list.filter(m => m.turn_done).map(m => m.text), ["Booked for four at 8"]);
+    assert.ok(by["find me a table"].turn_done_at && by["for four"].turn_done_at);
+    assert.deepEqual({ ...done, at: 0 }, { conversationId: A.c, ids: [u1, u2], replyTo: u2, lastReply: by["Booked for four at 8"].id, at: 0 });
+    // Another person's rows are never stamped by this turn.
+    assert.equal(db.finishTurn(B.c, ["in-1"]), null);
+  } finally { config.web = false; }
+});
+
+test("reply labels: a turn that sends nothing still ends, over the stream and in history", async () => {
+  config.web = true;
+  try {
+    const token = await signIn(A);
+    const u = db.writeMessage({ conversationId: A.c, role: "user", channel: "fake", externalId: "in-quiet", text: "thanks!" });
+    const { res, chunks } = sink();
+    liveRequest({ account: db.getAccount(A.c), token, headers: { authorization: `Bearer ${token}` } }).stream(res, new EventEmitter());
+    try {
+      db.finishTurn(B.c, ["nothing"]); // somebody else's turn: no event here
+      db.finishTurn(A.c, ["in-quiet"]);
+      const done = sse(chunks).filter(e => e.event === "done").map(e => e.data);
+      assert.equal(done.length, 1);
+      assert.deepEqual({ ...done[0], at: 0 }, { reply_to: u, answers: [u], last_reply: null, at: 0 });
+      assert.equal((await api("/messages", { token })).json.messages.find(m => m.id === u).turn_done_at, done[0].at);
+    } finally { res.emit("close"); }
+  } finally { config.web = false; }
+});
+
+test("receipts: a call, a purchase and a checkout carry `at`, the same moment their Page line shows", async () => {
+  const token = await signIn(A);
+  db.db.exec(`CREATE TABLE IF NOT EXISTS shop_runs (run_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, store TEXT NOT NULL, item TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL,
+    status TEXT NOT NULL, last_request_id TEXT NOT NULL DEFAULT '', signed_in INTEGER NOT NULL DEFAULT 0, result TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+  db.db.exec("DELETE FROM shop_runs");
+  const now = clock.now();
+  const done = call(A.c);
+  db.db.prepare("UPDATE calls SET state = 'completed', ended_at = ?, updated_at = ? WHERE id = ?").run(now - 5000, now - 1000, done);
+  const live = call(A.c, { goal: "Call the dentist" });
+  db.db.prepare("UPDATE calls SET state = 'in_progress', created_at = ? WHERE id = ?").run(now - 60_000, live);
+  db.recordAgentcardPurchase({ conversationId: A.c, buyConversationId: "b-at", status: "placed", amountCents: 700, merchant: "Target", what: "Tape" });
+  const pid = db.db.prepare("SELECT id FROM agentcard_purchases WHERE conversation_id = ?").get(A.c).id;
+  db.db.prepare("UPDATE agentcard_purchases SET updated_at = ? WHERE id = ?").run(now - 3000, pid);
+  db.db.prepare("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at) VALUES ('r_at1', ?, 'Ulta', 'Shampoo', 'buy', 'completed', ?, ?)").run(A.c, now - 9000, now - 2000);
+
+  const page = (await api("/page", { token })).json.sections;
+  const onPage = Object.fromEntries(Object.values(page).flat().map(i => [i.id, i.at]));
+  const want = { [`call-${done}`]: now - 5000, [`call-${live}`]: now - 60_000, [`purchase-${pid}`]: now - 3000, "run-r_at1": now - 2000 };
+  for (const [id, at] of Object.entries(want)) {
+    const item = (await api(`/items/${id}`, { token })).json.item;
+    assert.equal(item.at, at, id);
+    assert.equal(onPage[id], at, `${id} on the Page`);
+  }
+});

@@ -122,6 +122,8 @@ function confirmationArtifact(conv, id) {
 function callReceipt(c, name, now) {
   return {
     id: `call-${c.id}`, kind: "call", state: CALL_LIVE.has(c.state) ? "working" : CALL_DONE.has(c.state) ? "ready" : "failed", title: callTitle(c, name), private: true,
+    // `at` is the Page item's, so the receipt and its line on the Page agree (loneCalls).
+    at: CALL_LIVE.has(c.state) ? c.created_at : c.ended_at ?? c.updated_at,
     started_at: c.created_at, finished_at: c.ended_at ?? null, summary: String(c.summary ?? "").trim() || null, duration_s: c.duration_s ?? null, as_of: now,
     steps: [], cost: { charged_cents: 0, charged_known: true, currency: CURRENCY, lines: [] }, artifacts: [...callArtifacts(c), confirmationArtifact(c.conversation_id, c.confirmation_id)].filter(Boolean),
   };
@@ -135,6 +137,7 @@ function purchaseReceipt(p, conv, now) {
   const artifacts = [p.order_id || p.retailer_order_id ? { type: "confirmation", order_id: p.retailer_order_id || p.order_id, delivery_window: p.delivery_window || null } : null, confirmationArtifact(conv, p.confirmation_id)].filter(Boolean);
   return {
     id: `purchase-${p.id}`, kind: "purchase", state: BUY_DONE.has(p.status) ? "ready" : BUY_FAILED.has(p.status) ? "failed" : "working", title: p.merchant || p.what || "A purchase", private: true,
+    at: p.updated_at,
     started_at: p.created_at, finished_at: BUY_DONE.has(p.status) || BUY_FAILED.has(p.status) ? p.updated_at : null, summary: p.what || null, as_of: now,
     items: Array.isArray(cart.items) ? cart.items.map(i => ({ name: i.name ?? null, qty: i.qty ?? 1 })) : [],
     steps: [], cost: { charged_cents: BUY_DONE.has(p.status) ? p.amount_cents : unknown ? null : 0, charged_known: !unknown, currency: CURRENCY, lines: [purchaseLine(p)] }, artifacts,
@@ -148,6 +151,7 @@ function runReceipt(r, conv, now) {
   const paid = lines.filter(l => l.charged);
   return {
     id: `run-${r.run_id}`, kind: "checkout", state: r.status === "running" ? "working" : RUN_DONE.has(r.status) ? "ready" : "failed", title: [r.item, r.store].filter(Boolean).join(" · ") || "A checkout", private: true,
+    at: r.updated_at,
     started_at: r.created_at, finished_at: r.status === "running" ? null : r.updated_at, summary: null, as_of: now,
     steps: [], cost: { charged_cents: unknown ? null : paid.reduce((n, l) => n + (l.amount_cents ?? 0), 0), charged_known: !unknown, currency: CURRENCY, lines },
     artifacts: pays.flatMap(p => [p.order_intent_id ? { type: "confirmation", order_id: p.order_intent_id, delivery_window: null } : null, confirmationArtifact(conv, p.confirmation_id)]).filter(Boolean),
