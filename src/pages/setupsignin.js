@@ -48,7 +48,9 @@ export function startPage({ name, action, kind }) {
     + `<div class="ss-form">${steps([[`Open ${name}'s sign-in`, "now"], ["Sign in the way you normally do", "todo"], ["Back to your setup", "todo"]])}</div>`
     + `<form method="post" action="${esc(action)}" class="ss-note">${actions(go("Start", { attrs: ` data-busy="Starting…"` }))}</form>`
     + `<div class="ss-note">${note("this link works once, on this device, for a few minutes.")}</div>`;
-  return page(`Reason — sign in to ${name}`, `${header()}<main class="pf" id="cx-main">${frame({ main, margin: margin(name) })}</main>`, { kind });
+  // One Start per page: a second tap while Reason's browser opens would spend the link (its POST has no cookie yet).
+  const once = `;document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){if(f.getAttribute('data-sent')){e.preventDefault();return}f.setAttribute('data-sent','1');var b=f.querySelector('button');if(b){b.setAttribute('aria-disabled','true');var t=b.getAttribute('data-busy');if(t&&b.firstChild)b.firstChild.nodeValue=t+' '}})})`;
+  return page(`Reason — sign in to ${name}`, `${header()}<main class="pf" id="cx-main">${frame({ main, margin: margin(name) })}</main>`, { kind, script: once });
 }
 
 /**

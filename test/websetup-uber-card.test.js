@@ -339,6 +339,7 @@ test("the setup's Amazon sign-in is the paper store sign-in, and ends back on th
   assert.match(start.body, /Just this once\./);
   assert.match(start.body, /class="pf-steps"/, "the store sign-in's step checklist");
   assert.match(start.body, /action="\/s\/[^"]+\/start"/, "Start still opens Reason's browser");
+  assert.match(start.body, /data-sent/, "one Start per page");
   const done = pages.resultPage({ name: "Amazon", state: "signed_in", back: "https://start--staging.example/start/connect?back=amazon", kind: "amazon" });
   assert.match(done, /CONNECTED/);
   assert.match(done, /href="https:\/\/start--staging\.example\/start\/connect\?back=amazon"/);
