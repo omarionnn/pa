@@ -176,3 +176,10 @@ export function setupGonePage() {
   const side = label("WHAT YOU TYPED") + para("Wasn't kept. You'll sign in fresh next time.");
   return page("Reason — sign-in link", frame({ main, margin: side }), { right: "", card: "signin" });
 }
+
+/** One short notice with no way on: the link is somebody else's browser (403), or the profile is busy (409). */
+export function setupNoticePage({ entry, h1, why, card = "signin" }) {
+  const main = headline(h1, "Nothing was lost.") + lede(why);
+  const side = label("WHAT YOU TYPED") + para("Wasn't kept. You'll sign in fresh next time.");
+  return page(`Reason — sign in to ${entry.label}`, frame({ main, margin: side }), { entry, card });
+}

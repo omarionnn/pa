@@ -57,7 +57,7 @@ import { backToReasonHref, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
-import { setupStartPage, setupLivePage, setupResultPage, setupCodePage, setupGonePage } from "./pages/setupsignin.js";
+import { setupStartPage, setupLivePage, setupResultPage, setupCodePage, setupGonePage, setupNoticePage } from "./pages/setupsignin.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -388,7 +388,7 @@ const gateFor = (s) => proofPage(s.conversationId, `${s.entry.label} sign-in`);
 /** Text the person a code to their own thread, at most MAX_CODES_SENT in the window, and ask for it. */
 function sendCode(s, tell) {
   if (typeof tell !== "function") {
-    return { status: 403, headers: HTML(), body: shell("Open this on your own browser", `<p class="lead">This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.</p>`, { card: cardKind(s.entry) }) };
+    return { status: 403, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Open this on your own browser.", why: "This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.", card: cardKind(s.entry) }) };
   }
   const page = gateFor(s);
   if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
@@ -469,15 +469,17 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         if (s.secret || s.ended) return gone();
         const typed = form.get("code");
         if (typed === null || form.has("send")) return sendCode(s, tell);
+        // An empty tap on Sign in is not a guess: it costs none of the few tries (review, 2026-11-10).
+        if (!typed.trim()) return codePage(s, { status: 401, error: "Type the code Reason texted you first." });
         // Busy first, so a right code is not used up on a Start that cannot open anything.
         const busyNow = s.busy(s.conversationId);
-        if (busyNow) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(busyNow)}</p>`, { card: cardKind(s.entry) }) };
+        if (busyNow) return { status: 409, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Not right now.", why: busyNow, card: cardKind(s.entry) }) };
         const tried = tryCode(s, typed, headers);
         if (!tried.ok) return codePage(s, { status: tried.status, error: tried.error });
         remember = tried.cookie;
       }
       const blocked = s.busy(s.conversationId);
-      if (blocked) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(blocked)}</p>`, { card: cardKind(s.entry) }) };
+      if (blocked) return { status: 409, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Not right now.", why: blocked, card: cardKind(s.entry) }) };
       s.secret = newToken();
       s.startedAt = clock.now();
       s.timers.clear(s.timer);

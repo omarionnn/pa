@@ -233,6 +233,18 @@ test("the code page and the gone page are paper too, for a text thread and a set
   assert.equal(wrong.status, 401);
   assert.match(wrong.body, /class="pf-note"[^>]*>That code is not right\. 4 tries left\./, "the error is a note the cells point at");
   assert.match(wrong.body, /aria-invalid="true"/);
+  // An empty tap on Sign in costs none of the few tries: the same 4 are still left after it.
+  const empty = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "code=", tell: async () => {} });
+  assert.equal(empty.status, 401);
+  assert.match(empty.body, /Type the code Reason texted you first\./);
+  const wrong2 = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "code=000001", tell: async () => {} });
+  assert.match(wrong2.body, /3 tries left/, "the empty one was not counted");
+  // No way to text a code (no runtime): the own-browser notice, on paper.
+  const own = await remote.remoteRequest({ token, action: "start", method: "POST", headers: {}, readBody: async () => "", tell: null });
+  assert.equal(own.status, 403);
+  assert.match(own.body, /Open this on your own browser\.<br><em>Nothing was lost\.<\/em>/);
+  assert.match(own.body, /signed in to Reason on/);
+  assert.doesNotMatch(own.body, /class="sheet"/);
   // A setup's code page is the same page.
   const s = await newSetup();
   const t2 = link(s.conv);
