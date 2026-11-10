@@ -15,8 +15,8 @@
 //                       offer after the card (src/amazonconnect.js owns the step; this is only the
 //                       hook — remove the AMAZON HOOK lines to take it out). Yes → the link, then the
 //                       try line; anything else → the try line. Asked once, never nudged. The web
-//                       setup's hand-off (webHandoff) lands here too: the page no longer offers
-//                       Amazon, so the thread does, right after the card, the same way.
+//                       setup's hand-off (webHandoff) lands here too, unless Amazon was connected on
+//                       the page (per connection: skipped or failed there → offered here, the same way).
 //   complete            done; nobody ever goes back in
 //
 // Reason never says it saves itself in their phone or is in their contacts: it cannot touch their
@@ -57,6 +57,7 @@ import { rulesNote } from "./rules.js";
 import { contactCardUrl, lineNumber, RETRY_AFTER_MS, cardName, nameCase, DEFAULT_CARD_NAME } from "./contact.js";
 import { zoneFor } from "./zone.js";
 import * as amazon from "./amazonconnect.js"; // AMAZON HOOK
+import * as shop from "./shopconnect.js"; // AMAZON HOOK: connected on the web setup → no offer
 import * as setups from "./websetupstore.js";
 
 export const STATES = ["not_started", "awaiting_name", "awaiting_card_name", "awaiting_amazon", "complete"];
@@ -390,9 +391,11 @@ function theCard(router, conversationId, picked) {
 
 // AMAZON HOOK: the optional offer after the card (src/amazonconnect.js), REASON_INTRO_AMAZON=on only.
 export const amazonOfferOn = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_INTRO_AMAZON ?? "").trim().toLowerCase());
-// The web setup (src/websetup.js) does not offer Amazon any more (11-10), so a web-claimed account gets the
-// same offer in the thread; `amazon.available` still says no to anyone already connected, blocked or the operator.
-export const amazonCanOffer = (conversationId) => amazonOfferOn() && amazon.available(conversationId);
+// Per connection, not per person (owner 11-10): somebody who connected Amazon on the web setup (the store
+// sign-in through Crossmint, src/websetup.js; it moves to the account on the claim) is not offered it
+// again; somebody who skipped or failed it there is, like anyone else. `amazon.available` still says no
+// to anyone already signed in through Reason's own browser, blocked, or the operator.
+export const amazonCanOffer = (conversationId) => amazonOfferOn() && amazon.available(conversationId) && !shop.isConnected(conversationId, "amazon");
 const realAmazonLink = (conversationId, { log } = {}) => { const r = amazon.connectLink(conversationId, { via: "first_chat", log }); return r.ok ? r.url : null; };
 
 // ---------- the web setup's hand-off ----------
@@ -407,9 +410,10 @@ export const WEB_CARD = "here's my card, save it so you can always find me";
 /**
  * Their first text came from the web setup, and the setup is claimed (router): their name and the
  * name they gave Reason are already on the account, so the hello, the card under that name, then
- * the Amazon offer when it can go (the page never asks it; AMAZON HOOK, the awaiting_amazon step
- * reads their yes or no), else the one thing to try; done. Never the name question or the call-me
- * question: nothing the page already answered is asked again on the phone.
+ * the Amazon offer when it can go (not when they connected Amazon on the page: amazonCanOffer reads
+ * the store sign-in the claim moved; AMAZON HOOK, the awaiting_amazon step reads their yes or no),
+ * else the one thing to try; done. Never the name question or the call-me question: nothing the page
+ * already answered is asked again on the phone.
  */
 function webHandoff(router, conversationId) {
   const setup = setups.claimedBy(conversationId);

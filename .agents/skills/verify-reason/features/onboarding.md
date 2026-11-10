@@ -105,48 +105,63 @@ Prove: `node --test test/onboarding.test.js` + `bin/onboarding-checks.cjs`.
 
 ## Web setup hand-off — `REASON_WEB_SETUP` on | off (default off)
 
-heyreason.com/start (site repo, `public/start/`) asks name → Reason's name → Gmail / card connect, then
-opens Messages with `hey <reason name>, it's <name> · <code>` typed (`websetup.firstText`, lowercase,
+heyreason.com/start (site repo, `public/start/`) asks name → Reason's name → Amazon / Gmail / card connect,
+then opens Messages with `hey <reason name>, it's <name> · <code>` typed (`websetup.firstText`, lowercase,
 4-char code from `abcdefghjkmnpqrstuvwxyz23456789`). Server: `src/websetup.js` (+ rows in
 `src/websetupstore.js`), JSON under `/setup/api/*` via the site's signed `/setup/*` proxy; `rs_setup`
 cookie (HttpOnly, 24 h) owns the setup and is accepted by `connectgate.browserConversation` for the
 stand-in conversation `websetup:<id>` only. Connects: Gmail = Google's own connect for the stand-in,
-callback 302s to `/start/connect?back=email`; card, below. No Outlook (capabilities say `outlook:false`).
-**Amazon and Uber are OFF the page (owner, 11-10):** `/api/capabilities` answers `amazon:false, uber:false`
-whatever the server could do, and `POST /api/<id>/connect/amazon|uber` is 404 `{ok:false, why:"unavailable"}`
-with nothing made and the setup untouched (the claim still moves an Amazon check / Uber grant an older
-stand-in holds, and finds nothing otherwise).
+callback 302s to `/start/connect?back=email`; Amazon and card, below. No Outlook (capabilities say
+`outlook:false`). **Uber is OFF the page (owner, 11-10):** `capabilities.uber:false` whatever the server could
+do, `POST /api/<id>/connect/uber` is 404 `{ok:false, why:"unavailable"}` with nothing made (the claim still
+moves a grant an older stand-in holds; `uberCallbackDone` still returns such a setup to `?back=uber`).
 Claim (router, own first text only): code at the end AND the setup's names in the text → account name +
-card name set, Google rows (+ any Amazon check / profile) moved, Amazon follow-up timer at +90 s only if an
-Amazon check moved. Then `onboarding.handle` (not_started) sends `WEB_HELLO`, the card (`WEB_CARD`), and —
-with `REASON_INTRO_AMAZON=on` and `amazon.available` (not connected, not blocked, not the operator) — the
-same `amazon.OFFER` the text intro makes, state `awaiting_amazon` (`webHandoff`, AMAZON HOOK); their yes →
-`LINK_LINE` + the `/s/` link + `TRY_LINE`, no → `NO_LINE. TRY_LINE` (the existing awaiting_amazon branch).
-Flag off or Amazon already connected → `TRY_LINE`, complete. No model read of the first text, no name /
-call-me question (nothing the page answered is asked on the phone). No/bad code or switch off → the normal
-intro. Event/invite joiners never claim. Proof: `test/websetup.test.js`.
+card name set, Google rows moved, the setup's Crossmint state moved (`shop.adoptSetup`: card + store sign-ins
++ `shop_profiles` + the Crossmint user via `shop_crossmint_subjects`, only onto an account with no Crossmint
+state, claim ≤15 min `PAY_CLAIM_MS`; later → dropped: profile erased at Crossmint best effort). Then
+`onboarding.handle` (not_started) sends `WEB_HELLO`, the card (`WEB_CARD`), and — with `REASON_INTRO_AMAZON=on`,
+`amazon.available` (not blocked, not the operator) and Amazon NOT connected on the page (`amazonCanOffer` reads
+`shop.isConnected(id, "amazon")`, per connection) — the same `amazon.OFFER` the text intro makes, state
+`awaiting_amazon` (`webHandoff`, AMAZON HOOK); their yes → `LINK_LINE` + the `/s/` link + `TRY_LINE`, no →
+`NO_LINE. TRY_LINE` (the existing awaiting_amazon branch). Flag off, or Amazon connected on the page →
+`TRY_LINE`, complete (a Crossmint sign-in is for buying: no order-read follow-up timer; only an older setup's
+Reason-browser Amazon check sets one). No model read of the first text, no name / call-me question (nothing
+the page answered is asked on the phone). No/bad code or switch off → the normal intro. Event/invite joiners
+never claim. Proof: `test/websetup.test.js`.
+**Amazon on the setup = the Crossmint store sign-in (owner, 11-10), never Reason's own browser.**
+`capabilities.amazon` = the card's gate (`REASON_SHOP_CONNECT=on` + both Crossmint keys). `POST
+/api/<id>/connect/amazon` → `shop.setupStoreLink(c, "amazon")`: Crossmint only signs in to a store inside a
+checkout run, so it starts one whose whole task is the sign-in (`SETUP_SIGNIN_TASK`: no search, no cart, no
+buy; `maxCost` $1.00 enforced by Crossmint; `signIn: true` → mode `sign_in`) under the stand-in's own browser
+profile (`ensureProfile`), makes a `shop_links` row kind `signin` for it and returns
+`heyreason.com/web/connect/<token>` — keyed by the token alone, so it opens on any browser: no setup cookie, no
+texted code, no code gate. Past 14 min → `{ok:false, why:"too_late"}` (it would not move to them anyway). The
+run is followed like any other (`shop.step` / `follow`), but for a `websetup:` conversation nothing is texted
+and nothing is woken: a plain question (address, size) or a payment request ends the run quietly
+(`endQuietly`; a payment means the store let them in → `finishSignin` first). Page states (`webconnect.js`,
+`setupBack` → `<origin>/start/connect?back=amazon`): "Opening Amazon." (checking, before the login is asked) →
+"Sign in to Amazon." (email plain, password = Crossmint's sealed field, JWT `setupJwtSec`) → "You're signed in
+to Amazon. Back to your setup." (auto-return 1.5 s) or "That didn't go through / This link has run out" with
+"Back to your setup" (never "text me"). `connectState("amazon")`: `shop.isConnected` → connected 3/3;
+`shop.setupStorePending` (open link + live run) with Crossmint answering within `STALE_CONNECT_MS` (2 min) →
+connecting (step 2 once the login was asked for); else pending/failed → `failed` (try again; a new tap lets the
+old run go and spends its link). Card = `shop.setupCardLink` → the same `/web/connect/<token>` (Crossmint's own
+fields; JWT ≤10 min and never past created+15 min; no card link after 14 min → `too_late`); saved page shows
+"Back to your setup". Proof: `test/websetup-uber-card.test.js` (scripted Crossmint). **Unproven live:** a real
+Crossmint sign-in-only run at Amazon ending `succeeded` (the agent may end it otherwise), and what such a run
+costs at Crossmint.
 **No dead-end code gate for a setup (11-10):** a setup's Google/Uber start link (`connectgate.connectStartRequest`)
-or Amazon `/s/` link (`signin-remote.remoteRequest`) opened on a browser without the setup's cookie — another
-browser, a staging site whose host-only cookie cannot reach app.heyreason.com, or a setup that ran out — never
-shows "Enter the code Reason texted you" (there is no thread): paper page `setupsignin.setupBackPage`, one line +
-"Back to your setup" → `<setup origin>/start/connect?back=<which>` (`websetup.backUrlFor`; plain `/start/connect`
-when the setup is gone), nothing texted, nothing started. The setup's own browser passes straight through
-(302 to Google / the sign-in intro). Thread links keep their code gate.
+or an older Amazon `/s/` link (`signin-remote.remoteRequest`) opened on a browser without the setup's cookie —
+another browser, a staging site whose host-only cookie cannot reach app.heyreason.com, or a setup that ran
+out — never shows "Enter the code Reason texted you" (there is no thread): paper page
+`setupsignin.setupBackPage`, one line + "Back to your setup" → `<setup origin>/start/connect?back=<which>`
+(`websetup.backUrlFor`; plain `/start/connect` when the setup is gone), nothing texted, nothing started. The
+setup's own browser passes straight through (302 to Google / the sign-in intro). Thread links keep their code
+gate. Live check on heyreason.com itself: curl `/connect/start?state=…` with the `rs_setup` cookie → 302 to
+Google; without it → 200 back page, no code.
 **Never stuck on "connecting" (11-10):** `websetup.connectState` reads a pending email/uber connect as
 `connecting` only while an unused `oauth_states` row for the stand-in is younger than `STALE_CONNECT_MS`
-(2 min), else `failed` (try again); Amazon: an untapped link older than 2 min is `failed`, a sign-in under way
-stays `connecting` while it runs. A new tap always starts fresh (`google.authorizeUrl` / `uber.authorizeUrl`
-clear the old state; a new Amazon link replaces the open session). Card: unchanged (its own link TTL).
-
-**Uber + Card (PR #440, 11-10).** Screen 3 order: Amazon, Uber, Email, Card. Uber = `uber.authorizeUrl`
-for the stand-in, handed out only when `uber.connectReady()` (reads Uber's own authorize 302: `/oauth/errors`
-= `redirect_uri_not_registered`; cached 10 min, unreachable 30 s) says ready, else `{ok:false, why:"not_ready"}`
-and `capabilities.uber:false`; Uber's callback for a setup 302s to `/start/connect?back=uber`
-(`websetup.uberCallbackDone`). Card = `shop.setupCardLink` → `heyreason.com/web/connect/<token>` (Crossmint's
-own fields; JWT `setupJwtSec` ≤10 min and never past created+15 min; no card link after 14 min → `too_late`);
-nothing texted to the stand-in; saved page shows "Back to your setup". Claim ≤15 min (`PAY_CLAIM_MS`):
-Uber token + `connected_accounts` uber + card move; the card keeps its Crossmint user via
-`shop_crossmint_subjects` (only onto an account with no Crossmint state). Later claims / sweep drop them
-(Crossmint DELETE best effort). Live 11-10: Uber `not_ready` until https://app.heyreason.com/uber/callback is
-added in the Uber dashboard. Check: `curl -s https://start--textreason.netlify.app/setup/api/capabilities`.
-Proof: `test/websetup-uber-card.test.js`.
+(2 min), else `failed` (try again); Amazon as above. A new tap always starts fresh (`google.authorizeUrl` /
+`uber.authorizeUrl` clear the old state; a new Amazon tap ends the old run). Card: unchanged (its own link TTL).
+Staging gotcha: a setup made on start--…netlify.app has a host-only cookie, so its Gmail start link on
+app.heyreason.com shows the back page (by design); Amazon and the card work there (token-keyed).

@@ -189,18 +189,35 @@ function noAccount(store, passkey = false) {
   return frame({ main, margin: note(`nothing's bought until you ${approveLine(passkey)}.`), step: "noaccount", off: true });
 }
 
-export function renderChecking({ view, staging = false, passkey = false }) {
+export function renderChecking({ view, staging = false, passkey = false, setupBack = "" }) {
   const n = nameOf(view.store);
-  const main = headline(`Signing in to ${n}.`, "Hang tight.", "cx-h") + lede(`Keep this page open. If ${n} sends you a code, it'll ask for it right here. However it goes, I'll text you too.`)
-    + steps([[`Sent straight to ${n}, sealed`, "done"], [`${n} is checking it`, "now"], ["Signed in", "todo"]])
-    + live({ id: "cx-live", lines: checkingLines(n) });
-  const margin = label("WHILE YOU WAIT") + para(`Nothing is bought until you ${approveLine(passkey)}.`)
-    + label("IF IT TAKES A WHILE", { sp: true }) + para(`Stores sometimes take a minute or two. If ${esc(n)} stops it, this page says so, and so do I in the chat.`);
+  // A web setup's sign-in (src/websetup.js): nobody is texted; before the store has asked for the login
+  // the page is waiting on the store opening, not on an answer.
+  const opening = !!setupBack && !view.answered;
+  const main = headline(opening ? `Opening ${n}.` : `Signing in to ${n}.`, "Hang tight.", "cx-h")
+    + lede(opening ? `Keep this page open. ${n}'s sign-in will ask for your login right here, and the password goes to ${n} sealed, never to me.`
+      : `Keep this page open. If ${n} sends you a code, it'll ask for it right here.${setupBack ? "" : " However it goes, I'll text you too."}`)
+    + steps(opening ? [[`Opening ${n}`, "now"], ["Your login, sealed", "todo"], ["Signed in", "todo"]] : [[`Sent straight to ${n}, sealed`, "done"], [`${n} is checking it`, "now"], ["Signed in", "todo"]])
+    + live({ id: "cx-live", lines: opening ? [[0, `Opening ${n}.`], [8, `${n} is loading.`], [30, "Still opening. This can take a minute."], [75, "Taking longer than usual. Still on it."]] : checkingLines(n) });
+  const margin = label("WHILE YOU WAIT") + para(setupBack ? "Nothing is bought without your Face ID." : `Nothing is bought until you ${approveLine(passkey)}.`)
+    + label("IF IT TAKES A WHILE", { sp: true }) + para(`Stores sometimes take a minute or two. If ${esc(n)} stops it, this page says so${setupBack ? "." : ", and so do I in the chat."}`);
   return page("Reason — signing in", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
 }
 
-export function renderConnected({ view, staging = false, passkey = false }) {
+export function renderConnected({ view, staging = false, passkey = false, setupBack = "" }) {
   const n = nameOf(view.store);
+  if (setupBack) {
+    // Signed in from the web setup (src/websetup.js): no thread yet, so the way on is back to the setup,
+    // on its own after a moment (the setup reads the new state itself).
+    const main = headline(`You're signed in to ${n}.`, "Back to your setup.", "cx-h")
+      + lede(`${n} confirmed it. When you want something from ${n}, I can check out there, and nothing is bought without your Face ID.`)
+      + paper({ stamp: "CONNECTED", label: NAME(view.store), big: "Signed in.", mono: false })
+      + `<div class="cx-note">${actions(go("Back to your setup", { href: setupBack, attrs: ` id="cx-back"` }))}</div>`
+      + `<script>(function(){var a=document.getElementById('cx-back');if(a)setTimeout(function(){location.href=a.href},1500)})();</script>`;
+    const margin = label("SIGNED IN, I CAN") + para("Check out there, only after your Face ID.")
+      + label("AND", { sp: true }) + para(`Sign out of ${esc(n)} any time in ${SETTINGS}.`);
+    return page(`Reason — ${n} connected`, `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
+  }
   const main = headline(`You're signed in to ${n}.`, "Back to the chat.", "cx-h")
     + lede(`Next time you want something from ${n}, just text me. I'll send the exact total before buying.`)
     + paper({ stamp: "CONNECTED", label: NAME(view.store), big: "Signed in.", mono: false })
@@ -211,12 +228,25 @@ export function renderConnected({ view, staging = false, passkey = false }) {
 }
 
 /** Run out (any link), or a sign-in the store stopped (StoreCantConnect). */
-export function renderEnded({ view, staging = false }) {
+export function renderEnded({ view, staging = false, setupBack = "" }) {
   const card = view.kind === "card";
   const failed = view.state === "failed";
   const n = shop.storeName(view.store) || "";
   let main, margin;
   const s = n || "The store";
+  if (setupBack) {
+    // A web setup's link (src/websetup.js): nobody to text for a fresh one; the setup's connect screen
+    // starts it again. Never "text me".
+    const why = failed
+      ? (view.reason === "timeout" ? `${s} was waiting too long and gave up on this sign-in.` : view.reason === "replaced" ? "A newer attempt replaced this one." : `${s} stopped it before it finished.`)
+      : card ? "This card link has run out. Nothing was saved." : "This sign-in link has run out. Nothing was signed in.";
+    main = headline(failed ? "That didn't go through." : "This link has run out.", "Nothing was lost.", "cx-h")
+      + lede(`${why} You can try again from your setup.`)
+      + `<div class="cx-note">${actions(go("Back to your setup", { href: setupBack }))}</div>`;
+    margin = label("NOTHING BOUGHT") + para("Nothing was charged, and nothing of yours was kept here.")
+      + label("NEXT", { sp: true }) + para(`Tap ${card ? "Card" : esc(s)} on your setup for a fresh link.`);
+    return page("Reason — link", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging, status: failed ? 200 : 410 });
+  }
   if (failed) {
     // Which end it was (src/shopconnect.js failReason), and the next step, the same as the chat says.
     const why = view.reason === "timeout" ? `${s} was waiting too long and gave up on this sign-in. It happens when a code or a password takes a while to arrive.`
@@ -411,13 +441,15 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
     return json(out.ok ? 200 : 400, out);
   }
   if (verb) return null;
-  const setupMod = link.kind === "card" && String(link.conversation_id).startsWith("websetup:") ? await import("../websetup.js") : null;
-  const setupBack = setupMod ? setupMod.backUrlFor(link.conversation_id, "card") : "";
-  // A setup's card form: its Crossmint JWT ends by the setup's 15-minute mark (src/websetup.js setupJwtSec).
+  // A web setup's link (src/websetup.js): its card form, or its store sign-in (shop.setupStoreLink). No
+  // thread behind it, so every way on is back to the setup's connect screen.
+  const setupMod = String(link.conversation_id).startsWith("websetup:") ? await import("../websetup.js") : null;
+  const setupBack = setupMod ? setupMod.backUrlFor(link.conversation_id, link.kind === "card" ? "card" : "amazon") : "";
+  // A setup's form: its Crossmint JWT ends by the setup's 15-minute mark (src/websetup.js setupJwtSec).
   const setupTtl = setupMod ? setupMod.setupJwtSec(link.conversation_id) : null;
-  if (setupMod && view.state === "card" && setupTtl < 60) return send(secured(renderEnded({ view: { state: "expired" } }), "card"));
   const card = view.kind === "card" && view.state === "connected" ? shop.cardOf(link.conversation_id) : null;
   const interactive = ["signin", "code", "wrongcode", "retry", "card"].includes(view.state);
+  if (setupMod && interactive && setupTtl < 60) return send(secured(renderEnded({ view: { state: "expired", kind: link.kind, store: link.store }, setupBack }), link.kind === "card" ? "card" : "store"));
   const boot = interactive || view.state === "checking"
     ? {
       token, state: view.state, watch: view.state !== "card", ...(view.state === "checking" ? { waited: view.waited } : {}),

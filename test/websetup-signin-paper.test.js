@@ -79,7 +79,9 @@ async function startAs(token, setupCookie) {
 test("setup intro is the paper store sign-in: headline, sealed login, the margin, the practical facts, Connect Amazon card", async () => {
   const s = await newSetup();
   const token = link(s.conv);
-  const page = await req(token);
+  // The setup's own browser (its cookie): the intro. Any other browser gets the way back to the setup,
+  // never a code step (test/websetup.test.js).
+  const page = await req(token, "", { cookie: `rs_setup=${s.cookie}` });
   assert.equal(page.status, 200);
   const html = page.body;
   assert.match(html, /class="pf-hd"/);

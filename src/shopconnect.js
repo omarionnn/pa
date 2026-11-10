@@ -427,42 +427,100 @@ export function crossmintUser(conversationId) {
 }
 const hashedCrossmintUser = (c) => `reason-${createHash("sha256").update(`crossmint:${c}`).digest("hex").slice(0, 24)}`;
 
-// ---------------------------------------------------------------- the web setup's card (src/websetup.js)
+// ---------------------------------------------------------------- the web setup's card and store sign-in (src/websetup.js)
 const isSetupConversation = (c) => String(c ?? "").startsWith("websetup:");
 /** A setup's card page JWT lasts this long (not 30 minutes): its Crossmint user may become an account's. */
 export const SETUP_JWT_SEC = 10 * 60;
 /**
- * A setup's card, made theirs on the claim: the card row and the Crossmint user it was saved under
- * move to the account. Only onto an account with nothing at Crossmint yet (a brand-new one, which is
- * the only kind that claims): one that somehow has a card, a profile, a payment or its own subject
- * keeps those, and the setup's card is let go. Open card links on the stand-in are spent either way,
- * so nobody can add a card under that Crossmint user afterwards. True when the card moved.
+ * What a setup holds at Crossmint, made theirs on the claim: the card row, the stores it signed in to
+ * (shop_stores, with the browser profile those sign-ins live in) and the Crossmint user it was all
+ * made under move to the account. Only onto an account with nothing at Crossmint yet (a brand-new one,
+ * which is the only kind that claims): one that somehow has a card, a profile, a payment, a store or its
+ * own subject keeps those, and the setup's are let go. Open links on the stand-in are spent either way,
+ * so nobody can add a card or sign in under that Crossmint user afterwards; a sign-in run still going is
+ * let go. Returns what moved: `{ card, stores }`.
  */
-export function adoptSetupCard(from, to) {
-  if (!isSetupConversation(from) || !to || isSetupConversation(to)) return false;
+export function adoptSetup(from, to) {
+  const none = { card: false, stores: [] };
+  if (!isSetupConversation(from) || !to || isSetupConversation(to)) return none;
   const card = q("SELECT * FROM shop_cards WHERE conversation_id = ?").get(from);
+  const stores = q("SELECT store FROM shop_stores WHERE conversation_id = ? AND status = 'connected'").all(from).map((r) => r.store);
   q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND state = 'open'").run(from);
-  if (!card) return false;
+  for (const r of q("SELECT run_id FROM shop_runs WHERE conversation_id = ? AND status = 'running'").all(from)) letGo(r.run_id, "the setup was claimed").catch(() => {});
+  if (!card && !stores.length) return none;
   const busy = q("SELECT 1 FROM shop_cards WHERE conversation_id = ?").get(to)
     || q("SELECT 1 FROM shop_profiles WHERE conversation_id = ?").get(to)
     || q("SELECT 1 FROM shop_payments WHERE conversation_id = ?").get(to)
+    || q("SELECT 1 FROM shop_stores WHERE conversation_id = ?").get(to)
     || q("SELECT 1 FROM shop_crossmint_subjects WHERE conversation_id = ?").get(to);
-  if (busy) { dropSetupCard(from); return false; }
+  if (busy) { dropSetupCard(from); return none; }
   db.atomically(() => {
     q("INSERT INTO shop_crossmint_subjects (conversation_id, sub, from_conversation, created_at) VALUES (?, ?, ?, ?)").run(to, crossmintUser(from), from, clock.now());
     // Registration is asked again at pay time (registerCard there), with this account's own emails;
     // the setup could not text anyone, so nothing was asked yet.
     q("UPDATE shop_cards SET conversation_id = ?, asked_email = 0 WHERE conversation_id = ?").run(to, from);
     q("UPDATE shop_profiles SET conversation_id = ? WHERE conversation_id = ?").run(to, from);
+    q("DELETE FROM shop_stores WHERE conversation_id = ? AND status <> 'connected'").run(from);
+    q("UPDATE shop_stores SET conversation_id = ? WHERE conversation_id = ?").run(to, from);
   });
-  return true;
+  return { card: !!card, stores };
 }
-/** A setup's card let go: removed at Crossmint (best effort, in the background), its row and links gone. */
+/** The card alone (older callers): true when it moved. */
+export const adoptSetupCard = (from, to) => adoptSetup(from, to).card;
+/**
+ * A setup's card and store sign-ins let go: the card removed at Crossmint (best effort, in the
+ * background), a sign-in run still going cancelled, the store rows gone, the browser profile erased at
+ * Crossmint (best effort), its links spent.
+ */
 export function dropSetupCard(c) {
   if (!isSetupConversation(c)) return;
   if (cardOf(c)) removeCard(c).catch(() => {});
   q("DELETE FROM shop_cards WHERE conversation_id = ?").run(c);
   q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND state = 'open'").run(c);
+  for (const r of q("SELECT run_id FROM shop_runs WHERE conversation_id = ? AND status = 'running'").all(c)) letGo(r.run_id, "the setup is over").catch(() => {});
+  q("DELETE FROM shop_stores WHERE conversation_id = ?").run(c);
+  if (profileOf(c)) eraseProfile(c).catch(() => {});
+}
+/**
+ * A setup's store sign-in (owner 11-10: Amazon on the setup page through the store sign-in Reason's
+ * checkouts use, never Reason's own browser). Crossmint only signs in to a store inside a checkout
+ * run, so this starts one whose whole task is the sign-in — nothing searched, carted or bought, a
+ * $1 ceiling Crossmint enforces on top — under the setup's own browser profile, and hands back the
+ * link to Reason's sign-in page for it (src/pages/webconnect.js: email in the open, the password in
+ * Crossmint's sealed field). The page shows "checking" until the store asks for the login, then the
+ * form; the run is followed like any other (`step`), with nothing texted and nothing woken for a
+ * stand-in. The store ends up in shop_stores for the stand-in, and the claim moves it (adoptSetup).
+ * One attempt at a time: a new tap lets the old run go and spends its link.
+ */
+export const SETUP_SIGNIN_TASK = (name) => `Sign in to my ${name} account, then stop. This is only a sign-in: do not search for anything, do not add anything to the cart and do not buy anything. Once ${name} shows me signed in, you are done.`;
+export async function setupStoreLink(c, store = "amazon") {
+  if (!isSetupConversation(c) || !connectAllowedFor(c)) return { ok: false, why: "unavailable" };
+  if (!process.env.CROSSMINT_CLIENT_KEY || !process.env.CROSSMINT_SERVER_KEY) return { ok: false, why: "unavailable" };
+  if (isConnected(c, store)) return { ok: false, why: "connected" };
+  for (const r of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND store = ? AND status = 'running'").all(c, store)) await endQuietly(r, "started again from the setup");
+  q("UPDATE shop_links SET state = 'failed' WHERE conversation_id = ? AND kind = 'signin' AND state = 'open'").run(c);
+  const name = storeName(store) || store;
+  let out;
+  try {
+    out = await startCheckout({ conversationId: c, store, startUrl: STORES[store]?.url || `https://www.${store}.com/`, what: SETUP_SIGNIN_TASK(name), item: `${name} sign-in`, maxUsd: 1, signIn: true });
+  } catch (e) { out = { ok: false, error: String(e?.message ?? e) }; }
+  if (!out.ok) { logFn({ setup_store_signin: store, ok: false, why: String(out.error ?? "").slice(0, 120) }); return { ok: false, why: "unavailable" }; }
+  const token = createLink({ conversationId: c, kind: "signin", store, runId: out.runId });
+  follow(out.runId);
+  logFn({ setup_store_signin: store, ok: true });
+  return { ok: true, url: `${linkBase()}/${token}` };
+}
+/**
+ * A setup's store sign-in under way: its open link and the live run behind it, or null (none, done, or
+ * over). `asked` once the store asked for the login, `answered` once it went in, `since` the last time
+ * Crossmint answered about the run (the page's "connecting" lives on that).
+ */
+export function setupStorePending(c, store) {
+  const link = q("SELECT * FROM shop_links WHERE conversation_id = ? AND kind = 'signin' AND store = ? AND state = 'open' AND expires_at > ? ORDER BY created_at DESC").get(c, store, clock.now());
+  if (!link) return null;
+  const run = link.run_id ? runRow(link.run_id) : null;
+  if (!run || TERMINAL.has(run.status)) return null;
+  return { asked: !!link.request_json, answered: !!link.answered_at, since: run.last_ok_at ?? run.created_at, createdAt: link.created_at };
 }
 /** A setup's card-entry link (Crossmint's own form on Reason's /web/connect page), and its address. */
 export function setupCardLink(c) {
@@ -1969,7 +2027,8 @@ export async function step(runId) {
   const run = runRow(runId);
   if (!run || TERMINAL.has(run.status)) return { done: true };
   const said = [];
-  const say = async (text) => { said.push(text); if (sayFn) await sayFn(run.conversation_id, text); };
+  // A web setup's stand-in (setupStoreLink) has no thread: what would be texted is only recorded.
+  const say = async (text) => { said.push(text); if (sayFn && !isSetupConversation(run.conversation_id)) await sayFn(run.conversation_id, text); };
   let r;
   try { r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(runId)}`); } catch { r = { ok: false, json: null }; }
   if (!r.ok || !r.json) {
@@ -2012,6 +2071,11 @@ export async function step(runId) {
     if (it.kind === "payment") {
       // Past the sign-in: the store let them in.
       if (link || run.mode === "sign_in") finishSignin(run, link);
+      // A setup's sign-in-only run (setupStoreLink) that reached a payment: signed in, so done; nothing to buy.
+      if (isSetupConversation(run.conversation_id)) {
+        await endQuietly(run, "setup sign-in done; nothing to buy");
+        return { done: true, status: "cancelled", said };
+      }
       const row = recordPayment({ conversationId: run.conversation_id, runId, request: rq, item: run.item });
       if (row && told.has("superseded")) {
         // Started over with a corrected address: this one's payment is declined, quietly. Nothing charged.
@@ -2053,6 +2117,12 @@ export async function step(runId) {
       // record covers it (2026-10-31: his address was on file and he was asked for it anyway), with one
       // line saying where it ships; otherwise the model is woken once with what is still needed.
       setStage(runId, "needs_input");
+      // A setup's sign-in-only run (setupStoreLink): nobody to wake, no record to answer from, no other
+      // store to move on to. Let go, quietly; the page says the sign-in didn't go through.
+      if (isSetupConversation(run.conversation_id)) {
+        await endQuietly(run, "setup sign-in: the store asked something only a person could answer");
+        return { done: true, status: "cancelled", said };
+      }
       const pub = publicRequest(rq);
       // The store turning the checkout away, dressed as a question (Amazon's "Password reset required…
       // How should I proceed?", 2026-10-31): never the model's to answer. Code moves on to the next store.

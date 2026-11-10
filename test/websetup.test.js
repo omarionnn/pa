@@ -36,6 +36,7 @@ const ws = await import("../src/websetup.js");
 const store = await import("../src/websetupstore.js");
 const gate = await import("../src/connectgate.js");
 const amazon = await import("../src/amazonconnect.js");
+const shop = await import("../src/shopconnect.js");
 const remote = await import("../src/signin-remote.js");
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
@@ -144,33 +145,32 @@ test("the name line: shaped for 'kofi — …', cached per name, rate limited, a
   assert.equal((await api("GET", "/api/name-line", { query: { name: "fresh" }, ip: "5.5.5.5", nameLineFor })).status, 204, "limited, silently");
 });
 
-test("connects are bound to the setup: email via Google, Outlook unavailable; Amazon and Uber are off the page", async () => {
+test("connects are bound to the setup: Amazon via the Crossmint store sign-in, email via Google, Outlook unavailable; Uber is off the page", async () => {
   const s = await newSetup();
   const asked = [];
+  const amazonLink = async (c) => { asked.push(c); return { ok: true, url: "https://heyreason.example/web/connect/tok" }; };
   const googleLink = (c) => { asked.push(c); return { ok: true, url: "https://app.example/connect/start?state=st" }; };
+  assert.deepEqual((await api("POST", `/api/${s.id}/connect/amazon`, { cookie: s.cookie, amazonLink })).json, { ok: true, url: "https://heyreason.example/web/connect/tok" });
   assert.deepEqual((await api("POST", `/api/${s.id}/connect/email`, { cookie: s.cookie, body: { provider: "gmail" }, googleLink })).json, { ok: true, url: "https://app.example/connect/start?state=st" });
   assert.deepEqual((await api("POST", `/api/${s.id}/connect/email`, { cookie: s.cookie, body: { provider: "outlook" }, googleLink })).json, { ok: false, why: "unavailable" });
-  assert.deepEqual(asked, [`websetup:${s.id}`], "the setup's stand-in, never a real conversation");
-  // Amazon and Uber (11-10): refused with the cookie or without it, nothing made, the setup untouched.
-  const amz = await api("POST", `/api/${s.id}/connect/amazon`, { cookie: s.cookie });
-  assert.equal(amz.status, 404);
-  assert.deepEqual(amz.json, { ok: false, why: "unavailable" });
+  assert.deepEqual(asked, [`websetup:${s.id}`, `websetup:${s.id}`], "the setup's stand-in, never a real conversation");
+  assert.equal((await api("POST", `/api/${s.id}/connect/amazon`, { amazonLink })).status, 404, "not without the setup's cookie");
+  assert.equal(remote.remoteSessionFor(`websetup:${s.id}`), null, "never Reason's own browser for the setup's Amazon");
+  // Uber (11-10): refused with the cookie or without it, nothing made, the setup untouched.
   const ub = await api("POST", `/api/${s.id}/connect/uber`, { cookie: s.cookie });
   assert.equal(ub.status, 404);
   assert.deepEqual(ub.json, { ok: false, why: "unavailable" });
-  assert.equal((await api("POST", `/api/${s.id}/connect/amazon`)).status, 404, "not without the setup's cookie either");
-  assert.equal(remote.remoteSessionFor(`websetup:${s.id}`), null, "no Amazon sign-in was started");
-  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM oauth_states WHERE conversation_id = ?").get(`websetup:${s.id}`).n, 0, "no Uber state was made");
-  const row = store.get(s.id);
-  assert.equal(row.amazon_state || null, null);
-  assert.equal(row.uber_state || null, null);
+  assert.equal((await api("POST", `/api/${s.id}/connect/uber`)).status, 404);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM oauth_states WHERE conversation_id = ? AND provider = 'uber'").get(`websetup:${s.id}`).n, 0, "no Uber state was made");
+  assert.equal(store.get(s.id).uber_state || null, null);
   const view = (await api("GET", `/api/${s.id}`, { cookie: s.cookie })).json.connections;
-  assert.deepEqual(view.amazon, { state: "none", step: 1, of: 3 });
   assert.deepEqual(view.uber, { state: "none", step: 1, of: 3 });
+  assert.deepEqual(view.amazon, { state: "failed", step: 1, of: 3 }, "a link with no Crossmint run behind it (the seam) is not a live sign-in");
   const caps = (await api("GET", "/api/capabilities")).json;
   assert.equal(caps.outlook, false);
-  assert.equal(caps.amazon, false, "never on the page, whatever the server could do");
-  assert.equal(caps.uber, false);
+  assert.equal(caps.amazon, false, "no Crossmint here: the same gate as the card");
+  assert.equal(caps.card, false);
+  assert.equal(caps.uber, false, "never on the page, whatever the server could do");
 });
 
 test("the real Amazon setup link: a remote sign-in for the stand-in; its end lands on the setup, never a thread timer", async () => {
@@ -181,7 +181,7 @@ test("the real Amazon setup link: a remote sign-in for the stand-in; its end lan
   assert.match(out.url, /\/s\/[A-Za-z0-9_-]{32,64}$/);
   assert.deepEqual(remote.remoteSessionFor(c), { site: "amazon", started: false });
   const live = await api("GET", `/api/${s.id}`, { cookie: s.cookie });
-  assert.deepEqual(live.json.connections.amazon, { state: "connecting", step: 1, of: 3 });
+  assert.deepEqual(live.json.connections.amazon, { state: "none", step: 1, of: 3 }, "the page's Amazon is the store sign-in now (11-10): Reason's own browser does not show on it");
   assert.equal(amazon.setupConnectLink("dm:fake:+1415").ok, false, "only a setup's stand-in");
   assert.equal(amazon.available(c), false, "the text intro's offer never covers a stand-in");
   await remote.endAllRemoteSignins("cancelled");
@@ -329,6 +329,22 @@ test("what a stand-in holds moves to them: the Google grant; an Amazon check + p
   assert.equal(db.getAccount(me).onboarding, "complete");
 });
 
+test("connected Amazon on the page (the store sign-in): the claim moves it, and the thread does not offer Amazon again", async () => {
+  const h = harness();
+  const num = newNumber();
+  const s = await newSetup();
+  const c = `websetup:${s.id}`;
+  shop.markConnected(c, "amazon");
+  const { out, sent } = await claim(h, num, s);
+  const me = conv(num);
+  assert.equal(shop.isConnected(me, "amazon"), true, "moved with the claim");
+  assert.equal(shop.isConnected(c, "amazon"), false);
+  assert.equal(ob.amazonCanOffer(me), false, "per connection: connected there, not asked here");
+  assert.equal(out.onboarding, "complete");
+  assert.deepEqual(sent.map(m => m.text), [ob.WEB_HELLO("kofi"), ob.WEB_CARD, ob.TRY_LINE]);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM timers WHERE conversation_id = ? AND note = ?").get(me, amazon.followUpNote()).n, 0, "a store sign-in is for buying: no order read");
+});
+
 test("a plain claim moves nothing and starts no follow-up: no Amazon, no Uber on the stand-in", async () => {
   const h = harness();
   const num = newNumber();
@@ -450,7 +466,7 @@ test("a late claim (over an hour after the setup) takes the names but drops what
   assert.equal(existsSync(profilePath(c)), false);
 });
 
-test("a setup made on a listed staging site: host-only cookie, Google return to that site; Amazon still refused", async () => {
+test("a setup made on a listed staging site: host-only cookie, Google return to that site; the Amazon link needs no cookie at all", async () => {
   config.siteUrl = "https://heyreason.example";
   process.env.REASON_SETUP_ORIGINS = "https://start--site.netlify.example";
   try {
@@ -460,8 +476,9 @@ test("a setup made on a listed staging site: host-only cookie, Google return to 
     const id = JSON.parse(made.body).id;
     const cookie = cookieOf(made);
     assert.equal(ws.googleCallbackDone({ ok: true, conversationId: `websetup:${id}` }).headers.Location, "https://start--site.netlify.example/start/connect?back=email");
-    const a = await api("POST", `/api/${id}/connect/amazon`, { cookie });
-    assert.equal(a.status, 404, "no Amazon link for a setup on any site");
+    const amazonLink = async () => ({ ok: true, url: "https://heyreason.example/web/connect/tok" });
+    const a = await api("POST", `/api/${id}/connect/amazon`, { cookie, amazonLink });
+    assert.equal(a.json.url, "https://heyreason.example/web/connect/tok", "token-keyed on heyreason.com: never rewritten to the staging site, works from any browser");
     const evil = await ws.request({ method: "POST", path: "/api/new", headers: { origin: "https://start--evil.netlify.example", host: "files.heyreason.example" } });
     assert.equal(evil.status, 403, "an unlisted site is refused");
   } finally {
@@ -558,14 +575,9 @@ test("a started connect that nobody finished reads failed after two minutes, and
   assert.equal(ws.connectState(store.get(s.id), "uber").state, "connecting");
   clock.skip(ws.STALE_CONNECT_MS + 1000);
   assert.equal(ws.connectState(store.get(s.id), "uber").state, "failed");
-  // Amazon: an untapped link goes stale; a sign-in under way stays connecting for as long as it runs.
+  // Amazon: pending with no live Crossmint run behind it is failed (the run itself is covered in test/websetup-uber-card.test.js).
   store.setConnectState(s.id, "amazon", "pending");
-  const row = store.get(s.id);
-  const old = clock.now() - ws.STALE_CONNECT_MS - 1;
-  assert.equal(ws.connectState(row, "amazon", { remoteSession: () => ({ site: "amazon", started: false, createdAt: clock.now() }) }).state, "connecting");
-  assert.equal(ws.connectState(row, "amazon", { remoteSession: () => ({ site: "amazon", started: false, createdAt: old }) }).state, "failed");
-  assert.deepEqual(ws.connectState(row, "amazon", { remoteSession: () => ({ site: "amazon", started: true, createdAt: old }) }), { state: "connecting", step: 2, of: 3 });
-  assert.equal(ws.connectState(row, "amazon", { remoteSession: () => null }).state, "failed");
+  assert.equal(ws.connectState(store.get(s.id), "amazon").state, "failed");
 });
 
 test("a setup's first text that waits for the owner's yes is queued without its code", async () => {
