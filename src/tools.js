@@ -102,7 +102,7 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { imagenStatus, imagenProvider, openaiImageProvider } from "./imagen.js";
+import { imagenStatus, imageModelFor } from "./imagen.js";
 import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, verifyLink, UNDO_SAYS } from "./verify.js";
 import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
@@ -447,7 +447,11 @@ export const INVITE_TOOLS = new Set(["invites_list", "invite_link_create", "invi
  * dark launch, so nobody else's model is ever told invites exist.
  */
 export function invitesOpenFor(conversationId) {
-  return config.invitesOpen || accounts.ownerOf(conversationId).isOperator || db.invitesEnabledFor(conversationId);
+  if (accounts.ownerOf(conversationId).isOperator) return true;
+  // Under the paywall, only somebody free for good invites (owner, 2026-11-09: trial users get NO
+  // invites) — an invite is the promise "free for you, for good", which only their invite keeps.
+  try { if (plan.monthly() && plan.appliesTo(conversationId) && !plan.grandfathered(conversationId)) return false; } catch { /* fall through */ }
+  return config.invitesOpen || db.invitesEnabledFor(conversationId);
 }
 
 /**
@@ -558,14 +562,15 @@ function needsConfirmation(name, input, conversationId) {
  * amount a standing permission's limit is checked against, and `browser_submit` checks it a second
  * time against the total actually on the page, which is the number that would really be charged.
  */
-function amountForAction(name, input) {
+function amountForAction(name, input, c = null) {
   if (name === "browser_submit") return trust.largestAmount(input.what);
   // Read off the purchase row rather than out of the input, because the total of an AgentCard cart
   // is AgentCard's number and not the model's: the person was shown the cart this row holds, and
   // that is the figure a limit has to be checked against.
   if (name === "purchase_confirm") {
     const row = db.getAgentcardPurchase(input.conversation_id ?? "");
-    return row && row.cart_hash === input.cart_hash ? Number(row.amount_cents) || null : null;
+    // Only their own purchase: another person's cart is never the amount a permission of theirs is checked against.
+    return row && row.conversation_id === c && row.cart_hash === input.cart_hash ? Number(row.amount_cents) || null : null;
   }
   return null;
 }
@@ -2416,7 +2421,9 @@ export const CAPABILITIES = [
   { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
   // Rewritten by capabilitiesNow() from REASON_PAYWALL and this person's own plan row (src/plan.js):
   // absent while the switch is off or for somebody Reason is free for.
-  { name: "your_plan", status: "live", what: `Reason's own plan: ${plan.TRIAL_SESSIONS} free sessions, then ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)` },
+  { name: "your_plan", status: "live", what: plan.monthly()
+    ? `Reason's own plan: free each month for ${plan.FREE_CONVERSATIONS} conversations and ${plan.FREE_CALLS} calls (up to ${Math.round(plan.FREE_CALL_SECONDS / 60)} minutes each), unlimited for ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)`
+    : `Reason's own plan: ${plan.TRIAL_SESSIONS} free sessions, then ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)` },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "github", status: "not connected", what: "GitHub" },
   { name: "x", status: "not connected", what: "X (Twitter) — read mentions, timeline, search, bookmarks, and draft posts, replies, DMs for them to approve" },
@@ -2857,7 +2864,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     }
   }
 
-  // Image generation, from whether the Gemini key is set. Uses the same key as video; a separate
+  // Image generation, from whether the OpenAI key is set (OpenAI is the one picture model). A separate
   // capability row because "can Reason draw a picture" is a different question from "can it watch
   // a video", and both must be answered honestly from what is actually connected.
   const imgCap = out.find(c => c.name === "image_generation");
@@ -4713,7 +4720,7 @@ export const tools = [
   // ---------- Reason's own plan: the free trial and the $24.99/month subscription (src/plan.js) ----------
   {
     name: "subscription_show",
-    description: `Where this person stands with REASON'S OWN plan — the free trial (${plan.TRIAL_SESSIONS} sessions) and the ${plan.PRICE_LINE} subscription: sessions used and left, whether they are paying, the next bill date, or the date access ends after a cancellation. Call it when they ask about their trial, their plan, what Reason costs, when they are billed, or whether they are still paying. Never answer those from memory. This is about paying for Reason — NOT their own merchant subscriptions (Netflix, a gym): those are subscription_list and subscription_cancel_start.`,
+    description: `Where this person stands with REASON'S OWN plan — ${plan.monthly() ? `the free plan (${plan.FREE_CONVERSATIONS} conversations and ${plan.FREE_CALLS} calls a month, counts and the date they come back)` : `the free trial (${plan.TRIAL_SESSIONS} sessions)`} and the ${plan.PRICE_LINE} subscription: sessions used and left, whether they are paying, the next bill date, or the date access ends after a cancellation. Call it when they ask about their trial, their plan, what Reason costs, when they are billed, or whether they are still paying. Never answer those from memory. This is about paying for Reason — NOT their own merchant subscriptions (Netflix, a gym): those are subscription_list and subscription_cancel_start.`,
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -9067,7 +9074,7 @@ function confirmTargetFor(name, input, c = null) {
     // against is the same string, so a builder that changes its mind about what it wants to do
     // between the ask and the yes gets a MISMATCH and has to ask again.
     case "remote_approve": {
-      const job = db.getRemoteJobAnywhere(input.job_id);
+      const job = c ? db.getRemoteJob(c, input.job_id) : null;
       return job?.risky_action ? `remote:${job.risky_action}` : `remote:#${input.job_id}`;
     }
     /**
@@ -9459,6 +9466,13 @@ async function runToolInner(name, rawInput, ctx) {
     if (granted && google.missingScopeFor(name, granted)) return driveOrganiseScopeRefusal(DRIVE_ORGANISE_TOOLS.get(name));
   }
 
+  // The monthly free tier's 2 calls (src/plan.js): used up, call_place is refused here, before any yes
+  // is asked — asking "shall I call them?" and then refusing after the yes would be a broken promise.
+  if (name === "call_place") {
+    const freeCalls = await plan.callPlaceGate(c, { log: ctx.log ?? (() => {}) });
+    if (freeCalls) return freeCalls;
+  }
+
   let confirmationId = null;
   let spend = null;
   // The standing permission this action is going through on, when it is going through on one. Set
@@ -9488,7 +9502,7 @@ async function runToolInner(name, rawInput, ctx) {
       // without asking" covers any text to her, so those are checked against the person half alone.
       const forWhom = trust.PERSON_PINNED.has(name) ? (normalizeNumber(input.to) || String(input.to ?? "")) : (target ?? "");
       const standing = permissions.covering({
-        conversationId: c, action: name, target: forWhom, amountCents: amountForAction(name, input),
+        conversationId: c, action: name, target: forWhom, amountCents: amountForAction(name, input, c),
       });
       // A fee turns a cancellation back into something that needs asking about, whatever was
       // granted. Checked here rather than inside `covers`, because it is a fact about the service
@@ -11305,6 +11319,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // minute, so nothing else needed this: a turn is a fixed number of tokens, while a call runs
       // at a per-minute rate for as long as whoever picked up keeps talking. Both caps are counted
       // in the usage table, so a restart does not reset them, and 0 means uncapped.
+      // The monthly free tier's 2 calls are checked in runTool, before the confirm gate (callPlaceGate).
       const placedToday = accounts.withinCap(c, "call");
       if (!placedToday.ok) {
         return {
@@ -11326,7 +11341,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      const maxSeconds = (input.max_minutes ?? config.callMaxMinutes) * 60;
+      // On the free tier a call to them runs up to its 5 minutes (FREE_CALL_SECONDS), goodbye included.
+      // Only a call to them: an errand call to a business is not cut at 5 (review 2026-11-10).
+      const freeCallS = toOwner ? plan.callLimitSeconds(c) : null;
+      const maxSeconds = Math.min((input.max_minutes ?? config.callMaxMinutes) * 60, freeCallS || Infinity);
 
       // What the call opens with — and what it will not do, whatever it is asked — is not the
       // model's to write, and not the model's to forget. Recording somebody without telling them
@@ -11550,6 +11568,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");
+      try { plan.noteCall(c); } catch { /* the call is placed either way */ }
       return {
         ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
@@ -11798,11 +11817,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const send = input.send !== false;
       const styledPrompt = `${input.prompt}. Style: minimal editorial illustration, warm cream and soft charcoal palette with a single brick-red accent (${BRAND_PEN}). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no people. Muted, sophisticated color palette leaning warm beige and stone grey.`;
       const opts = { aspectRatio: input.aspect_ratio ?? "1:1", count: input.count ?? 1 };
-      const provider = ctx.imagenProvider ?? imagenProvider();
-      let out = await provider.generate(styledPrompt, opts);
-      if (!out.ok && config.openaiKey) {
-        out = await openaiImageProvider().generate(styledPrompt, opts);
-      }
+      // OpenAI is the one picture model (owner, 2026-11-09): no first try anywhere else.
+      const provider = ctx.imagenProvider ?? imageModelFor();
+      if (!provider) return { ok: false, ...imagenStatus() };
+      const out = await provider.generate(styledPrompt, opts);
       if (!out.ok) return out;
       // Asked for a picture: it goes into the thread as an attachment, and nothing comes back that
       // could be texted instead of it.
@@ -12557,7 +12575,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // whenever" is not read as covering somebody else's number.
       const tgt = String(scope.target ?? "").trim().slice(0, 200);
       const numeric = tgt && /^[+\d\s().-]+$/.test(tgt);
-      const who = numeric ? db.knownPersonByNumber(c, tgt)?.who : null;
+      // Only a name from their OWN records is shown; another person's Reason account is not on record for them.
+      const known = numeric ? db.knownPersonByNumber(c, tgt) : null;
+      const who = known && known.from !== "accounts" ? known.who : null;
       const capsAsk = input.caps ? `, and set their spending limits to $${input.caps.per_purchase} on one thing and $${input.caps.monthly} a month` : "";
       const grants = [
         `From now on, Reason may do this without asking first: ${String(scope.action).replace(/_/g, " ")}`,
@@ -12803,7 +12823,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const v = plan.view(c);
       return {
         ok: true, ...v,
-        note: v.status === "trial"
+        note: v.monthly && (v.status === "trial" || v.status === "lapsed")
+          ? `${me.name} is on the free plan: ${v.free_tier}. This month: ${v.conversations_used} of ${plan.FREE_CONVERSATIONS} conversations and ${v.calls_used} of ${plan.FREE_CALLS} calls used; it all comes back ${v.resets}. A conversation is a stretch of chat (a new one after 30 quiet minutes). Unlimited is ${v.price}; cancel any time by text. Say only what they asked; never "unlock" or "upgrade".`
+          : v.status === "trial"
           ? `${me.name} is on the free trial: ${v.sessions_used} of ${v.trial_sessions} sessions used, ${v.sessions_left} left. A session is a stretch of chat (a new one after 30 quiet minutes). After that it is ${v.price}; cancel any time by text. Say only what they asked; never "unlock" or "upgrade".`
           : v.status === "paid" ? `Paying ${v.price}. Next bill ${v.next_bill}. Cancel any time by text (subscription_cancel), and everything keeps working until the period ends.`
             : v.status === "cancelled" ? `Cancelled. Nothing more is charged; everything keeps working until ${v.access_until}, then holds. They can start again any time.`

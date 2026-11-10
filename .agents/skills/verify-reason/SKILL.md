@@ -490,12 +490,12 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
-**9 — The first-chat onboarding, end to end, on its own cage.** A brand-new number's five texts
-(`REASON_ONBOARDING=test` for that number only) through the real webhook, router and outbox onto
-`bin/fake-sendblue.mjs`; the reads and the one to-do turn on the subscription. Own run dir + port:
+**9 — The first-chat onboarding, end to end, on its own cage.** Two brand-new numbers (a hello, and a
+request first; `REASON_ONBOARDING=test` for those numbers only) through the real webhook, router and
+outbox onto `bin/fake-sendblue.mjs`; the reads and the one request's turn on the subscription. Own run dir + port:
 
 ```bash
-REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-drive.sh evidence/<UTC>-onboarding   # "all ok"
+REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-drive.sh evidence/<UTC>-onboarding   # "all ok" (13 checks)
 ```
 
 See [features/onboarding.md](features/onboarding.md).
@@ -545,6 +545,12 @@ copied to /tmp, recordings never copied off): `bin/call-hearing-levels.mjs` on c
 unchanged, 0 clipped. `bin/gptlive-drive.mjs --expect hearing` with real GPT-Live + claude-cli (test token, scratch
 config): the −51 dBFS clip went from wrong (off, 2/2) to right (on, 2/2), and `calls.turn_log` was written with level/boost.
 Not proven: a real phone call.
+
+### Baseline — the monthly free tier + sign-up ceiling (trial-rules, 2026-11-09, not merged)
+
+`npm run test:offline` in the worktree: 6,001 tests, 5,870 passing, 131 skipped, 0 failing. New
+`test/free-tier-monthly.test.js` (13). `bin/free-tier-drive.mjs` all ok; `bin/paywall-drive.mjs` all ok
+(flag unset = old trial unchanged). Live needs `REASON_FREE_TIER=monthly`; see [features/paywall.md](features/paywall.md).
 
 ### Baseline — #385 bubble-only contact photo LIVE + the paywall ON (2026-11-07)
 
@@ -959,7 +965,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. Background it under setsid like `caged.sh` (a bare `&` dies with the agent's command). |
 | `bin/cli-seal-probe.mjs [--unsealed]` | What a non-owner's CLI turn puts in front of the model, read off the wire: the real `claude` via `runClaudeCli`, `ANTHROPIC_BASE_URL` on a loopback stand-in (no model, no bill, no message). Must show 0 emails, no AGENTS.md, no repo path; `--unsealed` is the control. See [features/cli-sealed.md](features/cli-sealed.md). |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
-| `bin/onboarding-drive.sh [outdir] [before]` | The first-chat onboarding end to end: its own fake Sendblue + cage (claude-cli, one test number), five texts, `transcript.txt` with both sides and the gaps; `before` = flag off. Tears both down. |
+| `bin/onboarding-drive.sh [outdir] [before]` | The first-chat onboarding end to end: its own fake Sendblue + cage (claude-cli, two test numbers), seven texts, 13 checks, `transcript.txt` with both sides and the gaps; `before` = flag off. Tears both down. |
 | `bin/tagline.mjs [--out <dir>] \| --live <url>` | Tagline "Your personal concierge" on the home page + an invite page (body and og:description), old "lives in your texts" gone. In-process uses its own temp DB and a fake channel; `--live` is one read-only GET /. |
 
 ## Feature map
@@ -993,7 +999,7 @@ Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start 
 
 Research room (fair page share per planned query, big-question caps, one background follow-up per run, per-person daily cap): [features/research-room.md](features/research-room.md); `test/research-room.test.js`, `bin/research-room-drive.mjs`.
 
-First-chat onboarding (`REASON_ONBOARDING`; opener, name → card, work → ideas + closing line, the to-do list → the real turn; detours, one nudge, existing accounts exempt): [features/onboarding.md](features/onboarding.md); `test/onboarding.test.js`, `bin/onboarding-drive.sh`.
+First-chat onboarding (`REASON_ONBOARDING`; opener → name → what it means → "what do you want to call me?" → the card under that name → one thing to try, a call or an event; no "what do you do"; detours, one nudge, existing accounts exempt; event + invite joiners too): [features/onboarding.md](features/onboarding.md); `test/onboarding.test.js`, `bin/onboarding-drive.sh`.
 
 Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-time action, held action finished by the answer, travel asked once, `config.tz` = their clock inside their turn/page): [features/time-zone.md](features/time-zone.md); `test/time-zone.test.js`.
 

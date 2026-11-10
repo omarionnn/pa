@@ -67,11 +67,7 @@ export async function generateIllustration(page) {
   const provider = imageModelFor();
   if (!provider) return null;
   const prompt = illustrationPrompt(page);
-  let out = await provider.generate(prompt, { aspectRatio: "16:9", count: 1 });
-  if (!out.ok && config.openaiKey) {
-    const { openaiImageProvider } = await import("../imagen.js");
-    out = await openaiImageProvider().generate(prompt, { aspectRatio: "16:9", count: 1 });
-  }
+  const out = await provider.generate(prompt, { aspectRatio: "16:9", count: 1 });
   if (!out.ok || !out.images?.length) return null;
   const src = out.images[0].path;
   const dest = illustrationPath(page.id);
