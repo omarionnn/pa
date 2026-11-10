@@ -80,6 +80,13 @@ export const STORES = {
   homedepot: { name: "Home Depot", url: "https://www.homedepot.com/" },
   sephora: { name: "Sephora", url: "https://www.sephora.com/" },
   ulta: { name: "Ulta", url: "https://www.ulta.com/" },
+  // Food delivery (src/food.js): an order needs the account's saved addresses, so never a guest.
+  // Only with REASON_FOOD on (read at start, like every flag here): off, these sites are as before.
+  ...(/^(owner|on|1|true|yes)$/i.test(String(process.env.REASON_FOOD ?? "").trim()) ? {
+    doordash: { name: "DoorDash", url: "https://www.doordash.com/", signIn: "required" },
+    ubereats: { name: "Uber Eats", url: "https://www.ubereats.com/", signIn: "required" },
+    grubhub: { name: "Grubhub", url: "https://www.grubhub.com/", signIn: "required" },
+  } : {}),
   nike: { name: "Nike", url: "https://www.nike.com/" },
   apple: { name: "Apple", url: "https://www.apple.com/" },
 };
@@ -958,7 +965,7 @@ export function paymentAsk(row, { allIn = false } = {}) {
 }
 /** What a yes is pinned to (src/tools.js confirmTargetFor): the row, its run and request, and the amount. */
 export function payTarget(row) {
-  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]` : "";
+  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]${foodMod?.payTargetTail(row) ?? ""}` : "";
 }
 /** A payment request from Crossmint: kept as given, once per request id. */
 export function recordPayment({ conversationId, runId, request, item = "" }) {
@@ -1296,7 +1303,20 @@ export async function settleUnknownPayments({ conversationId = null, sinceMs = 7
 /** When this purchase's approval half hour ends: from the first time they were asked, across a store asked again. */
 export function askDeadline(row) {
   const run = row?.run_id ? runRow(row.run_id) : null;
-  return (run?.ask_since ?? row?.created_at ?? clock.now()) + passkey.APPROVAL_TTL_MS;
+  return (run?.ask_since ?? row?.created_at ?? clock.now()) + holdMsFor(row?.run_id, row?.conversation_id);
+}
+/** How long an ask is held: shopping's half hour, a food order's 15 minutes (src/food.js HOLD_MS). */
+const isFoodHold = (runId, conversationId) => !!(foodMod?.foodOn(conversationId) && foodMod.isFoodRun(runId));
+const holdMsFor = (runId, conversationId) => (isFoodHold(runId, conversationId) ? Math.min(foodMod.HOLD_MS, passkey.APPROVAL_TTL_MS) : passkey.APPROVAL_TTL_MS);
+/**
+ * Let a checkout go without a word (src/food.js: a food cart changed, or its hold ran out): its payment
+ * declined, the run cancelled at Crossmint, and its end marked told so no end text follows.
+ */
+export async function letGo(runId, why) {
+  const run = runRow(runId);
+  if (!run || TERMINAL.has(run.status)) return false;
+  await endQuietly(run, why);
+  return true;
 }
 /** The Face ID link for an asked payment (thirty minutes from the first ask, one use; src/passkey.js). */
 export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row, { until: askDeadline(row) })}`;
@@ -1502,7 +1522,9 @@ export const cardLinkUrl = (conversationId) => `${linkBase()}/${cardLink(convers
  * serve.js hands over how to text a person (`say`) and how to wake the model with an event turn
  * (`wake(conversationId, text, { key })`). Nothing is texted or woken before this.
  */
-export function attach({ say, wake, base, log } = {}) { sayFn = say ?? null; wakeFn = wake ?? null; logFn = log ?? (() => {}); passkey.attach({ say }); if (base) linkBase = () => base; }
+export function attach({ say, wake, base, log, picture } = {}) { pictureFn = picture ?? null; sayFn = say ?? null; wakeFn = wake ?? null; logFn = log ?? (() => {}); passkey.attach({ say }); if (base) linkBase = () => base; }
+/** How a picture is sent (a food order's approval card); none until attached. */
+let pictureFn = null;
 /** serve.js's structured log line; silent until attached. Codes and statuses only, never a value. */
 let logFn = () => {};
 // A web setup's stand-in has no thread: nothing is ever texted to it.
@@ -1588,6 +1610,34 @@ export function paymentText(run, row, it) {
   const where = row.merchant_name || storeName(run.store) || "The store";
   return `${where}'s total${row.item ? ` for ${row.item}` : ""}: ${parts}; ${amountText(row)} all in.\n${ask}`;
 }
+
+/**
+ * The ask goes out: shopping's text, or for a food order (src/food.js, REASON_FOOD) its card picture
+ * first and then its one line, the Face ID link kept where they have one. A card that cannot be drawn
+ * never holds the ask back: the line goes alone.
+ */
+async function sayPayment(run, row, it, say) {
+  const food = foodFor(run);
+  if (food) {
+    const tail = passkey.requiredFor(run.conversation_id) ? ` Approve it with Face ID here:\n${approvalUrl(row)}` : "";
+    const a = await food.approval({ run, row, card: cardOf(run.conversation_id), passkeyTail: tail }).catch(() => null);
+    if (a) {
+      if (a.file && pictureFn) { try { await pictureFn(run.conversation_id, a.file); } catch { /* the line still goes */ } }
+      await say(a.text);
+      await food.setStatus(a.order, "needs");
+      return;
+    }
+  }
+  await say(paymentText(run, row, it));
+}
+/** The food module, when this run is a food order's and food is on for them; else null. */
+function foodFor(run) {
+  if (!foodMod || !run || !foodMod.foodOn(run.conversation_id) || !foodMod.isFoodRun(run.run_id)) return null;
+  return foodMod;
+}
+let foodMod = null;
+/** Resolves once the food module is loaded (a cycle-free late import: food.js reads this module at call time). */
+export const foodReady = import("./food.js").then((m) => { foodMod = m; }).catch(() => { foodMod = null; });
 
 /** "12:25 PM" in their zone: when the store stops holding the cart, said as a clock time, never as a countdown. */
 function clockTime(ms, conversationId) {
@@ -1816,6 +1866,15 @@ export async function moveOn(run, reason, say, { stopAnswer = null, rq = null } 
   const store = storeOf(run);
   // The refusal form is answered with its way out first, so the store's side ends cleanly.
   if (stopAnswer && rq) { try { await postAnswer(run, rq, { [stopAnswer.key]: stopAnswer.value }); } catch { /* cancelled below either way */ } }
+  // A food order never moves to another restaurant by itself (never a silent substitute): the
+  // checkout ends, it is said, and the model is woken to bring one fix (src/food.js ended).
+  const food = foodFor(run);
+  if (food) {
+    await endQuietly(run, reason);
+    await say(`${store} ${reason}. Nothing charged.`);
+    await food.ended(runRow(run.run_id), "failed").catch(() => null);
+    return { moved: null };
+  }
   const alt = alternativeFor(run);
   const ask = q("SELECT * FROM shop_run_asks WHERE run_id = ?").get(run.run_id);
   let again = null;
@@ -1965,7 +2024,7 @@ export async function step(runId) {
       } else if (row && it.method === "card") {
         setStage(runId, "needs_approval");
         q("UPDATE shop_runs SET ask_since = COALESCE(ask_since, ?) WHERE run_id = ?").run(now, runId);
-        await say(paymentText(runRow(runId), row, it));
+        await sayPayment(runRow(runId), row, it, say);
       } else {
         // A payment Reason cannot approve from here (not a card, or no readable amount): never the
         // model's to answer. Said once; the request expires on its own and the end is texted.
@@ -2052,7 +2111,7 @@ export async function step(runId) {
       }
       setStage(runId, "failed");
       const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: true });
-      if (again.ok) { tellOnce(runId, "end"); q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`sign-in wall; started again signed in as ${again.runId}`, runId); follow(again.runId); }
+      if (again.ok) { tellOnce(runId, "end"); q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`sign-in wall; started again signed in as ${again.runId}`, runId); foodMod?.relinkRun(runId, again.runId); follow(again.runId); }
       else if (tellOnce(runId, "end")) await say(`${storeName(run.store) || "The store"} wants an account to check out, and I couldn't start the signed-in checkout. Nothing was charged.`);
       return { done: true, status, said, retried: again.ok ? again.runId : null };
     }
@@ -2070,7 +2129,9 @@ export async function step(runId) {
       if (!runRow(runId).mail_until) { q("UPDATE shop_runs SET mail_until = ? WHERE run_id = ?").run(now + MAIL_WATCH_MS, runId); watchMail(runId); }
       // An order placed is a finished errand (src/stamps.js: the "orders" seal). Told after the write; never costs the text.
       try { db.completionBus.emit("order", { conversationId: run.conversation_id, runId, store: storeOf(run) }); } catch { /* a listener's failure is its own */ }
-      if (tellOnce(runId, "end")) await say(placedText(run, result));
+      const food = foodFor(run);
+      const foodPlaced = food ? await food.placed(run).catch(() => null) : null;
+      if (tellOnce(runId, "end")) await say(foodPlaced ?? placedText(run, result));
     } else {
       setStage(runId, status === "cancelled" ? "cancelled" : "failed");
       // Walled off or blocked, nothing paid: the next store they were shown, by code, rather than
@@ -2087,6 +2148,7 @@ export async function step(runId) {
       const after = [];
       // The deferred mail wake runs even if the text failed to send: the message is already recorded as seen.
       if (tellOnce(runId, "end")) { try { await say(await endText({ ...runRow(runId), stage: before }, status, result, paid, after)); } finally { for (const f of after) await f(); } }
+      { const food = foodFor(run); if (food && !paid) await food.ended(runRow(runId), status).catch(() => null); }
     }
     return { done: true, status, said };
   }
@@ -2105,7 +2167,9 @@ const holdExpired = (result) => { const code = String(result?.code ?? "").toLowe
 async function renewHold(run, ask, result, say) {
   if (!run || !holdExpired(result)) return null;
   const since = run.ask_since ?? run.created_at;
-  if ((run.renewals ?? 0) >= RENEW_MAX || clock.now() >= since + passkey.APPROVAL_TTL_MS - REMIND_BEFORE_MS) return null;
+  // A food order's 15 minutes run to the end (Crossmint holds a payment about ten): asked again up to the last minute.
+  const food = isFoodHold(run.run_id, run.conversation_id);
+  if ((run.renewals ?? 0) >= (food ? RENEW_MAX + 1 : RENEW_MAX) || clock.now() >= since + holdMsFor(run.run_id, run.conversation_id) - (food ? 60_000 : REMIND_BEFORE_MS)) return null;
   // Declined, or Face ID already tapped and the payment still in flight: never a second ask for the same thing.
   if (q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND status IN ('declined', 'paying') LIMIT 1").get(run.run_id)) return null;
   const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
@@ -2115,6 +2179,7 @@ async function renewHold(run, ask, result, say) {
   const carried = [...toldOf(runRow(again.runId)), "renewed", ...(toldOf(run).has("reminded") ? ["reminded"] : [])];
   q("UPDATE shop_runs SET ask_since = ?, renewals = ?, told = ? WHERE run_id = ?").run(since, (run.renewals ?? 0) + 1, [...new Set(carried)].join(","), again.runId);
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`renewed: store hold ran out; asked again as ${again.runId}`, run.run_id);
+  foodMod?.relinkRun(run.run_id, again.runId);
   // The link they hold for the old payment can't pay it any more: closed, so its page says a newer one is coming.
   for (const p of q("SELECT id FROM shop_payments WHERE run_id = ?").all(run.run_id)) {
     const a = passkey.openApprovalFor(p.id);
@@ -2130,6 +2195,8 @@ async function renewHold(run, ask, result, say) {
  */
 async function remindApproval(run, say) {
   if (!run || run.stage !== "needs_approval" || toldOf(run).has("reminded")) return {};
+  // A food order's card is the one ask (src/food.js): its 15 minutes end with one line, not a reminder.
+  if (isFoodHold(run.run_id, run.conversation_id)) return {};
   const pay = payOf(run);
   if (!pay || pay.status !== "asked") return {};
   const ends = askDeadline(pay);
@@ -2232,6 +2299,7 @@ async function correctAndRestart(run, rq, answers) {
   const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
   if (!again.ok) return { ok: false, error: "restart_failed", status: again.status, say: "The record is corrected, but the store would not start the checkout again. Nothing was charged." };
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`corrected address; started again as ${again.runId}`, run.run_id);
+  foodMod?.relinkRun(run.run_id, again.runId, { address: shipping.shortAddress(row) });
   follow(again.runId);
   return { ok: true, run_id: again.runId, corrected: Object.keys(given), superseded: run.run_id,
     say: `Fixed on the record (now ${shipping.shortAddress(row) || "as they said"}); I started ${storeOf(run)}'s checkout over with it. Say that in one line; nothing is charged until they approve the total.` };

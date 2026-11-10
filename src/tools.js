@@ -70,6 +70,7 @@ import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
+import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool } from "./food.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
@@ -392,6 +393,7 @@ export function toolsFor(conversationId) {
     && choiceToolVisible(t.name, conversationId)
     && shopToolVisible(t.name, conversationId)
     && socialToolVisible(t.name, conversationId)
+    && foodToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
@@ -4442,6 +4444,7 @@ export const tools = [
   ...DIRECTIONS_TOOL_DEFS,
   ...CHOICE_TOOL_DEFS,
   ...SHOP_TOOL_DEFS,
+  ...FOOD_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
   {
     name: "capabilities",
@@ -6995,6 +6998,7 @@ const S = {
   ...DIRECTIONS_SCHEMAS,
   ...CHOICE_SCHEMAS,
   ...SHOP_SCHEMAS,
+  ...FOOD_SCHEMAS,
   ...TODO_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
@@ -12009,6 +12013,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (name === "shop_pay" && out?.unknown_outcome) trust.noteUnknownOutcome({ conversationId: c, action: "shop_pay", target: confirmTargetFor("shop_pay", input, c), why: `Crossmint ${out.status ?? "no answer"} after the order intent` });
       return out;
     }
+
+    // ---------- food orders (src/food.js, REASON_FOOD) ----------
+    case "food_order":
+      return await runFoodTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };

@@ -101,11 +101,25 @@ startOps({ runtime, router, log });
   if (shop.connectMode() !== "off") {
     shop.attach({
       say: (c, text) => runtime.say(c, text),
+      // A food order's approval card (src/food.js): one picture, before its one line.
+      picture: (c, file) => deliver({ conversationId: c, text: "", media: { file, mimeType: "image/jpeg", filename: "order.jpg" } }),
       // A plain question from the store, or the confirmation email: an event turn, keyed so a restart
       // cannot raise the same one twice.
       wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
       log,
     });
+    // Food orders (src/food.js, REASON_FOOD): status tapbacks on their request, the hold, the late check.
+    const food = await import("./food.js");
+    if (food.foodMode() !== "off") {
+      food.attach({
+        say: (c, text) => runtime.say(c, text),
+        picture: (c, file) => deliver({ conversationId: c, text: "", media: { file, mimeType: "image/jpeg", filename: "order.jpg" } }),
+        wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
+        channels: () => router,
+        log,
+      });
+    }
+    await shop.foodReady;
     const resumed = shop.resumeFollowing();
     if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });
   }
