@@ -1131,7 +1131,7 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
  * the warning that matters most here — a forwarded connect link attaches the opener's account to
  * the sender's Reason.
  */
-export function renderConnectGate({ provider = "your account", error = "", sent = false, canSend = true } = {}) {
+export function renderConnectGate({ provider = "your account", error = "", sent = false, canSend = true, head = "" } = {}) {
   const offer = canSend && !sent;
   const words = sent
     ? `<p>Reason texted you a six-digit code in the thread that asked for this link. Type it here to go on to ${esc(provider)}.</p>`
@@ -1148,7 +1148,7 @@ export function renderConnectGate({ provider = "your account", error = "", sent 
     + (error ? `<div class="bad">${esc(error)}</div>` : "")
     + `</form>`
     + `<p class="meta">If someone else sent you this link, close the tab. Finishing it would connect your ${esc(provider)} account to their Reason.</p></div>`;
-  return shell({ title: `Connect ${provider}`, body, pill: "Private" });
+  return shell({ title: `Connect ${provider}`, body, pill: "Private", head: head ? `\n${head}` : "" });
 }
 
 /**

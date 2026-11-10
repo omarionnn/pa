@@ -148,6 +148,11 @@ test("the page draws the password as Crossmint's sealed slot, never an input of 
   assert.ok(!/name="password"/.test(out.body), "no form input of ours carries the password");
   assert.match(out.body, /Sign in to Target\./);
   assert.match(out.headers["Content-Security-Policy"], /frame-src https:\/\/www\.crossmint\.com/);
+  // The phone's preview of the texted link: the kind of link, never the store.
+  const head = out.body.slice(0, out.body.indexOf("<title>"));
+  assert.match(head, /<meta property="og:title" content="Connect your store account">/);
+  assert.match(head, /\/web\/og\/secured\/store\.png\?v=\d+/);
+  assert.doesNotMatch(head, /Target|og:url/);
 });
 
 // ---------------------------------------------------------------- 2. per person, per store

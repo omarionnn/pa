@@ -92,6 +92,7 @@ import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard, shootWithChromium } from "./pages/card.js";
 import { madeKind, renderMadePage, callAudio, notYoursFor, archivedFor, privateHead, privateOgPng, PRIVATE_OG_VERSION } from "./pages/madedata.js";
 import { previewRequest } from "./pages/preview.js";
+import { securedImageRequest } from "./pages/securedcard.js";
 import { mimeForKind } from "./documents/store.js";
 import { isContactPath, contactPathParts, vcard, lineNumber, liveLineNumber, cardName } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
@@ -188,7 +189,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // The icon, the site's picture and Reason's contact card. Same for everybody, nothing of
       // anybody's in them, fetched by phones and by Sendblue rather than by people.
       if (req.method === "GET" || req.method === "HEAD") {
-        const asset = assetRequest({ pathname: url.pathname, router });
+        const asset = assetRequest({ pathname: url.pathname, router }) ?? securedImageRequest(url.pathname);
         if (asset) {
           res.writeHead(asset.status, asset.headers);
           return res.end(req.method === "HEAD" ? "" : asset.body);

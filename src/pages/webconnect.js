@@ -20,6 +20,7 @@
 import { readFileSync } from "node:fs";
 import { esc } from "./render.js";
 import { webPage } from "./webkit.js";
+import { withSecuredCard } from "./securedcard.js";
 import { PAPER_CSS, header, frame, headline, lede, label, para, note, sealed, field, slot, go, two, actions, paper, steps, codeInput, live, CODE_JS, STEP_JS, LIVE_JS } from "./paperkit.js";
 import { SECURITY_HEADERS } from "./websignin.js";
 import * as shop from "../shopconnect.js";
@@ -383,7 +384,10 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
   }
   const [token, verb = ""] = String(sub).split("/");
   const link = shop.linkFor(token);
-  if (!link || !shop.connectAllowedFor(link.conversation_id)) return send(renderEnded({ view: { state: "expired" } }));
+  // Every page a texted link opens carries the "Secured by Reason" card (src/pages/securedcard.js):
+  // the phone's preview fetcher reads this page with no cookie. The kind of link, never the store.
+  const secured = (drawn, kind) => ({ ...drawn, html: withSecuredCard(drawn.html, kind) });
+  if (!link || !shop.connectAllowedFor(link.conversation_id)) return send(secured(renderEnded({ view: { state: "expired" } }), "connect"));
   const view = shop.linkView(link);
   // The open page's poll: the state, and while the store is checking, how long for (so a page frozen in
   // the background says the right thing the moment it is back) and how far the checkout has got.
@@ -407,7 +411,7 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
     } : null;
   const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
   // Has a passkey, so every payment is approved with Face ID: the copy says so instead of "text yes".
-  const drawn = renderView(view, { card, faceId, passkey: passkey.requiredFor(link.conversation_id) });
+  const drawn = secured(renderView(view, { card, faceId, passkey: passkey.requiredFor(link.conversation_id) }), link.kind === "card" ? "card" : "store");
   return send(boot ? { ...drawn, html: withBoot(drawn.html, boot) } : drawn);
 }
 /** The screen is drawn once; a live page's boot data and script ride in their own tag at the end. */

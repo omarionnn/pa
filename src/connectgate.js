@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import * as db from "./db.js";
 import { readCookie, readCookies, cookieHeader, trySubmittedCode, issueCode, codeHost, boundTo, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT, MAX_FAILED_ATTEMPTS, CODE_TTL_MS } from "./pages/access.js";
 import { renderConnectGate, renderConnected } from "./pages/render.js";
+import { securedCardTags, providerKind } from "./pages/securedcard.js";
 
 export const START_PATH = "/connect/start";
 
@@ -114,12 +115,12 @@ export async function connectStartRequest({ state, method, headers, readBody, ru
   if (!row || !row.authorize_url || !NAMES[row.provider]) {
     return {
       status: 400, headers: HTML,
-      body: renderConnected({ ok: false, title: "Link expired", lines: ["This link has already been used, or a newer one replaced it. Ask Reason for a new one."] }),
+      body: renderConnected({ ok: false, title: "Link expired", lines: ["This link has already been used, or a newer one replaced it. Ask Reason for a new one."], head: `\n${securedCardTags("connect")}` }),
     };
   }
   const provider = nameOf(row.provider);
   const onward = (extra = {}) => ({ status: 302, headers: { ...HTML, Location: row.authorize_url, ...extra }, body: "" });
-  const gate = ({ status = 401, sent = false, error = "" } = {}) => ({ status, headers: HTML, body: renderConnectGate({ provider, sent, error }) });
+  const gate = ({ status = 401, sent = false, error = "" } = {}) => ({ status, headers: HTML, body: renderConnectGate({ provider, sent, error, head: securedCardTags(providerKind(row.provider)) }) });
 
   // The asker's own browser: straight on, nothing to type.
   if (browserConversation(headers) === row.conversation_id) return onward();
