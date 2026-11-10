@@ -156,7 +156,7 @@ function applyCuts(conv, cuts) {
     const copies = c.role === "user" ? [["inbound_messages", "text", "received_at", ""], ["inbound_parts", "text", "at", ""]] : [["outbox", "body", "created_at", " AND state = 'sent'"]];
     for (const [t, col, time, extra] of copies) for (const r of near(t, col, time, extra)) {
       const next = cutOut(r.t, c.spans);
-      db.db.prepare(`UPDATE ${t} SET ${col} = ? WHERE rowid = ?`).run(anythingLeft(next) ? next : "", r.rid);
+      db.db.prepare(`UPDATE ${t} SET ${col} = ? WHERE rowid = ?`).run(db.restcrypt.sealCell(t, col, conv, anythingLeft(next) ? next : ""), r.rid);
     }
   }
   // The thread Reason reads. A turn left with nothing keeps a marker, because the thread's turns must stay in shape.
@@ -201,7 +201,7 @@ function outOfReplies(conv, words) {
   const redact = (text) => String(text).replace(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[deleted at their request]");
   for (const [table, column] of [["event_log", "content"], ["messages", "text"]]) {
     const update = db.db.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`);
-    for (const r of ALL(`SELECT id, ${column} AS t FROM ${table} WHERE conversation_id = ? AND role != 'user' AND instr(lower(${column}), lower(?)) > 0`, conv, needle)) update.run(redact(r.t), r.id);
+    for (const r of ALL(`SELECT id, ${column} AS t FROM ${table} WHERE conversation_id = ? AND role != 'user' AND instr(lower(pt(${column})), lower(?)) > 0`, conv, needle)) update.run(db.restcrypt.sealCell(table, column, conv, redact(r.t)), r.id);
   }
 }
 
@@ -223,7 +223,7 @@ export async function forgetForever(conv, key, { log = () => {} } = {}) {
     if (id) sources = [id];
   } else {
     const said = String(ONE("SELECT said FROM whys WHERE id = ? AND conversation_id = ?", row.id, conv)?.said ?? "").trim();
-    if (said.length > 3) sources = ALL("SELECT id FROM event_log WHERE conversation_id = ? AND role = 'user' AND instr(content, ?) > 0", conv, said).map(r => r.id);
+    if (said.length > 3) sources = ALL("SELECT id FROM event_log WHERE conversation_id = ? AND role = 'user' AND instr(pt(content), ?) > 0", conv, said).map(r => r.id);
   }
   // Worked out first: if it can't be, nothing has changed and the person is told to try again.
   const cuts = await plannedCuts(conv, sources, wordings, log);

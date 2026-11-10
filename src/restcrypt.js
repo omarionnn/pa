@@ -209,6 +209,12 @@ function keyIdFor(conversationId, create) {
   return id;
 }
 
+const SEALED_CELLS = new Set(SENSITIVE.flatMap(s => s.cols.map(c => `${s.table}.${c}`)));
+/** For code that writes a table/column chosen at run time: seals only if that column is a sealed one. */
+export function sealCell(table, col, conversationId, plain) {
+  return SEALED_CELLS.has(`${table}.${col}`) ? sealFor(conversationId, plain) : plain;
+}
+
 /** Seal text for its owner. With the flag off it returns the text unchanged. */
 export function sealFor(conversationId, plain) {
   if (!flagOn() || passThrough(plain) || isSealed(plain)) return plain;

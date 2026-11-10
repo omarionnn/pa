@@ -2975,7 +2975,8 @@ export function forgetFromRecall(conversationId, names = []) {
   const mark = db.prepare("INSERT OR IGNORE INTO recall_forgotten (conversation_id, source_table, row_id, at) VALUES (?, ?, ?, ?)");
   const at = clock.now();
   const sweep = (table, cols, where = "") => {
-    const like = needles.map(n => `(${cols.map(c => `LOWER(COALESCE(${c}, '')) LIKE ?`).join(" OR ")})`).join(" OR ");
+    // pt(): sealed text (src/restcrypt.js) is opened before it is matched; plain text passes through.
+    const like = needles.map(n => `(${cols.map(c => `LOWER(COALESCE(pt(${c}), '')) LIKE ?`).join(" OR ")})`).join(" OR ");
     const args = needles.flatMap(n => cols.map(() => `%${n[0]}%`));
     const hits = db.prepare(`SELECT id, ${cols.map(c => `COALESCE(${c}, '') AS "${c}"`).join(", ")} FROM ${table} WHERE conversation_id = ? ${where} AND (${like})`)
       .all(conversationId, ...args)
@@ -13129,7 +13130,7 @@ export function scrubConversationText(conversationId, since, fn) {
     for (const row of db.prepare(`SELECT rowid AS rid, ${col} AS t FROM ${table} WHERE conversation_id = ? AND ${at} >= ?${extra}`).all(conversationId, since)) {
       if (typeof row.t !== "string") continue;
       const next = fn(row.t);
-      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`).run(next, row.rid); changed++; }
+      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`).run(restcrypt.sealCell(table, col, conversationId, next), row.rid); changed++; }
     }
   }
   const walk = (v) => typeof v === "string" ? fn(v) : Array.isArray(v) ? v.map(walk) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : v;
