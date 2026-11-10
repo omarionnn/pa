@@ -340,10 +340,10 @@ export const config = {
   // When true, anyone who texts the number gets their own Reason instantly — no master approval.
   // For when every number that has the line was given it by the owner personally.
   autoAdmit: process.env.REASON_AUTO_ADMIT === "1",
-  // Auto-admit's ceiling (owner, 2026-11-09): at most this many people who came in on their own (not by
+  // Auto-admit's ceiling (owner, 2026-11-09; 30 → 25 on 2026-11-10): at most this many people who came in on their own (not by
   // invite or event) get an account in any rolling hour. Past it a new number gets one text pointing at
   // the access list (`accessListUrl`) and joins the approval queue (src/access.js). 0 = no ceiling.
-  signupsPerHour: Number(process.env.REASON_SIGNUPS_PER_HOUR ?? 30),
+  signupsPerHour: Number(process.env.REASON_SIGNUPS_PER_HOUR ?? 25),
   accessListUrl: /^https?:\/\/[^\s"'<>]+$/.test(process.env.REASON_ACCESS_LIST_URL || "") ? process.env.REASON_ACCESS_LIST_URL : "https://heyreason.com/access",
   // The first-chat onboarding (src/onboarding.js): on | test | off, ON by default since 2026-11-06
   // (name → what Reason is → what to save it as → the card under that name). Only a person whose
