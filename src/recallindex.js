@@ -20,7 +20,7 @@
 // row that came from another's.
 import { config, clock } from "./config.js";
 import { db } from "./db.js";
-import { embed, float32ToBlob, blobToFloat32, cosine } from "./embedding.js";
+import { embed, vectorCell, blobToFloat32, cosine } from "./embedding.js";
 
 export const SOURCES = ["action_ledger", "calls", "timers", "event_log"];
 const MODEL = "text-embedding-3-small";
@@ -193,7 +193,7 @@ export async function indexPending({ conversationId = null, limit = 200, embedFn
           VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(fact_id, source_table) DO NOTHING`);
         for (const [j, b] of batch.entries()) {
           if (!vectors[j]) continue;
-          put.run(b.c, b.id, b.table, float32ToBlob(vectors[j]), MODEL, now, b.from ?? null);
+          put.run(b.c, b.id, b.table, vectorCell(b.c, vectors[j]), MODEL, now, b.from ?? null);
           if (b.reindex != null) db.prepare("DELETE FROM recall_reindex WHERE conversation_id = ? AND span_from = ?").run(b.c, b.reindex);
           done++;
         }

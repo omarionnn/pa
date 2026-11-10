@@ -22,7 +22,7 @@
 // voice-websockets (pcmu 8k), voice-server-controls (playback control), live-conversations (greeting,
 // usage, close), voice-sip, live-partner-integrations (Twilio Media Streams).
 import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeSealed } from "../restfiles.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as plan from "../plan.js";
@@ -3494,7 +3494,8 @@ export class GptLiveCall {
       if (this.persona && !this.persona.recordingPath) recordingWhy = "a caller with no account and no row to keep it on";
       else if (this.tape.seconds() >= 1) {
         const path = this.persona ? this.persona.recordingPath : recordingFileFor(this.call.id, "wav");
-        writeFileSync(path, this.tape.wav(), { mode: 0o600 });
+        // Sealed for its owner (REASON_ENCRYPT_REST2): the account, or the stranger's own key.
+        writeSealed(path, this.persona ? `stranger:${this.persona.strangerId}` : this.call.conversation_id, this.tape.wav());
         recording = { path, format: "wav", seconds: Math.round(this.tape.seconds()) };
       } else recordingWhy = "the line carried less than a second of audio";
     } catch (e) {
@@ -4094,7 +4095,7 @@ function acceptStrangerStream({ stranger, socket, log, openLive, generate }) {
   return new GptLiveCall({
     call: { id, conversation_id: "", direction: "in", is_owner: 0 }, twilio: socket, openLive, log,
     // The intro says the call is recorded, so the audio is kept, on their stranger row.
-    persona: { instructions: strangerInstructions(), greeting: strangerCall.introLine(), recordingPath: stranger.kept ? strangerCalls.recordingPathFor(stranger.kept.id) : "" },
+    persona: { instructions: strangerInstructions(), greeting: strangerCall.introLine(), recordingPath: stranger.kept ? strangerCalls.recordingPathFor(stranger.kept.id) : "", strangerId: stranger.kept?.id ?? null },
     brain: async (messages) => {
       const r = await strangerCall.strangerReply({ messages, generate: gen, extra, log });
       return { text: r.text, tools: [], endCall: r.ends ? { message: "" } : null, skip: !r.text && !r.ends };

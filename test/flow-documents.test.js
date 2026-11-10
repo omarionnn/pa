@@ -26,6 +26,7 @@ const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { pdfText } = await import("../src/pdf.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const { clock } = await import("../src/config.js");
 const { skip, label } = await import("./live.js");
 
@@ -64,7 +65,7 @@ test(`asked for an answer as a pdf, Reason writes a real PDF and puts it in the 
 
   // A real file, written by the real renderer.
   assert.ok(statSync(doc.path).size > 1000, "a PDF of a guide is not a few hundred bytes");
-  const bytes = readFileSync(doc.path);
+  const bytes = readPlain(doc.path);
   assert.equal(bytes.toString("latin1", 0, 5), "%PDF-", "it starts like a PDF");
   assert.equal(statSync(doc.path).size, doc.bytes, "the row's size is the file's size");
 

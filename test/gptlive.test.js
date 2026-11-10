@@ -20,6 +20,7 @@ process.env.REASON_UNDO_SECONDS = "0";
 const gl = await import("../src/calls/gptlive.js");
 const ws = await import("../src/calls/wsserver.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const voice = await import("../src/calls/voice.js");
 const { config, clock } = await import("../src/config.js");
 const { settleCall } = await import("../src/tools.js");
@@ -401,7 +402,7 @@ test("end_call: the goodbye is said, the line ends, and the call settles with co
   assert.equal(l.costCents, 8, "96 s at 5¢ a minute");
   assert.match(l.transcript, /Them: That's all, bye\./);
   assert.ok(existsSync(l.recording.path));
-  assert.equal(readFileSync(l.recording.path).toString("latin1", 0, 4), "RIFF");
+  assert.equal(readPlain(l.recording.path).toString("latin1", 0, 4), "RIFF");
 });
 
 // ---- call 56 (2026-10-31): the voice's own goodbye, and words cut off at the end ----
@@ -1510,7 +1511,7 @@ test("inbound everyone: each caller gets their own place — user, operator, blo
   const stranger = ring("+14155550199", "CA_stranger");
   assert.match(stranger.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\/[0-9a-f]{32}"/);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, before, "no call row for a stranger");
-  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone = ?").get("+14155550199");
+  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone IN (SELECT value FROM json_each(?))").get(JSON.stringify(db.restcrypt.blindIndexes("phone", "+14155550199")));
   assert.equal(kept.external_id, "gptlive:CA_stranger");
   // Withheld: a stranger with nothing kept.
   assert.match(ring("anonymous").body, /<Stream/);
@@ -1587,7 +1588,7 @@ test("a stranger's stream: the pitch persona, answers from the no-tools pitch tu
   const ended = call.end("caller hung up");
   await timers.advance(3500);
   await ended;
-  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone = ?").get("+14155550188");
+  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone IN (SELECT value FROM json_each(?))").get(JSON.stringify(db.restcrypt.blindIndexes("phone", "+14155550188")));
   assert.match(kept.summary, /What is this/);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls WHERE to_number = ?").get("+14155550188").n, 0);
 });

@@ -30,6 +30,7 @@ import { playable } from "./webaudio.js";
 import { fitPhoto, FIT_BYTES } from "./webshrink.js";
 import { readCookie } from "./pages/access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount } from "./pages/websignin.js";
+import { readPlain } from "./restfiles.js";
 
 /** Uploads per conversation per ten minutes. */
 export const UPLOAD_LIMIT = 40;
@@ -205,7 +206,7 @@ export function bytesOut({ bytes, mime, name = "", headers = {}, method = "GET" 
 
 function serveUpload(m, opts) {
   if (!m || !existsSync(uploads.filePath(m))) return notFound();
-  return bytesOut({ bytes: readFileSync(uploads.filePath(m)), mime: m.mime, name: m.name, ...opts });
+  return bytesOut({ bytes: readPlain(uploads.filePath(m)), mime: m.mime, name: m.name, ...opts });
 }
 
 const AUDIO_MIME = { ".caf": "audio/x-caf", ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".aac": "audio/aac", ".amr": "audio/amr", ".webm": "audio/webm" };
@@ -263,13 +264,13 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
     if (!f || Number(index) !== 0) return notFound();
     // A voice note or call recording: something the browser plays (src/webaudio.js), from its own root only.
     if (f.audio) return bytesOut({ ...(await playable({ path: f.path, root: f.root, mime: f.mime })), name: a.filename || f.name, headers, method });
-    return bytesOut({ bytes: readFileSync(f.path), mime: f.mime, name: a.filename || f.name, headers, method });
+    return bytesOut({ bytes: readPlain(f.path), mime: f.mime, name: a.filename || f.name, headers, method });
   }
   if (!a?.url) return notFound();
   // A choice card Reason drew (src/choicecards.js): its own file on this machine, by name only.
   if (String(a.url).startsWith("card:")) {
     const file = cardFile(String(a.url).slice(5));
-    return file && existsSync(file) ? bytesOut({ bytes: readFileSync(file), mime: "image/jpeg", name: a.filename, headers, method }) : notFound();
+    return file && existsSync(file) ? bytesOut({ bytes: readPlain(file), mime: "image/jpeg", name: a.filename, headers, method }) : notFound();
   }
   const id = uploads.uploadIdOf(a.url);
   if (id) {
@@ -279,7 +280,7 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
   const got = await fetchRemote(a, { fetchImpl });
   if (!got) return notFound();
   // A voice note texted in is a .caf: Chrome plays none of them, so it goes out as .m4a.
-  if (String(got.mime).startsWith("audio/")) return bytesOut({ ...(await playable({ bytes: got.bytes, mime: got.mime })), name: a.filename, headers, method });
+  if (String(got.mime).startsWith("audio/")) return bytesOut({ ...(await playable({ bytes: got.bytes, mime: got.mime, owner: account.conversation_id })), name: a.filename, headers, method });
   return bytesOut({ ...got, name: a.filename, headers, method });
 }
 

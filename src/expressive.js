@@ -8,6 +8,7 @@
 // is a thing the model decides, in the system prompt; code's job is to make the decision possible
 // and to refuse it honestly when the line, the rail or the machine cannot carry it.
 import { existsSync } from "node:fs";
+import { withPlainPath, sealLike } from "./restfiles.js";
 import { execFile } from "node:child_process";
 import { join, delimiter, basename } from "node:path";
 
@@ -284,7 +285,9 @@ export async function voiceNoteFile({ file, tmpDir, run = null, exists = existsS
   }
   const out = join(tmpDir, `${basename(path).replace(/\.[^.]+$/, "")}${VOICE_EXT}`);
   const args = conv.kind === "afconvert" ? VOICE_AFCONVERT_ARGS(path, out) : VOICE_FFMPEG_ARGS(path, out);
-  const r = await (run ?? runConverter)(args, { bin: conv.bin });
+  // A sealed source (REASON_ENCRYPT_REST2) is converted from a temp plain copy; the result is sealed like it.
+  const r = await withPlainPath(path, (plain) => (run ?? runConverter)(args.map(a => a === path ? plain : a), { bin: conv.bin }));
+  if (r.ok) sealLike(path, out);
   if (!r.ok) return { ok: false, error: `converting that audio to ${VOICE_EXT} failed: ${r.error}` };
   if (!exists(out)) return { ok: false, error: `${conv.kind} reported success but there is no ${out}, so there is nothing to send.` };
   return { ok: true, file: out, converted: true };

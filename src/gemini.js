@@ -37,6 +37,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
 import { config } from "./config.js";
+import { readPlain } from "./restfiles.js";
 
 /** The audio types Gemini's docs list, by the extension yt-dlp hands back. */
 const AUDIO_MIME = {
@@ -183,7 +184,7 @@ export function geminiProvider({
         return { ok: false, error: `Gemini does not take ${extname(file) || "that"} audio. Their list is wav, mp3, aiff, aac, ogg, flac, mpeg, m4a, opus and webm.` };
       }
       let bytes, buf;
-      try { bytes = statSync(file).size; buf = readFileSync(file); } catch { return { ok: false, error: `The audio file ${file} is not there.` }; }
+      try { buf = readPlain(file); bytes = buf.length; } catch { return { ok: false, error: `The audio file ${file} is not there.` }; }
 
       try {
         return await withTimeout(async (signal) => {
@@ -247,7 +248,7 @@ export function geminiProvider({
         return { ok: false, error: `Gemini does not take ${extname(file) || "that"} video format.` };
       }
       let bytes, buf;
-      try { bytes = statSync(file).size; buf = readFileSync(file); } catch { return { ok: false, error: `The video file ${file} is not there.` }; }
+      try { buf = readPlain(file); bytes = buf.length; } catch { return { ok: false, error: `The video file ${file} is not there.` }; }
 
       try {
         return await withTimeout(async (signal) => {

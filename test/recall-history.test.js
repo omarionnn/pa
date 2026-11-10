@@ -390,7 +390,9 @@ test("saidNothing reads only Reason's side, and only its 'nothing on it' phrasin
 });
 
 function cos(vec, blob) {
-  const b = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+  // A vector sealed with REASON_ENCRYPT_REST2=on reads back as its base64; the bytes otherwise.
+  const buf = typeof blob === "string" ? Buffer.from(blob, "base64") : blob;
+  const b = new Float32Array(Uint8Array.prototype.slice.call(buf).buffer);
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < vec.length; i++) { dot += vec[i] * b[i]; na += vec[i] ** 2; nb += b[i] ** 2; }
   return dot / Math.sqrt(na * nb);

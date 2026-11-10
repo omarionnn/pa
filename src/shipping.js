@@ -36,6 +36,7 @@ db.db.exec(`
     updated_at INTEGER NOT NULL
   );
 `);
+db.restStrictRefresh();
 const q = (sql) => db.db.prepare(sql);
 
 export const FIELDS = ["first_name", "last_name", "address1", "address2", "city", "state", "zip", "phone", "email"];
@@ -199,11 +200,11 @@ export function learn(conversationId, fields, { source = "", onlyMissing = false
   const now = clock.now();
   if (!have) {
     q(`INSERT INTO shop_shipping (conversation_id, ${FIELDS.join(", ")}, source, created_at, updated_at) VALUES (?, ${FIELDS.map(() => "?").join(", ")}, ?, ?, ?)`)
-      .run(conversationId, ...FIELDS.map((f) => next[f] ?? ""), source, now, now);
+      .run(conversationId, ...FIELDS.map((f) => db.seal2(conversationId, next[f] ?? "")), source, now, now);
   } else {
     const sources = [...new Set(String(have.source ?? "").split(",").filter(Boolean).concat(source ? [source] : []))].join(",");
     q(`UPDATE shop_shipping SET ${Object.keys(next).map((f) => `${f} = ?`).join(", ")}, source = ?, updated_at = ? WHERE conversation_id = ?`)
-      .run(...Object.values(next), sources, now, conversationId);
+      .run(...Object.values(next).map((v) => db.seal2(conversationId, v)), sources, now, conversationId);
   }
   return profileRow(conversationId);
 }

@@ -9,7 +9,8 @@
 // Nothing here decides whether to record — every call is recorded, and there is no switch. This
 // module only files what arrived, and reports plainly when nothing did.
 import { createHash } from "node:crypto";
-import { mkdirSync, copyFileSync, statSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdirSync, statSync, existsSync, unlinkSync } from "node:fs";
+import { readPlain, writeSealed, copySealed, sealInPlace } from "../restfiles.js";
 import { basename, extname, resolve } from "node:path";
 import { config } from "../config.js";
 import { forgetPlayable } from "../webaudio.js";
@@ -133,7 +134,7 @@ function formatFrom(ref) {
  * @param {import("./provider.js").Recording} ref
  * @param {{fetchImpl?: Function, maxBytes?: number}} opts
  */
-export async function storeRecording(callId, ref, { fetchImpl = globalThis.fetch, maxBytes = 25 * 1024 * 1024 } = {}) {
+export async function storeRecording(callId, ref, { fetchImpl = globalThis.fetch, maxBytes = 25 * 1024 * 1024, owner = null } = {}) {
   if (!ref || (!ref.path && !ref.url)) return { ok: false, error: "the provider returned no audio" };
   const mb = (n) => Math.round(n / (1024 * 1024));
 
@@ -153,12 +154,14 @@ export async function storeRecording(callId, ref, { fetchImpl = globalThis.fetch
       const size = statSync(ref.path).size;
       if (size === 0) return { ok: false, error: "the provider's file is empty" };
       if (size > maxBytes) return { ok: false, error: `the recording is ${mb(size)}MB, over the ${mb(maxBytes)}MB limit` };
-      const audio = looksLikeAudio(readFileSync(ref.path), { seconds: ref.seconds });
+      const audio = looksLikeAudio(readPlain(ref.path), { seconds: ref.seconds });
       if (!audio.ok) return { ok: false, error: audio.error };
       format = audio.format;
       file = recordingFileFor(callId, format);
       // Same path in and out means the provider handed us a file we already own: leave it alone.
-      if (resolve(ref.path) !== file) copyFileSync(ref.path, file);
+      if (resolve(ref.path) !== file) copySealed(ref.path, file, owner);
+      else sealInPlace(file, owner); // REASON_ENCRYPT_REST2: sealed for its owner
+
     } else {
       let res = await fetchImpl(ref.url, { headers: ref.headers ?? {} });
       if (!res?.ok) return { ok: false, error: `the provider's recording URL answered HTTP ${res?.status ?? "nothing"}` };
@@ -188,13 +191,14 @@ export async function storeRecording(callId, ref, { fetchImpl = globalThis.fetch
       if (!audio.ok) return { ok: false, error: audio.error };
       format = audio.format;
       file = recordingFileFor(callId, format);
-      writeFileSync(file, bytes);
+      writeSealed(file, owner, bytes);
     }
   } catch (e) {
     return { ok: false, error: `the recording could not be saved: ${(e?.message ?? String(e)).split("\n")[0]}` };
   }
 
-  const bytes = statSync(file).size;
+  const plain = readPlain(file);
+  const bytes = plain.length;
   return {
     ok: true,
     file,
@@ -202,7 +206,7 @@ export async function storeRecording(callId, ref, { fetchImpl = globalThis.fetch
     mime: mimeFor(format),
     bytes,
     seconds: Number.isFinite(ref.seconds) ? Math.round(ref.seconds) : null,
-    sha256: createHash("sha256").update(readFileSync(file)).digest("hex"),
+    sha256: createHash("sha256").update(plain).digest("hex"),
   };
 }
 
@@ -223,7 +227,7 @@ export function deleteRecordingFile(file) {
 export function readRecording(file) {
   try {
     if (!file || !existsSync(file)) return null;
-    return readFileSync(file);
+    return readPlain(file);
   } catch {
     return null;
   }

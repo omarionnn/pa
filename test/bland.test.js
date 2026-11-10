@@ -45,6 +45,7 @@ const { announcementFor, callRulesFor } = await import("../src/calls/provider.js
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const { callWebhookRequest } = await import("../src/http.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const trust = await import("../src/trust.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -523,7 +524,7 @@ test("a webhook settles the call: state, cost, and the audio filed", async () =>
   assert.equal(after.recording_state, "stored");
   assert.match(after.recording_file, /call-\d+\.wav$/);
   // What is on disk is the audio, not the JSON that said where the audio was.
-  assert.equal(readFileSync(after.recording_file).toString("latin1", 0, 4), "RIFF");
+  assert.equal(readPlain(after.recording_file).toString("latin1", 0, 4), "RIFF");
   assert.equal(after.recording_bytes, wavOf(45).length);
 });
 
@@ -560,7 +561,7 @@ test("the recording endpoint answers with JSON naming the audio, and the audio i
   const after = db.getCall(C, row.id);
   assert.equal(after.recording_state, "stored");
   assert.equal(after.recording_seconds, 22);
-  const saved = readFileSync(after.recording_file);
+  const saved = readPlain(after.recording_file);
   assert.equal(saved.length, wavOf(22).length);
   assert.equal(saved.toString("latin1", 0, 4), "RIFF");
   assert.equal(saved.toString("latin1", 8, 12), "WAVE");

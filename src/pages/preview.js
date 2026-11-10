@@ -22,6 +22,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { checkAccess, readCookie } from "./access.js";
 import { renderNotFound } from "./render.js";
+import { readPlain, sealInPlace } from "../restfiles.js";
 
 const FFMPEG = existsSync(join(homedir(), ".local/bin/ffmpeg"))
   ? join(homedir(), ".local/bin/ffmpeg") : "ffmpeg";
@@ -167,6 +168,7 @@ export async function pagePreview(page, { shoot } = {}) {
       "-crf", "22", "-preset", "slow", "-tune", "stillimage", "-movflags", "+faststart", "-an",
       tmp,
     ], { stdio: "ignore", timeout: 20_000 });
+    sealInPlace(tmp, page.conversation_id); // the title and first words: sealed for them
     renameSync(tmp, file);
 
     return { file, fresh: true };
@@ -189,7 +191,7 @@ export async function previewRequest({ id, key = null, headers = {}, log = () =>
   try {
     const result = await pagePreview(page);
     if (!result) return { status: 404, headers: HTML(), body: renderNotFound() };
-    const bytes = readFileSync(result.file);
+    const bytes = readPlain(result.file);
     const total = bytes.length;
     const range = String(headers?.range ?? "");
     const m = /^bytes=(\d+)-(\d*)$/.exec(range);

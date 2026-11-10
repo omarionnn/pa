@@ -45,6 +45,7 @@ const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { runTool } = await import("../src/tools.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const google = await import("../src/google.js");
 const { config, clock } = await import("../src/config.js");
 const { skip, label } = await import("./live.js");
@@ -102,7 +103,7 @@ test(`"send me my latest resume as a pdf" ends as his own file, as a PDF, in the
   const doc = docs[0];
   assert.equal(doc.kind, "pdf", `it made a ${doc.kind}, not a pdf. it said: ${reply}`);
   assert.match(doc.filename, /\.pdf$/);
-  const bytes = readFileSync(doc.path);
+  const bytes = readPlain(doc.path);
   assert.equal(bytes.toString("latin1", 0, 5), "%PDF-", "it starts like a PDF");
   assert.equal(statSync(doc.path).size, doc.bytes, "the row's size is the file's size");
 

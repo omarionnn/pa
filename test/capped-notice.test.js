@@ -54,7 +54,7 @@ function harness() {
 
 const texts = (body, id) => ({ channel: "fake", externalId: id, from: KOFI, text: body, at: clock.now() });
 const cappedLines = (channel) => channel.sent.filter(m => m.to === KOFI && /done for today/.test(m.text ?? ""));
-const cappedRows = () => db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE address = ? AND body LIKE '%done for today%'").get(KOFI).n;
+const cappedRows = () => db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE pt(address) = ? AND pt(body) LIKE '%done for today%'").get(KOFI).n;
 
 test("five texts past the cap get one 'done for today' line, not five", async () => {
   const h = harness();

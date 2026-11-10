@@ -21,6 +21,7 @@ import * as zonescope from "./zonescope.js";
 import { sniff, READABLE } from "./pictures.js";
 import { isPdfBytes } from "./pdf.js";
 import { isDocx, isPlainText } from "./docread.js";
+import { readPlain, writeSealed } from "./restfiles.js";
 
 /**
  * The ceilings, by kind: exactly what the failed slip types under it, "PHOTOS, PDFS, DOCS · UP TO
@@ -95,7 +96,7 @@ const metaPath = (id) => join(dir(), `${id}.json`);
 export function meta(id) {
   if (!ID.test(String(id ?? ""))) return null;
   try {
-    const m = JSON.parse(readFileSync(metaPath(id), "utf8"));
+    const m = JSON.parse(readPlain(metaPath(id)).toString("utf8"));
     return m && m.id === id ? m : null;
   } catch { return null; }
 }
@@ -120,8 +121,8 @@ export function store({ conversationId, bytes, name = "", voice = false, extra =
   if (keptBytes(conversationId) + buf.length > QUOTA_BYTES) return { error: "too_big", kind: what.kind, limit: QUOTA_BYTES };
   const id = randomBytes(16).toString("base64url");
   const m = { id, conversationId, kind: what.kind, mime: what.mime, ext: what.ext, name: cleanName(name, what.ext), bytes: buf.length, at: clock.now(), ...extra };
-  writeFileSync(filePath(m), buf, { mode: 0o600 });
-  writeFileSync(metaPath(id), JSON.stringify(m), { mode: 0o600 });
+  writeSealed(filePath(m), conversationId, buf); // sealed for them with REASON_ENCRYPT_REST2=on
+  writeSealed(metaPath(id), conversationId, JSON.stringify(m)); // its name and later its words: sealed too
   return m;
 }
 
@@ -130,7 +131,7 @@ export function update(id, patch) {
   const m = meta(id);
   if (!m) return null;
   const next = { ...m, ...patch, id: m.id, conversationId: m.conversationId };
-  writeFileSync(metaPath(id), JSON.stringify(next), { mode: 0o600 });
+  writeSealed(metaPath(id), m.conversationId, JSON.stringify(next));
   return next;
 }
 
@@ -143,7 +144,7 @@ export function keptBytes(conversationId) {
   try { names = readdirSync(dir()); } catch { return 0; }
   for (const f of names) {
     if (!f.endsWith(".json")) continue;
-    try { const m = JSON.parse(readFileSync(join(dir(), f), "utf8")); if (m.conversationId === conversationId) total += Number(m.bytes) || 0; } catch { /* half-written; skip */ }
+    try { const m = JSON.parse(readPlain(join(dir(), f)).toString("utf8")); if (m.conversationId === conversationId) total += Number(m.bytes) || 0; } catch { /* half-written; skip */ }
   }
   return total;
 }
@@ -191,7 +192,7 @@ export function localUpload(url, { conversationId = "" } = {}) {
   const owner = conversationId || zonescope.conversation();
   if (!m || !owner || m.conversationId !== owner || !existsSync(filePath(m))) return refused;
   const fetch = async () => {
-    const bytes = readFileSync(filePath(m));
+    const bytes = readPlain(filePath(m));
     return new Response(bytes, { status: 200, headers: { "content-type": m.mime, "content-length": String(bytes.length) } });
   };
   return { meta: m, fetch };

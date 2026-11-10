@@ -30,6 +30,7 @@ const { settleCall } = await import("../src/tools.js");
 const { announcementFor } = await import("../src/calls/provider.js");
 const { FIXTURE_RECORDING } = await import("../src/calls/fake.js");
 const db = await import("../src/db.js");
+const { readPlain } = await import("../src/restfiles.js"); // a file sealed with REASON_ENCRYPT_REST2=on reads plain
 const { config, clock } = await import("../src/config.js");
 
 const C = config.ownerConversation;
@@ -209,7 +210,7 @@ test("the audio is saved as real bytes, and a file that is not audio is refused"
   // Named for what the bytes ARE, not for what the file said it would be.
   assert.equal(row.recording_format, "wav");
   assert.ok(row.recording_bytes > 1000);
-  assert.ok(readFileSync(row.recording_file).length === row.recording_bytes);
+  assert.ok(readPlain(row.recording_file).length === row.recording_bytes);
 
   // The failure that cost a real call: 111 bytes of JSON, filed as audio and reported as saved.
   // The sniff is what makes that impossible.

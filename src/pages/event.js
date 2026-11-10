@@ -36,6 +36,7 @@ import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from 
 import { albumRequest } from "./album.js";
 import * as made from "./made.js";
 import { renderManage, manageRequest } from "./eventmanage.js";
+import { readPlain } from "../restfiles.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -403,7 +404,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     catch (e) { log({ event_cover_failed: ev.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
     let bytes = null;
     // A waiting picture can be turned down between finding it and reading it: then it is simply gone.
-    try { bytes = file ? readFileSync(file) : null; } catch { bytes = null; }
+    try { bytes = file ? readPlain(file) : null; } catch { bytes = null; }
     if (!bytes) return page(404, renderNotFound());
     // The live picture's address carries its version, so it may be kept; a waiting one never is.
     const cache = sub === "cover.jpg" ? "public, max-age=86400" : "private, no-store";

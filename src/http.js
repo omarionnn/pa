@@ -113,6 +113,7 @@ import * as stamps from "./stamps.js";
 import * as plan from "./plan.js";
 import * as stripeapi from "./stripe.js";
 import { config, stamp, clock } from "./config.js";
+import { readPlain } from "./restfiles.js";
 
 const MAX_BODY = 1_000_000;
 
@@ -984,7 +985,7 @@ export function inviteRequestFor({ token, router = null }) {
  * may read. A wrong key, a missing key, an id that does not exist and a row whose file has gone all
  * answer the same 404, so the link space cannot be probed and a real id tells a guesser nothing.
  */
-export function imageRequest(filename, { dir = config.imagenOutputDir, read = readFileSync } = {}) {
+export function imageRequest(filename, { dir = config.imagenOutputDir, read = readPlain } = {}) {
   const safe = filename.replace(/[^A-Za-z0-9_.-]/g, "");
   if (safe !== filename) return { status: 404, headers: HTML(), body: renderNotFound() };
   const ext = safe.endsWith(".jpg") ? "jpeg" : safe.endsWith(".webp") ? "webp" : safe.endsWith(".gif") ? "gif" : "png";
@@ -999,7 +1000,7 @@ export function imageRequest(filename, { dir = config.imagenOutputDir, read = re
   };
 }
 
-export function documentRequest({ id, key = null, read = readFileSync }) {
+export function documentRequest({ id, key = null, read = readPlain }) {
   const doc = db.getDocument(id);
   if (!doc) return { status: 404, headers: HTML(), body: renderNotFound() };
   const given = Buffer.from(String(key ?? ""));
@@ -1042,7 +1043,7 @@ export async function cardRequest({ id, key = null, headers = {}, draw = pageCar
   try {
     const whose = accounts.ownerOf(page.conversation_id);
     const card = await draw(page, { forName: whose.name, language: whose.language });
-    const bytes = readFileSync(card.file);
+    const bytes = readPlain(card.file);
     return {
       status: 200,
       headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": "private, max-age=86400" },
@@ -1664,7 +1665,7 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
     }
     const audio = callAudio(db.getCall(page.conversation_id, page.blocks[0].call_id));
     if (!audio) return { status: 404, headers: HTML(), body: renderNotFound() };
-    const bytes = readFileSync(audio.file);
+    const bytes = readPlain(audio.file);
     // A byte range, because Safari will not play a recording served without one.
     const range = /^bytes=(\d*)-(\d*)$/.exec(String(headers?.range ?? "").trim());
     if (range && (range[1] || range[2])) {

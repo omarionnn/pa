@@ -1,5 +1,5 @@
 import { config, clock } from "./config.js";
-import { db } from "./db.js";
+import { db, seal2 } from "./db.js";
 
 const MODEL = "text-embedding-3-small";
 const DIMS = 1536;
@@ -34,6 +34,7 @@ export async function embed(texts, {
 }
 
 export function cosine(a, b) {
+  if (a.length !== b.length) return 0; // a vector whose key was destroyed opens empty
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
@@ -48,8 +49,17 @@ export function float32ToBlob(arr) {
   return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
 }
 
+/** A vector as stored: sealed for its owner with REASON_ENCRYPT_REST2=on (src/restcrypt.js), else the bytes. */
+export function vectorCell(conversationId, arr) {
+  return seal2(conversationId, float32ToBlob(arr));
+}
+
+/** Bytes, or the base64 a sealed vector opens to (and "" for a person whose key was destroyed). */
 export function blobToFloat32(blob) {
-  const buf = Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
+  const buf = typeof blob === "string" ? Buffer.from(blob, "base64") : Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
+  if (buf.byteLength % 4) return new Float32Array(0);
+  // Buffer.from(base64) may sit at any offset in Node's shared pool; a Float32Array needs 4-byte alignment.
+  if (buf.byteOffset % 4) return new Float32Array(Uint8Array.prototype.slice.call(buf).buffer);
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 }
 
@@ -65,7 +75,7 @@ export async function embedAndStore(conversationId, factId, text, { sourceTable 
     `INSERT INTO fact_embeddings (conversation_id, fact_id, source_table, embedding, model, created_at)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(fact_id, source_table) DO UPDATE SET embedding = excluded.embedding, created_at = excluded.created_at`
-  ).run(conversationId, factId, sourceTable, float32ToBlob(vec), MODEL, clock.now());
+  ).run(conversationId, factId, sourceTable, vectorCell(conversationId, vec), MODEL, clock.now());
 }
 
 export function removeEmbedding(factId, sourceTable = "person_facts") {

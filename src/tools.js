@@ -97,6 +97,7 @@ import * as replies from "./replies.js";
 import * as reviewed from "./reviewed.js";
 import { fetchImage } from "./media.js";
 import * as voiceIO from "./voice.js";
+import { sealInPlace, writeSealed, readPlain } from "./restfiles.js";
 import * as nutrition from "./nutrition.js";
 import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
@@ -8064,7 +8065,7 @@ export async function fileRecording(conversationId, row, live, ctx = {}) {
   if (!live.recording) {
     return absent(live.recordingWhy || "the provider did not return any audio for this call");
   }
-  const saved = await storeRecording(row.id, live.recording, ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {});
+  const saved = await storeRecording(row.id, live.recording, { owner: conversationId, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}) });
   if (!saved.ok) return absent(saved.error);
 
   return db.updateCall(conversationId, row.id, {
@@ -11173,6 +11174,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // The thread's own address and nothing the model supplied: this only ever goes back to the
       // person whose conversation it is.
       const to = thread.address;
+      sealInPlace(spoken.file, c); // REASON_ENCRYPT_REST2: kept sealed while a queued send waits
       let r;
       try {
         r = await router.sendMedia({
@@ -11228,6 +11230,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // started for a voice note that really could go. Never for one going back to them.
       const parkedVoice = parkHeld({ name, input, conversationId: c, ctx, to });
       if (parkedVoice) return parkedVoice;
+      if (picked.converted) sealInPlace(picked.file, c); // the converted copy is theirs: sealed
 
       const r = await router.sendMedia({
         channel: channelName, to, text: input.text ?? "", chatId,
@@ -11822,6 +11825,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!provider) return { ok: false, ...imagenStatus() };
       const out = await provider.generate(styledPrompt, opts);
       if (!out.ok) return out;
+      for (const img of out.images ?? []) { try { sealInPlace(img.path, c); } catch { /* a test provider's path */ } } // theirs: sealed
       // Asked for a picture: it goes into the thread as an attachment, and nothing comes back that
       // could be texted instead of it.
       if (send) return await sendGeneratedImages({ images: out.images, say: input.say ?? "", model: out.model, ctx, c });
@@ -11859,7 +11863,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const id = db.newDocumentId();
       const filename = documentFilename(title, input.kind);
-      const written = writeDocument({ id, kind: input.kind, filename, bytes: made.bytes });
+      const written = writeDocument({ id, kind: input.kind, filename, bytes: made.bytes, owner: c });
       if (!written.ok) {
         return { ok: false, error: `That ${DOCUMENT_FORMATS[input.kind].what} was not made: ${written.error}` };
       }
@@ -16479,7 +16483,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const title = hit.file.name.replace(/\.[A-Za-z0-9]{1,5}$/, "").trim() || hit.file.name;
       const id = db.newDocumentId();
       const filename = documentFilename(title, want.kind);
-      const written = writeDocument({ id, kind: want.kind, filename, bytes: got.bytes, from: "Drive" });
+      const written = writeDocument({ id, kind: want.kind, filename, bytes: got.bytes, from: "Drive", owner: c });
       if (!written.ok) {
         return {
           ok: false, status: "not_a_file", account: hit.account, file: hit.file, asked_for: input.as,
@@ -17820,6 +17824,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         try {
           mkdirSync(dirname(shotPath), { recursive: true });
           await page.screenshot({ path: shotPath });
+          sealInPlace(shotPath, c); // a boarding pass is theirs: sealed (REASON_ENCRYPT_REST2)
           return shotPath;
         } catch { return ""; }
       })();
@@ -18709,6 +18714,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const path = join(config.shotRoot, `${ownfiles.shotPrefix(c)}${Date.now()}.png`);
       mkdirSync(dirname(resolve(path)), { recursive: true });
       await page.screenshot({ path: resolve(path), fullPage: !!input.full_page });
+      sealInPlace(resolve(path), c); // theirs: sealed (REASON_ENCRYPT_REST2)
       return { ok: true, path: resolve(path), url: page.url() };
     }
     case "browser_images": {

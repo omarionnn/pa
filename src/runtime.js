@@ -59,6 +59,7 @@ import * as dream from "./dream.js";
 import * as webdraft from "./webdraft.js";
 import * as onboarding from "./onboarding.js";
 import * as opsDigest from "./opsdigest.js";
+import { withPlainPath, sealLike } from "./restfiles.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -326,7 +327,10 @@ export class Runtime extends EventEmitter {
         const args = converter.kind === "afconvert"
           ? VOICE_AFCONVERT_ARGS(media.file, cafFile)
           : ["-y", ...VOICE_FFMPEG_ARGS(media.file, cafFile)];
-        const r = await runConverter(args, { bin: converter.bin });
+        // A sealed recording (REASON_ENCRYPT_REST2) is opened to a temp copy for the converter, and
+        // the .caf it makes is sealed under the same key.
+        const r = await withPlainPath(media.file, (plain) => runConverter(args.map(a => a === media.file ? plain : a), { bin: converter.bin }));
+        if (r.ok) sealLike(media.file, cafFile);
         if (r.ok) {
           media = { ...media, file: cafFile, mimeType: "audio/x-caf", filename: `call-${waiting.id}-${waiting.to_number.replace(/\D/g, "")}.caf` };
         } else {

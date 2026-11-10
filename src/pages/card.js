@@ -14,6 +14,7 @@
 // 1200×630 (≈1.91:1), the size every preview system agrees on. Rendered by the Chromium Playwright
 // already ships with, and kept on disk by page id and revision.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { readPlain, writeSealed, sealInPlace } from "../restfiles.js";
 import { join } from "node:path";
 import { config } from "../config.js";
 import { esc, madeFor, topLine } from "./render.js";
@@ -72,9 +73,9 @@ export async function generateIllustration(page) {
   const src = out.images[0].path;
   const dest = illustrationPath(page.id);
   mkdirSync(join(config.dataDir, "cards"), { recursive: true });
-  const tmp = `${dest}.${process.pid}.tmp`;
-  writeFileSync(tmp, readFileSync(src));
-  renameSync(tmp, dest);
+  // Theirs: the copy and the generated original are sealed for the page's owner (REASON_ENCRYPT_REST2).
+  writeSealed(dest, page.conversation_id, readPlain(src));
+  sealInPlace(src, page.conversation_id);
   return dest;
 }
 
@@ -85,7 +86,7 @@ export function cardHtml({ title, subtitle = "", forName = "", language = "", wh
   const size = t.length > 70 ? 56 : t.length > 40 ? 68 : 84;
 
   if (illustration) {
-    const b64 = readFileSync(illustration).toString("base64");
+    const b64 = readPlain(illustration).toString("base64");
     return `<!doctype html><html><head><meta charset="utf-8"><style>
 *{box-sizing:border-box;margin:0}
 html,body{width:${CARD_W}px;height:${CARD_H}px;overflow:hidden}
@@ -197,9 +198,7 @@ export async function pageCard(page, { forName = "", language = "", shoot = shoo
   const png = await withTimeout(shoot(html), RENDER_TIMEOUT_MS);
   if (!png?.length) throw new Error("the renderer gave back an empty picture");
   mkdirSync(join(config.dataDir, "cards"), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, png);
-  renameSync(tmp, file);
+  writeSealed(file, page.conversation_id, png); // the title and their name: sealed for them
   return { file, bytes: png.length, fresh: true };
 }
 

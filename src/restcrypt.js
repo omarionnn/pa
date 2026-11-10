@@ -23,7 +23,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, writeSync, fsyncSync, closeSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, readSync, writeSync, fsyncSync, closeSync, linkSync } from "node:fs";
 
 export const PREFIX = "enc:u1:";
 
@@ -36,9 +36,52 @@ export const SENSITIVE = [
   { table: "person_facts", cols: ["fact"], owner: "(SELECT p.conversation_id FROM people p WHERE p.id = person_facts.person_id)" },
   { table: "calls", cols: ["transcript", "summary", "turn_log"], owner: "conversation_id" },
 ];
-const TABLE_RE = new RegExp(`\\b(${SENSITIVE.map(s => s.table).join("|")})\\b`, "i");
+/**
+ * Phase 2 (11-10), behind REASON_ENCRYPT_REST2=on, which needs phase 1 on. Message copies, call
+ * details, saved addresses, rules and preferences, pages and documents. Same keys, same format.
+ * Numbers and emails of other people (who was called or texted, contacts, attendees) are sealed;
+ * ids, times, channels and conversation ids stay plain, and so do the copies of a person's own number
+ * (accounts.address and the like): their conversation id is that number (design doc: why).
+ * A stranger who rings with no Reason of their own gets a key of their own, "stranger:<row id>".
+ */
+export const SENSITIVE2 = [
+  { table: "inbound_messages", cols: ["text"], owner: "conversation_id" },
+  { table: "inbound_parts", cols: ["text"], owner: "conversation_id" },
+  { table: "pending_inbound", cols: ["text"], owner: "conversation_id" },
+  // address: who it went to, often someone other than them (texting a friend for them).
+  { table: "outbox", cols: ["body", "address"], owner: "conversation_id" },
+  { table: "stranger_calls", cols: ["said", "summary"], owner: "('stranger:' || stranger_calls.id)" },
+  // to_number: the number called, usually a business or a person they know.
+  { table: "calls", cols: ["goal", "facts", "to_number"], owner: "conversation_id" },
+  { table: "call_requests", cols: ["to_number"], owner: "conversation_id" },
+  { table: "call_quotes", cols: ["to_number"], owner: "conversation_id" },
+  { table: "important_people", cols: ["contacts"], owner: "conversation_id" },
+  { table: "spotify_join_requests", cols: ["email"], owner: "conversation_id" },
+  { table: "notice_events", cols: ["attendees"], owner: "conversation_id" },
+  { table: "agentcard_purchases", cols: ["address_json"], owner: "conversation_id" },
+  { table: "shop_shipping", cols: ["first_name", "last_name", "address1", "address2", "city", "state", "zip", "phone", "email"], owner: "conversation_id" },
+  { table: "saved_places", cols: ["address", "route_description"], owner: "conversation_id" },
+  { table: "treat_rules", cols: ["rule", "rule_key", "why"], owner: "conversation_id" },
+  { table: "preferences", cols: ["words", "note", "turned_down"], owner: "conversation_id" },
+  { table: "guesses", cols: ["about", "guess", "confirmed_said", "evidence", "use"], owner: "conversation_id" },
+  { table: "whys", cols: ["about", "why", "said"], owner: "conversation_id" },
+  { table: "pages", cols: ["title", "content", "subtitle", "closing"], owner: "conversation_id" },
+  { table: "documents", cols: ["title", "subtitle", "closing", "content"], owner: "conversation_id" },
+  // Search vectors: inversion attacks recover part of a short text from its embedding. Sealed as the
+  // base64 of the float32 bytes; embedding.js blobToFloat32 reads either form. `blob`: --open writes
+  // the bytes back, not the base64.
+  { table: "fact_embeddings", cols: ["embedding"], owner: "conversation_id", blob: true },
+];
+/** Every sealed column of both phases, each entry tagged with its phase. */
+export const ALL_SENSITIVE = [...SENSITIVE.map(s => ({ ...s, phase: 1 })), ...SENSITIVE2.map(s => ({ ...s, phase: 2 }))];
+const TABLE_RE = new RegExp(`\\b(${[...new Set(ALL_SENSITIVE.map(s => s.table))].join("|")})\\b`, "i");
+/** A column name as SQL: quoted, because guesses."use" is a keyword. */
+const qc = c => `"${c}"`;
 
 export function flagOn() { return String(process.env.REASON_ENCRYPT_REST ?? "off").trim().toLowerCase() === "on"; }
+/** Phase 2 seals only on top of phase 1. */
+export function flag2On() { return flagOn() && String(process.env.REASON_ENCRYPT_REST2 ?? "off").trim().toLowerCase() === "on"; }
+function phaseOn(phase) { return phase === 1 ? flagOn() : flag2On(); }
 export function isSealed(v) { return typeof v === "string" && v.startsWith(PREFIX); }
 const passThrough = v => v === null || v === undefined || v === "" || v === "[]";
 
@@ -324,6 +367,7 @@ export async function init(dbPath, { hasSealed = () => false } = {}) {
     ks.prepare("INSERT INTO install_key (version, source, wrapped, created_at) VALUES (1, ?, ?, ?)").run(source, wrapped, Date.now());
     ik = raw; ikVersion = 1; iks.set(1, raw);
   }
+  if (flag2On()) ensureIndexKey();
   return { active: true };
 }
 let ikVersion = 0;
@@ -382,10 +426,18 @@ function newKeyRow(c) {
   return won.id;
 }
 
-const SEALED_CELLS = new Set(SENSITIVE.flatMap(s => s.cols.map(c => `${s.table}.${c}`)));
-/** For code that writes a table/column chosen at run time: seals only if that column is a sealed one. */
+const SEALED_CELLS = new Map(ALL_SENSITIVE.flatMap(s => s.cols.map(c => [`${s.table}.${c}`, s.phase])));
+/** For code that writes a table/column chosen at run time: seals only if that column is sealed now. */
 export function sealCell(table, col, conversationId, plain) {
-  return SEALED_CELLS.has(`${table}.${col}`) ? sealFor(conversationId, plain) : plain;
+  const phase = SEALED_CELLS.get(`${table}.${col}`);
+  if (!phase) return plain;
+  return phase === 1 ? sealFor(conversationId, plain) : sealFor2(conversationId, plain);
+}
+
+/** Phase 2 columns (SENSITIVE2): seals only with REASON_ENCRYPT_REST2=on (and phase 1 on). */
+export function sealFor2(conversationId, plain) {
+  if (!flag2On() || passThrough(plain) || isSealed(plain)) return plain;
+  return forceSeal(conversationId, plain);
 }
 
 /** Seal text for its owner. With the flag off it returns the text unchanged. */
@@ -395,6 +447,8 @@ export function sealFor(conversationId, plain) {
 }
 export function forceSeal(conversationId, plain) {
   if (passThrough(plain) || isSealed(plain)) return plain;
+  // Bytes (a search vector) are sealed as their base64; they open as that base64 string.
+  if (plain instanceof Uint8Array) plain = Buffer.from(plain.buffer, plain.byteOffset, plain.byteLength).toString("base64");
   const id = keyIdFor(conversationId, true);
   return `${PREFIX}${id}:${gcmSeal(deks.get(id), Buffer.from(String(plain), "utf8"), `u:${id}`)}`;
 }
@@ -420,6 +474,100 @@ function openUncached(v) {
   const k = loadDek(id);
   if (!k) return SHREDDED;
   return gcmOpen(k, rest.slice(cut + 1), `u:${id}`).toString("utf8");
+}
+
+// ---------- files (phase 2): recordings, photos, documents, cards, voice notes ----------
+// A sealed file is FILE_MAGIC (8 bytes) | key id (6 bytes BE, as user_keys ids are) | iv (12) | tag (16) | ciphertext,
+// AES-256-GCM under the owner's person key, AAD "f:<keyId>". Like a sealed cell it names its key,
+// so a reader needs no owner: src/restfiles.js readPlain() opens any file, sealed or not.
+export const FILE_MAGIC = Buffer.from("RSNENC1\n", "latin1");
+export const FILE_ID_BYTES = 6;
+const FILE_HEAD = FILE_MAGIC.length + FILE_ID_BYTES + 12 + 16;
+/** Bytes a sealed file is longer than the plain one (header + iv + tag; GCM adds no padding). */
+export const FILE_OVERHEAD = FILE_HEAD;
+export function isSealedBytes(buf) {
+  return !!buf && buf.length >= FILE_HEAD && Buffer.from(buf.buffer, buf.byteOffset, FILE_MAGIC.length).equals(FILE_MAGIC);
+}
+/** Key id a sealed file was written under, or null for a plain one. */
+export function fileKeyId(buf) { return isSealedBytes(buf) ? Buffer.from(buf.buffer, buf.byteOffset, buf.length).readUIntBE(FILE_MAGIC.length, FILE_ID_BYTES) : null; }
+function sealBytesWith(id, key, bytes) {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", key, iv);
+  c.setAAD(Buffer.from(`f:${id}`));
+  const ct = Buffer.concat([c.update(bytes), c.final()]);
+  const head = Buffer.alloc(FILE_MAGIC.length + FILE_ID_BYTES);
+  FILE_MAGIC.copy(head, 0); head.writeUIntBE(id, FILE_MAGIC.length, FILE_ID_BYTES);
+  return Buffer.concat([head, iv, c.getAuthTag(), ct]);
+}
+/** A file's bytes as stored: sealed for its owner with REASON_ENCRYPT_REST2=on, else unchanged. */
+export function sealBytes(conversationId, bytes) {
+  const b = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (!flag2On() || isSealedBytes(b)) return b;
+  const id = keyIdFor(conversationId, true);
+  return sealBytesWith(id, deks.get(id), b);
+}
+/** Seal bytes under a given person key id (a file made from a sealed file stays under its key). */
+export function sealBytesUnder(id, bytes) {
+  const b = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (!flag2On() || isSealedBytes(b)) return b;
+  const k = loadDek(id);
+  if (!k) return Buffer.alloc(0); // its person was deleted meanwhile: keep nothing
+  return sealBytesWith(id, k, b);
+}
+/** The plain bytes of a stored file. Plain passes through; a destroyed key opens to 0 bytes. */
+export function openBytes(buf) {
+  if (!isSealedBytes(buf)) return buf;
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  const id = b.readUIntBE(FILE_MAGIC.length, FILE_ID_BYTES);
+  const k = loadDek(id);
+  if (!k) return Buffer.alloc(0);
+  let o = FILE_MAGIC.length + FILE_ID_BYTES;
+  const iv = b.subarray(o, o += 12), tag = b.subarray(o, o += 16);
+  const d = createDecipheriv("aes-256-gcm", k, iv);
+  d.setAAD(Buffer.from(`f:${id}`));
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(b.subarray(o)), d.final()]);
+}
+/** Directories holding sealed files (src/restfiles.js registers them), walked by rotatePersonKey. */
+let fileRootsFn = () => [];
+export function registerFileRoots(fn) { fileRootsFn = fn; }
+export function fileRootList() { return [...new Set(fileRootsFn().filter(Boolean))]; }
+function* walkFiles(dir, depth = 0) {
+  let ents;
+  try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of ents) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) { if (depth < 4 && e.name !== ".plain-tmp") yield* walkFiles(p, depth + 1); }
+    else if (e.isFile() && !TEMP_RE.test(e.name)) yield p;
+  }
+}
+/** A writeFileAtomic temp file (`<name>.rs-<pid>-<hex>`): never a stored file; swept at boot. */
+export const TEMP_RE = /\.rs-\d+-[0-9a-f]{8}$/;
+/** Every sealed file under the registered roots whose key id is `id`. */
+export function* filesSealedUnder(id) {
+  const head = Buffer.alloc(FILE_MAGIC.length + FILE_ID_BYTES);
+  for (const root of fileRootList()) for (const p of walkFiles(root)) {
+    let fd;
+    try { fd = openSync(p, "r"); } catch { continue; }
+    try {
+      const n = readSync(fd, head, 0, head.length, 0);
+      if (n === head.length && head.subarray(0, FILE_MAGIC.length).equals(FILE_MAGIC) && head.readUIntBE(FILE_MAGIC.length, FILE_ID_BYTES) === id) yield p;
+    } finally { closeSync(fd); }
+  }
+}
+/** Write bytes to `path` atomically (tmp + fsync + rename), keeping 0600. */
+/** Files rotatePersonKey could not open (damaged), for the log; the rotation went on without them. */
+export const unreadableFiles = [];
+export function writeFileAtomic(path, bytes, mode = 0o600, { syncParent = true } = {}) {
+  const tmp = `${path}.rs-${process.pid}-${randomBytes(4).toString("hex")}`;
+  const fd = openSync(tmp, "w", mode);
+  try {
+    for (let off = 0; off < bytes.length;) off += writeSync(fd, bytes, off, bytes.length - off);
+    fsyncSync(fd);
+  } catch (e) { closeSync(fd); rmSync(tmp, { force: true }); throw e; }
+  closeSync(fd);
+  renameSync(tmp, path);
+  if (syncParent) syncDir(dirname(path));
 }
 
 /** Crypto-shred: destroy the person's key. Every sealed copy of their data, in any backup, is dead. */
@@ -452,11 +600,12 @@ export function rotatePersonKey(rawPrepare, conversationId) {
   const newKey = loadDek(nid);
   const oldTag = `${PREFIX}${old.id}:`;
   let resealed = 0;
-  for (const s of SENSITIVE) {
+  for (const s of ALL_SENSITIVE) {
     if (!tableExists(rawPrepare, s.table)) continue;
     const pk = s.table === "conversations" ? "id" : "rowid";
-    for (const col of s.cols) {
-      if (!hasCol(rawPrepare, s.table, col)) continue;
+    for (const c of s.cols) {
+      if (!hasCol(rawPrepare, s.table, c)) continue;
+      const col = qc(c);
       const upd = rawPrepare(`UPDATE ${s.table} SET ${col} = ? WHERE ${pk} = ? AND ${col} = ?`);
       for (const r of rawPrepare(`SELECT ${pk} AS k, ${col} AS v FROM ${s.table} WHERE substr(${col}, 1, ${oldTag.length}) = ?`).all(oldTag)) {
         const plain = openAny(r.v);
@@ -464,6 +613,20 @@ export function rotatePersonKey(rawPrepare, conversationId) {
       }
     }
   }
+  // Their files too (recordings, photos, documents that stay), before the old key goes.
+  // A file that will not open (damaged) is already unreadable and is left; a failed write stops the
+  // rotation here, before the old key goes, and a re-run finishes it.
+  const moved = new Set();
+  unreadableFiles.length = 0;
+  for (const p of [...filesSealedUnder(old.id)]) {
+    let raw, plain;
+    try { raw = readFileSync(p); } catch (e) { if (e.code === "ENOENT") continue; throw e; } // EMFILE/EIO: stop, keep the key
+    // Only a failed authentication (damaged bytes, no error code) is skipped: it opens to nothing either way.
+    try { plain = openBytes(raw); } catch (e) { if (e.code) throw e; unreadableFiles.push(p); continue; }
+    try { writeFileAtomic(p, sealBytesWith(nid, newKey, plain), 0o600, { syncParent: false }); moved.add(dirname(p)); resealed++; }
+    catch (e) { if (e.code !== "ENOENT") throw e; /* deleted meanwhile */ }
+  }
+  for (const dir of moved) syncDir(dir); // every re-sealed file durable before the old key is destroyed
   ks.exec("BEGIN IMMEDIATE");
   try {
     ks.prepare("DELETE FROM user_keys WHERE id = ?").run(old.id);
@@ -505,6 +668,60 @@ export async function rotateInstallKey() {
 
 export function keystore() { return ks; }
 
+// ---------- blind index: exact match on a value that is never stored ----------
+// A keyed HMAC-SHA256 of a phone number (or email), "bi1:<base64url>", for a column that is only ever
+// matched and never read back (stranger_calls.phone). The index key is its own file beside the master
+// (/etc/reason/rest/index.key), never in reason.db, .env or a backup: the off-site backup carries only
+// its age-sealed copy (index.key.age, --seal-recovery-copy). Without the key a stolen copy holds hashes
+// that can't be checked against guesses; brute-forcing ~10^10 numbers needs the key.
+// Rotation (not built; plan in the design doc): write index.key.next, look up with both keys
+// (blindIndexes returns every form), write with the new one; once the rows written under the old key
+// are past their retention (privacy.js prune), drop the old key. No plaintext is needed to rotate.
+export const BI_PREFIX = "bi1:";
+export function indexKeyPath() { return process.env.REASON_REST_INDEX_KEY_FILE || join(dirname(kekFilePath()), "index.key"); }
+let idxKey = null;
+function readIndexKey({ create }) {
+  if (idxKey) return idxKey;
+  let hex;
+  if (sourceName() === "local") {
+    // Tests and development only, like REASON_REST_KEK itself.
+    hex = String(process.env.REASON_REST_INDEX_KEY ?? "").trim() || createHash("sha256").update("reason-index:" + String(process.env.REASON_REST_KEK ?? "")).digest("hex");
+  } else {
+    const p = indexKeyPath();
+    if (!existsSync(p)) {
+      if (!create) return null;
+      // Exclusive: the server and a script enabling it at once must not each write their own key.
+      // Written whole to a temp, then linked into place: the loser of a race reads the winner's full key.
+      const tmp = `${p}.${process.pid}.${randomBytes(4).toString("hex")}`;
+      const fd = openSync(tmp, "wx", 0o600);
+      try { writeSync(fd, randomBytes(32).toString("hex") + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
+      try { linkSync(tmp, p); } catch (e) { if (e.code !== "EEXIST") { rmSync(tmp, { force: true }); throw e; } }
+      rmSync(tmp, { force: true });
+      syncDir(dirname(p));
+    }
+    hex = readFileSync(p, "utf8").trim();
+  }
+  if (!/^[0-9a-f]{64}$/i.test(hex)) throw new Error(`${indexKeyPath()} must hold 64 hex characters (the blind-index key).`);
+  idxKey = createSecretKey(Buffer.from(hex, "hex"));
+  return idxKey;
+}
+/** Made at boot when phase 2 is on, so a missing or unwritable key fails loudly then, not mid-call. */
+export function ensureIndexKey() { return !!readIndexKey({ create: true }); }
+function hmacOf(key, kind, value) { return BI_PREFIX + createHmac("sha256", key).update(`${kind}:${value}`).digest("base64url"); }
+/** What to store: the blind index with phase 2 on, else the value itself. "" stays "". */
+export function blindIndex(kind, value) {
+  const v = String(value ?? "");
+  if (!v || !flag2On()) return v;
+  return hmacOf(readIndexKey({ create: true }), kind, v);
+}
+/** Every stored form a lookup must match: the plain value (rows from before) and its blind index. */
+export function blindIndexes(kind, value) {
+  const v = String(value ?? "");
+  if (!v) return [v];
+  const k = readIndexKey({ create: false });
+  return k ? [v, hmacOf(k, kind, v)] : [v];
+}
+
 // ---------- transparent reads ----------
 function openRow(row) {
   if (!row || typeof row !== "object") return row;
@@ -536,16 +753,20 @@ export function wrapDatabase(db) {
  * sensitive column. This is what catches a write path nobody wired to sealFor.
  */
 export function installStrictTriggers(db) {
-  for (const s of SENSITIVE) for (const col of s.cols) {
-    const cond = `NEW.${col} IS NOT NULL AND NEW.${col} <> '' AND NEW.${col} <> '[]' AND substr(NEW.${col}, 1, ${PREFIX.length}) <> '${PREFIX}'`;
-    const msg = `plaintext write to ${s.table}.${col} with REASON_ENCRYPT_REST=on`;
+  for (const s of ALL_SENSITIVE) for (const col of s.cols) {
+    if (!phaseOn(s.phase)) { dropTriggersFor(db, s.table, col); continue; }
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(s.table)) continue;
+    const n = `NEW.${qc(col)}`;
+    const cond = `${n} IS NOT NULL AND ${n} <> '' AND ${n} <> '[]' AND substr(${n}, 1, ${PREFIX.length}) <> '${PREFIX}'`;
+    const msg = `plaintext write to ${s.table}.${col} with REASON_ENCRYPT_REST${s.phase === 2 ? "2" : ""}=on`;
     db.exec(`
       CREATE TRIGGER IF NOT EXISTS rest_strict_${s.table}_${col}_i BEFORE INSERT ON ${s.table} WHEN ${cond} BEGIN SELECT RAISE(ABORT, '${msg}'); END;
-      CREATE TRIGGER IF NOT EXISTS rest_strict_${s.table}_${col}_u BEFORE UPDATE OF ${col} ON ${s.table} WHEN ${cond} BEGIN SELECT RAISE(ABORT, '${msg}'); END;`);
+      CREATE TRIGGER IF NOT EXISTS rest_strict_${s.table}_${col}_u BEFORE UPDATE OF ${qc(col)} ON ${s.table} WHEN ${cond} BEGIN SELECT RAISE(ABORT, '${msg}'); END;`);
   }
 }
+function dropTriggersFor(db, table, col) { db.exec(`DROP TRIGGER IF EXISTS rest_strict_${table}_${col}_i; DROP TRIGGER IF EXISTS rest_strict_${table}_${col}_u;`); }
 export function dropStrictTriggers(db) {
-  for (const s of SENSITIVE) for (const col of s.cols) db.exec(`DROP TRIGGER IF EXISTS rest_strict_${s.table}_${col}_i; DROP TRIGGER IF EXISTS rest_strict_${s.table}_${col}_u;`);
+  for (const s of ALL_SENSITIVE) for (const col of s.cols) dropTriggersFor(db, s.table, col);
 }
 
 // ---------- online migration ----------
@@ -561,26 +782,33 @@ function hasCol(rawPrepare, t, c) { return rawPrepare(`PRAGMA table_info(${t})`)
  */
 const shape = new Map();
 function colsOf(rawPrepare, t) {
-  if (!shape.has(t)) shape.set(t, rawPrepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t)
-    ? new Set(rawPrepare(`PRAGMA table_info(${t})`).all().map(r => r.name)) : null);
+  // A table another module makes later (stranger_calls, shop_shipping) is not cached as missing.
+  if (!shape.has(t)) {
+    if (!rawPrepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t)) return null;
+    shape.set(t, new Set(rawPrepare(`PRAGMA table_info(${t})`).all().map(r => r.name)));
+  }
   return shape.get(t);
 }
 const cursors = new Map(); // "dir:table.col" -> last primary key done, so a batch never rescans
 
-export function migrateBatch(rawPrepare, direction = "seal", batch = 200) {
+export function migrateBatch(rawPrepare, direction = "seal", batch = 200, phases = null) {
   let changed = 0;
-  for (const s of SENSITIVE) {
+  // Seal: only what its flag says is sealed now. Open (rollback): every phase, or only `phases`,
+  // so phase 2 rolls back on its own (REASON_ENCRYPT_REST2=off, --open) while phase 1 stays sealed.
+  for (const s of ALL_SENSITIVE) {
+    if (direction === "seal" ? !phaseOn(s.phase) : (phases && !phases.includes(s.phase))) continue;
     const cols = colsOf(rawPrepare, s.table);
     if (!cols) continue;
     const pk = s.table === "conversations" ? "id" : "rowid";
     // A thread is one JSON value that can run to hundreds of KB: a few at a time keeps a batch short.
     const limit = s.table === "conversations" ? Math.max(1, Math.ceil(batch / 50)) : batch;
-    for (const col of s.cols) {
-      if (!cols.has(col)) continue;
+    for (const c of s.cols) {
+      if (!cols.has(c)) continue;
+      const col = qc(c);
       const where = direction === "seal"
         ? `${col} IS NOT NULL AND ${col} <> '' AND ${col} <> '[]' AND substr(${col}, 1, ${PREFIX.length}) <> '${PREFIX}'`
         : `substr(${col}, 1, ${PREFIX.length}) = '${PREFIX}'`;
-      const ck = `${direction}:${s.table}.${col}`;
+      const ck = `${direction}:${s.table}.${c}`;
       const from = cursors.get(ck) ?? (pk === "id" ? "" : -1);
       const rows = rawPrepare(`SELECT ${pk} AS k, ${col} AS v, ${s.owner} AS owner FROM ${s.table} WHERE ${pk} > ? AND ${where} ORDER BY ${pk} LIMIT ${limit}`).all(from);
       if (!rows.length) continue;
@@ -590,7 +818,7 @@ export function migrateBatch(rawPrepare, direction = "seal", batch = 200) {
       try {
         for (const r of rows) {
           if (direction === "seal" && !r.owner) continue; // orphan fact with no person: left for --status
-          const next = direction === "seal" ? forceSeal(r.owner, r.v) : openAny(r.v);
+          const next = direction === "seal" ? forceSeal(r.owner, r.v) : (s.blob ? Buffer.from(openAny(r.v), "base64") : openAny(r.v));
           changed += Number(upd.run(next, r.k, r.v).changes);
         }
         rawPrepare("RELEASE rest_mig").run();
@@ -608,29 +836,30 @@ export function migrateBatch(rawPrepare, direction = "seal", batch = 200) {
 /** Counts for --status and /ops: how much is sealed vs plain, per column. */
 export function status(rawPrepare) {
   const out = [];
-  for (const s of SENSITIVE) {
+  for (const s of ALL_SENSITIVE) {
     if (!tableExists(rawPrepare, s.table)) continue;
-    for (const col of s.cols) {
-      if (!hasCol(rawPrepare, s.table, col)) continue;
+    for (const c of s.cols) {
+      if (!hasCol(rawPrepare, s.table, c)) continue;
+      const col = qc(c);
       const r = rawPrepare(`SELECT
         SUM(CASE WHEN substr(${col},1,${PREFIX.length}) = '${PREFIX}' THEN 1 ELSE 0 END) AS sealed,
         SUM(CASE WHEN ${col} IS NOT NULL AND ${col} <> '' AND ${col} <> '[]' AND substr(${col},1,${PREFIX.length}) <> '${PREFIX}' THEN 1 ELSE 0 END) AS plain
         FROM ${s.table}`).get();
-      out.push({ column: `${s.table}.${col}`, sealed: Number(r.sealed ?? 0), plain: Number(r.plain ?? 0) });
+      out.push({ column: `${s.table}.${c}`, phase: s.phase, sealed: Number(r.sealed ?? 0), plain: Number(r.plain ?? 0) });
     }
   }
   return out;
 }
 
 /** Test hook: forget in-memory keys (simulates a fresh process). */
-export function _resetForTests() { ks = null; ik = null; ikVersion = 0; deks.clear(); iks.clear(); opened.clear(); cursors.clear(); shape.clear(); }
+export function _resetForTests() { idxKey = null; ks = null; ik = null; ikVersion = 0; deks.clear(); iks.clear(); opened.clear(); cursors.clear(); shape.clear(); }
 
 /** For db.js: does reason.db already hold any sealed value? Cheap: one indexed-free LIMIT 1 per column. */
 export function anySealed(rawPrepare) {
-  for (const s of SENSITIVE) {
+  for (const s of ALL_SENSITIVE) {
     if (!rawPrepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(s.table)) continue;
     const cols = new Set(rawPrepare(`PRAGMA table_info(${s.table})`).all().map(r => r.name));
-    for (const col of s.cols) if (cols.has(col) && rawPrepare(`SELECT 1 FROM ${s.table} WHERE substr(${col}, 1, ${PREFIX.length}) = '${PREFIX}' LIMIT 1`).get()) return true;
+    for (const col of s.cols) if (cols.has(col) && rawPrepare(`SELECT 1 FROM ${s.table} WHERE substr(${qc(col)}, 1, ${PREFIX.length}) = '${PREFIX}' LIMIT 1`).get()) return true;
   }
   return false;
 }

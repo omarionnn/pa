@@ -255,7 +255,7 @@ export async function forgetForever(conv, key, { log = () => {} } = {}) {
       } else if (row.kind === "rule") {
         // The row stays as 'deleted' with no words: a review refuses to re-derive a rule from that source message.
         outOfReplies(conv, row.raw);
-        db.db.prepare("UPDATE treat_rules SET rule = ?, rule_key = ?, why = '' WHERE id = ? AND conversation_id = ?").run(`forgotten-rule-${row.id}`, `forgotten-rule-${row.id}`, row.id, conv);
+        db.db.prepare("UPDATE treat_rules SET rule = ?, rule_key = ?, why = '' WHERE id = ? AND conversation_id = ?").run(db.seal2(conv, `forgotten-rule-${row.id}`), db.seal2(conv, `forgotten-rule-${row.id}`), row.id, conv);
       } else {
         outOfReplies(conv, row.raw);
         db.db.prepare("DELETE FROM whys WHERE id = ? AND conversation_id = ?").run(row.id, conv);

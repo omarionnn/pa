@@ -71,7 +71,7 @@ test("an unknown caller's call is kept against the number it came from, with wha
   assert.match(out.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\/[0-9a-f]{32}"/);
   await pitchTurn(extraFor(), ["How do I sign up?", "Can it book a dentist for me?"]);
   const row = db.db.prepare("SELECT * FROM stranger_calls").get();
-  assert.equal(row.phone, CALLER);
+  assert.ok(db.restcrypt.blindIndexes("phone", CALLER).includes(row.phone), "kept against that number (its keyed hash with REASON_ENCRYPT_REST2=on)");
   assert.equal(row.external_id, "gptlive:CA1");
   assert.match(row.summary, /^They asked: How do I sign up; Can it book a dentist for me/);
   assert.doesNotMatch(JSON.stringify(row), /Omari|\+12025551234/, "nothing about any user in the row");
@@ -79,7 +79,7 @@ test("an unknown caller's call is kept against the number it came from, with wha
   ring("", "CA2");
   db.blockNumber(OTHER, "test");
   ring(OTHER, "CA3");
-  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone = ?").get(OTHER).n, 0, "blocked keeps nothing");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone IN (SELECT value FROM json_each(?))").get(JSON.stringify(db.restcrypt.blindIndexes("phone", OTHER))).n, 0, "blocked keeps nothing");
   // A withheld call's row (its recording needs one) carries no number, so it is nobody's, ever.
   const withheld = db.db.prepare("SELECT * FROM stranger_calls WHERE external_id = 'gptlive:CA2'").get();
   assert.equal(withheld.phone, "");
@@ -192,7 +192,7 @@ test("retention: their words go with content, the row with records; an aged call
   assert.match(note, /good to reconnect/);
   assert.doesNotMatch(note, /They asked|they asked/);
   ring(OTHER, "CA_old");
-  db.db.prepare("UPDATE stranger_calls SET started_at = ? WHERE phone = ?").run(clock.now() - (config.keepRecordsDays + 1) * DAY, OTHER);
+  db.db.prepare("UPDATE stranger_calls SET started_at = ? WHERE phone IN (SELECT value FROM json_each(?))").run(clock.now() - (config.keepRecordsDays + 1) * DAY, JSON.stringify(db.restcrypt.blindIndexes("phone", OTHER)));
   sweepRetention({});
-  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone = ?").get(OTHER).n, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone IN (SELECT value FROM json_each(?))").get(JSON.stringify(db.restcrypt.blindIndexes("phone", OTHER))).n, 0);
 });
