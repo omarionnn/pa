@@ -245,39 +245,13 @@ export async function signinWall(entry, { fetchImpl = fetch, timeoutMs = 15_000 
   return out;
 }
 
-// ---------------------------------------------------------------- Uber, first
+// ---------------------------------------------------------------- Uber
 /**
- * Uber is the first site this is for (owner, 2026-11-10): most people's Uber is a Google sign-in,
- * through the "Continue with Google" button on auth.uber.com — where uber.com, m.uber.com and
- * riders.uber.com all send a signed-out browser. That route SUPERSEDES the Uber OAuth connect card
- * (src/uber.js authorizeUrl, the web setup's Uber card, the app.heyreason.com/uber/callback flow):
- * the card is the fallback, not the first offer. The card is kept back when a Google sign-in to
- * Uber is already saved, or when the social flow can still get in: the flag reaches them, Uber's
- * sign-in page is not walled for Reason's browser (the live answer from `signinWall` when there is
- * one, else the dated finding in src/sites.js), and they have not said no to Google inside the 30 days.
- *   { saved, can_try, supersedes, why }
+ * Uber is NOT a social sign-in (owner, 2026-11-10, reversing the same day's "Uber first"): the Uber
+ * connect card (uber_connect, src/uber.js authorizeUrl, the web setup's Uber card) is how an Uber
+ * account is connected, and a ride is uber_link. Nothing here asks for a Google login for Uber.
  */
-export const UBER_ASK = "Uber signs in through your Google account. Want me to use it?";
 export const UBER_SIGNIN_HOSTS = ["uber.com", "m.uber.com", "riders.uber.com", "auth.uber.com"];
-export function uberSocialPath(conversationId, entry, { live = entry ? wallCached(entry.site) : null } = {}) {
-  if (!entry || entry.site !== "uber") return { saved: false, can_try: false, supersedes: false, why: "not Uber" };
-  const saved = providerOf(conversationId, "uber") === "google";
-  if (!socialAllowedFor(conversationId)) return { saved, can_try: false, supersedes: saved, why: saved ? "their Uber login is saved as a Google sign-in" : "social sign-in does not reach them" };
-  if (saved) return { saved, can_try: true, supersedes: true, why: "their Uber login is saved as a Google sign-in" };
-  const walled = live ? !live.in : !!entry.signin_blocked;
-  if (walled) return { saved, can_try: false, supersedes: false, walled: true, why: `Uber's sign-in page refuses Reason's browser (${live ? live.why : entry.signin_blocked.why})` };
-  if (!askAllowed(conversationId, "google")) return { saved, can_try: false, supersedes: false, why: "they said no to their Google login inside the last 30 days" };
-  return { saved, can_try: true, supersedes: true, why: "Uber signs in through their Google account: the sign-in link with provider google, not the connect card" };
-}
-/** The same answer after asking Uber's page live first (cached), for the places that can wait on it. */
-export async function uberRoute(conversationId, entry, { wall = signinWall } = {}) {
-  if (!entry || entry.site !== "uber") return uberSocialPath(conversationId, entry);
-  let live = null;
-  if (socialAllowedFor(conversationId) && providerOf(conversationId, "uber") !== "google") {
-    try { live = (await wall(entry)) ?? null; } catch { live = null; /* the dated finding answers */ }
-  }
-  return uberSocialPath(conversationId, entry, { live });
-}
 
 // ---------------------------------------------------------------- the record
 /** The provider a site's saved login uses for this person, from the live row; "" when none or not signed in. */
@@ -344,8 +318,8 @@ export const RULES = [
   `- A no is a no: finish the task another way if you can, and do not ask about that provider again for ${DECLINE_DAYS} days unless they bring it up. Record it with signin_provider action "declined", and check signin_provider action "ask_check" before any ask — it says whether the ${DECLINE_DAYS} days are up. Never pressure, never repeat a declined ask.`,
   `- HOW IT IS COLLECTED: never a password, a code or a card number in this chat. Send the secure sign-in link (signin_link, with the provider as its \`provider\`) and they sign in on the provider's own page inside it. The login is saved only once the site says they are signed in, and which provider each site uses is written down with it; you are told when that happens.`,
   `- TWO-STEP VERIFICATION: expect it. Least effort first: a Yes tap on their phone, then a code sent to an email you can read yourself (gmail_search, gmail_read — never "check your email"), then a texted code they forward to you. Tell them what to expect in one line: "Google will ping your phone. Tap Yes." A forwarded code is cleaned before it is typed (a "G-", spaces and dashes come off), so take it as they send it. If a code fails twice, switch methods once; if that fails too, stop and say plainly what blocked it. Sites often send a second code of their own after the provider approves: warn them one more may come.`,
-  `- AFTER ACCESS: finish the task first. Then, once, say what it unlocked: "Now I can handle your Uber and Airbnb too, since they use the same Google sign-in." When a session lapses, sign back in yourself (signin_status with recheck tries the saved provider button for you); only involve them for an approval tap or a code.`,
-  `- UBER FIRST: most people's Uber signs in through Google. The first time a real task needs Uber (a ride booked or priced, a past trip, a receipt) and no Uber login is saved, the ask is one line — "${UBER_ASK}" — and on a yes it is signin_link with site "uber" and provider "google", then "Google will ping your phone. Tap Yes." That comes BEFORE the Uber connect card (uber_connect), which is the fallback only when the Google route cannot get in — the tool tells you when that is so; then say plainly what blocked it and use uber_link. A no: uber_link as before, and no ask for ${DECLINE_DAYS} days.`,
+  `- AFTER ACCESS: finish the task first. Then, once, say what it unlocked: "Now I can handle your DoorDash and Airbnb too, since they use the same Google sign-in." When a session lapses, sign back in yourself (signin_status with recheck tries the saved provider button for you); only involve them for an approval tap or a code.`,
+  `- UBER: never ask for their Google (or any provider) login for Uber. Connecting their Uber account is the Uber connect card (uber_connect), only when they ask to connect it; a ride is uber_link, every time, as before.`,
   `- TRUST: use provider access only for tasks they asked for or approved — no curiosity browsing. Never change passwords, security settings, recovery emails or connected apps. Never grant a new third-party app access without asking. Money, a message sent as them, and anything permanent still need their go-ahead. If they ask what you can get into, answer honestly from signin_status and say how to revoke it (account_revoke, or the provider's own connected-apps page). Signing in with Google is not the same as reading their Gmail: it opens that site, nothing else.`,
 ].join("\n");
 

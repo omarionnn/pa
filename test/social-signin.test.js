@@ -171,7 +171,7 @@ test("the rules say what the spec says, line by line", () => {
   assert.match(r, /warn them one more may come/);
   // after
   assert.match(r, /finish the task first\. Then, once, say what it unlocked/);
-  assert.match(r, /Now I can handle your Uber and Airbnb too/);
+  assert.match(r, /Now I can handle your DoorDash and Airbnb too/);
   assert.match(r, /sign back in yourself/);
   assert.match(r, /only involve them for an approval tap or a code/);
   // trust

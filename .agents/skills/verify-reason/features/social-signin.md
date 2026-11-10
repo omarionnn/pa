@@ -40,16 +40,14 @@ Tests: `test/social-signin.test.js` (24, offline), `test/social-signin-rest.test
 - **A lapse.** `signin_status { recheck }` reads the provider BEFORE the probe; signed out + a provider
   → `signInAgain` (sign-in page, button, probe again). Signed in: nothing to tell them. Still out:
   the result says to send a fresh link with that provider and the one-line expectation.
-- **Uber first** (`uberSocialPath` / `uberRoute`, `UBER_ASK`): a Google-backed Uber login (saved, or
-  the flag reaches them + Uber's page loads + no Google no in 30 days) supersedes the OAuth connect
-  card. `uber_connect` → `{ superseded: "google", ask | say, fallback }` unless `fallback: true`;
-  web setup `connections.uber` = connected `via: "google"` when saved on the stand-in;
-  `capabilities.uber` false + `uber_via: "google"` and `connect/uber` → `superseded` only with the flag
-  `on` for everyone and Uber's page open. Hosts: uber.com, m.uber.com, riders.uber.com, auth.uber.com.
+- **Uber = the connect card** (2026-11-10 reversal of "Uber first"): no `uberSocialPath` / `uberRoute`
+  / `UBER_ASK`; the rules carry "UBER: never ask for their Google (or any provider) login for Uber";
+  `uber_connect` makes the card whatever the flag/wall/saved login; web setup Uber card = pre-social.
+  Hosts: uber.com, m.uber.com, riders.uber.com, auth.uber.com.
 - **The wall, live** (`signinWall`, `wallCached`, `_resetWalls`): a blocked site asked for with a
   provider is fetched from here first — 403 / "Just a moment" / "Performing security verification"
   is a wall (30 s), a loading page is open (10 min, `providers_offered`). `signin_link` / `signin_open`
-  refuse with `checked_live: true`, the Google words and (Uber) the card as `fallback` while walled.
+  refuse with `checked_live: true`, the Google words and (Uber) the card named as `instead` while walled.
 
 ## Prove
 
