@@ -25,6 +25,7 @@ import * as events from "../events.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import * as parts from "../parts.js";
+import * as threading from "../threading.js";
 import * as replies from "../replies.js";
 import * as reviewed from "../reviewed.js";
 import { hearInto } from "../voice.js";
@@ -424,6 +425,11 @@ export class Router {
     // Options Reason just showed (src/choicecards.js): what each number was, and which card an
     // inline reply or a tapback is on when the provider says. Empty with nothing open.
     const picking = choices.inboundChoiceLine(conversationId, { text: inbound.text, replyTo: inbound.replyTo ?? null });
+    // A tapback that reached us as a message (src/threading.js): which message it is on, and that
+    // it is not words. Owner-first behind REASON_THREADING.
+    const reacted = inbound.isReaction && threading.threadingOn({ isOperator })
+      ? threading.reactionLine(conversationId, inbound.said ?? inbound.text ?? "", { self: inbound.externalId })
+      : "";
     // §4h: taken back between the claim and here (takeBack). Checked with no await before the hold.
     if (inbound.channel === web.WEB) {
       this.preHold.delete(inbound.externalId);
@@ -434,7 +440,7 @@ export class Router {
     }
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
-      externalId: inbound.externalId, text: [under, picking, inbound.text].filter(Boolean).join("\n"),
+      externalId: inbound.externalId, text: [under, picking, reacted, inbound.text].filter(Boolean).join("\n"),
       attachments, service: inbound.service ?? null, isOperator,
       quietMs: Math.max(0, quietWindowFor(inbound.channel)), maxMs: Math.max(0, config.burstMaxMs),
     });
@@ -709,7 +715,14 @@ export class Router {
       // the burst line, which asks for one, stays the inline channels'.
       const canPin = inline || (last.channel === web.WEB && webReplyAllowedFor(conversationId));
       const said = texts.filter(Boolean);
-      const several = inline ? replies.burstLine(said.length) : "";
+      // REASON_THREADING (src/threading.js): parts of one send are one text, their attachments are
+      // numbered in the order sent, and jobs still running are named with the text that started each.
+      const threaded = threading.threadingOn({ isOperator: !!last.is_operator });
+      const sends = threaded ? threading.sendsOf(held) : null;
+      const textCount = sends ? sends.filter(g => g.rows.some(r => texts[held.indexOf(r)])).length : said.length;
+      const several = inline ? replies.burstLine(textCount) : "";
+      const numbered = sends ? sends.map(g => threading.attachmentLine(g.rows)).filter(Boolean) : [];
+      const jobs = threaded ? threading.jobsLine(conversationId) : "";
       fold.text = said.join("\n");
 
       // History, one row per message they sent — their own words as heard, with the channel each
@@ -771,7 +784,7 @@ export class Router {
       const gap = downSince ? leftWhileDownLine({ since: downSince, count: said.length }) : "";
 
       // Event log: record what the user said (after voice-note transcription) and enqueue extraction.
-      const userText = [gap, onboardFrame, several, ...said].filter(Boolean).join("\n");
+      const userText = [gap, onboardFrame, several, ...numbered, jobs, ...said].filter(Boolean).join("\n");
       let evId = null;
       try {
         evId = db.writeEvent({
@@ -786,7 +799,7 @@ export class Router {
         reply = await this.runtime.inbound(conversationId, userText, {
           channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
           fromOwner: true, isOperator: !!last.is_operator,
-          ...(canPin ? { answering: { handle: fold.added.at(-1)?.handle ?? last.external_id, texts: said.length, ...(downSince ? { always: true } : {}) } } : {}),
+          ...(canPin ? { answering: { handle: fold.added.at(-1)?.handle ?? last.external_id, texts: textCount, ...(downSince ? { always: true } : {}) } } : {}),
           fold,
           attachments: held.flatMap(h => h.attachments ?? []),
           requests,
