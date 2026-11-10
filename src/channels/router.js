@@ -44,6 +44,7 @@ import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
+import * as websetup from "../websetup.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -257,6 +258,13 @@ export class Router {
     // the card from it, after their name, with its own line.
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
+    // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
+    // its code: what they chose and connected on the page becomes theirs, and the intro asks none of
+    // it again (src/onboarding.js webHandoff). No code, or one that does not match: nothing changes.
+    if (arrivedNow && !isOperator) {
+      try { websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log }); }
+      catch (e) { this.log({ websetup_claim_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+    }
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new

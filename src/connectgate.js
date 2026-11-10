@@ -25,6 +25,7 @@ import * as db from "./db.js";
 import { readCookie, readCookies, cookieHeader, trySubmittedCode, issueCode, codeHost, boundTo, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT, MAX_FAILED_ATTEMPTS, CODE_TTL_MS } from "./pages/access.js";
 import { renderConnectGate, renderConnected } from "./pages/render.js";
 import { securedCardTags, providerKind } from "./pages/securedcard.js";
+import * as setups from "./websetupstore.js";
 
 export const START_PATH = "/connect/start";
 
@@ -59,6 +60,13 @@ export function browserConversation(headers) {
     if (!TRUSTED_SIGNIN.test(db.pageSessionSource(token) ?? "")) continue;
     const owner = db.pageSessionOwner(token, SESSION_TTL_MS);
     if (owner) return owner;
+  }
+  // A web setup's own browser (src/websetup.js, REASON_WEB_SETUP): its cookie names only the setup's
+  // stand-in conversation (`websetup:<id>`), which no account has, so it can finish that setup's
+  // Google link or Amazon sign-in and nothing of anybody's.
+  if (/^(1|true|on|yes)$/i.test(String(process.env.REASON_WEB_SETUP ?? "").trim())) {
+    const c = setups.conversationForSecret(setups.readSecret(headers?.cookie));
+    if (c) return c;
   }
   return null;
 }

@@ -65,6 +65,29 @@ export function followUpNote(e = entry()) {
  * "web_onboarding", ...). Returns `{ ok: true, url, goodForMinutes }` or `{ ok: false, why }`.
  * Nothing launches until they tap Start on the page; a new link replaces their old one.
  */
+/**
+ * The web setup's Amazon (src/websetup.js): the same sign-in in Reason's browser, for a setup's
+ * stand-in conversation, which has no account and no thread. Its browser proof is the setup cookie
+ * (src/connectgate.js), the profile it signs in is a new empty one that moves to them when their first
+ * text claims the setup, and how it ended is written on the setup rather than woken into a thread
+ * (the follow-up runs at the claim instead).
+ */
+export function setupAvailable() {
+  const e = entry();
+  return !!config.publicUrl && !!e && !e.signin_blocked;
+}
+
+export function setupConnectLink(setupConversationId, { via = "web_setup", log = () => {}, create = remote.createRemoteSignin, onEnd = null } = {}) {
+  if (!setupAvailable() || !String(setupConversationId ?? "").startsWith("websetup:")) return { ok: false, why: "unavailable" };
+  const e = entry();
+  const id = String(setupConversationId).slice("websetup:".length);
+  const ended = onEnd ?? ((ended) => import("./websetupstore.js").then(st => st.setConnectState(id, "amazon", ended?.state === "signed_in" ? "connected" : "failed")).catch(() => {}));
+  const out = create({ conversationId: setupConversationId, entry: e, closeBrowser, onEnd: ended, log });
+  ledgerWrite({ conversationId: setupConversationId, action: "signin_link", input: { site: SITE, via }, out: { ok: out.ok, site: e.site, reachable_from_a_phone: out.reachable_from_a_phone }, target: `site:${e.site}` });
+  if (!out.ok || !out.reachable_from_a_phone) return { ok: false, why: out.why || "not_reachable" };
+  return { ok: true, url: out.url, goodForMinutes: out.good_for_minutes };
+}
+
 export function connectLink(conversationId, { via = "", log = () => {}, create = remote.createRemoteSignin } = {}) {
   if (!available(conversationId)) return { ok: false, why: "unavailable" };
   const e = entry();

@@ -117,13 +117,13 @@ export function remoteSessionFor(conversationId) {
  * Make a link. Nothing is launched yet: the browser starts when somebody taps Start, so a link
  * nobody opens never holds the saved profile.
  */
-export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {} }) {
+export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {} }) {
   const old = sessions.get(byConversation.get(conversationId));
   if (old) end(old, "replaced").catch(() => {});
 
   const token = newToken();
   const s = {
-    token, conversationId, entry, afterSignedIn, launch, check, closeBrowser, busy, timers, log,
+    token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
     ended: null, startedAt: null, timer: null, signedInRun: 0,
   };
@@ -196,7 +196,9 @@ async function end(s, how) {
   }
   s.log({ signin_remote: "ended", how, site: entry.site, conversation: c, state: s.ended.state });
   // Only news is worth a message. A link that was replaced unopened, or that simply lapsed, is not.
-  if (note && how !== "link_expired") db.createTimer(c, { fireAt: clock.now(), note });
+  // A web setup's sign-in (src/websetup.js) has no thread to wake: how it ended goes on the setup.
+  if (s.onEnd) { try { s.onEnd(s.ended); } catch { /* the page reads the site's own check anyway */ } }
+  else if (note && how !== "link_expired") db.createTimer(c, { fireAt: clock.now(), note });
   if (byConversation.get(c) === s.token) byConversation.delete(c);
   // Kept a little while so the page can show the result, then forgotten.
   const t = s.timers.set(() => sessions.delete(s.token), 10 * 60_000);
