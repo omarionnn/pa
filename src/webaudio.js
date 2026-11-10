@@ -11,6 +11,7 @@
 // No converter, or a conversion that fails: the original bytes, which still play on an iPhone.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readPlain, sealLike, sealInPlace } from "./restfiles.js";
 import { extname, join, resolve, sep } from "node:path";
 import { config } from "./config.js";
 import { findConverter, runConverter } from "./expressive.js";
@@ -68,6 +69,8 @@ const free = () => { const next = waiting.shift(); if (next) next(); else runnin
 
 const hashOf = (bytes) => createHash("sha256").update(bytes).digest("hex").slice(0, 40);
 const outFor = (hash, root = config.webAudioRoot) => join(resolve(root), `${hash}.m4a`);
+/** Where the playable copy of these (plain) bytes would be: the file migration seals it like its source. */
+export const playableFor = (bytes) => outFor(hashOf(bytes));
 
 function sweep(dir, now = Date.now(), keepMs = KEEP_MS) {
   let gone = 0;
@@ -134,7 +137,7 @@ function fileHash(path, bytes) {
   let key = null;
   try { const st = statSync(path); key = `${path}:${st.size}:${st.mtimeMs}`; } catch { /* hash it anyway */ }
   if (key && hashes.has(key)) return hashes.get(key);
-  const h = hashOf(bytes ?? readFileSync(path));
+  const h = hashOf(bytes ?? readPlain(path));
   if (key) { hashes.set(key, h); if (hashes.size > 500) hashes.delete(hashes.keys().next().value); }
   return h;
 }
@@ -144,22 +147,26 @@ function fileHash(path, bytes) {
  * must not live on as its .m4a). Called by src/calls/recordings.js deleteRecordingFile and src/privacy.js.
  */
 export function forgetPlayable(path) {
-  try { if (!existsSync(path)) return; rmSync(outFor(hashOf(readFileSync(path))), { force: true }); } catch { /* nothing kept */ }
+  try { if (!existsSync(path)) return; rmSync(outFor(hashOf(readPlain(path))), { force: true }); } catch { /* nothing kept */ }
 }
 
 /**
  * Audio to hand the browser: `{ bytes, mime }`. `path` (a file Reason keeps, with the `root` it was
  * checked inside) or `bytes`; `mime` what it is now.
  */
-export async function playable({ bytes = null, path = null, root = null, mime, ...opts }) {
-  if (plays(mime)) return { bytes: bytes ?? readFileSync(path), mime };
+export async function playable({ bytes = null, path = null, root = null, mime, owner = null, ...opts }) {
+  if (plays(mime)) return { bytes: bytes ?? readPlain(path), mime };
   if (path) {
     const sib = playableSibling(path, root);
-    if (sib) return { bytes: readFileSync(sib.path), mime: sib.mime };
+    if (sib) return { bytes: readPlain(sib.path), mime: sib.mime };
   }
-  const original = bytes ?? readFileSync(path);
+  const original = bytes ?? readPlain(path);
   const hash = path ? fileHash(path, original) : null;
   const made = await toM4a(original, { ...opts, ...(hash ? { hash } : {}) });
-  if (made) { try { return { bytes: readFileSync(made), mime: "audio/mp4" }; } catch { /* fall through */ } }
+  if (made) {
+    // The playable copy is sealed like what it was made from (REASON_ENCRYPT_REST2).
+    try { if (path) sealLike(path, made); else if (owner) sealInPlace(made, owner); } catch { /* served plain-cached */ }
+    try { return { bytes: readPlain(made), mime: "audio/mp4" }; } catch { /* fall through */ }
+  }
   return { bytes: original, mime };
 }

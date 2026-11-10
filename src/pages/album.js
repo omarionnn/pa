@@ -17,6 +17,7 @@ import { coverUrl } from "../eventcover.js";
 import { normalizeNumber, config } from "../config.js";
 import * as made from "./made.js";
 import * as events from "../events.js";
+import { readPlain } from "../restfiles.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -257,7 +258,7 @@ export async function albumRequest({ ev, sub, method, query = {}, headers = {}, 
     if (!c || !albums.canSeePhoto(c, ev, photo)) return page(404, renderNotFound());
     const file = albums.photoFile(ev, photo);
     let bytes = null;
-    try { bytes = file ? readFileSync(file) : null; } catch { bytes = null; }
+    try { bytes = file ? readPlain(file) : null; } catch { bytes = null; }
     if (!bytes) return page(404, renderNotFound());
     const name = `${ev.name.replace(/[^\w-]+/g, "-").slice(0, 40)}-${photo.id}.${{ "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" }[photo.media_type] ?? "jpg"}`;
     return { status: 200, headers: { "Content-Type": photo.media_type, "Content-Length": bytes.length, "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex", "Content-Disposition": `${query.dl === "1" ? "attachment" : "inline"}; filename="${name}"` }, body: bytes };

@@ -14,6 +14,7 @@
 // Batches of 500 with a short pause, so it can run beside the live server (WAL, busy_timeout).
 const arg = process.argv[2] ?? "--status";
 const childProcess = await import("node:child_process");
+const { existsSync } = await import("node:fs");
 const d = await import("../src/db.js");
 const rc = d.restcrypt;
 // The disaster-recovery copy of the master: sealed with age to the owner's key (the same one env.age
@@ -27,11 +28,15 @@ function sealRecoveryCopy() {
   const f = rc.kekFilePath();
   ageSeal(f, f + ".age");
   console.log(`recovery copy: ${f}.age`);
+  // Phase 2's blind-index key (exact match on numbers) is recovered the same way.
+  const ix = rc.indexKeyPath();
+  if (existsSync(ix)) { ageSeal(ix, ix + ".age"); console.log(`recovery copy: ${ix}.age`); }
 }
 const pause = () => new Promise(r => setTimeout(r, 50));
 if (arg === "--status") {
   console.table(rc.status(d.rawPrepare));
-  console.log(`flag=${rc.flagOn() ? "on" : "off"} install_key=${rc.active() ? "unlocked" : "none"}`);
+  console.table(d.restfiles.fileStatus());
+  console.log(`flag=${rc.flagOn() ? "on" : "off"} flag2=${rc.flag2On() ? "on" : "off"} install_key=${rc.active() ? "unlocked" : "none"}`);
 } else if (arg === "--seal" || arg === "--open") {
   if (arg === "--seal" && !rc.flagOn()) { console.error("REASON_ENCRYPT_REST is not on."); process.exit(2); }
   if (arg === "--open" && rc.flag2On()) { console.error("Set REASON_ENCRYPT_REST2=off (phase 2 only) or REASON_ENCRYPT_REST=off (everything), and restart the server, before opening rows back up, or new writes keep sealing."); process.exit(2); }
@@ -41,6 +46,12 @@ if (arg === "--status") {
   let total = 0, n;
   while ((n = rc.migrateBatch(d.rawPrepare, arg === "--seal" ? "seal" : "open", 500, phases)) > 0) { total += n; await pause(); }
   console.log(`${arg === "--seal" ? "sealed" : "opened"} ${total} value(s)${phases ? " (phase 2 only)" : ""}`);
+  // Phase 2's files: sealed when phase 2 is on; opened on any rollback (files are phase 2 only).
+  if (arg === "--open" || rc.flag2On()) {
+    const f = await d.restfiles.migrateFiles(d.rawPrepare, arg === "--seal" ? "seal" : "open");
+    console.log(`files: ${JSON.stringify({ ...f, unowned_files: undefined })}`);
+    if (f.unowned_files.length) console.log(`files with no owner found (left plain): ${f.unowned_files.join(", ")}`);
+  }
   const st = rc.status(d.rawPrepare).filter(r => !phases || phases.includes(r.phase));
   console.table(st);
   const left = st.reduce((n, r) => n + (arg === "--seal" ? r.plain : r.sealed), 0);

@@ -64,6 +64,7 @@ import { basename, resolve } from "node:path";
 import { config } from "./config.js";
 import { api } from "./google.js";
 import { DRIVE_BASE, FILE_FIELDS, FOLDER_MIME, LIST_FIELDS, escapeTerm, fileView, kindOf } from "./drive.js";
+import { readPlain } from "./restfiles.js";
 
 /** Multipart's documented ceiling: "a small file (5 MB or less)". Above it, this refuses. */
 export const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
@@ -311,7 +312,7 @@ export function multipartUpload({ name, mimeType, bytes, parents = [] }) {
 }
 
 /** A file from this machine into their Drive. `{ ok, file }` or the api() failure. */
-export async function upload(token, { path, name = "", mimeType = "", parent = "", read = readFileSync }) {
+export async function upload(token, { path, name = "", mimeType = "", parent = "", read = readPlain }) {
   const part = multipartUpload({
     name: name || basename(path),
     mimeType,

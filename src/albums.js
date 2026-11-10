@@ -51,6 +51,7 @@ import * as accounts from "./accounts.js";
 import { fetchImage } from "./media.js";
 import { sniff, READABLE } from "./pictures.js";
 import { config, clock } from "./config.js";
+import { readPlain, writeSealed } from "./restfiles.js";
 
 // ---------- the switch, and the one retention setting ----------
 
@@ -101,9 +102,11 @@ const ROOT = () => join(config.dataDir, "event-albums");
 const dirOf = (ev) => join(ROOT(), ev.public_id);
 const EXT = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
 
-function writeAtomic(dir, name, bytes) {
+function writeAtomic(dir, name, bytes, owner = null) {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, name);
+  // A contributor's photo is sealed under their own key (REASON_ENCRYPT_REST2); members see it opened.
+  if (owner) { writeSealed(file, owner, bytes); return file; }
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   writeFileSync(tmp, bytes);
   renameSync(tmp, file);
@@ -236,7 +239,7 @@ export async function contribute({ ev, conversationId, mediaIds, fetchImpl = nul
     const dup = db.photoByHash(album.id, conversationId, sha256);
     if (dup) { out.duplicates.push({ photo_id: mid, photo: dup.id }); continue; }
     const name = `${randomBytes(9).toString("base64url")}.${EXT[type]}`;
-    try { writeAtomic(dirOf(ev), name, bytes); }
+    try { writeAtomic(dirOf(ev), name, bytes, conversationId); }
     catch (e) { out.failed.push({ photo_id: mid, why: `it couldn't be stored (${(e?.message ?? String(e)).split("\n")[0]})` }); continue; }
     out.added.push(db.insertPhoto({ albumId: album.id, eventId: ev.id, conversationId, mediaId: mid, file: name, mediaType: type, bytes: bytes.length, sha256 }));
   }
@@ -527,7 +530,7 @@ export function zipOf(ev, photos) {
   photos.forEach((p, i) => {
     const file = photoFile(ev, p);
     if (!file) return;
-    const data = readFileSync(file);
+    const data = readPlain(file);
     const base = `${String(i + 1).padStart(3, "0")}-shared-by-${String(p.shared_by ?? "guest").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "guest"}`;
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);

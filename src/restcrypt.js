@@ -23,7 +23,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
-import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, writeSync, fsyncSync, closeSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, readSync, writeSync, fsyncSync, closeSync } from "node:fs";
 
 export const PREFIX = "enc:u1:";
 
@@ -466,6 +466,92 @@ function openUncached(v) {
   return gcmOpen(k, rest.slice(cut + 1), `u:${id}`).toString("utf8");
 }
 
+// ---------- files (phase 2): recordings, photos, documents, cards, voice notes ----------
+// A sealed file is FILE_MAGIC (8 bytes) | key id (6 bytes BE, as user_keys ids are) | iv (12) | tag (16) | ciphertext,
+// AES-256-GCM under the owner's person key, AAD "f:<keyId>". Like a sealed cell it names its key,
+// so a reader needs no owner: src/restfiles.js readPlain() opens any file, sealed or not.
+export const FILE_MAGIC = Buffer.from("RSNENC1\n", "latin1");
+export const FILE_ID_BYTES = 6;
+const FILE_HEAD = FILE_MAGIC.length + FILE_ID_BYTES + 12 + 16;
+export function isSealedBytes(buf) {
+  return !!buf && buf.length >= FILE_HEAD && Buffer.from(buf.buffer, buf.byteOffset, FILE_MAGIC.length).equals(FILE_MAGIC);
+}
+/** Key id a sealed file was written under, or null for a plain one. */
+export function fileKeyId(buf) { return isSealedBytes(buf) ? Buffer.from(buf.buffer, buf.byteOffset, buf.length).readUIntBE(FILE_MAGIC.length, FILE_ID_BYTES) : null; }
+function sealBytesWith(id, key, bytes) {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", key, iv);
+  c.setAAD(Buffer.from(`f:${id}`));
+  const ct = Buffer.concat([c.update(bytes), c.final()]);
+  const head = Buffer.alloc(FILE_MAGIC.length + FILE_ID_BYTES);
+  FILE_MAGIC.copy(head, 0); head.writeUIntBE(id, FILE_MAGIC.length, FILE_ID_BYTES);
+  return Buffer.concat([head, iv, c.getAuthTag(), ct]);
+}
+/** A file's bytes as stored: sealed for its owner with REASON_ENCRYPT_REST2=on, else unchanged. */
+export function sealBytes(conversationId, bytes) {
+  const b = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (!flag2On() || isSealedBytes(b)) return b;
+  const id = keyIdFor(conversationId, true);
+  return sealBytesWith(id, deks.get(id), b);
+}
+/** Seal bytes under a given person key id (a file made from a sealed file stays under its key). */
+export function sealBytesUnder(id, bytes) {
+  const b = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (!flag2On() || isSealedBytes(b)) return b;
+  const k = loadDek(id);
+  if (!k) return Buffer.alloc(0); // its person was deleted meanwhile: keep nothing
+  return sealBytesWith(id, k, b);
+}
+/** The plain bytes of a stored file. Plain passes through; a destroyed key opens to 0 bytes. */
+export function openBytes(buf) {
+  if (!isSealedBytes(buf)) return buf;
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  const id = b.readUIntBE(FILE_MAGIC.length, FILE_ID_BYTES);
+  const k = loadDek(id);
+  if (!k) return Buffer.alloc(0);
+  let o = FILE_MAGIC.length + FILE_ID_BYTES;
+  const iv = b.subarray(o, o += 12), tag = b.subarray(o, o += 16);
+  const d = createDecipheriv("aes-256-gcm", k, iv);
+  d.setAAD(Buffer.from(`f:${id}`));
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(b.subarray(o)), d.final()]);
+}
+/** Directories holding sealed files (src/restfiles.js registers them), walked by rotatePersonKey. */
+let fileRootsFn = () => [];
+export function registerFileRoots(fn) { fileRootsFn = fn; }
+export function fileRootList() { return [...new Set(fileRootsFn().filter(Boolean))]; }
+function* walkFiles(dir, depth = 0) {
+  let ents;
+  try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of ents) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) { if (depth < 4) yield* walkFiles(p, depth + 1); } else if (e.isFile()) yield p;
+  }
+}
+/** Every sealed file under the registered roots whose key id is `id`. */
+export function* filesSealedUnder(id) {
+  const head = Buffer.alloc(FILE_MAGIC.length + FILE_ID_BYTES);
+  for (const root of fileRootList()) for (const p of walkFiles(root)) {
+    let fd;
+    try { fd = openSync(p, "r"); } catch { continue; }
+    try {
+      const n = readSync(fd, head, 0, head.length, 0);
+      if (n === head.length && head.subarray(0, FILE_MAGIC.length).equals(FILE_MAGIC) && head.readUIntBE(FILE_MAGIC.length, FILE_ID_BYTES) === id) yield p;
+    } finally { closeSync(fd); }
+  }
+}
+/** Write bytes to `path` atomically (tmp + fsync + rename), keeping 0600. */
+export function writeFileAtomic(path, bytes, mode = 0o600) {
+  const tmp = `${path}.rs-${process.pid}-${randomBytes(4).toString("hex")}`;
+  const fd = openSync(tmp, "w", mode);
+  try {
+    for (let off = 0; off < bytes.length;) off += writeSync(fd, bytes, off, bytes.length - off);
+    fsyncSync(fd);
+  } catch (e) { closeSync(fd); rmSync(tmp, { force: true }); throw e; }
+  closeSync(fd);
+  renameSync(tmp, path);
+}
+
 /** Crypto-shred: destroy the person's key. Every sealed copy of their data, in any backup, is dead. */
 export function destroyKey(conversationId) {
   if (!ks) return false;
@@ -508,6 +594,10 @@ export function rotatePersonKey(rawPrepare, conversationId) {
         resealed += Number(upd.run(`${PREFIX}${nid}:${gcmSeal(newKey, Buffer.from(plain, "utf8"), `u:${nid}`)}`, r.k, r.v).changes);
       }
     }
+  }
+  // Their files too (recordings, photos, documents that stay), before the old key goes.
+  for (const p of [...filesSealedUnder(old.id)]) {
+    try { writeFileAtomic(p, sealBytesWith(nid, newKey, openBytes(readFileSync(p)))); resealed++; } catch (e) { if (e.code !== "ENOENT") throw e; /* deleted meanwhile */ }
   }
   ks.exec("BEGIN IMMEDIATE");
   try {

@@ -10,6 +10,7 @@
 import { inflateRawSync } from "node:zlib";
 import { readFileSync, existsSync } from "node:fs";
 import { localUpload, filePath } from "./webuploads.js";
+import { readPlain } from "./restfiles.js";
 
 /** What one turn hands the model, at most, from one document. Same order of size as a PDF's read. */
 export const MAX_DOC_CHARS = 60_000;
@@ -124,7 +125,7 @@ export async function docsFor(attachments = [], { log = () => {}, cover = () => 
       continue;
     }
     let got;
-    try { got = docText(readFileSync(path)); } catch (e) { got = { ok: false, why: "the file is damaged" }; }
+    try { got = docText(readPlain(path)); } catch (e) { got = { ok: false, why: "the file is damaged" }; }
     if (!got.ok || !got.text) {
       const why = got.ok ? "there are no words in it" : got.why;
       notes.push(`they sent a document (${name}) and it could not be read: ${why}`);

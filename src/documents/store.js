@@ -12,6 +12,7 @@
 // all three the first time two documents were called the same thing.
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync, statSync } from "node:fs";
+import { writeSealed, readPlain } from "../restfiles.js";
 import { resolve, join } from "node:path";
 import { config } from "../config.js";
 import { renderDocx } from "./docx.js";
@@ -90,7 +91,7 @@ export function documentPath(id, filename) {
  * Returns what belongs on the row, with the size and the checksum read back off the file on disk
  * rather than off the buffer that was meant to go there.
  */
-export function writeDocument({ id, kind, filename, bytes, from = "" }) {
+export function writeDocument({ id, kind, filename, bytes, from = "", owner = null }) {
   const file = documentPath(id, filename);
   const magic = KINDS[kind]?.magic;
   if (magic && bytes.toString("latin1", 0, magic.length) !== magic) {
@@ -100,13 +101,14 @@ export function writeDocument({ id, kind, filename, bytes, from = "" }) {
     return { ok: false, error: `what ${from || `the ${kind} writer`} gave back does not start like a ${kind} file` };
   }
   try {
-    writeFileSync(file, bytes);
+    // Sealed for its owner (REASON_ENCRYPT_REST2); everything that serves or sends it opens it.
+    if (owner) writeSealed(file, owner, bytes); else writeFileSync(file, bytes);
   } catch (e) {
     return { ok: false, error: `the file could not be written: ${(e?.message ?? String(e)).split("\n")[0]}` };
   }
-  const size = statSync(file).size;
-  if (!size) return { ok: false, error: "the file was written and is empty" };
-  return { ok: true, file, bytes: size, sha256: createHash("sha256").update(readFileSync(file)).digest("hex") };
+  const back = readPlain(file);
+  if (!back.length) return { ok: false, error: "the file was written and is empty" };
+  return { ok: true, file, bytes: back.length, sha256: createHash("sha256").update(back).digest("hex") };
 }
 
 /**
@@ -146,7 +148,7 @@ export function deleteDocumentFile(file) {
 export function readDocument(file) {
   try {
     if (!file || !existsSync(file)) return null;
-    return readFileSync(file);
+    return readPlain(file);
   } catch {
     return null;
   }

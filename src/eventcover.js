@@ -22,6 +22,7 @@
 // Pictures live under data/event-covers: the live cover by its version, a waiting one by a random
 // name only the organizer's preview link knows, the drawn one by a hash of the name it shows.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { writeSealed } from "./restfiles.js";
 import { join, basename } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import * as db from "./db.js";
@@ -99,10 +100,13 @@ function writeAtomic(file, bytes) {
   renameSync(tmp, file);
 }
 
-async function draw(html, file) {
+async function draw(html, file, owner = null) {
   const jpg = await withTimeout(shootImpl(html), RENDER_TIMEOUT_MS);
   if (!jpg?.length) throw new Error("the renderer gave back an empty picture");
-  writeAtomic(file, jpg);
+  // The organizer's own photo is theirs: sealed under their key (REASON_ENCRYPT_REST2). Reason's
+  // drawn cover (the event's name, already public on its page) is not.
+  if (owner) writeSealed(file, owner, jpg);
+  else writeAtomic(file, jpg);
   return file;
 }
 
@@ -327,7 +331,7 @@ export async function offerCover({ ev, conversationId, mediaId, fetchImpl }) {
   const picture = { mediaType: got.mediaType, base64: got.base64 };
 
   const file = join(DIR(), `p-${ev.public_id}-${randomBytes(9).toString("base64url")}.jpg`);
-  try { await draw(uploadedHtml(picture), file); }
+  try { await draw(uploadedHtml(picture), file, conversationId); }
   catch (e) {
     const why = e instanceof NoCardRenderer ? e.message : (e?.message ?? String(e)).split("\n")[0];
     return { ok: false, error: `Couldn't make the card from that picture: ${why}` };

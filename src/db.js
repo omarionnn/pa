@@ -2,6 +2,7 @@
 import { DatabaseSync } from "node:sqlite";
 import * as secretbox from "./secretbox.js";
 import * as restcrypt from "./restcrypt.js";
+import * as restfiles from "./restfiles.js";
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { EventEmitter } from "node:events";
@@ -25,7 +26,7 @@ export function sealFact(personId, text) {
   const owner = db.prepare("SELECT conversation_id FROM people WHERE id = ?").get(personId)?.conversation_id;
   return restcrypt.sealFor(owner, text);
 }
-export { restcrypt };
+export { restcrypt, restfiles };
 /** Seal a phase-2 column (restcrypt.SENSITIVE2) for its owner; unchanged unless REASON_ENCRYPT_REST2=on. */
 export const seal2 = (conversationId, text) => restcrypt.sealFor2(conversationId, text);
 /**
@@ -42,13 +43,20 @@ export function restStrictRefresh() {
  * here; scripts/encrypt-rest.mjs --open writes them back as plain text.
  */
 export function startRestMigration({ log = () => {}, everyMs = 2000, batch = 200 } = {}) {
+  try { restfiles.sweepPlainTmp(); } catch { /* nothing left over */ }
   if (!restcrypt.flagOn() || !restcrypt.active()) return null;
   let total = 0;
   const t = setInterval(() => {
     try {
       const n = restcrypt.migrateBatch(rawPrepare, "seal", batch);
       total += n;
-      if (n === 0) { clearInterval(t); log({ encrypt_rest: "migration_done", sealed: total }); }
+      if (n === 0) {
+        clearInterval(t);
+        log({ encrypt_rest: "migration_done", sealed: total });
+        // Phase 2: the files on disk, once the rows are done (one pass; a few hundred files).
+        if (restcrypt.flag2On()) restfiles.migrateFiles(rawPrepare, "seal", { log })
+          .catch(e => log({ encrypt_rest: "file_migration_error", error: String(e?.message ?? e).slice(0, 200) }));
+      }
     } catch (e) { clearInterval(t); log({ encrypt_rest: "migration_error", error: String(e?.message ?? e).slice(0, 200) }); }
   }, everyMs);
   t.unref?.();
