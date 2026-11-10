@@ -95,7 +95,7 @@ import { checkReaction, checkSendStyle } from "../expressive.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { reverseGeocode } from "../places.js";
 import { isLinkPreviewAttachment } from "../linkpreview.js";
-import { readPlain } from "../restfiles.js";
+import { readPlain, plainStat } from "../restfiles.js";
 
 /** POST /api/upload-file: "Maximum file size: 100 MB" (api-v2/media). */
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -242,7 +242,7 @@ export class SendblueChannel extends Channel {
    * adapter: an attachment test should not need a real file on disk, and no test should need a
    * network or a Sendblue account.
    */
-  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now(), statFile = statSync, readFile = readPlain } = {}) {
+  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now(), statFile = plainStat, readFile = readPlain } = {}) {
     super();
     this.fetch = fetchImpl;
     this.now = now;

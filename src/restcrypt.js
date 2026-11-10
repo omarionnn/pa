@@ -483,6 +483,8 @@ function openUncached(v) {
 export const FILE_MAGIC = Buffer.from("RSNENC1\n", "latin1");
 export const FILE_ID_BYTES = 6;
 const FILE_HEAD = FILE_MAGIC.length + FILE_ID_BYTES + 12 + 16;
+/** Bytes a sealed file is longer than the plain one (header + iv + tag; GCM adds no padding). */
+export const FILE_OVERHEAD = FILE_HEAD;
 export function isSealedBytes(buf) {
   return !!buf && buf.length >= FILE_HEAD && Buffer.from(buf.buffer, buf.byteOffset, FILE_MAGIC.length).equals(FILE_MAGIC);
 }
@@ -535,9 +537,12 @@ function* walkFiles(dir, depth = 0) {
   try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const e of ents) {
     const p = join(dir, e.name);
-    if (e.isDirectory()) { if (depth < 4) yield* walkFiles(p, depth + 1); } else if (e.isFile()) yield p;
+    if (e.isDirectory()) { if (depth < 4 && e.name !== ".plain-tmp") yield* walkFiles(p, depth + 1); }
+    else if (e.isFile() && !TEMP_RE.test(e.name)) yield p;
   }
 }
+/** A writeFileAtomic temp file (`<name>.rs-<pid>-<hex>`): never a stored file; swept at boot. */
+export const TEMP_RE = /\.rs-\d+-[0-9a-f]{8}$/;
 /** Every sealed file under the registered roots whose key id is `id`. */
 export function* filesSealedUnder(id) {
   const head = Buffer.alloc(FILE_MAGIC.length + FILE_ID_BYTES);
@@ -551,7 +556,9 @@ export function* filesSealedUnder(id) {
   }
 }
 /** Write bytes to `path` atomically (tmp + fsync + rename), keeping 0600. */
-export function writeFileAtomic(path, bytes, mode = 0o600) {
+/** Files rotatePersonKey could not open (damaged), for the log; the rotation went on without them. */
+export const unreadableFiles = [];
+export function writeFileAtomic(path, bytes, mode = 0o600, { syncParent = true } = {}) {
   const tmp = `${path}.rs-${process.pid}-${randomBytes(4).toString("hex")}`;
   const fd = openSync(tmp, "w", mode);
   try {
@@ -560,6 +567,7 @@ export function writeFileAtomic(path, bytes, mode = 0o600) {
   } catch (e) { closeSync(fd); rmSync(tmp, { force: true }); throw e; }
   closeSync(fd);
   renameSync(tmp, path);
+  if (syncParent) syncDir(dirname(path));
 }
 
 /** Crypto-shred: destroy the person's key. Every sealed copy of their data, in any backup, is dead. */
@@ -606,9 +614,16 @@ export function rotatePersonKey(rawPrepare, conversationId) {
     }
   }
   // Their files too (recordings, photos, documents that stay), before the old key goes.
+  // A file that will not open (damaged) is already unreadable and is left; a failed write stops the
+  // rotation here, before the old key goes, and a re-run finishes it.
+  const moved = new Set();
   for (const p of [...filesSealedUnder(old.id)]) {
-    try { writeFileAtomic(p, sealBytesWith(nid, newKey, openBytes(readFileSync(p)))); resealed++; } catch (e) { if (e.code !== "ENOENT") throw e; /* deleted meanwhile */ }
+    let plain;
+    try { plain = openBytes(readFileSync(p)); } catch (e) { if (e.code !== "ENOENT") unreadableFiles.push(p); continue; }
+    try { writeFileAtomic(p, sealBytesWith(nid, newKey, plain), 0o600, { syncParent: false }); moved.add(dirname(p)); resealed++; }
+    catch (e) { if (e.code !== "ENOENT") throw e; /* deleted meanwhile */ }
   }
+  for (const dir of moved) syncDir(dir); // every re-sealed file durable before the old key is destroyed
   ks.exec("BEGIN IMMEDIATE");
   try {
     ks.prepare("DELETE FROM user_keys WHERE id = ?").run(old.id);
@@ -672,7 +687,12 @@ function readIndexKey({ create }) {
     const p = indexKeyPath();
     if (!existsSync(p)) {
       if (!create) return null;
-      durableWrite(p, randomBytes(32).toString("hex") + "\n");
+      // Exclusive: the server and a script enabling it at once must not each write their own key.
+      try {
+        const fd = openSync(p, "wx", 0o640);
+        try { writeSync(fd, randomBytes(32).toString("hex") + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
+        syncDir(dirname(p));
+      } catch (e) { if (e.code !== "EEXIST") throw e; }
     }
     hex = readFileSync(p, "utf8").trim();
   }

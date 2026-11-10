@@ -38,7 +38,7 @@ import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { isLinkPreviewAttachment } from "../linkpreview.js";
-import { readPlain } from "../restfiles.js";
+import { readPlain, plainStat } from "../restfiles.js";
 
 const REPLAY_WINDOW_S = 5 * 60;
 // Linq's documented pre-upload ceiling. The `url` form of a media part is capped at 10MB, but a
@@ -53,7 +53,7 @@ export class LinqChannel extends Channel {
    * the two file reads are injectable for the same reason — an attachment test should not need a
    * real file on disk, and a real send should not need a test double.
    */
-  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now(), statFile = statSync, readFile = readPlain } = {}) {
+  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now(), statFile = plainStat, readFile = readPlain } = {}) {
     super();
     this.fetch = fetchImpl;
     this.now = now;

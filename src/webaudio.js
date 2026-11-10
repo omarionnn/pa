@@ -166,7 +166,11 @@ export async function playable({ bytes = null, path = null, root = null, mime, o
   if (made) {
     // The playable copy is sealed like what it was made from (REASON_ENCRYPT_REST2).
     try { if (path) sealLike(path, made); else if (owner) sealInPlace(made, owner); } catch { /* served plain-cached */ }
-    try { return { bytes: readPlain(made), mime: "audio/mp4" }; } catch { /* fall through */ }
+    try {
+      const b = readPlain(made);
+      if (b.length) return { bytes: b, mime: "audio/mp4" };
+      rmSync(made, { force: true }); // sealed by someone whose key is gone: made again next time
+    } catch { /* fall through */ }
   }
   return { bytes: original, mime };
 }

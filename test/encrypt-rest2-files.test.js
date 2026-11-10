@@ -173,15 +173,45 @@ test("files already on disk: the migration seals them for their owner; the rollb
   assert.deepEqual(plainFilesWith(MARK), []);
 });
 
+test("a sealed file's declared size is its plain size (Linq signs the upload's length)", () => {
+  const file = rec.recordingFileFor(callId, "wav");
+  assert.equal(rf.plainStat(file).size, wav().length);
+  assert.equal(rf.plainSize(file), wav().length);
+  assert.equal(rf.plainStat(file).isFile(), true);
+});
+
+test("flags off with only sealed files left (a rollback cut short): the keystore still unlocks", async () => {
+  const file = rec.recordingFileFor(callId, "wav");
+  process.env.REASON_ENCRYPT_REST = "off"; process.env.REASON_ENCRYPT_REST2 = "off";
+  rc._resetForTests();
+  await rc.init(process.env.REASON_DB_PATH, { hasSealed: () => rf.anySealedFile() });
+  assert.equal(rc.active(), true);
+  assert.deepEqual(rec.readRecording(file), wav());
+  process.env.REASON_ENCRYPT_REST = "on"; process.env.REASON_ENCRYPT_REST2 = "on";
+  rc._resetForTests();
+  await rc.init(process.env.REASON_DB_PATH);
+});
+
 test("forget everything: the files that stay are re-sealed under the new key, the old key is gone", async () => {
   const ios = await import("../src/ios/memory.js");
   const file = rec.recordingFileFor(callId, "wav");
   const before = rf.keyIdOfFile(file);
+  // A crash leftover (half-written temp of a sealed file) and a damaged file under the same key
+  // must not stop the delete: the first is skipped by name, the second is left as it was.
+  const raw = readFileSync(file);
+  const leftover = `${file}.rs-4242-deadbeef`;
+  writeFileSync(leftover, raw.subarray(0, raw.length - 7));
+  const damaged = join(process.env.REASON_RECORDING_ROOT, "call-999999.wav");
+  writeFileSync(damaged, Buffer.concat([raw.subarray(0, raw.length - 3), Buffer.from("xyz")]));
   await ios.forgetEverything({ conversation_id: C });
   const nowId = rf.keyIdOfFile(file);
   assert.ok(nowId && nowId !== before, "re-sealed under a new key");
   assert.equal(rc.keystore().prepare("SELECT 1 FROM user_keys WHERE id = ?").get(before), undefined, "the old key is destroyed");
   assert.deepEqual(rec.readRecording(file), wav(), "and the recording still plays");
+  assert.ok(rc.unreadableFiles.includes(damaged), "the damaged one is reported, not fatal");
+  assert.equal(rf.sweepPlainTmp() >= 1, true);
+  assert.equal(existsSync(leftover), false, "the leftover temp is swept");
+  rmSync(damaged);
 });
 
 test("a person deleted: their files open to nothing", () => {

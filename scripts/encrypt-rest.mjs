@@ -42,16 +42,19 @@ if (arg === "--status") {
   if (arg === "--open" && rc.flag2On()) { console.error("Set REASON_ENCRYPT_REST2=off (phase 2 only) or REASON_ENCRYPT_REST=off (everything), and restart the server, before opening rows back up, or new writes keep sealing."); process.exit(2); }
   // Phase 1 still on: roll back phase 2 alone.
   const phases = arg === "--open" && rc.flagOn() ? [2] : null;
+  // Phase 2's files: sealed when phase 2 is on; opened on any rollback (files are phase 2 only).
+  // A rollback opens files FIRST: with the rows open, a later start may not unlock the keystore.
+  const files = async () => {
+    const f = await d.restfiles.migrateFiles(d.rawPrepare, arg === "--seal" ? "seal" : "open");
+    console.log(`files: ${JSON.stringify({ ...f, unowned_files: undefined })}`);
+    if (f.unowned_files.length) console.log(`files with no owner found (left plain): ${f.unowned_files.join(", ")}`);
+  };
+  if (arg === "--open") await files();
   if (arg === "--open") rc.dropStrictTriggers(d.db);
   let total = 0, n;
   while ((n = rc.migrateBatch(d.rawPrepare, arg === "--seal" ? "seal" : "open", 500, phases)) > 0) { total += n; await pause(); }
   console.log(`${arg === "--seal" ? "sealed" : "opened"} ${total} value(s)${phases ? " (phase 2 only)" : ""}`);
-  // Phase 2's files: sealed when phase 2 is on; opened on any rollback (files are phase 2 only).
-  if (arg === "--open" || rc.flag2On()) {
-    const f = await d.restfiles.migrateFiles(d.rawPrepare, arg === "--seal" ? "seal" : "open");
-    console.log(`files: ${JSON.stringify({ ...f, unowned_files: undefined })}`);
-    if (f.unowned_files.length) console.log(`files with no owner found (left plain): ${f.unowned_files.join(", ")}`);
-  }
+  if (arg === "--seal" && rc.flag2On()) await files();
   const st = rc.status(d.rawPrepare).filter(r => !phases || phases.includes(r.phase));
   console.table(st);
   const left = st.reduce((n, r) => n + (arg === "--seal" ? r.plain : r.sealed), 0);

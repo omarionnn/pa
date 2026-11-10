@@ -62,11 +62,21 @@ export function readPlain(path) {
   return rc.openBytes(readFileSync(path));
 }
 
-/** Plain size of a stored file (for Content-Length / Range), without keeping the bytes. */
+/** Plain size of a stored file (for Content-Length / a declared upload size). */
 export function plainSize(path) {
   const st = statSync(path);
-  if (st.size < 8) return st.size;
-  return readPlain(path).length;
+  return keyIdOfFile(path) == null ? st.size : st.size - rc.FILE_OVERHEAD;
+}
+/** statSync, with the size a sealed file opens to (Linq signs the declared length of an upload). */
+export function plainStat(path) {
+  const st = statSync(path);
+  return keyIdOfFile(path) == null ? st : Object.assign(Object.create(Object.getPrototypeOf(st)), st, { size: st.size - rc.FILE_OVERHEAD });
+}
+
+/** Any sealed file at all (boot: the keystore must unlock to read them even with the flags off). */
+export function anySealedFile() {
+  for (const root of fileRoots()) for (const p of walk(abs(root))) if (keyIdOfFile(p) != null) return true;
+  return false;
 }
 
 /** Seal a file already on disk for its owner, in place. True when it changed. */
@@ -132,12 +142,15 @@ export async function withPlainPath(path, fn) {
   try { return await fn(tmp); } finally { rmSync(tmp, { force: true }); }
 }
 
-/** Boot: a crash mid-withPlainPath may leave a plain copy behind. */
+/**
+ * Boot: a crash mid-withPlainPath may leave a plain copy behind, and a crash mid-write a half-written
+ * `<name>.rs-<pid>-<hex>` (which may hold plain bytes, from a rollback). Both go.
+ */
 export function sweepPlainTmp() {
-  const dir = plainTmpDir();
-  if (!existsSync(dir)) return 0;
   let n = 0;
-  for (const f of readdirSync(dir)) { rmSync(join(dir, f), { force: true }); n++; }
+  const dir = plainTmpDir();
+  if (existsSync(dir)) for (const f of readdirSync(dir)) { rmSync(join(dir, f), { force: true }); n++; }
+  for (const root of fileRoots()) for (const p of walk(abs(root), 0, true)) if (rc.TEMP_RE.test(p)) { rmSync(p, { force: true }); n++; }
   return n;
 }
 
@@ -266,13 +279,13 @@ export async function migrateFiles(rawPrepare, direction = "seal", { log = () =>
   return out;
 }
 
-function* walk(dir, depth = 0) {
+function* walk(dir, depth = 0, withTemps = false) {
   let ents;
   try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const e of ents) {
     const p = join(dir, e.name);
-    if (e.isDirectory()) { if (depth < 3 && !e.name.startsWith("frames-") && e.name !== ".plain-tmp") yield* walk(p, depth + 1); }
-    else if (e.isFile()) yield p;
+    if (e.isDirectory()) { if (depth < 3 && !e.name.startsWith("frames-") && e.name !== ".plain-tmp") yield* walk(p, depth + 1, withTemps); }
+    else if (e.isFile() && (withTemps || !rc.TEMP_RE.test(e.name))) yield p;
   }
 }
 

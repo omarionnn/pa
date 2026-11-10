@@ -15,7 +15,7 @@ mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
 // Encryption at rest (src/restcrypt.js, REASON_ENCRYPT_REST): unlock the install key before any query,
 // so every read below stays synchronous. Rows from statements on a sensitive table open themselves.
-await restcrypt.init(config.dbPath, { hasSealed: () => restcrypt.anySealed(db.prepare.bind(db)) });
+await restcrypt.init(config.dbPath, { hasSealed: () => restcrypt.anySealed(db.prepare.bind(db)) || restfiles.anySealedFile() });
 /** The unwrapped prepare: sealed values come back as stored. Migration and tests only. */
 export const rawPrepare = restcrypt.wrapDatabase(db);
 // With sealing on, a re-written row must not leave its old plain text in the file's free pages.
@@ -4607,7 +4607,7 @@ export function sentSince(conversationId, mark) {
  */
 export function ownerTextsSince(conversationId, mark) {
   return db.prepare(`SELECT id, body FROM outbox WHERE conversation_id = ? AND id > ? AND to_owner = 1
-    AND state != 'failed' AND TRIM(body) != '' ORDER BY id`).all(conversationId, mark);
+    AND state != 'failed' AND TRIM(pt(body)) != '' ORDER BY id`).all(conversationId, mark);
 }
 
 /**
