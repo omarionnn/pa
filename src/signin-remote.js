@@ -57,6 +57,7 @@ import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
+import { setupStartPage, setupLivePage, setupResultPage } from "./pages/setupsignin.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -437,7 +438,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
 
   // ---------- the page ----------
   if (method === "GET" && action === "") {
-    if (s.ended) return { status: 200, headers: HTML(), body: resultPage(s) };
+    if (s.ended) return { status: 200, headers: HTML(), body: await resultPage(s) };
     if (!s.secret) return { status: 200, headers: HTML(), body: startPage(s) };
     if (!mine) return gone();
     return { status: 200, headers: HTML(), body: livePage(s) };
@@ -489,6 +490,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       } catch (e) {
         s.log({ signin_remote: "launch_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] });
         await end(s, "launch_failed");
+        if (isSetup(s)) return { status: 500, headers: HTML(), body: await resultPage(s) };
         return { status: 500, headers: HTML(), body: shell("That did not start", `<p class="lead">The browser would not open. Nothing was changed. Ask Reason for a fresh link in a minute.</p>`, { card: cardKind(s.entry) }) };
       }
       s.log({ signin_remote: "started", site: s.entry.site, conversation: s.conversationId });
@@ -680,7 +682,19 @@ header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}
 <div class="sheet"><main>${inner}${THEME.markup}</main></div><script>${THEME.js}</script>${script}</body></html>`;
 }
 
+/**
+ * A web setup's sign-in (src/websetup.js, conversation `websetup:<id>`): no thread behind it, so its
+ * pages are the paper store sign-in (src/pages/setupsignin.js) and the way on is back to the setup.
+ * A sign-in link from a text thread keeps the pages below, unchanged.
+ */
+export const isSetup = (s) => String(s?.conversationId ?? "").startsWith("websetup:");
+/** The setup's connect screen on the site it was made on (loaded late: websetup.js reaches back here through amazonconnect.js). */
+async function setupBack(s) {
+  try { const ws = await import("./websetup.js"); return ws.backUrlFor(s.conversationId, s.entry.site); } catch { return "/start/connect"; }
+}
+
 function startPage(s) {
+  if (isSetup(s)) return setupStartPage({ entry: s.entry, action: `${PATH}/${s.token}/start` });
   const label = esc(s.entry.label);
   return shell(`Sign in to ${s.entry.label}`, `
 <h1>Sign in to ${label}</h1>
@@ -721,7 +735,8 @@ ${error ? `<p class="lead"><b>${esc(error)}</b></p>` : ""}
  * the person who just signed in is the one whose task is waiting on it. "Reason will text you"
  * stays — both are true, and the tap is the faster of the two.
  */
-function resultPage(s) {
+async function resultPage(s) {
+  if (isSetup(s)) return setupResultPage({ entry: s.entry, ended: s.ended, back: await setupBack(s), card: cardKind(s.entry) });
   const label = esc(s.entry.label);
   const name = s.entry.label;
   const [body, back] = s.ended.state === "signed_in"
@@ -768,7 +783,7 @@ function resultPage(s) {
  * appear on top of a box the site itself drew, they have no action, and they submit nowhere.
  */
 function livePage(s) {
-  const base = `${PATH}/${s.token}`;
+  if (isSetup(s)) return setupLivePage({ entry: s.entry, view: VIEW, script: liveScript(s), card: cardKind(s.entry) });
   const label = esc(s.entry.label);
   return shell(`Sign in to ${s.entry.label}`, `
 <header><h1>${label}</h1><button id="back">Back</button></header>
@@ -784,8 +799,14 @@ function livePage(s) {
   <div id="veil"><span><span class="spin"></span>Opening ${label}…</span></div>
 </div>
 <p class="small" id="msg"></p>
-<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { card: cardKind(s.entry), script: `<script>
-(function(){
+<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { card: cardKind(s.entry), script: `<script>${liveScript(s)}</script>` });
+}
+
+/** The live page's script: the same for both frames, driving the ids both draw. */
+function liveScript(s) {
+  const base = `${PATH}/${s.token}`;
+  const label = esc(s.entry.label);
+  return `(function(){
 var B=${JSON.stringify(base)},V=${JSON.stringify(VIEW)};
 var v=document.getElementById('v'),stage=document.getElementById('stage'),veil=document.getElementById('veil'),
     msg=document.getElementById('msg'),tip=document.getElementById('tip'),dead=false;
@@ -951,5 +972,5 @@ document.getElementById('done').onclick=function(){blurAll();msg.textContent='Ch
 document.getElementById('stop').onclick=function(){blurAll();msg.textContent='Closing…';dead=true;ask('/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'},20000).then(function(){location.reload()},function(){location.reload()})};
 say('<span class="spin"></span>Opening ${label}…');pull();
 })();
-</script>` });
+`;
 }

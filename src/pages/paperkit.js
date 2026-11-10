@@ -113,8 +113,8 @@ export const PAPER_CSS = `
 `;
 
 // ---------------------------------------------------------------- parts
-/** The page's header: the wordmark, home. */
-export const header = () => `<header class="pf-hd">${wordmark({ href: "/web?home" })}</header>`;
+/** The page's header: the wordmark, home, and (StoreSignIn) a typed eyebrow on the right. */
+export const header = ({ right = "" } = {}) => `<header class="pf-hd">${wordmark({ href: "/web?home" })}${right ? `<span class="pf-l">${esc(right)}</span>` : ""}</header>`;
 
 /**
  * One screen: the main column and its margin column. `step` names it when a page holds several
