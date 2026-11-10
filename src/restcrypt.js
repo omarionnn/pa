@@ -891,14 +891,23 @@ export function status(rawPrepare) {
         SUM(CASE WHEN ${col} IS NOT NULL AND ${col} <> '' AND ${col} <> '[]' AND substr(${col},1,${PREFIX.length}) <> '${PREFIX}' THEN 1 ELSE 0 END) AS plain
         FROM ${s.table}`).get();
       out.push({ column: `${s.table}.${c}`, phase: s.phase, sealed: Number(r.sealed ?? 0), plain: Number(r.plain ?? 0) });
-      // Its blind index: "sealed" = rows with one, "plain" = a value with no index yet (not findable once sealed).
-      const bi = s.bi?.[c];
-      if (bi && hasCol(rawPrepare, s.table, bi)) {
-        const b = rawPrepare(`SELECT SUM(CASE WHEN ${qc(bi)} IS NOT NULL THEN 1 ELSE 0 END) AS w,
-          SUM(CASE WHEN ${qc(bi)} IS NULL AND ${col} IS NOT NULL AND ${col} <> '' THEN 1 ELSE 0 END) AS wo FROM ${s.table}`).get();
-        out.push({ column: `${s.table}.${bi}`, phase: s.phase, sealed: Number(b.w ?? 0), plain: Number(b.wo ?? 0) });
-      }
+
     }
+  }
+  return out;
+}
+
+/**
+ * The blind indexes beside sealed columns (accounts.address_bi), for --status: `indexed` rows have
+ * one; `missing` = a sealed value with none, which no exact-match lookup can find. Want 0.
+ */
+export function indexStatus(rawPrepare) {
+  const out = [];
+  for (const s of ALL_SENSITIVE) for (const [c, bi] of Object.entries(s.bi ?? {})) {
+    if (!tableExists(rawPrepare, s.table) || !hasCol(rawPrepare, s.table, bi)) continue;
+    const r = rawPrepare(`SELECT SUM(CASE WHEN ${qc(bi)} IS NOT NULL THEN 1 ELSE 0 END) AS w,
+      SUM(CASE WHEN ${qc(bi)} IS NULL AND substr(${qc(c)}, 1, ${PREFIX.length}) = '${PREFIX}' THEN 1 ELSE 0 END) AS m FROM ${s.table}`).get();
+    out.push({ index: `${s.table}.${bi}`, of: c, phase: s.phase, indexed: Number(r.w ?? 0), missing: Number(r.m ?? 0) });
   }
   return out;
 }

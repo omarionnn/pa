@@ -1838,8 +1838,9 @@ addColumnIfMissing("accounts", "contact_card_name", "TEXT");
 // Phase 3 encryption at rest (restcrypt SENSITIVE3): accounts.address is sealed per person, so its
 // exact match (routing, the signup cap, "stopped", web claims) goes through this keyed HMAC instead.
 addColumnIfMissing("accounts", "address_bi", "TEXT");
-try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS accounts_channel_address_bi ON accounts(channel, address_bi) WHERE address_bi IS NOT NULL"); }
-catch { db.exec("CREATE INDEX IF NOT EXISTS accounts_address_bi ON accounts(address_bi)"); }
+// Not UNIQUE: the old UNIQUE(channel, address) was on the raw text, so two case forms of one email
+// were two rows; the index (on the normalized form) must not turn the second one's texts into errors.
+db.exec("CREATE INDEX IF NOT EXISTS accounts_address_bi ON accounts(address_bi)");
 addColumnIfMissing("accounts", "contact_card_token", "TEXT");
 // Reason's line moved on 2026-10-23 (src/linechange.js). One row per person who has been told —
 // with the card or without it — claimed before the send, so nobody is told twice. The owner had
@@ -3674,7 +3675,7 @@ export function upsertAccount({ conversationId, channel, address, name = "", isO
       channel = excluded.channel,
       address = CASE WHEN excluded.address = '' THEN accounts.address
                      WHEN excluded.address_bi IS NOT NULL AND accounts.address_bi IS excluded.address_bi
-                          AND substr(accounts.address, 1, 7) = 'enc:u1:' THEN accounts.address
+                          AND substr(accounts.address, 1, ${restcrypt.PREFIX.length}) = '${restcrypt.PREFIX}' THEN accounts.address
                      ELSE excluded.address END,
       address_bi = CASE WHEN excluded.address = '' THEN accounts.address_bi ELSE excluded.address_bi END`)
     .run(conversationId, channel, seal3(conversationId, address), restcrypt.addressIndex(address), seal3(conversationId, name), isOperator ? 1 : 0, now, now);

@@ -104,6 +104,7 @@ test("an old plain row migrates online: sealed and indexed in one write, findabl
   let guard = 0;
   while (rc.migrateBatch(d.rawPrepare, "seal", 50) > 0 && guard++ < 100);
   for (const s of phase3()) assert.equal(s.plain, 0, `${s.column} plain left`);
+  for (const s of rc.indexStatus(d.rawPrepare)) assert.equal(s.missing, 0, `${s.index} missing`);
   const r = raw(C3);
   assert.ok(rc.isSealed(r.address) && rc.isSealed(r.name));
   assert.match(r.address_bi, /^bi1:/);
@@ -126,7 +127,7 @@ test("phase 3 rolls back alone: flag 3 off + open, phases 1 and 2 untouched, loo
     rc.dropStrictTriggers(d.db);
     let guard = 0;
     while (rc.migrateBatch(d.rawPrepare, "open", 50, [3]) > 0 && guard++ < 100);
-    for (const s of phase3().filter(s => !s.column.endsWith("_bi"))) assert.equal(s.sealed, 0, `${s.column} still sealed`);
+    for (const s of phase3()) assert.equal(s.sealed, 0, `${s.column} still sealed`);
     assert.equal(raw(C1).address, NUM);
     assert.equal(raw(C1).name, NAME);
     assert.equal(d.accountByAddress("sendblue", NUM)?.conversation_id, C1);
