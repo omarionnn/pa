@@ -41,7 +41,7 @@ export const PUBLIC_FACTS = [
   "It handles things for you: it can make calls for you (like getting you in with a dentist), pay a bill, set reminders, and find and hold bookings (like a cabin for a weekend) for you to approve.",
   "It can ring you so you can plan your week out loud together.",
   "Its rules: Face ID before every purchase (no tap, no charge); it confirms before it acts on your behalf (calling, texting, booking); every call is recorded and it says so at the start; when it calls or writes for you it says it is an assistant, it never pretends to be you.",
-  "No download: your first text is the sign-up. Go to heyreason.com and tap Text Reason. If you're already texting it you can sign in on the web there too.",
+  "Signing up is one text: go to heyreason.com and tap Text Reason. If you're already texting it you can sign in on the web there too.",
   "The website does not list a price.",
 ];
 

@@ -51,7 +51,7 @@ export function homePage() {
       "It is one person's assistant at a time. Everyone who texts it gets their own: their own memory, their own connected accounts, their own history. Nobody can see anybody else's.",
       "It only connects to something when you connect it yourself. If you want it to work with your email, your calendar or your Drive, you ask, it sends you a link, and you agree on Google's own page. Each of those is its own permission and its own tap — connecting your email does not give it your files. It never asks for a password, for anything.",
       "Anything that spends money or reaches another person stops and asks you first, and shows you exactly what it is about to do. A yes covers that one thing.",
-      "It is free software, MIT licensed, and the whole of it can be read: github.com/omarionnn/pa",
+      "Reason is made by Saafi Interactions Lab.",
     ],
     sections: [
       {
@@ -80,18 +80,18 @@ export function privacyPage() {
   return renderNotice({
     title: "Privacy",
     kicker: "What Reason keeps, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-10-05`,
+    meta: `Reason at ${where()} · last changed 2026-11-10`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
     lines: [
-      "Reason is your personal concierge, over text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code, which is public: github.com/omarionnn/pa",
+      "Reason is your personal concierge, over text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code Reason actually runs. Reason is made by Saafi Interactions Lab.",
     ],
     sections: [
       {
         title: "What Reason stores",
         lines: [
-          "One database file on the machine Reason runs on. There is no other copy, no analytics service and no third-party storage. Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
+          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service, and the only storage off that machine is the encrypted backup. Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
           "Your messages to Reason and its replies to you, as a running transcript. The transcript keeps the most recent 60 messages of your thread and older ones fall off it.",
           "What the transcript holds is worth being plain about: it includes the results of things Reason looked up for you. So if Reason read an email or an event for you, the text of that email or event is in the transcript on the disk until it falls out of those 60 messages. It is not stored anywhere else, it is not indexed, and nothing goes looking through it.",
           "Plans, reminders, timers and the jobs Reason is working on between messages. Facts you have asked it to remember about people. Pages it made for you, and any answers you tapped on one.",
@@ -123,6 +123,7 @@ export function privacyPage() {
         lines: [
           "To answer you at all, Reason sends your conversation to Anthropic's API, because that is the model that reads it and writes the reply. There is no model on the machine. That means the part of your conversation still in the transcript — including text from an email or an event Reason read for you — is sent to Anthropic as part of producing your answer. Anthropic's own terms govern what they do with it.",
           "When you ask Reason to do something with a service, it talks to that service: Google for your mail, calendar and Drive, and whichever of a search provider, a telephony provider or a payments provider is set up on this install. It sends what the request needs and nothing more.",
+          "Encrypted backups. Once a day an encrypted copy of the database and your files goes to an off-site storage server, so nothing is lost if the machine fails. It is locked with a key the storage provider does not have, so they cannot read it, and the backups can only be added to from the machine, never changed or deleted from it.",
           "That is the whole list. Nothing is sent anywhere for analytics, advertising, or model training.",
         ],
       },
@@ -139,7 +140,7 @@ export function privacyPage() {
         lines: [
           "Ask Reason and it will tell you. If you run this install yourself, two commands do it: `npm run data:export` writes out everything held about you, including the call recordings, with the tokens replaced by a marker because those are live credentials rather than your records. `npm run data:delete` removes it.",
           "A delete is real and immediate. It removes the rows, the call recordings as files from the disk, and the saved browser logins, and it asks Google to let go of your connection on the way through — and reports honestly if Google would not.",
-          "Reason has no backups. There is nothing to recover from and nothing to ask anybody else to delete.",
+          "Reason keeps encrypted backups: a rolling copy on the same machine, replaced twice a day, and a daily encrypted copy off-site. A delete clears the live database at once; the rolling copy drops it within a day, and the off-site backups keep what they already hold, still encrypted and unread, with no fixed end date: they exist so Reason can be restored if the machine fails.",
         ],
       },
       {
@@ -152,7 +153,7 @@ export function privacyPage() {
         title: "Changes, and who to ask",
         lines: [
           "If what Reason does with your data changes, this page changes with it, and the date at the top moves.",
-          "This is one person's assistant, run by the person who gave you the number. Ask them, or read the code: github.com/omarionnn/pa",
+          "Reason is made by Saafi Interactions Lab. Text Reason with any question about your data and it will answer from what it actually holds, or delete it if you ask.",
         ],
       },
     ],
@@ -168,12 +169,12 @@ export function termsPage() {
   return renderNotice({
     title: "Terms",
     kicker: "What Reason is, what it promises, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-10-06`,
+    meta: `Reason at ${where()} · last changed 2026-11-10`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("terms")].filter(Boolean).join("\n")}`,
     links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Home", href: "/" }],
     lines: [
-      "Reason is your personal concierge, over text. It is free software under the MIT licence, and this install of it is run by one person, who gave you the number. These terms are between you and that person.",
+      "Reason is your personal concierge, over text. It is made by Saafi Interactions Lab, and these terms are between you and Saafi Interactions Lab.",
     ],
     sections: [
       {
@@ -194,7 +195,7 @@ export function termsPage() {
       {
         title: "What it does not promise",
         lines: [
-          "It can be wrong, late or unavailable. It is provided as is, without warranty of any kind, and the person running it is not liable for what you do with it or for a missed reminder, a wrong answer, or a booking that did not happen.",
+          "It can be wrong, late or unavailable. It is provided as is, without warranty of any kind, and Saafi Interactions Lab is not liable for what you do with it or for a missed reminder, a wrong answer, or a booking that did not happen.",
           "Other services it reaches — Google, a phone carrier, a restaurant's website — have their own terms, and those apply to what happens there.",
         ],
       },
@@ -202,7 +203,7 @@ export function termsPage() {
         title: "Your data, and leaving",
         lines: [
           "How your data is handled is on the privacy page, and that page is part of these terms: /privacy",
-          "You can disconnect any account, export everything, or have everything deleted at any time by asking. The person running it can pause or remove your access at any time; your data is kept until you ask for it to go.",
+          "You can disconnect any account, export everything, or have everything deleted at any time by asking. Saafi Interactions Lab can pause or remove your access at any time; your data is kept until you ask for it to go.",
         ],
       },
       {

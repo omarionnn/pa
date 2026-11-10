@@ -1397,7 +1397,7 @@ test("no model-facing prompt anywhere says Omarion Nyarko (texts, both call voic
   for (const f of files) {
     readFileSync(f, "utf8").split("\n").forEach((line, i) => {
       if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-      // The repo's own address (github.com/omarionnn/pa, the user-agent) is a link, not a credit.
+      // Pages and the user-agent are held to no handle at all by test/site.test.js (security run-3).
       if (/\bOmarion\b|Nyarko/i.test(line)) hits.push(`${f}:${i + 1}`);
     });
   }

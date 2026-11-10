@@ -1980,9 +1980,12 @@ was checked against the code rather than written from intention.
 
 ### Every claim on the privacy page, and what it was checked against
 
-- "One database file … no other copy, no analytics service and no third-party storage" — the table
+- "One database file … plus encrypted backups … no analytics service and no third-party storage" — the table
   list in `src/data.js` and the schema in `src/db.js`; `grep` for analytics, telemetry, Sentry,
-  PostHog, Mixpanel and Datadog across `src/` finds nothing.
+  PostHog, Mixpanel and Datadog across `src/` finds nothing. The backups line is the server, not this
+  repo: `reason-backup.timer` (rolling `reason.db.bak-rolling`, twice a day) and
+  `reason-offsite-backup.timer` (daily restic, encrypted, append-only key: forget/prune refused from
+  the server), checked on the live box 2026-11-10.
 - "keyed to your conversation, and no query … can read one person's rows from another person's" —
   every read takes a `conversation_id`. Pinned by the two-conversation tests in `test/google.test.js`,
   `test/accounts.test.js` and `test/channels.test.js`.
