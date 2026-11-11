@@ -809,7 +809,7 @@ export class SendblueChannel extends Channel {
 
     const j = r.json ?? {};
     const said = j.detail || j.message || r.text?.slice(0, 200) || `HTTP ${r.status}`;
-    if (r.ok && j.status !== "ERROR") return { ok: true, supported: true };
+    if (r.ok && j.status !== "ERROR") return { ok: true, supported: true, http_status: r.status };
 
     if (r.status === 422) {
       return { ok: false, supported: true, http_status: 422, error: said, remember: { scope: "line", why: `this Sendblue line cannot send read receipts (${said})` } };
