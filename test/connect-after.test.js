@@ -156,7 +156,7 @@ test("email: a Google grant and a mail read that worked → the line; the page o
   const c = conv(num);
   await intro(h, num);
   h.doing(async (cc) => {
-    db.saveOauthTokens(cc, "google", { accessToken: "t", scope: "https://www.googleapis.com/auth/gmail.readonly", accountLabel: "k@example.com" });
+    db.saveOauthTokens(cc, "google", { accessToken: "t", scope: "https://www.googleapis.com/auth/gmail.modify", accountLabel: "k@example.com" });
     clock.skip(1000);
     ca.noteTool(cc, "gmail_search", { query: "receipt" }, { ok: true, messages: [] });
   }, "found it: your receipt from tuesday");
@@ -172,7 +172,7 @@ test("never: a failed read, a failed turn, a connection from before, everything 
   // a mail read that failed is not the task working
   let num = newNumber(); let c = conv(num);
   await intro(h, num);
-  h.doing(async (cc) => { db.saveOauthTokens(cc, "google", { accessToken: "t", accountLabel: "a@x.com" }); ca.noteTool(cc, "gmail_search", {}, { ok: false, error: "401" }); });
+  h.doing(async (cc) => { db.saveOauthTokens(cc, "google", { accessToken: "t", scope: "https://www.googleapis.com/auth/gmail.modify", accountLabel: "a@x.com" }); ca.noteTool(cc, "gmail_search", {}, { ok: false, error: "401" }); });
   await h.router.deliver(text(num, "check my mail"));
   assert.equal(sentLine(to(h, num)), 0);
   assert.equal(ca.decide(c).why, "no_task_yet");
@@ -184,7 +184,7 @@ test("never: a failed read, a failed turn, a connection from before, everything 
   // connected before the first turn under the flag: the baseline, never counted
   num = newNumber(); c = conv(num);
   db.upsertAccount({ conversationId: c, channel: "fake", address: num, name: "Ama" });
-  db.saveOauthTokens(c, "google", { accessToken: "t", accountLabel: "ama@x.com" });
+  db.saveOauthTokens(c, "google", { accessToken: "t", scope: "https://www.googleapis.com/auth/gmail.modify", accountLabel: "ama@x.com" });
   ca.beforeTurn(c);
   ca.noteUse(c, "email");
   assert.equal(ca.decide(c).why, "no_task_yet");
@@ -193,7 +193,7 @@ test("never: a failed read, a failed turn, a connection from before, everything 
   num = newNumber(); c = conv(num);
   db.upsertAccount({ conversationId: c, channel: "fake", address: num, name: "Yaw" });
   ca.beforeTurn(c);
-  db.saveOauthTokens(c, "google", { accessToken: "t", accountLabel: "yaw@x.com" });
+  db.saveOauthTokens(c, "google", { accessToken: "t", scope: "https://www.googleapis.com/auth/gmail.modify", accountLabel: "yaw@x.com" });
   shop.markConnected(c, "amazon");
   ca.noteUse(c, "email");
   const out = await ca.afterTurn({ conversationId: c });
@@ -262,7 +262,7 @@ test("the prompt: connect in the moment with that service's own link, never in s
 test("the page: ✓ or a button; a button makes that service's own link and goes there; a dead link is gone", async () => {
   const num = newNumber(); const c = conv(num);
   db.upsertAccount({ conversationId: c, channel: "fake", address: num, name: "Kojo" });
-  db.saveOauthTokens(c, "google", { accessToken: "t", accountLabel: "kojo@x.com" });
+  db.saveOauthTokens(c, "google", { accessToken: "t", scope: "https://www.googleapis.com/auth/gmail.modify", accountLabel: "kojo@x.com" });
   const { token } = ca.createLink(c);
   const got = await page.connectAllRequest({ sub: token, method: "GET" });
   assert.equal(got.status, 200);
@@ -288,4 +288,10 @@ test("the page: ✓ or a button; a button makes that service's own link and goes
   assert.equal((await page.connectAllRequest({ sub: "A".repeat(32), method: "GET" })).status, 410);
   clock.skip(ca.LINK_TTL_MS + 1000);
   assert.equal((await page.connectAllRequest({ sub: token, method: "GET" })).status, 410);
+});
+
+test("a calendar + Drive grant without mail is not 'email connected', and the email button asks for Gmail (2026-11-11)", () => {
+  const c = "dm:fake:+15550001111";
+  db.saveOauthTokens(c, "google", { accessToken: "t", scope: "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.file", accountLabel: "cal@x.com" });
+  assert.equal(ca.connectedAt(c).email, null);
 });

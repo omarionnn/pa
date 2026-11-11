@@ -28,7 +28,7 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import * as shop from "./shopconnect.js";
 import * as amazon from "./amazonconnect.js";
-import { googleStatus, authorizeUrl as googleAuthorizeUrl } from "./google.js";
+import { googleStatus, authorizeUrl as googleAuthorizeUrl, covers as googleCovers, GMAIL_SCOPES } from "./google.js";
 import { clock } from "./config.js";
 
 export const LINE = "nice, that worked. so i don't have to keep asking you one thing at a time, you can connect the rest here whenever";
@@ -82,7 +82,9 @@ const crossmintOn = () => !!process.env.CROSSMINT_CLIENT_KEY && !!process.env.CR
 
 /** Each service's connected-at for this person (ms), or null when it is not connected. */
 export function connectedAt(conversationId) {
-  const google = db.listOauthTokens(conversationId, "google");
+  // "email" is a Google grant that carries mail. Since 2026-11-11 a first connect is calendar + Drive
+  // only, so a grant without gmail.modify is not email connected.
+  const google = db.listOauthTokens(conversationId, "google").filter((r) => googleCovers(String(r.scope ?? "").split(/\s+/).filter(Boolean), GMAIL_SCOPES));
   const store = shop.connectedStores(conversationId).find((s) => s.store === "amazon");
   let ownBrowser = null;
   if (amazon.connected(conversationId)) {
@@ -249,7 +251,7 @@ export function serviceLink(conversationId, service) {
   const at = connectedAt(conversationId);
   if (!offered(conversationId).includes(service)) return { ok: false, why: "unavailable" };
   if (at[service] != null) return { ok: false, why: "connected" };
-  if (service === "email") { const o = googleAuthorizeUrl(conversationId); return o.ok ? { ok: true, url: o.url } : { ok: false, why: "unavailable" }; }
+  if (service === "email") { const o = googleAuthorizeUrl(conversationId, { scopes: GMAIL_SCOPES }); return o.ok ? { ok: true, url: o.url } : { ok: false, why: "unavailable" }; }
   if (service === "card") return { ok: true, url: shop.cardLinkUrl(conversationId) };
   if (service === "amazon") {
     const o = amazon.connectLink(conversationId, { via: "connect_after", afterSignedIn: AMAZON_NOTE });
