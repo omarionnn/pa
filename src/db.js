@@ -12833,6 +12833,10 @@ addColumnIfMissing("events", "rides_enabled", "INTEGER NOT NULL DEFAULT 0");
 // a priced event goes through a Checkout Session and lands from the webhook (eventpay.settlePaid).
 addColumnIfMissing("events", "price_cents", "INTEGER");
 addColumnIfMissing("events", "currency", "TEXT NOT NULL DEFAULT 'usd'");
+// The refund policy on a priced event (src/eventpay.js refundWindow): 'none' | 'until' | 'anytime',
+// null = the default ('until', 48 hours before it starts); `refund_hours` is the N of 'until'.
+addColumnIfMissing("events", "refund_policy", "TEXT");
+addColumnIfMissing("events", "refund_hours", "INTEGER");
 // The link preview card (spec §14, src/eventcover.js). The live cover is an uploaded picture the
 // organizer approved after seeing the card it makes (`cover_file`, under data/event-covers, with who
 // approved it and when); with none, the card is Reason's own drawing of the name. `cover_pending` is
@@ -13215,7 +13219,7 @@ export function allEvents({ limit = 50 } = {}) {
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
   "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled",
   "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask",
-  "remind_day_before", "remind_soon", "price_cents", "currency"]);
+  "remind_day_before", "remind_soon", "price_cents", "currency", "refund_policy", "refund_hours"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);
