@@ -81,10 +81,11 @@ export function listFor(conversationId) {
   return db.db.prepare("SELECT * FROM verifications WHERE conversation_id = ? ORDER BY id").all(conversationId).map(row);
 }
 
-function set(id, fields) {
+/** Change one row, named with its person: a row id alone never changes anybody else's check. */
+function set(v, fields) {
   const keys = Object.keys(fields);
-  db.db.prepare(`UPDATE verifications SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
-    .run(...keys.map(k => fields[k]), clock.now(), id);
+  db.db.prepare(`UPDATE verifications SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ? AND conversation_id = ?`)
+    .run(...keys.map(k => fields[k]), clock.now(), v.id, v.conversation_id);
 }
 
 // ---------- the checks ----------
@@ -178,18 +179,18 @@ export async function pass({ runtime, now = clock.now(), log = runtime?.log ?? (
   const out = { due: 0, verified: 0, told: 0, retried: 0, deferred: 0, dropped: 0 };
   for (const v of due(now)) {
     const c = v.conversation_id;
-    if (!quickCorrectionOn(c)) { set(v.id, { state: "dropped", last_note: "switch off" }); out.dropped++; continue; }
+    if (!quickCorrectionOn(c)) { set(v, { state: "dropped", last_note: "switch off" }); out.dropped++; continue; }
     out.due++;
     const s = SCHEDULE[v.kind];
     const check = stubs.get(v.kind) ?? CHECKERS[v.kind];
     let r;
     try { r = await check(v); } catch (e) { r = { pending: true, why: (e?.message ?? String(e)).split("\n")[0] }; }
 
-    if (r?.ok) { set(v.id, { state: "verified", last_note: r.already_told ? "already told" : "held" }); out.verified++; continue; }
+    if (r?.ok) { set(v, { state: "verified", last_note: r.already_told ? "already told" : "held" }); out.verified++; continue; }
     if (r?.pending || !r) {
       const tries = v.tries + 1;
-      if (tries >= v.max_tries) { set(v.id, { state: "dropped", tries, last_note: `could not tell: ${r?.why ?? ""}`.trim() }); out.dropped++; }
-      else { set(v.id, { tries, due_at: now + s.retryMs, last_note: `not yet: ${r?.why ?? ""}`.trim() }); out.retried++; }
+      if (tries >= v.max_tries) { set(v, { state: "dropped", tries, last_note: `could not tell: ${r?.why ?? ""}`.trim() }); out.dropped++; }
+      else { set(v, { tries, due_at: now + s.retryMs, last_note: `not yet: ${r?.why ?? ""}`.trim() }); out.retried++; }
       continue;
     }
 
@@ -197,14 +198,14 @@ export async function pass({ runtime, now = clock.now(), log = runtime?.log ?? (
     if (notice.inTheirNight(c, now)) {
       const st = notice.settingsFor(c, { now });
       const at = notice.quietEndsAt(now, st.timeZone, { start: st.quietStart, end: st.quietEnd });
-      set(v.id, { due_at: at, last_note: `failed: ${r.why}; waiting for their morning` });
+      set(v, { due_at: at, last_note: `failed: ${r.why}; waiting for their morning` });
       out.deferred++;
       continue;
     }
     if (typeof runtime?.mayInterrupt === "function" && !runtime.mayInterrupt(c)) {
       const tries = v.tries + 1;
-      if (tries >= v.max_tries) { set(v.id, { state: "dropped", tries, last_note: `failed: ${r.why}; over the day's proactive cap` }); out.dropped++; }
-      else { set(v.id, { tries, due_at: now + 60 * MIN, last_note: `failed: ${r.why}; over the day's proactive cap` }); out.deferred++; }
+      if (tries >= v.max_tries) { set(v, { state: "dropped", tries, last_note: `failed: ${r.why}; over the day's proactive cap` }); out.dropped++; }
+      else { set(v, { tries, due_at: now + 60 * MIN, last_note: `failed: ${r.why}; over the day's proactive cap` }); out.deferred++; }
       continue;
     }
 
@@ -213,7 +214,7 @@ export async function pass({ runtime, now = clock.now(), log = runtime?.log ?? (
     try { sent = await runtime._tell(c, line, { idempotencyKey: `quickfix:${v.id}` }); }
     catch (e) { sent = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
     if (sent?.ok || sent?.queued) {
-      set(v.id, { state: "told", told_at: now, last_note: `failed: ${r.why}` });
+      set(v, { state: "told", told_at: now, last_note: `failed: ${r.why}` });
       // The outbox's own owner line about this row would now say it twice.
       if (r.outbox?.id != null) db.markOwnerTold(r.outbox.id);
       try { accounts.countUse(c, "proactive"); } catch { /* the line went; the count is best-effort */ }
@@ -222,8 +223,8 @@ export async function pass({ runtime, now = clock.now(), log = runtime?.log ?? (
     } else {
       const tries = v.tries + 1;
       log({ quick_correction_failed: v.id, kind: v.kind, conversation: c, why: sent?.error ?? "no reason given" });
-      if (tries >= v.max_tries) { set(v.id, { state: "dropped", tries, last_note: `failed: ${r.why}; could not tell them` }); out.dropped++; }
-      else { set(v.id, { tries, due_at: now + s.retryMs, last_note: `failed: ${r.why}; could not tell them yet` }); out.retried++; }
+      if (tries >= v.max_tries) { set(v, { state: "dropped", tries, last_note: `failed: ${r.why}; could not tell them` }); out.dropped++; }
+      else { set(v, { tries, due_at: now + s.retryMs, last_note: `failed: ${r.why}; could not tell them yet` }); out.retried++; }
     }
   }
   return out;

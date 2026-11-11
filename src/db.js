@@ -5003,11 +5003,11 @@ export function outboundByMessageId(channel, messageId) {
   return rowToOut(db.prepare("SELECT * FROM outbox WHERE channel = ? AND message_id = ? ORDER BY id DESC LIMIT 1").get(channel, id));
 }
 
-/** The carrier's later word on a sent row. A delivered one gets its stamp; any word is kept. */
-export function markOutboundDelivery(id, { status, delivered = false }) {
+/** The carrier's later word on a sent row (named with its person, so a wrong handle changes nobody else's row). A delivered one gets its stamp; any word is kept. */
+export function markOutboundDelivery(id, { conversationId, status, delivered = false }) {
   const now = clock.now();
-  db.prepare(`UPDATE outbox SET delivery_status = ?, delivered_at = CASE WHEN ? THEN ? ELSE delivered_at END, updated_at = ? WHERE id = ?`)
-    .run(String(status ?? ""), delivered ? 1 : 0, now, now, id);
+  db.prepare(`UPDATE outbox SET delivery_status = ?, delivered_at = CASE WHEN ? THEN ? ELSE delivered_at END, updated_at = ? WHERE id = ? AND conversation_id = ?`)
+    .run(String(status ?? ""), delivered ? 1 : 0, now, now, id, conversationId);
   return getOutbound(id);
 }
 

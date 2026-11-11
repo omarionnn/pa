@@ -6,6 +6,7 @@
  "src/calls/report.js | SELECT SELECT * FROM call_turns WHERE call_id = ? ORDER BY turn_index ASC, id ASC": 1,
  "src/calls/report.js | SELECT SELECT id, provider, direction, is_owner, state, created_at, ended_at, duration_s, cost_cents, ${pick(\"end_reason\")}, ${pick(\"end_detail\")}, ${pick(\"cost_credit": 1,
  "src/calls/report.js | SELECT SELECT t.* FROM call_turns t JOIN calls c ON c.id = t.call_id WHERE c.created_at >= ?": 1,
+ "src/connectafter.js | SELECT SELECT * FROM connect_after_links WHERE id = ?": 1,
  "src/data.js | SELECT SELECT id FROM pages UNION ALL SELECT id FROM trips": 1,
  "src/data.js | SELECT SELECT run_dir FROM remote_jobs": 1,
  "src/db.js | DELETE DELETE FROM documents WHERE id = ?": 1,
@@ -118,9 +119,11 @@
  "src/db.js | SELECT SELECT * FROM notice_seen WHERE timer_id = ?": 1,
  "src/db.js | SELECT SELECT * FROM oauth_states WHERE state = ?": 2,
  "src/db.js | SELECT SELECT * FROM outbox AS o WHERE o.state IN ('queued','unknown') AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?) AND (o.after_id IS NULL OR EXISTS (SEL": 1,
+ "src/db.js | SELECT SELECT * FROM outbox WHERE channel = ? AND message_id = ? ORDER BY id DESC LIMIT 1": 1,
  "src/db.js | SELECT SELECT * FROM outbox WHERE id = ?": 2,
  "src/db.js | SELECT SELECT * FROM outbox WHERE idem_key = ?": 1,
  "src/db.js | SELECT SELECT * FROM outbox WHERE state = 'failed' AND to_owner = 0 AND owner_told_at IS NULL ORDER BY id ASC": 1,
+ "src/db.js | SELECT SELECT * FROM outbox WHERE state = 'failed' AND to_owner = 1 AND told_at IS NULL AND last_error_key = 'DELIVERY_ERROR' ORDER BY id ASC": 1,
  "src/db.js | SELECT SELECT * FROM outbox WHERE state = 'sending' ORDER BY id ASC": 1,
  "src/db.js | SELECT SELECT * FROM outbox WHERE substr(idem_key, 1, ?) = ? ORDER BY id": 1,
  "src/db.js | SELECT SELECT * FROM page_choices WHERE delivered_at IS NULL ORDER BY id ASC": 1,
@@ -497,7 +500,6 @@
  "src/privacy.js | UPDATE UPDATE series SET last_report = NULL, last_report_at = NULL WHERE last_report IS NOT NULL AND last_report_at < ?": 1,
  "src/remote.js | UPDATE UPDATE remote_jobs SET session_key = ?, run_dir = ? WHERE id = ?": 1,
  "src/restfiles.js | SELECT SELECT * FROM events": 1,
- "src/connectafter.js | SELECT SELECT * FROM connect_after_links WHERE id = ?": 1,
  "src/shopconnect.js | SELECT SELECT * FROM shop_links WHERE id = ?": 1,
  "src/shopconnect.js | SELECT SELECT * FROM shop_links WHERE run_id = ? AND kind = 'signin' AND state = 'open' ORDER BY created_at DESC": 1,
  "src/shopconnect.js | SELECT SELECT * FROM shop_payments WHERE id = ?": 1,
@@ -564,5 +566,7 @@
  "src/stamps.js | UPDATE UPDATE stamp_shares SET signups = signups + 1 WHERE share_id = ?": 1,
  "src/stamps.js | UPDATE UPDATE stamps SET message_id = ? WHERE id = ?": 2,
  "src/stamps.js | UPDATE UPDATE stamps SET told_at = ? WHERE id = ? AND told_at IS NULL": 1,
- "src/tooldiet.js | DELETE DELETE FROM tool_sets; DELETE FROM tool_recent;": 1
+ "src/tooldiet.js | DELETE DELETE FROM tool_sets; DELETE FROM tool_recent;": 1,
+ "src/verifications.js | SELECT SELECT * FROM verifications WHERE id = ?": 1,
+ "src/verifications.js | SELECT SELECT * FROM verifications WHERE state = 'due' AND due_at <= ? ORDER BY due_at LIMIT ?": 1
 }

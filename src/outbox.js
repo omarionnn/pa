@@ -339,18 +339,18 @@ export function noteDelivery({ channel, messageId, status, error = null, log = (
   if (s === "ERROR") {
     if (row.state === "failed") return { ignored: "already failed", outbox_id: row.id };
     const why = `${row.channel} reported it was not delivered${error ? `: ${error}` : ""}`;
-    db.markOutboundDelivery(row.id, { status: s });
+    db.markOutboundDelivery(row.id, { conversationId: row.conversation_id, status: s });
     db.markOutboundFailed(row.id, { error: why, errorKey: "DELIVERY_ERROR" });
     log({ outbox: row.id, delivery: s, failed: row.address, why });
     raiseSendFailure(row, { why, key: "DELIVERY_ERROR", tried: "accepted by the carrier, then reported undelivered — not retried" });
     return { outbox_id: row.id, failed: true, why };
   }
   if (DELIVERED_STATUSES.has(s)) {
-    db.markOutboundDelivery(row.id, { status: s, delivered: s === "DELIVERED" });
+    db.markOutboundDelivery(row.id, { conversationId: row.conversation_id, status: s, delivered: s === "DELIVERED" });
     log({ outbox: row.id, delivery: s });
     return { outbox_id: row.id, delivered: s === "DELIVERED", status: s };
   }
-  db.markOutboundDelivery(row.id, { status: s });
+  db.markOutboundDelivery(row.id, { conversationId: row.conversation_id, status: s });
   return { outbox_id: row.id, status: s };
 }
 
