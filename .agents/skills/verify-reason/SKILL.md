@@ -511,6 +511,22 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — paid events (Stripe Connect tickets; 2026-11-11, PR event-paid, not merged, flag off)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Paid events". Offline: `test/event-paid.test.js`
+16/16 against a fake Stripe (`STRIPE_API_BASE` on 127.0.0.1; nothing reaches Stripe). `bin/events-drive.mjs` under
+`env -i` + temp DB: all ok, 120 steps, 17 new `pay:` steps (price before payouts → one setup link on the events
+domain; account.updated readies payouts and texts the organizer; $25 quote = $26.06 total / organizer $24.37; a right
+password by text gets the Checkout link + 15-min hold, not a join; the Checkout is a destination charge with the fee
+and two lines; asked twice = same link; completed webhook joins + receipt + welcome, duplicate changes nothing; an open
+hold counts against the cap; the sweep releases it after 15 min and expires the page; event_guests shows who paid;
+refund by text needs the yes pinned to the amount, refuses an unknown guest first, reverses transfer + refunds fee,
+guest leaves and is told; dashboard login link; cancel refunds everyone). Suite after the rebase on #405: see the PR
+body. `event_refund` added to `GATED_ACTIONS` + `NEVER_STANDING` (trustline test); eventpay's id/session/intent-keyed SQL
+added to `test/fixtures/unscoped-sql-baseline.json`. **Not provable here:** Connect — the Stripe account answered
+"You can only create new accounts if you've signed up for Connect" (test mode, 2026-11-11); real Checkout, Apple Pay,
+real webhooks, the Express onboarding page.
+
 ### Baseline — table pictures (render_table, PR #463, 2026-11-10, not merged, flag off)
 
 Offline suite in the worktree (fresh `npm ci`, `ANTHROPIC_API_KEY=` + paid-key guard): 6,352 tests, 6,212 pass,

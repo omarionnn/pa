@@ -414,6 +414,9 @@ export const config = {
   // organizes may turn it on; 1/true/on/yes: any organizer's; anything else: off, and no model is
   // told rides exist.
   eventRides: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_EVENT_RIDES ?? "").trim().toLowerCase()),
+  // Paid events (src/eventpay.js): who may put a price on an event they organize. `owner`: the owner's
+  // events only; 1/true/on/yes: any organizer's; anything else: off. An event already priced stays priced.
+  paidEvents: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_PAID_EVENTS ?? "").trim().toLowerCase()),
   // One private photo album per event (src/albums.js). On top of events. `owner`: only events the
   // owner organizes have one; 1/true/on/yes: every event's; anything else: off, and no model is told
   // albums exist. Nothing stored under off is touched: the sweep still closes an album at its expiry.

@@ -15,6 +15,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export const env = () => ({
   secretKey: String(process.env.STRIPE_SECRET_KEY ?? "").trim(),
   webhookSecret: String(process.env.STRIPE_WEBHOOK_SECRET ?? "").trim(),
+  // Optional: a second endpoint for Connect events (src/eventpay.js account.updated), when the main one does not listen to connected accounts.
+  connectWebhookSecret: String(process.env.STRIPE_CONNECT_WEBHOOK_SECRET ?? "").trim(),
   priceId: String(process.env.STRIPE_PRICE_ID ?? "").trim(),
   paymentLink: String(process.env.STRIPE_PAYMENT_LINK_URL ?? "").trim().replace(/\/+$/, ""),
   apiBase: String(process.env.STRIPE_API_BASE ?? "https://api.stripe.com").trim().replace(/\/+$/, ""),

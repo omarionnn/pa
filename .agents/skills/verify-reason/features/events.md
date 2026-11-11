@@ -404,6 +404,39 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   to 3) and the tool description tells the model to offer it when the event is RSVP-shaped. Per-event SQL on
   `event_answers`/`event_question_asks` is on `test/fixtures/unscoped-sql-baseline.json` (scoped by event_id; the
   organizer is checked in `events.managed` first).
+- **Paid events (2026-11-11, `src/eventpay.js`, tools `event_price` / `event_payouts` / `event_refund`, tables `event_payments` /
+  `event_payout_accounts`, `events.price_cents` + `currency`, flag `REASON_PAID_EVENTS` off|owner|on, off on live)** —
+  Stripe Connect Express + destination charges; Reason never holds funds. Per ticket at price P: the guest pays P plus
+  Stripe's processing (2.9% + 30¢ of the total, one "Processing" line on the hosted Checkout, Apple Pay included); the
+  organizer gets P less Reason's 2.5% of P; `application_fee_amount` = total − organizer's share (`quote()`:
+  $25 → $26.06 total, $1.06 processing, organizer $24.37, fee $1.69). Price $5–$500, `event_price` (price_dollars or
+  free:true; a price change is for new joins, nobody already in is charged or refunded). **Payouts first:** a price
+  needs the organizer's Express account with `charges_enabled` (`ensureAccount` → one `account_links` onboarding link,
+  texted on its own; return/refresh `/e/<id>/payouts` on the events domain, which re-reads the account and lands on
+  `#money`); `account.updated` readies it and texts the organizer once. **Nobody is in until the webhook:** on a priced
+  event the right password (text `event_join`, page join, page→claim text) answers with the Checkout link and a 15-minute
+  hold (`event_payments` status open; `openHolds` counts against the cap; one open link per person per event, asked twice
+  = the same page); `checkout.session.completed` → `settlePaid` (one transaction: row paid + `addAttendeeTx` under the
+  cap; welcome + a `receipt` message; a late payment with no spot left is refunded in full and said); the sweep
+  (`runtime.eventPayments`) expires holds past 15 min and `/expire`s the Stripe session (Stripe's own expires_at is 31
+  min, its minimum). `checkout.session.expired` / `async_payment_failed` mark the row. **Refunds:** `event_refund` by
+  text is in `ALWAYS_NEEDS_CONFIRMATION` + `GATED_ACTIONS` + `NEVER_STANDING`, target `refund $X to <name> for <event>
+  (event #id) [pay N]`, refusals (`refundRefusal`: not theirs, no such guest, never paid) before any yes; the page's
+  Tickets section refunds behind a review → confirm step; `refund()` posts `reverse_transfer` + `refund_application_fee`
+  so the guest sees one full refund (Reason eats Stripe's processing on a refund); the guest leaves (`leaveAttendee`,
+  rides told) and gets a `refund` message; `charge.refunded` from Stripe's dashboard does the same; `event_cancel` →
+  `refundAll` (everyone paid, fee included) and expires open Checkouts. **Manage page 07 · Tickets** (only where
+  `paidEventsOn() && (canPrice(c) || priced(ev))`): payouts setup / finish button (303 to Stripe), price with a live
+  quote (`price_in` → `price_quote`) behind a review step, PAID · GROSS · YOU GET, WHO PAID with Refund / Retry refund,
+  Open your Stripe dashboard (`login_links`, one-time). Organizer view carries `tickets` (paid, gross, you_get,
+  refunded, spots_held_for_payment, per_person) and `payouts_ready`; public/guest views carry `price_per_person`,
+  `price`, `paid_event`; the guest's `you.paid`. Webhooks share `/stripe/webhook` with the subscription:
+  `eventpay.isOurs(event)` routes tickets/accounts, `plan.js` the rest; a second signature try with
+  `STRIPE_CONNECT_WEBHOOK_SECRET` for a Connect endpoint. `event_payments` / `event_payout_accounts` are KEPT_ON_DELETE;
+  their id/session/intent-keyed SQL (webhook lookups) is on the unscoped-SQL baseline. **Not provable offline:** Connect
+  itself — on 2026-11-11 the Stripe account (test mode) answered `You can only create new accounts if you've signed up
+  for Connect`; the test-mode endpoint lacks `account.updated`, `checkout.session.expired`, `charge.refunded`. Pinned:
+  `test/event-paid.test.js` (16); drive: the `pay:` steps (17).
 
 ## How to get to it (user POV)
 
@@ -442,7 +475,7 @@ node --test test/code-guards.test.js   # #134: every code text ends `@<live host
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
 node --test test/event-web.test.js    # the pages, the finishing text, existing users by session and by text, who's going
-node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js test/event-edit-limits.test.js test/event-guest-questions.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390), list privacy + cap after creation, guest questions
+node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js test/event-edit-limits.test.js test/event-guest-questions.test.js test/event-paid.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390), list privacy + cap after creation, guest questions, paid events (fake Stripe)
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
 REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address
 ```

@@ -24,6 +24,7 @@ import * as cover from "../eventcover.js";
 import * as albums from "../albums.js";
 import * as schedule from "../eventschedule.js";
 import * as questions from "../eventquestions.js";
+import * as eventpay from "../eventpay.js";
 import { madeDoc, esc } from "./made.js";
 import { sameOrigin } from "./websignin.js";
 import { renderNotFound } from "./render.js";
@@ -123,6 +124,8 @@ if(w&&wp){var rest=wp.getAttribute('data-rest');function lw(){var v=w.value.trim
 document.querySelectorAll('[data-copy]').forEach(function(b){b.addEventListener('click',function(){var f=document.getElementById(b.getAttribute('data-copy'));var v=f.value!==undefined?f.value:f.textContent;function ok(){var was=b.textContent;b.textContent='Copied';setTimeout(function(){b.textContent=was},1600)}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(ok,function(){f.select&&f.select()})}else{f.select&&f.select();try{document.execCommand('copy');ok()}catch(e){}}})});
 document.querySelectorAll('.mg-pick').forEach(function(fs){function pick(v){var r=fs.querySelector('input[name=to][value='+v+']');if(r)r.checked=true}fs.querySelectorAll('.mg-picks input').forEach(function(c){c.addEventListener('change',function(){if(c.checked)pick('some')})});var s=fs.querySelector('.mg-since input');if(s)s.addEventListener('input',function(){if(s.value)pick('since')})});
 document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){if(f.dataset.sent){e.preventDefault();return}f.dataset.sent='1';var b=e.submitter||f.querySelector('button[type=submit]');if(b&&b.getAttribute('data-busy')){b.textContent=b.getAttribute('data-busy')}setTimeout(function(){b&&(b.disabled=true)},0)})});
+var pq=document.getElementById('price_in'),po=document.getElementById('price_quote');
+if(pq&&po){function money(c){var s=(Math.round(c)/100).toFixed(2);return '$'+(s.slice(-3)==='.00'?s.slice(0,-3):s)}function lq(){var m=/^\\s*\\$?\\s*(\\d{1,6})(?:\\.(\\d{1,2}))?\\s*$/.exec(pq.value);if(!m){po.textContent='';return}var p=+m[1]*100+ +((m[2]||'').padEnd(2,'0'));if(p<${eventpay.MIN_PRICE_CENTS}||p>${eventpay.MAX_PRICE_CENTS}){po.textContent='From $5 to $500 per person.';return}var t=Math.ceil((p+${eventpay.STRIPE_FIXED_CENTS})*10000/(10000-${eventpay.STRIPE_RATE_BPS}));var fee=Math.round(p*${eventpay.APP_FEE_BPS}/10000);po.textContent='Guests pay '+money(t)+' ('+money(p)+' + '+money(t-p)+' processing). You get '+money(p-fee)+' per person.'}pq.addEventListener('input',lq);lq()}
 `;
 
 const managePath = (ev) => `/e/${ev.public_id}/manage`;
@@ -255,7 +258,9 @@ function deliveryLine(m) {
 /** The fixed sentences a finished action lands back on the page with. Numbers only ever come from the query. */
 const DONE_SECTION = { welcome: "welcome", welcome_cleared: "welcome", blast: "message",
   scheduled: "schedule", sched_changed: "schedule", sched_cancelled: "schedule", reminder_on: "schedule", reminder_off: "schedule", details: "details", details_quiet: "details", nothing: "details", release: "details", removed: "guests", list_shown: "guests", list_hidden: "guests", cap_saved: "guests", nothing_cap: "guests", rides_on: "more", rides_off: "more", cover_removed: "more", cover_discarded: "more",
-  question_added: "questions", question_reworded: "questions", question_removed: "questions", question_required: "questions", question_optional: "questions", question_asked: "questions", question_not_asked: "questions" };
+  question_added: "questions", question_reworded: "questions", question_removed: "questions", question_required: "questions", question_optional: "questions", question_asked: "questions", question_not_asked: "questions",
+
+  price_saved: "money", price_free: "money", refunded: "money", payouts_ready: "money", payouts_pending: "money" };
 function doneNote(q, ev) {
   const n = (k) => Math.max(0, Math.min(100000, Number.parseInt(q[k] ?? "0", 10) || 0));
   const reached = () => (n("g") ? `Reached ${n("n")} of ${n("g")}${n("f") ? `; ${n("f")} didn't go through` : ""}.` : "Nobody has joined yet, so nobody was texted.");
@@ -298,8 +303,63 @@ function doneNote(q, ev) {
     case "sched_cancelled": return "Cancelled. Nobody was texted.";
     case "reminder_on": return "Reminder on.";
     case "reminder_off": return "Reminder off. Guests won't get that one.";
+    // Tickets (src/eventpay.js): read off the event as it is now, never off the address.
+    case "price_saved": return ev && eventpay.priced(ev) ? `Set. ${eventpay.organizerPriceLine(ev.price_cents)} Guests who join from now on pay on a Stripe page; nobody already in is charged.` : "Saved.";
+    case "price_free": return "Free to join from now on. Guests who already paid keep their spot and aren't refunded by this.";
+    case "refunded": return "Refunded in full, including processing. They're off the event and were told; the money shows on their card in a few days.";
+    case "payouts_ready": return "Payouts are set up with Stripe. You can put a price on this event now.";
+    case "payouts_pending": return "Stripe hasn't finished setting up your payouts yet. Finish the steps with the button below, or come back in a few minutes if you did.";
     default: return "";
   }
+}
+
+// ---------------------------------------------------------------- tickets and payouts (src/eventpay.js)
+
+/**
+ * The organizer's money on this event: payouts setup (Stripe's own onboarding, one link), the price
+ * per person with what guests pay and what they get, how many paid and the totals, one refund per
+ * guest behind a confirm step, and their Stripe Express dashboard. Shown only where a price could be
+ * set, or on an event that already has one.
+ */
+function ticketsSection(ev, { conversationId, drafts, sec, paused }) {
+  const acct = eventpay.payoutAccount(conversationId);
+  const ready = !!acct?.charges_enabled;
+  const priced = eventpay.priced(ev);
+  const s = eventpay.summary(ev);
+  const setupBtn = (label) => `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "payouts")}${hidden("step", "do")}<div class="mg-row">${button(label, { busy: "Opening Stripe…" })}</div></form>`;
+  let body;
+  if (!ready) {
+    body = p(acct
+      ? "You started setting up payouts with Stripe but it isn't finished. Finish the steps and the price can be set right after."
+      : "Charge guests to join. Guests pay on Stripe's secure page (Apple Pay works) and are on the event once the payment goes through. The money goes to your own Stripe account — set up once, a few minutes — and Reason keeps 2.5% of the price. Guests pay Stripe's processing on top, so your price is what you set.")
+      + setupBtn(acct ? "Finish setting up payouts" : "Set up payouts with Stripe")
+      + p("Stripe asks for your name, your bank and a few details. Reason never sees your bank; Stripe holds it.", "quiet");
+  } else {
+    const priceDraft = drafts.price ?? (priced ? String(ev.price_cents / 100).replace(/\.00$/, "") : "");
+    const guests = eventpay.paidGuests(ev);
+    const failed = guests.filter(g => g.refund_error);
+    body = `<div class="mg-kv"><span class="quiet">${esc(priced ? eventpay.organizerPriceLine(ev.price_cents) : "Free to join. Set a price per person and guests pay on Stripe's page when they join.")}</span><span class="mg-tag${priced ? " on" : ""}">${esc(priced ? `${eventpay.dollars(ev.price_cents).toUpperCase()} PER PERSON` : "FREE")}</span></div>`
+      + (paused ? p("Paused by Reason's operator, so the price can't change right now.", "quiet")
+        : form("price", "review", `<label for="price_in">PRICE PER PERSON · $5 TO $500<input id="price_in" name="price" type="text" inputmode="decimal" autocomplete="off" maxlength="9" placeholder="25" value="${esc(priceDraft)}"></label>`
+          + `<p class="quiet" id="price_quote" aria-live="polite"></p>`
+          + `<div class="mg-row">${button(priced ? "Change the price" : "Set the price", { busy: "Checking…" })}${priced ? `</div></form><form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "free")}${hidden("step", "review")}<div class="mg-row">${button("Make it free again", { cls: "mg-btn quiet", busy: "Opening…" })}` : ""}</div>`))
+      + (priced || s.paid_count
+        ? `<p class="lbl" style="margin-top:8px">SO FAR</p>`
+          + `<div class="mg-kv"><span class="lbl">PAID</span><span>${esc(plural(s.paid_count, "guest"))}${s.open_holds ? ` · ${esc(plural(s.open_holds, "spot"))} held while someone pays` : ""}</span></div>`
+          + `<div class="mg-kv"><span class="lbl">GROSS</span><span>${esc(eventpay.dollars(s.gross_cents))}</span></div>`
+          + `<div class="mg-kv"><span class="lbl">YOU GET</span><span>${esc(eventpay.dollars(s.organizer_net_cents))}${s.refunded_count ? ` · ${esc(plural(s.refunded_count, "refund"))}` : ""}</span></div>`
+          + (guests.length
+            ? `<p class="lbl" style="margin-top:8px">WHO PAID</p><ul class="mg-list">${guests.map(g => `<li><div class="mg-who"><b>${esc(g.display_name || "A guest")}</b><span>${esc(`paid ${eventpay.dollars(g.total_cents)} · ${when(ev, g.paid_at)}${g.refund_error ? " · the last refund didn't go through" : ""}`)}</span></div>`
+              + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "refund")}${hidden("step", "review")}${hidden("payment", g.payment_id)}${button(g.refund_error ? "Retry refund" : "Refund", { cls: "mg-btn quiet", busy: "…" })}</form></li>`).join("")}</ul>`
+              + p("A refund gives them everything back, processing included, and takes them off the event. Cancelling the event refunds everyone.", "quiet")
+            : p("Nobody has paid yet.", "quiet"))
+          + (failed.length ? `<p class="mg-note err">${esc(`${plural(failed.length, "refund")} didn't go through on Stripe's side. Retry above, or check your Stripe dashboard.`)}</p>` : "")
+        : "")
+      + `<p class="lbl" style="margin-top:8px">YOUR STRIPE ACCOUNT</p>`
+      + p("Your balance, payouts to your bank and every payment are in your Stripe dashboard. Stripe pays out on its own schedule.")
+      + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "dashboard")}${hidden("step", "do")}<div class="mg-row">${button("Open your Stripe dashboard", { cls: "mg-btn alt", busy: "Opening…" })}</div></form>`;
+  }
+  return sec("money", "07", "Tickets", `<h2 class="mg-h">${esc(priced ? `${eventpay.dollars(ev.price_cents)} a person` : "Tickets")}</h2>` + body);
 }
 
 /** One reminder's state, in a sentence the organizer reads. */
@@ -468,12 +528,14 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   const going = v.going;
   const sec = (id, n, title, inner) => section(id, n, title, inner, done);
 
+  // Tickets (src/eventpay.js): where a price could be set, or already is.
+  const money = eventpay.paidEventsOn() && (eventpay.canPrice(conversationId) || eventpay.priced(ev));
   const hero = `<div class="mg-hero"><p class="lbl">ONLY YOU SEE THIS PAGE</p><h1>${esc(ev.name)}</h1>`
-    + p([v.when ?? "No time set", plural(going, "guest"), v.capacity ? `cap ${v.capacity}${going >= v.capacity ? " (full)" : ""}` : ""].filter(Boolean).join(" · "), "quiet")
+    + p([v.when ?? "No time set", plural(going, "guest"), v.capacity ? `cap ${v.capacity}${going >= v.capacity ? " (full)" : ""}` : "", eventpay.priced(ev) ? `${eventpay.dollars(ev.price_cents)} a person` : ""].filter(Boolean).join(" · "), "quiet")
     + `</div>`;
   const banner = (paused ? `<p class="mg-note">Reason's operator has paused this event, so joining is closed and nothing goes out to guests until it's resumed. That isn't something you can undo from here.</p>` : "")
     + (done?.text && !done.section ? noteHtml(done) : "");
-  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE GUESTS"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["questions", "QUESTIONS"], ["access", "SHARING"], ["more", "MORE"]]
+  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE GUESTS"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["questions", "QUESTIONS"], ...(money ? [["money", "TICKETS"]] : []), ["access", "SHARING"], ["more", "MORE"]]
     .map(([id, l]) => `<li><a href="#${id}">${l}</a></li>`).join("")}</ul>`;
 
   // 01 — the welcome
@@ -534,6 +596,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   // 04 — guests
   const list = events.guestList(ev);
   const joined = list.filter(g => g.state === "joined");
+  const paidBy = eventpay.priced(ev) ? new Map(eventpay.paidGuests(ev).map(g => [g.guest_id, g])) : new Map();
   const guests = sec("guests", "05", "Guests",
     `<h2 class="mg-h">${esc(joined.length ? `${plural(joined.length, "guest")} in` : "Nobody yet")}</h2>`
     + p("Names are what each guest chose to show. Phone numbers are never shown, here or anywhere.")
@@ -542,6 +605,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
         g.state === "removed" ? "taken off the event" : !g.in_directory ? "not on the who's-going list"
           : ev.guest_list_visible || g.list_chosen ? "on the who's-going list" : "joined while the list was private",
         VIA[g.via] ?? "",
+        paidBy.get(g.guest_id) ? `paid ${eventpay.dollars(paidBy.get(g.guest_id).total_cents)}` : "",
       ].filter(Boolean).join(" · "))}${g.instagram ? ` · <a href="${esc(events.instagramUrl(g.instagram))}" rel="noopener noreferrer" target="_blank">@${esc(g.instagram)}</a>` : ""}</span></div>`
         + (g.state === "joined" ? `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "remove")}${hidden("step", "review")}${hidden("guest", g.guest_id)}${button("Remove", { cls: "mg-btn quiet", busy: "…" })}</form>` : "")
         + `</li>`).join("")}</ul>`
@@ -552,8 +616,11 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   // 06 — guest questions
   const asks = sec("questions", "06", "Guest questions", questionsSection(ev, { drafts }));
 
-  // 07 — access and sharing
-  const access = sec("access", "07", "Sharing",
+  // 07 — tickets and payouts (src/eventpay.js)
+  const tickets = money ? ticketsSection(ev, { conversationId, drafts, sec, paused }) : "";
+
+  // 08 — access and sharing
+  const access = sec("access", money ? "08" : "07", "Sharing",
     `<h2 class="mg-h">The link and the password</h2>`
     + p("Guests need both: the link opens the join page, and the password lets them in.")
     + `<label class="lbl" for="invite_link">INVITE LINK</label><div class="mg-copy"><input id="invite_link" type="text" readonly value="${esc(link)}"><button class="mg-btn alt" type="button" data-copy="invite_link">Copy</button></div>`
@@ -565,7 +632,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   const hasPicture = cover.hasUploaded(ev);
   const pending = cover.pendingOf(ev);
   const ridesHere = rides.canEnable(ev);
-  const more = sec("more", "08", "More",
+  const more = sec("more", money ? "09" : "08", "More",
     `<h2 class="mg-h">The rest</h2>`
     + `<p class="lbl">THE LINK'S CARD</p>`
     + `<img class="mg-cover" src="${esc(cover.coverUrl(ev))}" alt="The picture on your event link's card">`
@@ -585,7 +652,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + (albums.albumFor(ev) ? `<p class="lbl">PHOTO ALBUM</p>${p("Check guests in, pin highlights and release the album to everyone who came.")}<div class="mg-row"><a class="mg-btn alt" href="${esc(`/e/${ev.public_id}/album/manage`)}">Open the album</a></div>` : "")
     + `<details class="mg-more"${drafts.cancel ? " open" : ""}><summary>CANCEL THE EVENT →</summary>`
     + `<div class="mg-sec" style="gap:14px">`
-    + p("Every guest is texted that it's cancelled, and the join page and the guest list close. This can't be undone.")
+    + p(`Every guest is texted that it's cancelled, and the join page and the guest list close.${eventpay.summary(ev).paid_count ? " Everyone who paid is refunded in full, Reason's fee included." : ""} This can't be undone.`)
     + form("cancel", "review",
       `<label for="c_msg">A LINE FROM YOU (OPTIONAL)<textarea id="c_msg" name="message" maxlength="${LIMITS.cancel}" rows="2">${esc(drafts.cancel?.message ?? "")}</textarea></label>`
       + `<label for="c_name">TYPE THE EVENT'S NAME TO CONFIRM<input id="c_name" name="confirm_name" type="text" autocomplete="off" required></label>`
@@ -593,8 +660,8 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + `</div></details>`);
 
   const signOut = `<form method="POST" action="${esc(`/e/${ev.public_id}/signout`)}" style="margin:0"><button class="typed mut" type="submit">SIGN OUT OF THIS BROWSER</button></form>`;
-  const main = (hero + banner + nav + welcome + message + scheduled + details + guests + asks + access + more + signOut).split("__ACTION__").join(esc(managePath(ev)));
-  const side = `<span class="lbl d">AT A GLANCE</span><p class="quiet d">${esc(`${plural(going, "guest")} in. Time ${v.time_shown_to_guests ? "shared" : "hidden"}, location ${v.location_shown_to_guests ? "shared" : "hidden"}.`)}</p>`
+  const main = (hero + banner + nav + welcome + message + scheduled + details + guests + asks + tickets + access + more + signOut).split("__ACTION__").join(esc(managePath(ev)));
+  const side = `<span class="lbl d">AT A GLANCE</span><p class="quiet d">${esc(`${plural(going, "guest")} in. Time ${v.time_shown_to_guests ? "shared" : "hidden"}, location ${v.location_shown_to_guests ? "shared" : "hidden"}.${eventpay.priced(ev) ? ` ${eventpay.dollars(ev.price_cents)} a person, ${plural(eventpay.summary(ev).paid_count, "guest")} paid.` : ""}`)}</p>`
     + `<a class="typed d" href="${esc(link)}">${esc("THE JOIN PAGE GUESTS SEE →")}</a>`;
   return madeDoc({ title: `Your event: ${ev.name}`, kicker: "YOUR EVENT", main, side, head: CSS, script: SCRIPT, foot: "Only you, the organizer, can see this page. Guests never see it. You can also change anything by texting Reason.", url: link });
 }
@@ -693,7 +760,11 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
   const ctx = { conversationId: c, events: runtime, log };
   const run = (name, input) => tools.runEventTool(name, toolInput(own, input), ctx);
   const again = (notice, drafts = {}) => page(200, renderManage({ ev: own, conversationId: c, notice, drafts }));
-  const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", list: "guests", cap: "guests", question: "questions", question_remove: "questions", question_ask: "questions", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more" };
+  const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", list: "guests", cap: "guests", question: "questions", question_remove: "questions", question_ask: "questions", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more",
+
+    payouts: "money", price: "money", free: "money", refund: "money", dashboard: "money" };
+  // Tickets (src/eventpay.js): only where a price could be set, or already is; anybody else's post is a redirect home.
+  const money = eventpay.paidEventsOn() && (eventpay.canPrice(c) || eventpay.priced(own));
   const oops = (text, drafts = {}) => again({ text, error: true, section: SECTION[action] ?? null }, drafts);
   const valid = (name, input) => tools.EVENT_SCHEMAS[name].safeParse(toolInput(own, input)).success;
   log({ event_manage: own.id, action, step });
@@ -1142,8 +1213,98 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       if (step !== "do") return redirect(homePath(own));
       const out = await run("event_cancel", { ...(message.trim() ? { message } : {}) });
       if (!out?.ok) return oops("That didn't go through. The event is still on.");
-      log({ event_manage_cancelled: own.id, guests: out.sent?.guests ?? 0 });
+      log({ event_manage_cancelled: own.id, guests: out.sent?.guests ?? 0, refunds: out.refunds?.refunded ?? 0 });
       return redirect(homePath(own));
+    }
+
+    // ---------- tickets and payouts (src/eventpay.js) ----------
+
+    case "payouts": {
+      if (!money) return redirect(homePath(own));
+      if (eventpay.payoutsReady(c)) return back(own, "money", { done: "payouts_ready" });
+      // Stripe's own onboarding for their Express account; back to this page after (GET /payouts).
+      const link = await eventpay.onboardingLink(c, own, { fetchImpl: globalThis.fetch });
+      if (!link.ok) return oops("Stripe couldn't start the payouts setup just now. Try again in a few minutes.");
+      log({ event_manage_payouts: own.id, made: !!link.row });
+      return redirect(link.url);
+    }
+
+    case "price": {
+      if (!money) return redirect(homePath(own));
+      const raw = String(f.get("price") ?? "").trim();
+      if (step === "edit") return again(null, { price: raw });
+      const cents = eventpay.parseDollars(raw);
+      const problem = cents == null ? "bad_price" : eventpay.priceProblem(cents);
+      if (problem) return oops({ too_low: `The lowest price is ${eventpay.dollars(eventpay.MIN_PRICE_CENTS)} per person.`, too_high: `The highest price is ${eventpay.dollars(eventpay.MAX_PRICE_CENTS)} per person for now.`, bad_price: "Put in a price in dollars, like 25 or 12.50." }[problem], { price: raw });
+      if (!eventpay.payoutsReady(c)) return oops("Set up payouts with Stripe first; then the price.", { price: raw });
+      if ((own.price_cents ?? null) === cents) return back(own, "money", { done: "price_saved" });
+      const qt = eventpay.quote(cents);
+      if (step === "review") {
+        return page(200, renderConfirm({
+          ev: own, title: eventpay.priced(own) ? `Change the price to ${eventpay.dollars(cents)}?` : `Charge ${eventpay.dollars(cents)} a person?`,
+          sentences: [
+            `Guests pay ${eventpay.dollars(qt.total)}: your ${eventpay.dollars(qt.price)} plus ${eventpay.dollars(qt.processing)} of Stripe's processing, shown to them as one line. You get ${eventpay.dollars(qt.organizer_gets)} per person; Reason keeps 2.5% (${eventpay.dollars(qt.reason_fee)}).`,
+            "Guests pay on Stripe's secure page when they join (Apple Pay works) and are on the event once the payment goes through. Their spot is held for 15 minutes while they pay.",
+            eventpay.priced(own) ? "People already in paid the old price and aren't charged or refunded. Nobody is texted." : "Nobody already in is charged. Nobody is texted.",
+          ],
+          fields: { action: "price", step: "do", price: raw }, confirm: eventpay.priced(own) ? "Change the price" : `Charge ${eventpay.dollars(cents)}`, back: "Change it",
+        }));
+      }
+      if (step !== "do") return redirect(homePath(own));
+      const out = await run("event_price", { price_dollars: cents / 100 });
+      if (!out?.ok) return oops("That didn't save. The price is what it was.", { price: raw });
+      log({ event_manage_price: own.id, cents });
+      return back(own, "money", { done: "price_saved" });
+    }
+
+    case "free": {
+      if (!money) return redirect(homePath(own));
+      if (step === "edit") return back(own, "money");
+      if (!eventpay.priced(own)) return back(own, "money", { done: "price_free" });
+      if (step === "review") {
+        const s = eventpay.summary(own);
+        return page(200, renderConfirm({
+          ev: own, title: "Make it free to join?",
+          sentences: ["Guests who join from now on pay nothing.", s.paid_count ? `The ${plural(s.paid_count, "guest")} who already paid keep their spot and aren't refunded by this. To give one their money back, refund them in Tickets.` : "Nobody has paid, so nobody is affected.", "Nobody is texted."],
+          fields: { action: "free", step: "do" }, confirm: "Make it free", back: "Keep the price",
+        }));
+      }
+      if (step !== "do") return redirect(homePath(own));
+      const out = await run("event_price", { free: true });
+      if (!out?.ok) return oops("That didn't save. The price is what it was.");
+      return back(own, "money", { done: "price_free" });
+    }
+
+    case "refund": {
+      if (!money) return redirect(homePath(own));
+      const id = Number.parseInt(f.get("payment") ?? "", 10);
+      const g = Number.isInteger(id) && id > 0 ? eventpay.paidGuests(own).find(x => x.payment_id === id) : null;
+      if (!g) return oops("That payment isn't one that can be refunded any more.");
+      if (step === "edit") return back(own, "money");
+      if (step === "review") {
+        return page(200, renderConfirm({
+          ev: own, title: `Refund ${g.display_name || "this guest"} ${eventpay.dollars(g.total_cents)}?`,
+          sentences: [
+            `They get the whole ${eventpay.dollars(g.total_cents)} back — your ${eventpay.dollars(g.price_cents)} and the processing — on their card in a few days. Reason's fee goes back too; Stripe keeps its processing, which comes out of Reason, not you.`,
+            "They come off the event and lose its updates; they could join again by paying again. Reason texts them this:",
+          ],
+          preview: eventpay.refundedBody(own, g.total_cents), previewLabel: "THEY GET THIS TEXT",
+          fields: { action: "refund", step: "do", payment: String(g.payment_id) }, confirm: `Refund ${eventpay.dollars(g.total_cents)}`, back: "Keep it", danger: true,
+        }));
+      }
+      if (step !== "do") return redirect(homePath(own));
+      if (!g.guest_id) return oops("That guest's row is gone; refund them from your Stripe dashboard.");
+      const out = await run("event_refund", { guest_id: g.guest_id });
+      if (!out?.ok) return oops(out?.error ? "Stripe didn't take the refund just now. Nothing changed; try again in a few minutes." : "That didn't go through.");
+      log({ event_manage_refund: own.id, payment: g.payment_id });
+      return back(own, "money", { done: "refunded" });
+    }
+
+    case "dashboard": {
+      if (!money) return redirect(homePath(own));
+      const link = await eventpay.dashboardLink(c, { fetchImpl: globalThis.fetch });
+      if (!link.ok) return oops(link.reason === "no_account" ? "Set up payouts first." : "Stripe couldn't open your dashboard just now. Try again in a minute.");
+      return redirect(link.url);
     }
   }
   return redirect(homePath(own));

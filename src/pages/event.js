@@ -35,6 +35,7 @@ import { prettyNumber } from "../invites.js";
 import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
 import { albumRequest } from "./album.js";
 import * as made from "./made.js";
+import * as eventpay from "../eventpay.js";
 import { renderManage, manageRequest, ownOrigin } from "./eventmanage.js";
 import { readPlain } from "../restfiles.js";
 import * as questions from "../eventquestions.js";
@@ -126,6 +127,8 @@ function publicDetails(ev) {
   const rows = [
     ev.time_public && ev.starts_at != null ? `<p><b>When:</b> ${esc(events.whenLine(ev))}</p>` : "",
     ev.location_public && ev.location ? `<p><b>Where:</b> ${esc(ev.location)}</p>` : "",
+    // The price is public (src/eventpay.js): anyone deciding whether to come should see it first.
+    eventpay.priced(ev) ? `<p><b>Price:</b> ${esc(eventpay.guestPriceLine(ev))}</p>` : "",
   ].filter(Boolean);
   return rows.length ? `<div class="t">${rows.join("")}</div>` : "";
 }
@@ -231,7 +234,16 @@ function joinFormV2(ev, { account, error, values }) {
       ? `<p class="quiet">${esc(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</p>`
       : `<p class="quiet">Joining gives you access to Reason, your personal concierge, which can help you with everything about this event (and more). Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.</p>`
         + `<a class="typed" href="${esc(signinPath(ev))}">ALREADY USE REASON? SIGN IN WITH YOUR NUMBER</a>`)
-    + `<button class="go" type="submit" data-busy="Joining…">Join →</button></form>`;
+    + (eventpay.priced(ev) ? `<p class="quiet">${esc(paidJoinNote(ev, signedIn))}</p>` : "")
+    + `<button class="go" type="submit" data-busy="${eventpay.priced(ev) && signedIn ? "Opening payment…" : "Joining…"}">${eventpay.priced(ev) ? "Join and pay →" : "Join →"}</button></form>`;
+}
+
+/** What paying looks like from here (src/eventpay.js): a Stripe page now, or by text after the finishing text. */
+function paidJoinNote(ev, signedIn) {
+  const qt = eventpay.quote(ev.price_cents);
+  return signedIn
+    ? `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password you'll pay on a secure Stripe page — Apple Pay works — and you're in once the payment goes through.`
+    : `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password and one text to Reason, Reason texts you a secure Stripe payment link; you're in once the payment goes through.`;
 }
 
 /** P4 for anybody the link reaches: only what the organizer made public, then "Are you in?". */
@@ -239,6 +251,7 @@ function renderJoinV2({ ev, account = null, error = "", values = {} }) {
   const facts = [
     ["When", ev.time_public && ev.starts_at != null ? timeOnly(ev) : ""],
     ["Where", ev.location_public ? ev.location : ""],
+    ...(eventpay.priced(ev) ? [["Price", `${eventpay.dollars(ev.price_cents)} per person`]] : []),
   ];
   // No host name before joining: a forwarded link never shows anybody's name (publicView).
   return made.renderEvent({
@@ -302,7 +315,8 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
       : `<div class="t">${p("Joining gives you access to Reason, your personal concierge, which can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
         + p("Already use Reason? Same button — it recognizes your number and just adds you to the event.")
         + `<p><a href="${esc(signinPath(ev))}">Already use Reason? Sign in with your number</a></p></div>`)
-    + `<button class="ev-btn" type="submit" data-busy="Joining…">Join</button></form>`;
+    + (eventpay.priced(ev) ? `<div class="t">${p(paidJoinNote(ev, signedIn))}</div>` : "")
+    + `<button class="ev-btn" type="submit" data-busy="${eventpay.priced(ev) && signedIn ? "Opening payment…" : "Joining…"}">${eventpay.priced(ev) ? "Join and pay" : "Join"}</button></form>`;
   const body = intro(ev) + publicDetails(ev) + `<h2>Join</h2>` + form + foot();
   return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
@@ -315,12 +329,23 @@ export function finishStep({ ev, claim, lineNumber }) {
     return `${intro(ev)}<div class="t">${p("Reason's texting line isn't connected right now, so this can't be finished at the moment. Nothing was used up — try again later.")}</div>`;
   }
   const href = `sms:${normalizeNumber(lineNumber)}?&body=${encodeURIComponent(events.claimText(ev, code))}`;
-  return `${intro(ev)}<h2>Last step</h2><div class="t">`
-    + p("Tap the button. It opens a text to Reason with your code already written in — just press send. That text is how Reason knows the number is really yours, and it finishes your join.")
-    + `</div><a class="ev-btn" href="${esc(href)}">Text Reason to finish</a><div class="t">`
+  const paid = eventpay.priced(ev);
+  return `${intro(ev)}<h2>${paid ? "Next step" : "Last step"}</h2><div class="t">`
+    + p(paid
+      ? `Tap the button. It opens a text to Reason with your code already written in — just press send. That text is how Reason knows the number is really yours. Reason texts you back a secure Stripe payment link (${eventpay.dollars(eventpay.quote(ev.price_cents).total)} with processing); you're in once you've paid.`
+      : "Tap the button. It opens a text to Reason with your code already written in — just press send. That text is how Reason knows the number is really yours, and it finishes your join.")
+    + `</div><a class="ev-btn" href="${esc(href)}">${paid ? "Text Reason to get the payment link" : "Text Reason to finish"}</a><div class="t">`
     + p(`Not on your phone? From your phone, text ${shown} to ${prettyNumber(lineNumber)}.`)
-    + p("The code works once, for 24 hours. If you already use Reason, it just adds the event to your account.")
+    + p(paid ? "The code works once, for 24 hours. Nothing is charged until you pay on the Stripe page." : "The code works once, for 24 hours. If you already use Reason, it just adds the event to your account.")
     + `</div>`;
+}
+
+/** Where Stripe sends a guest after paying (/paid) or after changing their mind (/pay-back). Nothing is decided here: the webhook does the join. */
+function renderAfterPay({ ev, paid }) {
+  const body = intro(ev) + (paid
+    ? `<h2>Payment received</h2><div class="t">${p("Thank you. Reason is putting you on the guest list now and will text you the details in a moment — the welcome, and whatever the organizer has shared.")}${p("Nothing else to do here. Head back to your texts.")}</div>`
+    : `<h2>Nothing was charged</h2><div class="t">${p("No worries. Your spot wasn't kept, but the link and the password still work whenever you'd like to join.")}</div><a class="ev-btn" href="${esc(`/e/${ev.public_id}`)}">Back to the event</a>`);
+  return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
 export function renderJoined({ ev, att, saved = false, error = "" }) {
@@ -499,6 +524,28 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     return await manageRequest({ ev, method, headers, readBody, account, mine, runtime, log });
   }
 
+  // ---- back from Stripe (src/eventpay.js) ----
+  // A guest after paying, or after changing their mind: a plain page, no state read off the address.
+  if (sub === "paid" || sub === "pay-back") {
+    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    if (ev.status === "cancelled") return page(404, renderNotFound());
+    return page(200, renderAfterPay({ ev, paid: sub === "paid" }));
+  }
+  // The organizer back from Stripe's payouts onboarding: their account is read again (the webhook may
+  // be late), then their own page. `refresh` is Stripe's "the link expired": a fresh one, straight back.
+  if (sub === "payouts") {
+    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    if (!account || mine?.role !== "organizer" || ev.status === "cancelled") return page(404, renderNotFound());
+    const c = account.conversation_id;
+    const fresh = await eventpay.refreshAccount(c).catch(() => ({ ok: false }));
+    log({ event_payouts_return: ev.id, refresh: query.refresh === "1", ready: !!fresh.row?.charges_enabled });
+    if (query.refresh === "1" && !fresh.row?.charges_enabled) {
+      const link = await eventpay.onboardingLink(c, ev).catch(() => ({ ok: false }));
+      if (link.ok) return redirect(link.url);
+    }
+    return redirect(`/e/${ev.public_id}?done=${fresh.row?.charges_enabled ? "payouts_ready" : "payouts_pending"}#money`);
+  }
+
   // ---- sign this browser out ----
   if (sub === "signout") {
     if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
@@ -659,6 +706,19 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (account) {
     const shown = events.cleanDisplayName(values.display_name) || events.cleanDisplayName(account.name) || "Guest";
     const out = events.admitExisting({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", actor });
+    // A priced event (src/eventpay.js): the password was right; the spot is held and they go to
+    // Stripe's page. Nobody is on the event until the webhook says the payment landed.
+    if (!out.ok && out.reason === "payment_required") {
+      const pay = await eventpay.startCheckout({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", answers: asked.answers, log });
+      if (!pay.ok) {
+        log({ event_web_pay_refused: ev.id, why: pay.reason });
+        const why = { full: "This event is full right now (spots being paid for count). If a spot opens up, the same link and password will work.", removed: "The organizer took you off this event.", already: "You're already in.", no_payouts: "The organizer hasn't finished setting up payouts, so nobody can pay to join just yet.", paused: "Joining is paused right now." }[pay.reason]
+          ?? "The payment page couldn't be opened just now. Nothing was charged — try again in a minute.";
+        return again(200, why);
+      }
+      log({ event_web_pay_started: ev.id, reused: !!pay.reused });
+      return redirect(pay.url);
+    }
     if (!out.ok) {
       const why = { organizer: "You're organizing this one.", full: "This event is full right now. If a spot opens up, the same link and password will work.", removed: "The organizer took you off this event.", paused: "Joining is paused right now." }[out.reason] ?? "That didn't work.";
       return again(200, why);

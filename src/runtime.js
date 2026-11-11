@@ -2772,6 +2772,17 @@ export class Runtime extends EventEmitter {
     }
   }
 
+  /** Ticket holds past their 15 minutes (src/eventpay.js): released, and the Checkout page expired. Logged, never thrown. */
+  async eventPayments({ now = clock.now() } = {}) {
+    try {
+      const eventpay = await import("./eventpay.js");
+      return await eventpay.sweep({ now, log: this.log });
+    } catch (e) {
+      this.log({ event_payments_failed: (e?.message ?? String(e)).split("\n")[0] });
+      return { failed: true };
+    }
+  }
+
   /** Event messages an organizer scheduled, and the automatic reminders (src/eventschedule.js). Logged, never thrown. */
   async eventScheduled({ now = clock.now() } = {}) {
     try {
@@ -2898,6 +2909,8 @@ export class Runtime extends EventEmitter {
     const event_rides = await this.eventRides();
     // The one guest-list note after joining an event, when it had to wait for the morning.
     const event_list_notes = await this.eventListNotes();
+    // Spots held for a ticket payment whose 15 minutes ran out (src/eventpay.js): released, the page expired.
+    const event_payments = await this.eventPayments();
     // Messages an organizer scheduled for now, and the day-before / two-hours reminders. A row a
     // stopped process left mid-send is finished here, on the first pass after boot.
     const event_scheduled = await this.eventScheduled();

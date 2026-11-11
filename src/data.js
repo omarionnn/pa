@@ -255,6 +255,10 @@ export const KEPT_ON_DELETE = {
   event_messages: "an event's blasts, shared with every guest",
   // The organizer's questions belong to the event, which every guest is asked; the answers are each guest's own (deleted with them).
   event_questions: "an event's questions, asked of every guest who joins it",
+  // Money records (src/eventpay.js): a guest's payment is the organizer's sale and Stripe's record of
+  // what was charged and refunded; the organizer's Stripe account id is what refunds their guests.
+  event_payments: "a ticket payment is shared with the event's organizer and is what a refund reads; deleting it would strand money",
+  event_payout_accounts: "the organizer's Stripe account id; deleting it would leave their paid guests unrefundable",
 };
 
 /**
