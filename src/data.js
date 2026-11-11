@@ -227,6 +227,9 @@ const TABLES = [
   // Their answers to an organizer's questions (src/eventquestions.js): their own words, keyed by them,
   // and the one "the organizer added a question" text owed or sent to them.
   "event_answers", "event_question_asks",
+  // Their side of an event's help line (src/eventhelpline.js): that they texted it, and the questions
+  // they passed to the organizer with the answers that came back.
+  "event_helpline_contacts", "event_helpline_asks",
   // Which of their calls, messages and actions they asked Reason to forget, so recall never reads
   // them again (src/db.js forgetFromRecall). Row ids only, theirs.
   "recall_forgotten",

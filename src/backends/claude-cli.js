@@ -31,6 +31,7 @@ import { startCapture, recordLooked, captureViaCli, capturedWords } from "../loo
 import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
+import { voiceFor as helpLineVoice } from "../eventhelpline.js";
 import { openWorkNote } from "../openwork.js";
 import * as saidLedger from "../said.js";
 import { keptNote } from "../kept.js";
@@ -224,6 +225,8 @@ async function runTurnOnCli({
   const historyId = toolCtx.historyId ?? conversationId;
   // Whose Reason this is: the person in front of it, not whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
+  // An event's help line (src/eventhelpline.js): the same as the API path (src/agent.js).
+  try { const h = helpLineVoice(conversationId); if (h) me.helpLine = h; } catch { /* the turn runs as ever */ }
   const speaker = me.name === "the person I work for" ? "them" : me.name;
   // "(web)" after their name when the line came from Reason Web — the same label the API path writes
   // (src/agent.js), so the thread reads the same whichever backend ran the turn.
@@ -324,7 +327,7 @@ async function runTurnOnCli({
     // reason: the live Reason runs on this backend, so a feature nobody ever hears about here is a
     // feature nobody hears about at all. It goes into the prompt and NOT into the saved conversation,
     // because it is true of this turn only.
-    const turnNote = whatsnew.noteFor({
+    const turnNote = me.helpLine?.voice ? null : whatsnew.noteFor({
       conversationId, kind,
       capabilities: () => capabilitiesNow({ channels, calls, conversationId, ownerName: me.name }),
     });

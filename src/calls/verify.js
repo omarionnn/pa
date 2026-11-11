@@ -32,7 +32,7 @@
 import { timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { GATED_ACTIONS } from "../permissions.js";
-import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS, EVENT_GUEST_TOOLS, EVENT_ANSWER_TOOLS } from "../eventtools.js";
+import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS, EVENT_GUEST_TOOLS, EVENT_ANSWER_TOOLS, EVENT_HELP_GUEST_TOOLS, EVENT_HELP_ORGANIZER_TOOLS } from "../eventtools.js";
 import { ALBUM_ORGANIZER_TOOLS, ALBUM_MEMBER_TOOLS } from "../albumtools.js";
 import { config, clock } from "../config.js";
 
@@ -77,6 +77,8 @@ const EVENT_READS = {
   event_rides_setting: (input) => input != null && input.enabled === undefined,
   event_ride: (input) => input?.action === "neither",
   album_manage: (input) => input?.action === "status",
+  event_help: () => true,
+  event_help_line: (input) => (input?.action ?? "status") === "status",
 };
 // event_leave: it ends their ride offers, which texts the ride partner and sends new matches.
 // The album's organizer tool releases it (texting every checked-in guest) and checks guests in or out;
@@ -84,6 +86,8 @@ const EVENT_READS = {
 const REACHES_GUESTS = new Set([
   ...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS,
   ...EVENT_GUEST_TOOLS, ...EVENT_ANSWER_TOOLS, ...ALBUM_ORGANIZER_TOOLS, ...ALBUM_MEMBER_TOOLS,
+  // The help line (src/eventhelpline.js): a question passed to the host, an answer sent to a guest, the line turned on or off.
+  ...EVENT_HELP_GUEST_TOOLS, ...EVENT_HELP_ORGANIZER_TOOLS,
 ]);
 function eventWrite(name, input) {
   if (!REACHES_GUESTS.has(name)) return false;

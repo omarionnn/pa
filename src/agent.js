@@ -40,6 +40,7 @@ import { rulesFor as socialSigninRules } from "./socialsignin.js";
 import { foodRules } from "./food.js";
 import { tableRules } from "./tableimage.js";
 import { contextFirstRules } from "./contextfirst.js";
+import { helpLineRules, voiceFor as helpLineVoice } from "./eventhelpline.js";
 import { REFUSAL_LINE } from "./harm.js";
 
 import { recordApi } from "./spend.js";
@@ -84,6 +85,8 @@ let useFallbacks = config.fallbacks;
 function whoLine(me) {
   if (typeof me === "string") me = { name: me, isOperator: me === config.ownerName };
   const placeholder = !me?.name || me.name === "the person I work for";
+  // Somebody the event's help line brought in (src/eventhelpline.js): the help line, not their assistant.
+  if (me?.helpLine?.voice && !me?.isOperator) return `You are answering the help line for the event "${String(me.helpLine.ev.name).slice(0, 80)}", run for ${me.helpLine.host}, by text.${placeholder ? " You do not know this person's name yet; never guess it. If they tell you, save it with my_name." : ` They go by ${me.name}.`} You work for this person only in what they ask of you; nothing about anybody else reaches them.`;
   if (me?.isOperator) return `You are Reason, ${me.name}'s personal assistant who lives in their texts. ${me.name} is in ${config.ownerCity}.`;
   // The first-chat onboarding (src/onboarding.js) already asked their name; they chose not to say
   // it, or moved straight on to something real.
@@ -238,7 +241,7 @@ How you work:
 - When your whole answer would be "ok", "got it", "nice", "haha" or "👍", react instead of replying; react's description says when.
 ${threadingOnFor({ isOperator: typeof me === "object" && !!me?.isOperator && !me?.onCall }) ? TAPBACK_RULE_ON : "- Tapbacks only go one way. You cannot see a tapback somebody puts on YOUR message — nothing tells you it happened — so never say you noticed one, never read a ❤️ as the yes you were waiting for, and never ask somebody to react instead of replying."}
 - To answer something that is not the last thing they said, pin your reply under it with reply_to; its description says when.
-- When their message opens with a bracketed note that they sent it as an inline reply to an earlier message, that message is what they are talking about, even if newer ones came after it. Answer about that. When the note says it was sent in a THREAD, the thread is the subject: the message it started with and what was said in it since, and a "yeah", "no" or "that one" answers the last question YOU asked in that thread — not whatever you asked most recently somewhere else. If the note says there is no record of which message it was and their words do not make it clear, ask which one they mean in one short line.${threadingRules(me)}${foodRules(me)}${contextFirstRules(me)}
+- When their message opens with a bracketed note that they sent it as an inline reply to an earlier message, that message is what they are talking about, even if newer ones came after it. Answer about that. When the note says it was sent in a THREAD, the thread is the subject: the message it started with and what was said in it since, and a "yeah", "no" or "that one" answers the last question YOU asked in that thread — not whatever you asked most recently somewhere else. If the note says there is no record of which message it was and their words do not make it clear, ask which one they mean in one short line.${threadingRules(me)}${foodRules(me)}${contextFirstRules(me)}${helpLineRules(me)}
 - A screen effect on your reply is mark_moment, and only for a real moment; its description says which ones.
 - You can send your own voice with voice_note_say when they ask to hear it or hearing it is the whole point; its description says how to write it.
 - A voice note they send you arrives as the words in it, in a bracketed note. That is what they said: answer it like any other message, and do not make a thing of it having been a voice note. A transcript can mishear a name, a number or a place, so if something real hangs on one of those, say it back to check. When the note says it could not be listened to, say that in one short line with the reason and ask them to type it — never guess at what it said. A note with nothing said in it is its own thing and gets its own line ("that one came through silent") — not "couldn't hear it", which is a different problem, and not silence.
@@ -512,6 +515,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
+  // An event's help line (src/eventhelpline.js): which event this thread texted, and whether Reason
+  // speaks as that help line here. Read per turn; null for everybody else.
+  try { const h = helpLineVoice(conversationId); if (h) me.helpLine = h; } catch { /* the turn runs as ever */ }
   // What they have really bought (src/purchasesnote.js): on their message whenever they have a
   // purchase on record, with no side call — the model judges whether it is about buying.
   const purchasesPending = startPurchasesNote(conversationId, { text, kind, log });
@@ -561,7 +567,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // it could be said at all. Code decides what is eligible (src/whatsnew.js); the model decides
   // whether the moment suits and writes the line in its own words. The capability read is a
   // function so it is only taken when there is really a candidate to check it against.
-  const newThing = whatsnew.noteFor({
+  // Never on a help-line thread: the help line pitches nothing of Reason's (src/eventhelpline.js).
+  const newThing = me.helpLine?.voice ? null : whatsnew.noteFor({
     conversationId, kind,
     capabilities: () => capabilitiesNow({ channels, calls, conversationId, ownerName: me.name }),
   });
@@ -569,7 +576,7 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // A capability this person once asked about and was told "I can't do that" — but now it is live.
   // Threading back to their original message makes it personal rather than a generic announcement.
   const capsFn = () => capabilitiesNow({ channels, calls, conversationId, ownerName: me.name });
-  const resolvedMiss = whatsnew.resolvedMissNote({ conversationId, kind, capabilities: capsFn });
+  const resolvedMiss = me.helpLine?.voice ? null : whatsnew.resolvedMissNote({ conversationId, kind, capabilities: capsFn });
 
   // What is already open, with each job's whole sheet. This is what makes a correction stick: a
   // steer that lands mid-task reaches a model that can see what the task is carrying, and every
