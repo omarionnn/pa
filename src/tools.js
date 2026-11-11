@@ -14929,7 +14929,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         by_link: route.by_link,
         how: route.can_sign_in ? route.how : null,
         ...(route.can_sign_in ? {} : { remote: signin.remoteSigninAnswer("") }),
-        sites: rows.map(r => ({ ...r, ...(trust.SITE_REACHABLE[r.site] ? { site_loads_for_reason: trust.SITE_REACHABLE[r.site].loads } : {}) })),
+        sites: rows.map(r => {
+          // This list is Reason's own browser only. A store connected through Crossmint is connected
+          // even when its row here says never_signed_in; say so, so "not signed in here" is never
+          // repeated to the person as "not connected" (and no sign-in link is offered for it).
+          const viaStore = r.state === "signed_in" ? null : trust.storeConnected(c, r.site);
+          return {
+            ...r,
+            ...(viaStore ? { connected_via_crossmint: true, connected_at: stamp(viaStore.connectedAt), how_to_sign_in: undefined, note: `${viaStore.name} is connected through Crossmint (orders use the saved sign-in). This row only describes Reason's own browser; do not tell them it is not connected.` } : {}),
+            ...(trust.SITE_REACHABLE[r.site] ? { site_loads_for_reason: trust.SITE_REACHABLE[r.site].loads } : {}),
+          };
+        }),
         never_a_password: never,
         note: "These are from the last check, not from right now — `last_checked` says when. A session can expire quietly, so before an errand that depends on being signed in, call this again with recheck: true.",
       };
