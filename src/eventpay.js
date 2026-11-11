@@ -95,7 +95,7 @@ export function paidEventsOn() {
 /** May this conversation price the events it organizes? `owner`: the owner alone. */
 export function canPrice(conversationId) {
   if (!paidEventsOn() || !stripe.env().secretKey) return false;
-  if (config.paidEvents === "owner") return accounts.featureOwner(conversationId);
+  if (config.paidEvents === "owner") return accounts.featureOwner(conversationId, "paidEvents");
   return config.paidEvents === true;
 }
 

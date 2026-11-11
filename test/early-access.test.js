@@ -1,5 +1,6 @@
-// REASON_EARLY_ACCESS (src/accounts.js featureOwner): a listed conversation gets every feature whose
-// flag says "owner", and nothing else the operator has. A random conversation gets neither.
+// REASON_EARLY_ACCESS (src/accounts.js featureOwner): a listed conversation gets ONLY the features in
+// EARLY_ACCESS_FEATURES (paid events) while their flag says "owner" — no other owner-only feature and
+// nothing the operator has. A random conversation gets none of it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -30,21 +31,26 @@ const { iosAllowedFor } = await import("../src/ios/session.js");
 const plan = await import("../src/plan.js");
 
 const names = (c) => new Set(toolsFor(c).map(t => t.name));
-const FEATURE_TOOLS = ["event_price", "event_payouts", "event_refund", "signin_provider", "directions"];
+const PAID_TOOLS = ["event_price", "event_payouts", "event_refund"];
+const OTHER_OWNER_TOOLS = ["signin_provider", "directions"];
+const FEATURE_TOOLS = [...PAID_TOOLS, ...OTHER_OWNER_TOOLS];
 
 test("the owner sees every owner-only feature tool (baseline)", () => {
   const n = names("dm:owner");
   for (const t of FEATURE_TOOLS) assert.ok(n.has(t), t);
 });
 
-test("an early-access id gets paid events, social sign-in, directions and the app API", () => {
+test("an early-access id gets paid events and NO other owner-only feature", () => {
   const n = names(EARLY);
-  for (const t of FEATURE_TOOLS) assert.ok(n.has(t), t);
+  for (const t of PAID_TOOLS) assert.ok(n.has(t), t);
+  for (const t of OTHER_OWNER_TOOLS) assert.ok(!n.has(t), `not early access: ${t}`);
   assert.equal(eventpay.canPrice(EARLY), true);
-  assert.equal(social.socialAllowedFor(EARLY), true);
-  assert.equal(tripsOnFor(EARLY), true);
-  assert.equal(iosAllowedFor(EARLY), true);
-  assert.equal(accounts.featureOwner(EARLY), true);
+  assert.equal(social.socialAllowedFor(EARLY), false);
+  assert.equal(tripsOnFor(EARLY), false);
+  assert.equal(iosAllowedFor(EARLY), false);
+  assert.equal(accounts.featureOwner(EARLY, "paidEvents"), true);
+  assert.equal(accounts.featureOwner(EARLY), false, "a gate that names no feature stays operator-only");
+  assert.equal(accounts.featureOwner(EARLY, "directions"), false);
 });
 
 test("a random id gets none of them", () => {
@@ -74,6 +80,6 @@ test("ids match exactly: no prefix, no substring, empty list is nobody", () => {
   assert.equal(accounts.earlyAccess(`${EARLY}x`), false);
   const was = process.env.REASON_EARLY_ACCESS;
   process.env.REASON_EARLY_ACCESS = "";
-  try { assert.equal(accounts.featureOwner(EARLY), false); assert.equal(eventpay.canPrice(EARLY), false); }
+  try { assert.equal(accounts.featureOwner(EARLY, "paidEvents"), false); assert.equal(eventpay.canPrice(EARLY), false); }
   finally { process.env.REASON_EARLY_ACCESS = was; }
 });
