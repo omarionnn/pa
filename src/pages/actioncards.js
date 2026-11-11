@@ -360,5 +360,5 @@ export async function actionCardsOgRequest(pathname, { now = Date.now(), log = (
   if (!d) return null;
   const png = d.gone ? { bytes: genericOg(), fallback: true } : await actionCardsPng(d, { now });
   if (png.fallback) log({ action_cards_og_fallback: d.id, gone: d.gone });
-  return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": png.bytes.length, "Cache-Control": d.gone ? "public, max-age=86400" : "public, max-age=3600", "X-Content-Type-Options": "nosniff" }, body: png.bytes };
+  return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": png.bytes.length, "Cache-Control": d.gone ? "private, max-age=86400" : "private, max-age=3600", "X-Content-Type-Options": "nosniff" }, body: png.bytes };
 }

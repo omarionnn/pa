@@ -154,7 +154,7 @@ const clean = (v, max) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, m
  */
 export function createDigest(conversationId, cards, { now = clock.now(), ttlMs = DIGEST_TTL_MS } = {}) {
   const list = (Array.isArray(cards) ? cards : []).slice(0, MAX_CARDS).map(c => ({
-    verb: clean(c.verb, 24).toUpperCase() || "DO",
+    verb: clean(c.verb, 24).toUpperCase().replace(/[^A-Z0-9 -]/g, "").trim() || "DO", // letters, digits, spaces: the page renumbers eyebrows client-side from this
     title: clean(c.title, 140),
     whyNow: clean(c.whyNow ?? c.why_now ?? c.why, 200),
     prefill: clean(c.prefill ?? c.reply, 200),
