@@ -35,8 +35,9 @@ import { prettyNumber } from "../invites.js";
 import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
 import { albumRequest } from "./album.js";
 import * as made from "./made.js";
-import { renderManage, manageRequest } from "./eventmanage.js";
+import { renderManage, manageRequest, ownOrigin } from "./eventmanage.js";
 import { readPlain } from "../restfiles.js";
+import * as questions from "../eventquestions.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -57,6 +58,9 @@ const CSS = `
 .ev-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit;opacity:.8}
 /* Room for "Sending…" and its ring, so the line does not grow when it is tapped. */
 .ev-link[data-busy]{min-width:6.5rem;text-align:left}
+.ev-form fieldset{border:0;margin:.8rem 0;padding:0}
+.ev-form legend{font-weight:600;padding:0;margin-bottom:.3rem}
+.ev-form .pick{display:flex;gap:.5rem;align-items:center;font-weight:400;margin:.35rem 0}
 `;
 
 /**
@@ -155,6 +159,62 @@ export function dateCard(ev) {
 }
 const timeOnly = (ev) => new Date(ev.starts_at).toLocaleString("en-US", { timeZone: ev.tz, weekday: "short", hour: "numeric", minute: "2-digit" });
 
+/**
+ * The organizer's questions as form fields (src/eventquestions.js): free text, or one pick from a few
+ * choices with nothing picked to start. An optional one: a blank is a skip, and nothing about joining
+ * waits on it. A required one (owner decision 2026-11-11) is marked so, and the form does not go
+ * through without it — in the browser (`required`) and again when it is read (readForm `missing`).
+ * `values` puts back what they typed (`q_<id>`); `qv_<id>` is the version of the words they read, so
+ * an answer is never filed under words the organizer changed meanwhile. `v2` draws them in the v2
+ * pages' type; otherwise in the classic page's.
+ */
+export function questionFields(ev, values = {}, { v2 = true, heading = null, own = false } = {}) {
+  const list = questions.questionsOf(ev);
+  if (!list.length) return "";
+  const anyRequired = list.some(q => q.required);
+  const head0 = heading ?? (anyRequired ? "THE HOST ASKS" : "THE HOST ASKS · ALL OPTIONAL");
+  const tag = (q) => anyRequired ? `<small class="qt">${q.required ? "REQUIRED" : "OPTIONAL"}</small>` : "";
+  const field = (q) => {
+    const name = `q_${q.question_id}`;
+    const have = values[name] == null ? "" : String(values[name]);
+    const req = q.required ? " required" : "";
+    // On a guest's own answers form, what the page showed: a field left as it was is not touched.
+    const ver = `<input type="hidden" name="qv_${q.question_id}" value="${esc(q.version)}">${own ? `<input type="hidden" name="qo_${q.question_id}" value="${esc(have)}">` : ""}`;
+    if (q.kind === "choice") {
+      const radio = (value, label) => `<label class="${v2 ? "check pick" : "pick"}"><input type="radio" name="${name}" value="${value}"${have === value ? " checked" : ""}${req}> <span>${esc(label)}</span></label>`;
+      // Their own form can take an answer back: "No answer" is a pick of its own there — not for one the host asks everyone.
+      const picks = q.choices.map((c, i) => radio(String(i), c)).join("") + (own && !q.required ? radio("", "No answer") : "");
+      return `<fieldset class="qq"><legend>${esc(q.prompt)}${tag(q)}</legend>${picks}${ver}</fieldset>`;
+    }
+    return v2
+      ? `<label class="qq" for="${name}"><span class="qp">${esc(q.prompt)}${tag(q)}</span><input id="${name}" name="${name}" type="text" maxlength="${questions.LIMITS.answer}" value="${esc(have)}"${req}></label>${ver}`
+      : `<label for="${name}">${esc(q.prompt)}${tag(q)}</label><input id="${name}" name="${name}" type="text" maxlength="${questions.LIMITS.answer}" value="${esc(have)}"${req}>${ver}`;
+  };
+  const head = v2 ? `<p class="lbl qh">${esc(head0)}</p>` : `<p class="ev-note">${esc(head0.charAt(0) + head0.slice(1).toLowerCase())}</p>`;
+  return `<div class="qs">${head}${list.map(field).join("")}<p class="quiet">${esc("Only the host sees your answers. Never other guests, and never the guest list.")}</p></div>`;
+}
+
+/** What this guest has answered, as form values: what their answers form starts with. */
+function ownValues(ev, att) {
+  const out = {};
+  for (const q of questions.guestQuestions(ev, att)) {
+    if (q.your_answer == null) continue;
+    out[`q_${q.question_id}`] = q.kind === "choice" ? String(q.your_choice) : q.your_answer;
+  }
+  return out;
+}
+
+/** A joined guest's own answers, on their page, to change any time. Empty when the event asks nothing. */
+function answersBlock(ev, att, { v2 = true, saved = false, error = "" } = {}) {
+  if (!questions.hasQuestions(ev)) return "";
+  const fields = questionFields(ev, ownValues(ev, att), { v2, heading: "YOUR ANSWERS FOR THE HOST", own: true });
+  const note = saved ? (v2 ? `<p class="quiet" role="status">Saved.</p>` : `<p class="ev-note" role="status">Saved.</p>`) : "";
+  const err = error ? (v2 ? `<p class="err" role="alert">${esc(error)}</p>` : `<p class="ev-err">${esc(error)}</p>`) : "";
+  return v2
+    ? `<section class="dash" id="answers"><form class="jf" method="POST" action="${esc(`/e/${ev.public_id}/answers`)}">${err}${note}${fields}<button class="go" type="submit" data-busy="Saving…">Save answers →</button></form></section>`
+    : `<h2 id="answers">Your answers</h2><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/answers`)}">${err}${note}${fields}<button class="ev-btn" type="submit" data-busy="Saving…">Save answers</button></form>`;
+}
+
 /** The join form, in the v2 page's own type. The same fields, the same words and the same POST as renderJoin. */
 function joinFormV2(ev, { account, error, values }) {
   const signedIn = !!account;
@@ -166,6 +226,7 @@ function joinFormV2(ev, { account, error, values }) {
     + (signedIn ? "" : field("display_name", "Your name (what other guests see)", "text", `required maxlength="40" autocomplete="name"`))
     + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
     + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
+    + questionFields(ev, values)
     + (signedIn
       ? `<p class="quiet">${esc(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</p>`
       : `<p class="quiet">Joining gives you access to Reason, your personal concierge, which can help you with everything about this event (and more). Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.</p>`
@@ -192,7 +253,7 @@ function renderJoinV2({ ev, account = null, error = "", values = {} }) {
 }
 
 /** P4 for somebody on the event: the released details, who's coming, the calendar. */
-function renderJoinedV2({ ev, att }) {
+function renderJoinedV2({ ev, att, saved = false, error = "" }) {
   const v = events.guestView(ev, att);
   const list = ev.guest_list_visible ? events.directoryEntries(ev).map(e => e.name).filter(Boolean) : null;
   const going = db.joinedCount(ev.id);
@@ -201,6 +262,7 @@ function renderJoinedV2({ ev, att }) {
     date: v.when ? dateCard(ev) : null,
     facts: [["When", v.when ? timeOnly(ev) : ""], ["Where", v.where ?? ""]],
     rsvp: { joined: true },
+    after: answersBlock(ev, att, { saved, error }),
     coming: list,
     calendarHref: v.when ? `/e/${ev.public_id}/calendar.ics` : "",
     head: headFor(ev),
@@ -234,6 +296,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
     + (signedIn ? "" : field("display_name", "Your name (what other guests see)", "text", `required maxlength="40" autocomplete="name"`))
     + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
     + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
+    + questionFields(ev, values, { v2: false })
     + (signedIn
       ? `<div class="t">${p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</div>`
       : `<div class="t">${p("Joining gives you access to Reason, your personal concierge, which can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
@@ -260,10 +323,10 @@ export function finishStep({ ev, claim, lineNumber }) {
     + `</div>`;
 }
 
-export function renderJoined({ ev, att }) {
-  if (config.pagesV2) return renderJoinedV2({ ev, att });
+export function renderJoined({ ev, att, saved = false, error = "" }) {
+  if (config.pagesV2) return renderJoinedV2({ ev, att, saved, error });
   const dir = ev.guest_list_visible ? `<a class="ev-btn" href="${esc(whoPath(ev, att.token))}">See who's going</a>` : "";
-  const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}`;
+  const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}${answersBlock(ev, att, { v2: false, saved, error })}`;
   return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
@@ -524,6 +587,30 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     return page(200, renderGate({ ev, token }));
   }
 
+  // ---- a joined guest's own answers to the organizer's questions ----
+  if (sub === "answers") {
+    if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
+    if (ev.status !== "active" || mine?.role !== "guest") return page(404, renderNotFound());
+    if (!ownOrigin(headers)) return page(403, renderNotFound());
+    const body = await readBody();
+    if (body != null && String(body).length > 8000) return page(413, renderNotFound());
+    const form = new URLSearchParams(body ?? "");
+    const read = questions.readForm(ev, (k) => form.get(k), { own: true });
+    const shown = (error) => page(200, renderJoined({ ev, att: mine.att, error }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
+    if (read.problems.length) return shown(`${read.problems[0].prompt}: ${questions.ANSWER_WHY[read.problems[0].problem] ?? "that answer didn't read."}`);
+    // A question reworded since this page was opened: nothing is saved, and the page shows the new words.
+    // (One removed meanwhile just has its answer dropped.)
+    const now = new Map(db.eventQuestions(ev.id).map(q => [q.id, q.version]));
+    if (read.answers.some(a => now.get(a.q) !== a.v)) return shown("The host changed a question since you opened this page. Check it and save again.");
+    const filed = questions.saveAnswers(ev, mine.att, read.answers, "page");
+    // A clear takes back only the answer the page showed: one given by text since then stays.
+    const current = ownValues(ev, mine.att);
+    let cleared = 0;
+    for (const c of read.cleared) if (current[`q_${c.id}`] === c.was && db.clearEventAnswer(c.id, mine.att.id)) cleared++;
+    log({ event_answers_saved: ev.id, filed, cleared });
+    return redirect(`/e/${ev.public_id}?saved=answers#answers`);
+  }
+
   // ---- the join page ----
   if (method !== "GET" && method !== "HEAD" && !(method === "POST" && sub === "join")) {
     return page(405, renderNotFound(), { Allow: "GET, HEAD" });
@@ -546,11 +633,12 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", url: events.eventUrl(ev), head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
   // The organizer opening their own event's link gets their own page, never a guest's.
   if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev, query }));
-  if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
+  if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att, saved: query.saved === "answers" }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
   if (method !== "POST") return page(200, renderJoin({ ev, account }));
 
   const form = new URLSearchParams((await readBody()) ?? "");
   const values = { display_name: form.get("display_name") ?? "", instagram: form.get("instagram") ?? "", in_directory: form.get("in_directory") === "1" };
+  for (const q of db.eventQuestions(ev.id)) if (form.get(`q_${q.id}`) != null) values[`q_${q.id}`] = String(form.get(`q_${q.id}`)).slice(0, 600);
   const again = (status, error) => page(status, renderJoin({ ev, account, error, values }));
   const actor = eventActor(headers, remoteAddress);
   const found = await events.findForJoin({ actor, link: events.eventUrl(ev), password: form.get("password") ?? "", route: "web" });
@@ -561,6 +649,10 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   }
   const instagram = values.instagram.trim() ? events.instagramHandle(values.instagram) : null;
   if (values.instagram.trim() && !instagram) return again(200, "That doesn't look like an Instagram handle — just the username, like @yourname.");
+  // The host's questions: an answer that can't be read is sent back, and so is a required one left blank.
+  const asked = questions.readForm(ev, (k) => form.get(k));
+  if (asked.problems.length) return again(200, `${asked.problems[0].prompt}: ${questions.ANSWER_WHY[asked.problems[0].problem] ?? "that answer didn't read."}`);
+  if (asked.missing.length) return again(200, `${asked.missing[0]}: the host asks everyone this one before they're in.`);
 
   // Somebody already on Reason, recognized by their page session (sessionAccount only returns an
   // account Reason still serves): joined now, no signup, no code.
@@ -572,6 +664,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
       return again(200, why);
     }
     const att = out.already ? out.attendee : events.afterJoin({ ev, att: out.attendee, typedInstagram: instagram });
+    if (!out.already) questions.saveAnswers(ev, att, asked.answers, "join");
     if (!out.already) {
       await events.sendWelcome({ runtime, ev, att });
       events.scheduleListNote({ runtime, ev, att });
@@ -583,7 +676,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // Anybody else: everything is on the page; the last step is one text.
   const name = events.cleanDisplayName(values.display_name);
   if (!name) return again(200, "Add the name other guests should see.");
-  const claim = events.makeClaim({ ev, displayName: name, instagram, inDirectory: values.in_directory });
+  const claim = events.makeClaim({ ev, displayName: name, instagram, inDirectory: values.in_directory, answers: asked.answers });
   log({ event_web_claim: ev.id });
   return page(200, shell({ title: ev.name, body: finishStep({ ev, claim, lineNumber }), pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS }));
 }

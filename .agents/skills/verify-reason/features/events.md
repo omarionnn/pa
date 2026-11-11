@@ -355,6 +355,56 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   too, as …"); the full-event wording stays as written. Pinned: `test/event-edit-limits.test.js`; drive: the
   `limits:` steps (one per decision: asked once, organizer listed, full wording).
 
+- **Guest questions (2026-11-08, `src/eventquestions.js`, tools `event_questions` / `event_answer`, tables `event_questions` / `event_answers`, `event_claims.answers`)** —
+  the organizer asks up to 3 short questions guests answer on joining: `text` (answer ≤200 chars) or `choice` (one of 2–6
+  choices, each ≤40). Every one optional: the join page shows them under the name ("THE HOST ASKS · ALL OPTIONAL", nothing
+  `required`), a blank is a skip, joining never waits; an unreadable answer (a choice that isn't one) is sent back with the
+  form kept. Page claim: answers ride on `event_claims.answers` and are filed by `db.fileClaimAnswers` inside
+  `redeemEventClaim` only when the question's `version` is still what the guest read (a reword drops that answer). Signed-in
+  page join files them at once. Text join: `event_join` returns `questions` (choices numbered) and `say` tells the model to
+  ask only the first, optional, then the next after each `event_answer` (`choice` 1-based, `text`, `clear`; shown only to a
+  guest of an event that asks something). By text, `event_questions` add/change is CONDITIONALLY_GATED: target
+  `add a question for guests of <event> (event #id): "<words>" (pick one: a / b) {hash}`, refusal carries `asks`
+  (`guests_see`, `guests_already_in`); `questionsRefusal` refuses a 4th, empty, bad choices, a repeat, or a reword of an
+  answered one BEFORE any yes. list/remove ask nothing; remove with answers refuses `has_answers` + count until
+  `delete_answers` (answers deleted with it). Adding texts nobody; guests already in answer on their own page. Reword only
+  while 0 answers (`version` +1). Guest's own page (`/e/<id>`, joined) has "YOUR ANSWERS FOR THE HOST" → `POST
+  /e/<id>/answers` (guest session + `ownOrigin`, blank clears). Privacy: answers only on the organizer's manage page
+  (`06 · GUEST QUESTIONS`: ANSWERED · N OF M, count bar + names per choice, each text answer by name, "Not answered yet"),
+  in `event_guests` (per guest `answers`) and `event_questions` list (wrapped `fromOutside`); never on who's-going, the
+  public join page, another guest's page or `event_info`; joined guests only. `event_answers` keyed by the guest's
+  `conversation_id` (their delete takes them); `event_questions` KEPT_ON_DELETE. Call gate: `event_answer` and non-list
+  `event_questions` are consequential on a caller-ID-only call. Pinned: `test/event-guest-questions.test.js`; drive: the
+  `ask:` steps.
+  **Owner decisions 2026-11-11 (same PR):** (1) **Required** — `event_questions.required`; `required: true` on add/change
+  (target line ends `, required)` and the hash covers it; `asks.required`). Join page: "THE HOST ASKS" with REQUIRED /
+  OPTIONAL tags, `required` on the inputs, and `readForm().missing` refuses a blank server-side ("the host asks everyone
+  this one before they're in"). Text join: `events.joinExisting`/`joinVerified` return `needs_answers` + `questions`
+  before admitting (no welcome, no row); the model asks gently one at a time and calls `event_join` again with `answers`
+  `[{question_id, choice|text}]` and no password (the `verified` hold covers it, like needs_display_name); the answers
+  are filed as `via text`. Made required only while 0 answers (`answered_required` refused before the gate; CAS in
+  `db.setEventQuestionRequired`), optional again any time with answers standing (`version` untouched, not a reword); a
+  change with the words left out keeps them. Guests already in are never held to it (own-page save with it blank goes;
+  a required answer can be changed, never cleared: `event_answer clear` → `required`, no "No answer" pick). Manage page:
+  checkbox "Everyone has to answer this one to join", confirm "GUESTS SEE · REQUIRED", "Make it optional" on an answered
+  required one (`done=question_required|question_optional`). (2) **Ask the guests already in** — `event_questions action
+  ask_guests` (CONDITIONALLY_GATED; `questionsRefusal` → `nobody_to_ask` before any yes): target `ask N guests already in
+  <event> (event #id) to answer "<words>" (…): names {hash of question_id+version+ids}`, `asks` = guests/names/
+  muted_not_asked/`text_they_get` (`events.questionAskText`: "<organizer> added a question for everyone going to
+  <event>: "…" — a, b. totally optional — …" / required: "they're asking everyone…"). The yes owes one
+  `event_question_asks` row per guest (UNIQUE question+attendee, never twice; `oweQuestionAsks`), due after
+  `LIST_NOTE.backstopMs`; `sweepQuestionAsks` (run from `Runtime.eventListNotes` next to the list notes, result key
+  `asks`) sends by the list-note rules — not 21:00–09:00 in the event's zone, never muted/left, dropped when moot
+  (answered since, question reworded = version changed, removed, event cancelled/stale, guest left: `dropAnswersOf`
+  drops owed asks). `event_messages.kind = question_ask`, into the thread as Reason's own words. Adding by text: the
+  note says `can_ask_guests` N and tells the model to offer it in one line. Manage page: adding to an event with guests
+  lands on "Ask the N guests already in?" (names, exact text, `pin` = version + ids re-checked on send; "Don't ask" →
+  `done=question_not_asked`, nothing owed); each question with guests left to ask has "Ask the N guests already in →".
+  (3) **Creation mention** — `event_create.say` adds one plain line (ask people a few short questions when they join, up
+  to 3) and the tool description tells the model to offer it when the event is RSVP-shaped. Per-event SQL on
+  `event_answers`/`event_question_asks` is on `test/fixtures/unscoped-sql-baseline.json` (scoped by event_id; the
+  organizer is checked in `events.managed` first).
+
 ## How to get to it (user POV)
 
 - Open the link the organizer shared → enter the password → (already on Reason, same phone's
@@ -392,7 +442,7 @@ node --test test/code-guards.test.js   # #134: every code text ends `@<live host
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
 node --test test/event-web.test.js    # the pages, the finishing text, existing users by session and by text, who's going
-node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js test/event-edit-limits.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390), list privacy + cap after creation
+node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js test/event-edit-limits.test.js test/event-guest-questions.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390), list privacy + cap after creation, guest questions
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
 REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address
 ```

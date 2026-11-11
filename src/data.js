@@ -224,6 +224,9 @@ const TABLES = [
   // What an organiser scheduled for their guests (src/eventschedule.js): their own words, waiting to
   // go, and the record of which reminders went. Deleted, a waiting message never goes.
   "event_scheduled",
+  // Their answers to an organizer's questions (src/eventquestions.js): their own words, keyed by them,
+  // and the one "the organizer added a question" text owed or sent to them.
+  "event_answers", "event_question_asks",
   // Which of their calls, messages and actions they asked Reason to forget, so recall never reads
   // them again (src/db.js forgetFromRecall). Row ids only, theirs.
   "recall_forgotten",
@@ -250,6 +253,8 @@ export const KEPT_ON_DELETE = {
   events: "shared with the event's guests; an organiser's delete would remove it for everyone",
   event_albums: "one per event, shared with every guest who contributed",
   event_messages: "an event's blasts, shared with every guest",
+  // The organizer's questions belong to the event, which every guest is asked; the answers are each guest's own (deleted with them).
+  event_questions: "an event's questions, asked of every guest who joins it",
 };
 
 /**

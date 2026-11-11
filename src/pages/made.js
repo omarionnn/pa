@@ -152,6 +152,13 @@ details.join>summary::-webkit-details-marker{display:none}
 .jf .check{flex-direction:row;align-items:flex-start;gap:10px;font-family:${SANS};font-size:14px;letter-spacing:0;color:var(--ink);min-height:44px}
 .jf .check input{width:20px;height:20px;margin:2px 0 0;accent-color:var(--ink)}
 .err{margin:0;font-family:${HAND};font-size:22px;color:var(--pen)}
+.qs{display:flex;flex-direction:column;gap:14px;padding-top:4px}
+.qs .qh{margin:6px 0 -4px}
+.jf .qq{display:flex;flex-direction:column;gap:6px;border:0;margin:0;padding:0;min-width:0}
+.jf .qq legend,.jf .qq .qp{padding:0;margin:0 0 2px;font-family:${SANS};font-size:15px;line-height:1.4;letter-spacing:0;color:var(--ink)}
+.jf .qq .pick{min-height:40px;align-items:center}
+.jf .qq .pick input{margin:0}
+.jf .qq .qt{display:inline-block;margin-left:8px;font-family:${MONO};font-size:10px;letter-spacing:.08em;color:var(--dim);vertical-align:middle}
 /* P5 album */
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 14px}
 .grid figure{margin:0;display:flex;flex-direction:column;gap:6px}
@@ -422,7 +429,7 @@ export function renderEvent(vm) {
       + (vm.coming?.length ? `<p class="coming m"><span class="lbl">COMING · </span>${esc(vm.coming.join(", "))}</p>` : "")
       + `</section>`;
   }
-  const main = head + (desc ? desc : "") + (facts ? `<div class="evd">${facts}</div>` : "") + rsvp
+  const main = head + (desc ? desc : "") + (facts ? `<div class="evd">${facts}</div>` : "") + rsvp + (vm.after ?? "")
     + (cal ? `<span class="m">${cal}</span>` : "");
   const side = vm.coming?.length
     ? `<span class="lbl d">COMING</span><p class="names d">${vm.coming.map(esc).join("<br>")}</p>`

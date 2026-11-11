@@ -448,6 +448,100 @@ config.events = "owner";
   clock.reset();
 }
 
+// ---- guest questions (src/eventquestions.js): asked on joining, all optional, answers the organizer's alone ----
+{
+  const qs = await imp("src/eventquestions.js");
+  const made = await tool("event_create", { name: "Questions Brunch", description: "x", starts_at: "2027-08-01T11:00", timezone: "America/New_York", location: "3 Elm St", password: "brunch-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: true }, C.owner);
+  const qev = db.getEventRow(made.event.event_id);
+  await tool("event_join", { name: "Questions Brunch", password: "brunch-pw" }, C.ama);
+  await new Promise(r => setTimeout(r, 50));
+  const n0 = fake.sent.length;
+  const add = { event_id: qev.id, event_named: qev.name, action: "add", kind: "choice", prompt: "Any dietary needs?", choices: ["Vegetarian", "Vegan", "No restrictions"] };
+  const unasked = await tool("event_questions", add, C.owner);
+  step("ask: adding a question by text asks for the yes first, showing what guests see; nothing saved", unasked.blocked === "needs_confirmation" && /pick one: Vegetarian \/ Vegan \/ No restrictions/.test(unasked.asks?.guests_see ?? "") && db.eventQuestions(qev.id).length === 0, unasked.use_target);
+  const saved = await withYes(runTool, "event_questions", add, { conversationId: C.owner, messages: [], events: runtime });
+  await withYes(runTool, "event_questions", { event_id: qev.id, event_named: qev.name, action: "add", kind: "text", prompt: "Your plus-one's name" }, { conversationId: C.owner, messages: [], events: runtime });
+  await new Promise(r => setTimeout(r, 50));
+  step("ask: with the yes it's saved, and nobody is texted", saved.ok && db.eventQuestions(qev.id).length === 2 && fake.sent.length === n0, saved.note);
+  await withYes(runTool, "event_questions", { event_id: qev.id, event_named: qev.name, action: "add", kind: "text", prompt: "Arriving when?" }, { conversationId: C.owner, messages: [], events: runtime });
+  const fourth = await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "add", kind: "text", prompt: "One more?" }, C.owner);
+  step("ask: a fourth question is refused before any yes", fourth.problem === "too_many" && !fourth.blocked, fourth.error);
+  const [food, plus, arrive] = qs.questionsOf(qev);
+  await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "remove", question_id: arrive.question_id }, C.owner);
+  const qweb = (o) => web({ publicId: qev.public_id, ...o });
+  const open = await qweb({});
+  step("ask: the join page shows them under the name, all optional", /THE HOST ASKS · ALL OPTIONAL/i.test(open.body) && /Any dietary needs\?/.test(open.body) && !/name="q_\d+"[^>]*required/.test(open.body));
+  const NEWQ = "+14155550021";
+  const claim = await qweb({ sub: "join", method: "POST", headers: { "x-forwarded-for": "203.0.113.21" }, body: new URLSearchParams({ password: "brunch-pw", display_name: "Nana", [`q_${food.question_id}`]: "1", [`qv_${food.question_id}`]: "1", [`q_${plus.question_id}`]: "Akos", [`qv_${plus.question_id}`]: "1" }).toString() });
+  const qcode = decodeURIComponent(/body=([^"]+)"/.exec(claim.body)[1].replace(/&#39;/g, "'").replace(/&amp;/g, "&"));
+  await router.deliver({ channel: "fake", externalId: "web-q1", from: NEWQ, text: qcode });
+  const nana = db.attendeeRow(qev.id, `dm:fake:${NEWQ}`);
+  step("ask: a new guest's page answers reach their row through the finishing text", nana?.state === "joined" && JSON.stringify(db.answersOf(qev.id, nana.id).map(a => a.answer)) === '["Vegan","Akos"]');
+  const kofiIn = await tool("event_join", { name: "Questions Brunch", password: "brunch-pw" }, C.kofi);
+  step("ask: a text join hands the model the questions, one at a time, all optional", kofiIn.ok && kofiIn.questions?.length === 2 && /every one optional/.test(kofiIn.say) && /ask only the first/.test(kofiIn.say));
+  const pick = await tool("event_answer", { event_id: qev.id, event_named: qev.name, question_id: food.question_id, choice: 1 }, C.kofi);
+  step("ask: event_answer saves a pick by its number", pick.ok && pick.saved === "Vegetarian", JSON.stringify(pick).slice(0, 120));
+  db.startPageSession("drive-q-ama", "drive-session-token-ama-q-0001", { conversationId: C.ama });
+  const amaCookie = "reason_page=drive-session-token-ama-q-0001";
+  const ch = await qweb({ sub: "answers", method: "POST", headers: { cookie: amaCookie }, body: new URLSearchParams({ [`q_${food.question_id}`]: "2", [`q_${plus.question_id}`]: "Yaw M." }).toString() });
+  step("ask: a guest changes their answers on their own page", ch.status === 303 && JSON.stringify(db.answersOf(qev.id, db.attendeeRow(qev.id, C.ama).id).map(a => a.answer)) === '["No restrictions","Yaw M."]');
+  // The organizer's own page, drawn as /e/<id> draws it for their browser (the drive's owner has no page session of its own).
+  const host = (await imp("src/pages/eventmanage.js")).renderManage({ ev: db.getEventRow(qev.id), conversationId: C.owner });
+  const who = (await qweb({ sub: "who", headers: { cookie: amaCookie } })).body + (await qweb({ headers: { cookie: amaCookie } })).body + open.body;
+  step("ask: the organizer sees the count per choice and each answer; no guest page shows another's", /ANSWERED · 3 OF 3/.test(host) && /Akos/.test(host) && /Yaw M\./.test(host) && !/Akos/.test(who), "");
+  const rw = await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "change", question_id: plus.question_id, kind: "text", prompt: "Who are you bringing?" }, C.owner);
+  const rm = await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "remove", question_id: plus.question_id }, C.owner);
+  step("ask: an answered question can't be reworded; removing it says how many answers go first", rw.problem === "answered" && !rw.blocked && rm.problem === "has_answers" && rm.answers === 2, rm.error);
+
+  // ---- required questions + asking the guests already in (owner decisions 2026-11-11) ----
+  const reqIn = { event_id: qev.id, event_named: qev.name, action: "add", kind: "choice", prompt: "Bringing a plus-one?", choices: ["Yes", "No"], required: true };
+  const reqAsk = await tool("event_questions", reqIn, C.owner);
+  step("ask: a required question's yes names it as required; optional is a different target", reqAsk.blocked === "needs_confirmation" && /, required\) \{/.test(reqAsk.use_target) && reqAsk.asks?.required === true && (await imp("src/eventtools.js")).questionsTarget(C.owner, { ...reqIn, required: false }) !== reqAsk.use_target, reqAsk.use_target);
+  const reqSaved = await withYes(runTool, "event_questions", reqIn, { conversationId: C.owner, messages: [], events: runtime });
+  const reqQ = qs.questionsOf(qev).find(q => q.required);
+  const nReq = fake.sent.length;
+  await new Promise(r => setTimeout(r, 50));
+  step("ask: saved as required; nobody texted; the note offers to text the guests already in", reqSaved.ok && reqQ && fake.sent.length === nReq && reqSaved.can_ask_guests === 3 && /offer, in one short line/.test(reqSaved.note), reqSaved.note);
+  const openReq = await qweb({});
+  step("ask: the join page marks it REQUIRED and makes the browser insist; the optional one stays optional", /(THE HOST ASKS|The host asks)<\/p>/.test(openReq.body) && new RegExp(`name="q_${reqQ.question_id}" value="0" required`).test(openReq.body) && /OPTIONAL<\/small>/.test(openReq.body) && !new RegExp(`name="q_${food.question_id}"[^>]*required`).test(openReq.body));
+  const blankReq = await qweb({ sub: "join", method: "POST", headers: { "x-forwarded-for": "203.0.113.22" }, body: new URLSearchParams({ password: "brunch-pw", display_name: "Adwoa" }).toString() });
+  step("ask: the join page won't go through without the required answer", /the host asks everyone this one before they/.test(blankReq.body) && !/Last step/.test(blankReq.body));
+  const yaw0 = toNum(YAW).length;
+  const heldJoin = await tool("event_join", { name: "Questions Brunch", password: "brunch-pw" }, C.yaw);
+  await new Promise(r => setTimeout(r, 50));
+  step("ask: a text join isn't finished until the required one is answered: not in, no welcome, the question handed over", heldJoin.ok === false && heldJoin.reason === "needs_answers" && heldJoin.questions?.length === 1 && heldJoin.questions[0].required === true && /not in yet/.test(heldJoin.error) && db.attendeeRow(qev.id, C.yaw) === null && toNum(YAW).length === yaw0, heldJoin.error);
+  const yawIn = await tool("event_join", { name: "Questions Brunch", answers: [{ question_id: reqQ.question_id, choice: 2 }] }, C.yaw);
+  await new Promise(r => setTimeout(r, 50));
+  const yawRow = db.attendeeRow(qev.id, C.yaw);
+  step("ask: answered (no password again) → in, the answer filed, the welcome sent, only optional ones left to ask", yawIn.ok && yawRow?.state === "joined" && JSON.stringify(db.answersOf(qev.id, yawRow.id).map(a => a.answer)) === '["No"]' && toNum(YAW).length > yaw0 && !(yawIn.questions ?? []).some(q => q.required), JSON.stringify(yawIn).slice(0, 160));
+  const noClear = await tool("event_answer", { event_id: qev.id, event_named: qev.name, question_id: reqQ.question_id, clear: true }, C.yaw);
+  step("ask: a required answer can be changed, never taken back", noClear.ok === false && noClear.problem === "required", noClear.error);
+  // Already in and never asked: Ama, Kofi and Nana (Yaw answered to get in). One yes pinned to those three.
+  const askIn = { event_id: qev.id, event_named: qev.name, action: "ask_guests", question_id: reqQ.question_id };
+  const askFirst = await tool("event_questions", askIn, C.owner);
+  step("ask: texting the guests already in asks for the yes with who and the exact text; nothing owed yet", askFirst.blocked === "needs_confirmation" && askFirst.asks?.guests === 3 && /added a question for everyone going to Questions Brunch/.test(askFirst.asks?.text_they_get ?? "") && db.questionAskRows(reqQ.question_id).length === 0, askFirst.use_target);
+  const askDone = await withYes(runTool, "event_questions", askIn, { conversationId: C.owner, messages: [], events: runtime });
+  const nAsk = fake.sent.length;
+  await new Promise(r => setTimeout(r, 50));
+  step("ask: with the yes, three are owed to the sweep; nothing goes in the turn", askDone.ok && askDone.asked === 3 && db.questionAskRows(reqQ.question_id).filter(r => r.state === "owed").length === 3 && fake.sent.length === nAsk, askDone.note);
+  // Night in the event's zone holds it; the morning sends it once each.
+  const toNY = (hour) => { const h = (t) => Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hourCycle: "h23", hour: "2-digit" }).format(t)); let t = clock.now() - (clock.now() % 3_600_000) + 3_600_000; for (let i = 0; i < 72 && h(t) !== hour; i++) t += 3_600_000; clock.skip(t - clock.now()); };
+  toNY(23);
+  const night = await events.sweepQuestionAsks({ runtime });
+  await new Promise(r => setTimeout(r, 50));
+  step("ask: at night the sweep holds it", night.later === 3 && fake.sent.length === nAsk, JSON.stringify(night));
+  toNY(10);
+  const morning = await events.sweepQuestionAsks({ runtime });
+  await new Promise(r => setTimeout(r, 80));
+  const askedTexts = fake.sent.slice(nAsk).filter(m => /added a question for everyone going to Questions Brunch/.test(m.text));
+  step("ask: the morning sweep texts each once; a second ask has nobody left", askedTexts.length === 3 && new Set(askedTexts.map(m => m.to)).size === 3 && db.questionAskRows(reqQ.question_id).every(r => r.state === "sent") && (await tool("event_questions", askIn, C.owner)).problem === "nobody_to_ask", JSON.stringify({ morning, to: askedTexts.map(m => m.to) }));
+  // Off again goes any time, the answer standing.
+  const offAgain = await withYes(runTool, "event_questions", { event_id: qev.id, event_named: qev.name, action: "change", question_id: reqQ.question_id, required: false }, { conversationId: C.owner, messages: [], events: runtime });
+  step("ask: making it optional again goes with answers on it, and they stand", offAgain.ok && offAgain.required_change !== true && db.eventQuestion(qev.id, reqQ.question_id).required === 0 && db.questionAnswerCount(reqQ.question_id) === 1, offAgain.note);
+  clock.reset();
+  await tool("event_cancel", { event_id: qev.id, event_named: qev.name }, C.owner);
+}
+
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 

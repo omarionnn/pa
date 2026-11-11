@@ -522,6 +522,16 @@ See [features/table-images.md](features/table-images.md).
 ### Baseline — the card's CVC after Face ID + paid-row ledger release (cvc-recollect, #411, 2026-11-08)
 
 Offline suite under `env -i` (fresh `npm ci` in the worktree): 5,814 tests, 5,681 pass, 131 skipped, 2 fail — web-ongoing "the desktop margin" (date-dependent, fails on main too) and pages-busy-buttons "name=value" (load flake: 4/4 alone on the branch and on main; an earlier full run also flaked ops "a check's 'since'", 33/33 alone). New: `test/cvc-recollect-1108.test.js` (15; 12 source mutations all caught). Drives: `bin/passkey-drive.mjs` all ok with new scenario (k) (Face ID → "Enter your card's 3-digit code to finish." → Finish → paid with the same intent; Crossmint's island stood in at the network layer); `bin/spend-unknown-drive.mjs` all ok. Every Crossmint fake now answers `GET /api/unstable/order-intents/{id}` (payRow reads the rails before handing the intent over). See [features/passkey-pay.md](features/passkey-pay.md) "The card's CVC after Face ID".
+### Baseline — event guest questions (up to 3 questions on joining, optional or required; ask guests already in; 2026-11-11, PR #405)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Guest questions". Offline:
+`test/event-guest-questions.test.js` 14/14 (+3 on 2026-11-11: required by page and by text with the held password,
+required on/off rules, ask_guests gated + sweep rules); full `npm run test:offline` after the rebase on #467: SUITE_NUMBERS.
+`bin/events-drive.mjs` under `caged.sh env` + temp DB: all ok, 103 steps, 22 `ask:` steps (the 10 from 11-08, +12:
+required yes names it; join page REQUIRED tag + browser `required`, blank refused; text join `needs_answers` → in once
+answered, welcome then; required can't be cleared; ask_guests yes with names + text, 3 owed, night holds, morning sends
+each once, second ask has nobody; optional again with answers standing). Not proven: the real model asking a required
+question before "you're in", a live ask text arriving. The SQL ratchet baseline gained the per-event statements.
 
 ### Baseline — event edit-limits (guest-list privacy + cap after creation; 2026-11-08, PR event-edit-limits, not merged)
 

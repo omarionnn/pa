@@ -65,7 +65,7 @@ import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -362,6 +362,9 @@ export const CONDITIONALLY_GATED = new Set([
   // private, asking if they want to be on it (src/events.js setListVisible). Hiding it, or a cap, texts
   // nobody. Decided in needsConfirmation.
   "event_settings",
+  // Adding or rewording a question every guest is asked when they join (src/eventquestions.js):
+  // the organizer's yes to exactly those words. Listing the answers, or removing one, asks nothing.
+  "event_questions",
 ]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
@@ -601,6 +604,7 @@ function needsConfirmation(name, input, conversationId) {
   // moment an address is on it, it is the same kind of act as sending that person an email.
   if (name === "drive_share") return !!String(input.with_email ?? "").trim();
   if (name === "event_settings") return settingsNeedYes(conversationId, input);
+  if (name === "event_questions") return questionsNeedYes(conversationId, input);
   return false;
 }
 
@@ -9233,6 +9237,7 @@ function confirmTargetFor(name, input, c = null) {
     case "event_blast": return blastTarget(c, input);
     case "event_schedule": return scheduleTarget(c, input);
     case "event_settings": return settingsTarget(c, input);
+    case "event_questions": return questionsTarget(c, input);
     case "github_issue_create": return github.issueTarget(input);
     case "github_issue_comment": return github.commentTarget(input);
     default: return null;
@@ -9562,6 +9567,13 @@ async function runToolInner(name, rawInput, ctx) {
     const refusal = settingsRefusal(c, input);
     if (refusal) return refusal;
   }
+  // And for a guest question: a fourth one, a reword of an answered one, or no words at all is refused
+  // here, never after a yes was collected for something that could not be saved.
+  if (name === "event_questions") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = questionsRefusal(c, input);
+    if (refusal) return refusal;
+  }
   // And for a scheduled message, the time and the words as well: a time already gone is refused here,
   // not after a yes was collected for something that could never be set.
   if (name === "event_schedule") {
@@ -9663,6 +9675,11 @@ async function runToolInner(name, rawInput, ctx) {
       // Showing a private guest list: how many guests it asks, who, and the exact text they get.
       if (name === "event_settings" && gate.blocked === "needs_confirmation") {
         const asks = settingsAsks(c, input);
+        if (asks) refusal = { ...refusal, asks };
+      }
+      // A guest question: exactly what guests will see, and how many are already in (not texted).
+      if (name === "event_questions" && gate.blocked === "needs_confirmation") {
+        const asks = questionsAsks(c, input);
         if (asks) refusal = { ...refusal, asks };
       }
       trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
@@ -12032,7 +12049,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- events (src/eventtools.js) ----------
     // One switch arm for the lot: every rule about who may do what is src/events.js's.
     case "event_create": case "event_list": case "event_lookup": case "event_join": case "event_info": case "event_leave":
-    case "event_mute": case "event_directory": case "event_instagram": case "event_guests": case "event_update": case "event_settings": case "event_release":
+    case "event_mute": case "event_directory": case "event_instagram": case "event_guests": case "event_update": case "event_settings": case "event_questions": case "event_answer": case "event_release":
     case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel": case "browsers_sign_out":
     case "event_ride": case "event_rides_setting": case "event_cover": case "event_detail_public":
     case "event_schedule": case "event_scheduled":
