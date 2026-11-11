@@ -511,6 +511,14 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — table pictures (render_table, PR #463, 2026-11-10, not merged, flag off)
+
+Offline suite in the worktree (fresh `npm ci`, `ANTHROPIC_API_KEY=` + paid-key guard): 6,352 tests, 6,212 pass,
+**0 fail**, 140 skipped (148 s). New: `test/render-table.test.js` (24, no browser) and
+`test/render-table-png.test.js` (real Chromium → `/tmp/render-table-preview/`: light, dark, 10-row split; 2160 px
+wide, 150–325 KB, 220–680 ms a picture). Not provable here: Sendblue fetching the public address (live host only).
+See [features/table-images.md](features/table-images.md).
+
 ### Baseline — the card's CVC after Face ID + paid-row ledger release (cvc-recollect, #411, 2026-11-08)
 
 Offline suite under `env -i` (fresh `npm ci` in the worktree): 5,814 tests, 5,681 pass, 131 skipped, 2 fail — web-ongoing "the desktop margin" (date-dependent, fails on main too) and pages-busy-buttons "name=value" (load flake: 4/4 alone on the branch and on main; an earlier full run also flaked ops "a check's 'since'", 33/33 alone). New: `test/cvc-recollect-1108.test.js` (15; 12 source mutations all caught). Drives: `bin/passkey-drive.mjs` all ok with new scenario (k) (Face ID → "Enter your card's 3-digit code to finish." → Finish → paid with the same intent; Crossmint's island stood in at the network layer); `bin/spend-unknown-drive.mjs` all ok. Every Crossmint fake now answers `GET /api/unstable/order-intents/{id}` (payRow reads the rails before handing the intent over). See [features/passkey-pay.md](features/passkey-pay.md) "The card's CVC after Face ID".
