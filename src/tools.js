@@ -8978,6 +8978,7 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
 
   const batch = `${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
   let went = 0;
+  let lastSend = null;
   for (let i = 0; i < n; i++) {
     const img = images[i];
     let r;
@@ -8990,6 +8991,7 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
     } catch (e) {
       r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
+    lastSend = r;
     if (r?.ok && !r.queued) { went++; continue; }
 
     if (r?.queued) {
@@ -9005,9 +9007,14 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
       note: `Only ${went} of the ${n} pictures arrived in their thread; the rest could not be sent (${why}). Say exactly that — do not say they all went, and do not give a link for the missing ones.`,
     };
   }
+  // REASON_DELIVERY_GATED: the carrier took them; "in their thread" waits for its word.
+  const gatedPics = deliveryNote(c, router, thread.channel, lastSend);
   return {
     ok: true, sent: true, sent_count: n, made: n, model, ...(line ? { said: line } : {}),
-    note: `${n > 1 ? `All ${n} pictures are` : "The picture is"} in their thread now, as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}. You may say you sent ${n > 1 ? "them" : "it"}. Do not also send a link, and never call it a photo: it is a generated picture. If you have nothing to add, reply NO_REPLY.`,
+    ...(gatedPics ? { delivery: "pending" } : {}),
+    note: gatedPics
+      ? `${n > 1 ? `All ${n} pictures are` : "The picture is"} on the way into their thread as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}, and ${gatedPics} Do not also send a link, and never call it a photo: it is a generated picture.`
+      : `${n > 1 ? `All ${n} pictures are` : "The picture is"} in their thread now, as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}. You may say you sent ${n > 1 ? "them" : "it"}. Do not also send a link, and never call it a photo: it is a generated picture. If you have nothing to add, reply NO_REPLY.`,
   };
 }
 
@@ -11528,9 +11535,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
       if (!r.ok) return { ...r, note: "The picture did not go. Say that plainly." };
+      const gatedUrl = deliveryNote(c, router, channelName, r);
       return {
         ok: true, sent_to: to, url, delivered: r.delivered,
-        note: "That went as a picture in their iMessage thread. You may say you sent it.",
+        ...(gatedUrl
+          ? { delivery: "pending", note: `A picture, on its way into their iMessage thread, and ${gatedUrl}` }
+          : { note: "That went as a picture in their iMessage thread. You may say you sent it." }),
       };
     }
 
