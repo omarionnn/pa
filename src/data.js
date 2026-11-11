@@ -212,6 +212,8 @@ const TABLES = [
   "call_errands", "call_quotes", "call_commitments", "call_requests",
   // What they asked, what Reason claimed back, and the bookkeeping around it.
   "requests", "request_messages", "open_questions", "sent_claims", "choice_sets", "held_actions",
+  // Checks left after an outward action, for the "quick correction:" line (src/verifications.js).
+  "verifications",
   "capability_misses", "parallel_runs", "pattern_asks", "line_change_cards",
   // Their own lists: what they spent, what they ate, what they need from the shop.
   "expenses", "meal_entries", "grocery_items",

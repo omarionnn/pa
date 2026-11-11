@@ -4991,6 +4991,26 @@ export function claimOutbound(id) {
   return r.changes === 1 ? getOutbound(id) : null;
 }
 
+// REASON_DELIVERY_GATED (src/outbox.js noteDelivery): what the carrier said AFTER taking a message.
+// `sent` is "the provider accepted it"; delivery_status is its later word (SENT, DELIVERED, ERROR).
+addColumnIfMissing("outbox", "delivery_status", "TEXT");
+addColumnIfMissing("outbox", "delivered_at", "INTEGER");
+
+/** The row the provider is talking about, by the handle it gave back when the message was accepted. */
+export function outboundByMessageId(channel, messageId) {
+  const id = String(messageId ?? "").trim();
+  if (!id) return null;
+  return rowToOut(db.prepare("SELECT * FROM outbox WHERE channel = ? AND message_id = ? ORDER BY id DESC LIMIT 1").get(channel, id));
+}
+
+/** The carrier's later word on a sent row. A delivered one gets its stamp; any word is kept. */
+export function markOutboundDelivery(id, { status, delivered = false }) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET delivery_status = ?, delivered_at = CASE WHEN ? THEN ? ELSE delivered_at END, updated_at = ? WHERE id = ?`)
+    .run(String(status ?? ""), delivered ? 1 : 0, now, now, id);
+  return getOutbound(id);
+}
+
 /** It went. */
 export function markOutboundSent(id, { messageId = null } = {}) {
   const now = clock.now();
@@ -5131,6 +5151,16 @@ export function strandedOutbound() {
 export function undeliveredFor(conversationId) {
   return db.prepare(`SELECT * FROM outbox WHERE conversation_id = ? AND state = 'failed' AND told_at IS NULL
     ORDER BY id ASC`).all(conversationId).map(rowToOut);
+}
+
+/**
+ * A person's OWN text that the carrier accepted and later reported undelivered (REASON_DELIVERY_GATED,
+ * src/outbox.js noteDelivery), not yet told. The sweep says it in one line rather than waiting for
+ * their next turn.
+ */
+export function ownUndeliveredUntold() {
+  return db.prepare(`SELECT * FROM outbox WHERE state = 'failed' AND to_owner = 1 AND told_at IS NULL
+    AND last_error_key = 'DELIVERY_ERROR' ORDER BY id ASC`).all().map(rowToOut);
 }
 
 /** Said once. Returns false when somebody else got there first. */

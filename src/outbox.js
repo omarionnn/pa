@@ -35,6 +35,7 @@ import { freshRideLinks } from "./ridelinks.js";
 import * as incidents from "./incidents.js";
 import { withoutNoReply } from "./plain.js";
 import { effectPartIndex } from "./links.js";
+import { deliveryGatedOn } from "./trustflags.js";
 
 /** What a send returns when the silence marker was all there was: nothing went, on purpose. */
 const NOTHING_LEFT = Object.freeze({ ok: false, not_sent: true, silent: true, retryable: false, error: "Not sent: once NO_REPLY was taken off there was nothing left to send." });
@@ -314,6 +315,52 @@ function raiseSendFailure(row, { why, key = null, code = null, tried = "" }) {
       next: `${row.channel}'s dashboard and its status page; journalctl -u reason for the response`,
     });
   } catch { /* an alert never breaks the outbox */ }
+}
+
+/**
+ * The carrier's later word on a message it had already taken (REASON_DELIVERY_GATED).
+ *
+ * Until this, `sent` meant "Sendblue answered 200 QUEUED": the message had left Reason, not
+ * arrived. Sendblue says what became of it afterwards on the same webhook (SENT, DELIVERED, or
+ * ERROR with the reason), and that callback was dropped as an "outbound echo". Now a DELIVERED is
+ * stamped on the row and an ERROR turns a `sent` row into a `failed` one — which is all it takes
+ * for the person to be told at the top of their next turn (undeliveredNotice), the owner to be told
+ * about a third party's text (ownerFailureLine), and a quick-correction check (src/verifications.js)
+ * to find it. Nothing is retried: the carrier already tried.
+ *
+ * Returns what it did, or `{ ignored }` with why. Off unless the switch covers the row's person.
+ */
+export const DELIVERED_STATUSES = new Set(["DELIVERED", "SENT"]);
+export function noteDelivery({ channel, messageId, status, error = null, log = () => {} }) {
+  const row = db.outboundByMessageId(channel, messageId);
+  if (!row) return { ignored: "no such message" };
+  if (!deliveryGatedOn(row.conversation_id)) return { ignored: "off", outbox_id: row.id };
+  const s = String(status ?? "").toUpperCase();
+  if (s === "ERROR") {
+    if (row.state === "failed") return { ignored: "already failed", outbox_id: row.id };
+    const why = `${row.channel} reported it was not delivered${error ? `: ${error}` : ""}`;
+    db.markOutboundDelivery(row.id, { status: s });
+    db.markOutboundFailed(row.id, { error: why, errorKey: "DELIVERY_ERROR" });
+    log({ outbox: row.id, delivery: s, failed: row.address, why });
+    raiseSendFailure(row, { why, key: "DELIVERY_ERROR", tried: "accepted by the carrier, then reported undelivered — not retried" });
+    return { outbox_id: row.id, failed: true, why };
+  }
+  if (DELIVERED_STATUSES.has(s)) {
+    db.markOutboundDelivery(row.id, { status: s, delivered: s === "DELIVERED" });
+    log({ outbox: row.id, delivery: s });
+    return { outbox_id: row.id, delivered: s === "DELIVERED", status: s };
+  }
+  db.markOutboundDelivery(row.id, { status: s });
+  return { outbox_id: row.id, status: s };
+}
+
+/**
+ * The one line they get about their OWN text that the carrier later reported undelivered. A text to
+ * somebody else already has ownerFailureLine; a reply to them had only the next turn's notice, which
+ * can be a day away. Keyed to the row so it is said once.
+ */
+export function undeliveredLine(row) {
+  return `quick correction: my last text didn't get through to you (${row.last_error}). it said: ${trim(row.body, 300)}`;
 }
 
 /**
