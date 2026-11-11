@@ -674,6 +674,8 @@ export async function guestRefund({ ev, conversationId, runtime = null, log = ()
 
 /** Why a guest's refund can't happen, in the words to say it in (the organizer can always still choose to). */
 export function refusalWords(ev, window) {
+  // A start time the organizer hasn't shared is never told by the wording: "started" reads as "closed".
+  if (!ev.time_released && window.why === "started") window = { ...window, why: "closed" };
   const lead = { no_refunds: `${ev.name} has a no-refunds policy`, closed: `the refund window for ${ev.name} has closed (${refundPolicyLine(window.policy).toLowerCase().replace(/\.$/, "")})`, started: `${ev.name} has already started`, not_active: `${ev.name} isn't taking refund requests` }[window.why] ?? "that ticket can't be refunded automatically";
   return `${lead}, so I can't refund it myself — but the organizer can still choose to refund you, so it's worth asking them.`;
 }

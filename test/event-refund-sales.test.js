@@ -458,3 +458,41 @@ test("next payout when there isn't one: clearing, ready, nothing, Stripe down, p
   const st = await tool("event_payouts", { event_id: ev.id, action: "status" }, OWNER_C, h.runtime);
   assert.match(st.say, /^No tickets sold yet for Supper Club\.$/);
 });
+
+// ---------- review notes ----------
+
+test("leaving first keeps the ticket: the leave says it wasn't refunded and offers it; the refund still goes through by text", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const row = await amaPays(h, ev);
+  const left = await tool("event_leave", { event_id: ev.id }, C.ama, h.runtime);
+  assert.equal(left.ok, true);
+  assert.match(left.note, /They paid \$26\.06, and leaving doesn't refund it\. The refund policy allows a refund right now/);
+  assert.equal(toolsFor(C.ama).some(t => t.name === "event_ticket_refund"), true, "still holds a ticket");
+  const done = await withYes(runTool, "event_ticket_refund", { event_id: ev.id }, { conversationId: C.ama, messages: [], events: h.runtime });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(eventpay.paymentRow(row.id).status, "refunded");
+});
+
+test("a hidden start time: 'started' is said as 'closed', and whether a refund is open now isn't in the guest's view", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h, { over: { show_time_on_join: false } });
+  await amaPays(h, ev);
+  assert.equal(db.getEventRow(ev.id).time_released, 0);
+  const info = await tool("event_info", { event_id: ev.id }, C.ama, h.runtime);
+  assert.equal(info.you.can_ask_for_refund_now, undefined);
+  startsIn(ev, -HOUR);
+  const asked = await tool("event_ticket_refund", { event_id: ev.id }, C.ama, h.runtime);
+  assert.match(asked.error, /refund window for Supper Club has closed/);
+  assert.doesNotMatch(asked.error, /already started/);
+});
+
+test("the page's refund is off with the switch: REASON_PAID_EVENTS off → 404", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  await amaPays(h, ev);
+  config.paidEvents = false;
+  const r = await req(h, ev, { sub: "refund", method: "POST", body: "step=do", cookie: COOKIE.ama });
+  assert.equal(r.status, 404);
+  assert.equal(calls.filter(c => c.path === "/v1/refunds").length, 0);
+});

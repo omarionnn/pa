@@ -244,7 +244,8 @@ function paidLine(ev, att) {
   if (!row) return {};
   // Their own ticket's policy (the one bought under, or looser now), and whether they can ask now.
   const w = eventpay.refundWindow(ev, row);
-  return { paid: eventpay.dollars(row.total_cents), your_refund_policy: eventpay.refundPolicyLine(w.policy), can_ask_for_refund_now: w.allowed };
+  // Whether they can ask now is left out while the time is hidden: watched over time it would tell the start.
+  return { paid: eventpay.dollars(row.total_cents), your_refund_policy: eventpay.refundPolicyLine(w.policy), ...(ev.time_released ? { can_ask_for_refund_now: w.allowed } : {}) };
 }
 
 /** The organizer's view: all of it, except the password, which nobody can read back. */

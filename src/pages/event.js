@@ -718,7 +718,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // ---- a paying guest's own refund, under the event's refund policy (src/eventpay.js guestRefund) ----
   if (sub === "refund") {
     if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
-    if (ev.status !== "active" || mine?.role !== "guest") return page(404, renderNotFound());
+    if (!eventpay.paidEventsOn() || ev.status === "cancelled" || mine?.role !== "guest") return page(404, renderNotFound());
     if (!ownOrigin(headers)) return page(403, renderNotFound());
     const body = await readBody();
     if (body != null && String(body).length > 2000) return page(413, renderNotFound());

@@ -111,13 +111,17 @@ export function eventToolVisible(name, conversationId) {
 
 /** The guest's paid ticket on the event they named, or why there isn't one. `{ ev, row }` or `{ refusal }`. */
 function guestTicket(c, input) {
-  const v = events.visible(c, input.event_id);
-  if (!v || v.role !== "guest") return { refusal: { ok: false, error: `They don't have a ticket for an event #${input.event_id}. event_list shows the events they're in.` } };
+  // The ticket is the payment, not the spot: a guest who left first (event_leave) still holds what they paid for.
+  const ev = db.getEventRow(input.event_id);
+  const row = ev && ev.organizer_conversation_id !== c ? eventpay.paidRow(ev.id, c) : null;
+  if (!row) {
+    const v = events.visible(c, input.event_id);
+    if (!v || v.role !== "guest") return { refusal: { ok: false, error: `They don't have a ticket for an event #${input.event_id}. event_list shows the events they're in.` } };
+    return { refusal: { ok: false, error: `They didn't pay for ${v.ev.name}${eventpay.priced(v.ev) ? " (or it was already refunded)" : " — it's free"}, so there's nothing to refund. To drop out, that's event_leave.` } };
+  }
   const which = events.whichEvent(c, input.event_id, input.event_named, { forGuest: true });
   if (!which.ok) return { refusal: askWhich(which) };
-  const row = eventpay.paidRow(v.ev.id, c);
-  if (!row) return { refusal: { ok: false, error: `They didn't pay for ${v.ev.name}${eventpay.priced(v.ev) ? " (or it was already refunded)" : " — it's free"}, so there's nothing to refund. To drop out, that's event_leave.` } };
-  return { ev: v.ev, row };
+  return { ev, row };
 }
 
 /**
@@ -1258,7 +1262,11 @@ export async function runEventTool(name, input, ctx) {
       if (!db.leaveAttendee(v.att.id)) return { ok: false, error: "They're no longer on this event." };
       // A ride they had ends now, and whoever was paired with them is told (src/eventrides.js).
       await rides.leftEvent({ runtime, ev: v.ev, conversationId: c }).catch(() => {});
-      return { ok: true, left: v.ev.name, note: "They're off it: no more messages from this event, and its who's-going page is closed to them. Their Reason is untouched." };
+      // A paid ticket is not refunded by leaving; the refund (event_ticket_refund) still can be, while the policy allows.
+      const paidRow = eventpay.paidRow(v.ev.id, c);
+      const w = paidRow ? eventpay.refundWindow(v.ev, paidRow) : null;
+      return { ok: true, left: v.ev.name, note: "They're off it: no more messages from this event, and its who's-going page is closed to them. Their Reason is untouched."
+        + (paidRow ? ` They paid ${eventpay.dollars(paidRow.total_cents)}, and leaving doesn't refund it.${w?.allowed ? " The refund policy allows a refund right now: offer it in one line (event_ticket_refund)." : ""}` : "") };
     }
     if (name === "event_mute") {
       db.updateAttendeeRow(v.att.id, { muted: input.muted ? 1 : 0 });
