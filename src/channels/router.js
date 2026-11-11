@@ -698,7 +698,7 @@ export class Router {
     // A reply to Reason's own event onboarding line ("how was it?", the call offer; src/eventonboarding.js)
     // is Reason's conversation, not theirs (owner, 2026-11-11): not counted, and never met by the ceiling.
     let onbReply = false;
-    try { onbReply = last.channel !== web.WEB && eventonb.awaitingReply(conversationId); } catch { onbReply = false; }
+    try { onbReply = last.channel !== web.WEB && eventonb.claimFreeReply(conversationId); } catch { onbReply = false; }
     accounts.countUse(conversationId, "turn", 1, { visit: !onbReply });
     // Over this month's free conversations (REASON_FREE_TIER=monthly): no turn at all — one line and the
     // pay link, once a conversation; anything else they text in it is kept in their history and left.

@@ -157,6 +157,20 @@ export function awaitingReply(conversationId, now = clock.now()) {
   return row.state === "offered" && now - (row.cards_at ?? 0) <= OFFER_FRESH_MS;
 }
 
+/**
+ * The router's claim on that exemption: once per line of Reason's (the "how was it?" it sent, the call
+ * offer it sent), so a row stuck in `asked` — its send failed, the turn errored — never hands out more
+ * than one uncounted turn (review 2026-11-11). True when this drain is the free reply.
+ */
+export function claimFreeReply(conversationId, now = clock.now()) {
+  if (!awaitingReply(conversationId, now)) return false;
+  const row = rowOf(conversationId);
+  const key = `eventonb:free:${conversationId}:${row.state}:${row.state === "asked" ? row.asked_at ?? 0 : row.cards_at ?? 0}`;
+  if (db.opsGet(key)) return false;
+  db.opsSet(key, now);
+  return true;
+}
+
 /** A row whose moment has passed is ended here, so nothing hangs on it (frame, card hold, B/C). */
 function settleStale(row, now = clock.now()) {
   if (!row) return row;

@@ -283,6 +283,26 @@ test("a free-tier guest under the ceiling: the reply to 'how was it?' leaves the
   assert.equal(used(c), 1);
   // accounts.countUse without visit counts the day's turn but no conversation.
   clock.skip(40 * MIN);
+  clock.skip(40 * MIN);
   accounts.countUse(c, "turn", 1, { visit: false });
   assert.equal(used(c), 1);
+});
+
+test("a row stuck in 'asked' (the turn failed, no reply): only ONE uncounted reply, then their texts count", async () => {
+  const h = harness({ reply: null });
+  const ev = makeEvent();
+  const num = newNumber();
+  await joinByText(h, ev, num);
+  const c = conv(num);
+  const at = eo.morningAfter(db.getEventRow(ev.id), c);
+  clock.skip(at + 60_000 - clock.now());
+  await h.runtime.tick();
+  assert.equal(eo.rowOf(c).state, "asked");
+  await h.router.deliver(texts(num, "it was great"));
+  assert.equal(used(c), 0, "the reply to A is free");
+  assert.equal(eo.rowOf(c).state, "asked", "no reply went, so the row stays asked");
+  clock.skip(40 * MIN);
+  await h.router.deliver(texts(num, "can you find me a dentist"));
+  assert.equal(used(c), 1, "not a second free turn");
+  assert.equal(eo.claimFreeReply(c), false);
 });
