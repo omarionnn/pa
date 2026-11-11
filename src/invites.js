@@ -281,7 +281,7 @@ export function inviteForSetup(token) {
  * first (the losing side of a race is told so); null when it is already a member's number.
  */
 export function claimForSetup({ inviteId, channel, address, name = "" }) {
-  const inv = db.db.prepare("SELECT * FROM invites WHERE id = ?").get(Number(inviteId)) ?? null;
+  const inv = db.db.prepare("SELECT id, conversation_id, claim_code FROM invites WHERE id = ?").get(Number(inviteId)) ?? null;
   if (!inv) return { joined: false, reason: "not_found", toThem: ALREADY_CLAIMED };
   const addr = normalizeNumber(address) || String(address ?? "").trim();
   const out = db.redeemInvite({ claimCode: inv.claim_code, channel, address: addr, name });
