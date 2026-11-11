@@ -1359,15 +1359,18 @@ export class Router {
    * plus an honest line about the file, never to pretending it went. That answer is not retryable
    * and the outbox treats it accordingly.
    */
-  async sendMedia({ channel, to, text, file, mimeType, filename = null, chatId = null, idempotencyKey, conversationId = null, toOwner = false }) {
+  async sendMedia({ channel, to, text, file = null, mediaUrl = null, mimeType, filename = null, chatId = null, idempotencyKey, conversationId = null, toOwner = false, table = false }) {
     const pre = this.#ready(channel, { media: true });
     if (pre) return pre;
     if (channel === "console" || !conversationId) {
-      return await this.sendNow({ channel, to, text, file, mimeType, filename, chatId, idempotencyKey });
+      return await this.sendNow({ channel, to, text, file, mediaUrl, mimeType, filename, chatId, idempotencyKey });
     }
+    // `mediaUrl` is a file the provider fetches by address (a table picture on Reason's own host,
+    // src/tableimage.js): durable like a file, and sendNow hands it to the channel's sendMediaUrl. `table`
+    // marks that picture so history (db.historyFromOutbound) draws it; any other address stays a file.
     return await outbox.sendDurable({
       channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, log: this.log,
-      media: { file, mimeType, filename },
+      media: mediaUrl ? { mediaUrl, mimeType, filename, ...(table ? { table: true } : {}) } : { file, mimeType, filename },
     });
   }
 

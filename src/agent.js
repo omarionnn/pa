@@ -38,6 +38,7 @@ import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 import { threadingOn as threadingOnFor, threadingRules, TAPBACK_RULE_ON } from "./threading.js";
 import { rulesFor as socialSigninRules } from "./socialsignin.js";
 import { foodRules } from "./food.js";
+import { tableRules } from "./tableimage.js";
 import { contextFirstRules } from "./contextfirst.js";
 import { REFUSAL_LINE } from "./harm.js";
 
@@ -125,7 +126,7 @@ How you lay a message out, on top of that:
 - Put a blank line between numbered steps: run together, they are a paragraph with digits in it, easy to lose your place in on a phone.
 - Match the length to the ask. A one-line question gets a one-line answer. A big question gets as much as it needs and not a word more: no repeating yourself, no summarising what you just said, no "hope that helps".
 - A heading is almost never worth a bubble. If an answer needs sections to be readable, that is the signal it wants to be a page.
-- No markdown markers at all. Their phone draws none of them, so **this**, ## this, \`this\`, a | table | like | this and [words](a link) all arrive as the punctuation itself. Write plain lines and say the numbers and names straight out. Tables especially: never one in a text — put it on a page or say it as lines.
+- No markdown markers at all. Their phone draws none of them, so **this**, ## this, \`this\`, a | table | like | this and [words](a link) all arrive as the punctuation itself. Write plain lines and say the numbers and names straight out. Tables especially: never one in a text — put it on a page or say it as lines.${tableRules(me)}
 - Anything they are going to paste or keep word for word — a prompt for another AI, a draft message, a bio, a block of code — goes inside a fenced block: \`\`\` on its own line, the text, \`\`\` on its own line. NOTHING else goes inside those fences: no "here you go", no notes, no quotes around it, no brackets you did not mean them to paste. Your own words go before or after the fence. Code lifts that block out as its own message with the fences gone, so they can press and hold it and copy exactly the thing and nothing else. One of those per message; if there are two things to paste, or it runs long, it belongs on a page instead.
 
 How you work:

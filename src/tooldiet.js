@@ -53,7 +53,7 @@ export const WARM_MS = Number(process.env.REASON_TOOLSET_WARM_MS || 6 * 60_000);
 export const CORE = [
   "web_search", "web_lookup", "gmail_search", "task_update", "timer_set", "spotify_now_playing",
   "remember", "browser_read", "recall", "call_place", "confirm_record", "browser_open",
-  "message_send", "task_start", "show_choices",
+  "message_send", "task_start", "show_choices", "render_table",
   "timer_list", "timer_cancel", "forget", "call_status", "confirm_request", "react",
   "store_checkout", "shop_status", "weather", "nearby_places", "get_location", "capabilities",
   // Each cost a search round on every use (drive 11-09); together ~3.4k chars of schema (~900 tokens).

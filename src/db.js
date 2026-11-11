@@ -11307,10 +11307,15 @@ function historyFromOutbound(row) {
   if (HISTORY_EXCLUDED_KEYS.some(p => String(row.idem_key ?? "").startsWith(p))) return null;
   // A choice card is a picture Reason drew, kept on this machine, so Web can draw it in the thread too.
   const card = /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(row.media?.file ?? ""));
+  // A table picture (src/tableimage.js) went by address, an upload of this conversation's (marked `table`
+  // by the tool that drew it): Web serves it from there. Any other address (a contact card's .vcf) stays a file.
+  const table = row.media?.table === true && /^https?:\/\/.+\/web\/media\/u\//.test(String(row.media.mediaUrl ?? ""))
+    && /^image\//.test(String(row.media.mimeType ?? "image/png"));
   // A welcome card (src/welcome.js) is history as its words: Web cannot draw the picture, and a blank file says nothing.
   const media = !row.media || row.media.fallbackText || row.media.carousel ? []
     : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
-      : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
+      : table ? [{ kind: "image", mimeType: row.media.mimeType ?? "image/png", filename: row.media.filename ?? null, url: row.media.mediaUrl, table: true }]
+        : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
     externalId: row.message_id ?? null, outboxId: row.id, text: row.body || (row.media?.fallbackText ? `(picture) ${row.media.fallbackText}` : row.media?.historyText ?? ""), media, at: row.sent_at ?? clock.now(),

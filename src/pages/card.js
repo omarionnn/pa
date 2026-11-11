@@ -137,7 +137,7 @@ export class NoCardRenderer extends Error {}
  * a page is drawn once per change, so a browser kept warm for it would mostly be a browser kept
  * warm for nothing.
  */
-export async function shootWithChromium(html, { width = CARD_W, height = CARD_H, type = "png" } = {}) {
+export async function shootWithChromium(html, { width = CARD_W, height = CARD_H, type = "png", scale = 1, fullPage = false, ready = null } = {}) {
   let playwright;
   try { playwright = await import("playwright"); }
   catch { throw new NoCardRenderer("Playwright is not installed, so no page picture can be drawn."); }
@@ -151,10 +151,14 @@ export async function shootWithChromium(html, { width = CARD_W, height = CARD_H,
     throw e;
   }
   try {
-    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+    // `scale` is the device scale (a table picture is laid out at 1080 and drawn at 2×, src/tableimage.js);
+    // `fullPage` lets the content set the height; `ready` is a page expression the shot waits for (a
+    // fitting script that has finished), so nothing is drawn mid-layout.
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: scale });
     await page.setContent(html, { waitUntil: "load" });
+    if (ready) await page.waitForFunction(ready, null, { timeout: 5_000 });
     // A photo as JPEG stays well under the size a preview fetcher will take; PNG stays for drawn cards.
-    return await page.screenshot({ type, ...(type === "jpeg" ? { quality: 86 } : {}), clip: { x: 0, y: 0, width, height } });
+    return await page.screenshot({ type, ...(type === "jpeg" ? { quality: 86 } : {}), ...(fullPage ? { fullPage: true } : { clip: { x: 0, y: 0, width, height } }) });
   } finally {
     await browser.close().catch(() => {});
   }
