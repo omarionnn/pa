@@ -1230,6 +1230,8 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
     case "help_reply": {
       const message = String(f.get("message") ?? "");
       if (!message.trim()) return oops("Write the answer first.");
+      // REASON_EVENT_HELP_LINE: the same gate as the text tool (review 2026-11-11).
+      if (!helpline.eventAllowed(own)) return oops("The help line isn't available for this event.");
       // This event's questions only, from this event's page.
       const out = await helpline.replyToAsk({ runtime, organizerConversationId: c, askId: Number(f.get("ask_id")) || 0, message: message.slice(0, 1500), eventId: own.id });
       if (!out?.ok) return oops("That question isn't on this event any more.");

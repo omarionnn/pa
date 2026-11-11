@@ -791,7 +791,7 @@ async function runHelpTool(name, input, { c, runtime }) {
     // Only an event whose help line this conversation texted: never one picked by a number alone.
     const ev = input.event_id ? db.getEventRow(input.event_id) : helpline.activeLine(c);
     const texted = ev && db.db.prepare("SELECT 1 FROM event_helpline_contacts WHERE event_id = ? AND conversation_id = ?").get(ev.id, c);
-    if (!ev || !texted || ev.status === "cancelled") return { ok: false, error: "There's no event help line on this conversation. Ask which event they mean." };
+    if (!ev || !texted || ev.status === "cancelled" || !helpline.eventAllowed(ev)) return { ok: false, error: "There's no event help line on this conversation. Ask which event they mean." };
     if (name === "event_help") return organizerWords({ ok: true, event: helpline.helpFacts(ev, c) }, ev);
     // Off: what is known stays readable, but nothing more reaches the organizer through it (review 2026-11-11).
     if (!helpline.lineOn(ev)) return { ok: false, error: "The host turned this help line off, so questions can't be passed on through it now. Say so kindly." };

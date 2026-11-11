@@ -523,3 +523,23 @@ test("flag off: the public event page is the same as an event with no help line,
   assert.equal(b, a, "identical page");
   assert.equal(helpline.lineForText({ address: "+16465550178", text: helpline.firstText(withLine) }), null);
 });
+
+test("flag no longer reaching the organizer: event_help by event_id and the manage page's answer both refuse (review 2026-11-11)", async () => {
+  const h = harness();
+  const ev = await lagosNight(h);
+  const G = "+16465550179";
+  await h.router.deliver(texts(G, helpline.firstText(ev)));
+  await settle();
+  const g = db.accountByAddress("fake", G).conversation_id;
+  const asked = await tool("event_help_ask", { question: "dress code?" }, g, h.runtime);
+  assert.equal(asked.ok, true);
+  await settle();
+  process.env.REASON_EVENT_HELP_LINE = "owner";
+  assert.equal((await tool("event_help", { event_id: ev.id }, g, h.runtime)).ok, false);
+  assert.equal((await tool("event_help_reply", { ask_id: asked.ask_id, message: "all black" }, C.org, h.runtime)).ok, false);
+  const headers = { cookie: COOKIE.org, "user-agent": IPHONE, origin: "https://files.example.test", "sec-fetch-site": "same-origin", "x-forwarded-for": "203.0.113.9", "x-files-domain": "true", "x-reason-caddy": "caddy-test", host: "files.example.test" };
+  h.channel.sent.length = 0;
+  await eventRequestFor({ publicId: ev.public_id, sub: "manage", method: "POST", query: {}, headers, remoteAddress: "127.0.0.1", readBody: async () => form({ action: "help_reply", ask_id: String(asked.ask_id), message: "all black" }), runtime: h.runtime, router: h.router });
+  await settle();
+  assert.equal(sentTo(h, G).length, 0, "nothing reached the guest");
+});
