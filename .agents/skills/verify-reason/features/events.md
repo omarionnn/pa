@@ -376,6 +376,34 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   `conversation_id` (their delete takes them); `event_questions` KEPT_ON_DELETE. Call gate: `event_answer` and non-list
   `event_questions` are consequential on a caller-ID-only call. Pinned: `test/event-guest-questions.test.js`; drive: the
   `ask:` steps.
+  **Owner decisions 2026-11-11 (same PR):** (1) **Required** — `event_questions.required`; `required: true` on add/change
+  (target line ends `, required)` and the hash covers it; `asks.required`). Join page: "THE HOST ASKS" with REQUIRED /
+  OPTIONAL tags, `required` on the inputs, and `readForm().missing` refuses a blank server-side ("the host asks everyone
+  this one before they're in"). Text join: `events.joinExisting`/`joinVerified` return `needs_answers` + `questions`
+  before admitting (no welcome, no row); the model asks gently one at a time and calls `event_join` again with `answers`
+  `[{question_id, choice|text}]` and no password (the `verified` hold covers it, like needs_display_name); the answers
+  are filed as `via text`. Made required only while 0 answers (`answered_required` refused before the gate; CAS in
+  `db.setEventQuestionRequired`), optional again any time with answers standing (`version` untouched, not a reword); a
+  change with the words left out keeps them. Guests already in are never held to it (own-page save with it blank goes;
+  a required answer can be changed, never cleared: `event_answer clear` → `required`, no "No answer" pick). Manage page:
+  checkbox "Everyone has to answer this one to join", confirm "GUESTS SEE · REQUIRED", "Make it optional" on an answered
+  required one (`done=question_required|question_optional`). (2) **Ask the guests already in** — `event_questions action
+  ask_guests` (CONDITIONALLY_GATED; `questionsRefusal` → `nobody_to_ask` before any yes): target `ask N guests already in
+  <event> (event #id) to answer "<words>" (…): names {hash of question_id+version+ids}`, `asks` = guests/names/
+  muted_not_asked/`text_they_get` (`events.questionAskText`: "<organizer> added a question for everyone going to
+  <event>: "…" — a, b. totally optional — …" / required: "they're asking everyone…"). The yes owes one
+  `event_question_asks` row per guest (UNIQUE question+attendee, never twice; `oweQuestionAsks`), due after
+  `LIST_NOTE.backstopMs`; `sweepQuestionAsks` (run from `Runtime.eventListNotes` next to the list notes, result key
+  `asks`) sends by the list-note rules — not 21:00–09:00 in the event's zone, never muted/left, dropped when moot
+  (answered since, question reworded = version changed, removed, event cancelled/stale, guest left: `dropAnswersOf`
+  drops owed asks). `event_messages.kind = question_ask`, into the thread as Reason's own words. Adding by text: the
+  note says `can_ask_guests` N and tells the model to offer it in one line. Manage page: adding to an event with guests
+  lands on "Ask the N guests already in?" (names, exact text, `pin` = version + ids re-checked on send; "Don't ask" →
+  `done=question_not_asked`, nothing owed); each question with guests left to ask has "Ask the N guests already in →".
+  (3) **Creation mention** — `event_create.say` adds one plain line (ask people a few short questions when they join, up
+  to 3) and the tool description tells the model to offer it when the event is RSVP-shaped. Per-event SQL on
+  `event_answers`/`event_question_asks` is on `test/fixtures/unscoped-sql-baseline.json` (scoped by event_id; the
+  organizer is checked in `events.managed` first).
 
 ## How to get to it (user POV)
 
