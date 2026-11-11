@@ -160,6 +160,11 @@ const pastRunWindow = (at, tz) => { const { hour, minute } = localParts(at, tz);
 export function dayRow(conversationId, day) {
   return db.db.prepare("SELECT * FROM action_card_days WHERE conversation_id = ? AND day = ?").get(conversationId, day) ?? null;
 }
+/** Has the MORNING run happened (or been written off) today? An urgent single before it does not count. */
+export function ranToday(conversationId, day) {
+  const r = dayRow(conversationId, day);
+  return !!r && r.outcome !== "urgent";
+}
 
 // ---------------------------------------------------------------- the scheduler
 
@@ -189,7 +194,7 @@ export function sweepCards({ now = clock.now(), log = () => {}, queue = backgrou
       const tz = dreamZone(c);
       const day = localDay(now, tz);
       const key = `${c}|${day}`;
-      if (dayRow(c, day)) continue;
+      if (ranToday(c, day)) { attempted.delete(key); continue; }
       if (inRunWindow(now, tz)) {
         if (running.has(c)) continue;
         running.add(c);
@@ -682,20 +687,26 @@ export function dedupeAndRank(conversationId, made, { now = clock.now() } = {}) 
 
 // ---------------------------------------------------------------- the morning text
 
-const firstName = (conversationId) => (String(accounts.ownerOf(conversationId).name || "").trim().split(/\s+/)[0] || "there").toLowerCase();
+/** Their first name, lowercased as in the mockup; "" for somebody Reason has no name for yet. */
+const firstName = (conversationId) => {
+  const n = String(accounts.ownerOf(conversationId).name || "").trim();
+  if (!n || /^the person i work for$/i.test(n)) return "";
+  return n.split(/\s+/)[0].toLowerCase();
+};
 
 /** The approved copy, from the top card's lead. */
 export function morningText({ name, lead, count, url }) {
   const l = String(lead ?? "").replace(/[.!]+$/, "");
-  if (count >= 3) return `morning ${name}. ${l}. that and ${count - 1} more when you want them: ${url}`;
-  if (count === 2) return `morning ${name}. ${l}. that and one more: ${url}`;
-  return `morning ${name}. one thing i can take off your plate: ${l}. ${url}`;
+  const hi = name ? `morning ${name}.` : "morning.";
+  if (count >= 3) return `${hi} ${l}. that and ${count - 1} more when you want them: ${url}`;
+  if (count === 2) return `${hi} ${l}. that and one more: ${url}`;
+  return `${hi} one thing i can take off your plate: ${l}. ${url}`;
 }
 /** The urgent single's copy. */
 export function urgentText({ name, lead, offer, url }) {
   const l = String(lead ?? "").replace(/[.!]+$/, "");
   const o = String(offer || "want me to handle it?").replace(/[?]*$/, "?");
-  return `${name}, ${l}. ${o} ${url}`;
+  return `${name ? `${name}, ` : ""}${l}. ${o} ${url}`;
 }
 
 let runtimeRef = null;
@@ -723,7 +734,7 @@ export async function runMorning(conversationId, { now = clock.now(), tz = dream
   if (!dry) {
     const why = ask ? null : whyNot();
     if (why) { log({ action_cards: c, skipped: why }); return { skipped: why }; }
-    if (dayRow(c, day)) return { skipped: "already_ran" };
+    if (ranToday(c, day)) return { skipped: "already_ran" };
     // Reached the front of the lane after the window (the sweep writes the day off at 9:30, but a
     // job that started the restart dance between the two sweeps can land here): not at this hour.
     if (!inRunWindow(now, tz)) { recordDay(c, { day, at: now, outcome: "skipped", why: "late" }); log({ action_cards: c, outcome: "skipped", why: "late" }); return { skipped: "late" }; }
@@ -810,7 +821,9 @@ export function urgentFrom(conversationId, candidates, { now = clock.now(), tz =
     return { urgent: !!sent.ok };
   };
   Promise.resolve(queue(`cards:urgent:${c}`, job)).catch(e => log({ action_cards: c, urgent_failed: errorKind(e) })).finally(() => running.delete(`urgent:${c}`));
-  return { queued: true, key };
+  // `taken`: the sweep's candidate this card now speaks for, so the sweep's own turn does not text
+  // the same thing a second time. Held there; if the model passes on it, the next sweep sees it again.
+  return { queued: true, key, taken: pick };
 }
 
 // ---------------------------------------------------------------- where did this come from

@@ -315,6 +315,7 @@ test("the copy for one, two and three cards; a capped person gets the page but n
   assert.equal(engine.morningText({ name: "kofi", lead: "your Anthropic key expires Nov 18", count: 2, url: "L" }), "morning kofi. your Anthropic key expires Nov 18. that and one more: L");
   assert.equal(engine.morningText({ name: "kofi", lead: "your Anthropic key expires Nov 18", count: 3, url: "L" }), "morning kofi. your Anthropic key expires Nov 18. that and 2 more when you want them: L");
   assert.equal(engine.urgentText({ name: "kofi", lead: "your 2pm with Ana moved to 1:30", offer: "want me to move your ride", url: "L" }), "kofi, your 2pm with Ana moved to 1:30. want me to move your ride? L");
+  assert.equal(engine.morningText({ name: "", lead: "your lease renews Nov 30", count: 1, url: "L" }), "morning. one thing i can take off your plate: your lease renews Nov 30. L");
   seedOwnRows();
   const rt = fakeRuntime({ allow: false });
   const out = await engine.runMorning(C, { now: NOW, tz: TZ, tokensFor: noGoogle, ask: scriptedAsk().ask, runtime: rt });
@@ -395,6 +396,14 @@ test("the urgent single: a calendar thing inside two hours, outside quiet hours,
   assert.equal(engine.urgentFrom(C, [{ ...cand, key: "k:3", event_id: "e8" }], { now: NOW, tz: TZ, ask, queue, runtime: rt }).skipped, "two_texts_today");
   // Their night: no.
   assert.equal(engine.urgentFrom(C, [cand], { now: Date.parse("2026-11-18T04:00:00Z"), tz: TZ, ask, queue, runtime: rt }).skipped, "quiet_hours");
+  // An urgent single before 7:30 does not count as the morning run: the run still happens.
+  db.db.exec("DELETE FROM action_card_days");
+  db.db.prepare("INSERT INTO action_card_days (conversation_id, day, run_at, outcome, urgent_sent) VALUES (?, '2026-11-17', ?, 'urgent', 1)").run(C, NOW);
+  assert.equal(engine.ranToday(C, "2026-11-17"), false);
+  const morning = await engine.runMorning(C, { now: NOW, tz: TZ, tokensFor: noGoogle, ask, runtime: rt });
+  assert.equal(morning.outcome, "empty");
+  assert.equal(engine.dayRow(C, "2026-11-17").urgent_sent, 1, "the urgent count survives the morning row");
+  assert.equal(engine.textsToday(C, "2026-11-17"), 1);
 });
 
 test("where did this come from: a class and a day, never a subject; show_source hands the thread to gmail_read; forget it; stop showing me X", async () => {
@@ -474,6 +483,6 @@ test("with cards on, the sweep's own texts are limited to time-critical calendar
     { kind: "calendar_moved", key: "cal:a:e6@x", thing: "cal:a:e6", what: "Design review moved to 9:30", starts: soon, account: ACCT.account, event_id: "e6", state: soon },
   ], context: [], accounts: [ACCT.account] });
   const out2 = await rt.notice({ gatherWith: gatherCal, readWith: async () => ({ ok: true, status: 200, body: { status: "confirmed", start: { dateTime: soon } } }), now: later });
-  assert.equal(out2.turns, 1, "a meeting inside two hours still goes to the model");
-  assert.equal(out2.urgent_cards, 1, "and is offered as an urgent single too");
+  assert.equal(out2.urgent_cards, 1, "a meeting inside two hours becomes an urgent single card");
+  assert.equal(out2.turns, 0, "and the sweep's own turn does not text the same thing a second time");
 });

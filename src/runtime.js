@@ -2322,7 +2322,8 @@ export class Runtime extends EventEmitter {
       if (actionengine.cardsOnFor(c)) {
         const urgent = actionengine.urgentFrom(c, inFront, { now, tz, settings, log: this.log });
         if (urgent.queued) out.urgent_cards = (out.urgent_cards ?? 0) + 1;
-        const critical = inFront.filter(x => actionengine.timeCritical(x, now) || notice.THEIR_OWN_SCHEDULE.has(x.kind) || notice.KINDS[x.kind]?.speakable === false);
+        // The one the card speaks for is not the turn's to text as well: one thing, one text.
+        const critical = inFront.filter(x => x !== urgent.taken && (actionengine.timeCritical(x, now) || notice.THEIR_OWN_SCHEDULE.has(x.kind) || notice.KINDS[x.kind]?.speakable === false));
         for (const x of inFront) if (x.id && !critical.includes(x)) db.holdNotice(x.id, now);
         out.held += inFront.length - critical.length;
         inFront = critical;
