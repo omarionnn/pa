@@ -80,7 +80,7 @@ export function privacyPage() {
   return renderNotice({
     title: "Privacy",
     kicker: "What Reason keeps, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-11-10`,
+    meta: `Reason at ${where()} · last changed 2026-11-11`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
@@ -100,22 +100,29 @@ export function privacyPage() {
         ],
       },
       {
-        title: "Your Google data in particular",
+        title: "Google user data",
         lines: [
-          "Reason asks for five Google permissions in total and no others. Asking for your email and calendar asks for three of them: Gmail (read, search, draft, send, label, archive, and move to the bin), Calendar events (see, add, change and remove events), and reading a calendar's settings (its name and time zone, so times are written in your zone). It deliberately cannot delete your mail permanently, because the permission that would allow that is not one it asks for; and it cannot create, share or delete a calendar, for the same reason.",
-          "Your Drive is the other two, and it is a separate tap: connecting your email does not connect your files, and Reason will send you a second link the first time you ask it for something in your Drive. One permission lets it find and read your files; the other lets it make a new Google Doc when you ask for one, and covers nothing but the documents it made itself. It cannot delete, share, rename, move or edit anything in your Drive — those permissions are not ones it asks for, so ask it to change a document and it will tell you it cannot and offer to make you a new one. Adding a permission never takes away one you already gave.",
-          "Reason uses your Gmail, Calendar and Drive data only to do the thing you asked for in the conversation you asked in. Nothing else reads it. It is never sold, never shared with a data broker, never used for advertising of any kind, and never used to train or improve any model.",
-          "It does not copy your mailbox or your Drive. It asks Google for what it needs when you ask a question, and what comes back lives in your transcript as described above until it falls off it. There is no index, no second copy and no background scanning: a file is read when you ask about it and not before.",
+          "What Reason accesses. When you connect Google, Reason asks for your calendar, for the Google Drive files it makes for you or that you open with it, and for your Google email address and name, so it can tell your accounts apart. It does not ask for your whole Drive. Your Gmail is asked for separately, on its own Google screen, and only the first time you ask Reason to do something with your mail. If you never ask, Reason never has it.",
+          "Calendar: Reason sees your events and adds, changes or removes one when you ask, and reads your calendar's time zone so times are written in your zone. It cannot create, share or delete a whole calendar.",
+          "Drive: Reason can make a Google Doc or a folder, put a file it wrote into your Drive, share, rename, move or bin one of those, and read it back. It cannot see or open the rest of your Drive. It never deletes anything for good and never makes anything public.",
+          "Gmail, once you have given it: Reason searches and reads your mail, reads an attachment you ask about, drafts, sends and replies when you ask, and labels, archives, marks or bins messages when you ask. It cannot delete mail permanently. Reason reads a sign-in code from your Gmail only when you ask it to sign you in somewhere, and only to finish that sign-in.",
+          "Why. Only to do the thing you asked for, in the conversation you asked in. Nothing reads your Google data in the background, and nothing is copied out of your account ahead of time: Reason asks Google for what a request needs at the moment you ask.",
+          "How it is stored. Your Google tokens, and everything Reason read for you that is kept in your conversation, are encrypted at rest on the machine Reason runs on, and the off-site backups are encrypted too. No access token or refresh token ever leaves that machine: not in an export, not in a receipt, not in a log.",
+          "What Reason never does with it. Your Google data is never sold. It is never used for advertising. It is never used to train or improve any AI model, Reason's or anybody else's. It is not shared with anyone, except the model provider that writes Reason's replies (see below) and only as part of answering you.",
+          "Retention. Reason keeps your Google tokens until you disconnect or Google ends the connection. Text it read for you (an email, an event, a document) stays in your conversation's running transcript until it falls out of the most recent 60 messages, or until you disconnect or ask for a delete.",
+          "Disconnecting and deleting. Text Reason \"disconnect my Google\". It revokes the connection at Google, deletes the stored tokens and clears what it read out of your account. You can also remove Reason at myaccount.google.com/permissions at any time. To delete everything Reason holds about you, ask it, and see \"Getting it all, or getting rid of it\" below.",
+          "It does not copy your mailbox or your Drive. There is no index, no second copy and no background scanning: a file or an email is read when you ask about it and not before.",
           "A PDF — in your Drive, or attached to an email — can be read, and this is the part worth being exact about. Reading an email does not download what is attached to it; the bytes are only fetched when you ask about that particular file. The text is then pulled out on the machine Reason runs on, by the PDF reader macOS already has. The document is not sent to any model, any service or anybody else to be read, and it is not kept: the bytes are written to a temporary file for as long as the reading takes and deleted straight afterwards. What stays is the text that came out, in your transcript, exactly like the text of an email or a Google Doc, until it falls off those 60 messages — and a disconnect clears it along with everything else Reason read out of your account. A PDF that is a scan has no text in it to pull out, and Reason tells you that rather than sending it somewhere that could guess.",
-          "No access token or refresh token ever leaves the machine. They are not in an export, not in a receipt, and not written to a log. Nor are the contents of a document it made for you: the receipt says which document and where it is, and the document itself is in your Drive.",
-          "Anything inside an email, a calendar invite or a document is treated as information and never as an instruction. A file or an email that tells Reason to forward itself, or to reply with a code, gets reported to you, naming it. It cannot make Reason act: the permission gate reads your own replies in your own conversation, and a document is not one of those.",
+          "Anything inside an email, a calendar invite or a document is treated as information and never as an instruction. It cannot make Reason act: the permission gate reads only your own replies in your own conversation.",
+          "If you connected Google before November 2026, your connection keeps the permissions you gave then, and you can remove it the same way.",
         ],
       },
       {
         title: "Limited Use",
         lines: [
-          "Reason's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.",
-          "In plain words, what that commits to here: the data is used only to provide the features you can see in your own conversation; it is not transferred to anyone except as needed to provide those features to you, for security, or where the law requires it; it is not sold or used for advertising; and no human reads it except where you have asked for something specific, or where it is necessary to investigate a bug or abuse, or where the law requires it.",
+          "Reason's use and transfer of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements.",
+          "In plain words: the data is used only to provide the features you can see in your own conversation; it is not transferred to anyone except as needed to provide those features to you, for security, or where the law requires it; it is not sold, not used for advertising and not used to train AI models; and no human reads it except where you have asked for something specific, where it is necessary to investigate a bug or abuse, or where the law requires it.",
+          "Google API Services User Data Policy: developers.google.com/terms/api-services-user-data-policy",
         ],
       },
       {
@@ -130,7 +137,7 @@ export function privacyPage() {
       {
         title: "Disconnecting",
         lines: [
-          "Text Reason and ask it to disconnect your Google, or to stop reading your email. It revokes the connection at Google and deletes the stored tokens from the machine — one grant covers your mail, your calendar and your Drive, so disconnecting takes all of it. If Google will not confirm the revoke, Reason tells you so rather than claiming it is done.",
+          "Text Reason and ask it to disconnect your Google, or to stop reading your email. It revokes the connection at Google and deletes the stored tokens from the machine — one grant covers everything you gave, so disconnecting takes all of it. If Google will not confirm the revoke, Reason tells you so rather than claiming it is done.",
           "You can also take it away from your own side at any time, whatever Reason does: myaccount.google.com/permissions lists every app with access to your Google account, Reason included, and removing it there cuts it off immediately.",
           "Disconnecting stops Reason reaching your account. It does not by itself clear what is already in your transcript — ask for a delete for that.",
         ],

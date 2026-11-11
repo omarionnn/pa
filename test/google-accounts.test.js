@@ -168,6 +168,8 @@ test("the link for a second account asks Google for the chooser; the first one d
   assert.equal(new URL(providerUrl(first.url)).searchParams.get("prompt"), "consent", "nothing to choose between yet");
   assert.equal(new URL(providerUrl(first.url)).searchParams.has("login_hint"), false);
 
+  // A grant made by today's first connect plus mail, so the plain link names nothing new for it.
+  fake.set({ grantScopes: [...google.DEFAULT_SCOPES, google.GMAIL_SCOPE] });
   await connect(ME);
   const second = await call("google_connect", {});
   // Documented: prompt is "a space-delimited, case-sensitive list", and only `none` may not be combined.

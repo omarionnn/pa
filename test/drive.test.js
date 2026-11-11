@@ -53,7 +53,8 @@ const { config, clock } = await import("../src/config.js");
 const OMARI = "dm:owner";
 const AMA = "dm:fake:+13475550000";
 const MAIL_AND_CALENDAR = [google.GMAIL_SCOPE, ...google.CALENDAR_SCOPES];
-const EVERYTHING = [...MAIL_AND_CALENDAR, ...google.DRIVE_SCOPES];
+// A grant made before 2026-11-11 (drive.readonly + drive.file): existing users keep whole-Drive reads.
+const EVERYTHING = [...MAIL_AND_CALENDAR, google.DRIVE_READ_SCOPE, google.DRIVE_FILE_SCOPE];
 
 let fake;
 const call = (name, input, conversationId = OMARI, messages = []) => runTool(name, input, { conversationId, messages });
@@ -143,22 +144,23 @@ test("a mail-and-calendar grant reads as Drive NOT connected, and asking produce
   assert.equal(caps.find(c => c.name === "email").status, "live");
   const dr = caps.find(c => c.name === "drive");
   assert.equal(dr.status, "connectable");
-  assert.match(dr.what, /SEPARATE permission/, "and the model is told it is one more tap, not a refusal");
+  assert.match(dr.what, /one more tap/, "and the model is told it is one more tap, not a refusal");
   assert.match(dr.what, /google_connect/);
 
   // Asking anyway: a named refusal with the scope in it, not a silent empty answer and not a 403.
   const out = await call("drive_search", { query: "lease" });
   assert.equal(out.ok, false);
   assert.equal(out.status, "scope_missing");
-  assert.deepEqual(out.missing_scope, [google.DRIVE_READ_SCOPE]);
-  assert.match(out.error, /drive\.readonly/);
+  assert.deepEqual(out.missing_scope, [google.DRIVE_FILE_SCOPE], "drive.file, never the restricted read scope");
+  assert.match(out.error, /drive\.file/);
+  assert.doesNotMatch(out.error, /drive\.readonly/);
   assert.match(out.error, /google_connect with scopes/);
   assert.equal(fake.state.driveSearches.length, 0, "nothing was asked of Drive");
 
   // And the link that fixes it is the ordinary one, asking for BOTH halves of Drive.
   const link = await call("google_connect", { scopes: out.missing_scope });
-  const asked = new URL(providerUrl(link.url)).searchParams.get("scope").split(" ").sort();
-  assert.deepEqual(asked, [...google.DRIVE_SCOPES].sort(), "naming one Drive scope asks for both");
+  const asked = new URL(providerUrl(link.url)).searchParams.get("scope").split(" ");
+  assert.deepEqual(asked.filter(s => !google.IDENTITY_SCOPES.includes(s)), [google.DRIVE_FILE_SCOPE], "drive.file and nothing restricted");
   assert.ok(link.say_with_link, "with the in-product notice Google's policy wants");
   assert.ok(link.scopes.every(s => s.so_that), "each one said in plain words");
 });
@@ -248,10 +250,11 @@ test("the notice is in full the first time they give a kind of access, and the a
 
 test("the consent line speaks to them, second person: 'your mail', 'when you ask' (owner, 2026-11-06)", async () => {
   const mail = await call("google_connect", { scopes: MAIL_AND_CALENDAR });
-  assert.match(mail.say_with_link, /^Reason only reads or changes your mail or reads or changes your calendar when you ask, keeps nothing beyond the conversation/);
+  // A first connect carries calendar and Drive too (2026-11-11), and the line says all three.
+  assert.match(mail.say_with_link, /^Reason only reads or changes your mail, reads or changes your calendar or puts a document it made in your Drive, or opens one it made when you ask, keeps nothing beyond the conversation/);
   assert.doesNotMatch(mail.say_with_link, /\b(their|they)\b/);
   const drive = await call("google_connect", { scopes: google.DRIVE_SCOPES });
-  assert.match(drive.say_with_link, /opens a file in your Drive/);
+  assert.match(drive.say_with_link, /puts a document it made in your Drive/);
 });
 
 test("with two accounts on, a Drive ask still shows the chooser and says which one to pick", async () => {

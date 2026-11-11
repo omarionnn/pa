@@ -162,23 +162,81 @@ test("with a client but no grant, the capability says connectable and how to ask
 // (test/drive.test.js), so what this pins is the thing that was really at stake — **a plain "connect
 // my Google" does not quietly carry Drive with it**. Somebody asking Reason about their inbox is not
 // asked about their documents, and everybody who connected before 2026-10-06 has mail and no Drive.
-test("a plain connect asks for mail and calendar only — Drive is a separate tap", async () => {
+// Pinned 2026-11-11 for Google's OAuth verification: the first connect has no restricted scope.
+const FIRST_CONNECT = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.calendars.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+  ];
+
+test("the first connect asks for exactly calendar, drive.file, email and profile — no Gmail, no restricted scope", async () => {
   const link = await call("google_connect", {});
   const asked = new URL(providerUrl(link.url)).searchParams.get("scope").split(" ");
-  assert.ok(!asked.some(s => s.includes("drive")), "no Drive scope on a plain connect link");
-  assert.deepEqual(google.DEFAULT_SCOPES.slice().sort(), [...google.CALENDAR_SCOPES, google.GMAIL_SCOPE].sort());
-  // And a grant made that way is honestly not a Drive connection.
-  fake.set({ grantScopes: [google.GMAIL_SCOPE, ...google.CALENDAR_SCOPES] });
-  await connect();
-  assert.equal(trust.accountStatus(OMARI, "gmail").status, "connected");
-  assert.equal(trust.accountStatus(OMARI, "google_drive").status, "connectable",
-    "mail connected and Drive not is a real state, and it is the one everybody is in today");
+  assert.deepEqual(asked, FIRST_CONNECT, "the exact list, in order");
+  assert.deepEqual(google.DEFAULT_SCOPES, FIRST_CONNECT);
+  for (const gone of [google.GMAIL_SCOPE, google.DRIVE_READ_SCOPE, google.DRIVE_METADATA_SCOPE, google.LEGACY_CALENDAR_SCOPE]) {
+    assert.ok(!asked.includes(gone), `${gone} must not be on the first connect`);
+    if (gone !== google.GMAIL_SCOPE) assert.ok(!google.SCOPE_LIST.includes(gone), `${gone} must never be askable`);
+  }
+  // A grant made that way learns its address from userinfo, and is calendar + Drive, not mail.
+  fake.set({ grantScopes: FIRST_CONNECT });
+  const state = new URL(link.url).searchParams.get("state");
+  const done = await google.completeConnect({ code: "good-code", state });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(done.email, "me@example.com");
+  assert.equal(trust.accountStatus(OMARI, "google_calendar").status, "connected");
+  assert.equal(trust.accountStatus(OMARI, "google_drive").status, "connected");
+  assert.notEqual(trust.accountStatus(OMARI, "gmail").status, "connected");
 });
 
-test("Reason asks for exactly the two scopes Omari enabled, offline, and forces a fresh refresh token", async () => {
+test("Gmail is asked for incrementally: the first mail task gets a Gmail-only link with include_granted_scopes", async () => {
+  fake.set({ grantScopes: FIRST_CONNECT });
+  await connect();
+  // A mail tool on a calendar+Drive grant: a named, friendly refusal with the exact link scopes.
+  const out = await call("gmail_search", { query: "invoice" });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "scope_missing");
+  assert.equal(out.needs_mail_permission, true);
+  assert.deepEqual(out.missing_scope, [google.GMAIL_SCOPE]);
+  assert.doesNotMatch(out.error, /unticked/);
+  // The link it points at: Gmail plus identity only, include_granted_scopes=true, login_hint for the account.
+  const link = await call("google_connect", { scopes: out.missing_scope });
+  const q = new URL(providerUrl(link.url)).searchParams;
+  assert.deepEqual(q.get("scope").split(" "), ["https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile", google.GMAIL_SCOPE]);
+  assert.equal(q.get("include_granted_scopes"), "true");
+  assert.equal(q.get("login_hint"), "me@example.com");
+  // Google hands back the union (include_granted_scopes), and nothing they gave is lost.
+  fake.set({ grantScopes: [...FIRST_CONNECT, google.GMAIL_SCOPE] });
+  const done = await google.completeConnect({ code: "good-code", state: q.get("state") });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(trust.accountStatus(OMARI, "gmail").status, "connected");
+  assert.equal(trust.accountStatus(OMARI, "google_calendar").status, "connected");
+  assert.equal(trust.accountStatus(OMARI, "google_drive").status, "connected");
+});
+
+test("a mail task with nothing connected yet gets ONE screen: the first-connect set plus Gmail", async () => {
+  const link = await call("google_connect", { scopes: [google.GMAIL_SCOPE] });
+  assert.deepEqual(new URL(providerUrl(link.url)).searchParams.get("scope").split(" "), [...FIRST_CONNECT, google.GMAIL_SCOPE]);
+});
+
+test("an existing grant with gmail.modify and the broad calendar keeps working untouched", async () => {
+  fake.set({ grantScopes: [google.GMAIL_SCOPE, google.LEGACY_CALENDAR_SCOPE] });
+  const link = await call("google_connect", {});
+  const done = await google.completeConnect({ code: "good-code", state: new URL(link.url).searchParams.get("state") });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(done.email, "me@example.com", "the address still comes from Gmail's profile on an old grant");
+  assert.equal(trust.accountStatus(OMARI, "gmail").status, "connected");
+  assert.equal(trust.accountStatus(OMARI, "google_calendar").status, "connected");
+  const found = await call("gmail_search", { query: "invoice" });
+  assert.equal(found.ok, true, JSON.stringify(found));
+});
+
+test("Reason asks for the first-connect scopes, offline, and forces a fresh refresh token", async () => {
   const link = await call("google_connect", {});
   const q = new URL(providerUrl(link.url)).searchParams;
-  assert.deepEqual(q.get("scope").split(" ").sort(), [...google.CALENDAR_SCOPES, google.GMAIL_SCOPE].sort());
+  assert.deepEqual(q.get("scope").split(" "), FIRST_CONNECT);
   assert.equal(q.get("response_type"), "code");
   assert.equal(q.get("access_type"), "offline", "without this Google sends no refresh token");
   assert.equal(q.get("prompt"), "consent", "and without this a reconnect gets no NEW refresh token");
@@ -1341,12 +1399,12 @@ test("the calendar capability is live only once this person has connected", asyn
 // Google's "narrowest scopes" rule. Three things have to hold: the two travel together, a grant
 // made under the old broad scope still counts, and a missing pair is named as a pair.
 
-test("the connect link asks for the three narrow scopes and never the broad calendar one", async () => {
+test("the connect link asks for the narrow calendar pair and never the broad calendar one", async () => {
   const out = google.authorizeUrl(OMARI);
   assert.equal(out.ok, true);
   const q = new URL(providerUrl(out.url)).searchParams;
   const asked = q.get("scope").split(" ");
-  assert.deepEqual(asked.sort(), [google.GMAIL_SCOPE, ...google.CALENDAR_SCOPES].sort());
+  assert.deepEqual(asked, FIRST_CONNECT);
   assert.ok(!asked.includes(google.LEGACY_CALENDAR_SCOPE));
   // And the result carries the in-product notice to send with the link, pointing at this install's policy.
   assert.match(out.say_with_link, /Privacy policy: /);
@@ -1355,15 +1413,15 @@ test("the connect link asks for the three narrow scopes and never the broad cale
 });
 
 test("asking for either calendar scope — or the old broad one — asks for both narrow ones", async () => {
+  // With an account already on (so the first-connect set is not added), naming one calendar scope asks for the pair.
+  fake.set({ grantScopes: [google.GMAIL_SCOPE] });
+  await connect();
   for (const one of [google.CALENDAR_EVENTS_SCOPE, google.CALENDAR_READ_SCOPE, google.LEGACY_CALENDAR_SCOPE]) {
     const out = google.authorizeUrl(OMARI, { scopes: [one] });
     assert.equal(out.ok, true, one);
-    const asked = new URL(providerUrl(out.url)).searchParams.get("scope").split(" ").sort();
-    assert.deepEqual(asked, [...google.CALENDAR_SCOPES].sort(), one);
+    const asked = new URL(providerUrl(out.url)).searchParams.get("scope").split(" ");
+    assert.deepEqual(asked.filter(s => !google.IDENTITY_SCOPES.includes(s)), google.CALENDAR_SCOPES, one);
   }
-  // Gmail alone stays alone.
-  const mail = google.authorizeUrl(OMARI, { scopes: [google.GMAIL_SCOPE] });
-  assert.deepEqual(new URL(providerUrl(mail.url)).searchParams.get("scope").split(" "), [google.GMAIL_SCOPE]);
 });
 
 test("covers(): the old broad calendar grant satisfies both narrow scopes; nothing else stands in", () => {
