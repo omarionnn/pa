@@ -208,6 +208,7 @@ export class Router {
     // #claimEvent, after the organizer's welcome. The master's yes sent "you're in".
     let arrivedNow = inbound.channel !== web.WEB && admitted.allow && admitted.created && !admitted.isOperator;
     let inviteSetupJoin = null;
+    let helpJustMade = false;
     if (!admitted.allow) {
       if (admitted.reason === "blocked") {
         this.log({ inbound: inbound.externalId, blocked: address });
@@ -234,6 +235,7 @@ export class Router {
       // text. An account is made for them on the spot and their text gets an ordinary turn in the help
       // line's voice — no access queue, no first-chat onboarding, no welcome cards (arrivedNow stays false).
       const help = await this.#helpLineArrival(inbound, address);
+      if (help?.created) helpJustMade = true;
       if (help?.result) return help.result;
       if (!help) {
       // A web setup started from an invite link (REASON_INVITE_START): its first text spends the
@@ -362,7 +364,7 @@ export class Router {
     // A text to an event's help line (src/eventhelpline.js): counted for the organizer, and the thread
     // is on that event's help line from here (the prompt reads it). After the claim, so a retry never
     // counts twice. Its turn runs as any other.
-    if (inbound.channel !== web.WEB) {
+    if (inbound.channel !== web.WEB && !helpJustMade) {
       try {
         const line = helpline.lineForText({ address, text: inbound.text ?? "" });
         if (line && helpline.noteContact(line, conversationId)) this.log({ inbound: inbound.externalId, help_line: line.id });
@@ -1225,6 +1227,8 @@ export class Router {
     let ev = null;
     try { ev = helpline.lineForText({ address, text: inbound.text ?? "" }); } catch { ev = null; }
     if (!ev) return null;
+    // A number this backend won't answer gets no account it can't use (review 2026-11-11).
+    if (!servesOnThisBackend(address).serves) return null;
     const out = helpline.arriveNew({ ev, channel: inbound.channel, address });
     if (!out) return null;
     if (out.busy) {
