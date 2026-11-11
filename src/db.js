@@ -13554,10 +13554,11 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
       if (prior?.state === "joined") return fail("already");
       if (prior?.state === "removed") return fail("removed");
       const now = clock.now();
-      const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ? WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
+      // The page's answers go with the payment (eventpay.startCheckout → settlePaid files them); the claim keeps no copy.
+      const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ?, answers = NULL WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
       if (won.changes !== 1) return fail("used");
       db.exec("COMMIT");
-      return { ok: true, pending_payment: true, claim: eventClaimByCode(code), event: getEventRow(ev.id), inDirectory, attendee: null, already: false, account: getAccount(conversationId), newAccount };
+      return { ok: true, pending_payment: true, claim: eventClaimByCode(code), answers: claim.answers ?? null, event: getEventRow(ev.id), inDirectory, attendee: null, already: false, account: getAccount(conversationId), newAccount };
     }
     const added = addAttendeeTx({ eventId: ev.id, conversationId, displayName: claim.display_name, instagram: claim.instagram, inDirectory, via: "web_text", newAccount });
     if (!added.ok) return fail(added.reason);

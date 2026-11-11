@@ -131,7 +131,6 @@ export function refundRefusal(c, input) {
   if (!att) return { ok: false, error: `No guest #${input.guest_id} on ${ev.name}. event_guests lists them, with what each paid.` };
   const row = eventpay.paidRow(ev.id, att.conversation_id);
   if (!row) return { ok: false, error: `${att.display_name || "That guest"} hasn't paid for ${ev.name}${att.state !== "joined" ? " (they're not on it any more)" : ""}, so there's nothing to refund.` };
-  if (row.refund_error && !input.confirmation_id) return null;
   return null;
 }
 
@@ -1085,7 +1084,7 @@ export async function runEventTool(name, input, ctx) {
     // A priced event (src/eventpay.js): the password was right, and what they get is the payment
     // link. Their spot is held 15 minutes; they are in when Stripe says so, and Reason texts them then.
     if (!out.ok && out.reason === "payment_required") {
-      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: c, displayName: out.displayName, instagram: out.instagram, inDirectory: out.inDirectory, via: out.via ?? "text", log: ctx.log ?? (() => {}) });
+      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: c, displayName: out.displayName, instagram: out.instagram, inDirectory: out.inDirectory, via: out.via ?? "text", answers: out.answers ?? null, log: ctx.log ?? (() => {}) });
       if (!pay.ok) {
         const why = {
           full: "The event is full right now: the organizer set a limit and it's reached (spots being paid for count). Say that if a spot opens up, the same password works. There is no waitlist, so never offer one.",
@@ -1470,7 +1469,10 @@ export async function runEventTool(name, input, ctx) {
       await rides.leftEvent({ runtime, ev, conversationId: att.conversation_id }).catch(() => {});
       const message = db.insertEventMessage(ev.id, "removed", removedBody(ev));
       const sent = await events.deliver({ runtime, message, conversationId: att.conversation_id, hold: ev.status === "paused" });
-      return { ok: true, removed: att.display_name, told_them: sent.state, note: "Their own Reason is untouched; only this event is gone for them, including the who's-going page." };
+      // A paid guest keeps their money unless the organizer refunds them: say so, in one line.
+      const paidRow = eventpay.paidRow(ev.id, att.conversation_id);
+      return { ok: true, removed: att.display_name, told_them: sent.state, note: "Their own Reason is untouched; only this event is gone for them, including the who's-going page."
+        + (paidRow ? ` They paid ${eventpay.dollars(paidRow.total_cents)} and were NOT refunded by this; event_refund (guest_id ${att.id}) gives it back if the organizer wants that.` : "") };
     }
 
     case "event_cover": return await coverTool(input, c, ev, ctx);

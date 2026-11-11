@@ -529,7 +529,7 @@ test("event_refund by text needs the yes, pinned to the guest and the amount; wi
   const refund = lastCall("/v1/refunds");
   assert.equal(refund.form.reverse_transfer, "true");
   assert.equal(refund.form.refund_application_fee, "true");
-  assert.equal(refund.idem, `evrefund:${eventpay.rowBySession("cs_test_1").id}`);
+  assert.equal(refund.idem, `evrefund:${eventpay.rowBySession("cs_test_1").id}:0`);
   assert.equal(db.attendeeRow(ev.id, C.ama).state, "left");
   assert.equal(eventpay.rowBySession("cs_test_1").status, "refunded");
   assert.ok(sentTo(h, AMA).some(t => /the organizer refunded your \$26\.06 for Supper Club, so you're no longer on its guest list/.test(t)), JSON.stringify(sentTo(h, AMA)));
@@ -710,4 +710,87 @@ test("what the organizer and a guest are shown: the view, the public page, and t
   const free = makeEvent(OWNER_C, { name: "Free Supper", password: "gratis" });
   assert.equal(events.publicView(free).paid_event, undefined);
   assert.equal(events.organizerView(free).tickets, undefined);
+});
+
+// ---------- the second review's blockers (2026-11-11) ----------
+
+test("answers to the organizer's questions survive a paid join: by text and from the page they ride on the payment and are filed when it lands", async () => {
+  const questions = await import("../src/eventquestions.js");
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const food = questions.addQuestion(ev, { kind: "choice", prompt: "Any dietary needs?", choices: ["Vegetarian", "Vegan", "No restrictions"], required: true }).question;
+  const plus = questions.addQuestion(ev, { kind: "text", prompt: "Your plus-one's name" }).question;
+  // By text: a required question unanswered holds the join; answered, the Checkout link comes and the answers wait on the row.
+  const held = await tool("event_join", { name: "Supper Club", password: "truffle" }, C.ama, h.runtime);
+  assert.equal(held.reason, "needs_answers");
+  const join = await tool("event_join", { name: "Supper Club", password: "truffle", answers: [{ question_id: food.question_id, choice: 2 }, { question_id: plus.question_id, text: "Kojo" }] }, C.ama, h.runtime);
+  assert.equal(join.payment_required, true, JSON.stringify(join));
+  const row = eventpay.openRow(ev.id, C.ama);
+  assert.ok(row.answers, "the answers ride on the payment row");
+  assert.equal(questions.answersByGuest(ev).size, 0, "nothing filed before the payment");
+  await completed(h, row);
+  await settle();
+  const ama = db.attendeeRow(ev.id, C.ama);
+  assert.equal(ama.state, "joined");
+  assert.deepEqual(questions.answersByGuest(ev).get(ama.id), [{ question: "Any dietary needs?", answer: "Vegan" }, { question: "Your plus-one's name", answer: "Kojo" }]);
+  assert.equal(eventpay.paymentRow(row.id).answers, null, "the row keeps no copy once filed");
+  // From the page, signed in: the form's answers go the same way.
+  const fields = { display_name: "Kofi", password: "truffle", in_directory: "1", [`q_${food.question_id}`]: "0", [`q_${plus.question_id}`]: "Abena" };
+  const page = await req(h, ev, { sub: "join", method: "POST", body: form(fields), cookie: COOKIE.kofi });
+  assert.equal(page.status, 303, JSON.stringify(page).slice(0, 300));
+  const krow = eventpay.openRow(ev.id, C.kofi);
+  assert.ok(krow?.answers, "the page's answers ride on Kofi's payment row");
+  await completed(h, krow);
+  await settle();
+  const kofi = db.attendeeRow(ev.id, C.kofi);
+  assert.deepEqual(questions.answersByGuest(ev).get(kofi.id), [{ question: "Any dietary needs?", answer: "Vegetarian" }, { question: "Your plus-one's name", answer: "Abena" }]);
+});
+
+test("a payment that lands for somebody already in buys nothing: refunded in full, said, and their spot stands", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const first = await tool("event_join", { name: "Supper Club", password: "truffle" }, C.ama, h.runtime);
+  assert.equal(first.payment_required, true);
+  const row1 = eventpay.openRow(ev.id, C.ama);
+  // The hold runs out and the page stays open on Stripe's side (the expire call failed); a second page is opened and both get paid.
+  clock.skip(16 * MIN);
+  failNext = "/v1/checkout/sessions/";
+  await eventpay.sweep({ log: () => {} });
+  assert.equal(eventpay.paymentRow(row1.id).status, "expired");
+  const second = await tool("event_join", { name: "Supper Club", password: "truffle" }, C.ama, h.runtime);
+  assert.equal(second.payment_required, true);
+  const row2 = eventpay.openRow(ev.id, C.ama);
+  assert.notEqual(row2.id, row1.id);
+  await completed(h, row2);
+  await settle();
+  assert.equal(db.attendeeRow(ev.id, C.ama).state, "joined");
+  h.channel.sent.length = 0;
+  refundsMade = 0;
+  const late = await completed(h, row1, { intent: `pi_fake_${row1.id}` });
+  assert.equal(late.status, 200);
+  await settle();
+  assert.equal(eventpay.paymentRow(row1.id).status, "refunded", "the late payment went straight back");
+  assert.equal(refundsMade, 1);
+  const rf = lastCall("/v1/refunds");
+  assert.equal(rf.form.payment_intent, `pi_fake_${row1.id}`);
+  assert.equal(rf.form.reverse_transfer, "true");
+  assert.equal(rf.form.refund_application_fee, "true");
+  assert.equal(db.attendeeRow(ev.id, C.ama).state, "joined", "their spot stands");
+  assert.equal(eventpay.paymentRow(row2.id).status, "paid", "the payment that got them in stands");
+  assert.equal(db.joinedCount(ev.id), 1);
+  const got = sentTo(h, AMA);
+  assert.ok(got.some(t => /already had you on it, so i've refunded your \$26\.06 in full/.test(t)), JSON.stringify(got));
+  // A refund retry after Stripe said no is a new request, not the replayed no.
+  const refusal = await tool("event_refund", { event_id: ev.id, guest_id: db.attendeeRow(ev.id, C.ama).id }, OWNER_C, h.runtime);
+  assert.equal(refusal.blocked, "needs_confirmation");
+  failNext = "/v1/refunds";
+  const failed = await withYes(runTool, "event_refund", { event_id: ev.id, guest_id: db.attendeeRow(ev.id, C.ama).id }, { conversationId: OWNER_C, messages: [], events: h.runtime });
+  assert.equal(failed.ok, false);
+  assert.equal(eventpay.paymentRow(row2.id).refund_attempts, 1);
+  const keys = calls.filter(c => c.path === "/v1/refunds").map(c => c.idem);
+  const retried = await withYes(runTool, "event_refund", { event_id: ev.id, guest_id: db.attendeeRow(ev.id, C.ama).id }, { conversationId: OWNER_C, messages: [], events: h.runtime });
+  assert.equal(retried.ok, true, JSON.stringify(retried));
+  const keysAfter = calls.filter(c => c.path === "/v1/refunds").map(c => c.idem);
+  assert.notEqual(keysAfter.at(-1), keys.at(-1), "a fresh idempotency key on the retry");
+  assert.equal(eventpay.paymentRow(row2.id).status, "refunded");
 });

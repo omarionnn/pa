@@ -709,7 +709,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     // A priced event (src/eventpay.js): the password was right; the spot is held and they go to
     // Stripe's page. Nobody is on the event until the webhook says the payment landed.
     if (!out.ok && out.reason === "payment_required") {
-      const pay = await eventpay.startCheckout({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", log });
+      const pay = await eventpay.startCheckout({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", answers: asked.answers, log });
       if (!pay.ok) {
         log({ event_web_pay_refused: ev.id, why: pay.reason });
         const why = { full: "This event is full right now (spots being paid for count). If a spot opens up, the same link and password will work.", removed: "The organizer took you off this event.", already: "You're already in.", no_payouts: "The organizer hasn't finished setting up payouts, so nobody can pay to join just yet.", paused: "Joining is paused right now." }[pay.reason]

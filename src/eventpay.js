@@ -68,6 +68,9 @@ db.db.exec(`
     payment_intent_id TEXT,
     refund_id TEXT,
     refund_error TEXT,
+    refund_attempts INTEGER NOT NULL DEFAULT 0,
+    -- the join page's / the text's answers to the organizer's questions (src/eventquestions.js), filed on the join
+    answers TEXT,
     -- open (a spot is held while the Checkout page is open) | expired | paid | refunded | failed
     status TEXT NOT NULL DEFAULT 'open',
     created_at INTEGER NOT NULL,
@@ -289,7 +292,7 @@ const cancelUrl = (ev) => `${events.eventUrl(ev)}/pay-back`;
  * `{ ok: false, reason }` with reason one of `not_paid`, `paused`, `cancelled`, `organizer`, `already`,
  * `removed`, `full`, `no_payouts`, `stripe` (with `error`).
  */
-export async function startCheckout({ ev, conversationId, displayName, instagram = null, inDirectory = false, via = "text", fetchImpl = globalThis.fetch, now = clock.now(), log = () => {} }) {
+export async function startCheckout({ ev, conversationId, displayName, instagram = null, inDirectory = false, via = "text", answers = null, fetchImpl = globalThis.fetch, now = clock.now(), log = () => {} }) {
   if (!priced(ev)) return { ok: false, reason: "not_paid" };
   if (ev.status !== "active") return { ok: false, reason: ev.status };
   if (ev.organizer_conversation_id === conversationId) return { ok: false, reason: "organizer" };
@@ -304,9 +307,11 @@ export async function startCheckout({ ev, conversationId, displayName, instagram
   const acct = payoutAccount(ev.organizer_conversation_id);
   if (!acct?.charges_enabled) return { ok: false, reason: "no_payouts" };
   const qt = quote(ev.price_cents);
-  const id = Number(q(`INSERT INTO event_payments (event_id, conversation_id, display_name, instagram, in_directory, via, price_cents, processing_cents, total_cents, application_fee_cents, currency, status, created_at, expires_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`)
-    .run(ev.id, conversationId, String(displayName ?? ""), instagram ?? null, inDirectory ? 1 : 0, via, qt.price, qt.processing, qt.total, qt.application_fee, ev.currency || "usd", now, now + HOLD_MS, now).lastInsertRowid);
+  // The answers ride on the row (as the claim carries them for a free join) and are filed by settlePaid.
+  const answersJson = Array.isArray(answers) ? (answers.length ? JSON.stringify(answers) : null) : (typeof answers === "string" && answers ? answers : null);
+  const id = Number(q(`INSERT INTO event_payments (event_id, conversation_id, display_name, instagram, in_directory, via, answers, price_cents, processing_cents, total_cents, application_fee_cents, currency, status, created_at, expires_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`)
+    .run(ev.id, conversationId, String(displayName ?? ""), instagram ?? null, inDirectory ? 1 : 0, via, answersJson, qt.price, qt.processing, qt.total, qt.application_fee, ev.currency || "usd", now, now + HOLD_MS, now).lastInsertRowid);
   const currency = ev.currency || "usd";
   const r = await stripe.api("POST", "/v1/checkout/sessions", {
     mode: "payment",
@@ -457,16 +462,22 @@ export async function settlePaid(row, { intentId = null, total = null }, ctx) {
     throw e;
   }
   const paid = paymentRow(row.id);
+  // Already in (a second Checkout paid after the first, or a free join before a late payment): this
+  // payment bought nothing, so it goes straight back. Their spot stands as it was.
+  if (added.ok && added.already) added = { ok: false, reason: "already" };
   if (!added.ok) {
     // Paid for a spot that is no longer there: the whole amount back, and said plainly.
-    const r = await refund({ ev, row: paid, why: added.reason, fetchImpl: ctx.fetchImpl, runtime, log, tellGuest: false });
-    const words = { full: "filled up before your payment landed", cancelled: "was cancelled", paused: "is paused right now", removed: "isn't open to you", organizer: "is your own" }[added.reason] ?? "couldn't take your join";
+    const r = await refund({ ev, row: paid, why: added.reason, fetchImpl: ctx.fetchImpl, runtime, log, tellGuest: false, leave: false });
+    const words = { full: "filled up before your payment landed", cancelled: "was cancelled", paused: "is paused right now", removed: "isn't open to you", organizer: "is your own", already: "already had you on it" }[added.reason] ?? "couldn't take your join";
     tell(ctx, row.conversation_id, r.ok
       ? `sorry — ${ev?.name ?? "the event"} ${words}, so i've refunded your ${dollars(paid.total_cents)} in full. it shows up on your card in a few days.`
       : `sorry — ${ev?.name ?? "the event"} ${words}. your ${dollars(paid.total_cents)} is being refunded; if it hasn't shown up in a few days, tell me.`);
     return { paid: true, joined: false, refunded: r.ok, reason: added.reason };
   }
   const att = events.afterJoin({ ev, att: added.attendee, typedInstagram: row.instagram });
+  // The answers they gave on the page or by text, filed now that they are in (a reworded question drops its answer).
+  if (paid.answers) { try { db.fileClaimAnswers(ev.id, att, paid.answers, row.via === "text" ? "text" : "join"); } catch (e) { log({ event_pay_answers_failed: row.id, why: (e?.message ?? String(e)).split("\n")[0] }); } }
+  q("UPDATE event_payments SET answers = NULL WHERE id = ?").run(row.id);
   const receipt = db.insertEventMessage(ev.id, "receipt", `paid ${dollars(paid.total_cents)} for ${ev.name} — you're in.`);
   await events.deliver({ runtime, message: receipt, conversationId: row.conversation_id });
   await events.sendWelcome({ runtime, ev, att });
@@ -488,31 +499,32 @@ export function refundedBody(ev, totalCents, { cancelled = false } = {}) {
  * refunded, so the guest sees one full refund. Then they are off the event and told. Idempotent on
  * the row. `{ ok: true, refund_id }` or `{ ok: false, reason, error }`.
  */
-export async function refund({ ev, row, why = "organizer", fetchImpl = globalThis.fetch, runtime = null, log = () => {}, now = clock.now(), tellGuest = true, cancelled = false }) {
+export async function refund({ ev, row, why = "organizer", fetchImpl = globalThis.fetch, runtime = null, log = () => {}, now = clock.now(), tellGuest = true, cancelled = false, leave = true }) {
   const cur = paymentRow(row.id);
   if (!cur) return { ok: false, reason: "not_found" };
   if (cur.status === "refunded") return { ok: true, refund_id: cur.refund_id, already: true };
   if (cur.status !== "paid" || !cur.payment_intent_id) return { ok: false, reason: "not_paid" };
+  // The key carries the attempt, so a retry after Stripe said no is a new request, not the replayed no.
   const r = await stripe.api("POST", "/v1/refunds", {
     payment_intent: cur.payment_intent_id, reverse_transfer: true, refund_application_fee: true,
     metadata: { reason_kind: "event_ticket", event_payment_id: String(cur.id), why: String(why).slice(0, 40) },
-  }, { fetchImpl, idempotencyKey: `evrefund:${cur.id}` });
+  }, { fetchImpl, idempotencyKey: `evrefund:${cur.id}:${cur.refund_attempts}` });
   if (!r.ok) {
     const error = r.body?.error?.message ?? `Stripe answered ${r.status}`;
-    q("UPDATE event_payments SET refund_error = ?, updated_at = ? WHERE id = ?").run(String(error).slice(0, 300), now, cur.id);
+    q("UPDATE event_payments SET refund_error = ?, refund_attempts = refund_attempts + 1, updated_at = ? WHERE id = ?").run(String(error).slice(0, 300), now, cur.id);
     log({ event_refund_failed: cur.id, why: String(error).slice(0, 160) });
     return { ok: false, reason: "stripe", error };
   }
-  await afterRefund(cur, { refundId: r.body?.id ?? null, why, tellGuest, cancelled }, { runtime, now, log });
+  await afterRefund(cur, { refundId: r.body?.id ?? null, why, tellGuest, cancelled, leave }, { runtime, now, log });
   return { ok: true, refund_id: r.body?.id ?? null };
 }
 
-/** The row goes refunded, the guest leaves the event, and is told (unless the caller says it). */
-async function afterRefund(row, { refundId = null, why = "organizer", tellGuest = true, cancelled = false }, { runtime = null, now = clock.now(), log = () => {} }) {
+/** The row goes refunded, the guest leaves the event (unless the payment never got them in: `leave` false), and is told (unless the caller says it). */
+async function afterRefund(row, { refundId = null, why = "organizer", tellGuest = true, cancelled = false, leave = true }, { runtime = null, now = clock.now(), log = () => {} }) {
   q("UPDATE event_payments SET status = 'refunded', refund_id = ?, refund_error = NULL, refunded_at = ?, updated_at = ? WHERE id = ? AND status = 'paid'").run(refundId, now, now, row.id);
   const ev = db.getEventRow(row.event_id);
   const att = ev ? db.attendeeRow(ev.id, row.conversation_id) : null;
-  if (att?.state === "joined" && att.role === "guest") {
+  if (leave && att?.state === "joined" && att.role === "guest") {
     db.leaveAttendee(att.id);
     try { const rides = await import("./eventrides.js"); await rides.leftEvent({ runtime, ev, conversationId: row.conversation_id }); } catch { /* rides are optional */ }
   }

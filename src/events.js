@@ -761,6 +761,8 @@ function requiredAnswers(ev, conversationId, answers) {
 /** The answers given with the join, filed onto the new guest (never onto somebody who was already in). */
 function withAnswers(out, answers) {
   if (out.ok && !out.already && answers?.length) questions.saveAnswers(out.event, out.attendee, answers, "text");
+  // A priced event: the answers ride on the payment (src/eventpay.js startCheckout) and are filed when it lands.
+  if (!out.ok && out.reason === "payment_required" && answers?.length) out.answers = answers;
   return out;
 }
 

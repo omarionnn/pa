@@ -1027,7 +1027,7 @@ export class Router {
     // the payment link — their words first, the link as its own message. They are in once Stripe says
     // so (eventpay.settlePaid sends the welcome then); nothing else is said now.
     if (out.pending_payment) {
-      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", log: this.log });
+      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", answers: out.answers ?? null, log: this.log });
       const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote), pay.url]
         : [{ full: "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one." }[pay.reason]
           ?? "i couldn't start the payment for that event just now. nothing was charged — open the event link again in a minute to try again."];
