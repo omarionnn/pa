@@ -49,6 +49,7 @@ import * as onboarding from "../onboarding.js";
 import * as eventonb from "../eventonboarding.js";
 import * as actioncards from "../actioncards.js";
 import * as connectafter from "../connectafter.js";
+import * as helpline from "../eventhelpline.js";
 import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
 import * as plan from "../plan.js";
@@ -208,6 +209,7 @@ export class Router {
     // #claimEvent, after the organizer's welcome. The master's yes sent "you're in".
     let arrivedNow = inbound.channel !== web.WEB && admitted.allow && admitted.created && !admitted.isOperator;
     let inviteSetupJoin = null;
+    let helpJustMade = false;
     if (!admitted.allow) {
       if (admitted.reason === "blocked") {
         this.log({ inbound: inbound.externalId, blocked: address });
@@ -230,6 +232,13 @@ export class Router {
       // can send it — and the event join is its own way in, separate from invites (src/pages/event.js).
       const joined = await this.#claimEvent(inbound, address, null);
       if (joined) return joined;
+      // Or an event's HELP LINE (src/eventhelpline.js): the public code its link wrote into their first
+      // text. An account is made for them on the spot and their text gets an ordinary turn in the help
+      // line's voice — no access queue, no first-chat onboarding, no welcome cards (arrivedNow stays false).
+      const help = await this.#helpLineArrival(inbound, address);
+      if (help?.created) helpJustMade = true;
+      if (help?.result) return help.result;
+      if (!help) {
       // A web setup started from an invite link (REASON_INVITE_START): its first text spends the
       // invite and makes the account; the hand-off below is the web welcome, "invited by" in its line.
       const setupInvite = await this.#claimSetupInvite(inbound, address);
@@ -252,6 +261,7 @@ export class Router {
         arrivedNow = inbound.channel !== web.WEB;
       } else {
         return accessResult;
+      }
       }
     }
     // Re-read after a possible auto-admit created the account.
@@ -351,6 +361,16 @@ export class Router {
     // are joined on their own account — no signup, no onboarding — and no turn runs on the code.
     const eventJoin = await this.#claimEvent(inbound, address, conversationId);
     if (eventJoin) return eventJoin;
+
+    // A text to an event's help line (src/eventhelpline.js): counted for the organizer, and the thread
+    // is on that event's help line from here (the prompt reads it). After the claim, so a retry never
+    // counts twice. Its turn runs as any other.
+    if (inbound.channel !== web.WEB && !helpJustMade) {
+      try {
+        const line = helpline.lineForText({ address, text: inbound.text ?? "" });
+        if (line && helpline.noteContact(line, conversationId)) this.log({ inbound: inbound.externalId, help_line: line.id });
+      } catch (e) { this.log({ help_line_note_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+    }
 
     // Somebody who already has a Reason texting a live invite's code — their own, or one a friend
     // sent them. It is not spent on them, and they are told so in a line rather than a turn. (The
@@ -948,14 +968,15 @@ export class Router {
     // Otherwise: if this person now has a name and hasn't gotten their card, send it.
     // Fires here rather than before the turn so the card arrives after "nice to meet you" — and only
     // after a turn that actually said something, so it never follows a failure line or silence.
-    if (reply !== null && !eventNoCard && !onboarding.active(conversationId)) void this.#offerCardIfNamed(conversationId);
+    // Not on a help-line thread (src/eventhelpline.js): the help line pitches nothing of Reason's, the contact card included.
+    if (reply !== null && !eventNoCard && !onboarding.active(conversationId) && !helpline.voiceFor(conversationId)?.voice) void this.#offerCardIfNamed(conversationId);
     // The free trial's 25th-session bubbles, after that session's reply has answered them, and the
     // hold once they have lapsed (src/plan.js). Nothing under REASON_PAYWALL=off; never throws here.
     await plan.afterTurn({ conversationId, router: this, log: this.log })
       .catch(e => this.log({ paywall_after_turn_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
     // After the first task that needed a new connection has worked: one line and a link to connect the
     // rest (src/connectafter.js, REASON_CONNECT_AFTER). Never on a failed turn or mid-checkout; once ever.
-    if (reply !== null && !onboarding.active(conversationId)) {
+    if (reply !== null && !onboarding.active(conversationId) && !helpline.voiceFor(conversationId)?.voice) {
       await connectafter.afterTurn({ conversationId, router: this, log: this.log, failed: !!this.runtime?.turnFailedSince?.(conversationId, turnStartedAt) })
         .catch(e => this.log({ connect_after_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
     }
@@ -1206,6 +1227,30 @@ export class Router {
     if (!written) this.#eventHistory(conv, inbound, said);
     else if (said.length) db.saveConversation(conv, [...db.loadConversation(conv), { role: "assistant", content: said.join("\n\n") }]);
     return { ok: true, conversationId: conv, event: out.already ? "already" : "joined", newAccount: out.newAccount, replied: true };
+  }
+
+  /**
+   * A number with no account texting a live help line's code (src/eventhelpline.js). Null when the
+   * text carries none, or the number is not one to let in this way — the caller carries on as for any
+   * stranger. `{ result }` when it is answered here (the help line is full for the hour). `{ created }`
+   * when an account was made: the caller re-reads it and runs an ordinary turn.
+   */
+  async #helpLineArrival(inbound, address) {
+    if (inbound.channel === web.WEB) return null;
+    let ev = null;
+    try { ev = helpline.lineForText({ address, text: inbound.text ?? "" }); } catch { ev = null; }
+    if (!ev) return null;
+    // A number this backend won't answer gets no account it can't use (review 2026-11-11).
+    if (!servesOnThisBackend(address).serves) return null;
+    const out = helpline.arriveNew({ ev, channel: inbound.channel, address });
+    if (!out) return null;
+    if (out.busy) {
+      this.log({ inbound: inbound.externalId, help_line_busy: ev.id });
+      if (helpline.shouldTellBusy(address)) await this.sendNow({ channel: inbound.channel, to: address, text: helpline.BUSY_LINE, chatId: inbound.chatId ?? null }).catch(() => {});
+      return { result: { ok: true, admitted: false, help_line: "busy", conversationId: null, replied: true } };
+    }
+    this.log({ inbound: inbound.externalId, help_line_new: ev.id, conversationId: out.conversationId });
+    return { created: out.created, conversationId: out.conversationId, ev };
   }
 
   /** An event join's start of history: the code text they sent, then what Reason sent back. */

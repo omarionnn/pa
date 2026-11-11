@@ -39,6 +39,7 @@ import * as eventpay from "../eventpay.js";
 import { renderManage, manageRequest, ownOrigin } from "./eventmanage.js";
 import { readPlain } from "../restfiles.js";
 import * as questions from "../eventquestions.js";
+import * as helpline from "../eventhelpline.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -103,13 +104,13 @@ export function eventActor(headers = {}, remoteAddress = "") {
  * the time, the place or anybody's name: a forwarded link shows this card to anyone. Written into the
  * served HTML because Messages runs no script.
  */
-export function headFor(ev) {
+export function headFor(ev, { line = previewLine(ev) } = {}) {
   const image = coverUrl(ev);
   return [
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,
     `<meta property="og:title" content="${esc(ev.name)}">`,
-    `<meta property="og:description" content="${esc(INVITE_LINE)}">`,
+    `<meta property="og:description" content="${esc(line)}">`,
     `<meta property="og:image" content="${esc(image)}">`,
     `<meta property="og:image:type" content="image/jpeg">`,
     `<meta property="og:image:width" content="${COVER_W}">`,
@@ -117,10 +118,50 @@ export function headFor(ev) {
     `<meta property="og:image:alt" content="${esc(ev.name)}">`,
     `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${esc(ev.name)}">`,
-    `<meta name="twitter:description" content="${esc(INVITE_LINE)}">`,
+    `<meta name="twitter:description" content="${esc(line)}">`,
     `<meta name="twitter:image" content="${esc(image)}">`,
   ].map(t => `\n${t}`).join("");
 }
+
+/**
+ * The card's one line under the name. With a ticket link (src/eventhelpline.js) it says where tickets
+ * are and, when the help line is on, that a text gets the address and updates; otherwise the fixed
+ * invitation line. Never a time, a place or anybody's name.
+ */
+export function previewLine(ev) {
+  if (ev.status === "active" && ev.ticket_url && helpline.eventAllowed(ev)) {
+    return helpline.lineOn(ev) ? "Get tickets, then text for the address and updates." : "Get tickets on the event page.";
+  }
+  return INVITE_LINE;
+}
+
+/**
+ * Under the description, for anybody the link reaches (owner request 2026-11-11): "Get tickets" (the
+ * organizer's ticket page), "Get the address and updates" (a text to the help line, already written),
+ * and that the same thread reaches the host. Each only when there is something behind it. The texts
+ * open Messages straight from here, in the shape this phone reads (helpline.smsHref).
+ */
+export function helpLineBlock(ev, { lineNumber = null, userAgent = "", v2 = true } = {}) {
+  // REASON_EVENT_HELP_LINE: nothing here unless this event's organizer passes the flag.
+  if (ev.status !== "active" || !helpline.eventAllowed(ev)) return "";
+  const ticket = ev.ticket_url || "";
+  const text = helpline.lineOn(ev) && lineNumber ? helpline.smsHref(lineNumber, helpline.firstText(ev), userAgent) : "";
+  if (!ticket && !text) return "";
+  const host = helpline.hostName(ev);
+  if (!v2) {
+    return `<div class="hl">`
+      + (ticket ? `<a class="ev-btn" href="${esc(ticket)}" rel="noopener noreferrer" target="_blank">Get tickets</a>` : "")
+      + (text ? `<a class="ev-manage" href="${esc(text)}">Get the address and updates</a>`
+        + `<div class="t"><p>Questions? <a href="${esc(text)}">Text ${esc(host === "the host" ? "the host" : host)}</a> — the same text thread reaches them.</p></div>` : "")
+      + `</div>`;
+  }
+  return `<section class="hl" aria-label="Tickets and updates">${HL_CSS}`
+    + (ticket ? `<a class="hl-btn" href="${esc(ticket)}" rel="noopener noreferrer" target="_blank">Get tickets →</a>` : "")
+    + (text ? `<a class="hl-btn hl-alt" href="${esc(text)}">Get the address and updates →</a>`
+      + `<p class="quiet">Questions? <a href="${esc(text)}">Text ${esc(host)}</a> — the same text thread reaches them.</p>` : "")
+    + `</section>`;
+}
+const HL_CSS = `<style>.hl{display:flex;flex-direction:column;gap:10px;margin:4px 0 2px}.hl-btn{display:block;text-align:center;padding:14px 16px;border-radius:12px;background:var(--ink);color:var(--g,#fff);text-decoration:none;font-weight:600;font-size:16px;min-height:48px;box-sizing:border-box}.hl-alt{background:none;color:var(--ink);border:1.5px solid var(--ink)}.hl .quiet a{color:inherit}</style>`;
 
 const p = (s) => `<p>${esc(s)}</p>`;
 /** What the organizer deliberately made public to anyone with the link — and only that. */
@@ -248,7 +289,7 @@ function paidJoinNote(ev, signedIn) {
 }
 
 /** P4 for anybody the link reaches: only what the organizer made public, then "Are you in?". */
-function renderJoinV2({ ev, account = null, error = "", values = {} }) {
+function renderJoinV2({ ev, account = null, error = "", values = {}, lineNumber = null, userAgent = "" }) {
   const facts = [
     ["When", ev.time_public && ev.starts_at != null ? timeOnly(ev) : ""],
     ["Where", ev.location_public ? ev.location : ""],
@@ -260,6 +301,7 @@ function renderJoinV2({ ev, account = null, error = "", values = {} }) {
     date: ev.time_public ? dateCard(ev) : null,
     facts,
     rsvp: { joinHtml: joinFormV2(ev, { account, error, values }), open: !!error },
+    afterDesc: helpLineBlock(ev, { lineNumber, userAgent }),
     coming: null, calendarHref: "",
     head: headFor(ev),
     url: events.eventUrl(ev),
@@ -299,8 +341,8 @@ export function calendarFile(ev, att) {
   ].join("\r\n");
 }
 
-export function renderJoin({ ev, account = null, error = "", values = {} }) {
-  if (config.pagesV2) return renderJoinV2({ ev, account, error, values });
+export function renderJoin({ ev, account = null, error = "", values = {}, lineNumber = null, userAgent = "" }) {
+  if (config.pagesV2) return renderJoinV2({ ev, account, error, values, lineNumber, userAgent });
   const signedIn = !!account;
   const field = (name, label, type = "text", extra = "") =>
     `<label for="${name}">${esc(label)}</label><input id="${name}" name="${name}" type="${type}" ${extra} value="${type === "password" ? "" : esc(values[name] ?? "")}">`;
@@ -318,7 +360,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
         + `<p><a href="${esc(signinPath(ev))}">Already use Reason? Sign in with your number</a></p></div>`)
     + (eventpay.priced(ev) ? `<div class="t">${p(paidJoinNote(ev, signedIn))}</div>` : "")
     + `<button class="ev-btn" type="submit" data-busy="${eventpay.priced(ev) && signedIn ? "Opening payment…" : "Joining…"}">${eventpay.priced(ev) ? "Join and pay" : "Join"}</button></form>`;
-  const body = intro(ev) + publicDetails(ev) + `<h2>Join</h2>` + form + foot();
+  const body = intro(ev) + helpLineBlock(ev, { lineNumber, userAgent, v2: false }) + publicDetails(ev) + `<h2>Join</h2>` + form + foot();
   return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
@@ -339,6 +381,29 @@ export function finishStep({ ev, claim, lineNumber }) {
     + p(`Not on your phone? From your phone, text ${shown} to ${prettyNumber(lineNumber)}.`)
     + p(paid ? "The code works once, for 24 hours. Nothing is charged until you pay on the Stripe page." : "The code works once, for 24 hours. If you already use Reason, it just adds the event to your account.")
     + `</div>`;
+}
+
+/**
+ * The help line's own link, the one on a ticket page or a story: it opens Messages to Reason with the
+ * first text written, by itself on a phone, and with one button if the browser held that back (an
+ * in-app browser often does). Nothing else is on it: no password, no sign-up, nothing about Reason.
+ * Its preview card is the event's.
+ */
+export const HELP_PREVIEW_LINE = "Questions, the address, updates? Text the help line.";
+export function renderTextPage({ ev, lineNumber, userAgent = "" }) {
+  const host = helpline.hostName(ev);
+  if (!lineNumber) {
+    return shell({ title: ev.name, body: `${intro(ev)}<div class="t">${p("The help line can't take texts right this minute. Try again soon.")}</div>`, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
+  }
+  const href = helpline.smsHref(lineNumber, helpline.firstText(ev), userAgent);
+  const phone = /iPhone|iPad|iPod|Android/i.test(userAgent);
+  const body = `<div class="hero"><p class="kicker">Help line</p><h1>${esc(ev.name)}</h1></div>`
+    + `<div class="t">${p(`Questions, the address, updates? Text the ${ev.name} help line${host === "the host" ? "" : `, run for ${host}`}.`)}</div>`
+    + `<a class="ev-btn" id="go" href="${esc(href)}">Open Messages</a>`
+    + `<div class="t">${p(`Or text "code ${ev.help_code}" to ${prettyNumber(lineNumber)}.`)}</div>`
+    + (ev.ticket_url ? `<a class="ev-manage" href="${esc(ev.ticket_url)}" rel="noopener noreferrer" target="_blank">Get tickets</a>` : "")
+    + (phone ? `<script>setTimeout(function(){location.href=document.getElementById("go").href},150)</script>` : "");
+  return shell({ title: `${ev.name} — help line`, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev, { line: HELP_PREVIEW_LINE }), css: CSS });
 }
 
 /** Where Stripe sends a guest after paying (/paid) or after changing their mind (/pay-back). Nothing is decided here: the webhook does the join. */
@@ -661,6 +726,13 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     return redirect(`/e/${ev.public_id}?saved=answers#answers`);
   }
 
+  // ---- the help line's link (src/eventhelpline.js): /e/{id}/text opens a text to Reason, already written ----
+  if (sub === "text") {
+    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    if (ev.status !== "active" || !helpline.lineOn(ev)) return page(404, renderNotFound());
+    return page(200, renderTextPage({ ev, lineNumber, userAgent: String(headers["user-agent"] ?? "") }));
+  }
+
   // ---- the join page ----
   if (method !== "GET" && method !== "HEAD" && !(method === "POST" && sub === "join")) {
     return page(405, renderNotFound(), { Allow: "GET, HEAD" });
@@ -684,12 +756,13 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // The organizer opening their own event's link gets their own page, never a guest's.
   if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev, query }));
   if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att, saved: query.saved === "answers" }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
-  if (method !== "POST") return page(200, renderJoin({ ev, account }));
+  const ua = String(headers["user-agent"] ?? "");
+  if (method !== "POST") return page(200, renderJoin({ ev, account, lineNumber, userAgent: ua }));
 
   const form = new URLSearchParams((await readBody()) ?? "");
   const values = { display_name: form.get("display_name") ?? "", instagram: form.get("instagram") ?? "", in_directory: form.get("in_directory") === "1" };
   for (const q of db.eventQuestions(ev.id)) if (form.get(`q_${q.id}`) != null) values[`q_${q.id}`] = String(form.get(`q_${q.id}`)).slice(0, 600);
-  const again = (status, error) => page(status, renderJoin({ ev, account, error, values }));
+  const again = (status, error) => page(status, renderJoin({ ev, account, error, values, lineNumber, userAgent: ua }));
   const actor = eventActor(headers, remoteAddress);
   const found = await events.findForJoin({ actor, link: events.eventUrl(ev), password: form.get("password") ?? "", route: "web" });
   if (!found.ok) {

@@ -133,14 +133,14 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
 
 /**
  * Has the last hour already let in `signupsPerHour` people who came in on their own? The operator and
- * anybody who came by invite or event are not counted (they never pass through here), nor a member's number
+ * anybody who came by invite, event or an event's help line (limited to that event until its password) are not counted (they never pass through here), nor a member's number
  * showing up on another channel (review 2026-11-10) — only a number's first account is a new person.
  */
 export function signupsFull(now = clock.now()) {
   const limit = Number(config.signupsPerHour) || 0;
   if (limit <= 0) return false;
   const n = db.db.prepare(`SELECT COUNT(*) AS n FROM accounts WHERE created_at >= ? AND COALESCE(is_operator, 0) = 0
-                           AND invited_by IS NULL AND joined_via_event IS NULL
+                           AND invited_by IS NULL AND joined_via_event IS NULL AND helpline_event IS NULL
                            AND (address IS NULL OR NOT EXISTS (SELECT 1 FROM accounts b WHERE (b.address = accounts.address OR b.address_bi = accounts.address_bi)
                                                                 AND b.created_at < accounts.created_at))`).get(now - 60 * 60_000)?.n ?? 0;
   return n >= limit;

@@ -67,6 +67,7 @@ import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
 import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal } from "./eventtools.js";
+import * as helpline from "./eventhelpline.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -394,6 +395,7 @@ export function toolsFor(conversationId) {
   // Crossmint on: it is the only way to buy here, so AgentCard's buying tools and flight_book go (src/shoptools.js).
   const crossmint = shopConnect.connectAllowedFor(conversationId);
   const bookingOk = flightbook.bookingEnabled(conversationId) && !crossmint;
+  const helplineLimited = helpline.limited(conversationId);
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
@@ -409,7 +411,9 @@ export function toolsFor(conversationId) {
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
-    && planToolVisible(t.name, conversationId))
+    && planToolVisible(t.name, conversationId)
+    // A help-line account not yet let into the rest of Reason (src/eventhelpline.js): its events only.
+    && (!helplineLimited || helpline.LIMITED_TOOLS.has(t.name)))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
@@ -9486,6 +9490,11 @@ async function withFoldedPhoto(ctx, pics, out) {
 async function runToolInner(name, rawInput, ctx) {
   const schema = S[name];
   if (!schema) return { error: `Unknown tool ${name}` };
+  // A help-line account not yet let into the rest of Reason (src/eventhelpline.js): its events only,
+  // whatever the model asked for — the list it is shown is half of it, this is the other half.
+  if (ctx?.conversationId && !helpline.LIMITED_TOOLS.has(name) && helpline.limited(ctx.conversationId)) {
+    return { ok: false, blocked: "help_line_only", error: "This conversation is an event's help line: only that event can be handled here. Say so kindly in one line and help with the event." };
+  }
 
   // The hard line, at the tools, and before the input is even looked at. A turn whose message the
   // harm screen did not pass as clear — a borderline read, a person in crisis, or a screen that
@@ -12155,6 +12164,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "event_ride": case "event_rides_setting": case "event_cover": case "event_detail_public":
     case "event_schedule": case "event_scheduled":
     case "event_price": case "event_payouts": case "event_refund":
+    case "event_help": case "event_help_ask": case "event_help_line": case "event_help_reply":
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- an event's photo album (src/albumtools.js) ----------

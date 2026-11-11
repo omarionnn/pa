@@ -429,7 +429,8 @@ export function renderEvent(vm) {
       + (vm.coming?.length ? `<p class="coming m"><span class="lbl">COMING · </span>${esc(vm.coming.join(", "))}</p>` : "")
       + `</section>`;
   }
-  const main = head + (desc ? desc : "") + (facts ? `<div class="evd">${facts}</div>` : "") + rsvp + (vm.after ?? "")
+  // `afterDesc`: what sits right under the description — the help line's three ways in (src/pages/event.js helpLineBlock).
+  const main = head + (desc ? desc : "") + (vm.afterDesc ?? "") + (facts ? `<div class="evd">${facts}</div>` : "") + rsvp + (vm.after ?? "")
     + (cal ? `<span class="m">${cal}</span>` : "");
   const side = vm.coming?.length
     ? `<span class="lbl d">COMING</span><p class="names d">${vm.coming.map(esc).join("<br>")}</p>`

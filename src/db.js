@@ -12849,6 +12849,39 @@ addColumnIfMissing("events", "cover_pending", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("events", "time_public", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("events", "location_public", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("events", "public_ask", "TEXT NOT NULL DEFAULT ''");
+// An event's help line (src/eventhelpline.js): its public code while on, the ticket link shown as
+// "Get tickets", the host's name as the help line says it; the account a help-line text made; who
+// texted which help line; the questions passed to the organizer and the answers sent back.
+addColumnIfMissing("events", "help_code", "TEXT");
+addColumnIfMissing("events", "ticket_url", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("events", "help_host", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("accounts", "helpline_event", "INTEGER");
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS events_help_code ON events(help_code) WHERE help_code IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS event_helpline_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    new_account INTEGER NOT NULL DEFAULT 0,
+    texts INTEGER NOT NULL DEFAULT 1,
+    first_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL,
+    UNIQUE(event_id, conversation_id)
+  );
+  CREATE INDEX IF NOT EXISTS event_helpline_contacts_conv ON event_helpline_contacts(conversation_id, last_at);
+  CREATE INDEX IF NOT EXISTS event_helpline_contacts_new ON event_helpline_contacts(new_account, first_at);
+  CREATE TABLE IF NOT EXISTS event_helpline_asks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    asked_at INTEGER NOT NULL,
+    answer TEXT,
+    answered_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS event_helpline_asks_event ON event_helpline_asks(event_id, asked_at);
+  CREATE INDEX IF NOT EXISTS event_helpline_asks_conv ON event_helpline_asks(conversation_id, asked_at);
+`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS ride_offers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13215,7 +13248,7 @@ export function allEvents({ limit = 50 } = {}) {
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
   "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled",
   "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask",
-  "remind_day_before", "remind_soon", "price_cents", "currency"]);
+  "remind_day_before", "remind_soon", "price_cents", "currency", "ticket_url", "help_host"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);

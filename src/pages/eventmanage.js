@@ -25,6 +25,8 @@ import * as albums from "../albums.js";
 import * as schedule from "../eventschedule.js";
 import * as questions from "../eventquestions.js";
 import * as eventpay from "../eventpay.js";
+import * as helpline from "../eventhelpline.js";
+import { qrSvg } from "./qr.js";
 import { madeDoc, esc } from "./made.js";
 import { sameOrigin } from "./websignin.js";
 import { renderNotFound } from "./render.js";
@@ -80,6 +82,8 @@ const CSS = `<style>
 .mg-kv{display:flex;justify-content:space-between;gap:12px;align-items:baseline;font-size:14px}
 .mg-kv .lbl{flex:none}
 .mg-copy{display:flex;gap:8px;align-items:stretch}
+.mg-qr{margin:12px 0 4px}.mg-qr svg{display:block;width:168px;height:168px;background:#fff;padding:8px;border-radius:10px}
+.mg-ask{border-top:1px dashed var(--hair);padding-top:10px;margin-top:6px}
 .mg-copy input{flex:1;min-width:0;min-height:44px;border:1.5px solid var(--hair);border-radius:10px;padding:0 10px;background:var(--lift);color:var(--ink);font:14px 'Courier New',Courier,monospace}
 .mg-secret{font:700 24px 'Courier New',Courier,monospace;letter-spacing:.06em;color:var(--pen);margin:0;overflow-wrap:anywhere}
 .mg-cover{display:block;box-sizing:border-box;width:calc(100% - 3px);max-width:420px;aspect-ratio:1200/630;object-fit:cover;background:var(--photo);border:6px solid var(--lift);box-shadow:2px 3px 0 var(--shp)}
@@ -260,7 +264,8 @@ const DONE_SECTION = { welcome: "welcome", welcome_cleared: "welcome", blast: "m
   scheduled: "schedule", sched_changed: "schedule", sched_cancelled: "schedule", reminder_on: "schedule", reminder_off: "schedule", details: "details", details_quiet: "details", nothing: "details", release: "details", removed: "guests", list_shown: "guests", list_hidden: "guests", cap_saved: "guests", nothing_cap: "guests", rides_on: "more", rides_off: "more", cover_removed: "more", cover_discarded: "more",
   question_added: "questions", question_reworded: "questions", question_removed: "questions", question_required: "questions", question_optional: "questions", question_asked: "questions", question_not_asked: "questions",
 
-  price_saved: "money", price_free: "money", refunded: "money", payouts_ready: "money", payouts_pending: "money" };
+  price_saved: "money", price_free: "money", refunded: "money", payouts_ready: "money", payouts_pending: "money",
+  help_on: "help", help_off: "help", help_ticket: "help", help_ticket_cleared: "help", help_host: "help", help_replied: "help" };
 function doneNote(q, ev) {
   const n = (k) => Math.max(0, Math.min(100000, Number.parseInt(q[k] ?? "0", 10) || 0));
   const reached = () => (n("g") ? `Reached ${n("n")} of ${n("g")}${n("f") ? `; ${n("f")} didn't go through` : ""}.` : "Nobody has joined yet, so nobody was texted.");
@@ -304,6 +309,12 @@ function doneNote(q, ev) {
     case "reminder_on": return "Reminder on.";
     case "reminder_off": return "Reminder off. Guests won't get that one.";
     // Tickets (src/eventpay.js): read off the event as it is now, never off the address.
+    case "help_on": return "The help line is on. Put the link on your ticket page and socials; it's also on your event page now.";
+    case "help_off": return "The help line is off. The old link and code stop working; turning it on again makes a new one.";
+    case "help_ticket": return "Saved. Your event page shows Get tickets.";
+    case "help_ticket_cleared": return "Ticket link removed.";
+    case "help_host": return "Saved. The help line says it's run for that name.";
+    case "help_replied": return "Sent. They got your answer in their texts.";
     case "price_saved": return ev && eventpay.priced(ev) ? `Set. ${eventpay.organizerPriceLine(ev.price_cents)} Guests who join from now on pay on a Stripe page; nobody already in is charged.` : "Saved.";
     case "price_free": return "Free to join from now on. Guests who already paid keep their spot and aren't refunded by this.";
     case "refunded": return "Refunded in full, including processing. They're off the event and were told; the money shows on their card in a few days.";
@@ -535,7 +546,9 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + `</div>`;
   const banner = (paused ? `<p class="mg-note">Reason's operator has paused this event, so joining is closed and nothing goes out to guests until it's resumed. That isn't something you can undo from here.</p>` : "")
     + (done?.text && !done.section ? noteHtml(done) : "");
-  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE GUESTS"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["questions", "QUESTIONS"], ...(money ? [["money", "TICKETS"]] : []), ["access", "SHARING"], ["more", "MORE"]]
+  // REASON_EVENT_HELP_LINE: the Help line section only for an organizer the flag reaches.
+  const helpHere = helpline.eventAllowed(ev);
+  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE GUESTS"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["questions", "QUESTIONS"], ...(money ? [["money", "TICKETS"]] : []), ["access", "SHARING"], ...(helpHere ? [["help", "HELP LINE"]] : []), ["more", "MORE"]]
     .map(([id, l]) => `<li><a href="#${id}">${l}</a></li>`).join("")}</ul>`;
 
   // 01 — the welcome
@@ -628,11 +641,15 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + form("password", "review", `<label for="new_pw">NEW PASSWORD<input id="new_pw" name="password" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" minlength="4" maxlength="${LIMITS.password}" required></label>`
       + `<div class="mg-row">${button("Change password", { cls: "mg-btn alt", busy: "Opening…" })}</div>`));
 
+  // The help line (src/eventhelpline.js): one link for the ticket page and socials, its QR, the ticket link, and who texted in.
+  const help = helpHere ? sec("help", money ? "09" : "08", "Help line", helpLineSection(ev, { drafts })) : "";
+  const moreNo = (money ? 9 : 8) + (helpHere ? 1 : 0);
+
   // 06 — the rest
   const hasPicture = cover.hasUploaded(ev);
   const pending = cover.pendingOf(ev);
   const ridesHere = rides.canEnable(ev);
-  const more = sec("more", money ? "09" : "08", "More",
+  const more = sec("more", String(moreNo).padStart(2, "0"), "More",
     `<h2 class="mg-h">The rest</h2>`
     + `<p class="lbl">THE LINK'S CARD</p>`
     + `<img class="mg-cover" src="${esc(cover.coverUrl(ev))}" alt="The picture on your event link's card">`
@@ -660,10 +677,46 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + `</div></details>`);
 
   const signOut = `<form method="POST" action="${esc(`/e/${ev.public_id}/signout`)}" style="margin:0"><button class="typed mut" type="submit">SIGN OUT OF THIS BROWSER</button></form>`;
-  const main = (hero + banner + nav + welcome + message + scheduled + details + guests + asks + tickets + access + more + signOut).split("__ACTION__").join(esc(managePath(ev)));
+  const main = (hero + banner + nav + welcome + message + scheduled + details + guests + asks + tickets + access + help + more + signOut).split("__ACTION__").join(esc(managePath(ev)));
   const side = `<span class="lbl d">AT A GLANCE</span><p class="quiet d">${esc(`${plural(going, "guest")} in. Time ${v.time_shown_to_guests ? "shared" : "hidden"}, location ${v.location_shown_to_guests ? "shared" : "hidden"}.${eventpay.priced(ev) ? ` ${eventpay.dollars(ev.price_cents)} a person, ${plural(eventpay.summary(ev).paid_count, "guest")} paid.` : ""}`)}</p>`
     + `<a class="typed d" href="${esc(link)}">${esc("THE JOIN PAGE GUESTS SEE →")}</a>`;
   return madeDoc({ title: `Your event: ${ev.name}`, kicker: "YOUR EVENT", main, side, head: CSS, script: SCRIPT, foot: "Only you, the organizer, can see this page. Guests never see it. You can also change anything by texting Reason.", url: link });
+}
+
+/**
+ * The Help line block (owner request 2026-11-11): the link that opens a text to Reason already naming
+ * the event, its QR, the code; the ticket link shown as Get tickets on the event page; the name the
+ * help line says it's run for; how many people texted in; and the questions waiting on the organizer,
+ * each answerable here.
+ */
+function helpLineSection(ev, { drafts = {} } = {}) {
+  const v = helpline.organizerHelpView(ev);
+  const ticketDraft = drafts.ticket ?? ev.ticket_url ?? "";
+  const hostDraft = drafts.host ?? ev.help_host ?? "";
+  const ticketForm = form("help_ticket", "", `<label for="help_ticket">LINK TO YOUR TICKET PAGE (POSH, EVENTBRITE…)<input id="help_ticket" name="ticket_link" type="url" inputmode="url" autocapitalize="off" spellcheck="false" maxlength="${helpline.LIMITS.ticketUrl}" placeholder="https://posh.vip/e/…" value="${esc(ticketDraft)}"></label>`
+    + `<div class="mg-row">${button("Save ticket link", { cls: "mg-btn alt", busy: "Saving…" })}${ev.ticket_url ? button("Remove it", { cls: "mg-btn quiet", name: "clear", value: "1", busy: "Removing…" }) : ""}</div>`);
+  if (!v.on) {
+    return `<h2 class="mg-h">One link for questions, the address and updates</h2>`
+      + p("Turn this on and you get a link for your ticket page and socials — \"Questions, the address, updates? Text us →\". Tapping it opens a text to Reason that already names this event. Reason answers as your event's help line: what it is, how to get tickets, and the address once they give the event password. Anything it can't answer comes to you here and by text.")
+      + p(`It says it's run for ${v.host_name}, so turning it on shows that name to anyone who texts or opens your event page. Change it below once it's on.`, "quiet")
+      + form("help_on", "", `<div class="mg-row">${button("Turn on the help line", { busy: "Turning on…" })}</div>`)
+      + `<p class="lbl">TICKET LINK</p>` + p("Selling tickets somewhere else? Add the link and your event page shows a Get tickets button.") + ticketForm;
+  }
+  const asks = v.open_questions.length
+    ? `<p class="lbl">WAITING ON YOU</p>` + v.open_questions.map(a => `<div class="mg-ask"><p class="mg-p"><b>${esc(a.who)}</b> asked: ${esc(a.question)}</p>`
+      + form("help_reply", "", `${hidden("ask_id", String(a.id))}<label for="hr_${a.id}">YOUR ANSWER<textarea id="hr_${a.id}" name="message" maxlength="${helpline.LIMITS.answer}" rows="2"></textarea></label><div class="mg-row">${button("Send answer", { cls: "mg-btn alt", busy: "Sending…" })}</div>`) + `</div>`).join("")
+    : "";
+  return `<h2 class="mg-h">${esc(plural(v.texted_in, "person", "people"))} texted in</h2>`
+    + p("Put this link on your ticket page (Posh, Eventbrite) and socials. It opens a text to Reason that already names this event; Reason answers as your event's help line and passes on what it can't answer.")
+    + `<label class="lbl" for="help_link">HELP LINE LINK</label><div class="mg-copy"><input id="help_link" type="text" readonly value="${esc(v.help_link)}"><button class="mg-btn alt" type="button" data-copy="help_link">Copy</button></div>`
+    + `<div class="mg-qr">${qrSvg(v.help_link, { label: `QR code for the ${ev.name} help line`, size: 168 })}</div>`
+    + p(`For a flyer: scan it, or text "code ${v.code}" to Reason. The first text reads: "${v.first_text}".`, "quiet")
+    + p("Put the event password in your ticket confirmation, so buyers can get the address: Reason asks for it before it shares anything you keep for guests.", "quiet")
+    + asks
+    + `<p class="lbl">TICKET LINK</p>` + ticketForm
+    + `<p class="lbl">RUN FOR</p>`
+    + form("help_host", "", `<label for="help_host">THE NAME GUESTS HEAR<input id="help_host" name="host_name" type="text" maxlength="${helpline.LIMITS.host}" placeholder="${esc(events.organizerName(ev) || "")}" value="${esc(hostDraft)}"></label><div class="mg-row">${button("Save name", { cls: "mg-btn alt", busy: "Saving…" })}</div>`)
+    + form("help_off", "", `<div class="mg-row">${button("Turn off the help line", { cls: "mg-btn quiet", busy: "Turning off…" })}</div>`);
 }
 
 /** A fingerprint of exactly who an ask would text right now, and the words it carries (the question's version). */
@@ -762,7 +815,8 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
   const again = (notice, drafts = {}) => page(200, renderManage({ ev: own, conversationId: c, notice, drafts }));
   const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", list: "guests", cap: "guests", question: "questions", question_remove: "questions", question_ask: "questions", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more",
 
-    payouts: "money", price: "money", free: "money", refund: "money", dashboard: "money" };
+    payouts: "money", price: "money", free: "money", refund: "money", dashboard: "money",
+    help_on: "help", help_off: "help", help_ticket: "help", help_host: "help", help_reply: "help" };
   // Tickets (src/eventpay.js): only where a price could be set, or already is; anybody else's post is a redirect home.
   const money = eventpay.paidEventsOn() && (eventpay.canPrice(c) || eventpay.priced(own));
   const oops = (text, drafts = {}) => again({ text, error: true, section: SECTION[action] ?? null }, drafts);
@@ -1152,6 +1206,36 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       if (!out?.ok) return oops("That didn't go through. The old password still works.");
       log({ event_manage_password: own.id });
       return page(200, renderNewPassword({ ev: own, password: pw }));
+    }
+
+    // ---- the help line (src/eventhelpline.js), through the same tools a text uses ----
+    case "help_on":
+    case "help_off": {
+      const out = await run("event_help_line", { action: action === "help_on" ? "on" : "off" });
+      if (!out?.ok) return oops("That didn't go through.");
+      return back(own, "help", { done: action });
+    }
+    case "help_ticket": {
+      const raw = f.get("clear") === "1" ? "" : String(f.get("ticket_link") ?? "");
+      const out = await run("event_help_line", { action: "ticket_link", ticket_link: raw.slice(0, 600) });
+      if (!out?.ok) return oops("That doesn't look like a web link. Paste the ticket page's link, starting with https://", { ticket: raw });
+      return back(own, "help", { done: raw.trim() ? "help_ticket" : "help_ticket_cleared" });
+    }
+    case "help_host": {
+      const raw = String(f.get("host_name") ?? "");
+      const out = await run("event_help_line", { action: "host_name", host_name: raw.slice(0, 120) });
+      if (!out?.ok) return oops("That didn't save.", { host: raw });
+      return back(own, "help", { done: "help_host" });
+    }
+    case "help_reply": {
+      const message = String(f.get("message") ?? "");
+      if (!message.trim()) return oops("Write the answer first.");
+      // REASON_EVENT_HELP_LINE: the same gate as the text tool (review 2026-11-11).
+      if (!helpline.eventAllowed(own)) return oops("The help line isn't available for this event.");
+      // This event's questions only, from this event's page.
+      const out = await helpline.replyToAsk({ runtime, organizerConversationId: c, askId: Number(f.get("ask_id")) || 0, message: message.slice(0, 1500), eventId: own.id });
+      if (!out?.ok) return oops("That question isn't on this event any more.");
+      return back(own, "help", { done: "help_replied" });
     }
 
     case "rides": {

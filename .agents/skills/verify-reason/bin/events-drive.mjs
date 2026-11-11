@@ -19,6 +19,7 @@ process.env.REASON_ONBOARDING ??= "off";
 // Paid events (src/eventpay.js): on for the `pay:` steps, against a fake Stripe on this machine. The API
 // base is forced to the fake whatever key the env carries, so nothing here can reach Stripe.
 process.env.REASON_PAID_EVENTS = "on";
+process.env.REASON_EVENT_HELP_LINE ??= "on"; // the hl: steps (src/eventhelpline.js); live starts at owner
 process.env.STRIPE_SECRET_KEY = "sk_test_drive_fake";
 process.env.STRIPE_WEBHOOK_SECRET = "whsec_drive_fake";
 const stripeCalls = [];
@@ -645,6 +646,43 @@ config.events = "owner";
   await new Promise(r => setTimeout(r, 80));
   step("pay: cancelling refunds everyone who paid, application fee included, and the guest hears it's cancelled and refunded", cancelled.ok && cancelled.refunds?.refunded === 1 && cancelled.refunds?.failed === 0 && stripeCalls.filter(c => c.path === "/v1/refunds").length === nR + 1 && eventpay.paidRows(pev.id).length === 0 && toNum(YAW).some(t => /is cancelled, so your \$26\.06 has been refunded in full/.test(t)), JSON.stringify(cancelled.refunds));
   clock.reset();
+}
+
+// ---- an event's help line (src/eventhelpline.js): one link, a brand-new number served without onboarding ----
+{
+  const helpline = await imp("src/eventhelpline.js");
+  const made = await tool("event_create", { name: "Help Line Night", description: "posh tickets, reason help line", starts_at: "2027-03-06T21:00", timezone: "America/New_York", location: "77 Dock St", password: "harbor", show_time_on_join: true, show_location_on_join: true, guest_list_visible: false }, C.owner);
+  const hev0 = db.getEventRow(made.event?.event_id);
+  const on = await tool("event_help_line", { event_id: hev0.id, action: "on" }, C.owner);
+  await tool("event_help_line", { event_id: hev0.id, action: "ticket_link", ticket_link: "posh.vip/e/help-line-night" }, C.owner);
+  const hev = db.getEventRow(hev0.id);
+  step("hl: the organizer turns the help line on and gets one link under the event's own /e/ path", on.ok && on.help_line?.help_link === `${events.eventUrl(hev)}/text` && /^[A-HJKMNP-Z2-9]{6}$/.test(hev.help_code ?? ""), on.help_line?.help_link);
+  const hweb = (o = {}) => eventRequestFor({ publicId: hev.public_id, method: "GET", query: {}, headers: { "x-files-domain": "true", "x-reason-caddy": process.env.REASON_CADDY_SECRET, "x-forwarded-for": "203.0.113.7", "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", ...(o.headers ?? {}) }, remoteAddress: "127.0.0.1", readBody: async () => null, runtime, router, ...o });
+  const tp = await hweb({ sub: "text" });
+  const first = `Hi! I'm coming to Help Line Night (code ${hev.help_code})`;
+  step("hl: /text opens Messages to the line with the first text written, iOS shape, nothing about passwords on it", tp.status === 200 && tp.body.replace(/&amp;/g, "&").replace(/&#39;/g, "'").includes(`&body=${encodeURIComponent(first)}`) && !/password/i.test(tp.body.slice(tp.body.indexOf("<body"))));
+  const pub = await hweb({});
+  step("hl: the public page shows Get tickets, Get the address and updates, Questions? Text the host; the preview mentions tickets and the text", /Get tickets( →)?</.test(pub.body) && /Get the address and updates( →)?</.test(pub.body) && /Questions\? <a/.test(pub.body) && /og:description" content="Get tickets, then text for the address and updates\."/.test(pub.body) && !/77 Dock/.test(pub.body));
+  const HNEW = "+14155550091";
+  const before = db.db.prepare("SELECT COUNT(*) AS n FROM access_requests").get().n;
+  await router.deliver({ channel: "fake", externalId: "hl-drive-1", from: HNEW, text: first, at: clock.now() });
+  await new Promise(r => setTimeout(r, 80));
+  const hacct = db.accountByAddress("fake", HNEW);
+  step("hl: a brand-new number's code text makes a help-line account — no access request, no onboarding, no card, not 'joined via event'", !!hacct && hacct.helpline_event === hev.id && hacct.joined_via_event == null && (hacct.onboarding ?? null) === null && db.db.prepare("SELECT COUNT(*) AS n FROM access_requests").get().n === before && !fake.sent.some(m => m.to === HNEW && m.mediaUrl), JSON.stringify({ he: hacct?.helpline_event, ob: hacct?.onboarding }));
+  const hc = hacct?.conversation_id;
+  const pre = await tool("event_help", {}, hc);
+  step("hl: before the password the help line has the ticket link and the host, never the address", pre.ok && /posh\.vip\/e\/help-line-night/.test(JSON.stringify(pre)) && !/77 Dock/.test(JSON.stringify(pre)));
+  const joined = await tool("event_join", { link: events.eventUrl(hev), password: "harbor", display_name: "Tolu" }, hc);
+  const post = await tool("event_help", {}, hc);
+  step("hl: with the password from the ticket confirmation they're a guest and the address is theirs", joined.ok && db.attendeeRow(hev.id, hc)?.state === "joined" && /77 Dock/.test(JSON.stringify(post)));
+  const asked = await tool("event_help_ask", { question: "can i bring my cousin?" }, hc);
+  await new Promise(r => setTimeout(r, 60));
+  const toOwner = toNum(OWNER).join("\n");
+  const reply = await tool("event_help_reply", { ask_id: asked.ask_id, message: "yes, add her name at the door" }, C.owner);
+  await new Promise(r => setTimeout(r, 60));
+  step("hl: a question goes to the organizer as '<name> asked …' (no number), the answer comes back as '<host>: …'", asked.ok && /Tolu asked on the Help Line Night help line/.test(toOwner) && !toOwner.includes(HNEW) && reply.ok && toNum(HNEW).includes("Omari: yes, add her name at the door"));
+  await tool("event_help_line", { event_id: hev.id, action: "off" }, C.owner);
+  step("hl: off — the link 404s and the old code matches nothing", (await hweb({ sub: "text" })).status === 404 && helpline.eventForCode(hev.help_code) === null);
 }
 
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);

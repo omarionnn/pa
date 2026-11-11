@@ -511,6 +511,22 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — event help line (2026-11-11, PR #488 event-help-line, not merged, no flag)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Help line". Offline: `test/event-help-line.test.js`
+14/14 (link + iOS/Android/other sms shapes, off → 404 + new code on; https-only ticket link; the public page's three
+items under the description + preview line; brand-new number via code: account `helpline_event`, no access request, no
+onboarding/cards/contact card, never `joined_via_event`; limited tools in the list AND at runTool, no address before
+the password, a guest after it; limited even with auto-admit, not counted by `signupsFull`; voice + honesty prompt;
+existing user keeps their own Reason; organizer's own text not counted; relay both ways, per-person cap, off stops
+questions, host name sanitized; guessing (5 misses), spam (busy line once/hour), declined number kept out; manage-page
+block + answer from the page). `bin/events-drive.mjs` under `caged.sh env` + temp DB: all ok, 129 steps, 8 new `hl:`
+steps. SQL ratchet baseline +11 event-level statements (code lookup, counts, organizer-checked answer) and the
+`signupsFull` statement re-keyed. Suite: 6,533 tests, 0 failing from the branch; 7 ops tests (`ops.test.js`,
+`ops-gate.test.js`, `ops-password`) fail on this Mac only because the disk is 83% full (server check → warn) — env,
+not code. **Not provable here:** a real model's wording in the help-line voice, iOS/Android Messages actually opening
+from an in-app browser (Instagram), Posh's page accepting the link.
+
 ### Baseline — paid events (Stripe Connect tickets; 2026-11-11, PR event-paid, not merged, flag off)
 
 Scoped maintain pass for [features/events.md](features/events.md) "Paid events". Offline: `test/event-paid.test.js`
