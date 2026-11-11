@@ -37,6 +37,7 @@
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
+//   GET  /web/connect-all/{token}, POST …/go/{service}   connect the rest, after the first task that needed a connection worked (src/pages/connectall.js; REASON_CONNECT_AFTER)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
 //   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY or REASON_STAMPS_ALL)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
@@ -399,6 +400,22 @@ export function createServer({ router, runtime, log = () => {} }) {
           }
         } catch (e) {
           log({ http: "/web/approve", threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
+      // Connect the rest (src/connectafter.js, REASON_CONNECT_AFTER): the one follow-up link's page.
+      const connectAllRoute = /^\/web\/connect-all\/([A-Za-z0-9_-]{20,64}(?:\/go\/[a-z]+)?)$/.exec(url.pathname);
+      if (connectAllRoute && (await import("./connectafter.js")).mode() !== "off") {
+        let out = null;
+        try {
+          const { connectAllRequest } = await import("./pages/connectall.js");
+          out = await connectAllRequest({ sub: connectAllRoute[1], method: req.method, headers: req.headers, log });
+        } catch (e) {
+          log({ http: "/web/connect-all", threw: (e?.message ?? String(e)).split("\n")[0] });
           return send(500, { ok: false, error: "server error" });
         }
         if (out) {

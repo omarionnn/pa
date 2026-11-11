@@ -236,6 +236,8 @@ const TABLES = [
   // Action Cards (src/actioncards.js): the daily notes left for them, each card on them, the titles
   // they struck out, and the per-card log of views, taps, replies and dismisses.
   "action_digests", "action_cards", "action_card_dismissed", "action_card_events",
+  // Connect the rest (src/connectafter.js): the once-ever record, the uses that proved a connection, its page links.
+  "connect_after", "connect_after_uses", "connect_after_links",
   // The engine behind them (src/actionengine.js): each day's run and what it cost, where each card
   // came from (sealed), and their standing "stop showing me X" rules.
   "action_card_days", "action_card_sources", "card_skip_rules",
@@ -311,7 +313,7 @@ export const INSTALL_WIDE = {
 // and shopping profile's handles at Crossmint.
 const SECRET_COLUMNS = {
   oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
-  shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
+  shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], connect_after_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
   pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
 };
 // What a redacted column says instead, when it is not a credential.

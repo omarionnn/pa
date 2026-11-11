@@ -47,6 +47,7 @@ import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
 import * as actioncards from "../actioncards.js";
+import * as connectafter from "../connectafter.js";
 import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
 import * as plan from "../plan.js";
@@ -706,6 +707,9 @@ export class Router {
     if (held.length > 1) this.log({ burst: conversationId, messages: held.length, spanned_ms: last.arrived_at - held[0].arrived_at });
 
     let reply;
+    // Connect the rest (src/connectafter.js): what they already had before their first turn under it is the baseline.
+    const turnStartedAt = clock.now();
+    connectafter.beforeTurn(conversationId);
     // Hoisted out of the turn so the put-back below can drop the rows this turn opened.
     let requests = [];
     // A real request somebody made mid-way through the first-chat onboarding: the turn does it, and
@@ -902,6 +906,12 @@ export class Router {
     // hold once they have lapsed (src/plan.js). Nothing under REASON_PAYWALL=off; never throws here.
     await plan.afterTurn({ conversationId, router: this, log: this.log })
       .catch(e => this.log({ paywall_after_turn_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
+    // After the first task that needed a new connection has worked: one line and a link to connect the
+    // rest (src/connectafter.js, REASON_CONNECT_AFTER). Never on a failed turn or mid-checkout; once ever.
+    if (reply !== null && !onboarding.active(conversationId)) {
+      await connectafter.afterTurn({ conversationId, router: this, log: this.log, failed: !!this.runtime?.turnFailedSince?.(conversationId, turnStartedAt) })
+        .catch(e => this.log({ connect_after_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
+    }
     return {
       ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
       messages: held.length, replied: reply !== null,

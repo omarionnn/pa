@@ -43,6 +43,7 @@ import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
 import * as ownfiles from "./ownfiles.js";
+import * as connectafter from "./connectafter.js";
 import { judgeReply } from "./judge.js";
 import { publicUrl } from "./netguard.js";
 import * as drivePdf from "./pdf.js";
@@ -9415,6 +9416,8 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
       if (moved) out.time_zone_check = moved;
     } catch {}
   }
+  // A connection that did its job (src/connectafter.js): mail read, a page on amazon opened. Never throws.
+  if (ctx?.conversationId) { try { connectafter.noteTool(ctx.conversationId, name, rawInput, out); } catch {} }
   // The task this call worked on, for the turn to write its messages down under (src/settle.js).
   if (ctx?.turnTasks) { const t = taskOfCall(name, rawInput, out); if (t) ctx.turnTasks.add(t); }
   // What this call came to, for the check in front of the reply (src/said.js): no "done" without it.

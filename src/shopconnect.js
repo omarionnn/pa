@@ -1636,8 +1636,13 @@ const wake = async (c, text, key) => { try { if (wakeFn) await wakeFn(c, text, {
 
 function setStage(runId, stage) {
   const now = clock.now();
-  q("UPDATE shop_runs SET stage = ?, stage_at = ?, updated_at = ? WHERE run_id = ? AND stage <> ?").run(stage, now, now, runId, stage);
+  const changed = q("UPDATE shop_runs SET stage = ?, stage_at = ?, updated_at = ? WHERE run_id = ? AND stage <> ?").run(stage, now, now, runId, stage).changes;
+  // A checkout that placed its order: the store sign-in and the card both worked (src/connectafter.js).
+  if (changed && stage === "placed") { try { placedHook?.(q("SELECT conversation_id, store FROM shop_runs WHERE run_id = ?").get(runId)); } catch { /* never in the way */ } }
 }
+let placedHook = null;
+/** src/connectafter.js registers here (it imports this module, so not the other way round). */
+export const onPlaced = (fn) => { placedHook = fn; };
 const toldOf = (run) => new Set(String(run?.told ?? "").split(",").filter(Boolean));
 /** Claims an event as texted. False when it already was: each is said once, across restarts too. */
 function tellOnce(runId, what) {
