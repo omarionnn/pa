@@ -65,7 +65,7 @@ import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -319,7 +319,9 @@ export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_su
   // used to live only in the tool descriptions; something the model read could talk it past that.
   "event_blast", "github_issue_create", "github_issue_comment",
   // The same words to every guest, at a time they chose (src/eventschedule.js): a blast with a clock on it.
-  "event_schedule"]);
+  "event_schedule",
+  // Money back to one guest, who then leaves the event (src/eventpay.js): the yes is pinned to the guest and the amount.
+  "event_refund"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -9238,6 +9240,7 @@ function confirmTargetFor(name, input, c = null) {
     case "event_schedule": return scheduleTarget(c, input);
     case "event_settings": return settingsTarget(c, input);
     case "event_questions": return questionsTarget(c, input);
+    case "event_refund": return refundTarget(c, input);
     case "github_issue_create": return github.issueTarget(input);
     case "github_issue_comment": return github.commentTarget(input);
     default: return null;
@@ -9559,6 +9562,12 @@ async function runToolInner(name, rawInput, ctx) {
   if (name === "event_blast") {
     if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
     const refusal = organizerRefusal(c, input, name) ?? audienceRefusal(c, input);
+    if (refusal) return refusal;
+  }
+  // And for a refund: somebody else's event, or a guest who never paid, is refused before any yes.
+  if (name === "event_refund") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = refundRefusal(c, input);
     if (refusal) return refusal;
   }
   // And for a guest-list or cap change: refused as the handler would refuse it before any yes is asked.
@@ -12053,6 +12062,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel": case "browsers_sign_out":
     case "event_ride": case "event_rides_setting": case "event_cover": case "event_detail_public":
     case "event_schedule": case "event_scheduled":
+    case "event_price": case "event_payouts": case "event_refund":
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- an event's photo album (src/albumtools.js) ----------

@@ -28,6 +28,7 @@ import * as questions from "./eventquestions.js";
 import * as accounts from "./accounts.js";
 import { boundTo, codeHost, typedCode } from "./pages/access.js";
 import { atLocal, tzFor } from "./series.js";
+import * as eventpay from "./eventpay.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
 
 // ---------- the switch ----------
@@ -205,7 +206,14 @@ export function organizerStopped(ev) {
  * whether it can be joined. Nothing about who is going, when or where.
  */
 export function publicView(ev) {
-  return { name: ev.name, description: ev.description, status: ev.status, link: eventUrl(ev) };
+  // The price is public: anyone deciding whether to come should know it before typing a password.
+  return { name: ev.name, description: ev.description, status: ev.status, link: eventUrl(ev), ...priceView(ev) };
+}
+
+/** The price as anybody may see it (src/eventpay.js), or nothing for a free event. */
+export function priceView(ev) {
+  if (!eventpay.priced(ev)) return {};
+  return { price_per_person: eventpay.dollars(ev.price_cents), price: eventpay.guestPriceLine(ev), paid_event: true };
 }
 
 /** What a joined guest may know: the released details, and nothing that is still the organizer's. */
@@ -224,8 +232,16 @@ export function guestView(ev, att) {
     ...(placeOut ? {} : { where_hidden: "the organizer hasn't shared the location yet" }),
     guest_list: ev.guest_list_visible ? "visible to guests" : "kept private by the organizer",
     ...(ev.guest_list_visible && att ? { directory_link: directoryUrl(ev, att) } : {}),
-    ...(att ? { you: { display_name: att.display_name, in_directory: !!att.in_directory, instagram: att.instagram || null, muted: !!att.muted } } : {}),
+    ...priceView(ev),
+    ...(att ? { you: { display_name: att.display_name, in_directory: !!att.in_directory, instagram: att.instagram || null, muted: !!att.muted, ...paidLine(ev, att) } } : {}),
   };
+}
+
+/** What this guest paid, when the event costs something. */
+function paidLine(ev, att) {
+  if (!eventpay.priced(ev) || !att?.conversation_id) return {};
+  const row = eventpay.paidRow(ev.id, att.conversation_id);
+  return row ? { paid: eventpay.dollars(row.total_cents) } : {};
 }
 
 /** The organizer's view: all of it, except the password, which nobody can read back. */
@@ -250,6 +266,19 @@ export function organizerView(ev) {
     guest_list_page: organizerPageUrl(ev),
     // Counts only, never who rides with whom (spec v3 §13); read off src/eventrides.js's tables.
     ...(ev.rides_enabled && (config.eventRides === true || config.eventRides === "owner") ? { rides: rideCounts(ev) } : {}),
+    // Tickets (src/eventpay.js): the price, how many paid, what it comes to; and whether payouts are set up.
+    ...(eventpay.priced(ev) ? { price_per_person: eventpay.dollars(ev.price_cents), tickets: ticketView(ev) } : {}),
+    ...(eventpay.paidEventsOn() && (eventpay.canPrice(ev.organizer_conversation_id) || eventpay.priced(ev)) ? { payouts_ready: eventpay.payoutsReady(ev.organizer_conversation_id) } : {}),
+  };
+}
+
+/** The money on one event, in words and numbers the organizer can read. */
+export function ticketView(ev) {
+  const s = eventpay.summary(ev);
+  return {
+    price_per_person: eventpay.dollars(ev.price_cents), paid: s.paid_count, gross: eventpay.dollars(s.gross_cents), you_get: eventpay.dollars(s.organizer_net_cents),
+    refunded: s.refunded_count, spots_held_for_payment: s.open_holds, ...(s.failed_refunds ? { refunds_that_failed: s.failed_refunds } : {}),
+    per_person: eventpay.organizerPriceLine(ev.price_cents),
   };
 }
 
@@ -686,6 +715,14 @@ export function admitExisting({ ev, conversationId, displayName, instagram = nul
   if (ev.status === "paused") return { ok: false, reason: "paused" };
   if (ev.status === "cancelled") return { ok: false, reason: "cancelled" };
   if (ev.organizer_conversation_id === conversationId) return { ok: false, reason: "organizer" };
+  // A priced event (src/eventpay.js): the password opens the page, but the spot is paid for first.
+  // Nobody is admitted here; the caller starts a Checkout and the webhook does the join (settlePaid).
+  if (eventpay.priced(ev) && !eventpay.paidRow(ev.id, conversationId)) {
+    const prior = db.attendeeRow(ev.id, conversationId);
+    if (prior?.state === "joined") return { ok: true, event: ev, attendee: prior, already: true };
+    if (prior?.state === "removed") return { ok: false, reason: "removed" };
+    return { ok: false, reason: "payment_required", event: ev, displayName, instagram, inDirectory, via, actor };
+  }
   const added = db.addAttendee({ eventId: ev.id, conversationId, displayName, instagram, inDirectory, via });
   if (!added.ok) return { ok: false, reason: added.reason };
   db.recordJoinAttempt({ eventId: ev.id, actor, route: via, ok: true });
@@ -1348,7 +1385,7 @@ export async function retryFailed({ runtime, ev }) {
  * went. Per-guest texts (welcomes, list notes, a removal) are left out: they were never the
  * organizer's words to everyone. Only for the event's organizer — the caller has checked `managed`.
  */
-export const ORGANIZER_MESSAGE_KINDS = new Set(["blast", "update", "release", "cancel", "scheduled", "reminder"]);
+export const ORGANIZER_MESSAGE_KINDS = new Set(["blast", "update", "release", "cancel", "scheduled", "reminder", "refund"]);
 export function sentMessages(ev, { limit = 10 } = {}) {
   const out = [];
   for (const m of db.eventMessages(ev.id, { limit: 200 })) {

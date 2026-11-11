@@ -16,6 +16,33 @@ process.env.REASON_BURST_QUIET_MS = "0";
 // The events path with the first-chat onboarding off (no model read in this drive): welcome → card →
 // the one thing to try. The onboarding path for event joiners is test/event-web.test.js + features/onboarding.md.
 process.env.REASON_ONBOARDING ??= "off";
+// Paid events (src/eventpay.js): on for the `pay:` steps, against a fake Stripe on this machine. The API
+// base is forced to the fake whatever key the env carries, so nothing here can reach Stripe.
+process.env.REASON_PAID_EVENTS = "on";
+process.env.STRIPE_SECRET_KEY = "sk_test_drive_fake";
+process.env.STRIPE_WEBHOOK_SECRET = "whsec_drive_fake";
+const stripeCalls = [];
+let stripeN = 0;
+const fakeStripe = (await import("node:http")).createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => { body += c; });
+  req.on("end", () => {
+    const form = Object.fromEntries(new URLSearchParams(body));
+    stripeCalls.push({ method: req.method, path: req.url, form });
+    res.setHeader("content-type", "application/json");
+    if (req.method === "POST" && req.url === "/v1/accounts") return res.end(JSON.stringify({ id: `acct_drive_${++stripeN}`, object: "account", type: "express", charges_enabled: false, details_submitted: false }));
+    if (req.method === "POST" && req.url === "/v1/account_links") return res.end(JSON.stringify({ object: "account_link", url: `https://connect.stripe.test/setup/${form.account}` }));
+    if (/^\/v1\/accounts\/[^/]+$/.test(req.url) && req.method === "GET") return res.end(JSON.stringify({ id: req.url.split("/").pop(), object: "account", charges_enabled: true, details_submitted: true, payouts_enabled: true }));
+    if (/^\/v1\/accounts\/[^/]+\/login_links$/.test(req.url)) return res.end(JSON.stringify({ object: "login_link", url: "https://connect.stripe.test/express/x" }));
+    if (req.method === "POST" && req.url === "/v1/checkout/sessions") return res.end(JSON.stringify({ id: `cs_drive_${++stripeN}`, object: "checkout.session", url: `https://checkout.stripe.test/c/pay/cs_drive_${stripeN}` }));
+    if (/\/expire$/.test(req.url)) return res.end(JSON.stringify({ object: "checkout.session", status: "expired" }));
+    if (req.method === "POST" && req.url === "/v1/refunds") return res.end(JSON.stringify({ id: `re_drive_${++stripeN}`, object: "refund", status: "succeeded" }));
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: { message: `no such route in the fake: ${req.method} ${req.url}` } }));
+  });
+});
+await new Promise(r => fakeStripe.listen(0, "127.0.0.1", r));
+process.env.STRIPE_API_BASE = `http://127.0.0.1:${fakeStripe.address().port}`;
 // A throwaway database only: a new file in a temp directory. Never a real one.
 {
   const { resolve, dirname } = await import("node:path");

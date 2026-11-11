@@ -113,6 +113,7 @@ import * as stamps from "./stamps.js";
 // The free trial and the subscription (REASON_PAYWALL): Stripe's webhook and the two pages it sends people back to.
 import * as plan from "./plan.js";
 import * as stripeapi from "./stripe.js";
+import * as eventpay from "./eventpay.js";
 import { config, stamp, clock } from "./config.js";
 import { readPlain } from "./restfiles.js";
 
@@ -266,7 +267,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- an event's pages ----------
       // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
       // link arriving through the files domain, which Caddy rewrites under /p.
-      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|paid|pay-back|payouts|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
       if (eventRoute) {
         const out = await eventRequestFor({
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
@@ -1303,7 +1304,11 @@ export async function parallelWebhookRequest({ rawBody, headers = {}, runtime = 
  * 200, because Stripe retries anything else for days and the row already says what happened.
  */
 export async function stripeWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {
-  const v = stripeapi.verifyWebhook({ rawBody, headers, nowMs: clock.now() });
+  let v = stripeapi.verifyWebhook({ rawBody, headers, nowMs: clock.now() });
+  // Connect events (an organizer's account.updated, src/eventpay.js) may come from a second endpoint
+  // with its own secret, STRIPE_CONNECT_WEBHOOK_SECRET; the same path takes both.
+  const connectSecret = stripeapi.env().connectWebhookSecret;
+  if (!v.ok && connectSecret) v = stripeapi.verifyWebhook({ rawBody, headers, secret: connectSecret, nowMs: clock.now() });
   if (!v.ok) {
     log({ stripe_webhook_rejected: v.why });
     return { status: 401, body: { error: `rejected: ${v.why}` } };
@@ -1312,7 +1317,8 @@ export async function stripeWebhookRequest({ rawBody, headers = {}, runtime = nu
   try { event = JSON.parse(rawBody); } catch { return { status: 400, body: { error: "bad json" } }; }
   if (!event?.id || !event?.type) return { status: 400, body: { error: "no event id or type" } };
   const say = runtime?.say ? (c, text) => runtime.say(c, text) : null;
-  const out = await plan.handleStripeEvent(event, { say, log });
+  // Tickets and organizers' accounts are src/eventpay.js's; everything else is the subscription's.
+  const out = eventpay.isOurs(event) ? await eventpay.handleStripeEvent(event, { runtime, say, log }) : await plan.handleStripeEvent(event, { say, log });
   // A 500 is the one answer that makes Stripe try again, which is what an event nothing acted on needs.
   if (out.ok === false) return { status: 500, body: { error: "not handled; try again" } };
   return { status: 200, body: { ok: true, ...(out.duplicate ? { duplicate: true } : {}), ...(out.matched === false ? { matched: false } : {}) } };

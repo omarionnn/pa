@@ -12829,6 +12829,10 @@ export function organizerListing(eventId) {
 //   ride_asks             the one day-before "are you driving or looking for a ride?" per guest.
 //   ride_blocks           a pair somebody reported: never suggested to each other again.
 addColumnIfMissing("events", "rides_enabled", "INTEGER NOT NULL DEFAULT 0");
+// Paid events (src/eventpay.js): the price per person in cents, null for a free event. Every join of
+// a priced event goes through a Checkout Session and lands from the webhook (eventpay.settlePaid).
+addColumnIfMissing("events", "price_cents", "INTEGER");
+addColumnIfMissing("events", "currency", "TEXT NOT NULL DEFAULT 'usd'");
 // The link preview card (spec §14, src/eventcover.js). The live cover is an uploaded picture the
 // organizer approved after seeing the card it makes (`cover_file`, under data/event-covers, with who
 // approved it and when); with none, the card is Reason's own drawing of the name. `cover_pending` is
@@ -13211,7 +13215,7 @@ export function allEvents({ limit = 50 } = {}) {
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
   "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled",
   "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask",
-  "remind_day_before", "remind_soon"]);
+  "remind_day_before", "remind_soon", "price_cents", "currency"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);
@@ -13542,6 +13546,19 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
     if (conversationId === ev.organizer_conversation_id) return fail("organizer");
     // Ticked while the list was private, used after it was shown: that tick was never a choice.
     const inDirectory = !!claim.in_directory && !(claim.list_shown === 0 && ev.guest_list_visible);
+    // A priced event (src/eventpay.js): the text proved the phone and made the account, and the
+    // claim is spent — but nobody is on the event until Stripe says the payment landed. The caller
+    // sends the payment link; eventpay.settlePaid does the join from the webhook.
+    if (Number(ev.price_cents ?? 0) > 0) {
+      const prior = attendeeRow(ev.id, conversationId);
+      if (prior?.state === "joined") return fail("already");
+      if (prior?.state === "removed") return fail("removed");
+      const now = clock.now();
+      const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ? WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
+      if (won.changes !== 1) return fail("used");
+      db.exec("COMMIT");
+      return { ok: true, pending_payment: true, claim: eventClaimByCode(code), event: getEventRow(ev.id), inDirectory, attendee: null, already: false, account: getAccount(conversationId), newAccount };
+    }
     const added = addAttendeeTx({ eventId: ev.id, conversationId, displayName: claim.display_name, instagram: claim.instagram, inDirectory, via: "web_text", newAccount });
     if (!added.ok) return fail(added.reason);
     const now = clock.now();

@@ -22,6 +22,7 @@ import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import * as invites from "../invites.js";
 import * as events from "../events.js";
+import * as eventpay from "../eventpay.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import * as parts from "../parts.js";
@@ -1017,11 +1018,23 @@ export class Router {
       return { ok: true, admitted: !!conversationId, event: out.reason, conversationId, replied: true };
     }
     const conv = out.account.conversation_id;
-    this.log({ inbound: inbound.externalId, event_joined: out.event.id, conversationId: conv, new_account: out.newAccount });
+    this.log({ inbound: inbound.externalId, event_joined: out.event.id, conversationId: conv, new_account: out.newAccount, pending_payment: !!out.pending_payment });
     // Written down as taken, so a retried delivery of this text stops at the duplicate check.
     if (!conversationId) db.claimInbound({ channel: inbound.channel, externalId: inbound.externalId, conversationId: conv, text: inbound.text ?? null });
     db.upsertThread({ conversationId: conv, channel: inbound.channel, address, chatId, isOwner: true, service: inbound.service ?? null, lastInboundId: inbound.baseHandle ?? inbound.externalId ?? null });
     const said = [];
+    // A priced event (src/eventpay.js): the phone is proved and the account made, and what goes back is
+    // the payment link — their words first, the link as its own message. They are in once Stripe says
+    // so (eventpay.settlePaid sends the welcome then); nothing else is said now.
+    if (out.pending_payment) {
+      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", log: this.log });
+      const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote), pay.url]
+        : [{ full: "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one." }[pay.reason]
+          ?? "i couldn't start the payment for that event just now. nothing was charged — open the event link again in a minute to try again."];
+      for (const text of lines) await this.send({ channel: inbound.channel, to: address, text, chatId, conversationId: conv, toOwner: true }).catch(() => {});
+      this.#eventHistory(conv, inbound, [pay.ok ? `[sent them the payment link for the event "${out.event.name.slice(0, 80)}"; they're not in until the payment goes through]` : lines[0]]);
+      return { ok: true, conversationId: conv, event: "payment_required", newAccount: out.newAccount, replied: true, paid_link: pay.ok };
+    }
     if (!out.already) {
       // A handle typed on the page is kept for their next events; somebody who already had Reason
       // gets the one guest-list note after the welcome (src/events.js afterJoin).
