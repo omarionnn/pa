@@ -652,7 +652,7 @@ test("the Tickets section: set up payouts (303 to Stripe), the price behind a co
   assert.match(paidPage.body, /WHO PAID/);
   assert.match(paidPage.body, /paid \$26\.06/);
   assert.match(paidPage.body, /GROSS<\/span><span>\$25</);
-  assert.match(paidPage.body, /YOU GET<\/span><span>\$24\.37</);
+  assert.match(paidPage.body, /COMING TO YOU<\/span><span><b>\$24\.37</);
   assert.match(paidPage.body, new RegExp(`name="payment" value="${row.id}"`));
   const rreview = await post(h, ev, { action: "refund", step: "review", payment: String(row.id) });
   assert.match(rreview.body, /Refund Ama \$26\.06\?/);
