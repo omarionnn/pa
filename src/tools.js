@@ -14487,6 +14487,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const threads = [];
       const seen = new Set();
       for (const a of tokens.accounts) {
+        if (a.scopes && !google.covers(a.scopes, [google.GMAIL_SCOPE])) continue; // calendar + Drive only, no mail granted (2026-11-11)
         for (const q of [`from:${person}`, `to:${person}`]) {
           const list = await google.api(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q, maxResults: 8 } });
           if (!list.ok) continue;

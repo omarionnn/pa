@@ -754,6 +754,7 @@ export async function gather({ conversationId, now = clock.now(), since = null, 
   const mailSeen = [];
 
   for (const a of live) {
+    if (a.scopes && !google.covers(a.scopes, [google.GMAIL_SCOPE])) continue; // calendar + Drive only, no mail granted (2026-11-11)
     const list = await api(a, "GET", "/gmail/v1/users/me/messages", { query: { q: unreadQuery(windowFrom), maxResults: 15 } });
     if (!list.ok) { out.failed.push({ account: a.account, what: "mail", error: list.error }); continue; }
     for (const m of list.body?.messages ?? []) {
@@ -810,6 +811,7 @@ export async function gather({ conversationId, now = clock.now(), since = null, 
 
     // Mail with a date on it. Gmail's own operators do the selecting; whether a bill due Friday is
     // worth a text today is the model's call and nobody else's.
+    if (a.scopes && !google.covers(a.scopes, [google.GMAIL_SCOPE])) continue; // calendar + Drive only, no mail granted (2026-11-11)
     const due = await api(a, "GET", "/gmail/v1/users/me/messages", { query: { q: DUE_MAIL_QUERY, maxResults: 10 } });
     if (!due.ok) { out.failed.push({ account: a.account, what: "mail_due", error: due.error }); continue; }
     for (const m of due.body?.messages ?? []) {

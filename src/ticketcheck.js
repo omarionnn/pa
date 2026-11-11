@@ -257,6 +257,7 @@ async function runWatch(w, row, { now, tell, log, gmail, read, out, placed = tru
     let read_ = 0;
     for (const a of accounts.accounts) {
       if (read_ >= READ_PER_CHECK) break;
+      if (a.scopes && !google.covers(a.scopes, [google.GMAIL_SCOPE])) continue; // calendar + Drive only, no mail granted (2026-11-11)
       const api = (method, path, opts) => (a.api ? a.api(method, path, opts) : google.api(a.token, method, path, opts));
       const list = await api("GET", "/gmail/v1/users/me/messages", { query: { q, maxResults: READ_PER_CHECK } });
       if (!list.ok) { log({ ticket_check: "search_failed", watch: w.id, error: String(list.error ?? "").slice(0, 120) }); continue; }

@@ -285,6 +285,8 @@ export function askable(need) {
 
 /** Reading a Drive file: drive.file, or an old drive.readonly grant (kept working, never asked for). */
 const DRIVE_READING = [[DRIVE_FILE_SCOPE, DRIVE_READ_SCOPE]];
+/** Organising: drive.file, or an old drive.metadata grant (kept working, never asked for). */
+const DRIVE_ORGANISING = [[DRIVE_FILE_SCOPE, DRIVE_METADATA_SCOPE]];
 
 /** Whether this grant reaches the person's WHOLE Drive (an old drive.readonly grant) or only Reason's files. */
 export function wholeDrive(granted) {
@@ -354,9 +356,9 @@ export const TOOL_SCOPES = {
   // And the three that are really new. All files.update on a file the person made themselves, which
   // drive.file cannot touch and drive.readonly cannot change: drive.metadata is the narrowest scope
   // on that method's list. missingScopeFor names it, and the refusal offers the link.
-  drive_rename: [DRIVE_FILE_SCOPE],
-  drive_move: [DRIVE_FILE_SCOPE],
-  drive_trash: [DRIVE_FILE_SCOPE],
+  drive_rename: DRIVE_ORGANISING,
+  drive_move: DRIVE_ORGANISING,
+  drive_trash: DRIVE_ORGANISING,
   // The floor only. Handing a file back always means reading it, so drive.readonly is what this
   // cannot run without; the second scope is wanted on ONE of its three routes — the copy-and-export
   // that turns a .docx into a PDF — and is checked there, against that file, so somebody whose PDF
@@ -406,7 +408,12 @@ export function notConnected(extra = {}) {
  * conversation: the cookie a Web or private-page sign-in already left, or a code texted to this
  * thread.
  */
-export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account = "" } = {}) {
+export function authorizeUrl(conversationId, { scopes = null, account = "" } = {}) {
+  // A plain connect (no scopes named) is never a top-up: with an account already on, it means ANOTHER
+  // account, and gets the chooser — even for a grant from before drive.file was on the first screen.
+  // A top-up is always a link that names what is missing (a tool's missing_scope).
+  const explicit = Array.isArray(scopes) && scopes.length > 0;
+  if (!explicit) scopes = DEFAULT_SCOPES;
   const st = googleStatus();
   if (!st.connected) return notConnected();
   // Old names still arrive (a model reading an older missing_scope, a stored link plan): the broad
@@ -427,7 +434,7 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
   // What the caller named, identity aside — the thing "is this a top-up or another account" is read off.
   const named = SCOPE_LIST.filter(s => asked.has(s) && !IDENTITY_SCOPES.includes(s));
   const held = db.listOauthTokens(conversationId, PROVIDER);
-  if (!held.length || (!String(account ?? "").trim() && held.every(r => covers(scopesOf(r), named)))) {
+  if (!held.length || (!String(account ?? "").trim() && (!explicit || held.every(r => covers(scopesOf(r), named))))) {
     for (const s of DEFAULT_SCOPES) asked.add(s);
   }
   for (const s of IDENTITY_SCOPES) asked.add(s);
@@ -460,7 +467,7 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
   //     Google documents the parameter for. With several it still needs the chooser, and the line
   //     below tells them which one to pick.
   const rows = db.listOauthTokens(conversationId, PROVIDER);
-  const toppingUp = !hint && rows.some(r => !covers(scopesOf(r), named));
+  const toppingUp = !hint && explicit && rows.some(r => !covers(scopesOf(r), named));
   const addingAnother = !hint && already.length > 0 && !toppingUp;
   const onlyOne = toppingUp && rows.length === 1 && !!rows[0].account_label;
   // The accounts on which they have already given EVERY kind of access this link asks for, taken

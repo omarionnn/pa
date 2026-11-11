@@ -145,7 +145,8 @@ test("the Google user data section says what is accessed, why, storage, retentio
   // Sign-in codes, only when asked.
   assert.match(body, /reads a sign-in code from your Gmail only when you ask it to sign you in somewhere/);
   // Why, storage, retention, disconnect and delete.
-  assert.match(body, /Only to do the thing you asked for/);
+  assert.match(body, /Only to do what you asked for/);
+  assert.match(body, /not read for any other purpose/);
   assert.match(body, /encrypted at rest/);
   assert.match(body, /No access token or refresh token ever leaves that machine/i);
   assert.match(body, /Retention\./);

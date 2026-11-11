@@ -746,3 +746,16 @@ test("a migrated connection goes on working, and a second account can be added t
   assert.deepEqual(out.labels, ["omari@example.com", "work@example.com"]);
   assert.equal(out.original_still_there, "live-refresh", "and adding one did not disturb it");
 });
+
+test("a plain connect from a pre-2026-11-11 grant (mail + broad calendar, no drive.file) still opens the chooser", async () => {
+  fake.set({ grantScopes: [google.GMAIL_SCOPE, google.LEGACY_CALENDAR_SCOPE] });
+  await connect(ME);
+  const another = await call("google_connect", {});
+  const q = new URL(providerUrl(another.url)).searchParams;
+  assert.equal(q.get("prompt"), "select_account consent", "adding an account is not a top-up");
+  assert.equal(q.has("login_hint"), false, "never hint the account they already have");
+  assert.match(another.adding_another, /chooser/);
+  // While a link NAMING what is missing is a top-up on that account.
+  const drive = await call("google_connect", { scopes: google.DRIVE_SCOPES });
+  assert.equal(new URL(providerUrl(drive.url)).searchParams.get("login_hint"), ME);
+});

@@ -137,7 +137,7 @@ const ledger = () => db.listActions(OMARI);
 
 test("every organising tool runs on drive.file now; drive.metadata is never asked for (2026-11-11)", () => {
   for (const t of ["drive_rename", "drive_move", "drive_trash", "drive_folder_create", "drive_upload", "drive_share"]) {
-    assert.deepEqual(google.TOOL_SCOPES[t], [google.DRIVE_FILE_SCOPE], `${t} must cost drive.file and nothing broader`);
+    assert.deepEqual(google.askable(google.TOOL_SCOPES[t]), [google.DRIVE_FILE_SCOPE], `${t} must cost drive.file and nothing broader`);
   }
   // Reading takes drive.file, or an old drive.readonly grant, which keeps working.
   assert.deepEqual(google.TOOL_SCOPES.drive_folders, [[google.DRIVE_FILE_SCOPE, google.DRIVE_READ_SCOPE]]);
@@ -722,4 +722,11 @@ test("a path handed to a tool call is never adopted as theirs, even when that fi
   // The same file, made by the call and not named in what it was given, is theirs.
   ownfiles.noteMade("dm:fake:+15550000009", { ok: true, path: theirs }, before, { title: "Offer" });
   assert.equal(ownfiles.ownFile("dm:fake:+15550000009", theirs).ok, true);
+});
+
+test("an old grant with drive.metadata but drive.file unticked still passes the organising check", () => {
+  for (const t of ["drive_rename", "drive_move", "drive_trash"]) {
+    assert.equal(google.missingScopeFor(t, [google.DRIVE_READ_SCOPE, google.DRIVE_METADATA_SCOPE]), null, t);
+    assert.deepEqual(google.missingScopeFor(t, [google.GMAIL_SCOPE]), [google.DRIVE_FILE_SCOPE], `${t} asks only for drive.file`);
+  }
 });
