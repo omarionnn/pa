@@ -61,6 +61,7 @@ beforeEach(() => {
   config.onboardingNumbers = [];
   config.onboardingNudgeMin = 240;
   config.publicUrl = "https://reason.example.test";
+  config.onboardingCardGapMs = 0;
   db.db.exec("DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM conversations; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM outbox; DELETE FROM timers; DELETE FROM web_setups;");
   db.upsertAccount({ conversationId: config.ownerConversation, channel: "fake", address: MASTER, name: "Omari", isOperator: true });
 });
@@ -83,7 +84,7 @@ function harness(reads = {}, channelOpts = {}) {
 }
 const text = (from, body) => ({ channel: "fake", externalId: `m${Math.random()}`, from, text: body, at: clock.now() });
 const to = (h, num) => h.channel.sent.filter(m => m.to === num);
-const show = (m) => m.media?.file ? `[picture ${m.media.filename}]` : m.media?.url ? `${m.text} [card]` : m.text;
+const show = (m) => m.carousel ? `[carousel ${m.carousel.length}]` : m.media?.file ? `[picture ${m.media.filename}]` : m.media?.url ? `${m.text} [card]` : m.text;
 const PICS = welcome.CARDS.map(c => `[picture ${c.key}.jpg]`);
 const LINES = welcome.CARDS.map(welcome.textLine);
 
@@ -297,5 +298,180 @@ test("a reply while the gallery is still held: its answer waits behind the rest,
   down = false;
   clock.skip(10 * 60_000);
   for (let i = 0; i < 15; i++) await outbox.pass({ router: h.router });
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS, ob.NAME_Q, ob.MET("Kofi"), ob.CARD_NAME_ASK]);
+});
+
+// ---------- the carousel (owner, 2026-11-11: one swipeable stack, not seven pictures down the thread) ----------
+
+/** A channel with Sendblue's carousel: `fail` decides each try's answer. */
+function withCarousel(h, fail = () => null) {
+  const tries = [];
+  h.channel.sendCarousel = async ({ to, mediaUrls }) => {
+    tries.push(mediaUrls);
+    const f = fail(tries.length);
+    if (f) return { ok: false, supported: true, ...f };
+    const delivered = { channel: "fake", to, text: "", carousel: mediaUrls, at: clock.now() };
+    h.channel.sent.push(delivered);
+    return { ok: true, supported: true, delivered };
+  };
+  return tries;
+}
+const V1 = { retryable: false, error: "Carousel messaging is only available on V2 lines" };
+
+test("carousel: the intro, ONE message carrying all seven cards in order, then the question", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  const tries = withCarousel(h);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, "[carousel 7]", ob.NAME_Q]);
+  assert.deepEqual(tries[0].map(u => u.split("/").pop()), welcome.CARDS.map(c => c.file.split("/").pop()));
+  assert.ok(tries[0].every(u => /^https:\/\/reason\.example\.test\/img\/welcome\/[0-9a-f]{8}\/\d\d-[a-z]+\.jpg$/.test(u)));
+  // Each address really serves its card.
+  const { assetRequest } = await import("../src/http.js");
+  const got = assetRequest({ pathname: new URL(tries[0][4]).pathname });
+  assert.equal(got.status, 200);
+  assert.equal(got.headers["Content-Type"], "image/jpeg");
+  assert.equal(assetRequest({ pathname: "/img/welcome/00000000/99-nope.jpg" }), null);
+  assert.equal(assetRequest({ pathname: "/img/welcome/00000000/01-calls.jpg" }), null, "an old version is not today's card");
+  assert.equal(assetRequest({ pathname: "/img/welcome/01-calls.jpg" }), null);
+  // The model's history (and Web) carry the set as words.
+  assert.match(JSON.stringify(db.loadConversation(conv(num))), /Calls: /);
+});
+
+test("carousel, web setup: the line from the page, the stack, the question", async () => {
+  const h = harness();
+  withCarousel(h);
+  const num = newNumber();
+  const s = await newSetup();
+  await h.router.deliver(text(num, ws.firstText({ user: "kofi", reasonName: "jarvis", code: s.code })));
+  assert.deepEqual(to(h, num).map(show), ["hey kofi, Jarvis here. picking up from your setup, here's what i can do for you", "[carousel 7]", welcome.HELP_FIRST]);
+});
+
+test("carousel refused (a V1 line): the seven pictures one by one in its place, then the question; nothing failed", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  withCarousel(h, () => V1);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS, ob.NAME_Q]);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE state = 'failed'").get().n, 0);
+});
+
+test("carousel refused AND a picture refused: that one card as its line, the rest in order", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  withCarousel(h, () => V1);
+  const real = h.channel.sendMedia.bind(h.channel);
+  h.channel.sendMedia = async (a) => a.filename === "food.jpg" ? { ok: false, supported: true, error: "HTTP 400" } : real(a);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  const want = [ob.INTRO, ...PICS, ob.NAME_Q];
+  want[5] = LINES[4];
+  assert.deepEqual(to(h, num).map(show), want);
+});
+
+test("carousel held on a passing failure: the sweep sends the stack later, then the question; never pictures as well", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  let down = true;
+  withCarousel(h, () => down ? { retryable: true, error: "HTTP 503" } : null);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO]);
+  down = false;
+  clock.skip(10 * 60_000);
+  for (let i = 0; i < 6; i++) await outbox.pass({ router: h.router });
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, "[carousel 7]", ob.NAME_Q]);
+});
+
+test("carousel out of tries: the pictures in its place, then the question", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  withCarousel(h, () => ({ retryable: true, error: "HTTP 503" }));
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  for (let i = 0; i < 20; i++) { clock.skip(60 * 60_000); await outbox.pass({ router: h.router }); }
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS, ob.NAME_Q]);
+});
+
+test("the process stops while the carousel is being sent: after the restart the pictures go, then the question", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  let crash = true;
+  h.channel.sendCarousel = () => crash ? new Promise(() => {}) : Promise.resolve({ ok: true });
+  const num = newNumber();
+  void h.router.deliver(text(num, "hey"));
+  for (let i = 0; i < 50 && !db.db.prepare("SELECT 1 FROM outbox WHERE state = 'sending'").get(); i++) await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO]);
+  crash = false;
+  outbox.recoverStranded({});
+  for (let i = 0; i < 12; i++) await outbox.pass({ router: h.router });
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS, ob.NAME_Q]);
+});
+
+test("a reply while the carousel is held waits behind it", async () => {
+  const h = harness({ hey: { kind: "greeting" }, kofi: { kind: "answer", name: "Kofi" } });
+  let down = true;
+  withCarousel(h, () => down ? { retryable: true, error: "HTTP 429" } : null);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  await h.router.deliver(text(num, "kofi"));
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO]);
+  down = false;
+  clock.skip(10 * 60_000);
+  for (let i = 0; i < 8; i++) await outbox.pass({ router: h.router });
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, "[carousel 7]", ob.NAME_Q, ob.MET("Kofi"), ob.CARD_NAME_ASK]);
+});
+
+test("Sendblue's carousel: one POST to /api/send-carousel with the addresses; Sendblue's V1 refusal comes back as a failure, not retried", async () => {
+  const { SendblueChannel } = await import("../src/channels/sendblue.js");
+  const saved = { sendblueKeyId: config.sendblueKeyId, sendblueSecretKey: config.sendblueSecretKey, sendblueFrom: config.sendblueFrom, sendblueWebhookSecret: config.sendblueWebhookSecret };
+  Object.assign(config, { sendblueKeyId: "k", sendblueSecretKey: "s", sendblueFrom: LINE, sendblueWebhookSecret: "w" });
+  try {
+    const calls = [];
+    let answer = { status: 200, json: { status: "QUEUED", message_handle: "h1", message_type: "carousel" } };
+    const sb = new SendblueChannel({ fetchImpl: async (url, init) => { calls.push({ url, body: JSON.parse(init.body), headers: init.headers }); return new Response(JSON.stringify(answer.json), { status: answer.status }); } });
+    const urls = ["https://f.test/img/welcome/x/01-calls.jpg", "https://f.test/img/welcome/x/02-events.jpg"];
+    const ok = await sb.sendCarousel({ to: "+14155550123", mediaUrls: urls });
+    assert.equal(ok.ok, true);
+    assert.equal(calls[0].url, "https://api.sendblue.com/api/send-carousel");
+    assert.deepEqual(calls[0].body, { number: "+14155550123", from_number: LINE, media_urls: urls });
+    assert.equal(calls[0].headers["sb-api-key-id"], "k");
+    answer = { status: 400, json: { status: "ERROR", message: "Carousel messaging is only available on V2 lines" } };
+    const no = await sb.sendCarousel({ to: "+14155550123", mediaUrls: urls });
+    assert.equal(no.ok, false);
+    assert.notEqual(no.retryable, true);
+    assert.match(no.error, /V2/);
+    const bad = await sb.sendCarousel({ to: "+14155550123", mediaUrls: ["http://f.test/a.jpg", urls[0]] });
+    assert.equal(bad.ok, false);
+    assert.equal(calls.length, 2, "an http address never reaches Sendblue");
+  } finally { Object.assign(config, saved); }
+});
+
+test("a carousel failing twice on passing errors goes as pictures, not after an hour of retries", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  const tries = withCarousel(h, () => ({ retryable: true, error: "HTTP 503" }));
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  clock.skip(5 * 60_000);
+  for (let i = 0; i < 4; i++) await outbox.pass({ router: h.router });
+  assert.equal(tries.length, outbox.CAROUSEL_TRIES);
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS, ob.NAME_Q]);
+});
+
+test("carousel turned into pictures with one held, and a reply: the answer waits behind the question, not beside it", async () => {
+  const h = harness({ hey: { kind: "greeting" }, kofi: { kind: "answer", name: "Kofi" } });
+  withCarousel(h, () => V1);
+  const real = h.channel.sendMedia.bind(h.channel);
+  let down = true;
+  h.channel.sendMedia = async (a) => down && a.filename === "food.jpg" ? { ok: false, supported: true, retryable: true, error: "HTTP 429" } : real(a);
+  let qDown = true;
+  const realSend = h.channel.send.bind(h.channel);
+  h.channel.send = async (a) => qDown && a.text === ob.NAME_Q ? { ok: false, retryable: true, error: "HTTP 503" } : realSend(a);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  await h.router.deliver(text(num, "kofi"));
+  down = false;
+  clock.skip(10 * 60_000);
+  for (let i = 0; i < 8; i++) await outbox.pass({ router: h.router });
+  assert.ok(!to(h, num).some(m => m.text === ob.CARD_NAME_ASK), "nothing of the next step before the question");
+  qDown = false;
+  clock.skip(60 * 60_000);
+  for (let i = 0; i < 8; i++) await outbox.pass({ router: h.router });
   assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS, ob.NAME_Q, ob.MET("Kofi"), ob.CARD_NAME_ASK]);
 });

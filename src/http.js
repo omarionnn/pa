@@ -59,6 +59,7 @@
 // but that the two cases cannot be told apart — until 2026-10-10 they could, because a missing
 // page answered 404 while a private one answered 401, and that sorted guessed links into real and
 // imaginary. Keep any new page route on the same footing.
+import { fileForPath as welcomeFileForPath } from "./welcome.js";
 import { createServer as nodeCreateServer } from "node:http";
 import * as zonescope from "./zonescope.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -917,6 +918,14 @@ function assetBytes(name) {
  * right after the line changes. No live line, no card — a 404 rather than a card with no number.
  */
 export function assetRequest({ pathname, router = null }) {
+  // The welcome cards (src/welcome.js), fetched by Sendblue for the carousel. Same for everybody.
+  const welcomeFile = welcomeFileForPath(pathname);
+  if (welcomeFile) {
+    let bytes = null;
+    try { bytes = readFileSync(welcomeFile); } catch { /* 404 below */ }
+    if (!bytes) return { status: 404, headers: HTML(), body: renderNotFound() };
+    return { status: 200, headers: { "Content-Type": "image/jpeg", "Content-Length": bytes.length, "Cache-Control": "public, max-age=31536000, immutable" }, body: bytes };
+  }
   const png = { "/apple-touch-icon.png": "apple-touch-icon.png", "/og.png": "og.png" }[pathname];
   if (png) {
     const bytes = assetBytes(png);

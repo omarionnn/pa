@@ -3772,7 +3772,11 @@ export function defaultMode(conversationId) {
 // ---------- the contact card (src/contact.js) ----------
 /** The newest first-chat message to this person still on its way (queued, sending or unknown), else null. */
 export function pendingOnboardingTail(conversationId) {
-  return db.prepare("SELECT id FROM outbox WHERE conversation_id = ? AND idem_key LIKE 'onboard:%' AND state IN ('queued','sending','unknown') ORDER BY id DESC LIMIT 1").get(conversationId)?.id ?? null;
+  // The end of the chain (the row nothing waits on), not the newest id: a carousel turned into its
+  // pictures has rows newer than the question that follows them.
+  return db.prepare(`SELECT o.id FROM outbox AS o WHERE o.conversation_id = ? AND o.idem_key LIKE 'onboard:%' AND o.state IN ('queued','sending','unknown')
+    AND NOT EXISTS (SELECT 1 FROM outbox AS n WHERE n.after_id = o.id AND n.conversation_id = o.conversation_id AND n.state IN ('queued','sending','unknown'))
+    ORDER BY o.id DESC LIMIT 1`).get(conversationId)?.id ?? null;
 }
 
 /** The welcome cards went to this person (src/onboarding.js), from the first chat or the web setup's hand-off. */
@@ -5052,6 +5056,36 @@ export function outboundAsText(id, text) {
   db.prepare(`UPDATE outbox SET state = 'queued', media = NULL, body = ?, attempts = 0, next_attempt_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?`)
     .run(seal2(row.conversation_id, String(text ?? "")), clock.now(), clock.now(), id, row.conversation_id);
   return getOutbound(id);
+}
+
+/**
+ * A carousel that cannot go, turned into its pictures (src/outbox.js attempt): this row becomes the
+ * first picture, a row for each of the others is chained after it, and whatever waited on this row
+ * now waits on the last of them. One transaction. Returns the rows' ids, in order.
+ */
+export function outboundCarouselToPictures(id, pictures) {
+  const conversationId = db.prepare("SELECT conversation_id FROM outbox WHERE id = ?").get(id)?.conversation_id;
+  const row = conversationId ? db.prepare("SELECT * FROM outbox WHERE id = ? AND conversation_id = ?").get(id, conversationId) : null;
+  if (!row || !pictures?.length) return [];
+  const conv = row.conversation_id;
+  const now = clock.now();
+  const ids = [id];
+  atomically(() => {
+    db.prepare(`UPDATE outbox SET state = 'queued', media = ?, body = ?, attempts = 0, next_attempt_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?`)
+      .run(JSON.stringify(pictures[0]), seal2(conv, ""), now, now, id, conv);
+    let previous = id;
+    for (const [k, p] of pictures.slice(1).entries()) {
+      const r = db.prepare(`INSERT OR IGNORE INTO outbox
+        (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, after_id, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
+        SELECT ?, conversation_id, channel, address, chat_id, ?, ?, NULL, NULL, ?, 'queued', max_attempts, ?, to_owner, ?, ? FROM outbox WHERE id = ? AND conversation_id = ?`)
+        .run(`${row.idem_key}#p${k + 2}`, seal2(conv, ""), JSON.stringify(p), previous, now, now, now, id, conv);
+      previous = r.changes ? Number(r.lastInsertRowid) : db.prepare("SELECT id FROM outbox WHERE idem_key = ? AND conversation_id = ?").get(`${row.idem_key}#p${k + 2}`, conv).id;
+      ids.push(previous);
+    }
+    db.prepare(`UPDATE outbox SET after_id = ? WHERE after_id = ? AND conversation_id = ? AND id NOT IN (${ids.map(() => "?").join(",")})`)
+      .run(previous, id, conv, ...ids);
+  });
+  return ids;
 }
 
 /** Nobody knows whether it arrived. Set only by the restart sweep. */
@@ -11274,12 +11308,12 @@ function historyFromOutbound(row) {
   // A choice card is a picture Reason drew, kept on this machine, so Web can draw it in the thread too.
   const card = /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(row.media?.file ?? ""));
   // A welcome card (src/welcome.js) is history as its words: Web cannot draw the picture, and a blank file says nothing.
-  const media = !row.media || row.media.fallbackText ? []
+  const media = !row.media || row.media.fallbackText || row.media.carousel ? []
     : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
       : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
-    externalId: row.message_id ?? null, outboxId: row.id, text: row.body || (row.media?.fallbackText ? `(picture) ${row.media.fallbackText}` : ""), media, at: row.sent_at ?? clock.now(),
+    externalId: row.message_id ?? null, outboxId: row.id, text: row.body || (row.media?.fallbackText ? `(picture) ${row.media.fallbackText}` : row.media?.historyText ?? ""), media, at: row.sent_at ?? clock.now(),
     chatId: row.chat_id ?? null, source: opsSourceOf(row.idem_key),
   });
 }

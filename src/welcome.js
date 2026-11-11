@@ -19,8 +19,10 @@
 // calls, REASON_EVENTS, timers, REASON_SHOP_CONNECT + Face ID, REASON_FOOD, pages, search). No card
 // for reading their messages or their inbox: Reason cannot read their iMessage or WhatsApp.
 import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
+import { join, dirname, basename } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { config } from "./config.js";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "welcome");
 
@@ -62,14 +64,47 @@ export function carriesFiles(router, channel) {
   return !!ch && ch.carriesFiles === true;
 }
 
+// The cards' public addresses, for the carousel: Sendblue fetches them (files.heyreason.com/img/* goes
+// straight to the app, src/http.js assetRequest). The version is the set's own hash, so a redraw
+// is a new address and no phone or cache keeps an old card.
+let version = null;
+export function setVersion() {
+  if (version) return version;
+  const h = createHash("sha256");
+  for (const c of CARDS) { try { h.update(readFileSync(c.file)); } catch { return null; } }
+  return (version = h.digest("hex").slice(0, 8));
+}
+export function cardUrls(base = config.pagesUrl || config.publicUrl) {
+  const v = setVersion();
+  if (!v || !/^https:\/\//.test(String(base ?? ""))) return null;
+  return CARDS.map(c => `${String(base).replace(/\/+$/, "")}/img/welcome/${v}/${basename(c.file)}`);
+}
+/** `/img/welcome/<version>/NN-key.jpg` → the card's file on disk, or null. */
+export function fileForPath(pathname) {
+  // Only today's set: an old version's address is a 404, never today's picture cached as the old one.
+  const m = /^\/img\/welcome\/([0-9a-f]{8})\/(\d\d-[a-z]+\.jpg)$/.exec(String(pathname ?? ""));
+  if (!m || m[1] !== setVersion()) return null;
+  return m ? CARDS.find(c => basename(c.file) === m[2])?.file ?? null : null;
+}
+
+const picture = (c) => ({ file: c.file, mimeType: "image/jpeg", filename: `${c.key}.jpg`, fallbackText: textLine(c) });
+
 /**
- * The seven as bubbles for commitStep, in order: each its own message with only the picture and its
- * line kept for a fall-back, or, when the channel cannot carry files or a picture is missing on disk,
- * the line itself.
+ * The seven as bubbles for commitStep, in order of preference (owner, 2026-11-11):
+ *   1. ONE carousel message (swipeable stack), when the channel has one and the cards have public
+ *      addresses. If it cannot go, the outbox turns it into 2. in its place.
+ *   2. Each its own picture message, its line kept for a fall-back.
+ *   3. The lines themselves (no files on this channel, or a picture missing on disk).
  */
 export function bubbles(router, channel) {
-  const files = carriesFiles(router, channel);
-  return CARDS.map(c => files && existsSync(c.file)
-    ? { text: "", media: { file: c.file, mimeType: "image/jpeg", filename: `${c.key}.jpg`, fallbackText: textLine(c) }, welcome: true }
-    : { text: textLine(c), welcome: true });
+  const ch = router?.get?.(channel);
+  const files = carriesFiles(router, channel) && CARDS.every(c => existsSync(c.file));
+  const urls = files && typeof ch?.sendCarousel === "function" ? cardUrls() : null;
+  if (urls) {
+    return [{
+      text: "", welcome: true,
+      media: { carousel: urls, pictures: CARDS.map(picture), historyText: `(pictures, one swipeable set) ${CARDS.map(textLine).join(" · ")}` },
+    }];
+  }
+  return CARDS.map(c => files ? { text: "", media: picture(c), welcome: true } : { text: textLine(c), welcome: true });
 }

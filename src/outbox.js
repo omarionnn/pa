@@ -170,6 +170,9 @@ export async function sendSequence({ channel, router, conversationId, to, parts,
  * Every exit writes the row before it returns, so there is no window where the process could stop
  * and leave a row saying something that is not true.
  */
+/** How many tries a carousel gets before its pictures go one by one instead (src/welcome.js). */
+export const CAROUSEL_TRIES = 2;
+
 export async function attempt({ id, router, log = () => {} }) {
   const claimed = db.claimOutbound(id);
   // Somebody else is already sending this one, or it is already finished. Either way, not ours.
@@ -217,9 +220,27 @@ export async function attempt({ id, router, log = () => {} }) {
     return { ok: true, outbox_id: id, delivered: r.delivered, attempts: sent.attempts };
   }
 
+  const final = r.retryable !== true || claimed.attempts >= claimed.max_attempts;
+  // A carousel gets two tries, not the outbox's five: a set held for an hour behind the intro is worse
+  // than the pictures one by one now.
+  const carouselDone = Array.isArray(claimed.media?.carousel) && claimed.attempts >= CAROUSEL_TRIES;
+  // A carousel (the welcome cards, src/welcome.js) that cannot go for good — a V1 line, a refusal, out
+  // of tries — becomes its pictures, one message each, in its place in the chain; each of those can
+  // still fall back to its own line. Sent here in order, so whoever is waiting on this row waits on all.
+  if ((final || carouselDone) && Array.isArray(claimed.media?.carousel) && claimed.media.pictures?.length) {
+    const ids = db.outboundCarouselToPictures(id, claimed.media.pictures);
+    log({ outbox: id, carousel_failed: (r.error ?? "unknown").split("\n")[0].slice(0, 200), sent_as_pictures: ids.length });
+    let last = null;
+    for (const [i, one] of ids.entries()) {
+      if (i && config.onboardingCardGapMs > 0) await new Promise(res => setTimeout(res, config.onboardingCardGapMs));
+      last = await attempt({ id: one, router, log });
+      if (!last.ok) return { ...last, ok: false };
+    }
+    return last;
+  }
+
   // A picture that carries its own words (a welcome card, src/welcome.js) and cannot go for good goes
   // as those words, on the same row, so its place in the chain holds and nothing behind it dies.
-  const final = r.retryable !== true || claimed.attempts >= claimed.max_attempts;
   const fallbackText = String(claimed.media?.fallbackText ?? "").trim();
   if (final && fallbackText) {
     db.outboundAsText(id, fallbackText);
@@ -329,6 +350,13 @@ export async function resolveUnknown({ id, router, log = () => {} }) {
   // A picture card with its own words (src/welcome.js) and no text to look it up by: the provider
   // cannot say whether it went, and failing it would take every card and question behind it down.
   // It goes as its line instead: at worst they see a card and its line, never a gallery cut short.
+  // A carousel stranded the same way: sent again as its pictures (at worst they see the set twice,
+  // never a gallery cut short and the question lost with it).
+  if (Array.isArray(row.media?.carousel) && row.media.pictures?.length) {
+    db.outboundCarouselToPictures(id, row.media.pictures);
+    log({ outbox: id, resolved: "sent_as_pictures", why: "stopped mid-send; a carousel cannot be looked up" });
+    return { ok: true, outbox_id: id, resolved: "queued" };
+  }
   const fallbackText = String(row.media?.fallbackText ?? "").trim();
   if (fallbackText && !String(row.body ?? "").trim()) {
     db.outboundAsText(id, fallbackText);
