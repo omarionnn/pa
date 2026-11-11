@@ -92,7 +92,7 @@ export function eventToolVisible(name, conversationId) {
   // one that could), and a guest of an event that has them on.
   if (EVENT_RIDE_ORGANIZER_TOOLS.has(name)) {
     if (!rides.ridesOn()) return false;
-    const owner = accounts.ownerOf(conversationId).isOperator;
+    const owner = accounts.featureOwner(conversationId);
     return db.eventsOrganizedBy(conversationId).some(rides.canEnable) || (events.canCreate(conversationId) && (config.eventRides === true || owner));
   }
   if (EVENT_RIDE_GUEST_TOOLS.has(name)) return rides.ridesOn() && db.eventsAttendedBy(conversationId).some(rides.active);

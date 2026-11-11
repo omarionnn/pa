@@ -42,7 +42,7 @@ import * as accounts from "./accounts.js";
  * the dark invites use) and exactly off for everyone else; 1/true/on/yes is everyone.
  */
 export function bookingEnabled(conversationId) {
-  if (config.flightBooking === "owner") return !!conversationId && accounts.ownerOf(conversationId).isOperator;
+  if (config.flightBooking === "owner") return accounts.featureOwner(conversationId);
   return !!config.flightBooking;
 }
 

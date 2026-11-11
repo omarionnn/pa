@@ -62,7 +62,7 @@ export const SHORT_CELL = 9;
 export function tableImagesOn(conversationId) {
   const v = String(process.env.REASON_TABLE_IMAGES ?? "").trim().toLowerCase();
   if (["1", "true", "on", "yes"].includes(v)) return true;
-  return v === "owner" && !!conversationId && accounts.ownerOf(conversationId).isOperator;
+  return v === "owner" && accounts.featureOwner(conversationId);
 }
 export function tableToolVisible(name, conversationId) {
   if (!TABLE_TOOLS.has(name)) return true;

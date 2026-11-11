@@ -104,6 +104,24 @@ export function admit({ channel, address, name = "" }) {
 }
 
 /**
+ * REASON_EARLY_ACCESS: comma-separated conversation ids (e.g. dm:sendblue:+15551234567) that get every
+ * feature whose flag says "owner", as if they were the owner. FEATURE GATING ONLY: never operator powers,
+ * ops pages, owner-routed sends, instance ownership, billing exemptions or anything else that asks
+ * `isOperator`. Read at call time; nothing announces it to the people on the list.
+ */
+export function earlyAccessIds() {
+  return String(process.env.REASON_EARLY_ACCESS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+}
+export function earlyAccess(conversationId) {
+  return !!conversationId && earlyAccessIds().includes(String(conversationId));
+}
+/** May this conversation have a feature whose flag is "owner"? The operator, or an early-access id. */
+export function featureOwner(conversationId) {
+  if (!conversationId) return false;
+  return earlyAccess(conversationId) || ownerOf(conversationId).isOperator;
+}
+
+/**
  * Whose Reason is this conversation? Used everywhere a tool needs to say "the person I work for".
  *
  * Falls back to config for the operator's own thread so that an install with one number in

@@ -63,7 +63,7 @@ const GAP_MS = Number(process.env.REASON_CHOICE_GAP_MS ?? 900);
 export function choiceCardsOn(conversationId) {
   const v = String(process.env.REASON_CHOICE_CARDS ?? "").trim().toLowerCase();
   if (["1", "true", "on", "yes"].includes(v)) return true;
-  return v === "owner" && !!conversationId && accounts.ownerOf(conversationId).isOperator;
+  return v === "owner" && accounts.featureOwner(conversationId);
 }
 
 export function choiceToolVisible(name, conversationId) {

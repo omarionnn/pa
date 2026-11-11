@@ -20,7 +20,7 @@ export { SESSION_TTL_MS, CODE_TTL_MS };
 /** May THIS conversation use the app API? Asked with the conversation the session resolved to, never one the client named. */
 export function iosAllowedFor(conversationId) {
   if (!conversationId) return false;
-  if (config.iosApi === "owner") return accounts.ownerOf(conversationId).isOperator;
+  if (config.iosApi === "owner") return accounts.featureOwner(conversationId);
   return config.iosApi === true;
 }
 

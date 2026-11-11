@@ -42,7 +42,7 @@ export function socialMode() {
 export function socialAllowedFor(conversationId) {
   const m = socialMode();
   if (m === "off") return false;
-  if (m === "owner") return !!conversationId && (conversationId === config.ownerConversation || accounts.ownerOf(conversationId).isOperator);
+  if (m === "owner") return !!conversationId && (conversationId === config.ownerConversation || accounts.featureOwner(conversationId));
   return true;
 }
 

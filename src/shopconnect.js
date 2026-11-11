@@ -58,7 +58,7 @@ export function connectMode() {
 export function connectAllowedFor(conversationId) {
   if (!conversationId) return false;
   const mode = connectMode();
-  if (mode === "owner") return accounts.ownerOf(conversationId).isOperator;
+  if (mode === "owner") return accounts.featureOwner(conversationId);
   return mode === "on";
 }
 

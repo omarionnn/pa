@@ -40,7 +40,7 @@ export function eventsOn() {
 
 /** May this conversation make an event? `owner`: the owner alone. On: anybody with a Reason. */
 export function canCreate(conversationId) {
-  if (config.events === "owner") return !!conversationId && accounts.ownerOf(conversationId).isOperator;
+  if (config.events === "owner") return accounts.featureOwner(conversationId);
   return config.events === true;
 }
 
