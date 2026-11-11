@@ -409,7 +409,18 @@ export class Router {
     // the sender is admitted and after the event id is claimed, so a retried delivery does not mark
     // the same thing read twice and nothing Reason is never going to answer is marked read at all.
     // Marking something read and then ignoring it would be worse than silence.
-    await markRead({ channel: this.get(inbound.channel), to: address, log: this.log });
+    // One timing line per inbound (11-11, "Read" felt slow): provider's sent time → our arrival →
+    // the mark-read call, its round trip and its result. No words, no number.
+    const markAt = clock.now();
+    const rr = await markRead({ channel: this.get(inbound.channel), to: address, log: this.log });
+    this.log({
+      read_receipt_timing: inbound.channel,
+      sent_to_in_ms: Number.isFinite(inbound.at) && Number.isFinite(inbound.arrivedAt) ? inbound.arrivedAt - inbound.at : null,
+      in_to_mark_ms: Number.isFinite(inbound.arrivedAt) ? markAt - inbound.arrivedAt : null,
+      mark_ms: rr?.ms ?? null,
+      result: rr?.ok ? "ok" : (rr?.skipped ?? (rr?.remembered ? "refused_for_good" : rr?.threw ? "threw" : "not_now")),
+      status: rr?.status ?? null,
+    });
 
     // Their own day's worth of turns. The operator pays for all of them, so the limit is real and
     // it is counted in the database; past it Reason says so instead of going quiet.
@@ -1545,6 +1556,8 @@ export class Router {
    * A bad signature never reaches `deliver`.
    */
   async webhook({ channel, rawBody, rawBytes, headers }) {
+    // When the delivery reached us, before anything is checked — the start of the timing line.
+    const arrivedAt = clock.now();
     const ch = this.get(channel);
     if (!ch) return { status: 404, body: { error: `no channel '${channel}'` } };
     let parsed;
@@ -1559,7 +1572,7 @@ export class Router {
     try { webhookAlert.note({ channel, status: parsed.status, error: parsed.body?.error ?? "", request: { headers, rawBody: rawBody ?? rawBytes?.toString?.("utf8") ?? "" } }); } catch { /* never blocks */ }
     const delivered = [];
     for (const inbound of parsed.inbound ?? []) {
-      delivered.push(await this.deliver({ ...inbound, channel }));
+      delivered.push(await this.deliver({ ...inbound, channel, arrivedAt }));
     }
     return { status: parsed.status, body: { ...parsed.body, delivered: delivered.length }, results: delivered };
   }
