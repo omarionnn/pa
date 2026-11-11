@@ -11,6 +11,8 @@
 import "./logmask-install.js"; // first: phone numbers out of every printed line (src/logmask.js)
 import { Runtime } from "./runtime.js";
 import { socialMode as socialSigninMode } from "./socialsignin.js";
+import { earlyAccessIds } from "./accounts.js";
+import { getAccount } from "./db.js";
 import { requireKey as requireTokenKey } from "./secretbox.js";
 import { Router } from "./channels/router.js";
 import { ConsoleChannel } from "./channels/console.js";
@@ -188,6 +190,8 @@ server.listen(config.port, config.host, () => {
   }
   // Signing in through a Google/Apple/Facebook/Microsoft account (src/socialsignin.js): said once, armed or not.
   if (socialSigninMode() !== "off") console.log(`  social sign-in: ${socialSigninMode() === "owner" ? "owner only" : "everyone"} (REASON_SOCIAL_SIGNIN)`);
+  // REASON_EARLY_ACCESS (src/accounts.js featureOwner): counts only, never the ids. "0 with an account" = a typo.
+  { const ids = earlyAccessIds(); if (ids.length) console.log(`  early access: ${ids.length} id(s), ${ids.filter(id => getAccount(id)).length} with an account (REASON_EARLY_ACCESS)`); }
   console.log(`  listening on http://${config.host}:${config.port}`);
   for (const s of router.statuses()) {
     console.log(`  ${s.name}: ${s.status}${s.missing?.length ? ` (needs ${s.missing.join(", ")})` : ""}`);
