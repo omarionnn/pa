@@ -80,7 +80,9 @@ export const EVENT_GUEST_TOOLS = new Set(["event_list", "event_lookup", "event_j
 export const EVENT_ANSWER_TOOLS = new Set(["event_answer"]);
 /** Tickets (src/eventpay.js, REASON_PAID_EVENTS): the organizer's price, payouts and refunds. */
 export const EVENT_PAID_TOOLS = new Set(["event_price", "event_payouts", "event_refund"]);
-export const EVENT_TOOLS = new Set([...EVENT_CREATE_TOOLS, ...EVENT_ORGANIZER_TOOLS, ...EVENT_GUEST_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, ...EVENT_ANSWER_TOOLS, ...EVENT_PAID_TOOLS]);
+/** A paying guest's own refund, under the event's refund policy (src/eventpay.js guestRefund). */
+export const EVENT_GUEST_PAID_TOOLS = new Set(["event_ticket_refund"]);
+export const EVENT_TOOLS = new Set([...EVENT_CREATE_TOOLS, ...EVENT_ORGANIZER_TOOLS, ...EVENT_GUEST_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, ...EVENT_ANSWER_TOOLS, ...EVENT_PAID_TOOLS, ...EVENT_GUEST_PAID_TOOLS]);
 
 /** Which of the event tools this conversation is shown. */
 export function eventToolVisible(name, conversationId) {
@@ -102,7 +104,38 @@ export function eventToolVisible(name, conversationId) {
     if (!eventpay.paidEventsOn()) return false;
     return eventpay.canPrice(conversationId) || db.eventsOrganizedBy(conversationId).some(eventpay.priced);
   }
+  // A guest's own refund: only to somebody holding a paid ticket on an event that is still on.
+  if (EVENT_GUEST_PAID_TOOLS.has(name)) return eventpay.paidEventsOn() && eventpay.holdsTicket(conversationId);
   return true;
+}
+
+/** The guest's paid ticket on the event they named, or why there isn't one. `{ ev, row }` or `{ refusal }`. */
+function guestTicket(c, input) {
+  const v = events.visible(c, input.event_id);
+  if (!v || v.role !== "guest") return { refusal: { ok: false, error: `They don't have a ticket for an event #${input.event_id}. event_list shows the events they're in.` } };
+  const which = events.whichEvent(c, input.event_id, input.event_named, { forGuest: true });
+  if (!which.ok) return { refusal: askWhich(which) };
+  const row = eventpay.paidRow(v.ev.id, c);
+  if (!row) return { refusal: { ok: false, error: `They didn't pay for ${v.ev.name}${eventpay.priced(v.ev) ? " (or it was already refunded)" : " — it's free"}, so there's nothing to refund. To drop out, that's event_leave.` } };
+  return { ev: v.ev, row };
+}
+
+/**
+ * Why a guest's own refund can't happen, or null when it can: no ticket, or the policy says no now.
+ * Run before the yes is asked (src/tools.js), so nobody is asked to confirm a refund that would be refused.
+ */
+export function ticketRefundRefusal(c, input) {
+  const t = guestTicket(c, input);
+  if (t.refusal) return t.refusal;
+  const w = eventpay.refundWindow(t.ev, t.row);
+  if (!w.allowed) return { ok: false, reason: "refund_not_allowed", policy: eventpay.refundPolicyLine(w.policy), error: `${eventpay.refusalWords(t.ev, w)} Say that kindly, in your own words; never promise the organizer will, and never ask the organizer for them.` };
+  return null;
+}
+
+/** What the guest's yes covers: their one ticket, its amount, the event (pinned to the payment row). */
+export function ticketRefundTarget(c, input) {
+  const t = guestTicket(c, input);
+  return t.refusal ? `refund my ticket for event #${input.event_id}` : eventpay.guestRefundTarget(t.ev, t.row);
 }
 
 /**
@@ -672,21 +705,30 @@ export const EVENT_TOOL_DEFS = [
   {
     name: "event_price",
     description: "Organizer only: charge guests to join their event — set a price per person (whole dollars or dollars and cents, from $5 to $500), change it, or make the event free again (free true). Guests pay on a secure Stripe page (Apple Pay works) when they join, and nobody is on the event until the payment goes through; the guest pays Stripe's processing on top, so the organizer's price is what it says. Reason keeps 2.5% of the price; the rest goes to the organizer's own Stripe account."
-      + " Before an event can have a price the organizer sets up payouts with Stripe once, from a link Reason texts them: when this returns payouts_setup with a link, send the link as its own message and say they can set the price once that's done. The result's `per_person` line says what guests pay and what they get per person — relay it. A price change applies to people joining after it; nobody already in is charged or refunded.",
+      + " Before an event can have a price the organizer sets up payouts with Stripe once, from a link Reason texts them: when this returns payouts_setup with a link, send the link as its own message and say they can set the price once that's done. The result's `per_person` line says what guests pay and what they get per person — relay it. A price change applies to people joining after it; nobody already in is charged or refunded."
+      + " Every priced event has a refund policy, shown to guests next to the price, on the Stripe page and in their receipt: no refunds, refunds until N hours or days before it starts (the default, 48 hours), or refunds anytime until it starts. If they didn't say one when pricing, leave it out (the default applies) and tell them in one line which policy guests see and that they can change it. Guests who ask get refunded automatically while the policy allows; the organizer can always refund anybody with event_refund. A looser policy reaches tickets already sold; a stricter one only new sales.",
     input_schema: {
       type: "object",
       properties: {
         event_id: EVENT_ID, event_named: EVENT_NAMED,
-        price_dollars: { type: "number", description: "The price per person in dollars, e.g. 25 or 12.50. Leave out when making it free." },
+        price_dollars: { type: "number", description: "The price per person in dollars, e.g. 25 or 12.50. Leave out when making it free, or when only the refund policy changes." },
         free: { type: "boolean", description: "true to take the price off: joining is free again from now on." },
+        refund_policy: { type: "string", enum: ["none", "until", "anytime"], description: "The refund policy guests see: none = no refunds; until = refunds until refund_hours (or refund_days) before it starts (the default, 48 hours); anytime = refunds any time until it starts. Can be passed alone to change just the policy." },
+        refund_hours: { type: "integer", description: "With refund_policy until: how many hours before the start refunds close (default 48)." },
+        refund_days: { type: "integer", description: "With refund_policy until: the same in days, when they say days." },
       },
       required: ["event_id"],
     },
   },
   {
     name: "event_payouts",
-    description: "Organizer only: their Stripe payouts for paid events. status: whether payouts are set up, and on this event how many paid, the gross and what they get. setup: the one link to set up (or finish setting up) payouts with Stripe — send it as its own message. dashboard: a one-time link into their Stripe Express dashboard (balance, payouts, their bank). Links are theirs alone: never forward one to anybody else.",
+    description: "Organizer only: their Stripe payouts and ticket sales for paid events — use status for \"how are ticket sales\", \"how much have I made\", \"when do I get paid\". status: whether payouts are set up; on this event tickets sold, the gross, refunded, Reason's 2.5% and what's coming to them; and their next payout from Stripe (all their events together). Relay `say` in plain words. setup: the one link to set up (or finish setting up) payouts with Stripe — send it as its own message. dashboard: a one-time link into their Stripe Express dashboard (balance, payouts, their bank). Links are theirs alone: never forward one to anybody else.",
     input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, action: { type: "string", enum: ["status", "setup", "dashboard"] } }, required: ["event_id", "action"] },
+  },
+  {
+    name: "event_ticket_refund",
+    description: "A guest's own refund for a paid event they joined (\"refund my ticket for X\", \"can I get my money back\"). Reason checks the event's refund policy: when it allows, the guest gets the whole amount back (price and processing), comes off the guest list and the organizer is told; when it doesn't, nothing happens and the answer says why — tell them kindly that the organizer can still choose to refund them. Needs their yes, checked in code: call first with no confirmation_id (nothing happens), tell them the amount and that they'll come off the event, then confirm_request with action event_ticket_refund and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the confirmation_id.",
+    input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this ticket." } }, required: ["event_id"] },
   },
   {
     name: "event_refund",
@@ -741,7 +783,9 @@ export const EVENT_SCHEMAS = {
   event_cancel: z.object({ event_id: id, event_named: text(500).optional(), message: text(500).optional() }),
   event_cover: z.object({ event_id: id, event_named: text(500).optional(), action: z.enum(["use_photo", "approve", "discard", "remove", "status"]), photo_id: id.optional() }),
   event_detail_public: z.object({ event_id: id, event_named: text(500).optional(), detail: z.enum(["time", "location"]), public: z.boolean().optional(), confirm: z.boolean().optional() }),
-  event_price: z.object({ event_id: id, event_named: text(500).optional(), price_dollars: z.number().min(0).max(100000).optional(), free: z.boolean().optional() }),
+  event_price: z.object({ event_id: id, event_named: text(500).optional(), price_dollars: z.number().min(0).max(100000).optional(), free: z.boolean().optional(),
+    refund_policy: z.enum(["none", "until", "anytime"]).optional(), refund_hours: z.number().int().min(1).max(1440).optional(), refund_days: z.number().int().min(1).max(60).optional() }),
+  event_ticket_refund: z.object({ event_id: id, event_named: text(500).optional(), confirmation_id: z.number().int().optional() }),
   event_payouts: z.object({ event_id: id, event_named: text(500).optional(), action: z.enum(["status", "setup", "dashboard"]) }),
   event_refund: z.object({ event_id: id, event_named: text(500).optional(), guest_id: id, confirmation_id: z.number().int().optional() }),
 };
@@ -1184,6 +1228,16 @@ export async function runEventTool(name, input, ctx) {
     }, v.ev);
   }
 
+  if (name === "event_ticket_refund") {
+    const refused = ticketRefundRefusal(c, input);
+    if (refused) return refused;
+    const t = guestTicket(c, input);
+    const r = await eventpay.guestRefund({ ev: t.ev, conversationId: c, runtime, log: ctx.log ?? (() => {}) });
+    if (!r.ok && r.reason === "stripe") return { ok: false, error: "Stripe didn't take the refund just now. Nothing changed and they're still on the event; they can try again in a few minutes." };
+    if (!r.ok) return { ok: false, error: r.window ? eventpay.refusalWords(t.ev, r.window) : "There's nothing to refund on that one." };
+    return { ok: true, refunded: eventpay.dollars(r.row.total_cents), left: t.ev.name, note: "Refunded in full (price and processing), under the event's refund policy. They're off the guest list, the organizer was told, and they got a text saying so — don't repeat it word for word; a short confirmation is enough. It shows on their card in a few days." };
+  }
+
   if (name === "event_info" || name === "event_leave" || name === "event_mute" || name === "event_directory") {
     const v = events.visible(c, input.event_id);
     if (!v) return { ok: false, error: `They aren't in an event #${input.event_id}. event_list shows the ones they are.` };
@@ -1336,12 +1390,24 @@ export async function runEventTool(name, input, ctx) {
 
     case "event_price": {
       if (!eventpay.canPrice(c) && !eventpay.priced(ev)) return NOT_AVAILABLE;
+      // The refund policy, when they named one (alone, or with the price).
+      const wantsPolicy = input.refund_policy != null || input.refund_hours != null || input.refund_days != null;
+      const pol = wantsPolicy ? eventpay.readPolicy({ policy: input.refund_policy ?? "until", hours: input.refund_hours ?? null, days: input.refund_days ?? null }) : null;
+      if (pol && !pol.ok) return { ok: false, error: pol.problem === "bad_hours" ? "Refunds can close from 1 hour to 60 days before the start; ask how long before." : "The refund policy is one of: no refunds, refunds until some hours or days before it starts, or refunds anytime until it starts." };
+      const policyNote = (r) => r.tightened && r.sold
+        ? ` The ${r.sold} guest${r.sold === 1 ? "" : "s"} who already paid keep the looser policy they bought under; this one is for new sales.`
+        : r.loosened && r.sold ? ` It reaches the ${r.sold} guest${r.sold === 1 ? "" : "s"} who already paid too.` : "";
       if (input.free) {
         if (!eventpay.priced(ev)) return { ok: true, already: true, note: "It's already free to join." };
         const r = eventpay.setPrice(ev, null, c);
         return { ok: true, free: true, event: events.organizerView(r.ev), note: `Free to join from now on. ${eventpay.summary(ev).paid_count ? "Guests who already paid keep their spot and aren't refunded by this; event_refund gives one their money back." : ""}`.trim() };
       }
       const cents = input.price_dollars == null ? null : Math.round(Number(input.price_dollars) * 100);
+      if (cents == null && pol) {
+        const r = eventpay.setRefundPolicy(ev, pol);
+        return { ok: true, refund_policy: eventpay.policyLabel(r.policy), guests_see: eventpay.refundPolicyLine(r.policy), changed: r.changed,
+          note: `${r.changed ? "Saved" : "Already the policy"}. Guests see it next to the price, on the Stripe page and in their receipt.${policyNote(r)}${eventpay.priced(ev) ? "" : " It applies once the event has a price."}` };
+      }
       if (cents == null) return { ok: false, error: "Ask what the price per person should be (from $5 to $500), or whether they want it free." };
       const problem = eventpay.priceProblem(cents);
       if (problem) return { ok: false, error: { too_low: `The lowest price is ${eventpay.dollars(eventpay.MIN_PRICE_CENTS)} per person.`, too_high: `The highest price is ${eventpay.dollars(eventpay.MAX_PRICE_CENTS)} per person for now.`, bad_price: "That didn't read as a dollar amount." }[problem] };
@@ -1356,8 +1422,13 @@ export async function runEventTool(name, input, ctx) {
       }
       const r = eventpay.setPrice(ev, cents, c);
       if (!r.ok) return { ok: false, error: "That price couldn't be saved." };
-      return { ok: true, price_per_person: eventpay.dollars(cents), per_person: eventpay.organizerPriceLine(cents), changed: r.changed, event: events.organizerView(r.ev),
-        note: `${r.changed ? "Set" : "Already that price"}. Guests now pay on a Stripe page when they join and are in once the payment goes through; nobody already in is charged.` };
+      const pr = pol ? eventpay.setRefundPolicy(r.ev, pol) : null;
+      const after = pr?.ev ?? r.ev;
+      const now = eventpay.policyOf(after);
+      return { ok: true, price_per_person: eventpay.dollars(cents), per_person: eventpay.organizerPriceLine(cents), changed: r.changed || !!pr?.changed, event: events.organizerView(after),
+        refund_policy: eventpay.policyLabel(now), guests_see: eventpay.refundPolicyLine(now),
+        note: `${r.changed ? "Set" : "Already that price"}. Guests now pay on a Stripe page when they join and are in once the payment goes through; nobody already in is charged.`
+          + ` Refund policy: ${eventpay.policyLabel(now)}${pol ? "" : " (the default; they can change it)"} — say it in one line.${pr ? policyNote(pr) : ""}` };
     }
 
     case "event_payouts": {
@@ -1375,7 +1446,10 @@ export async function runEventTool(name, input, ctx) {
         if (!link.ok) return { ok: false, error: "Stripe couldn't open their dashboard just now. They can try again in a minute." };
         return { ok: true, dashboard_link: link.url, links: LINK_ALONE, note: "A one-time link into their Stripe Express dashboard: balance, payouts, their bank. Theirs alone; send it as its own message." };
       }
-      return { ok: true, payouts_ready: !!acct?.charges_enabled, setup_started: !!acct, ...(eventpay.priced(ev) ? { tickets: events.ticketView(ev) } : { free_event: true }),
+      // Ticket sales and the next payout, the same numbers as the page's Tickets section.
+      const sold = eventpay.priced(ev) || eventpay.summary(ev).sold_count > 0;
+      const payout = acct?.charges_enabled ? await eventpay.payoutInfo(c).catch(() => null) : null;
+      return { ok: true, payouts_ready: !!acct?.charges_enabled, setup_started: !!acct, ...(sold ? { tickets: events.ticketView(ev), next_payout: eventpay.payoutLine(payout, ev.tz), say: eventpay.salesWords(ev, eventpay.summary(ev), payout) } : { free_event: true }),
         note: acct?.charges_enabled ? "Payouts are set up; money from paid joins goes to their Stripe account (Stripe pays out to their bank on its schedule)." : acct ? "They started setting up payouts but haven't finished; event_payouts setup gets a fresh link." : "Payouts aren't set up; event_payouts setup gets the link." };
     }
 

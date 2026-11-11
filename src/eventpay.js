@@ -378,6 +378,11 @@ export function paidRows(eventId) {
   return q("SELECT * FROM event_payments WHERE event_id = ? AND status = 'paid' ORDER BY paid_at, id").all(Number(eventId));
 }
 
+/** Does this conversation hold a paid ticket on an event that is still on? (Shows them event_ticket_refund.) */
+export function holdsTicket(conversationId) {
+  return !!q("SELECT 1 FROM event_payments p JOIN events e ON e.id = p.event_id WHERE p.conversation_id = ? AND p.status = 'paid' AND e.status != 'cancelled' LIMIT 1").get(String(conversationId ?? ""));
+}
+
 /** Where Stripe sends the guest after paying, or after changing their mind — both on the events domain. */
 const successUrl = (ev) => `${events.eventUrl(ev)}/paid`;
 const cancelUrl = (ev) => `${events.eventUrl(ev)}/pay-back`;
@@ -773,7 +778,7 @@ export function forgetPayoutInfo() { payoutCache.clear(); }
 
 /** A date the organizer reads: "Fri, Nov 13". */
 function dayWords(ms, tz) {
-  return new Date(ms).toLocaleDateString("en-US", { timeZone: tz || config.tz || "America/New_York", weekday: "short", month: "short", day: "numeric" });
+  return new Date(ms).toLocaleDateString("en-US", { timeZone: tz || config.installTz || "America/New_York", weekday: "short", month: "short", day: "numeric" });
 }
 
 /** The next payout in one plain line, from payoutInfo's answer. */
