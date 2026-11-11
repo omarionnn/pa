@@ -11337,6 +11337,18 @@ function historyFromOutbound(row) {
   });
 }
 
+/**
+ * The names this person's Reason keeps about other people (`people`, `important_people`), for the iPhone
+ * app's progress lines (src/progress.js): a search naming one of them is never spelled out. This
+ * conversation's only.
+ */
+export function knownNamesOf(conversationId) {
+  if (!conversationId) return [];
+  const rows = db.prepare(`SELECT name AS n FROM people WHERE conversation_id = ?
+    UNION SELECT who AS n FROM important_people WHERE conversation_id = ? LIMIT 2000`).all(conversationId, conversationId);
+  return rows.map(r => String(r.n ?? "").trim()).filter(Boolean);
+}
+
 /** The history row id of the person's message with this inbound handle, in this conversation only. */
 export function userRowIdOf(conversationId, handle) {
   if (!conversationId || handle == null || handle === "") return null;

@@ -14,6 +14,7 @@
 // In-process like the typing event it replaces: nothing is stored, a restart forgets it.
 import { EventEmitter } from "node:events";
 import { clock, config } from "./config.js";
+import * as db from "./db.js";
 
 /** `say` events: { conversationId, handle, tool, text, at } (src/ios/live.js listens). */
 export const progressEvents = new EventEmitter();
@@ -30,6 +31,28 @@ export function clean(v, max = 40) {
     .replace(/["“”`]/g, "").replace(/\s+/g, " ").trim().replace(/[.,;:!?-]+$/, "");
   if (s.length > max) s = s.slice(0, max).replace(/\s+\S*$/, "") || s.slice(0, max);
   return s.trim();
+}
+
+// A street address inside free text ("218 Halsey St", "40 west 12th street"): the words are dropped whole.
+const ADDRESS = /\b\d{1,6}\s+(?:[\w.'-]+\s+){0,4}(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|way|ct|court|pl|place|ter|terrace|pkwy|parkway|hwy|highway|sq|square|cir|circle|apt|suite)\b/i;
+const norm = (s) => String(s ?? "").toLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+
+/**
+ * True when free text names someone this person's Reason knows (`names`: the names it keeps, src/db.js
+ * `people`), whole or by a first name of three letters or more, or holds a street address.
+ */
+export function namesSomeone(text, names = []) {
+  const t = ` ${norm(text)} `;
+  if (!t.trim()) return false;
+  if (ADDRESS.test(String(text))) return true;
+  for (const n of names) {
+    const k = norm(n);
+    if (!k) continue;
+    if (t.includes(` ${k} `)) return true;
+    const first = k.split(" ")[0];
+    if (first.length >= 3 && t.includes(` ${first} `)) return true;
+  }
+  return false;
 }
 
 /** "https://www.ulta.com/p/x" or "ulta.com" → "Ulta"; null when it isn't a site. */
@@ -106,7 +129,7 @@ export function phraseFor(name, input = {}, opts = {}) {
     const p = phrase(String(name ?? ""), input && typeof input === "object" ? input : {}, opts);
     if (!p) return null;
     const line = p.replace(/\s+/g, " ").trim();
-    return line.length > MAX ? `${line.slice(0, MAX - 1).replace(/\s+\S*$/, "")}…` : line;
+    return line.length > MAX ? line.slice(0, MAX).replace(/\s+\S*$/, "").replace(/[\s,;:.-]+(?:and|for|to|from|at|in|on|of|the)?$/i, "").trim() : line; // the contract: no trailing ellipsis
   } catch { return null; }
 }
 
@@ -117,25 +140,28 @@ function phrase(name, i, opts) {
   if (name === "send_picture") return toThem(i.to) ? null : "Sending the picture";
   if (Object.hasOwn(NEUTRAL, name)) return NEUTRAL[name];
 
+  // Free text that goes in, unless it names someone they know or an address: then null, and the step gets
+  // its plain line instead ("Searching the web"), never the words.
+  const free = (v, max) => { const s = clean(v, max); return s && namesSomeone(s, opts.names) ? null : s; };
   switch (name) {
     case "web_search": {
-      const q = clean(i.query);
+      const q = free(i.query);
       const sites = [...new Set((Array.isArray(i.sites) ? i.sites : []).map(siteName).filter(Boolean))].slice(0, 3);
       if (sites.length && q) return `Checking ${joinAnd(sites)} for ${q}`;
       if (sites.length) return `Checking ${joinAnd(sites)}`;
-      return q ? `Searching for ${q}` : null;
+      return q ? `Searching for ${q}` : q === null ? "Searching the web" : null;
     }
-    case "research": { const q = clean(i.question ?? i.queries?.[0], 45); return q ? `Looking into ${q}` : "Looking into it"; }
-    case "find_all": { const q = clean(i.objective, 45); return q ? `Finding ${q}` : null; }
+    case "research": { const q = free(i.question ?? i.queries?.[0], 45); return q ? `Looking into ${q}` : "Looking into it"; }
+    case "find_all": { const q = free(i.objective, 45); return q ? `Finding ${q}` : q === null ? "Searching the web" : null; }
     case "web_lookup": case "browser_open": { const s = siteName(i.url); return s ? `Reading ${s}` : "Reading the page"; }
     case "offer_check": { const s = siteName(i.url); return s ? `Checking the price on ${s}` : "Checking the price"; }
     case "store_checkout": {
-      const store = clean(i.store, 25) || siteName(i.start_url), item = clean(i.item ?? i.what, 30);
+      const store = free(i.store, 25) || siteName(i.start_url), item = free(i.item ?? i.what, 30);
       if (store && item) return `Checking out ${item} at ${store}`;
       return store ? `Checking out at ${store}` : "Working on the checkout";
     }
     case "show_choices": return "Putting the options together";
-    case "image_search": { const q = clean(Array.isArray(i.queries) ? i.queries[0] : i.queries, 35); return q ? `Finding pictures of ${q}` : "Finding pictures"; }
+    case "image_search": { const q = free(Array.isArray(i.queries) ? i.queries[0] : i.queries, 35); return q ? `Finding pictures of ${q}` : "Finding pictures"; }
     case "calendar_events": case "apple_calendar_events": {
       const from = dayWord(i.from, opts), to = dayWord(i.to, opts);
       const one = from && (!to || to === from || isNextDayEnd(i.from, i.to));
@@ -146,27 +172,27 @@ function phrase(name, i, opts) {
       return "Looking at your calendar";
     }
     case "flight_search": case "flight_dates": {
-      const o = clean(i.origin, 20), d = clean(i.destination, 20);
+      const o = free(i.origin, 20), d = free(i.destination, 20);
       const when = dayWord(i.depart_date ?? i.from_date, opts);
       const route = o && d ? ` from ${o} to ${d}` : d ? ` to ${d}` : "";
       if (name === "flight_dates") return `Comparing dates for flights${route}`;
       return `Searching flights${route}${when ? (possessive(when) || /day$/.test(when) ? ` for ${when}` : ` on ${when}`) : ""}`;
     }
     case "flight_list": return "Checking your flights";
-    case "weather": { const p = clean(i.place, 30); return p ? `Checking the weather in ${p}` : "Checking the weather"; }
-    case "nearby_places": { const w = clean(i.cuisine || i.type || i.name, 30); return w ? `Looking for ${w} nearby` : "Looking at what's nearby"; }
-    case "transit_status": { const l = clean(i.lines, 25); return l ? `Checking the ${l} line` : "Checking the trains"; }
-    case "spotify_search": { const q = clean(i.query); return q ? `Searching Spotify for ${q}` : "Searching Spotify"; }
+    case "weather": { const p = free(i.place, 30); return p ? `Checking the weather in ${p}` : "Checking the weather"; }
+    case "nearby_places": { const w = free(i.cuisine || i.type || i.name, 30); return w ? `Looking for ${w} nearby` : "Looking at what's nearby"; }
+    case "transit_status": { const l = free(i.lines, 25); return l ? `Checking the ${l} line` : "Checking the trains"; }
+    case "spotify_search": { const q = free(i.query); return q ? `Searching Spotify for ${q}` : "Searching Spotify"; }
     case "spotify_control": case "spotify_queue": return "Changing what's playing";
     case "spotify_now_playing": return "Checking what's playing";
     case "spotify_playlist_create": case "spotify_playlist_add": return "Working on the playlist";
-    case "x_search": { const q = clean(i.query); return q ? `Searching X for ${q}` : "Searching X"; }
+    case "x_search": { const q = free(i.query); return q ? `Searching X for ${q}` : "Searching X"; }
     case "x_post": case "x_reply": return "Posting to X";
     case "x_timeline": return "Reading your timeline on X";
-    case "github_issues": case "github_pulls": { const r = clean(i.repo, 30); return r ? `Checking ${r} on GitHub` : "Checking GitHub"; }
+    case "github_issues": case "github_pulls": { const r = free(i.repo, 30); return r ? `Checking ${r} on GitHub` : "Checking GitHub"; }
     case "github_code_search": case "github_file_read": return "Reading the code";
-    case "page_create": case "document_create": { const t = clean(i.title, 35); return t ? `Writing up ${t}` : "Writing it up"; }
-    case "event_create": { const n = clean(i.name, 35); return n ? `Setting up ${n}` : "Setting up the event"; }
+    case "page_create": case "document_create": { const t = free(i.title, 35); return t ? `Writing up ${t}` : "Writing it up"; }
+    case "event_create": { const n = free(i.name, 35); return n ? `Setting up ${n}` : "Setting up the event"; }
     case "event_update": case "event_settings": return "Updating the event";
     case "flight_save": return "Saving the flight";
     case "spend_today": case "purchases_recent": return "Checking your spending";
@@ -185,10 +211,13 @@ function isNextDayEnd(from, to) {
  * outside one (a reminder, a sweep) answers nobody and narrates nothing. The same line twice in a row in one
  * turn is said once. Never throws.
  */
-export function say(turn, name, input, { answering = null, at = clock.now() } = {}) {
+export function say(turn, name, input, { answering = null, at = clock.now(), namesOf = db.knownNamesOf } = {}) {
   try {
     if (!turn?.open || !turn.conversationId) return null;
-    const text = phraseFor(name, input);
+    // Nobody listening (no iPhone app stream open: REASON_IOS_API off, or the app closed): no work at all.
+    if (!progressEvents.listenerCount("say")) return null;
+    if (!turn.names) { try { turn.names = namesOf(turn.conversationId); } catch { turn.names = []; } }
+    const text = phraseFor(name, input, { names: turn.names });
     if (!text || text === turn.said) return null;
     turn.said = text;
     const event = { conversationId: turn.conversationId, handle: answering, tool: String(name), text, at };

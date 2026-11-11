@@ -908,3 +908,74 @@ test("reply labels: a text a CLI tool call queues from outside the turn's scope 
     () => db.enqueueOutbound({ idemKey: "cli:2", conversationId: A.c, channel: "fake", address: A.phone, body: "Later", toOwner: true }).row));
   assert.equal(db.db.prepare("SELECT answers_handle FROM outbox WHERE id = ?").get(after.id).answers_handle, null, "after the turn: answers nobody");
 });
+
+test("progress privacy: free text naming someone they know, or a street address, gets the step's plain line, never the words", () => {
+  const names = ["Kwame Mensah", "Abena"];
+  const cases = [
+    ["web_search", { query: "Kwame Mensah LinkedIn" }, "Searching the web"],
+    ["web_search", { query: "gifts for kwame" }, "Searching the web"],
+    ["web_search", { query: "Abena's favourite perfume" }, "Searching the web"],
+    ["web_search", { query: "CeraVe cleanser" }, "Searching for CeraVe cleanser"],
+    ["web_search", { query: "218 Halsey St Brooklyn", sites: ["ulta.com"] }, "Checking Ulta"],
+    ["research", { question: "is Kwame Mensah on the board" }, "Looking into it"],
+    ["find_all", { objective: "everyone who knows Abena" }, "Searching the web"],
+    ["weather", { place: "40 west 12th street" }, "Checking the weather"],
+    ["weather", { place: "Accra" }, "Checking the weather in Accra"],
+    ["page_create", { title: "Notes for Abena" }, "Writing it up"],
+    ["event_create", { name: "Kwame's 30th" }, "Setting up the event"],
+    ["store_checkout", { store: "Ulta", item: "a gift for Abena" }, "Checking out at Ulta"],
+    ["image_search", { queries: ["Kwame Mensah"] }, "Finding pictures"],
+  ];
+  for (const [name, input, want] of cases) {
+    const got = progress.phraseFor(name, input, { names });
+    assert.equal(got, want, `${name} ${JSON.stringify(input)}`);
+    assert.doesNotMatch(got, /kwame|mensah|abena|halsey|12th/i, name);
+  }
+  assert.equal(progress.namesSomeone("bob's burgers", ["Bo"]), false, "a first name under three letters doesn't count by itself");
+  assert.equal(progress.namesSomeone("ask Bo", ["Bo"]), true, "the whole name still does");
+});
+
+test("progress privacy: say() reads the names this person's Reason keeps, once a turn, and only theirs", async () => {
+  db.upsertPerson(A.c, "Esi Owusu");
+  db.upsertPerson(B.c, "Yaa Asantewaa");
+  assert.ok(db.knownNamesOf(A.c).includes("Esi Owusu"));
+  assert.ok(!db.knownNamesOf(A.c).includes("Yaa Asantewaa"), "never another person's");
+  const heard = [];
+  const on = (e) => heard.push(e.text);
+  progress.progressEvents.on("say", on);
+  let reads = 0;
+  const namesOf = (c) => { reads++; return db.knownNamesOf(c); };
+  try {
+    const { turn, result } = turnlink.run({ conversationId: A.c, to: A.phone, held: [{ external_id: "in-n1" }] }, async () => {});
+    await result;
+    progress.say(turn, "web_search", { query: "Esi Owusu birthday ideas" }, { answering: "in-n1", namesOf });
+    progress.say(turn, "web_search", { query: "Yaa Asantewaa history" }, { answering: "in-n1", namesOf });
+    turnlink.close(turn);
+    assert.deepEqual(heard, ["Searching the web", "Searching for Yaa Asantewaa history"]);
+    assert.equal(reads, 1, "names read once per turn");
+  } finally { progress.progressEvents.off("say", on); }
+});
+
+test("reply labels: a turn's handles include texts folded in mid-turn, and the reply answers the newest", () => {
+  const { turn } = turnlink.run({ conversationId: A.c, to: A.phone, held: [{ external_id: "f1" }, { external_id: "f2" }] }, () => null);
+  assert.equal(turnlink.answering(turn), "f2");
+  turn.fold = { token: "t", added: [{ handle: "f3" }] };
+  assert.deepEqual(turnlink.handlesOf(turn), ["f1", "f2", "f3"]);
+  assert.equal(turnlink.answering(turn), "f3");
+  turnlink.close(turn);
+  assert.equal(turnlink.ofCall(A.c, "t"), null, "a closed turn is never found again");
+});
+
+test("receipts: atOf gives epoch ms and the same instant in ISO, null stays null", async () => {
+  const { atOf } = await import("../src/ios/feed.js");
+  assert.deepEqual(atOf(1762800000000), { at: 1762800000000, at_iso: "2025-11-10T18:40:00.000Z" });
+  assert.deepEqual(atOf(null), { at: null, at_iso: null });
+  assert.deepEqual(atOf(undefined), { at: null, at_iso: null });
+});
+
+test("progress: a long line is cut to 60 characters on a word, with no trailing ellipsis or dangling word", () => {
+  const got = progress.phraseFor("web_search", { query: "very long query about waterproof hiking boots", sites: ["ulta.com", "target.com", "sephora.com"] });
+  assert.ok(got.length <= 60, got);
+  assert.doesNotMatch(got, /…$|\.\.\.$|\s(and|for|to|at|the)$/, got);
+  assert.match(got, /^Checking Ulta, Target and Sephora/);
+});
