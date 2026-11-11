@@ -612,7 +612,7 @@ test("the Tickets section: set up payouts (303 to Stripe), the price behind a co
   assert.match(before.body, /07<\/span> · TICKETS/);
   assert.match(before.body, /Set up payouts with Stripe/);
   assert.match(before.body, /08<\/span> · SHARING/);
-  assert.match(before.body, /09<\/span> · MORE/);
+  assert.match(before.body, /10<\/span> · MORE/);
   const setup = await post(h, ev, { action: "payouts", step: "do" });
   assert.equal(setup.status, 303);
   assert.match(setup.headers.Location, /^https:\/\/connect\.stripe\.test\/setup\/acct_fake_1$/);

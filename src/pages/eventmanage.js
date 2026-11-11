@@ -690,14 +690,14 @@ function helpLineSection(ev, { drafts = {} } = {}) {
   const v = helpline.organizerHelpView(ev);
   const ticketDraft = drafts.ticket ?? ev.ticket_url ?? "";
   const hostDraft = drafts.host ?? ev.help_host ?? "";
-  const ticketForm = form("help_ticket", "", `<label for="help_ticket">TICKET LINK (POSH, EVENTBRITE…)<input id="help_ticket" name="ticket_link" type="url" inputmode="url" autocapitalize="off" spellcheck="false" maxlength="${helpline.LIMITS.ticketUrl}" placeholder="https://posh.vip/e/…" value="${esc(ticketDraft)}"></label>`
+  const ticketForm = form("help_ticket", "", `<label for="help_ticket">LINK TO YOUR TICKET PAGE (POSH, EVENTBRITE…)<input id="help_ticket" name="ticket_link" type="url" inputmode="url" autocapitalize="off" spellcheck="false" maxlength="${helpline.LIMITS.ticketUrl}" placeholder="https://posh.vip/e/…" value="${esc(ticketDraft)}"></label>`
     + `<div class="mg-row">${button("Save ticket link", { cls: "mg-btn alt", busy: "Saving…" })}${ev.ticket_url ? button("Remove it", { cls: "mg-btn quiet", name: "clear", value: "1", busy: "Removing…" }) : ""}</div>`);
   if (!v.on) {
     return `<h2 class="mg-h">One link for questions, the address and updates</h2>`
       + p("Turn this on and you get a link for your ticket page and socials — \"Questions, the address, updates? Text us →\". Tapping it opens a text to Reason that already names this event. Reason answers as your event's help line: what it is, how to get tickets, and the address once they give the event password. Anything it can't answer comes to you here and by text.")
       + p(`It says it's run for ${v.host_name}, so turning it on shows that name to anyone who texts or opens your event page. Change it below once it's on.`, "quiet")
       + form("help_on", "", `<div class="mg-row">${button("Turn on the help line", { busy: "Turning on…" })}</div>`)
-      + `<p class="lbl">TICKETS</p>` + p("Selling tickets somewhere else? Add the link and your event page shows a Get tickets button.") + ticketForm;
+      + `<p class="lbl">TICKET LINK</p>` + p("Selling tickets somewhere else? Add the link and your event page shows a Get tickets button.") + ticketForm;
   }
   const asks = v.open_questions.length
     ? `<p class="lbl">WAITING ON YOU</p>` + v.open_questions.map(a => `<div class="mg-ask"><p class="mg-p"><b>${esc(a.who)}</b> asked: ${esc(a.question)}</p>`
@@ -710,7 +710,7 @@ function helpLineSection(ev, { drafts = {} } = {}) {
     + p(`For a flyer: scan it, or text "code ${v.code}" to Reason. The first text reads: "${v.first_text}".`, "quiet")
     + p("Put the event password in your ticket confirmation, so buyers can get the address: Reason asks for it before it shares anything you keep for guests.", "quiet")
     + asks
-    + `<p class="lbl">TICKETS</p>` + ticketForm
+    + `<p class="lbl">TICKET LINK</p>` + ticketForm
     + `<p class="lbl">RUN FOR</p>`
     + form("help_host", "", `<label for="help_host">THE NAME GUESTS HEAR<input id="help_host" name="host_name" type="text" maxlength="${helpline.LIMITS.host}" placeholder="${esc(events.organizerName(ev) || "")}" value="${esc(hostDraft)}"></label><div class="mg-row">${button("Save name", { cls: "mg-btn alt", busy: "Saving…" })}</div>`)
     + form("help_off", "", `<div class="mg-row">${button("Turn off the help line", { cls: "mg-btn quiet", busy: "Turning off…" })}</div>`);

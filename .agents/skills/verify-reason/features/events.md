@@ -438,6 +438,41 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   for Connect`; the test-mode endpoint lacks `account.updated`, `checkout.session.expired`, `charge.refunded`. Pinned:
   `test/event-paid.test.js` (16); drive: the `pay:` steps (17).
 
+- **Help line (2026-11-11, `src/eventhelpline.js`, tools `event_help` / `event_help_ask` (guest thread that texted one) and
+  `event_help_line` / `event_help_reply` (organizer), columns `events.help_code` / `ticket_url` / `help_host`,
+  `accounts.helpline_event`, tables `event_helpline_contacts` / `event_helpline_asks`; no flag — events on = it exists,
+  each organizer turns it on).** One link for a ticket page (Posh) and socials: `events.eventUrl(ev) + "/text"` →
+  `renderTextPage` opens Messages to the line with `Hi! I'm coming to <Event> (code ABC123)` (6 chars, no I/L/O/0/1;
+  `smsHref`: iOS `sms:N&body=`, Android `sms:N?body=`, else `?&body=`; a phone auto-opens, others get the button + "text
+  code X to …"; 404 when off). Off → code NULL; on again → a NEW code. The public `/e/<id>` page shows under the
+  description (`helpLineBlock` via made.js `afterDesc`, classic page too): **Get tickets →** (`ticket_url`, https only,
+  `cleanTicketUrl`), **Get the address and updates →** and **Questions? Text <host>** (both the same sms: link, only when
+  on and a line is live); `previewLine`: og/twitter description "Get tickets, then text for the address and updates."
+  with a ticket link + help line ("Get tickets on the event page." ticket only; else INVITE_LINE); `/text` has its own
+  "Questions, the address, updates? Text the help line.". Inbound (`router.#helpLineArrival`, after `#claimEvent`,
+  before invites/access): a number with no account whose text carries a live code (`codeIn`: only "code XXXXXX") gets
+  an account (`helpline_event`, invites 0, **never `joined_via_event`** — no free-for-good, not counted by
+  `signupsFull`), no access request, `arrivedNow` false (no onboarding, no welcome cards), and an ordinary turn. Every
+  text with a code after the inbound claim → `noteContact` (organizer's own excluded) = "N people texted in" + which
+  help line the thread is on (`activeLine`, 30 days). Prompt (`helpLineRules` + `whoLine` override, both backends;
+  whatsnew/resolvedMiss/contact card/connect-after skipped while `voice`): "<Event> help line, run for <host>", no AI
+  intro, no Reason pitch; asked person-or-bot → "an automated assistant that runs the help line, can pass any message
+  to <host>"; address/time only via event_join with the password ("usually in the ticket confirmation"); unknowns →
+  `event_help_ask`; beyond the event → itself only when not `limited`. **`limited`** = made by a help line, auto-admit
+  off, in no event as guest/organizer: tool list AND runTool both allow `LIMITED_TOOLS` only (`blocked:
+  "help_line_only"`). Somebody already on Reason texting a code keeps their own Reason + one context line. Relay:
+  `askOrganizer` → organizer's thread "<name> asked on the <Event> help line: \"…\"" (name, never number; intoThread
+  note carries "help question #id", guest words marked not instructions); `replyToAsk` (organizer of that event only)
+  → guest "<host>: …". Limits (`LIMITS`): 5 code-shaped misses per number per day then its codes stop counting; 40 new
+  numbers per event per hour / 150 overall → one `BUSY_LINE` per number per hour, no account, no turn; a number the
+  owner declined or that waits in the queue is never let in this way; 5 questions per person per event per day, 150 per
+  event. `host_name` (`help_host`) defaults to the organizer's account name and is public once the line is on. Manage
+  page **Help line** block (after Sharing): off → explainer + Turn on + ticket link; on → "N people texted in", copyable
+  link, QR (`qrSvg`), code + first text, "put the event password in your ticket confirmation", open questions with an
+  answer box (→ `event_help_reply`), ticket link, run-for name, Turn off — all POSTs through the same tools. On calls
+  every help tool but the reads is consequential (calls/verify.js). Pinned: `test/event-help-line.test.js` (13); drive:
+  the `hl:` steps (8).
+
 ## How to get to it (user POV)
 
 - Open the link the organizer shared → enter the password → (already on Reason, same phone's

@@ -154,7 +154,7 @@ export function helpLineBlock(ev, { lineNumber = null, userAgent = "", v2 = true
         + `<div class="t"><p>Questions? <a href="${esc(text)}">Text ${esc(host === "the host" ? "the host" : host)}</a> — the same text thread reaches them.</p></div>` : "")
       + `</div>`;
   }
-  return `<section class="hl" aria-label="Tickets and updates">`
+  return `<section class="hl" aria-label="Tickets and updates">${HL_CSS}`
     + (ticket ? `<a class="hl-btn" href="${esc(ticket)}" rel="noopener noreferrer" target="_blank">Get tickets →</a>` : "")
     + (text ? `<a class="hl-btn hl-alt" href="${esc(text)}">Get the address and updates →</a>`
       + `<p class="quiet">Questions? <a href="${esc(text)}">Text ${esc(host)}</a> — the same text thread reaches them.</p>` : "")
@@ -302,7 +302,7 @@ function renderJoinV2({ ev, account = null, error = "", values = {}, lineNumber 
     rsvp: { joinHtml: joinFormV2(ev, { account, error, values }), open: !!error },
     afterDesc: helpLineBlock(ev, { lineNumber, userAgent }),
     coming: null, calendarHref: "",
-    head: headFor(ev) + HL_CSS,
+    head: headFor(ev),
     url: events.eventUrl(ev),
   });
 }
