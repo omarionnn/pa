@@ -184,7 +184,7 @@ test("fonts are self-hosted: five faces at /web/fonts, nothing from Google, CSP 
 test("6A sign-in: the number on an underline, the Caveat note, a text action, and the way in for somebody new", () => {
   const s = allScreens().signin;
   assert.match(s, /<h1 id="so-title" class="h1">What's your number\?<\/h1>/);
-  assert.match(s, /<label for="number">PHONE NUMBER<\/label><input class="ul-in" id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="\(555\) 000-0000"/);
+  assert.match(s, /<label for="number">PHONE NUMBER OR APPLE ID EMAIL<\/label><input class="ul-in" id="number" name="number" type="text" inputmode="email" autocomplete="tel email" placeholder="\(555\) 000-0000"/);
   assert.match(s, /<p class="hand">the same line you already text me on\.<\/p>/);
   assert.match(s, /<button class="act" type="submit">Text me a code <span aria-hidden="true">→<\/span><\/button>/);
   assert.match(s, /<a class="act2 so-new" href="\/web\?join=1">NEW TO REASON\? START WITH A TEXT →<\/a>/);
