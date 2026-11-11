@@ -167,6 +167,7 @@ export async function awaitingCandidates({ live = [], api, mine = new Set(), now
   const cap = Number(config.alertAwaitingProbes ?? 4);
   for (const a of live) {
     if (used >= cap) break;
+    if (a.scopes && !google.covers(a.scopes, [google.GMAIL_SCOPE])) continue; // calendar + Drive only, no mail granted (2026-11-11)
     const list = await api(a, "GET", "/gmail/v1/users/me/messages", { query: { q: sentQuery(), maxResults: 10 } });
     if (!list.ok) { failed.push({ account: a.account, what: "sent_mail", error: list.error }); continue; }
     const seenThread = new Set();

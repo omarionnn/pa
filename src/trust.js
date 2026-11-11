@@ -480,12 +480,12 @@ export const PROVIDERS = {
     built: true,
     via: "api",
     oauth: "google",
-    // `organise_files` is only ever on a row where drive.metadata was really granted, so a Drive
-    // connected before 2026-10-07 reads as read + write and not as organise. See CONNECTS in
+    // `organise_files` is only ever on a row where drive.file was really granted (drive.metadata
+    // before 2026-11-11, which old grants still carry). See CONNECTS in
     // src/google.js: it is an extra on the same connection, not a connection of its own.
     scopes: ["read_files", "write_files", "organise_files"],
-    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — hand one of their own files back in the thread as a PDF or a Word document, make a new Google Doc or folder, put a file Reason wrote in there, and organise what is already in it: rename, move into folders, put in the bin. A PDF that is a scan has no text to read and says so. Never deletes anything of theirs for good, never makes anything public, and can only share a file with another person where Reason itself made that file",
-    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and the Drive scopes on its Data Access page — including drive.metadata if organising is wanted — and then this person tapping the Drive connect link once",
+    what: "find a file Reason made (or they opened with Reason) in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — hand one of their own files back in the thread as a PDF or a Word document, make a new Google Doc or folder, put a file Reason wrote in there, and organise what is already in it: rename, move into folders, put in the bin. A PDF that is a scan has no text to read and says so. Never deletes anything of theirs for good, never makes anything public, and can only share a file with another person where Reason itself made that file",
+    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and drive.file on its Data Access page, and then this person tapping the Google connect link once",
   },
   // Built now, from Spotify's current docs. The credentials are a developer app's client id and
   // secret; the *person's* half is an authorization they give on Spotify's own page, which is why

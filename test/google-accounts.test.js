@@ -168,6 +168,8 @@ test("the link for a second account asks Google for the chooser; the first one d
   assert.equal(new URL(providerUrl(first.url)).searchParams.get("prompt"), "consent", "nothing to choose between yet");
   assert.equal(new URL(providerUrl(first.url)).searchParams.has("login_hint"), false);
 
+  // A grant made by today's first connect plus mail, so the plain link names nothing new for it.
+  fake.set({ grantScopes: [...google.DEFAULT_SCOPES, google.GMAIL_SCOPE] });
   await connect(ME);
   const second = await call("google_connect", {});
   // Documented: prompt is "a space-delimited, case-sensitive list", and only `none` may not be combined.
@@ -743,4 +745,17 @@ test("a migrated connection goes on working, and a second account can be added t
   assert.equal(out.before_refresh, "live-refresh");
   assert.deepEqual(out.labels, ["omari@example.com", "work@example.com"]);
   assert.equal(out.original_still_there, "live-refresh", "and adding one did not disturb it");
+});
+
+test("a plain connect from a pre-2026-11-11 grant (mail + broad calendar, no drive.file) still opens the chooser", async () => {
+  fake.set({ grantScopes: [google.GMAIL_SCOPE, google.LEGACY_CALENDAR_SCOPE] });
+  await connect(ME);
+  const another = await call("google_connect", {});
+  const q = new URL(providerUrl(another.url)).searchParams;
+  assert.equal(q.get("prompt"), "select_account consent", "adding an account is not a top-up");
+  assert.equal(q.has("login_hint"), false, "never hint the account they already have");
+  assert.match(another.adding_another, /chooser/);
+  // While a link NAMING what is missing is a top-up on that account.
+  const drive = await call("google_connect", { scopes: google.DRIVE_SCOPES });
+  assert.equal(new URL(providerUrl(drive.url)).searchParams.get("login_hint"), ME);
 });

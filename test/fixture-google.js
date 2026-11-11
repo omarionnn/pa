@@ -753,7 +753,8 @@ export async function startGoogle({
     // ---------- the APIs ----------
     const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     const isApi = url.pathname.startsWith("/gmail/") || url.pathname.startsWith("/calendar/")
-      || url.pathname.startsWith("/drive/") || url.pathname.startsWith("/upload/drive/");
+      || url.pathname.startsWith("/drive/") || url.pathname.startsWith("/upload/drive/")
+      || url.pathname === "/oauth2/v3/userinfo";
     // WHICH account this request is for, read off the token and nothing else. Every route below works
     // on `me`, so there is no way for a request carrying one account's token to touch another's
     // mailbox, labels or calendar — which is what makes the isolation checkable from here.
@@ -825,6 +826,14 @@ export async function startGoogle({
     };
 
     // ---------- gmail.googleapis.com ----------
+    // Google's userinfo endpoint (www.googleapis.com/oauth2/v3/userinfo), behind the identity scope.
+    // The first connect learns the address here since 2026-11-11, when mail left it.
+    if (url.pathname === "/oauth2/v3/userinfo" && req.method === "GET") {
+      if (needScope(["https://www.googleapis.com/auth/userinfo.email", "email"])) return undefined;
+      if (!me.profileWorks) return err(500, "Backend Error", "INTERNAL");
+      return json(200, { sub: "1", email: me.email, email_verified: true, name: "Test Person" });
+    }
+
     if (url.pathname === "/gmail/v1/users/me/profile" && req.method === "GET") {
       if (needScope(GMAIL)) return undefined;
       if (!me.profileWorks) return err(500, "Backend Error", "INTERNAL");

@@ -106,32 +106,22 @@
 //   forbade `localhost` by name. The registered URI is https://reason.tail3753c7.ts.net/google/callback,
 //   so REDIRECT_PATH below is /google/callback and nothing else will work.
 //
-//   **Scopes.** Five: gmail.modify, calendar.events, calendar.calendars.readonly, drive.readonly and
-//   drive.file (the broad `calendar` scope the first grants carried is still honoured, never
-//   re-asked — see LEGACY_CALENDAR_SCOPE). One consent screen per grant, one refresh token, and the
-//   capabilities it feeds — which is why the tokens live under one provider row ('google') while
-//   `connected_accounts` keeps the per-capability rows the registry reads. gmail.modify covers
-//   everything below including users.getProfile, which is how the connected address is learned
-//   without asking for an identity scope nobody needs. It does NOT cover permanent deletion:
-//   users.messages.delete "Requires the following OAuth scope: https://mail.google.com/" and
-//   nothing else, so Reason cannot delete mail forever and says so rather than discovering a 403.
+//   **Scopes** (trimmed 2026-11-11 for Google's OAuth verification). The first connect asks for
+//   calendar.events, calendar.calendars.readonly, drive.file, userinfo.email and userinfo.profile —
+//   no restricted scope. gmail.modify (restricted) is asked for INCREMENTALLY, only when a task first
+//   needs their mail, through the same link. drive.readonly, drive.metadata and the broad `calendar`
+//   are never asked for again, but a grant that already carries them keeps them and keeps working
+//   (covers() honours legacy calendar; the Drive token reaches what Google granted). One provider row
+//   ('google') per account, and `connected_accounts` keeps the per-capability rows the registry reads.
+//   gmail.modify does NOT cover permanent deletion: users.messages.delete "Requires the following
+//   OAuth scope: https://mail.google.com/" and nothing else, so Reason cannot delete mail forever.
 //
-//   **Drive is asked for separately, when it is wanted.** DEFAULT_SCOPES is mail + calendar, and the
-//   two Drive scopes are added only when a Drive tool finds them missing and hands the model the
-//   scope list to pass back. That is Google's own advice rather than a preference: their incremental
-//   authorization section says "It is considered a best user-experience practice to request
-//   authorization for resources at the time you need them", and the example they use for it is
-//   Drive. So somebody who connected mail last week is not retrospectively holding a Drive grant, and
-//   nobody is shown a Drive line on a consent screen for asking about their inbox.
-//
-//   **include_granted_scopes=true, which is what makes that safe** (…/web-server#httprest, the
+//   **include_granted_scopes=true is what makes incremental safe** (…/web-server#httprest, the
 //   authorization parameter table): "If you set this parameter's value to true and the authorization
 //   request is granted, then the new access token will also cover any scopes to which the user
-//   previously granted the application access." Without it, a link asking for only the Drive scopes
-//   would come back with a token carrying only the Drive scopes — and since the store keeps the
-//   granted scope string as the record of what this grant can do, adding Drive would have silently
-//   taken their mail away. With it, the token that comes back carries mail, calendar and Drive, and
-//   `completeConnect` writes all of them.
+//   previously granted the application access." Without it, a link asking for only Gmail would come
+//   back with a token carrying only Gmail — and since the store keeps the granted scope string as the
+//   record of what this grant can do, adding mail would have silently taken their calendar away.
 //
 //   **Drive** (developers.google.com/workspace/drive/api/…, all read 2026-10-06). files.list on
 //   /drive/v3/files takes `q` — "a search query combining one or more search terms", documented in
@@ -210,102 +200,97 @@ export const CALENDAR_SCOPES = [CALENDAR_EVENTS_SCOPE, CALENDAR_READ_SCOPE];
  */
 export const LEGACY_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
 
-// Drive is two scopes, and they are two because neither one alone is a Drive worth connecting.
+// Drive is ONE scope now: `drive.file`, the non-sensitive one. Changed 2026-11-11 for Google's OAuth
+// verification (Omari: "trim the scopes"). Google's rule is the narrowest scope that does the job
+// (support.google.com/cloud/answer/13464321), and `drive.readonly` and `drive.metadata` are both
+// RESTRICTED — each one would need its own justification and a yearly security assessment.
 //
-// `drive.readonly` is the only way to find and read a file the person already has. Google's scope
-// table (…/drive/api/guides/api-specific-auth, read 2026-10-06) lists it as RESTRICTED — "View and
-// download all your Drive files" — and that is not a quiet escalation here: Reason already asks for
-// gmail.modify, which is restricted too, so the verification class of this app does not change by
-// adding it. There is no narrower read: `drive.metadata.readonly` is restricted as well and cannot
-// read contents, and `drive.file` on its own is documented as only seeing files "that you open with
-// an app or that the user shares with an app while using the Google Picker API or the app's file
-// picker" — Reason has no picker, so under drive.file alone "find my lease" would find nothing.
+// What drive.file reaches, in Google's words: files "that you open with an app or that the user shares
+// with an app while using the Google Picker API or the app's file picker", plus files the app created.
+// So every Drive tool still runs on it — making a Doc, a folder, an upload, sharing, renaming, moving,
+// binning and reading back — but only on files Reason made (or a file opened with Reason). Searching a
+// person's whole Drive for a document they made themselves is the one thing that no longer works for a
+// NEW connection, and the Drive tools say so in a line rather than pretending the Drive is empty.
 //
-// `drive.file` is the non-sensitive one and it is what creating a document needs: files.create's
-// scope list is drive, drive.appdata or drive.file, and the narrowest of those is the one asked for.
-export const DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+// Nobody already connected loses anything: a grant that carries drive.readonly or drive.metadata keeps
+// them (the token is what Google honours, and nothing here strips a scope off a row), so their search
+// and organising go on reaching their whole Drive. The two are simply never ASKED for again — they are
+// not in SCOPES, so authorizeUrl cannot put them on a consent screen.
 export const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
-/** The two together are what "drive" means here; asking for one of them means asking for both. */
-export const DRIVE_SCOPES = [DRIVE_READ_SCOPE, DRIVE_FILE_SCOPE];
-
-/**
- * The third Drive scope, and the whole of what organising costs. Added 2026-10-07.
- *
- * Omari: "I should also be able to organize." Reading a file and tidying a Drive turn out to be
- * genuinely different grants, and the arithmetic is worth writing down because it decides what
- * appears on somebody's consent screen:
- *
- *   - **A folder, an upload, and a link are already paid for.** files.create's scope list is drive,
- *     drive.appdata or drive.file (…/reference/rest/v3/files/create), so making a folder and putting
- *     a file Reason wrote into their Drive both sit inside the `drive.file` already granted. So does
- *     permissions.create, whose list is only drive and drive.file — per-file, which is the point
- *     below.
- *   - **Renaming, moving and binning an existing file do not.** All three are files.update
- *     (…/files/update, read 2026-10-07: a move is `addParents`/`removeParents`, a bin is the
- *     `trashed` field per …/guides/delete), and its scope list is drive, drive.appdata, drive.file,
- *     drive.metadata, drive.scripts. `drive.readonly` is not on it and never could be. `drive.file`
- *     is on it but means nothing here: it is per-file for files this app made, and the file somebody
- *     wants moved is one they made themselves years ago.
- *   - **So the narrowest thing that works is `drive.metadata`** — "View and manage metadata of files
- *     in your Drive", RESTRICTED in Google's scope table. Restricted is not an escalation of the
- *     app's verification class, which `gmail.modify` and `drive.readonly` already set, but it IS one
- *     more line on the consent screen and one more scope to justify, so it is asked for only when
- *     somebody actually wants their Drive organised.
- *   - **The broad `drive` scope is still never asked for**, and that has a visible price that is
- *     stated rather than hidden: `drive.metadata` cannot change a file's CONTENT and
- *     permissions.create does not accept it at all, so Reason can hand the owner the link to any of
- *     their files but can only share a file with another PERSON when Reason itself made that file.
- *     Sharing somebody's existing document with a third party would cost "View and manage all your
- *     Drive files", and that is not a fair trade for a feature nobody asked for. drive_share says so
- *     in those terms rather than coming back as a 403.
- *
- * Deliberately NOT in DRIVE_SCOPES. That array is what `CONNECTS.google_drive` calls a Drive
- * connection, and adding a third scope to it would make every grant made on 2026-10-06 — including
- * the one on Omari's phone — read as Drive not connected. Finding and reading a file goes on working
- * exactly as it did; only the three organising tools notice the difference, and they say so by name.
- */
+/** Legacy, honoured on old grants, never asked for (2026-11-11). */
+export const DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+/** Legacy, honoured on old grants, never asked for (2026-11-11). */
 export const DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata";
-/** What a link has to carry for organising to work: finding the file, and then changing it. */
-export const DRIVE_ORGANISE_SCOPES = [DRIVE_READ_SCOPE, DRIVE_FILE_SCOPE, DRIVE_METADATA_SCOPE];
+/** What "drive" means here: drive.file and nothing broader. */
+export const DRIVE_SCOPES = [DRIVE_FILE_SCOPE];
+/** What a link has to carry for organising: the same drive.file (kept as a name for the callers). */
+export const DRIVE_ORGANISE_SCOPES = [DRIVE_FILE_SCOPE];
+
+// Who the grant is for. Mail used to be how the connected address was learned (users.getProfile), and
+// mail is no longer on the first screen, so the address now comes from the identity scopes — the two
+// Google lists as non-sensitive ("See your primary Google Account email address", "See your personal
+// info"). The address is the account's name here: several accounts can be connected and the person
+// picks which to use by it.
+export const EMAIL_SCOPE = "https://www.googleapis.com/auth/userinfo.email";
+export const PROFILE_SCOPE = "https://www.googleapis.com/auth/userinfo.profile";
+export const IDENTITY_SCOPES = [EMAIL_SCOPE, PROFILE_SCOPE];
+// Google may hand the identity scopes back under their short names (and adds `openid`), so both
+// spellings count as the same grant.
+const SCOPE_ALIASES = { email: EMAIL_SCOPE, profile: PROFILE_SCOPE };
 
 /**
  * What Reason can ask for, and why each one. Exactly the six on the client's Data Access page; a
- * seventh would be a line on somebody's consent screen that buys nothing.
+ * seventh would be a line on somebody's consent screen that buys nothing. The order is the order a
+ * link carries them in.
  */
 export const SCOPES = {
-  [GMAIL_SCOPE]: "read and search their mail, draft, send, reply, label, archive and bin it — everything except deleting it forever",
   [CALENDAR_EVENTS_SCOPE]: "see what is on their calendar and put things on it, change them, take them off",
   [CALENDAR_READ_SCOPE]: "read a calendar's own time zone, so times are written in their zone and not this machine's",
-  [DRIVE_READ_SCOPE]: "find a file in their Drive and read what is in it — their own documents, spreadsheets and slides",
-  [DRIVE_FILE_SCOPE]: "make a new Google Doc or a folder in their Drive, put a file Reason wrote into it, and share one of those back — only the things Reason itself made, nothing else in there",
-  [DRIVE_METADATA_SCOPE]: "tidy up their Drive: rename a file, move one into a folder, put one in the bin. Only where a file sits and what it is called — never what is inside it, and never deleting anything for good",
+  [DRIVE_FILE_SCOPE]: "make a new Google Doc or a folder in their Drive, put a file Reason wrote into it, share, rename, move or bin one of those — only the files Reason itself made or they opened with Reason, nothing else in there",
+  [EMAIL_SCOPE]: "know which Google address this is, so several accounts can be told apart",
+  [PROFILE_SCOPE]: "know the name on the account",
+  [GMAIL_SCOPE]: "read and search their mail, draft, send, reply, label, archive and bin it — everything except deleting it forever. Asked for only when a task first needs their mail",
 };
 export const SCOPE_LIST = Object.keys(SCOPES);
 
 /**
- * What a plain "connect my Google" asks for: mail and calendar, not Drive.
+ * What a plain "connect my Google" asks for: calendar, drive.file and who they are — not mail.
  *
- * Drive is left out on Google's own advice rather than as a preference — their incremental
- * authorization section says to "request authorization for resources at the time you need them", and
- * Drive is the example they use for it. So a person asking Reason about their inbox is not shown a
- * line about their documents, and the Drive scopes are added by a second trip through the link when a
- * Drive tool is what they wanted. `include_granted_scopes=true` is what keeps that second trip from
- * costing them the first one — see authorizeUrl.
+ * Mail is gmail.modify, a RESTRICTED scope, so it is asked for incrementally (2026-11-11, for Google's
+ * verification): only when a task first needs their mail, through the same connect link, with
+ * include_granted_scopes=true so the calendar and Drive they gave are kept. Somebody who granted mail
+ * before this keeps it — nothing here takes a scope off a stored grant.
  */
-export const DEFAULT_SCOPES = [GMAIL_SCOPE, ...CALENDAR_SCOPES];
+export const DEFAULT_SCOPES = [...CALENDAR_SCOPES, DRIVE_FILE_SCOPE, ...IDENTITY_SCOPES];
+/** The incremental mail request. */
+export const GMAIL_SCOPES = [GMAIL_SCOPE];
 
 /**
- * Whether a grant covers every scope in `need`. A scope counts as granted when it is there by name,
- * or when it is a calendar scope and the broad legacy `calendar` grant is there instead.
- *
- * Nothing special is done for Drive: the only Drive scopes anybody can hold are the two asked for
- * here, so a grant made before 2026-10-06 has neither of them and reads as Drive not connected — by
- * this function, with no extra check anywhere. That is the whole of "an existing Google connection
- * does not silently become a Drive connection".
+ * Whether a grant covers every scope in `need`. A scope counts as granted when it is there by name
+ * (or under Google's short name for it), or when it is a calendar scope and the broad legacy
+ * `calendar` grant is there instead.
  */
 export function covers(granted, need) {
-  const have = new Set(granted);
-  return need.every(s => have.has(s) || (CALENDAR_SCOPES.includes(s) && have.has(LEGACY_CALENDAR_SCOPE)));
+  const have = new Set((granted ?? []).map(s => SCOPE_ALIASES[s] ?? s));
+  const one = (s) => have.has(s) || (CALENDAR_SCOPES.includes(s) && have.has(LEGACY_CALENDAR_SCOPE));
+  // An entry that is itself a list is "any one of these" — how the Drive reading tools take either
+  // drive.file (every grant since 2026-11-11) or an old drive.readonly grant.
+  return need.every(s => (Array.isArray(s) ? s.some(one) : one(s)));
+}
+
+/** The scopes a link can really ask for to satisfy `need` — any-of lists flattened, legacy left out. */
+export function askable(need) {
+  return [...new Set((need ?? []).flat())].filter(s => SCOPE_LIST.includes(s));
+}
+
+/** Reading a Drive file: drive.file, or an old drive.readonly grant (kept working, never asked for). */
+const DRIVE_READING = [[DRIVE_FILE_SCOPE, DRIVE_READ_SCOPE]];
+/** Organising: drive.file, or an old drive.metadata grant (kept working, never asked for). */
+const DRIVE_ORGANISING = [[DRIVE_FILE_SCOPE, DRIVE_METADATA_SCOPE]];
+
+/** Whether this grant reaches the person's WHOLE Drive (an old drive.readonly grant) or only Reason's files. */
+export function wholeDrive(granted) {
+  return (granted ?? []).includes(DRIVE_READ_SCOPE);
 }
 
 /** Which registry account each set of scopes is the credential for, so a half-granted consent is honest. */
@@ -322,7 +307,7 @@ export const CONNECTS = {
     // so it is an EXTRA on this row rather than a fourth entry here. A Drive connected before
     // 2026-10-07 is still a Drive; it just does not carry this, and everything that reads a status
     // can then say which half is live instead of promising organising to a grant that cannot do it.
-    extra: [{ needs: [DRIVE_METADATA_SCOPE], scope: "organise_files" }],
+    extra: [{ needs: [DRIVE_FILE_SCOPE], scope: "organise_files" }],
   },
 };
 
@@ -352,8 +337,8 @@ export const TOOL_SCOPES = {
   calendar_delete: CALENDAR_SCOPES,
   // Narrower than CONNECTS.google_drive on purpose: reading needs the read scope, making a document
   // needs drive.file, and a consent with one box unticked should be told about the box it unticked.
-  drive_search: [DRIVE_READ_SCOPE],
-  drive_read: [DRIVE_READ_SCOPE],
+  drive_search: DRIVE_READING,
+  drive_read: DRIVE_READING,
   drive_create: [DRIVE_FILE_SCOPE],
   // Organising, per tool rather than per feature, because they do not all cost the same and the
   // difference is the whole of what somebody is being asked for. Three of these work on a Drive
@@ -364,21 +349,21 @@ export const TOOL_SCOPES = {
   // folder and uploading a file Reason wrote are both files.create, which takes drive.file. Sharing
   // is permissions.create, whose scope list is drive and drive.file only — so drive.file is both the
   // narrowest thing that works AND the reason it only reaches files Reason itself made.
-  drive_folders: [DRIVE_READ_SCOPE],
+  drive_folders: DRIVE_READING,
   drive_folder_create: [DRIVE_FILE_SCOPE],
   drive_upload: [DRIVE_FILE_SCOPE],
   drive_share: [DRIVE_FILE_SCOPE],
   // And the three that are really new. All files.update on a file the person made themselves, which
   // drive.file cannot touch and drive.readonly cannot change: drive.metadata is the narrowest scope
   // on that method's list. missingScopeFor names it, and the refusal offers the link.
-  drive_rename: [DRIVE_METADATA_SCOPE],
-  drive_move: [DRIVE_METADATA_SCOPE],
-  drive_trash: [DRIVE_METADATA_SCOPE],
+  drive_rename: DRIVE_ORGANISING,
+  drive_move: DRIVE_ORGANISING,
+  drive_trash: DRIVE_ORGANISING,
   // The floor only. Handing a file back always means reading it, so drive.readonly is what this
   // cannot run without; the second scope is wanted on ONE of its three routes — the copy-and-export
   // that turns a .docx into a PDF — and is checked there, against that file, so somebody whose PDF
   // could have been sent straight back is never refused over a permission that route never needed.
-  drive_send: [DRIVE_READ_SCOPE],
+  drive_send: DRIVE_READING,
 };
 
 export function googleStatus({ clientId = config.googleClientId, clientSecret = config.googleClientSecret } = {}) {
@@ -389,7 +374,7 @@ export function googleStatus({ clientId = config.googleClientId, clientSecret = 
     connected: missing.length === 0,
     missing,
     redirect_uri: callbackUrl(REDIRECT_PATH),
-    what: "read and write their Gmail, read and write their calendar, and read their Drive and make a document in it",
+    what: "read and write their calendar and make documents in their Drive (only the files Reason makes); their Gmail is added when a task first needs it",
   };
 }
 
@@ -423,26 +408,37 @@ export function notConnected(extra = {}) {
  * conversation: the cookie a Web or private-page sign-in already left, or a code texted to this
  * thread.
  */
-export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account = "" } = {}) {
+export function authorizeUrl(conversationId, { scopes = null, account = "" } = {}) {
+  // A plain connect (no scopes named) is never a top-up: with an account already on, it means ANOTHER
+  // account, and gets the chooser — even for a grant from before drive.file was on the first screen.
+  // A top-up is always a link that names what is missing (a tool's missing_scope).
+  const explicit = Array.isArray(scopes) && scopes.length > 0;
+  if (!explicit) scopes = DEFAULT_SCOPES;
   const st = googleStatus();
   if (!st.connected) return notConnected();
+  // Old names still arrive (a model reading an older missing_scope, a stored link plan): the broad
+  // calendar means the two narrow ones, and drive.readonly / drive.metadata mean drive.file, which is
+  // all Drive is asked for now. Nothing outside SCOPE_LIST can reach a consent screen.
+  const RENAMED = { [LEGACY_CALENDAR_SCOPE]: CALENDAR_EVENTS_SCOPE, [DRIVE_READ_SCOPE]: DRIVE_FILE_SCOPE, [DRIVE_METADATA_SCOPE]: DRIVE_FILE_SCOPE, ...SCOPE_ALIASES };
+  const asked = new Set((scopes ?? []).map(s => RENAMED[s] ?? s).filter(s => SCOPE_LIST.includes(s)));
+  if (!asked.size) return { ok: false, error: `No known scopes asked for. Known: ${SCOPE_LIST.join(", ")}.` };
   // Calendar is two scopes that only make sense together — events without the time zone would write
-  // times in the wrong zone — so naming either (or the old broad one) asks for both.
-  const asked = new Set(scopes.filter(s => SCOPE_LIST.includes(s) || s === LEGACY_CALENDAR_SCOPE));
-  if ([...asked].some(s => CALENDAR_SCOPES.includes(s) || s === LEGACY_CALENDAR_SCOPE)) {
-    asked.delete(LEGACY_CALENDAR_SCOPE);
-    for (const s of CALENDAR_SCOPES) asked.add(s);
+  // times in the wrong zone — so naming either asks for both.
+  if ([...asked].some(s => CALENDAR_SCOPES.includes(s))) for (const s of CALENDAR_SCOPES) asked.add(s);
+  // A first connect is always the whole first screen, whatever the task was: somebody whose first
+  // ask is about their mail gets calendar, drive.file and who-they-are on the same screen as Gmail,
+  // rather than a second trip a minute later. "First" is no account yet, or a link for ANOTHER
+  // account (every grant they hold already covers what is named, so the only thing to do is add one).
+  // A link topping up an account they have adds only what it names (plus the identity pair, which is
+  // how the address is learned and costs nothing new to read).
+  // What the caller named, identity aside — the thing "is this a top-up or another account" is read off.
+  const named = SCOPE_LIST.filter(s => asked.has(s) && !IDENTITY_SCOPES.includes(s));
+  const held = db.listOauthTokens(conversationId, PROVIDER);
+  if (!held.length || (!String(account ?? "").trim() && (!explicit || held.every(r => covers(scopesOf(r), named))))) {
+    for (const s of DEFAULT_SCOPES) asked.add(s);
   }
-  // Drive is two scopes for the same kind of reason — finding a file and making one are the two
-  // halves of what anybody means by "connect my Drive" — so naming either asks for both.
-  if ([...asked].some(s => DRIVE_SCOPES.includes(s))) for (const s of DRIVE_SCOPES) asked.add(s);
-  // And organising pulls in those two as well, because it cannot stand alone: moving a file means
-  // finding it first, and a grant that could rename a document but not read one would be a strange
-  // thing to have agreed to. The implication only runs this way — asking for Drive does NOT add
-  // drive.metadata, so somebody who only ever wanted their files read is never shown that line.
-  if (asked.has(DRIVE_METADATA_SCOPE)) for (const s of DRIVE_SCOPES) asked.add(s);
+  for (const s of IDENTITY_SCOPES) asked.add(s);
   const want = SCOPE_LIST.filter(s => asked.has(s));
-  if (!want.length) return { ok: false, error: `No known scopes asked for. Known: ${SCOPE_LIST.join(", ")}.` };
   const redirectUri = st.redirect_uri;
   const already = connectedAddresses(conversationId);
   const hint = String(account ?? "").trim();
@@ -471,7 +467,7 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
   //     Google documents the parameter for. With several it still needs the chooser, and the line
   //     below tells them which one to pick.
   const rows = db.listOauthTokens(conversationId, PROVIDER);
-  const toppingUp = !hint && rows.some(r => !covers(scopesOf(r), want));
+  const toppingUp = !hint && explicit && rows.some(r => !covers(scopesOf(r), named));
   const addingAnother = !hint && already.length > 0 && !toppingUp;
   const onlyOne = toppingUp && rows.length === 1 && !!rows[0].account_label;
   // The accounts on which they have already given EVERY kind of access this link asks for, taken
@@ -570,7 +566,7 @@ function whatItAsksFor(want) {
   const parts = [
     ...(want.includes(GMAIL_SCOPE) ? ["reads or changes your mail"] : []),
     ...(want.some(s => CALENDAR_SCOPES.includes(s)) ? ["reads or changes your calendar"] : []),
-    ...(want.some(s => DRIVE_SCOPES.includes(s)) ? ["opens a file in your Drive, or puts a new document in it"] : []),
+    ...(want.some(s => DRIVE_SCOPES.includes(s)) ? ["puts a document it made in your Drive, or opens one it made"] : []),
   ];
   if (!parts.length) return "uses what you grant";
   if (parts.length === 1) return parts[0];
@@ -725,6 +721,14 @@ export async function completeConnect({ code, state, error = "", fetchImpl = fet
  * inference nothing has checked against real Google.
  */
 async function addressOf(token, granted, { fetchImpl = fetch } = {}) {
+  // The identity scope first: it is what the first connect asks for now that mail is not on it
+  // (2026-11-11). Google's userinfo endpoint answers `email` and `email_verified`; an unverified
+  // address is not used as the account's name.
+  if (covers(granted, [EMAIL_SCOPE])) {
+    const who = await api(token, "GET", "/oauth2/v3/userinfo", { fetchImpl });
+    const addr = String(who.body?.email ?? "");
+    if (who.ok && addr.includes("@") && who.body?.email_verified !== false) return addr;
+  }
   if (granted.includes(GMAIL_SCOPE)) {
     const who = await api(token, "GET", "/gmail/v1/users/me/profile", { fetchImpl });
     if (who.ok && String(who.body?.emailAddress ?? "").includes("@")) return String(who.body.emailAddress);
@@ -983,7 +987,7 @@ export async function accessTokenFor(conversationId, { account = "", fetchImpl =
     }
     return {
       ok: false, status: "not_connected",
-      error: `${accountName(conversationId)} has not connected Google yet. Call google_connect and send them the link; nothing about their mail, calendar or files is knowable until they agree on Google's own page.`,
+      error: `${accountName(conversationId)} has not connected Google yet. Call google_connect and send them the link — when the task is about their MAIL, pass scopes ${JSON.stringify(GMAIL_SCOPES)} so mail is on that first screen too (the first link always carries calendar and Drive). Nothing about their mail, calendar or files is knowable until they agree on Google's own page.`,
     };
   }
   const mine = row.account_label;
@@ -1149,7 +1153,7 @@ export function grantedScopes(conversationId, account = "") {
 export function missingScopeFor(tool, scopes) {
   const need = TOOL_SCOPES[tool] ?? [];
   if (!need.length) return null;
-  return covers(scopes, need) ? null : need;
+  return covers(scopes, need) ? null : askable(need);
 }
 
 /**
