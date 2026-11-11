@@ -42,7 +42,7 @@ delete process.env.REASON_AUTO_ADMIT;
 
 // ---------------------------------------------------------------- a fake Stripe on this machine
 const calls = [];
-let accountsMade = 0, sessionsMade = 0, refundsMade = 0, failNext = null;
+let accountsMade = 0, sessionsMade = 0, refundsMade = 0, failNext = null, failStatus = 402;
 let balance = { available: [], pending: [] }, payouts = [], payoutFail = false;
 const fake = http.createServer((req, res) => {
   let body = "";
@@ -51,7 +51,7 @@ const fake = http.createServer((req, res) => {
     const form = Object.fromEntries(new URLSearchParams(body));
     calls.push({ method: req.method, path: req.url, form, idem: req.headers["idempotency-key"] ?? null, auth: req.headers.authorization, account: req.headers["stripe-account"] ?? null });
     res.setHeader("content-type", "application/json");
-    if (failNext && req.url.startsWith(failNext)) { failNext = null; res.statusCode = 402; return res.end(JSON.stringify({ error: { message: "fake decline", code: "fake" } })); }
+    if (failNext && req.url.startsWith(failNext)) { failNext = null; res.statusCode = failStatus; failStatus = 402; return res.end(JSON.stringify({ error: { message: "fake decline", code: "fake" } })); }
     if (req.method === "POST" && req.url === "/v1/accounts") return res.end(JSON.stringify({ id: `acct_fake_${++accountsMade}`, object: "account", type: "express", charges_enabled: false, details_submitted: false, payouts_enabled: false }));
     const acct = /^\/v1\/accounts\/([^/?]+)$/.exec(req.url);
     if (acct && req.method === "GET") return res.end(JSON.stringify({ id: decodeURIComponent(acct[1]), object: "account", charges_enabled: stateOf(acct[1]).charges, details_submitted: stateOf(acct[1]).charges, payouts_enabled: stateOf(acct[1]).charges }));
@@ -515,6 +515,29 @@ test("Reason's 2.5% back after a guest's own cancel: Stripe saying no leaves it 
   assert.notEqual(tries[0].idem, tries[1].idem, "a retry after Stripe's no is a new request, not the replayed no");
   assert.equal((await eventpay.sweep()).fees_back, 0, "nothing owed, nothing asked");
   assert.equal(calls.filter(c => c.path.startsWith("/v1/application_fees/")).length, 2);
+});
+
+test("a refund Stripe may have done (a 5xx, no answer) is retried under the same key; a definite no moves it on; a double cancel owes the fee once", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const row = await amaPays(h, ev);
+  failNext = "/v1/refunds"; failStatus = 500;
+  assert.equal((await eventpay.guestRefund({ ev: db.getEventRow(ev.id), conversationId: C.ama, runtime: h.runtime })).ok, false);
+  failNext = "/v1/refunds"; failStatus = 402;
+  assert.equal((await eventpay.guestRefund({ ev: db.getEventRow(ev.id), conversationId: C.ama, runtime: h.runtime })).ok, false);
+  const keys = calls.filter(c => c.path === "/v1/refunds").map(c => c.idem);
+  assert.equal(keys[0], keys[1], "after a 5xx the retry replays: Stripe never refunds twice");
+  // Now two cancels at once (a double tap): one refund, Reason's 2.5% owed once, one text.
+  h.channel.sent.length = 0;
+  const [a, b] = await Promise.all([1, 2].map(() => eventpay.guestRefund({ ev: db.getEventRow(ev.id), conversationId: C.ama, runtime: h.runtime })));
+  assert.ok(a.ok || b.ok);
+  await settle();
+  assert.notEqual(calls.filter(c => c.path === "/v1/refunds").at(-1).idem, keys[0], "the definite no moved the key on");
+  assert.equal(new Set(calls.filter(c => c.path === "/v1/refunds").slice(2).map(c => c.idem)).size, 1, "both taps carry one key");
+  assert.equal(calls.filter(c => c.path.startsWith("/v1/application_fees/")).length, 1);
+  assert.equal(calls.filter(c => c.path.startsWith("/v1/application_fees/")).at(-1).form.amount, "63");
+  assert.equal(eventpay.paymentRow(row.id).fee_back_owed_cents, 0);
+  assert.equal(sentTo(h, AMA).filter(t => /is cancelled and you're off its guest list/.test(t)).length, 1);
 });
 
 test("next payout when there isn't one: clearing, ready, nothing, Stripe down, payouts not set up — never a made-up date", async () => {

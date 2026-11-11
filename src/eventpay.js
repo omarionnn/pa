@@ -687,14 +687,20 @@ export async function refund({ ev, row, why = "organizer", fetchImpl = globalThi
   const r = await stripe.api("POST", "/v1/refunds", body, { fetchImpl, idempotencyKey: `evrefund:${cur.id}:${cur.refund_attempts}${split.kept_cents ? "p" : ""}` });
   if (!r.ok) {
     const error = r.body?.error?.message ?? `Stripe answered ${r.status}`;
-    q("UPDATE event_payments SET refund_error = ?, refund_attempts = refund_attempts + 1, updated_at = ? WHERE id = ?").run(String(error).slice(0, 300), now, cur.id);
+    // Only a definite no (4xx) moves the key on. No answer (a timeout) or a 5xx may have gone through:
+    // the retry keeps the key, so Stripe replays it instead of refunding twice (review 2026-11-11).
+    q(`UPDATE event_payments SET refund_error = ?, refund_attempts = refund_attempts + ${definiteNo(r) ? 1 : 0}, updated_at = ? WHERE id = ?`).run(String(error).slice(0, 300), now, cur.id);
     log({ event_refund_failed: cur.id, why: String(error).slice(0, 160) });
     return { ok: false, reason: "stripe", error };
   }
-  if (split.fee_back_cents) q("UPDATE event_payments SET fee_back_owed_cents = fee_back_owed_cents + ?, updated_at = ? WHERE id = ?").run(split.fee_back_cents, now, cur.id);
-  await afterRefund(cur, { refundId: r.body?.id ?? null, why, tellGuest, cancelled, leave, backCents: split.back_cents }, { runtime, now, log });
+  await afterRefund(cur, { refundId: r.body?.id ?? null, why, tellGuest, cancelled, leave, backCents: split.back_cents, feeBackCents: split.fee_back_cents }, { runtime, now, log });
   if (split.fee_back_cents) await feeBack(cur.id, { fetchImpl, log, now });
   return { ok: true, refund_id: r.body?.id ?? null, amount_cents: split.back_cents };
+}
+
+/** Stripe said no for certain (a 4xx): a retry may be a new request. A timeout or a 5xx may have gone through. */
+function definiteNo(r) {
+  return r.status >= 400 && r.status < 500;
 }
 
 const feeBackBusy = new Set();
@@ -722,7 +728,8 @@ export async function feeBack(paymentId, { fetchImpl = globalThis.fetch, log = (
     const r = await stripe.api("POST", `/v1/application_fees/${encodeURIComponent(feeId)}/refunds`, {
       amount: owed, metadata: { reason_kind: "event_ticket", event_payment_id: String(row.id), why: "guest_cancel_fee_back" },
     }, { fetchImpl, idempotencyKey: `evfeeback:${row.id}:${row.fee_back_seq}` });
-    if (r.status > 0) q("UPDATE event_payments SET fee_back_seq = fee_back_seq + 1 WHERE id = ?").run(row.id);
+    // A yes or a definite no moves the key on; no answer keeps it, so a retry replays what Stripe did.
+    if (r.ok || definiteNo(r)) q("UPDATE event_payments SET fee_back_seq = fee_back_seq + 1 WHERE id = ?").run(row.id);
     if (!r.ok) {
       log({ event_fee_back_failed: row.id, step: "refund", status: r.status, why: String(r.body?.error?.message ?? "").slice(0, 160) });
       return { ok: false, owed };
@@ -734,9 +741,12 @@ export async function feeBack(paymentId, { fetchImpl = globalThis.fetch, log = (
 }
 
 /** The row goes refunded, the guest leaves the event (unless the payment never got them in: `leave` false), and is told (unless the caller says it). */
-async function afterRefund(row, { refundId = null, why = "organizer", tellGuest = true, cancelled = false, leave = true, backCents = null }, { runtime = null, now = clock.now(), log = () => {} }) {
+async function afterRefund(row, { refundId = null, why = "organizer", tellGuest = true, cancelled = false, leave = true, backCents = null, feeBackCents = 0 }, { runtime = null, now = clock.now(), log = () => {} }) {
   const back = backCents ?? row.total_cents;
-  q("UPDATE event_payments SET status = 'refunded', refund_id = ?, refund_error = NULL, answers = NULL, refunded_cents = ?, refunded_at = ?, updated_at = ? WHERE id = ? AND status = 'paid'").run(refundId, back, now, now, row.id);
+  // Reason's 2.5% owed back is written with the refund itself, and only when this call is the one that
+  // refunded it (a double-submitted cancel gets Stripe's replay, and must not owe the fee twice).
+  const changed = q("UPDATE event_payments SET status = 'refunded', refund_id = ?, refund_error = NULL, answers = NULL, refunded_cents = ?, fee_back_owed_cents = fee_back_owed_cents + ?, refunded_at = ?, updated_at = ? WHERE id = ? AND status = 'paid'").run(refundId, back, Number(feeBackCents) || 0, now, now, row.id).changes;
+  if (!changed) return { amount_cents: 0 };
   const ev = db.getEventRow(row.event_id);
   const att = ev ? db.attendeeRow(ev.id, row.conversation_id) : null;
   // They leave only when no payment of theirs still stands (a refunded duplicate never costs a spot that is paid for).
