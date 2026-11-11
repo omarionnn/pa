@@ -32,8 +32,9 @@ import * as harm from "../harm.js";
 import { ledgerWrite } from "../trust.js";
 import { config, clock, stamp } from "../config.js";
 import { callRulesFor } from "./provider.js";
+import { mannerFor } from "./manner.js";
 import {
-  VOICE_RULES, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame, callIdentityFor,
+  VOICE_RULES, voiceRules, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame, callIdentityFor,
 } from "./voice-prompt.js";
 import * as hold from "./hold.js";
 import { WAITING_TOOLS, NEW_PERSON_TOOL, MACHINE_TOOL, WAITING_RULES } from "./hold.js";
@@ -554,9 +555,9 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // `onCall`: the text-thread rules (src/threading.js) are about bubbles and pins, not a call.
     systemFor({ ...me, onCall: true }),
     `--- you are ON A PHONE CALL right now, not texting ---`,
-    VOICE_RULES,
+    voiceRules({ manner: mannerFor(conversationId) }),
     ownerLanguageRule(lang.language || "en"),
-    ownerCallFrame({ name: me.name, identity: callIdentityFor(conversationId) }),
+    ownerCallFrame({ name: me.name, identity: callIdentityFor(conversationId), manner: mannerFor(conversationId) }),
     // A call REASON placed to them — scheduled ("call me at 7 to get me up") or asked for by text —
     // has a reason, and the model answering the turns must know it: a wake-up call whose second
     // line is "what's up?" is Reason forgetting why it rang. The opening line already said it.
@@ -655,8 +656,12 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
       rules: callRulesFor({ ownerName }),
       announcement: call.announcement ?? "",
       openingOwed,
+      manner: mannerFor(call.conversation_id),
+      // Code stops the recording on an objection only on a GPT-Live business call that talks (./gptlive.js).
+      recordingOff: call.provider === "gptlive" && !!config.lineTalk && call.direction !== "in",
     }),
     `--- you are ON A PHONE CALL right now ---`,
+    // The own-call swaps (task_start, "my bad", texting them) are not for a business (cold review 11-11).
     VOICE_RULES,
     LANGUAGE_RULE,
     // What it may and may not agree to, the questions it owes, and everything it would otherwise have

@@ -21,6 +21,7 @@
 // the general persona.
 import * as accounts from "../accounts.js";
 import { config } from "../config.js";
+import { MANNER_RULE_SWAPS, OWN_TURN_MANNER, lineMannerLines } from "./manner.js";
 
 /**
  * Their own call (paid set 3, 11-09): "text me what" — "text me that" through the phone line — right
@@ -64,6 +65,15 @@ export const VOICE_RULES = [
   `Warm and natural, not performed. No laughing at your own lines, no "um", no breathiness, no acting. And natural`
     + ` never means pretending to be a person: if you are asked, you are an AI, plainly and without a speech about it.`,
 ].join("\n");
+
+/**
+ * VOICE_RULES with the call manner's lines in place of the ones it replaces (./manner.js), or as they
+ * are with it off.
+ */
+export function voiceRules({ manner = false } = {}) {
+  if (!manner) return VOICE_RULES;
+  return VOICE_RULES.split("\n").map(l => MANNER_RULE_SWAPS.find(([re]) => re.test(l))?.[1] ?? l).join("\n");
+}
 
 /**
  * The language rule, as the thing Reason is told to DO about it rather than as a preference.
@@ -174,8 +184,8 @@ export function callIdentityFor(conversationId) {
   return config.callIdentity === true;
 }
 
-export function ownerCallFrame({ name, identity = false }) {
-  return [
+export function ownerCallFrame({ name, identity = false, manner = false }) {
+  const lines = [
     ...(identity ? [
       ownCallIdentity({ name }),
       `${name === NO_NAME ? "They are" : name + " is"} on the phone with you right now. This is the same conversation as their texts — the recent ones are below —`
@@ -240,7 +250,14 @@ export function ownerCallFrame({ name, identity = false }) {
     `Your record of this call (shown above their newest words) lists every lookup you really ran; what you said from it was`
     + ` checked. Do not talk about whether something was looked up unless they ask, and never take back an answer that came`
     + ` from the record. A correction you have already made, in a text or on a call, is made: do not make it again.`,
-  ].join("\n");
+  ];
+  if (!manner) return lines.join("\n");
+  // The call manner (./manner.js): its "I'll text you that" and spoken-yes lines take the place of the two
+  // older ones they cover, the rest are added.
+  return lines
+    .filter(l => !/^When you do something that produces a link/.test(l))
+    .map(l => /^You have your ordinary tools/.test(l) ? `You have your ordinary tools and you may use them on this call. Anything that needs their yes still needs it, and their spoken yes counts.` : l)
+    .concat(OWN_TURN_MANNER).join("\n");
 }
 
 /**
@@ -271,7 +288,7 @@ export function speakToThem({ ownerName }) {
  * is the thing a model cannot be told structurally — that an answer it does not have is a "let me
  * check with them", not an invention.
  */
-export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [], rules = [], announcement = "", openingOwed = false }) {
+export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [], rules = [], announcement = "", openingOwed = false, manner = false, recordingOff = false }) {
   const list = facts.map(f => String(f).trim()).filter(Boolean);
   return [
     `You are an AI assistant on a phone call for ${ownerName}. You are not ${ownerName} and you never say you are.`,
@@ -307,6 +324,7 @@ export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [],
     `Do not say goodbye until you are actually ending the call. When you ARE ending it, thank them and`
       + ` call the end_call tool in the same turn — never one without the other.`,
     `Once you have the answer, or they tell you they cannot help, that is the moment to end it.`,
+    ...(manner ? lineMannerLines(String(ownerName ?? "").trim().split(/\s+/)[0] || ownerName, { recordingOff }) : []),
   ].filter(Boolean).join("\n\n");
 }
 

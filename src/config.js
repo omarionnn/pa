@@ -652,6 +652,8 @@ export const config = {
   // (or on) for every account's own calls, =owner for the operator's only. With REASON_CALL_PROVIDER=gptlive
   // every call is GPT-Live already and this changes nothing.
   callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
+  // How Reason sounds on calls (Omari's call voice spec 11-11, src/calls/manner.js): owner | on | off (unset = off).
+  callManner: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_MANNER ?? "").trim().toLowerCase()),
   // Calls Reason makes to businesses and other people, and places ringing back about them, on GPT-Live
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
   // Unset, those calls are the provider's.
