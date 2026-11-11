@@ -63,6 +63,10 @@ const fake = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/v1/balance") { if (payoutFail) { res.statusCode = 500; return res.end(JSON.stringify({ error: { message: "fake outage" } })); } return res.end(JSON.stringify({ object: "balance", ...balance })); }
     if (req.method === "GET" && req.url.startsWith("/v1/payouts")) return res.end(JSON.stringify({ object: "list", data: payouts }));
     if (req.method === "POST" && req.url === "/v1/refunds") return res.end(JSON.stringify({ id: `re_fake_${++refundsMade}`, object: "refund", status: "succeeded", payment_intent: form.payment_intent }));
+    // A guest's own cancel: the charge's application fee is looked up, then Reason's 2.5% refunded on it.
+    const piGet = /^\/v1\/payment_intents\/([^/?]+)\?expand\[\]=latest_charge$/.exec(decodeURIComponent(req.url));
+    if (piGet && req.method === "GET") return res.end(JSON.stringify({ id: piGet[1], object: "payment_intent", latest_charge: { id: `ch_${piGet[1]}`, object: "charge", application_fee: `fee_${piGet[1]}` } }));
+    if (req.method === "POST" && /^\/v1\/application_fees\/[^/]+\/refunds$/.test(req.url)) return res.end(JSON.stringify({ id: `fr_fake_${++refundsMade}`, object: "fee_refund", amount: Number(form.amount) }));
     res.statusCode = 404;
     res.end(JSON.stringify({ error: { message: `no such route in the fake: ${req.method} ${req.url}` } }));
   });
@@ -255,14 +259,16 @@ test("guests see the policy: join page next to the price, Stripe's page, the pay
   const out = await tool("event_join", { name: "Supper Club", password: "truffle" }, C.ama, h.runtime);
   assert.equal(out.payment_required, true);
   const cs = lastCall("/v1/checkout/sessions");
-  assert.equal(cs.form["custom_text[submit][message]"], "Refunds until 24 hours before it starts. Ask Reason by text, or use your event page, to get your refund.");
-  assert.equal(cs.form["line_items[0][price_data][product_data][description]"], "Refunds until 24 hours before it starts.");
+  // Every place the policy is said, what a guest's own cancel gives back is said with it (owner decision 2026-11-11).
+  assert.match(unesc(pub.body), /Refunds until 24 hours before it starts\. If you cancel: \$25\.00 back; the \$1\.06 processing fee isn't refundable\./);
+  assert.equal(cs.form["custom_text[submit][message]"], "Refunds until 24 hours before it starts. If you cancel: $25.00 back; the $1.06 processing fee isn't refundable. Ask Reason by text, or use your event page, to cancel.");
+  assert.equal(cs.form["line_items[0][price_data][product_data][description]"], "Refunds until 24 hours before it starts. If you cancel: $25.00 back; the $1.06 processing fee isn't refundable.");
   const row = eventpay.rowBySession("cs_test_1");
   assert.equal(row.refund_hours, 24);
-  assert.match(eventpay.payLinkText(db.getEventRow(ev.id)), /refunds until 24 hours before it starts\. your spot is held/);
+  assert.match(eventpay.payLinkText(db.getEventRow(ev.id)), /refunds until 24 hours before it starts\. if you cancel: \$25\.00 back; the \$1\.06 processing fee isn't refundable\. your spot is held/);
   await completed(h, row);
   await settle();
-  assert.ok(sentTo(h, AMA).some(t => /^paid \$26\.06 for Supper Club — you're in\. refunds until 24 hours before it starts — just text me "refund my ticket" if plans change\.$/.test(t)), JSON.stringify(sentTo(h, AMA)));
+  assert.ok(sentTo(h, AMA).some(t => /^paid \$26\.06 for Supper Club — you're in\. refunds until 24 hours before it starts — just text me "refund my ticket" if plans change \(\$25\.00 back; the \$1\.06 processing fee isn't refundable\)\.$/.test(t)), JSON.stringify(sentTo(h, AMA)));
   // No refunds: said plainly, with no "ask Reason" line on Stripe's page.
   await tool("event_price", { event_id: ev.id, refund_policy: "none" }, OWNER_C, h.runtime);
   await tool("event_join", { name: "Supper Club", password: "truffle" }, C.kofi, h.runtime);
@@ -274,7 +280,7 @@ test("guests see the policy: join page next to the price, Stripe's page, the pay
 
 // ---------- a guest's own refund, by text ----------
 
-test("a guest's refund by text: shown only to ticket holders, behind the yes pinned to the ticket; refunded in full, off the list, both told", async () => {
+test("a guest's refund by text: shown only to ticket holders, behind the yes pinned to the ticket; the price back (processing kept, Reason's 2.5% back to the organizer), off the list, both told", async () => {
   const h = harness();
   const ev = await pricedEvent(h);
   assert.equal(toolsFor(C.ama).some(t => t.name === "event_ticket_refund"), false, "no ticket, no tool");
@@ -284,20 +290,27 @@ test("a guest's refund by text: shown only to ticket holders, behind the yes pin
   h.channel.sent.length = 0;
   const unasked = await tool("event_ticket_refund", { event_id: ev.id }, C.ama, h.runtime);
   assert.equal(unasked.blocked, "needs_confirmation", JSON.stringify(unasked));
-  assert.match(unasked.use_target, /^refund my \$26\.06 ticket for Supper Club \(event #\d+\) \[pay \d+\]$/);
+  assert.match(unasked.use_target, /^cancel my ticket for Supper Club \(event #\d+\): \$25\.00 back \[pay \d+\]$/);
   assert.equal(calls.filter(c => c.path === "/v1/refunds").length, 0, "nothing happened before the yes");
   const done = await withYes(runTool, "event_ticket_refund", { event_id: ev.id }, { conversationId: C.ama, messages: [], events: h.runtime });
   assert.equal(done.ok, true, JSON.stringify(done));
-  assert.equal(done.refunded, "$26.06");
+  assert.equal(done.refunded, "$25.00");
+  assert.equal(done.not_refunded, "$25.00 back; the $1.06 processing fee isn't refundable.");
   await settle();
   const refund = lastCall("/v1/refunds");
-  assert.equal(refund.form.reverse_transfer, "true");
-  assert.equal(refund.form.refund_application_fee, "true", "Reason earns nothing on a refunded ticket");
+  assert.equal(refund.form.amount, "2500", "the ticket price, not the $26.06 total: Stripe keeps its processing");
+  assert.equal(refund.form.reverse_transfer, "true", "the transfer is reversed in proportion: exactly $25.00");
+  assert.equal(refund.form.refund_application_fee, "false", "no proportional fee refund; Reason's 2.5% goes back on its own");
   assert.equal(refund.form["metadata[why]"], "guest");
+  const feeBack = lastCall("/v1/application_fees/");
+  assert.ok(feeBack, "Reason's 2.5% went back");
+  assert.equal(feeBack.form.amount, "63", "Reason's 2.5% of $25, so the organizer ends with nothing for the ticket");
+  assert.equal(eventpay.paymentRow(row.id).fee_back_owed_cents, 0);
+  assert.equal(eventpay.paymentRow(row.id).refunded_cents, 2500);
   assert.equal(eventpay.paymentRow(row.id).status, "refunded");
   assert.equal(db.attendeeRow(ev.id, C.ama).state, "left");
-  assert.ok(sentTo(h, AMA).some(t => /your \$26\.06 for Supper Club is refunded in full, so you're off its guest list/.test(t)), JSON.stringify(sentTo(h, AMA)));
-  assert.ok(sentTo(h, OWNER).some(t => /^Ama asked for a refund on Supper Club and got \$26\.06 back under your refund policy/.test(t)), JSON.stringify(sentTo(h, OWNER)));
+  assert.ok(sentTo(h, AMA).some(t => /your ticket for Supper Club is cancelled and you're off its guest list: \$25\.00 back; the \$1\.06 processing fee isn't refundable\. it shows up on your card/.test(t)), JSON.stringify(sentTo(h, AMA)));
+  assert.ok(sentTo(h, OWNER).some(t => /^Ama cancelled their ticket to Supper Club under your refund policy and got the \$25\.00 ticket price back/.test(t)), JSON.stringify(sentTo(h, OWNER)));
   // Somebody without a ticket on it, by id: refused before any yes, describing nothing.
   const kofi = await tool("event_ticket_refund", { event_id: ev.id }, C.kofi, h.runtime);
   assert.equal(kofi.use_target, undefined);
@@ -324,6 +337,12 @@ test("outside the policy the guest is refused before any yes, told the organizer
   const org = await withYes(runTool, "event_refund", { event_id: ev.id, guest_id: guestId }, { conversationId: OWNER_C, messages: [], events: h.runtime });
   assert.equal(org.ok, true, JSON.stringify(org));
   assert.equal(eventpay.paymentRow(row.id).status, "refunded");
+  // The organizer's refund gives everything back, processing included, and Stripe refunds the whole fee.
+  const rf = lastCall("/v1/refunds");
+  assert.equal(rf.form.amount, undefined, "the whole charge");
+  assert.equal(rf.form.refund_application_fee, "true");
+  assert.equal(calls.filter(c => c.path.startsWith("/v1/application_fees/")).length, 0);
+  assert.equal(eventpay.paymentRow(row.id).refunded_cents, 2606);
 });
 
 // ---------- a guest's own refund, on their page ----------
@@ -337,6 +356,7 @@ test("the guest's page: their ticket and policy, Refund my ticket behind a confi
   assert.match(body, /YOUR TICKET|Your ticket/);
   assert.match(body, /You paid \$26\.06\. Refunds until 48 hours before it starts\. That's until Thu, Jun 3/);
   assert.match(body, /Refund my ticket/);
+  assert.match(body, /Plans changed\? Cancel and you get \$25\.00 back; the \$1\.06 processing fee isn't refundable\./);
   // Somebody else's browser, or another site: nothing.
   const kofi = await req(h, ev, { sub: "refund", method: "POST", body: "step=do", cookie: COOKIE.kofi });
   assert.equal(kofi.status, 404);
@@ -344,11 +364,13 @@ test("the guest's page: their ticket and policy, Refund my ticket behind a confi
   assert.equal(cross.status, 403);
   const review = await req(h, ev, { sub: "refund", method: "POST", body: "step=review", cookie: COOKIE.ama });
   assert.equal(review.status, 200);
-  assert.match(unesc(review.body), /Refund your ticket\?.*whole \$26\.06 back/s);
+  assert.match(unesc(review.body), /Refund your ticket\?.*You paid \$26\.06\. Cancel and you get \$25\.00 back; the \$1\.06 processing fee isn't refundable\./s);
+  assert.match(unesc(review.body), /Cancel and get \$25\.00 back<\/button>/);
   assert.equal(eventpay.paymentRow(row.id).status, "paid", "the review refunds nothing");
   const done = await req(h, ev, { sub: "refund", method: "POST", body: "step=do", cookie: COOKIE.ama });
   assert.equal(done.status, 200);
-  assert.match(unesc(done.body), /Refunded.*\$26\.06 is on its way back/s);
+  assert.match(unesc(done.body), /Refunded.*\$25\.00 back; the \$1\.06 processing fee isn't refundable\. The money is on its way back/s);
+  assert.equal(lastCall("/v1/refunds").form.amount, "2500");
   assert.equal(eventpay.paymentRow(row.id).status, "refunded");
   assert.equal(db.attendeeRow(ev.id, C.ama).state, "left");
 });
@@ -435,6 +457,64 @@ test("sales: sold, gross, refunded, Reason's 2.5%, coming to you; the next payou
   const asked = calls.filter(c => c.path === "/v1/balance").length;
   await req(h, ev, { cookie: COOKIE.owner });
   assert.equal(calls.filter(c => c.path === "/v1/balance").length, asked, "a reload inside a minute doesn't ask Stripe again");
+});
+
+// Owner decision 2026-11-11: a guest's own cancel gets the price back (Stripe keeps its processing,
+// Reason's 2.5% goes back to the organizer); the organizer's refund or a cancel gets everything back.
+// The ledger below plays Stripe's money moves for a destination charge (the whole charge is
+// transferred, the application fee comes back; a refund reverses the transfer in proportion) and
+// checks the organizer ends with exactly what the summary says, and the platform with Reason's 2.5%
+// on the tickets that stand less the processing it ate on the organizer's refund.
+test("sales after a guest's own cancel and an organizer's refund: the summary is what the money did", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const rows = [await amaPays(h, ev, C.ama), await amaPays(h, ev, C.kofi), await amaPays(h, ev, C.yaw)];
+  const ama = await eventpay.guestRefund({ ev: db.getEventRow(ev.id), conversationId: C.ama, runtime: h.runtime });
+  assert.equal(ama.ok, true, JSON.stringify(ama));
+  assert.equal(ama.back_cents, 2500);
+  await eventpay.refund({ ev: db.getEventRow(ev.id), row: rows[1], why: "organizer", runtime: h.runtime });
+  await settle();
+  const s = eventpay.summary(db.getEventRow(ev.id));
+  assert.equal(s.sold_count, 3);
+  assert.equal(s.gross_cents, 7500);
+  assert.equal(s.refunded_count, 2);
+  assert.equal(s.refunded_cents, 5000, "the organizer gave back two tickets' price");
+  assert.equal(s.returned_cents, 2500 + 2606, "Ama got the price, Kofi everything");
+  assert.equal(s.reason_fee_cents, 63);
+  assert.equal(s.organizer_net_cents, 2437);
+  assert.equal(s.gross_cents - s.refunded_cents - s.reason_fee_cents, s.organizer_net_cents);
+  // The ledger, from the calls Reason made.
+  const qt = eventpay.quote(2500);
+  let organizer = 0, platform = 0;
+  for (const r of rows) { organizer += qt.total - qt.application_fee; platform += qt.application_fee - qt.processing; }
+  for (const c of calls.filter(c => c.path === "/v1/refunds")) {
+    const pay = eventpay.paymentRow(Number(c.form["metadata[event_payment_id]"]));
+    const amount = c.form.amount ? Number(c.form.amount) : pay.total_cents;
+    const reversed = Math.round(pay.total_cents * amount / pay.total_cents);
+    const feeBack = c.form.refund_application_fee === "true" ? Math.round(pay.application_fee_cents * amount / pay.total_cents) : 0;
+    organizer += -reversed + feeBack; platform += -amount + reversed - feeBack;
+  }
+  for (const c of calls.filter(c => /^\/v1\/application_fees\/[^/]+\/refunds$/.test(c.path))) { organizer += Number(c.form.amount); platform -= Number(c.form.amount); }
+  assert.equal(organizer, s.organizer_net_cents, "the organizer has exactly what Coming to you says");
+  assert.equal(platform, qt.reason_fee - qt.processing, "Reason keeps 2.5% on Yaw's ticket and ate the processing on the organizer's refund only");
+});
+
+test("Reason's 2.5% back after a guest's own cancel: Stripe saying no leaves it owed, the sweep pays it once", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const row = await amaPays(h, ev);
+  failNext = "/v1/application_fees/";
+  const out = await eventpay.guestRefund({ ev: db.getEventRow(ev.id), conversationId: C.ama, runtime: h.runtime });
+  assert.equal(out.ok, true, "the guest's money went back; only the fee refund waits");
+  assert.equal(eventpay.paymentRow(row.id).fee_back_owed_cents, 63);
+  const swept = await eventpay.sweep();
+  assert.equal(swept.fees_back, 1);
+  assert.equal(eventpay.paymentRow(row.id).fee_back_owed_cents, 0);
+  const tries = calls.filter(c => c.path.startsWith("/v1/application_fees/"));
+  assert.equal(tries.length, 2);
+  assert.notEqual(tries[0].idem, tries[1].idem, "a retry after Stripe's no is a new request, not the replayed no");
+  assert.equal((await eventpay.sweep()).fees_back, 0, "nothing owed, nothing asked");
+  assert.equal(calls.filter(c => c.path.startsWith("/v1/application_fees/")).length, 2);
 });
 
 test("next payout when there isn't one: clearing, ready, nothing, Stripe down, payouts not set up — never a made-up date", async () => {

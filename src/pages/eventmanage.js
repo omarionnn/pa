@@ -368,7 +368,7 @@ function ticketsSection(ev, { conversationId, drafts, sec, paused }) {
       + radio("anytime", "Refunds anytime until it starts")
       + radio("none", "No refunds")
       + `</fieldset>`
-      + p("Guests who ask while the policy allows are refunded automatically — the ticket and the processing. You can always refund anybody yourself, whatever the policy.", "quiet");
+      + p("Guests who cancel while the policy allows get the ticket price back automatically; the processing fee they paid isn't refundable. You can always refund anybody yourself, whatever the policy — that gives them everything back, processing included.", "quiet");
     const guests = eventpay.paidGuests(ev);
     const failed = guests.filter(g => g.refund_error);
     body = `<div class="mg-kv"><span class="quiet">${esc(priced ? eventpay.organizerPriceLine(ev.price_cents) : "Free to join. Set a price per person and guests pay on Stripe's page when they join.")}</span><span class="mg-tag${priced ? " on" : ""}">${esc(priced ? `${eventpay.dollars(ev.price_cents).toUpperCase()} PER PERSON` : "FREE")}</span></div>`

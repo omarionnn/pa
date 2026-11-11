@@ -448,11 +448,22 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   + the ticket line's `product_data.description`; the pay-link text; the paid-join receipt (`receiptBody`: `paid $X for
   <name> — you're in. refunds until … — just text me "refund my ticket"…`); guest view `you.your_refund_policy` +
   `can_ask_for_refund_now`. **Guest's own refund:** `event_ticket_refund` (visible only while `holdsTicket`: a paid row
-  on a non-cancelled event) is in `ALWAYS_NEEDS_CONFIRMATION` + `GATED_ACTIONS` + `NEVER_STANDING`, target `refund my $X
-  ticket for <event> (event #id) [pay N]`; `ticketRefundRefusal` (no ticket; `refundWindow` says no_refunds / closed /
-  started) answers BEFORE any yes, saying the organizer can still choose to refund. Allowed → `guestRefund` → the same
-  `refund()` (reverse_transfer + refund_application_fee, metadata why=guest), guest leaves and gets "done — your $X …
-  is refunded in full", organizer gets "<name> asked for a refund on <event> and got $X back under your refund policy".
+  on a non-cancelled event) is in `ALWAYS_NEEDS_CONFIRMATION` + `GATED_ACTIONS` + `NEVER_STANDING`, target `cancel my ticket
+  for <event> (event #id): $25.00 back [pay N]`; `ticketRefundRefusal` (no ticket; `refundWindow` says no_refunds / closed /
+  started) answers BEFORE any yes, saying the organizer can still choose to refund. Allowed → `guestRefund` → `refund()`
+  with why=guest. **Who asked decides what comes back (owner decision 2026-11-11, `refundSplit`):** a guest's own cancel
+  (why guest/buyer) refunds `amount` = the price with `reverse_transfer` and `refund_application_fee=false` (the transfer
+  of a destination charge is the whole charge, so the proportional reversal is exactly the price), then `feeBack` posts
+  `/v1/application_fees/<fee>/refunds` amount = Reason's 2.5% (fee id from GET `/v1/payment_intents/<pi>?expand[]=latest_charge`);
+  Stripe keeps its processing; the organizer ends with $0 for the ticket. Owed fee-backs sit on
+  `event_payments.fee_back_owed_cents` (key `evfeeback:<id>:<fee_back_seq>`) and the sweep retries. Organizer refunds,
+  cancels, no-room and dashboard refunds stay whole (processing included). Every guest-facing line says it:
+  `policyWithMoney` "Refunds until 48 hours before it starts. If you cancel: $25.00 back; the $1.06 processing fee isn't
+  refundable." (join page, Stripe description + submit text, pay-link text), receipt "(… isn't refundable)", ticket
+  block "Plans changed? Cancel and you get …", confirm step "You paid $26.06. Cancel and you get …" + button "Cancel and
+  get $25.00 back", done page, text "done — your ticket for X is cancelled …: $25.00 back; the $1.06 processing fee isn't
+  refundable"; organizer hears "<name> cancelled their ticket to <event> under your refund policy and got the $25.00
+  ticket price back". `event_payments.refunded_cents` = what went to the card; `summary().returned_cents` sums it.
   Guest page: YOUR TICKET block (paid, policy, closing time only when the event's time is out to them) with "Refund my
   ticket" → POST `/e/<id>/refund` step=review (confirm page) → step=do (Refunded page); outside the window no button, "The
   organizer can still choose to refund you"; a stranger's POST 404, cross-origin 403. Organizer `event_refund` ignores

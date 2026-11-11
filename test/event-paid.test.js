@@ -64,6 +64,10 @@ const fake = http.createServer((req, res) => {
     if (req.method === "POST" && req.url === "/v1/checkout/sessions") return res.end(JSON.stringify({ id: `cs_test_${++sessionsMade}`, object: "checkout.session", url: `https://checkout.stripe.test/c/pay/cs_test_${sessionsMade}`, payment_intent: null }));
     if (/^\/v1\/checkout\/sessions\/[^/]+\/expire$/.test(req.url) && req.method === "POST") return res.end(JSON.stringify({ object: "checkout.session", status: "expired" }));
     if (req.method === "POST" && req.url === "/v1/refunds") return res.end(JSON.stringify({ id: `re_fake_${++refundsMade}`, object: "refund", status: "succeeded", payment_intent: form.payment_intent }));
+    // A guest's own cancel: the charge's application fee is looked up, then Reason's 2.5% refunded on it.
+    const piGet = /^\/v1\/payment_intents\/([^/?]+)\?expand\[\]=latest_charge$/.exec(decodeURIComponent(req.url));
+    if (piGet && req.method === "GET") return res.end(JSON.stringify({ id: piGet[1], object: "payment_intent", latest_charge: { id: `ch_${piGet[1]}`, object: "charge", application_fee: `fee_${piGet[1]}` } }));
+    if (req.method === "POST" && /^\/v1\/application_fees\/[^/]+\/refunds$/.test(req.url)) return res.end(JSON.stringify({ id: `fr_fake_${++refundsMade}`, object: "fee_refund", amount: Number(form.amount) }));
     res.statusCode = 404;
     res.end(JSON.stringify({ error: { message: `no such route in the fake: ${req.method} ${req.url}` } }));
   });
@@ -480,7 +484,7 @@ test("a new guest on the page: the finishing text proves the phone and is answer
   assert.ok(conv, "the account was made by the text");
   assert.equal(db.attendeeRow(ev.id, conv), null, "not on the event yet");
   const got = sentTo(h, NEW1);
-  assert.ok(got.some(t => /\$25 per person \(\$26\.06 with processing\)\. refunds until 48 hours before it starts\. your spot is held for 15 minutes/.test(t)), JSON.stringify(got));
+  assert.ok(got.some(t => /\$25 per person \(\$26\.06 with processing\)\. refunds until 48 hours before it starts\. if you cancel: \$25\.00 back; the \$1\.06 processing fee isn't refundable\. your spot is held for 15 minutes/.test(t)), JSON.stringify(got));
   assert.ok(got.some(t => /^https:\/\/checkout\.stripe\.test\/c\/pay\/cs_test_1$/.test(t)), "the link went as its own message");
   const claim = db.eventClaimByCode(/code ([A-Z0-9-]+)/i.exec(codeText)[1].replace("-", ""));
   assert.equal(claim.state, "used");

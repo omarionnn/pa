@@ -40,6 +40,9 @@ const fakeStripe = (await import("node:http")).createServer((req, res) => {
     if (req.method === "GET" && req.url === "/v1/balance") return res.end(JSON.stringify({ object: "balance", available: [], pending: [{ amount: 2437, currency: "usd" }] }));
     if (req.method === "GET" && req.url.startsWith("/v1/payouts")) return res.end(JSON.stringify({ object: "list", data: [] }));
     if (req.method === "POST" && req.url === "/v1/refunds") return res.end(JSON.stringify({ id: `re_drive_${++stripeN}`, object: "refund", status: "succeeded" }));
+    const piGet = /^\/v1\/payment_intents\/([^/?]+)\?expand\[\]=latest_charge$/.exec(decodeURIComponent(req.url));
+    if (piGet && req.method === "GET") return res.end(JSON.stringify({ id: piGet[1], object: "payment_intent", latest_charge: { id: `ch_${piGet[1]}`, application_fee: `fee_${piGet[1]}` } }));
+    if (req.method === "POST" && /^\/v1\/application_fees\/[^/]+\/refunds$/.test(req.url)) return res.end(JSON.stringify({ id: `fr_drive_${++stripeN}`, object: "fee_refund", amount: Number(form.amount) }));
     res.statusCode = 404;
     res.end(JSON.stringify({ error: { message: `no such route in the fake: ${req.method} ${req.url}` } }));
   });
@@ -649,7 +652,7 @@ config.events = "owner";
       && /Next payout: None scheduled yet — \$24\.37 is still clearing at Stripe/.test(sales.say ?? "") && stripeCalls.some(c => c.path === "/v1/balance" && /^acct_drive_/.test(c.account ?? "")), sales.say);
   const tight = await tool("event_price", { event_id: pev.id, event_named: pev.name, refund_policy: "none" }, C.owner);
   const yawAsk = await tool("event_ticket_refund", { event_id: pev.id, event_named: pev.name }, C.yaw);
-  step("pay: tightening to no refunds spares tickets already sold: Yaw's ask still goes to the yes, pinned to his ticket", tight.ok && /keep the looser policy/.test(tight.note ?? "") && yawAsk.blocked === "needs_confirmation" && /^refund my \$26\.06 ticket for Paid Supper/.test(yawAsk.use_target ?? ""), JSON.stringify({ note: tight.note, yaw: yawAsk.use_target ?? yawAsk.error }));
+  step("pay: tightening to no refunds spares tickets already sold: Yaw's ask still goes to the yes, pinned to his ticket", tight.ok && /keep the looser policy/.test(tight.note ?? "") && yawAsk.blocked === "needs_confirmation" && /^cancel my ticket for Paid Supper \(event #\d+\): \$25\.00 back/.test(yawAsk.use_target ?? ""), JSON.stringify({ note: tight.note, yaw: yawAsk.use_target ?? yawAsk.error }));
   const kofiAsk = await tool("event_ticket_refund", { event_id: pev.id, event_named: pev.name }, C.kofi);
   step("pay: somebody without a ticket is never offered a guest refund", kofiAsk.ok === false && !kofiAsk.use_target, kofiAsk.error);
   const dash = await tool("event_payouts", { event_id: pev.id, event_named: pev.name, action: "dashboard" }, C.owner);

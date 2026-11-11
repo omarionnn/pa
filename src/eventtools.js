@@ -731,7 +731,7 @@ export const EVENT_TOOL_DEFS = [
   },
   {
     name: "event_ticket_refund",
-    description: "A guest's own refund for a paid event they joined (\"refund my ticket for X\", \"can I get my money back\"). Reason checks the event's refund policy: when it allows, the guest gets the whole amount back (price and processing), comes off the guest list and the organizer is told; when it doesn't, nothing happens and the answer says why — tell them kindly that the organizer can still choose to refund them. Needs their yes, checked in code: call first with no confirmation_id (nothing happens), tell them the amount and that they'll come off the event, then confirm_request with action event_ticket_refund and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the confirmation_id.",
+    description: "A guest's own refund for a paid event they joined (\"refund my ticket for X\", \"can I get my money back\"). Reason checks the event's refund policy: when it allows, the guest gets the ticket price back — the processing fee they paid at checkout isn't refundable — comes off the guest list and the organizer is told; when it doesn't, nothing happens and the answer says why — tell them kindly that the organizer can still choose to refund them. Needs their yes, checked in code: call first with no confirmation_id (nothing happens), tell them plainly what comes back (the `use_target` says it, e.g. \"$25.00 back\") and that the processing fee isn't refundable, and that they'll come off the event, then confirm_request with action event_ticket_refund and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the confirmation_id.",
     input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this ticket." } }, required: ["event_id"] },
   },
   {
@@ -1239,7 +1239,7 @@ export async function runEventTool(name, input, ctx) {
     const r = await eventpay.guestRefund({ ev: t.ev, conversationId: c, runtime, log: ctx.log ?? (() => {}) });
     if (!r.ok && r.reason === "stripe") return { ok: false, error: "Stripe didn't take the refund just now. Nothing changed and they're still on the event; they can try again in a few minutes." };
     if (!r.ok) return { ok: false, error: r.window ? eventpay.refusalWords(t.ev, r.window) : "There's nothing to refund on that one." };
-    return { ok: true, refunded: eventpay.dollars(r.row.total_cents), left: t.ev.name, note: "Refunded in full (price and processing), under the event's refund policy. They're off the guest list, the organizer was told, and they got a text saying so — don't repeat it word for word; a short confirmation is enough. It shows on their card in a few days." };
+    return { ok: true, refunded: eventpay.cents2(r.back_cents), not_refunded: eventpay.selfRefundWords(r.row), left: t.ev.name, note: "Refunded under the event's refund policy: the ticket price came back; the processing fee isn't refundable. They're off the guest list, the organizer was told, and they got a text saying so — don't repeat it word for word; a short confirmation is enough. It shows on their card in a few days." };
   }
 
   if (name === "event_info" || name === "event_leave" || name === "event_mute" || name === "event_directory") {
@@ -1266,7 +1266,7 @@ export async function runEventTool(name, input, ctx) {
       const paidRow = eventpay.paidRow(v.ev.id, c);
       const w = paidRow ? eventpay.refundWindow(v.ev, paidRow) : null;
       return { ok: true, left: v.ev.name, note: "They're off it: no more messages from this event, and its who's-going page is closed to them. Their Reason is untouched."
-        + (paidRow ? ` They paid ${eventpay.dollars(paidRow.total_cents)}, and leaving doesn't refund it.${w?.allowed ? " The refund policy allows a refund right now: offer it in one line (event_ticket_refund)." : ""}` : "") };
+        + (paidRow ? ` They paid ${eventpay.dollars(paidRow.total_cents)}, and leaving doesn't refund it.${w?.allowed ? ` The refund policy allows a refund right now (${eventpay.selfRefundWords(paidRow)}): offer it in one line (event_ticket_refund).` : ""}` : "") };
     }
     if (name === "event_mute") {
       db.updateAttendeeRow(v.att.id, { muted: input.muted ? 1 : 0 });

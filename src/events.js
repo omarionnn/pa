@@ -213,7 +213,7 @@ export function publicView(ev) {
 /** The price as anybody may see it (src/eventpay.js), or nothing for a free event. */
 export function priceView(ev) {
   if (!eventpay.priced(ev)) return {};
-  return { price_per_person: eventpay.dollars(ev.price_cents), price: eventpay.guestPriceLine(ev), refund_policy: eventpay.refundPolicyLine(eventpay.policyOf(ev)), paid_event: true };
+  return { price_per_person: eventpay.dollars(ev.price_cents), price: eventpay.guestPriceLine(ev), refund_policy: eventpay.policyWithMoney(eventpay.policyOf(ev), eventpay.ticketAt(ev)), paid_event: true };
 }
 
 /** What a joined guest may know: the released details, and nothing that is still the organizer's. */
@@ -245,7 +245,7 @@ function paidLine(ev, att) {
   // Their own ticket's policy (the one bought under, or looser now), and whether they can ask now.
   const w = eventpay.refundWindow(ev, row);
   // Whether they can ask now is left out while the time is hidden: watched over time it would tell the start.
-  return { paid: eventpay.dollars(row.total_cents), your_refund_policy: eventpay.refundPolicyLine(w.policy), ...(ev.time_released ? { can_ask_for_refund_now: w.allowed } : {}) };
+  return { paid: eventpay.dollars(row.total_cents), your_refund_policy: eventpay.refundPolicyLine(w.policy), if_you_cancel: eventpay.selfRefundWords(row), ...(ev.time_released ? { can_ask_for_refund_now: w.allowed } : {}) };
 }
 
 /** The organizer's view: all of it, except the password, which nobody can read back. */

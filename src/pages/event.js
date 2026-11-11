@@ -131,7 +131,7 @@ function publicDetails(ev) {
     // The price is public (src/eventpay.js): anyone deciding whether to come should see it first.
     eventpay.priced(ev) ? `<p><b>Price:</b> ${esc(eventpay.guestPriceLine(ev))}</p>` : "",
     // The refund policy sits next to the price: what a guest can count on before paying.
-    eventpay.priced(ev) ? `<p><b>Refunds:</b> ${esc(eventpay.refundPolicyLine(eventpay.policyOf(ev)))}</p>` : "",
+    eventpay.priced(ev) ? `<p><b>Refunds:</b> ${esc(eventpay.policyWithMoney(eventpay.policyOf(ev), eventpay.ticketAt(ev)))}</p>` : "",
   ].filter(Boolean);
   return rows.length ? `<div class="t">${rows.join("")}</div>` : "";
 }
@@ -244,7 +244,7 @@ function joinFormV2(ev, { account, error, values }) {
 /** What paying looks like from here (src/eventpay.js): a Stripe page now, or by text after the finishing text. */
 function paidJoinNote(ev, signedIn) {
   const qt = eventpay.quote(ev.price_cents);
-  const refunds = ` ${eventpay.refundPolicyLine(eventpay.policyOf(ev))}`;
+  const refunds = ` ${eventpay.policyWithMoney(eventpay.policyOf(ev), eventpay.ticketAt(ev))}`;
   return signedIn
     ? `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password you'll pay on a secure Stripe page — Apple Pay works — and you're in once the payment goes through.${refunds}`
     : `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password and one text to Reason, Reason texts you a secure Stripe payment link; you're in once the payment goes through.${refunds}`;
@@ -275,7 +275,7 @@ function ticketBlock(ev, att, { v2 = true } = {}) {
   const policy = eventpay.refundPolicyLine(w.policy);
   const closes = w.allowed && w.closes_at != null && timeOut && w.policy.policy === "until" ? ` That's until ${closesWords(ev, w.closes_at)}.` : "";
   const lines = [`You paid ${eventpay.dollars(row.total_cents)}. ${policy}${closes}`,
-    w.allowed ? "Plans changed? You get it all back, processing included, and come off the guest list." : "The organizer can still choose to refund you — ask them, or text Reason."];
+    w.allowed ? `Plans changed? Cancel and you get ${eventpay.selfRefundWords(row)} You come off the guest list.` : "The organizer can still choose to refund you — ask them, or text Reason."];
   const action = esc(`/e/${ev.public_id}/refund`);
   const btn = w.allowed
     ? `<form class="${v2 ? "jf" : "ev-form"}" method="POST" action="${action}"><input type="hidden" name="step" value="review"><button class="${v2 ? "go" : "ev-btn"}" type="submit" data-busy="Opening…">${v2 ? "Refund my ticket →" : "Refund my ticket"}</button></form>`
@@ -289,13 +289,13 @@ function ticketBlock(ev, att, { v2 = true } = {}) {
 function renderRefundPage({ ev, row = null, done = null, error = "" }) {
   let body;
   if (done) {
-    body = `<h2>Refunded</h2><div class="t">${p(`Your ${eventpay.dollars(done.total_cents)} is on its way back to your card — it shows up in a few days. You're off the guest list, and the organizer was told.`)}${p("Changed your mind again? The link and the password still work; joining means paying again.")}</div>`;
+    body = `<h2>Refunded</h2><div class="t">${p(`${eventpay.selfRefundWords(done)} The money is on its way back to your card — it shows up in a few days. You're off the guest list, and the organizer was told.`)}${p("Changed your mind again? The link and the password still work; joining means paying again.")}</div>`;
   } else {
     body = `<h2>Refund your ticket?</h2><div class="t">`
       + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
-      + p(`You get the whole ${eventpay.dollars(row.total_cents)} back — the ticket and the processing — on your card in a few days.`)
+      + p(`You paid ${eventpay.cents2(row.total_cents)}. Cancel and you get ${eventpay.selfRefundWords(row)} It's on your card in a few days.`)
       + p("You come off the guest list and stop getting the event's updates. The organizer is told.")
-      + `</div><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/refund`)}"><input type="hidden" name="step" value="do"><button class="ev-btn" type="submit" data-busy="Refunding…">Refund ${esc(eventpay.dollars(row.total_cents))}</button></form>`
+      + `</div><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/refund`)}"><input type="hidden" name="step" value="do"><button class="ev-btn" type="submit" data-busy="Refunding…">Cancel and get ${esc(eventpay.cents2(eventpay.refundSplit(row, "guest").back_cents))} back</button></form>`
       + `<p><a href="${esc(`/e/${ev.public_id}`)}">Keep my ticket</a></p>`;
   }
   return shell({ title: ev.name, body: intro(ev) + body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
