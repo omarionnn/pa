@@ -1224,7 +1224,10 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       if (eventpay.payoutsReady(c)) return back(own, "money", { done: "payouts_ready" });
       // Stripe's own onboarding for their Express account; back to this page after (GET /payouts).
       const link = await eventpay.onboardingLink(c, own, { fetchImpl: globalThis.fetch });
-      if (!link.ok) return oops("Stripe couldn't start the payouts setup just now. Try again in a few minutes.");
+      if (!link.ok) {
+        log({ event_manage_payouts_failed: own.id, status: link.status ?? null, code: link.code ?? null, error: String(link.error ?? "").slice(0, 200) });
+        return oops("Stripe couldn't start the payouts setup just now. Try again in a few minutes.");
+      }
       log({ event_manage_payouts: own.id, made: !!link.row });
       return redirect(link.url);
     }
