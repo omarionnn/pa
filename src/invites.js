@@ -38,6 +38,27 @@ export function inviteUrl(token) {
   return `${base}${INVITE_PATH}/${token}`;
 }
 
+/**
+ * REASON_INVITE_START (default off): an invite link's button leads into the web setup
+ * (heyreason.com/start/?invite=<token>) instead of opening a text with the claim code. The setup
+ * carries the invite; the setup's first text spends it, in the same transaction that makes the
+ * account (src/websetup.js claimInviteFromText), and the hand-off is the web welcome with "invited by"
+ * in its first line. The old texted claim code keeps working for links already handed out.
+ * Needs REASON_WEB_SETUP on too (the setup API it leads into).
+ */
+export const startOn = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_INVITE_START ?? "").trim().toLowerCase())
+  && ["1", "true", "on", "yes"].includes(String(process.env.REASON_WEB_SETUP ?? "").trim().toLowerCase());
+
+/**
+ * Where an invite's button goes under REASON_INVITE_START: the site's /start with the token. The site
+ * is REASON_INVITE_START_URL when set (a staging copy of the site), else REASON_SITE_URL. Null when
+ * there is no site to send them to (the page then keeps the texted code).
+ */
+export function startUrl(token) {
+  const base = (/^https:\/\/[^\s"'<>]+$/.test(process.env.REASON_INVITE_START_URL || "") ? process.env.REASON_INVITE_START_URL : config.siteUrl || "").replace(/\/+$/, "");
+  return base ? `${base}/start/?invite=${encodeURIComponent(token)}` : null;
+}
+
 /** "ABCD-EFGH": how a claim code is shown and prefilled. */
 export function formatCode(code) {
   const c = String(code ?? "").toUpperCase();
@@ -244,6 +265,41 @@ export function claimByText({ channel, address, text, name = "" }) {
   };
 }
 
+/**
+ * A web setup started from an invite link (REASON_INVITE_START): the invite its token names, read
+ * only, as `{ id, state, from }`, or null for a token that is not a link. Nothing is spent here.
+ */
+export function inviteForSetup(token) {
+  const inv = /^[A-Za-z0-9_-]{32}$/.test(String(token ?? "")) ? db.inviteByToken(token) : null;
+  return inv ? { id: inv.id, state: inv.state, from: inviterName(inv.conversation_id) || "A friend" } : null;
+}
+
+/**
+ * The setup's first text, from a number with no account, for a setup that carries an invite: spend
+ * the invite and make the account, in db.redeemInvite's one transaction (the same as a texted code).
+ * `{ joined: true, … }` on a win; `{ joined: false, reason, toThem }` when it was claimed or canceled
+ * first (the losing side of a race is told so); null when it is already a member's number.
+ */
+export function claimForSetup({ inviteId, channel, address, name = "" }) {
+  const inv = db.db.prepare("SELECT id, conversation_id, claim_code FROM invites WHERE id = ?").get(Number(inviteId)) ?? null;
+  if (!inv) return { joined: false, reason: "not_found", toThem: ALREADY_CLAIMED };
+  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const out = db.redeemInvite({ claimCode: inv.claim_code, channel, address: addr, name });
+  if (!out.ok) {
+    if (out.reason === "canceled") return { joined: false, reason: "canceled", toThem: CANCELED };
+    if (out.reason === "already_member") return null;
+    return { joined: false, reason: out.reason, toThem: ALREADY_CLAIMED };
+  }
+  const joiner = out.account.name || `Someone with a number ending ${addr.slice(-4)}`;
+  return {
+    joined: true,
+    conversationId: out.account.conversation_id,
+    inviteId: inv.id,
+    inviter: inv.conversation_id,
+    toInviter: `${joiner} just joined with your invite 🎉`,
+  };
+}
+
 /** An existing member texting a live invite's code: it is not spent on them. */
 export function memberLine(inv, conversationId) {
   if (inv.state !== "unused") return null;
@@ -318,6 +374,18 @@ export function renderInvite({ invite, name, lineNumber }) {
     action = `<h2>Canceled</h2><div class="t">${p(name + " canceled this invite. Ask them for a new one.")}</div>`;
   } else if (!lineNumber) {
     action = `<h2>How to join</h2><div class="t">${p("Reason's texting line isn't connected right now, so this invite can't be claimed at the moment. It hasn't been used — try again later.")}</div>`;
+  } else if (startOn() && startUrl(invite.token)) {
+    // Into the web setup (REASON_INVITE_START): a few screens, then Messages with the first text typed.
+    // The texted code stays as the second way in, so a page saved before this still works.
+    const code = formatCode(invite.claim_code);
+    action = `<h2>How to join</h2><div class="t">`
+      + p("Tap the button. You'll pick what to call Reason and connect what you like, then it opens a text to Reason with everything already written in, so all you do is press send. That text is how Reason knows the number is really yours, and it's what claims the invite.")
+      + `</div>`
+      + `<a class="join" href="${esc(startUrl(invite.token))}" style="display:block;text-align:center;margin:.8rem 0 1rem;padding:.95rem;font-weight:600;border-radius:.6rem;background:var(--ink);color:var(--bg);text-decoration:none">Set up your Reason</a>`
+      + `<div class="t">`
+      + p(`In a hurry? From your phone, text ${code} to ${prettyNumber(lineNumber)}.`)
+      + p("This invite works once. Opening this page doesn't use it up: it's claimed by whoever sends the first text.")
+      + `</div>`;
   } else {
     const code = formatCode(invite.claim_code);
     const href = `sms:${normalizeNumber(lineNumber)}?&body=${encodeURIComponent(joinText(invite.claim_code))}`;

@@ -43,6 +43,7 @@ import * as shop from "./shopconnect.js";
 import { profilePath } from "./browser.js";
 import { cookieDomain } from "./pages/siteproxy.js";
 import { clientIp } from "./opspassword.js";
+import * as invites from "./invites.js";
 
 export const on = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_WEB_SETUP ?? "").trim().toLowerCase());
 export const PATH = "/setup";
@@ -126,6 +127,28 @@ export function claimFromText({ conversationId, text, log = () => {} }) {
   if (moved.amazon) db.createTimer(conversationId, { fireAt: clock.now() + 90_000, note: amazon.followUpNote() });
   log({ websetup_claim: "claimed", setup: row.id, amazon: moved.amazon, amazon_store: moved.amazonStore, email: moved.email, uber: moved.uber, card: moved.card, ...(fresh ? {} : { connections: "dropped_late" }) });
   return { setupId: row.id, user: row.user_name, reasonName: row.reason_name || DEFAULT_CARD_NAME, text: withoutCode(text), ...moved };
+}
+
+/**
+ * REASON_INVITE_START: the setup's first text, from a number with NO account, when the setup was
+ * started from an invite link. The same proof as any setup claim (the code at the end, and the setup's
+ * names in the text); then the invite is spent and the account made in one transaction
+ * (invites.claimForSetup → db.redeemInvite), so the invite rules hold exactly as for a texted code:
+ * one use, nothing spent before this text, and the losing side of a race is told it was claimed.
+ * Null when this is not such a text (the caller carries on: event, texted invite code, admission).
+ * The setup itself is claimed right after by claimFromText, on the account this made.
+ */
+export function claimInviteFromText({ channel, address, text, log = () => {} }) {
+  if (!on() || !invites.startOn()) return null;
+  const code = codeInText(text);
+  if (!code) return null;
+  const row = store.byCode(code);
+  if (!row?.invite_id) return null;
+  // Without its names the text proves nothing; claimFromText counts the miss if they get in another way.
+  if (!row.user_name || !has(text, row.user_name) || !has(text, row.reason_name)) return null;
+  const out = invites.claimForSetup({ inviteId: row.invite_id, channel, address, name: nameCase(row.user_name) });
+  log({ websetup_invite: out ? (out.joined ? "joined" : out.reason) : "member", setup: row.id, invite: row.invite_id });
+  return out;
 }
 
 /**
@@ -251,9 +274,16 @@ export function connectState(row, which, { now = clock.now() } = {}) {
   return { state: "none", step: 1, of: STEPS };
 }
 
+/** The invite a setup carries, for its page: who sent it. Never the token, never a price. */
+function inviteView(row) {
+  if (!row?.invite_id) return {};
+  const inv = db.db.prepare("SELECT conversation_id, state FROM invites WHERE id = ?").get(row.invite_id);
+  return inv ? { invite: { from: invites.inviterName(inv.conversation_id) || "A friend", state: inv.state } } : {};
+}
+
 export function view(row, opts = {}) {
   return {
-    id: row.id, code: row.code, user: row.user_name, reasonName: row.reason_name,
+    id: row.id, code: row.code, user: row.user_name, reasonName: row.reason_name, ...inviteView(row),
     connections: { amazon: connectState(row, "amazon", opts), uber: connectState(row, "uber", opts), email: connectState(row, "email", opts), card: connectState(row, "card", opts) },
   };
 }
@@ -401,9 +431,13 @@ export async function request({ method = "GET", path = "", query = {}, headers =
     if (!limits.create(ip)) return json(429, { error: "slow down" });
     sweep();
     const o = originOf(String(headers.origin ?? ""));
-    const s = store.create(undefined, { origin: o && setupOrigins().includes(o) ? o : "" });
-    log({ websetup: "created", setup: s.id });
-    return json(201, { id: s.id, code: s.code, expiresAt: s.expiresAt }, { "Set-Cookie": setupCookie(s.secret, headers) });
+    // Started from an invite link (REASON_INVITE_START): the setup carries a live invite, read only.
+    // A claimed or canceled one is not carried (the page says so and the setup goes on as anybody's).
+    const b = invites.startOn() ? ((await body()) ?? {}) : {};
+    const inv = b.invite ? invites.inviteForSetup(String(b.invite)) : null;
+    const s = store.create(undefined, { origin: o && setupOrigins().includes(o) ? o : "", inviteId: inv?.state === "unused" ? inv.id : null });
+    log({ websetup: "created", setup: s.id, ...(inv ? { invite: inv.id, invite_state: inv.state } : {}) });
+    return json(201, { id: s.id, code: s.code, expiresAt: s.expiresAt, ...(inv ? { invite: { from: inv.from, state: inv.state } } : {}) }, { "Set-Cookie": setupCookie(s.secret, headers) });
   }
 
   const m = /^\/api\/([A-Za-z0-9_-]{16})(?:\/connect\/(amazon|email|uber|card))?$/.exec(path);

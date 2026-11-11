@@ -38,7 +38,7 @@ db.db.exec(`
   CREATE INDEX IF NOT EXISTS web_setups_claimed ON web_setups (claimed_by);
 `);
 // Columns added after the table first shipped to a test DB (harmless when already there).
-for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0", "uber_state TEXT NOT NULL DEFAULT ''", "card_state TEXT NOT NULL DEFAULT ''"]) {
+for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0", "uber_state TEXT NOT NULL DEFAULT ''", "card_state TEXT NOT NULL DEFAULT ''", "invite_id INTEGER"]) {
   try { db.db.exec(`ALTER TABLE web_setups ADD COLUMN ${col}`); } catch { /* exists */ }
 }
 // Once claimed, a setup keeps no name and no phone (encryption at rest, #425/#438): both names are
@@ -83,12 +83,14 @@ function newCode() {
 }
 
 /** A new setup: its id (in the page's address), its secret (the browser's cookie, stored hashed) and its code. */
-export function create(now = clock.now(), { origin = "" } = {}) {
+// invite_id: the invite a setup was started from (REASON_INVITE_START, src/websetup.js). A reference
+// only: the invite is spent when the setup's first text makes the account, never when the page opens.
+export function create(now = clock.now(), { origin = "", inviteId = null } = {}) {
   const id = randomBytes(12).toString("base64url");
   const secret = randomBytes(24).toString("base64url");
   const code = newCode();
-  db.db.prepare("INSERT INTO web_setups (id, secret_hash, code, created_at, expires_at, origin) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(id, hash(secret), code, now, now + TTL_MS, String(origin ?? ""));
+  db.db.prepare("INSERT INTO web_setups (id, secret_hash, code, created_at, expires_at, origin, invite_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(id, hash(secret), code, now, now + TTL_MS, String(origin ?? ""), inviteId == null ? null : Number(inviteId));
   return { id, secret, code, expiresAt: now + TTL_MS };
 }
 

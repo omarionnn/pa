@@ -202,6 +202,7 @@ export class Router {
     // first-chat onboarding starts for here (src/onboarding.js); an event join starts it from
     // #claimEvent, after the organizer's welcome. The master's yes sent "you're in".
     let arrivedNow = inbound.channel !== web.WEB && admitted.allow && admitted.created && !admitted.isOperator;
+    let inviteSetupJoin = null;
     if (!admitted.allow) {
       if (admitted.reason === "blocked") {
         this.log({ inbound: inbound.externalId, blocked: address });
@@ -224,7 +225,12 @@ export class Router {
       // can send it — and the event join is its own way in, separate from invites (src/pages/event.js).
       const joined = await this.#claimEvent(inbound, address, null);
       if (joined) return joined;
-      const claim = await this.#claimInvite(inbound, address);
+      // A web setup started from an invite link (REASON_INVITE_START): its first text spends the
+      // invite and makes the account; the hand-off below is the web welcome, "invited by" in its line.
+      const setupInvite = await this.#claimSetupInvite(inbound, address);
+      if (setupInvite && !setupInvite.joined) return setupInvite.result;
+      if (setupInvite?.joined) inviteSetupJoin = setupInvite;
+      const claim = setupInvite?.joined ? setupInvite : await this.#claimInvite(inbound, address);
       if (claim && !claim.joined) return claim.result;
       // Otherwise: auto-admit if configured, or ask the master.
       // A web setup's first text (src/websetup.js) keeps its code for the claim below, but a text
@@ -269,15 +275,23 @@ export class Router {
     // its code: what they chose and connected on the page becomes theirs, and the intro asks none of
     // it again (src/onboarding.js webHandoff). No code, or one that does not match: nothing changes.
     if (arrivedNow && !isOperator) {
+      let setupClaimed = false;
       try {
         const claim = websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log });
         // The code has done its job: it is not stored with their words, and the model never reads it.
         if (claim) {
+          setupClaimed = true;
           inbound.text = claim.text;
           if (typeof inbound.said === "string") inbound.said = websetup.withoutCode(inbound.said);
         }
       }
       catch (e) { this.log({ websetup_claim_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+      // An invite spent through a setup names its inviter in the web welcome's first line. When that
+      // welcome cannot run (the onboarding switch does not cover them, or the setup claim fell through),
+      // the invite's own line goes instead, so they are always told who got them in.
+      if (inviteSetupJoin && !(onboardingNow && setupClaimed)) {
+        await this.send({ channel: inbound.channel, to: address, text: inviteSetupJoin.welcome, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
+      }
     }
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
@@ -988,6 +1002,27 @@ export class Router {
       .catch(() => {});
     this.runtime?.say?.(out.inviter, out.toInviter);
     return { joined: true };
+  }
+
+  /**
+   * An unknown number's first text from a web setup that was started from an invite link
+   * (REASON_INVITE_START, src/websetup.js claimInviteFromText). Null when it is not one. Joined: the
+   * invite is spent and the account made, the inviter told; no welcome line here, because the web
+   * welcome carries "invited by" in its own first line. Not joined: the line saying why, nothing admitted.
+   */
+  async #claimSetupInvite(inbound, address) {
+    let out = null;
+    try { out = websetup.claimInviteFromText({ channel: inbound.channel, address, text: inbound.text ?? "", log: this.log }); }
+    catch (e) { this.log({ websetup_invite_failed: (e?.message ?? String(e)).split("\n")[0] }); return null; }
+    if (!out) return null;
+    if (!out.joined) {
+      this.log({ inbound: inbound.externalId, invite_refused: out.reason, via: "web_setup" });
+      if (out.toThem) await this.sendNow({ channel: inbound.channel, to: address, text: out.toThem, chatId: inbound.chatId ?? null }).catch(() => {});
+      return { joined: false, result: { ok: true, admitted: false, invite: out.reason, conversationId: null } };
+    }
+    this.log({ inbound: inbound.externalId, invite_joined: out.inviteId, conversationId: out.conversationId, via: "web_setup" });
+    this.runtime?.say?.(out.inviter, out.toInviter);
+    return { joined: true, welcome: `You're in, invited by ${invites.inviterName(out.inviter) || "a friend"}.` };
   }
 
   /**
