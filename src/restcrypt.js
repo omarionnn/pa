@@ -79,6 +79,10 @@ export const SENSITIVE2 = [
   // base64 of the float32 bytes; embedding.js blobToFloat32 reads either form. `blob`: --open writes
   // the bytes back, not the base64.
   { table: "fact_embeddings", cols: ["embedding"], owner: "conversation_id", blob: true },
+  // Action Cards (src/actioncards.js): what Reason noticed about them, the margin note, the request a
+  // tap types, and the titles they struck out.
+  { table: "action_cards", cols: ["title", "why_now", "prefill"], owner: "conversation_id" },
+  { table: "action_card_dismissed", cols: ["title"], owner: "conversation_id" },
 ];
 /**
  * Phase 3 (11-10), behind REASON_ENCRYPT_REST3=on, which needs phase 1 on. A person's own name, the

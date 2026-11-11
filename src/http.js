@@ -94,6 +94,8 @@ import { pageCard, shootWithChromium } from "./pages/card.js";
 import { madeKind, renderMadePage, callAudio, notYoursFor, archivedFor, privateHead, privateOgPng, PRIVATE_OG_VERSION } from "./pages/madedata.js";
 import { previewRequest } from "./pages/preview.js";
 import { securedImageRequest } from "./pages/securedcard.js";
+// Action Cards (REASON_ACTION_CARDS, src/actioncards.js): the daily note's page at /a/<token> and its link card.
+import { actionCardsRequest, actionCardsOgRequest, PATH as ACTION_CARDS_PATH } from "./pages/actioncards.js";
 import { mimeForKind } from "./documents/store.js";
 import * as websetup from "./websetup.js";
 import { isContactPath, contactPathParts, vcard, lineNumber, liveLineNumber, cardName } from "./contact.js";
@@ -198,6 +200,21 @@ export function createServer({ router, runtime, log = () => {} }) {
           res.writeHead(asset.status, asset.headers);
           return res.end(req.method === "HEAD" ? "" : asset.body);
         }
+        // An Action Cards digest's link card (drawn for its state; nothing without a good token).
+        if (url.pathname.startsWith("/web/og/a/")) {
+          const og = await actionCardsOgRequest(url.pathname, { log });
+          if (og) {
+            res.writeHead(og.status, og.headers);
+            return res.end(req.method === "HEAD" ? "" : og.body);
+          }
+        }
+      }
+
+      // ---------- Action Cards: the daily note (src/pages/actioncards.js) ----------
+      if (url.pathname === ACTION_CARDS_PATH || url.pathname.startsWith(`${ACTION_CARDS_PATH}/`)) {
+        const out = await actionCardsRequest({ method: req.method, path: url.pathname, headers: req.headers, log });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
       }
 
       // ---------- a page's picture ----------
