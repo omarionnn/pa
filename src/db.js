@@ -1870,6 +1870,8 @@ addColumnIfMissing("accounts", "onboarding_at", "INTEGER");
 addColumnIfMissing("accounts", "onboarding_steers", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("accounts", "onboarding_name_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "onboarding_nudged_at", "INTEGER");
+// The welcome cards (src/welcome.js): 'direct' or 'web' once sent, else NULL. Never sent twice.
+addColumnIfMissing("accounts", "welcome_cards", "TEXT");
 addColumnIfMissing("accounts", "patterns", "TEXT");
 addColumnIfMissing("accounts", "patterns_said", "TEXT");
 addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
@@ -3768,6 +3770,11 @@ export function defaultMode(conversationId) {
 }
 
 // ---------- the contact card (src/contact.js) ----------
+/** The welcome cards went to this person (src/onboarding.js), from the first chat or the web setup's hand-off. */
+export function setWelcomeCards(conversationId, kind) {
+  db.prepare("UPDATE accounts SET welcome_cards = COALESCE(welcome_cards, ?) WHERE conversation_id = ?").run(kind === "web" ? "web" : "direct", conversationId);
+}
+
 export function markContactCardTried(conversationId) {
   db.prepare("UPDATE accounts SET contact_card_tried_at = ? WHERE conversation_id = ?").run(clock.now(), conversationId);
 }
@@ -3803,7 +3810,7 @@ export function contactCardNameByToken(token) {
  * in the first-chat onboarding: their card comes from it, under the name they pick.
  */
 export function accountsWithoutContactCard() {
-  return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL AND COALESCE(onboarding, '') NOT IN ('not_started', 'awaiting_name', 'awaiting_card_name') ORDER BY created_at ASC").all();
+  return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL AND COALESCE(onboarding, '') NOT IN ('not_started', 'awaiting_first', 'awaiting_name', 'awaiting_card_name') ORDER BY created_at ASC").all();
 }
 
 export function listAccountsOfPeople() {
@@ -5026,6 +5033,19 @@ export function markOutboundFailed(id, { error, errorKey = null, errorCode = nul
     // own reasons (opted out, never texted the line) is that same refusal, not a fault of Reason's.
     markOutboundFailed(r.id, { error: `the message it goes with never arrived, so this was not sent on its own: ${String(error ?? "")}`, errorKey, errorCode });
   }
+  return getOutbound(id);
+}
+
+/**
+ * A picture that cannot go, turned into its own words on the same row (src/outbox.js attempt): the
+ * file comes off, the body becomes the line, the attempts start over, and it is due now. Same id, so
+ * whatever is chained behind it still waits for it.
+ */
+export function outboundAsText(id, text) {
+  const row = db.prepare("SELECT conversation_id FROM outbox WHERE id = ?").get(id);
+  if (!row) return null;
+  db.prepare(`UPDATE outbox SET state = 'queued', media = NULL, body = ?, attempts = 0, next_attempt_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?`)
+    .run(seal2(row.conversation_id, String(text ?? "")), clock.now(), clock.now(), id, row.conversation_id);
   return getOutbound(id);
 }
 

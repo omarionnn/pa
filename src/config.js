@@ -354,6 +354,8 @@ export const config = {
   onboardingNumbers: (process.env.REASON_ONBOARDING_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
   // The pause between two of its bubbles (plus up to 600 ms of jitter, so it reads like typing).
   onboardingGapMs: Number(process.env.REASON_ONBOARDING_GAP_MS ?? 1100),
+  // Between one welcome card and the next (src/welcome.js): short, so iMessage stacks them.
+  onboardingCardGapMs: Number(process.env.REASON_WELCOME_CARD_GAP_MS ?? 250),
   // The one nudge for somebody who went quiet mid-flow, this long after the last step (never at night).
   onboardingNudgeMin: Number(process.env.REASON_ONBOARDING_NUDGE_MIN ?? 240),
   // A flow nobody has answered for this many days is over ('complete'): a late "ok" is not a step's answer.

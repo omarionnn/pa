@@ -17,7 +17,16 @@
 //                       try line; anything else → the try line. Asked once, never nudged. The web
 //                       setup's hand-off (webHandoff) lands here too, unless Amazon was connected on
 //                       the page (per connection: skipped or failed there → offered here, the same way).
+//   awaiting_first      REASON_WELCOME_CARDS=on, web setup only: the hand-off was the welcome (a line
+//                       picking up from the page, the seven cards, "what would you like help with
+//                       first?"). Their first reply goes to the normal turn; after its answer, the card
+//                       under the page's name, then the Amazon offer or done (webCardAfter).
 //   complete            done; nobody ever goes back in
+//
+// The welcome cards (src/welcome.js), REASON_WELCOME_CARDS=on only: for somebody who texted first,
+// they go right after who Reason is (INTRO, or BY_THE_WAY after a first request) and before the name
+// question; the try line at the end becomes "what would you like help with first?". Once per person
+// (accounts.welcome_cards); event joiners keep their own start.
 //
 // Reason never says it saves itself in their phone or is in their contacts: it cannot touch their
 // phone. The card is sent; saving it is theirs.
@@ -59,9 +68,10 @@ import { zoneFor } from "./zone.js";
 import * as amazon from "./amazonconnect.js"; // AMAZON HOOK
 import * as shop from "./shopconnect.js"; // AMAZON HOOK: connected on the web setup → no offer
 import * as setups from "./websetupstore.js";
+import * as welcome from "./welcome.js";
 
-export const STATES = ["not_started", "awaiting_name", "awaiting_card_name", "awaiting_amazon", "complete"];
-const ACTIVE = new Set(["not_started", "awaiting_name", "awaiting_card_name", "awaiting_amazon"]);
+export const STATES = ["not_started", "awaiting_first", "awaiting_name", "awaiting_card_name", "awaiting_amazon", "complete"];
+const ACTIVE = new Set(["not_started", "awaiting_first", "awaiting_name", "awaiting_card_name", "awaiting_amazon"]);
 
 /** Who Reason is, in the owner's words (2026-11-06). */
 export const INTRO = "hey, i'm Reason. i will help you with errands and complete your to do list for you";
@@ -84,6 +94,22 @@ export const CARD_NAME_ASK = "what do you want to call me?";
 export const CARD_SENT = (name, picked) => `${picked ? `${name} it is.` : `${DEFAULT_CARD_NAME} it is.`} here's my card, save it so you can always find me`;
 /** The one thing to try, right after the card (or after their name, when no card can go): a call, or an event. */
 export const TRY_LINE = "something to try: i can make a call for you, like booking a restaurant, checking a store, setting up an appointment or sorting something out while you get on with your day. or i can help you set up and run an event. want to try one?";
+/**
+ * The welcome gallery (src/welcome.js, REASON_WELCOME_CARDS=on): the seven cards right after who
+ * Reason is, before its question. Who got them is kept on the account (welcome_cards: 'direct' or
+ * 'web'), so the flow's last line fits: after the cards, "what would you like help with first?"
+ * stands in for the try line (they have seen what to try); somebody from the web setup was already
+ * asked it before their card, so nothing more is asked.
+ */
+const withCards = (router, route, intro, conversationId) =>
+  welcome.forEveryone() && route && !db.getAccount(conversationId)?.welcome_cards ? [intro, ...welcome.bubbles(router, route.channel)] : [intro];
+const cardsIn = (bubbles) => bubbles.some(b => b?.welcome);
+export function tryLine(conversationId) {
+  const w = db.getAccount(conversationId)?.welcome_cards ?? null;
+  return w === "web" ? null : w === "direct" ? welcome.HELP_FIRST : TRY_LINE;
+}
+const tail = (conversationId) => { const t = tryLine(conversationId); return t ? [t] : []; };
+
 /** The one steer back to whatever is still pending, after a detour's answer. */
 export const STEERS = {
   awaiting_name: "but wait, i didn't get your name",
@@ -283,14 +309,14 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
   const canSend = live(router, route.channel);
   // Nothing can go: the step stays where it is, and nothing is written as said that was not.
   if (!canSend) { log({ onboarding_not_sent: conversationId, why: `${route.channel} is not connected` }); return []; }
-  const said = bubbles.map(b => typeof b === "string" ? b : b.text);
+  const said = bubbles.map(b => typeof b === "string" ? b : (b.text || (b.media?.fallbackText ? `[picture card] ${b.media.fallbackText}` : "")));
   db.atomically(() => {
     let previous = null;
     if (canSend) {
       for (const [i, b] of bubbles.entries()) {
         const { row } = db.enqueueOutbound({
           idemKey: `${key}#${i + 1}`, conversationId, channel: route.channel, address: route.to, chatId: route.chatId ?? null,
-          body: typeof b === "string" ? b : b.text, media: b?.mediaUrl ? { mediaUrl: b.mediaUrl } : null,
+          body: typeof b === "string" ? b : b.text, media: b?.media ?? (b?.mediaUrl ? { mediaUrl: b.mediaUrl } : null),
           afterId: previous, toOwner: true, maxAttempts: config.outboxMaxAttempts,
         });
         rows.push({ row, card: !!b?.mediaUrl });
@@ -306,7 +332,8 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
     db.saveConversation(conversationId, messages);
   });
   for (const [i, { row, card }] of rows.entries()) {
-    if (i) await sleep(pause());
+    // The welcome cards go back to back, so iMessage stacks them; every other bubble a beat apart.
+    if (i) await sleep(bubbles[i]?.welcome && bubbles[i - 1]?.welcome ? config.onboardingCardGapMs : pause());
     const r = await outbox.attempt({ id: row.id, router, log });
     if (!r.ok) {
       log({ onboarding_send_held: conversationId, n: i + 1, why: r.error ?? "unknown", queued: !!r.queued, card });
@@ -366,11 +393,13 @@ export async function fireNudge({ timer, router, key, log = () => {} }) {
  * instead, and the flow is done. `intro` goes first when Reason has not said who it is yet. `met`
  * false with no name leaves out "nice to meet you anyway" (after a request, where it would read oddly).
  */
-function afterName(router, conversationId, who, { line = null, intro = null, met = true } = {}) {
+function afterName(router, conversationId, who, { line = null, intro = null, met = true, route = null } = {}) {
   const can = cardCanGo(router, db.getAccount(conversationId));
   const meet = line || (who || met ? MET(who) : null);
+  const lead = intro ? (route ? withCards(router, route, intro, conversationId) : [intro]) : [];
+  const last = can ? CARD_NAME_ASK : cardsIn(lead) ? welcome.HELP_FIRST : tryLine(conversationId);
   return {
-    bubbles: [...(intro ? [intro] : []), ...(meet ? [meet] : []), can ? CARD_NAME_ASK : TRY_LINE],
+    bubbles: [...lead, ...(meet ? [meet] : []), ...(last ? [last] : [])],
     next: can ? "awaiting_card_name" : "complete",
   };
 }
@@ -383,10 +412,10 @@ function theCard(router, conversationId, picked) {
   const chose = !!String(picked ?? "").trim();
   const name = cardName(picked);
   const url = cardUrl(router, db.getAccount(conversationId), name);
-  if (!url) return { bubbles: [TRY_LINE], next: "complete", name: null };
+  if (!url) return { bubbles: tail(conversationId), next: "complete", name: null };
   const card = { text: CARD_SENT(name, chose), mediaUrl: url };
   if (amazonCanOffer(conversationId)) return { bubbles: [card, amazon.OFFER], next: "awaiting_amazon", name }; // AMAZON HOOK
-  return { bubbles: [card, TRY_LINE], next: "complete", name };
+  return { bubbles: [card, ...tail(conversationId)], next: "complete", name };
 }
 
 // AMAZON HOOK: the optional offer after the card (src/amazonconnect.js), REASON_INTRO_AMAZON=on only.
@@ -427,14 +456,42 @@ function webHandoff(router, conversationId) {
   return { bubbles: [hello, card, TRY_LINE], next: "complete", name };
 }
 
+/**
+ * REASON_WELCOME_CARDS=on: the web setup's hand-off is the welcome instead. One line picking up from
+ * the page (their name, the name they gave Reason), the seven cards, then "what would you like help
+ * with first?"; nothing else yet. Their first reply is answered by the normal turn, and only then
+ * their card (and the Amazon offer when it can go): webCardAfter, from afterTask.
+ */
+function webWelcome(router, conversationId, route) {
+  const setup = setups.claimedBy(conversationId);
+  const account = db.getAccount(conversationId);
+  const reasonName = account.contact_card_name || cardName(setup?.reason_name);
+  const intro = welcome.WEB_INTRO({ user: setup?.user_name || account.name, reasonName });
+  return { bubbles: [...withCards(router, route, intro, conversationId), welcome.HELP_FIRST], next: "awaiting_first", name: null };
+}
+
+/** After their first reply to the web welcome: the card under the name from the page, then the Amazon offer or nothing more. */
+function webCardAfter(router, conversationId) {
+  const setup = setups.claimedBy(conversationId);
+  const account = db.getAccount(conversationId);
+  const name = account.contact_card_name || cardName(setup?.reason_name);
+  const url = cardUrl(router, account, name);
+  if (!url) return { bubbles: [], next: "complete", name: null };
+  const card = { text: WEB_CARD, mediaUrl: url };
+  if (amazonCanOffer(conversationId)) return { bubbles: [card, amazon.OFFER], next: "awaiting_amazon", name }; // AMAZON HOOK
+  return { bubbles: [card], next: "complete", name };
+}
+
 const cardNote = (name) => `[sent them Reason's contact card under the name they chose for it: ${name}. Saving it is up to them; Reason cannot touch their phone. You are still Reason]`;
 
 /** Commit a step: its bubbles, its state, and the history, keyed so the same step twice queues nothing twice. */
-async function runStep({ router, conversationId, route, row, bubbles, next, cardNamed = null, userLine = null, keyPart = "", sleep, log }) {
+async function runStep({ router, conversationId, route, row, bubbles, next, cardNamed = null, userLine = null, keyPart = "", welcomeKind = "direct", sleep, log }) {
   const state = row.onboarding;
   const steered = row.onboarding_steers ?? 0;
   const key = `onboard:${conversationId}:${state}:${steered}:${row.onboarding_at ?? 0}${keyPart}`;
   const write = () => {
+    // Once per person: who got the cards, and from where (the flow's last line reads it, src/welcome.js).
+    if (cardsIn(bubbles)) db.setWelcomeCards(conversationId, welcomeKind);
     if (next === "complete") finish(conversationId);
     else if (next !== state) db.setOnboarding(conversationId, { state: next, nameAsked: next === "awaiting_name" || state === "awaiting_name" });
     else db.setOnboarding(conversationId, { steers: steered + 1 });
@@ -477,10 +534,13 @@ export async function afterTask({ router, conversationId, route, ask = askStruct
   const row = db.getAccount(conversationId);
   const steered = row.onboarding_steers ?? 0;
   let step;
-  if (row.onboarding === "not_started" || (row.onboarding === "awaiting_name" && row.name)) {
+  if (row.onboarding === "awaiting_first") {
+    // Their first reply to the web welcome has its answer: now the card.
+    step = webCardAfter(router, conversationId);
+  } else if (row.onboarding === "not_started" || (row.onboarding === "awaiting_name" && row.name)) {
     step = row.name
-      ? afterName(router, conversationId, row.name, { intro: row.onboarding === "not_started" ? BY_THE_WAY : null, line: await nameLine({ name: row.name, ask }) })
-      : { bubbles: [...NAME_ASK], next: "awaiting_name" };
+      ? afterName(router, conversationId, row.name, { intro: row.onboarding === "not_started" ? BY_THE_WAY : null, line: await nameLine({ name: row.name, ask }), route })
+      : { bubbles: [...withCards(router, route, BY_THE_WAY, conversationId), NAME_Q], next: "awaiting_name" };
   } else if (row.onboarding === "awaiting_name") {
     step = !steered ? { bubbles: [STEERS.awaiting_name], next: "awaiting_name" } : afterName(router, conversationId, "", { met: false });
   } else if (row.onboarding === "awaiting_card_name") {
@@ -516,10 +576,17 @@ export async function handle({ router, conversationId, route, texts = [], attach
 
   // The web setup already asked everything this flow would (src/websetup.js): its hand-off, no read.
   if (state === "not_started" && handledOnWeb(conversationId)) {
-    const step = webHandoff(router, conversationId);
+    const step = welcome.forEveryone() ? webWelcome(router, conversationId, route) : webHandoff(router, conversationId);
     log({ onboarding: conversationId, from: state, to: step.next, why: "web_setup" });
-    const said = await runStep({ router, conversationId, route, row, bubbles: step.bubbles, next: step.next, cardNamed: step.name, userLine: `[${stamp()}] ${row.name || "them"}: ${text}`, keyPart: ":web", sleep, log });
+    const said = await runStep({ router, conversationId, route, row, bubbles: step.bubbles, next: step.next, cardNamed: step.name, userLine: `[${stamp()}] ${row.name || "them"}: ${text}`, keyPart: ":web", welcomeKind: "web", sleep, log });
     return { handled: true, step: step.next, said };
+  }
+
+  // Their first reply after the web welcome: whatever it is, the normal turn answers it (screened
+  // there), and their card follows that answer (afterTask). Nothing is read here.
+  if (state === "awaiting_first") {
+    log({ onboarding: conversationId, from: state, to: state, why: "first_reply", after: true });
+    return { handled: false, after: true };
   }
 
   // A voice note, a contact card or a link is words by now (heard / read upstream), so it is read
@@ -577,8 +644,8 @@ export async function handle({ router, conversationId, route, texts = [], attach
     const lead = read.kind === "question" ? replyLine : [];
     // Their name already in the first text ("hey it's kofi"): never asked for again — who Reason
     // is, then their name met.
-    if (read.name) { const s = afterName(router, conversationId, read.name, { intro: INTRO, line: read.nameLine }); step = { bubbles: [...lead, ...s.bubbles], next: s.next }; }
-    else step = { bubbles: [...lead, ...OPENER], next: "awaiting_name" };
+    if (read.name) { const s = afterName(router, conversationId, read.name, { intro: INTRO, line: read.nameLine, route }); step = { bubbles: [...lead, ...s.bubbles], next: s.next }; }
+    else step = { bubbles: [...lead, ...withCards(router, route, INTRO, conversationId), NAME_Q], next: "awaiting_name" };
     // They rang Reason's number before signing up (src/strangercalls.js): said first, once.
     const back = reconnectLine(conversationId);
     if (back) step.bubbles = [back, ...step.bubbles];
@@ -600,12 +667,12 @@ export async function handle({ router, conversationId, route, texts = [], attach
       const url = await Promise.resolve().then(() => amazonLink(conversationId, { log })).catch(e => { log({ onboarding_amazon_link_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); return null; });
       // The link alone in its own bubble, so it unfurls as its card. No link: said plainly, then on.
       step = url
-        ? { bubbles: [amazon.LINK_LINE, url, TRY_LINE], next: "complete" }
-        : { bubbles: [amazon.FAILED_LINE, TRY_LINE], next: "complete" };
-    } else if (read.amazon === "no" || read.kind === "decline") step = { bubbles: [`${amazon.NO_LINE}. ${TRY_LINE}`], next: "complete" };
+        ? { bubbles: [amazon.LINK_LINE, url, ...tail(conversationId)], next: "complete" }
+        : { bubbles: [amazon.FAILED_LINE, ...tail(conversationId)], next: "complete" };
+    } else if (read.amazon === "no" || read.kind === "decline") { const t = tryLine(conversationId); step = { bubbles: [t ? `${amazon.NO_LINE}. ${t}` : amazon.NO_LINE], next: "complete" }; }
     // A question about it gets its answer and the offer stays open, never asked again; a second detour lets it go.
     else if (read.kind === "question" && !steered && replyLine.length) step = { bubbles: replyLine, next: state };
-    else step = { bubbles: [...replyLine, TRY_LINE], next: "complete" };
+    else step = { bubbles: [...replyLine, ...tail(conversationId)], next: "complete" };
   }
 
   const said = await runStep({

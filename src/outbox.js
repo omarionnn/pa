@@ -217,6 +217,16 @@ export async function attempt({ id, router, log = () => {} }) {
     return { ok: true, outbox_id: id, delivered: r.delivered, attempts: sent.attempts };
   }
 
+  // A picture that carries its own words (a welcome card, src/welcome.js) and cannot go for good goes
+  // as those words, on the same row, so its place in the chain holds and nothing behind it dies.
+  const final = r.retryable !== true || claimed.attempts >= claimed.max_attempts;
+  const fallbackText = String(claimed.media?.fallbackText ?? "").trim();
+  if (final && fallbackText) {
+    db.outboundAsText(id, fallbackText);
+    log({ outbox: id, media_failed: (r.error ?? "unknown").split("\n")[0].slice(0, 200), sent_as_text: true });
+    return attempt({ id, router, log });
+  }
+
   return settle({ row: claimed, result: r, log });
 }
 
