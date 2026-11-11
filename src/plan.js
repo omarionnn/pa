@@ -141,6 +141,22 @@ function envShipTs() {
   return n < 1e12 ? n * 1000 : n;
 }
 
+/**
+ * Event joiners pay like anybody else (owner, 2026-11-11): an account that came in through an EVENT
+ * at or after this moment (REASON_EVENT_PAYWALL_TS, ms or s or a date, set to the deploy moment) is
+ * on the monthly free tier like somebody who texted in on their own — the event no longer makes it
+ * free for good. Everybody who joined through an event before it keeps what they have. Unset: the
+ * old rule (an event a free-for-good member made still makes a free-for-good account). Invites are
+ * untouched either way.
+ */
+export function eventPaywallTs() {
+  const raw = String(process.env.REASON_EVENT_PAYWALL_TS ?? "").trim();
+  if (!raw) return null;
+  const n = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
+  if (!Number.isFinite(n)) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
 /** The flip moment, ms: when the switch was first seen `on`, written then. Null until it has been. */
 export function onSince() {
   const stored = Number(db.opsGet(ON_KEY));
@@ -174,7 +190,7 @@ export function appliesTo(conversationId) {
   return true;
 }
 
-/** Free for good: the operator, a test number, anybody who came in by invite or event, or an account from before the flip. */
+/** Free for good: the operator, a test number, anybody who came in by invite (or by event before REASON_EVENT_PAYWALL_TS), or an account from before the flip. */
 export function grandfathered(conversationId, seen = new Set()) {
   const row = db.getAccount(conversationId);
   if (mode() === "owner" && isOperator(conversationId, row)) return false; // so he can try it on himself
@@ -194,8 +210,11 @@ export function grandfathered(conversationId, seen = new Set()) {
   // make a free-forever account — the joiner is on the free tier like anybody who came in on their own.
   // Followed up the chain (inviter's inviter…), each account once.
   seen.add(conversationId);
+  const eventCut = eventPaywallTs();
   const viaFree = (a) => {
     let sponsor = a.invited_by || null;
+    // An event join from the cut-off on is the way in for nobody (owner, 2026-11-11): free tier.
+    if (!sponsor && a.joined_via_event != null && eventCut && (a.created_at ?? 0) >= eventCut) return false;
     if (!sponsor && a.joined_via_event != null) {
       try { sponsor = q("SELECT organizer_conversation_id AS o FROM events WHERE id = ?").get(a.joined_via_event)?.o ?? null; } catch { sponsor = null; }
     }
@@ -210,7 +229,7 @@ export function grandfathered(conversationId, seen = new Set()) {
     return grandfathered(sponsor, seen);
   };
   if (row?.address) {
-    const ways = q(`SELECT conversation_id, invited_by, joined_via_event FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH} AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL)
+    const ways = q(`SELECT conversation_id, invited_by, joined_via_event, created_at FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH} AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL)
              AND created_at <= (SELECT MIN(created_at) FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH})`).all(...db.accountAddrArgs(row.address), ...db.accountAddrArgs(row.address));
     if (ways.some(viaFree)) return true;
   } else if ((row?.invited_by || row?.joined_via_event != null) && viaFree(row)) return true;
