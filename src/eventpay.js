@@ -184,7 +184,10 @@ export async function ensureAccount(conversationId, { fetchImpl = globalThis.fet
     capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
     business_profile: { product_description: "Tickets to an event organized through Reason" },
     metadata: { reason_kind: "event_organizer", conversation_id: conversationId },
-  }, { fetchImpl, idempotencyKey: `evacct:${createHash("sha256").update(conversationId).digest("hex").slice(0, 24)}` });
+  // The key guards a double tap, not forever: Stripe replays a FAILED answer under the same key for
+  // 24 h, so a key that never changes kept one early refusal (platform profile unfinished) coming
+  // back long after it was fixed. A 10-minute window keeps the double-tap guard and lets a retry be new.
+  }, { fetchImpl, idempotencyKey: `evacct:${createHash("sha256").update(conversationId).digest("hex").slice(0, 24)}:${Math.floor(clock.now() / 600_000)}` });
   if (!r.ok) return { ok: false, error: r.body?.error?.message ?? `Stripe answered ${r.status}`, status: r.status, code: r.body?.error?.code ?? null };
   return { ok: true, row: writeAccount(conversationId, r.body), made: true };
 }
