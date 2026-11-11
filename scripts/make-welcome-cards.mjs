@@ -18,7 +18,7 @@ const font = (f) => pathToFileURL(join(root, "assets/fonts", f)).href;
 const args = process.argv.slice(2);
 const outAt = args.indexOf("--out");
 const out = outAt >= 0 ? args[outAt + 1] : join(root, "assets/welcome");
-const want = args.filter((a, i) => a !== "--out" && i !== outAt + 1);
+const want = args.filter((a, i) => a !== "--out" && !(outAt >= 0 && i === outAt + 1));
 mkdirSync(out, { recursive: true });
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
