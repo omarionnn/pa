@@ -45,6 +45,7 @@ import { checkUrl } from "./pictures.js";
 import { webLookup, plainFetch } from "./weblookup.js";
 import { parallelClient } from "./parallel.js";
 import { connectAllowedFor } from "./shopconnect.js";
+import { tableInboundLine } from "./tableimage.js";
 
 export const CHOICE_TOOLS = new Set(["show_choices"]);
 
@@ -1013,6 +1014,8 @@ export function inboundChoiceLine(conversationId, { text = "", replyTo = null, n
   try { set = db.openChoiceFor(conversationId, now); } catch { return ""; }
   if (!set) return "";
   try { db.countChoiceRead(set.id); } catch { /* best effort */ }
+  // A table picture (src/tableimage.js): the same rows kept the same way, read back as rows from the top.
+  if (set.kind === "table") return tableInboundLine(set, { text, replyTo, now });
   const list = set.options.map(o => `${o.n} = ${[o.name, o.price, o.detail].filter(Boolean).join(", ")}`).join("; ");
   const shown = set.state === "text" ? "as a numbered list" : `as ${set.options.length} numbered picture cards`;
   let line = `[${ago(now - (set.shown_at ?? set.created_at))} ago you showed them ${set.options.length} options ${shown}: ${list}.`;

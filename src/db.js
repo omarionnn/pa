@@ -11248,9 +11248,11 @@ function historyFromOutbound(row) {
   if (HISTORY_EXCLUDED_KEYS.some(p => String(row.idem_key ?? "").startsWith(p))) return null;
   // A choice card is a picture Reason drew, kept on this machine, so Web can draw it in the thread too.
   const card = /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(row.media?.file ?? ""));
+  // A table picture (src/tableimage.js) went by address, an upload of this conversation's: Web serves it from there.
   const media = !row.media ? []
     : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
-      : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
+      : row.media.mediaUrl ? [{ kind: "image", mimeType: row.media.mimeType ?? "image/png", filename: row.media.filename ?? null, url: row.media.mediaUrl, table: true }]
+        : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
     externalId: row.message_id ?? null, outboxId: row.id, text: row.body ?? "", media, at: row.sent_at ?? clock.now(),

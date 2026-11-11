@@ -69,6 +69,7 @@ import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEv
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
+import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "./tableimage.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool } from "./food.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
@@ -164,6 +165,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "ac
   "mark_moment",
   // Choice cards fetch each option's photo from the shop or the listing, and land on their phone.
   "show_choices",
+  // A table picture is drawn, kept 30 days and lands on their phone the same way (src/tableimage.js).
+  "render_table",
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
   "page_create", "page_update", "page_delete",
@@ -391,6 +394,7 @@ export function toolsFor(conversationId) {
     && albumToolVisible(t.name, conversationId)
     && directionsToolVisible(t.name, conversationId)
     && choiceToolVisible(t.name, conversationId)
+    && tableToolVisible(t.name, conversationId)
     && shopToolVisible(t.name, conversationId)
     && socialToolVisible(t.name, conversationId)
     && foodToolVisible(t.name, conversationId)
@@ -4485,6 +4489,8 @@ export const tools = [
   // Walking directions and Escort (src/directionstools.js, src/trips.js), behind REASON_DIRECTIONS.
   ...DIRECTIONS_TOOL_DEFS,
   ...CHOICE_TOOL_DEFS,
+  // A comparison table as a picture (src/tableimage.js), behind REASON_TABLE_IMAGES.
+  ...TABLE_TOOL_DEFS,
   ...SHOP_TOOL_DEFS,
   ...FOOD_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
@@ -7038,6 +7044,7 @@ const S = {
   ...ALBUM_SCHEMAS,
   ...DIRECTIONS_SCHEMAS,
   ...CHOICE_SCHEMAS,
+  ...TABLE_SCHEMAS,
   ...SHOP_SCHEMAS,
   ...FOOD_SCHEMAS,
   ...TODO_SCHEMAS,
@@ -12046,6 +12053,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- choice cards (src/choicecards.js) ----------
     case "show_choices":
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
+
+    // ---------- table pictures (src/tableimage.js) ----------
+    case "render_table":
+      return await runTableTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- Crossmint checkouts (src/shoptools.js) ----------
     case "store_checkout": case "shop_pay": case "shop_decline": case "shop_card": case "shop_status": case "shop_answer": case "spend_limit_set": case "spend_limit_confirm": {

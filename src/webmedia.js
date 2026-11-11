@@ -296,8 +296,15 @@ export async function webMediaRoute({ path, method, headers = {}, readBody, log 
     return uploadRequest({ account, headers, readBody, log });
   }
   if (method !== "GET" && method !== "HEAD") return notFound();
-  if (!account) return notFound();
   let m;
+  // A table picture Reason drew (src/tableimage.js) is fetched by the texting provider, which has no
+  // session: served to anyone holding its address. The 128-bit random id is the secret, the record says
+  // it was made public on purpose (`public: "table"`), and it goes with the upload after 30 days.
+  if (!account && (m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/[^/]*)?$/.exec(path))) {
+    const rec = uploads.meta(m[1]);
+    return rec?.public === "table" ? serveUpload(rec, { headers, method }) : notFound();
+  }
+  if (!account) return notFound();
   if ((m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/[^/]*)?$/.exec(path))) {
     const rec = uploads.meta(m[1]);
     return rec && rec.conversationId === account.conversation_id ? serveUpload(rec, { headers, method }) : notFound();

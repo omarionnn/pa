@@ -34,6 +34,8 @@ export const ALWAYS_LOAD = new Set([
   // Choice cards (src/choicecards.js), only while their switch is on: a deferred tool is a name the
   // model never thinks to search for, so a shopping turn wrote a list instead (cage, 2026-10-30).
   ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_CHOICE_CARDS ?? "").trim().toLowerCase()) ? [] : ["show_choices"]),
+  // Table pictures (src/tableimage.js), the same way and for the same reason.
+  ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_TABLE_IMAGES ?? "").trim().toLowerCase()) ? [] : ["render_table"]),
 ]);
 
 // A tool's own description, plus any feature rule it shares with the rest of its group (see

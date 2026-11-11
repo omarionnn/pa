@@ -29,6 +29,7 @@ import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
 import * as choices from "./choicecards.js";
+import * as tables from "./tableimage.js";
 import * as todo from "./todo.js";
 import { whereTo } from "./deliver.js";
 import { sweepRetention } from "./privacy.js";
@@ -396,6 +397,19 @@ export class Runtime extends EventEmitter {
     }
   }
 
+  /** The table picture render_table drew this turn, sent behind the reply's words (src/tableimage.js). Never throws. */
+  async _sendTableImages(conversationId, withWords, meta = {}) {
+    try {
+      return await tables.sendQueued(conversationId, {
+        router: this.turnExtras?.channels ?? null, withWords, log: this.log,
+        route: whereTo({ conversationId, channel: meta.channel ?? null, to: meta.to ?? null, chatId: meta.chatId ?? null }),
+      });
+    } catch (e) {
+      this.log({ table_images_error: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+      return null;
+    }
+  }
+
   async _fireHeldReaction(conversationId, withWords) {
     const held = db.takeHeldReaction(conversationId);
     if (!held) return null;
@@ -482,6 +496,8 @@ export class Runtime extends EventEmitter {
       try {
         const stale = choices.takeQueued(conversationId);
         if (stale) db.setChoiceState(stale.setId, "dropped");
+        const staleTable = tables.takeQueued(conversationId);
+        if (staleTable) db.setChoiceState(staleTable.setId, "dropped");
       } catch { /* never costs the turn */ }
       // `answering` is the router's note of which text this turn is for. It decides the pin below,
       // and it reaches the tools so a task started this turn can keep the handle it was asked under.
@@ -759,6 +775,8 @@ export class Runtime extends EventEmitter {
           await this._fireHeldReaction(conversationId, out?.ok !== false);
           // Choice cards the turn drew (show_choices): after the line above them, one bubble each, in order.
           await this._sendChoiceCards(conversationId, out?.ok !== false, meta);
+          // A table picture the turn drew (render_table): after its line, one bubble per picture, in order.
+          await this._sendTableImages(conversationId, out?.ok !== false, meta);
           // What this reply asserted and asked, written down once it has really gone (src/said.js),
           // so a later message that changes a value has to say so and a settled question stays closed.
           // Off the reply's path: nothing waits for it.
