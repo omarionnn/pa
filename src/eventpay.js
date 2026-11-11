@@ -28,6 +28,7 @@ import * as db from "./db.js";
 import * as stripe from "./stripe.js";
 import * as accounts from "./accounts.js";
 import * as events from "./events.js";
+import * as eventonb from "./eventonboarding.js";
 import { config, clock } from "./config.js";
 
 export const APP_FEE_BPS = 250;          // Reason's 2.5% of the ticket price
@@ -485,6 +486,9 @@ export async function settlePaid(row, { intentId = null, total = null }, ctx) {
   await events.deliver({ runtime, message: receipt, conversationId: row.conversation_id });
   await events.sendWelcome({ runtime, ev, att });
   events.scheduleListNote({ runtime, ev, att });
+  // A new guest the event onboarding covers (src/eventonboarding.js): its one line, now they are in.
+  await eventonb.afterPaid({ runtime, ev, conversationId: row.conversation_id, organizer: events.organizerName(ev), log })
+    .catch(e => log({ event_onboarding_paid_failed: row.conversation_id, why: (e?.message ?? String(e)).split("\n")[0] }));
   return { paid: true, joined: true, already: !!added.already };
 }
 

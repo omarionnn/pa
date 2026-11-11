@@ -46,6 +46,7 @@ import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
+import * as eventonb from "../eventonboarding.js";
 import * as actioncards from "../actioncards.js";
 import * as connectafter from "../connectafter.js";
 import * as actionengine from "../actionengine.js";
@@ -726,6 +727,7 @@ export class Router {
     // A real request somebody made mid-way through the first-chat onboarding: the turn does it, and
     // the step still pending follows its reply (src/onboarding.js afterTask).
     let onboardAfter = null;
+    let eventAfter = null;
     // An open Action Card this text answers (src/actioncards.js matchInbound): the words of a tap's
     // prefill, or near enough. The turn runs on the text as it is — it already IS the request, in
     // their own voice — and the card is checked off once that turn has replied.
@@ -788,6 +790,19 @@ export class Router {
       // this step, before any request row is opened. Something real — a task, a picture, a to-do
       // list — falls through to the normal turn below, which does the thing first; the step follows.
       let onboardFrame = "";
+      // Somebody who came in through an event link (src/eventonboarding.js, REASON_EVENT_ONBOARDING):
+      // the turn is told where they are (an event guest, their reply to "how was it?", or to the call
+      // offer), and after the reply to "how was it?" the cards and the call offer follow its answer.
+      if (last.channel !== web.WEB && !fold.webChat) {
+        const who = accounts.ownerOf(conversationId).name;
+        const thread = eventonb.rowOf(conversationId)?.state === "asked" ? db.loadConversation(conversationId) : null;
+        const eo = await eventonb.beforeTurn({
+          conversationId, text: said.join("\n"), log: this.log,
+          screen: thread ? ({ text }) => this.runtime.screen?.({ text, messages: thread, who: who === "the person I work for" ? "them" : who }) ?? { verdict: "clear" } : null,
+        }).catch(e => { this.log({ event_onboarding_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); return null; });
+        if (eo?.frame) onboardFrame = eo.frame;
+        if (eo?.after) eventAfter = { channel: last.channel, to: last.address, chatId: last.chat_id ?? null };
+      }
       if (last.channel !== web.WEB && !fold.webChat && onboarding.active(conversationId)) {
         const thread = db.loadConversation(conversationId);
         const who = accounts.ownerOf(conversationId).name;
@@ -799,7 +814,7 @@ export class Router {
           attachments: held.flatMap(h => h.attachments ?? []), log: this.log, ...this.onboard,
         });
         if (ob.handled) return { ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator, messages: held.length, replied: true, onboarding: ob.step };
-        onboardFrame = ob.frame ?? "";
+        onboardFrame = ob.frame ?? onboardFrame;
         if (ob.after) onboardAfter = { channel: last.channel, to: last.address, chatId: last.chat_id ?? null };
       }
 
@@ -908,6 +923,12 @@ export class Router {
     if (onboardAfter && reply !== null) {
       await onboarding.afterTask({ router: this, conversationId, route: onboardAfter, log: this.log, ...this.onboard })
         .catch(e => this.log({ onboarding_after_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
+    }
+    // An event guest's reply to "how was it?" has its answer: now "i can do more than events", the
+    // seven cards and the surprise-call offer (src/eventonboarding.js).
+    if (eventAfter && reply !== null) {
+      await eventonb.afterReply({ router: this, conversationId, route: eventAfter, log: this.log, sleep: this.onboard?.sleep })
+        .catch(e => this.log({ event_onboarding_after_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
     }
     // Otherwise: if this person now has a name and hasn't gotten their card, send it.
     // Fires here rather than before the turn so the card arrives after "nice to meet you" — and only
@@ -1104,6 +1125,7 @@ export class Router {
     // the payment link — their words first, the link as its own message. They are in once Stripe says
     // so (eventpay.settlePaid sends the welcome then); nothing else is said now.
     if (out.pending_payment) {
+      eventonb.onPendingPay({ conversationId: conv, address, ev: out.event, newAccount: out.newAccount });
       const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", answers: out.answers ?? null, log: this.log });
       const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote), pay.url]
         : [{ full: "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one." }[pay.reason]
@@ -1118,6 +1140,16 @@ export class Router {
       const att = events.afterJoin({ ev: out.event, att: out.attendee, typedInstagram: out.claim?.instagram ?? null, newAccount: out.newAccount });
       await events.sendWelcome({ runtime: this.runtime, ev: out.event, att });
       if (!out.newAccount) events.scheduleListNote({ runtime: this.runtime, ev: out.event, att });
+      // REASON_EVENT_ONBOARDING (src/eventonboarding.js): one line after the welcome and nothing else
+      // now — no name question, no card, no cards; the morning after the event comes on its timer.
+      const eo = eventonb.onJoin({ conversationId: conv, address, ev: out.event, newAccount: out.newAccount, organizer: events.organizerName(out.event) });
+      if (eo) {
+        await this.send({ channel: inbound.channel, to: address, text: eo.line, chatId, conversationId: conv, toOwner: true }).catch(() => {});
+        this.log({ inbound: inbound.externalId, event_onboarding_join: conv, event: out.event.id });
+        said.push(`[sent them the welcome for the event "${out.event.name.slice(0, 80)}" and the details its organizer has released]`, eo.line);
+        this.#eventHistory(conv, inbound, said);
+        return { ok: true, conversationId: conv, event: "joined", newAccount: out.newAccount, replied: true, eventOnboarding: "joined" };
+      }
       // Not the welcome's own words: those are the organizer's, and a guest's history must not hold
       // somebody else's text as if Reason had written it. event_info has the details on demand.
       said.push(`[sent them the welcome for the event "${out.event.name.slice(0, 80)}" and the details its organizer has released]`);
@@ -1384,6 +1416,8 @@ export class Router {
       const account = db.getAccount(conversationId);
       if (!account || account.contact_card_sent_at) return;
       if (!account.name) return; // wait until they have given their name
+      // An event guest gets it only once past the morning-after cards (src/eventonboarding.js).
+      if (eventonb.holdsCard(conversationId)) return;
       await offerContactCard({ router: this, account, log: this.log });
     } catch (e) {
       this.log({ contact_card_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
