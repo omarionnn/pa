@@ -569,6 +569,83 @@ config.events = "owner";
   await tool("event_cancel", { event_id: qev.id, event_named: qev.name }, C.owner);
 }
 
+// ---- paid events (src/eventpay.js, REASON_PAID_EVENTS=on, Stripe = the fake above) ----
+{
+  clock.reset();
+  const eventpay = await imp("src/eventpay.js");
+  const stripe = await imp("src/stripe.js");
+  const { stripeWebhookRequest } = await imp("src/http.js");
+  let evt = 0;
+  const webhook = (type, object) => {
+    const raw = JSON.stringify({ id: `evt_drive_${++evt}`, type, data: { object } });
+    return stripeWebhookRequest({ rawBody: raw, headers: { "stripe-signature": stripe.sign(raw, process.env.STRIPE_WEBHOOK_SECRET, Math.floor(clock.now() / 1000)), "content-type": "application/json" }, runtime });
+  };
+  const made = await tool("event_create", { name: "Paid Supper", description: "five courses", starts_at: "2027-08-14T19:00", timezone: "America/New_York", location: "9 Pine St", welcome_message: "glad you're coming!", password: "paid-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: true }, C.owner);
+  const pev = db.getEventRow(made.event.event_id);
+  const n0 = fake.sent.length;
+  const early = await tool("event_price", { event_id: pev.id, event_named: pev.name, price_dollars: 25 }, C.owner);
+  step("pay: a price before payouts gets one Stripe setup link on the events domain and sets nothing", early.ok === false && early.reason === "payouts_setup" && /^https:\/\/connect\.stripe\.test\/setup\/acct_drive_/.test(early.setup_link ?? "") && db.getEventRow(pev.id).price_cents == null
+    && stripeCalls.some(c => c.path === "/v1/account_links" && /\/payouts\?back=1$/.test(c.form.return_url) && c.form.return_url.startsWith(events.eventUrl(pev))), JSON.stringify({ reason: early.reason, link: early.setup_link }));
+  const acct = eventpay.payoutAccount(C.owner);
+  const ready = await webhook("account.updated", { id: acct.stripe_account_id, object: "account", charges_enabled: true, details_submitted: true, payouts_enabled: true });
+  await new Promise(r => setTimeout(r, 50));
+  step("pay: account.updated with charges on readies payouts and tells the organizer", ready.status === 200 && eventpay.payoutsReady(C.owner) && fake.sent.length > n0 && toNum(OWNER).some(t => /payouts are set up with Stripe/.test(t)), JSON.stringify(ready.body));
+  const priced = await tool("event_price", { event_id: pev.id, event_named: pev.name, price_dollars: 25 }, C.owner);
+  const qt = eventpay.quote(2500);
+  step("pay: $25 a person: guests pay price + Stripe processing, the organizer gets $24.37 (price less 2.5%, rounded)", priced.ok && db.getEventRow(pev.id).price_cents === 2500 && qt.organizer_gets === 2437 && qt.total === 2606 && /You get \$24\.37 per person/.test(priced.per_person ?? ""), priced.per_person);
+  const look = await tool("event_lookup", { link: events.eventUrl(pev) }, C.ama);
+  step("pay: the price is public on a pasted link, before any password", look.ok && look.event.paid_event === true && /\$25 per person/.test(look.event.price ?? ""), look.event?.price);
+  const nA = fake.sent.length;
+  const join = await tool("event_join", { name: "Paid Supper", password: "paid-pw" }, C.ama);
+  const hold = eventpay.openRow(pev.id, C.ama);
+  const cs = stripeCalls.filter(c => c.path === "/v1/checkout/sessions").at(-1);
+  step("pay: the right password by text gets the Checkout link and a 15-minute hold, not a join", join.ok && join.payment_required === true && join.joined === false && /^https:\/\/checkout\.stripe\.test\//.test(join.pay_link ?? "") && !!hold && hold.expires_at - hold.created_at === 15 * 60_000 && db.joinedCount(pev.id) === 0 && fake.sent.length === nA, JSON.stringify({ reason: join.reason, link: join.pay_link }));
+  step("pay: the Checkout is a destination charge to the organizer's account with Reason's fee, two lines, back to the events domain",
+    !!cs && cs.form["payment_intent_data[transfer_data][destination]"] === acct.stripe_account_id && Number(cs.form["payment_intent_data[application_fee_amount]"]) === qt.application_fee
+    && Number(cs.form["line_items[0][price_data][unit_amount]"]) === 2500 && Number(cs.form["line_items[1][price_data][unit_amount]"]) === qt.processing && cs.form["line_items[1][price_data][product_data][name]"] === "Processing"
+    && cs.form.success_url === `${events.eventUrl(pev)}/paid` && cs.form.cancel_url === `${events.eventUrl(pev)}/pay-back`, JSON.stringify(cs?.form).slice(0, 300));
+  const again = await tool("event_join", { name: "Paid Supper", password: "paid-pw" }, C.ama);
+  step("pay: asked twice, the same open link comes back (one hold per person)", again.ok && again.pay_link === join.pay_link && eventpay.openHolds(pev.id) === 1, again.pay_link);
+  const done = await webhook("checkout.session.completed", { id: hold.checkout_session_id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_drive_${hold.id}`, amount_total: qt.total, client_reference_id: `evpay:${hold.id}`, metadata: { reason_kind: "event_ticket", event_payment_id: String(hold.id) } });
+  await new Promise(r => setTimeout(r, 80));
+  step("pay: checkout.session.completed does the join: Ama is in, paid, and gets the receipt and the welcome", done.status === 200 && db.attendeeRow(pev.id, C.ama)?.state === "joined" && eventpay.paidRow(pev.id, C.ama)?.status === "paid" && toNum(AMA).some(t => /paid \$26\.06 for Paid Supper — you're in/.test(t)) && toNum(AMA).some(t => /glad you're coming/.test(t)), JSON.stringify(done.body));
+  const dup = await webhook("checkout.session.completed", { id: hold.checkout_session_id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_drive_${hold.id}`, client_reference_id: `evpay:${hold.id}` });
+  step("pay: the same payment landing again changes nothing", dup.status === 200 && db.joinedCount(pev.id) === 1 && eventpay.paidRows(pev.id).length === 1, JSON.stringify(dup.body));
+  // the hold counts against the cap, and is released by the sweep
+  await tool("event_settings", { event_id: pev.id, event_named: pev.name, capacity: 2 }, C.owner);
+  const kofi = await tool("event_join", { name: "Paid Supper", password: "paid-pw" }, C.kofi);
+  const yaw = await tool("event_join", { name: "Paid Supper", password: "paid-pw" }, C.yaw);
+  step("pay: a spot being paid for counts against the cap: Kofi's open Checkout makes it full for Yaw", kofi.ok && kofi.payment_required && yaw.ok === false && yaw.reason === "full" && /full right now/.test(yaw.error ?? "") && !/waitlist you|waitlist them/.test(yaw.error ?? ""), yaw.error);
+  clock.skip(16 * 60_000);
+  const swept = await eventpay.sweep({ log: () => {} });
+  const yaw2 = await tool("event_join", { name: "Paid Supper", password: "paid-pw" }, C.yaw);
+  step("pay: after 15 minutes the sweep lets the hold go, expires the page on Stripe, and the spot is open again", swept.expired === 1 && eventpay.paymentRow(eventpay.openRow(pev.id, C.kofi)?.id ?? 0) === null && stripeCalls.some(c => /\/expire$/.test(c.path)) && yaw2.ok && yaw2.payment_required === true, JSON.stringify(swept));
+  const yawHold = eventpay.openRow(pev.id, C.yaw);
+  await webhook("checkout.session.completed", { id: yawHold.checkout_session_id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_drive_${yawHold.id}`, amount_total: qt.total, client_reference_id: `evpay:${yawHold.id}` });
+  await new Promise(r => setTimeout(r, 80));
+  // a refund by text: the yes first, pinned to the guest and the amount
+  const amaId = db.attendeeRow(pev.id, C.ama).id;
+  const guests = await tool("event_guests", { event_id: pev.id, event_named: pev.name }, C.owner);
+  step("pay: event_guests shows who paid what, and the money on the event", guests.ok && guests.tickets?.paid === 2 && guests.tickets?.gross === "$50" && guests.tickets?.you_get === "$48.74" && guests.guests.find(g => g.guest_id === amaId)?.paid === "$26.06", JSON.stringify(guests.tickets));
+  const unasked = await tool("event_refund", { event_id: pev.id, event_named: pev.name, guest_id: amaId }, C.owner);
+  step("pay: a refund by text needs the yes, pinned to the guest and the amount; nothing moves first", unasked.blocked === "needs_confirmation" && /^refund \$26\.06 to Ama for Paid Supper/.test(unasked.use_target ?? "") && eventpay.paidRow(pev.id, C.ama)?.status === "paid", unasked.use_target);
+  const notPaid = await tool("event_refund", { event_id: pev.id, event_named: pev.name, guest_id: 999999 }, C.owner);
+  step("pay: a refund for a guest who isn't there is refused before any yes", notPaid.ok === false && /No guest #999999/.test(notPaid.error ?? ""), notPaid.error);
+  const refunded = await withYes(runTool, "event_refund", { event_id: pev.id, event_named: pev.name, guest_id: amaId }, { conversationId: C.owner, messages: [], events: runtime });
+  await new Promise(r => setTimeout(r, 80));
+  const rf = stripeCalls.filter(c => c.path === "/v1/refunds").at(-1);
+  step("pay: with the yes the guest gets everything back (transfer reversed, fee refunded), leaves, and is told", refunded.ok && refunded.refunded === "$26.06" && !!rf && rf.form.reverse_transfer === "true" && rf.form.refund_application_fee === "true" && rf.form.payment_intent === `pi_drive_${hold.id}`
+    && db.attendeeRow(pev.id, C.ama)?.state === "left" && eventpay.paidRow(pev.id, C.ama) === null && toNum(AMA).some(t => /refunded your \$26\.06 for Paid Supper/.test(t)), JSON.stringify({ refunded, state: db.attendeeRow(pev.id, C.ama)?.state }));
+  const dash = await tool("event_payouts", { event_id: pev.id, event_named: pev.name, action: "dashboard" }, C.owner);
+  step("pay: the organizer gets a one-time Stripe Express dashboard link", dash.ok && /^https:\/\/connect\.stripe\.test\/express\//.test(dash.dashboard_link ?? ""), dash.dashboard_link);
+  // cancelling refunds everyone who paid, fee included
+  const nR = stripeCalls.filter(c => c.path === "/v1/refunds").length;
+  const cancelled = await tool("event_cancel", { event_id: pev.id, event_named: pev.name }, C.owner);
+  await new Promise(r => setTimeout(r, 80));
+  step("pay: cancelling refunds everyone who paid, application fee included, and the guest hears it's cancelled and refunded", cancelled.ok && cancelled.refunds?.refunded === 1 && cancelled.refunds?.failed === 0 && stripeCalls.filter(c => c.path === "/v1/refunds").length === nR + 1 && eventpay.paidRows(pev.id).length === 0 && toNum(YAW).some(t => /is cancelled, so your \$26\.06 has been refunded in full/.test(t)), JSON.stringify(cancelled.refunds));
+  clock.reset();
+}
+
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 
