@@ -45,6 +45,16 @@ export async function whileTurn(fn) {
   }
 }
 
+/**
+ * Hold the lane for a stretch that is not one CLI run — a person's whole turn, check and send
+ * included (REASON_FAST_REPLY, src/runtime.js _turn). Returns the release; calling it twice is safe.
+ */
+export function holdLane() {
+  lane.turns++;
+  let released = false;
+  return () => { if (!released) { released = true; lane.turns--; } };
+}
+
 /** A CLI run failed: if it says the subscription is limited, park the lane until it is not. */
 export function noteFailure(err) {
   const o = readOutage(err, { now: lane.now() });

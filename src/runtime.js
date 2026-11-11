@@ -50,6 +50,9 @@ import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
 import * as onethought from "./onethought.js";
 import * as said from "./said.js";
 import * as offers from "./offers.js";
+import * as timing from "./replytiming.js";
+import { fastReplyOn } from "./fastreply.js";
+import { holdLane } from "./background.js";
 import { PROVIDER as GOOGLE } from "./google.js";
 import * as eventRides from "./eventrides.js";
 import { sweepListNotes, sweepQuestionAsks } from "./events.js";
@@ -490,8 +493,18 @@ export class Runtime extends EventEmitter {
    * and before anything leaves, so code rather than the model's own judgement decides whether a
    * reply earns an interruption. Returns what Reason said, even when it was held back.
    */
-  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, gate = null, attachments = [], ctx = {}, onSend = null, keep = null }) {
-    return this.enqueue(conversationId, async () => {
+  _turn(args) {
+    return this.enqueue(args.conversationId, async () => {
+      // REASON_FAST_REPLY (src/fastreply.js §5): the background lane stays paused for the WHOLE of a
+      // person's turn — the said check and the send included, not only the model (whileTurn in
+      // src/backends/claude-cli.js covers that part). Extraction's CLI was booting beside the check's.
+      const release = args.kind !== "event" && fastReplyOn({ conversationId: args.conversationId, isOperator: !!args.meta?.isOperator }) ? holdLane() : null;
+      try { return await this._turnBody(args); } finally { release?.(); }
+    });
+  }
+
+  async _turnBody({ conversationId, text, kind = "user", meta = {}, shouldSend = null, gate = null, attachments = [], ctx = {}, onSend = null, keep = null }) {
+    {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
       // Same for a "what's new" claim: a turn that said it would mention something and then sent
@@ -585,6 +598,10 @@ export class Runtime extends EventEmitter {
       // The said check's CLI, started now so its cold start is paid while the turn runs (src/said.js).
       // Not for a Web draft, which checks its pieces as they are written (src/webdraft.js).
       const warmCheck = kind === "user" && !draft ? said.warmCheck(conversationId) : null;
+      // src/replytiming.js: the wait behind this conversation's other turns, the screen's start and the
+      // check's warm start are "queue"; what the turn itself does is measured inside the backend.
+      timing.mark(conversationId, "queue");
+      let rewriteMs = 0;
       try {
         const first = await this.runTurn(turnArgs(draft ? { draft } : {}));
         // The reply waits for the verdict. Almost always it is in long before the turn is done.
@@ -617,10 +634,13 @@ export class Runtime extends EventEmitter {
         const figures = offers.takeRecompose(conversationId);
         if (reply && reply.trim() !== "NO_REPLY") {
           // A reply the tab already watched pass this check, word for word, is not asked twice (src/webdraft.js).
+          timing.touch(conversationId);
           const check = kind !== "user" ? { ok: true }
-            : draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text });
+            : draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text, fast: fastReplyOn({ conversationId, isOperator: !!meta.isOperator }) });
+          timing.mark(conversationId, "check");
           const notes = [check.ok ? "" : check.note, figures ?? ""].filter(Boolean);
           if (notes.length) {
+            const rewriteStarted = Date.now();
             const note = notes.join(" ");
             // What the tab was shown goes; the rewrite arrives whole.
             draft?.taken();
@@ -635,8 +655,10 @@ export class Runtime extends EventEmitter {
               keep: onethought.CODE_LINE, attachments: [], continueSession: true, recompose: true,
             })), { conversationId, text, meta });
             db.dropUserLineEndingWith(conversationId, onethought.CODE_LINE);
+            rewriteMs = Date.now() - rewriteStarted;
           }
         }
+        timing.note(conversationId, "rewrite", rewriteMs);
       } catch (e) {
         // A turn that broke before the screen had answered is decided by the screen, not the error.
         // The usual way is the reply model's own safeguards refusing the message outright, which
@@ -747,10 +769,14 @@ export class Runtime extends EventEmitter {
         await this._fireHeldReaction(conversationId, false);
       };
       if (reply && !gatedQuiet && (!shouldSend || shouldSend(reply))) {
+        timing.touch(conversationId);
         const out = await this._emit({
           conversationId, text: reply,
           meta: { ...meta, ...(replyTo ? { replyTo } : {}), ...(sendStyle ? { sendStyle } : {}) },
         });
+        // The one timing line for this reply (src/replytiming.js), now that it has left.
+        timing.mark(conversationId, "send");
+        timing.finish(conversationId, this.log, { sent: out?.ok === false ? 0 : 1, rewritten: rewriteMs ? 1 : 0 });
         // For a caller that has to know what became of the send and not only what was written —
         // a timer is finished with once its message is handed over, not once the model has spoken.
         onSend?.(out);
@@ -809,6 +835,7 @@ export class Runtime extends EventEmitter {
         }
       } else {
         await heldBack(gatedQuiet ? { why: "quiet_nothing_new" } : {});
+        timing.finish(conversationId, this.log, { sent: 0, rewritten: rewriteMs ? 1 : 0 });
       }
       // The reply has gone (or there is none): the tab's growing copy is taken back, after the real one.
       draft?.end();
@@ -825,7 +852,7 @@ export class Runtime extends EventEmitter {
       } catch (e) { this.log({ settle_link_failed: (e?.message ?? String(e)).split("\n")[0] }); }
       db.dropStaleRequests(conversationId);
       return reply;
-    });
+    }
   }
 
   /**
