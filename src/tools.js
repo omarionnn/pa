@@ -9652,13 +9652,13 @@ async function runToolInner(name, rawInput, ctx) {
     const refusal = organizerRefusal(c, input, name) ?? audienceRefusal(c, input);
     if (refusal) return refusal;
   }
-  // And for a refund: somebody else's event, or a guest who never paid, is refused before any yes.
   // And a guest's own refund: no ticket, or the policy says no now, is said before any yes is asked.
   if (name === "event_ticket_refund") {
     if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
     const refusal = ticketRefundRefusal(c, input);
     if (refusal) return refusal;
   }
+  // And for a refund: somebody else's event, or a guest who never paid, is refused before any yes.
   if (name === "event_refund") {
     if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
     const refusal = refundRefusal(c, input);
