@@ -449,7 +449,7 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
         + `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="number" value="${esc(number)}"><button class="ev-link" type="submit" data-busy="Sending…">Text it again</button></form>`
         + `<div class="t">${p("No code? You're new to Reason — join with the event password instead.")}</div><a class="ev-btn" href="${esc(`/e/${ev.public_id}`)}">Join as a new guest</a>`
       : `<div class="t">${p("Already use Reason? Put in your number and Reason will text you a code.")}</div>`
-        + `<form class="ev-form" method="POST" action="${esc(action)}"><label for="number">Your phone number</label><input id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567" maxlength="24" required value="${esc(number)}">`
+        + `<form class="ev-form" method="POST" action="${esc(action)}"><label for="number">Your phone number or Apple ID email</label><input id="number" name="number" type="text" inputmode="email" autocomplete="tel email" placeholder="(555) 123-4567" maxlength="254" required value="${esc(number)}">`
         + `<button class="ev-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`);
   return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
@@ -566,7 +566,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     if (mine) return redirect(`/e/${ev.public_id}`);
     if (method !== "POST") return page(200, renderSignin({ ev }));
     const form = new URLSearchParams((await readBody()) ?? "");
-    const number = String(form.get("number") ?? "").slice(0, 24);
+    const number = String(form.get("number") ?? "").slice(0, 254);
     const code = form.get("code");
     // Only somebody already ON this event has a private page here to sign in to; everybody else —
     // no account, or an account that isn't on it — gets the same words and no text, and joins with

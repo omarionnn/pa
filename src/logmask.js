@@ -11,6 +11,10 @@ import { createHmac, randomBytes } from "node:crypto";
 import { inspect } from "node:util";
 
 const PHONE = /\+\d{10,15}(?!\d)/g;
+// An Apple ID email is an address too (REASON_EMAIL_HANDLES, 2026-11-11): conversation ids carry it
+// the same way (`dm:sendblue:jane@icloud.com`), so it gets the same treatment — first letter, the
+// domain and the keyed hash, never the part that names the person.
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 // Keyed so the short hash cannot be reversed by trying every number; the token key when there is
 // one (stable across restarts), else a per-process key (lines still follow within one run).
 const KEY = process.env.REASON_TOKEN_KEY || randomBytes(32).toString("hex");
@@ -21,9 +25,15 @@ export function maskPhone(number) {
   return `+…${number.slice(-4)}~${h}`;
 }
 
-/** The text with every E.164 number masked. */
+/** `jane@icloud.com` → `j…@icloud.com~1f2e3d`. */
+export function maskEmail(email) {
+  const h = createHmac("sha256", KEY).update(email.toLowerCase()).digest("hex").slice(0, 6);
+  return `${email[0]}…${email.slice(email.indexOf("@"))}~${h}`;
+}
+
+/** The text with every E.164 number and every email address masked. */
 export function maskPhones(text) {
-  return String(text).replace(PHONE, maskPhone);
+  return String(text).replace(PHONE, maskPhone).replace(EMAIL, maskEmail);
 }
 
 const mask = (a) => {
@@ -36,8 +46,8 @@ const mask = (a) => {
   if (a && typeof a === "object") {
     // Objects print the way console would, then masked — only when a number is in there.
     const s = inspect(a, { depth: 4 });
-    PHONE.lastIndex = 0;
-    return PHONE.test(s) ? maskPhones(s) : a;
+    PHONE.lastIndex = 0; EMAIL.lastIndex = 0;
+    return PHONE.test(s) || EMAIL.test(s) ? maskPhones(s) : a;
   }
   return a;
 };

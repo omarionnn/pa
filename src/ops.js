@@ -475,6 +475,7 @@ export function startLoopWatch(everyMs = 1000) {
 const dropped = new Map();
 export function noteDroppedInbound(channel, reason) {
   const key = `${channel}: ${String(reason ?? "").slice(0, 80)}`;
+  if (!dropped.has(key) && dropped.size >= 50) return;
   dropped.set(key, (dropped.get(key) ?? 0) + 1);
 }
 export function droppedInbound() { return Object.fromEntries([...dropped].sort((a, b) => b[1] - a[1])); }

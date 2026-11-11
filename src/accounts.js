@@ -72,7 +72,7 @@ export function accountState(channel, address) {
 /** Did the master pre-approve this number by listing it in REASON_TEST_NUMBERS? */
 export function isPreApproved(address) {
   const addr = normalizeHandle(address) || String(address ?? "").trim();
-  return !!addr && config.testNumbers.some((n) => (normalizeNumber(n) || n) === addr);
+  return !!addr && config.testNumbers.some((n) => (normalizeHandle(n) || n) === addr);
 }
 
 export function admit({ channel, address, name = "" }) {

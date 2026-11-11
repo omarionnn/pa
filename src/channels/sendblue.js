@@ -833,7 +833,7 @@ export class SendblueChannel extends Channel {
   async readLocation({ number: raw }) {
     if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
     const number = normalizeHandle(raw);
-    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164` };
+    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164 or an Apple ID email` };
 
     const q = new URLSearchParams({ from_number: this.from });
     let res;
@@ -878,7 +878,7 @@ export class SendblueChannel extends Channel {
   async requestLocation({ number: raw }) {
     if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
     const number = normalizeHandle(raw);
-    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164` };
+    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164 or an Apple ID email` };
 
     const r = await this.#postJson("/api/request-location", { number, from_number: this.from });
     if (r.transport) return { ok: false, supported: true, error: `Sendblue could not be reached: ${r.transport}` };

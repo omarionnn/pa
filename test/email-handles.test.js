@@ -272,3 +272,40 @@ test("the startup banner does not promise a restriction that auto-admit makes in
   assert.match(open, /restricts nothing/);
   assert.match(open, /Anthropic API key with credit/);
 });
+
+// ---------- after the cold review ----------
+
+test("the journal masks an email handle the way it masks a number: first letter, domain, keyed hash", async () => {
+  const { maskPhones } = await import("../src/logmask.js");
+  const line = maskPhones(`{"inbound":"H-1","auto_admitted":"jane@icloud.com","conversationId":"dm:sendblue:jane@icloud.com","to":"+12025551234"}`);
+  assert.equal(line.includes("jane@"), false);
+  assert.match(line, /dm:sendblue:j…@icloud\.com~[0-9a-f]{6}/);
+  assert.match(line, /\+…1234~[0-9a-f]{6}/);
+  assert.equal(maskPhones("Jane@iCloud.com").split("~")[1], maskPhones("jane@icloud.com").split("~")[1], "one Apple ID, one hash");
+});
+
+test("a pre-approved test entry that is an email matches the person however they capitalise it", () => {
+  const before = config.testNumbers;
+  config.testNumbers = ["Jane@iCloud.com"];
+  try {
+    assert.equal(accounts.isPreApproved("jane@icloud.com"), true);
+    assert.equal(accounts.isPreApproved("JANE@ICLOUD.COM"), true);
+    assert.equal(accounts.isPreApproved("someone-else@icloud.com"), false);
+  } finally { config.testNumbers = before; }
+});
+
+test("the Web and event sign-in pages find an email-handle account, and never read its digits as a phone", async () => {
+  configure();
+  try {
+    const { router } = harness();
+    const h = "12025551234@icloud.com";
+    await router.webhook({ channel: "sendblue", rawBody: fromMail({ from: h }), headers: headers() });
+    const websignin = await import("../src/pages/websignin.js");
+    const events = await import("../src/events.js");
+    assert.equal(websignin.accountForNumber("12025551234@iCloud.com", { allowed: () => true })?.address, h);
+    assert.equal(websignin.accountForNumber("+12025551234", { allowed: () => true }), null, "the digits inside the email are not a number anybody has");
+    assert.equal(events.accountForNumber(h)?.address, h);
+    assert.equal(websignin.maskedNumber(h), "1•••@icloud.com");
+    assert.equal(websignin.maskedNumber("+12025550142"), "••• ••• 0142");
+  } finally { unconfigure(); }
+});

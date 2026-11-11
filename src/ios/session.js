@@ -41,7 +41,7 @@ export function askForCode({ phone, challenge, headers, remoteAddress, runtime, 
   const actor = eventActor(headers, remoteAddress);
   if (!events.signinGate(actor)) return { ok: false, reason: "rate_limited" };
   events.noteSigninRequest(actor);
-  const who = accountForNumber(String(phone ?? "").slice(0, 24), { allowed: iosAllowedFor });
+  const who = accountForNumber(String(phone ?? "").slice(0, 254), { allowed: iosAllowedFor });
   if (!who) return { ok: true };
   const asked = requestCode({ id: signinKey(who.conversation_id), title: "Reason" }, { host: "", bound: bindingOf(challenge) });
   if (!asked.ok) { log({ ios_signin_code_refused: asked.reason }); return { ok: true }; }
@@ -56,7 +56,7 @@ export function askForCode({ phone, challenge, headers, remoteAddress, runtime, 
 /** Trade a code for a device session. Every miss is the same miss. */
 export function verifyCode({ phone, challenge, code, deviceName, headers, remoteAddress, log = () => {} }) {
   const actor = eventActor(headers, remoteAddress);
-  const who = accountForNumber(String(phone ?? "").slice(0, 24), { allowed: iosAllowedFor });
+  const who = accountForNumber(String(phone ?? "").slice(0, 254), { allowed: iosAllowedFor });
   const tried = events.tryKeyedCode({
     conversationId: who?.conversation_id ?? null, code, personKey: who ? signinKey(who.conversation_id) : null,
     browserKey: `iosb:${actor}`, bound: bindingOf(challenge),

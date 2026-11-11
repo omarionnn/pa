@@ -332,8 +332,8 @@ export function renderSignin({ number = "", error = null, joinNumber = null, for
     + `<section class="so-in" aria-labelledby="so-title">`
     + (out ? hand("you've been signed out. everything's still here.", { role: "status", tilt: true }) : "")
     + `<h1 id="so-title" class="h1">What's your number?</h1>`
-    + `<form method="POST" action="/web/signin">${hidden("f", formToken)}<div class="so-field"><label for="number">PHONE NUMBER</label>`
-    + `<input class="ul-in" id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 000-0000" maxlength="24" required value="${esc(number)}"${error?.kind === "pause" ? " disabled" : ""}>${note}</div>`
+    + `<form method="POST" action="/web/signin">${hidden("f", formToken)}<div class="so-field"><label for="number">PHONE NUMBER OR APPLE ID EMAIL</label>`
+    + `<input class="ul-in" id="number" name="number" type="text" inputmode="email" autocomplete="tel email" placeholder="(555) 000-0000" maxlength="254" required value="${esc(number)}"${error?.kind === "pause" ? " disabled" : ""}>${note}</div>`
     + (error?.kind === "pause" ? "" : action("Text me a code"))
     + `</form></section>${joinBlock(joinNumber)}</div>`
     + typed("NEW TO REASON? START WITH A TEXT →", { href: "/web?join=1", cls: "so-new" })
@@ -343,7 +343,10 @@ export function renderSignin({ number = "", error = null, joinNumber = null, for
 
 /** "••• ••• 0142": the number they typed, all but its last four hidden. Never anything the server knows. */
 export function maskedNumber(number) {
-  const d = String(number ?? "").replace(/\D/g, "");
+  const s = String(number ?? "").trim();
+  // An Apple ID email: its first letter and domain, never the digits inside it (those are not a phone).
+  if (s.includes("@")) { const at = s.indexOf("@"); return at > 0 ? `${s[0]}•••${s.slice(at)}` : "your email"; }
+  const d = s.replace(/\D/g, "");
   return d.length >= 4 ? `••• ••• ${d.slice(-4)}` : "your number";
 }
 
@@ -620,7 +623,7 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     const token = randomBytes(16).toString("base64url");
     return page(403, renderSignin({ joinNumber, formToken: token, error: { kind: "origin" } }), { "Set-Cookie": formCookieHeader(token) });
   }
-  const number = String(form.get("number") ?? "").slice(0, 24);
+  const number = String(form.get("number") ?? "").slice(0, 254);
   const actor = eventActor(headers, remoteAddress);
   // The code a browser asks for is that browser's: bound to its form secret (checked equal just
   // above), so a stranger typing this number neither kills nor reaches it (events.tryKeyedCode).

@@ -134,7 +134,7 @@ export function coversAddress(address) {
   if (config.onboarding === "on") return true;
   if (config.onboarding !== "test") return false;
   const a = normalizeHandle(address) || String(address ?? "").trim();
-  return !!a && config.onboardingNumbers.some(n => (normalizeNumber(n) || n) === a);
+  return !!a && config.onboardingNumbers.some(n => (normalizeHandle(n) || n) === a);
 }
 
 /** Start it for a person whose account was just made (their first text, or an event join). Never the operator. */
