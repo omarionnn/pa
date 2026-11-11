@@ -33,7 +33,7 @@
  "src/db.js | SELECT SELECT * FROM accounts WHERE ${ACCOUNT_ADDR_MATCH} ORDER BY created_at": 1,
  "src/db.js | SELECT SELECT * FROM accounts WHERE ${ACCOUNT_ADDR_MATCH} ORDER BY last_seen_at DESC LIMIT 1": 1,
  "src/db.js | SELECT SELECT * FROM accounts WHERE channel = ? AND ${ACCOUNT_ADDR_MATCH}": 1,
- "src/db.js | SELECT SELECT * FROM accounts WHERE contact_card_sent_at IS NULL AND COALESCE(onboarding, '') NOT IN ('not_started', 'awaiting_name', 'awaiting_card_name') ORDER BY cr": 1,
+ "src/db.js | SELECT SELECT * FROM accounts WHERE contact_card_sent_at IS NULL AND COALESCE(onboarding, '') NOT IN ('not_started', 'awaiting_first', 'awaiting_name', 'awaiting_card_": 1,
  "src/db.js | SELECT SELECT * FROM agentcard_purchases WHERE authorization_id = ? AND authorization_id != ''": 1,
  "src/db.js | SELECT SELECT * FROM agentcard_purchases WHERE buy_conversation_id = ?": 1,
  "src/db.js | SELECT SELECT * FROM agentcard_purchases WHERE order_id = ? AND order_id != ''": 1,

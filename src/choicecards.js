@@ -603,8 +603,10 @@ export function choiceWording(conversationId, text, { since = null } = {}) {
   try {
     const t = String(text ?? "");
     if (!t.trim()) return { text, flag: null };
-    const set = db.db.prepare("SELECT id, options, created_at, state FROM choice_sets WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversationId);
+    const set = db.db.prepare("SELECT id, kind, options, created_at, state FROM choice_sets WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversationId);
     if (!set || clock.now() - set.created_at > CHOICE_FRESH_MS) return { text, flag: null };
+    // A table (src/tableimage.js) is rows to point at, not things for sale: nothing here is bought, so no total line.
+    if (set.kind === "table") return { text, flag: null };
     // Only the reply the cards go out with: a set drawn on THIS turn (`since`, the turn's start), never a
     // later reply about something else, and so never twice (review 2026-10-31).
     if (since != null && set.created_at < since) return { text, flag: null };

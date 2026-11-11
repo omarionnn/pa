@@ -28,6 +28,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { clock } from "./config.js";
+import { Channel } from "./channels/channel.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import * as uploads from "./webuploads.js";
@@ -392,7 +393,10 @@ export async function sendQueued(conversationId, { router, route, withWords, log
     log({ table_dropped: conversationId, set: q.setId, why: withWords ? "no channel to send pictures on" : "the turn sent no words" });
     return { sent: 0 };
   }
-  const byUrl = typeof router.get?.(route.channel)?.sendMediaUrl === "function";
+  // By address only on a channel that really fetches one (Sendblue). The base Channel class carries a
+  // stub `sendMediaUrl` that refuses, and Web and Linq inherit it: hand those the file instead.
+  const ch = router.get?.(route.channel);
+  const byUrl = typeof ch?.sendMediaUrl === "function" && ch.sendMediaUrl !== Channel.prototype.sendMediaUrl;
   const handles = [];
   let sent = 0;
   let failed = null;
@@ -402,7 +406,7 @@ export async function sendQueued(conversationId, { router, route, withWords, log
     try {
       r = await router.sendMedia({
         channel: route.channel, to: route.to, chatId: route.chatId ?? null, text: "",
-        ...(byUrl ? { mediaUrl: p.url } : { file: p.file }), mimeType: p.mime, filename: p.filename,
+        ...(byUrl ? { mediaUrl: p.url, table: true } : { file: p.file }), mimeType: p.mime, filename: p.filename,
         conversationId, toOwner: true, idempotencyKey: `table:${q.setId}:${i + 1}`,
       });
     } catch (e) {
@@ -446,7 +450,9 @@ export function pickFromTable(names, text) {
   let m;
   if ((m = /^(?:#|no\.?\s*|number\s+|option\s+|row\s+)?(\d{1,2})\s*[.)!]?$/.exec(t))) return at(Number(m[1]));
   if ((m = /^(?:the\s+)?(?:#|no\.?\s*|number\s+|option\s+|row\s+)(\d{1,2})\b/.exec(t))) return at(Number(m[1]));
-  if ((m = /^(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d{1,2}(?:st|nd|rd|th))(?:\s+(?:one|row|option|pick))?\b/.exec(t))) return at(ORDINALS[m[1]] ?? parseInt(m[1], 10));
+  // An ordinal only as the whole message (plus a tail word and a mark): "First, is the 2nd one open late?"
+  // is a question with an ordinal in it, not a pick (review 2026-11-10).
+  if ((m = /^(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d{1,2}(?:st|nd|rd|th))(?:\s+(?:one|row|option|pick))?\s*(?:,?\s*please)?\s*[.!]?$/.exec(t))) return at(ORDINALS[m[1]] ?? parseInt(m[1], 10));
   if (/^(?:the\s+)?last(?:\s+(?:one|row|option))?\s*[.!]?$/.test(t)) return n - 1;
   if (/^(?:the\s+)?(?:top|first)(?:\s+(?:one|row|option))?\s*[.!]?$/.test(t)) return 0;
   // A number as a word only when it is the whole message ("three", "the two"): "the one with the best
@@ -454,7 +460,9 @@ export function pickFromTable(names, text) {
   if ((m = /^(?:the\s+)?(one|two|three|four|five|six|seven|eight|nine|ten)(?:\s+(?:one|row|option))?\s*[.!]?$/.exec(t))) return at(WORDS[m[1]]);
   // By name: the whole name in their words, or a distinctive word of the name only one row has.
   const low = names.map(x => String(x).toLowerCase());
-  const whole = low.map((x, i) => (t.includes(x) ? i : -1)).filter(i => i >= 0);
+  // Whole name on word edges: "Ace" is not inside "place".
+  const edge = (x) => new RegExp(`(?:^|[^a-z0-9])${x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^a-z0-9])`);
+  const whole = low.map((x, i) => (edge(x).test(t) ? i : -1)).filter(i => i >= 0);
   if (whole.length === 1) return whole[0];
   if (whole.length > 1) return null;
   const words = new Set(t.split(/[^a-z0-9'&]+/).filter(w => w.length >= 4));

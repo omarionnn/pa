@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="570" viewBox="0 0 240 190">
+<!-- Reason welcome card 5: Food. Ink #2a2520, pen #9c3b2e. Strokes 6.5/240 of the width, round caps and joins, no fills. -->
+<defs><filter id="wobble" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="35"/><feDisplacementMap in="SourceGraphic" scale="3.2"/></filter></defs>
+<g filter="url(#wobble)" transform="translate(0 8)" fill="none" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+<g transform="rotate(-16 124 104)"><path d="M58 70h120a34 34 0 0 1 0 68H58" stroke="#2a2520"/><path d="M58 70a14 34 0 0 0 0 68a14 34 0 0 0 0-68z" stroke="#2a2520"/><path d="M136 70l8 8-8 9 8 8-8 9 8 8-8 9 8 8-8 9" stroke="#2a2520"/><path d="M160 78l-6 14M178 84l-8 18M186 106l-10 16" stroke="#2a2520"/><path d="M92 72q10 32 0 64" stroke="#2a2520"/></g>
+<path d="M54 92h.1M62 104h.1M52 112h.1M60 120h.1" stroke="#9c3b2e"/>
+<path d="M92 50q-9-10 0-20t0-20M120 46q-9-10 0-20t0-20M148 50q-9-10 0-20t0-20" stroke="#9c3b2e"/>
+</g>
+</svg>

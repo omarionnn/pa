@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="570" viewBox="0 0 240 190">
+<!-- Reason welcome card 4: Shopping. Ink #2a2520, pen #9c3b2e. Strokes 6.5/240 of the width, round caps and joins, no fills. -->
+<defs><filter id="wobble" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="28"/><feDisplacementMap in="SourceGraphic" scale="3.2"/></filter></defs>
+<g filter="url(#wobble)" transform="translate(0 8)" fill="none" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M56 74H184L172 160H68Z" stroke="#2a2520"/>
+<path d="M92 74V62a28 28 0 0 1 56 0v12" stroke="#2a2520"/>
+<path d="M106 74V34h26v40M113 34V22h12M119 22v-8h16" stroke="#2a2520"/>
+<path d="M96 118l16 16 34-36" stroke="#9c3b2e"/>
+</g>
+</svg>

@@ -1870,6 +1870,8 @@ addColumnIfMissing("accounts", "onboarding_at", "INTEGER");
 addColumnIfMissing("accounts", "onboarding_steers", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("accounts", "onboarding_name_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "onboarding_nudged_at", "INTEGER");
+// The welcome cards (src/welcome.js): 'direct' or 'web' once sent, else NULL. Never sent twice.
+addColumnIfMissing("accounts", "welcome_cards", "TEXT");
 addColumnIfMissing("accounts", "patterns", "TEXT");
 addColumnIfMissing("accounts", "patterns_said", "TEXT");
 addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
@@ -3768,6 +3770,16 @@ export function defaultMode(conversationId) {
 }
 
 // ---------- the contact card (src/contact.js) ----------
+/** The newest first-chat message to this person still on its way (queued, sending or unknown), else null. */
+export function pendingOnboardingTail(conversationId) {
+  return db.prepare("SELECT id FROM outbox WHERE conversation_id = ? AND idem_key LIKE 'onboard:%' AND state IN ('queued','sending','unknown') ORDER BY id DESC LIMIT 1").get(conversationId)?.id ?? null;
+}
+
+/** The welcome cards went to this person (src/onboarding.js), from the first chat or the web setup's hand-off. */
+export function setWelcomeCards(conversationId, kind) {
+  db.prepare("UPDATE accounts SET welcome_cards = COALESCE(welcome_cards, ?) WHERE conversation_id = ?").run(kind === "web" ? "web" : "direct", conversationId);
+}
+
 export function markContactCardTried(conversationId) {
   db.prepare("UPDATE accounts SET contact_card_tried_at = ? WHERE conversation_id = ?").run(clock.now(), conversationId);
 }
@@ -3803,7 +3815,7 @@ export function contactCardNameByToken(token) {
  * in the first-chat onboarding: their card comes from it, under the name they pick.
  */
 export function accountsWithoutContactCard() {
-  return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL AND COALESCE(onboarding, '') NOT IN ('not_started', 'awaiting_name', 'awaiting_card_name') ORDER BY created_at ASC").all();
+  return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL AND COALESCE(onboarding, '') NOT IN ('not_started', 'awaiting_first', 'awaiting_name', 'awaiting_card_name') ORDER BY created_at ASC").all();
 }
 
 export function listAccountsOfPeople() {
@@ -5026,6 +5038,19 @@ export function markOutboundFailed(id, { error, errorKey = null, errorCode = nul
     // own reasons (opted out, never texted the line) is that same refusal, not a fault of Reason's.
     markOutboundFailed(r.id, { error: `the message it goes with never arrived, so this was not sent on its own: ${String(error ?? "")}`, errorKey, errorCode });
   }
+  return getOutbound(id);
+}
+
+/**
+ * A picture that cannot go, turned into its own words on the same row (src/outbox.js attempt): the
+ * file comes off, the body becomes the line, the attempts start over, and it is due now. Same id, so
+ * whatever is chained behind it still waits for it.
+ */
+export function outboundAsText(id, text) {
+  const row = db.prepare("SELECT conversation_id FROM outbox WHERE id = ?").get(id);
+  if (!row) return null;
+  db.prepare(`UPDATE outbox SET state = 'queued', media = NULL, body = ?, attempts = 0, next_attempt_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?`)
+    .run(seal2(row.conversation_id, String(text ?? "")), clock.now(), clock.now(), id, row.conversation_id);
   return getOutbound(id);
 }
 
@@ -11248,14 +11273,18 @@ function historyFromOutbound(row) {
   if (HISTORY_EXCLUDED_KEYS.some(p => String(row.idem_key ?? "").startsWith(p))) return null;
   // A choice card is a picture Reason drew, kept on this machine, so Web can draw it in the thread too.
   const card = /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(row.media?.file ?? ""));
-  // A table picture (src/tableimage.js) went by address, an upload of this conversation's: Web serves it from there.
-  const media = !row.media ? []
+  // A table picture (src/tableimage.js) went by address, an upload of this conversation's (marked `table`
+  // by the tool that drew it): Web serves it from there. Any other address (a contact card's .vcf) stays a file.
+  const table = row.media?.table === true && /^https?:\/\/.+\/web\/media\/u\//.test(String(row.media.mediaUrl ?? ""))
+    && /^image\//.test(String(row.media.mimeType ?? "image/png"));
+  // A welcome card (src/welcome.js) is history as its words: Web cannot draw the picture, and a blank file says nothing.
+  const media = !row.media || row.media.fallbackText ? []
     : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
-      : row.media.mediaUrl ? [{ kind: "image", mimeType: row.media.mimeType ?? "image/png", filename: row.media.filename ?? null, url: row.media.mediaUrl, table: true }]
+      : table ? [{ kind: "image", mimeType: row.media.mimeType ?? "image/png", filename: row.media.filename ?? null, url: row.media.mediaUrl, table: true }]
         : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
-    externalId: row.message_id ?? null, outboxId: row.id, text: row.body ?? "", media, at: row.sent_at ?? clock.now(),
+    externalId: row.message_id ?? null, outboxId: row.id, text: row.body || (row.media?.fallbackText ? `(picture) ${row.media.fallbackText}` : ""), media, at: row.sent_at ?? clock.now(),
     chatId: row.chat_id ?? null, source: opsSourceOf(row.idem_key),
   });
 }

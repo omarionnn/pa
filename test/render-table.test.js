@@ -355,3 +355,71 @@ test("a Web-only chat gets no picture; the tool says to write lines", async () =
   assert.equal(r.ok, false);
   assert.match(r.error, /Web-only/);
 });
+
+// ---------- review of PR #463 ----------
+
+test("review: the real Web/Linq channel inherits the base stub sendMediaUrl — it still gets the file, never the address", async () => {
+  const { Channel } = await import("../src/channels/channel.js");
+  const { WebChannel } = await import("../src/channels/web.js");
+  const r = await t.runTableTool("render_table", input(), ctx());
+  const router = fakeRouter();
+  // A channel whose sendMediaUrl is the base class's refusal, exactly as Web and Linq have it.
+  const web = Object.create(WebChannel.prototype);
+  assert.equal(web.sendMediaUrl, Channel.prototype.sendMediaUrl);
+  router.get = () => web;
+  await t.sendQueued(C, { router, withWords: true, route: { channel: "web", to: C } });
+  assert.equal(router.sent[0].mediaUrl, undefined);
+  assert.ok(existsSync(router.sent[0].file));
+  assert.equal(router.sent[0].table, undefined);
+  assert.equal(router.sent[0].idempotencyKey, `table:${r.set_id}:1`);
+  // Sendblue overrides it: that one goes by address, marked as a table.
+  const { SendblueChannel } = await import("../src/channels/sendblue.js");
+  const sb = Object.create(SendblueChannel.prototype);
+  assert.notEqual(sb.sendMediaUrl, Channel.prototype.sendMediaUrl);
+  await t.runTableTool("render_table", input(), ctx());
+  const r2 = fakeRouter(); r2.get = () => sb;
+  await t.sendQueued(C, { router: r2, withWords: true, route: { channel: "sendblue", to: "+12025551234" } });
+  assert.match(r2.sent[0].mediaUrl, /\/web\/media\/u\//);
+  assert.equal(r2.sent[0].table, true);
+});
+
+test("review: history draws a table sent by address, but a contact card's .vcf by address stays a file", async () => {
+  const { config } = await import("../src/config.js");
+  const was = config.web;
+  config.web = true;
+  try {
+    db.db.exec("DELETE FROM messages; DELETE FROM outbox;");
+    const put = (idemKey, media) => {
+      const { row } = db.enqueueOutbound({ idemKey, conversationId: C, channel: "sendblue", address: "+12025551234", body: "", media, toOwner: true });
+      db.claimOutbound(row.id);
+      return db.markOutboundSent(row.id, { messageId: `M-${idemKey}` });
+    };
+    put("table:1:1", { mediaUrl: "https://heyreason.com/web/media/u/abc123.png", mimeType: "image/png", filename: "reason-table-1.png", table: true });
+    put("onboard:card:1", { mediaUrl: "https://heyreason.com/contact/reason.vcf", mimeType: "text/vcard", filename: "Reason.vcf" });
+    put("x:unmarked", { mediaUrl: "https://heyreason.com/web/media/u/def456.png", mimeType: "image/png", filename: "p.png" });
+    const rows = db.messagesFor(C);
+    const by = Object.fromEntries(rows.map(r => [r.outbox_id ? db.getOutbound(r.outbox_id).idem_key : r.id, r]));
+    assert.deepEqual(by["table:1:1"].media[0], { kind: "image", mimeType: "image/png", filename: "reason-table-1.png", url: "https://heyreason.com/web/media/u/abc123.png", table: true });
+    assert.equal(by["onboard:card:1"].media[0].kind, "file");
+    assert.equal(by["onboard:card:1"].media[0].url, undefined);
+    assert.equal(by["x:unmarked"].media[0].kind, "file", "an address nobody marked as a table is not drawn");
+  } finally { config.web = was; }
+});
+
+test("review: a fresh table set never makes a reply promise a total — only shopping sets do", async () => {
+  await t.runTableTool("render_table", input(), ctx());
+  const set = db.db.prepare("SELECT kind FROM choice_sets WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(C);
+  assert.equal(set.kind, "table");
+  const w = cc.choiceWording(C, "Joe's is open until 2am and the quietest of the three.");
+  assert.equal(w.flag, null);
+  assert.ok(!w.text.includes(cc.TOTAL_FIRST_LINE));
+});
+
+test("review: an ordinal inside a question is not a pick, and a short name is not matched inside a longer word", () => {
+  const names = ["Ace Hotel", "The Standard", "Joe's Pizza"];
+  assert.equal(t.pickFromTable(names, "First, is the 2nd one open late?"), null);
+  assert.equal(t.pickFromTable(names, "the 2nd one"), 1);
+  assert.equal(t.pickFromTable(names, "second, please"), 1);
+  assert.equal(t.pickFromTable(["Ace", "Bar", "Cue"], "which place has parking"), null);
+  assert.equal(t.pickFromTable(["Ace", "Bar", "Cue"], "ace"), 0);
+});
