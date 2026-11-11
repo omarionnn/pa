@@ -326,6 +326,16 @@ export async function resolveUnknown({ id, router, log = () => {} }) {
   const row = db.getOutbound(id);
   if (!row || row.state !== "unknown") return { ok: false, skipped: row?.state ?? "gone" };
 
+  // A picture card with its own words (src/welcome.js) and no text to look it up by: the provider
+  // cannot say whether it went, and failing it would take every card and question behind it down.
+  // It goes as its line instead: at worst they see a card and its line, never a gallery cut short.
+  const fallbackText = String(row.media?.fallbackText ?? "").trim();
+  if (fallbackText && !String(row.body ?? "").trim()) {
+    db.outboundAsText(id, fallbackText);
+    log({ outbox: id, resolved: "sent_as_text", why: "stopped mid-send; a picture cannot be looked up" });
+    return { ok: true, outbox_id: id, resolved: "queued" };
+  }
+
   const ch = router.get(row.channel);
   if (!ch) {
     db.markOutboundFailed(row.id, { error: `the ${row.channel} channel is not registered any more, so this was never sent and cannot be` });

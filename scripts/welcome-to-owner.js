@@ -8,7 +8,7 @@
 // its place; a restart mid-way is finished by the live service's outbox sweep, never repeated), then
 // tried in turn here. Refuses under REASON_WELCOME_CARDS=off. The owner is announce.js's
 // ownerRecipient(). A marker file in the data directory makes a second run send nothing.
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { config } from "../src/config.js";
@@ -26,8 +26,9 @@ export async function sendWelcomeToOwner({ id = SEND_ID, router, marker = marker
   }
   const db = await import("../src/db.js");
   const outbox = await import("../src/outbox.js");
-  const r = ownerRecipient();
-  const account = db.getAccount(r.conversationId);
+  let r, account;
+  try { r = ownerRecipient(); account = db.getAccount(r.conversationId); }
+  catch (e) { rmSync(marker, { force: true }); return { outcome: "failed", why: (e?.message ?? String(e)).split("\n")[0] }; }
   const bubbles = [
     welcome.WEB_INTRO({ user: account?.name || config.ownerName, reasonName: "Reason" }),
     ...welcome.bubbles(router, r.channel),
@@ -35,7 +36,7 @@ export async function sendWelcomeToOwner({ id = SEND_ID, router, marker = marker
   ];
   // One chain, written before anything is tried: each row waits for the one before it.
   const rows = [];
-  db.atomically(() => {
+  try { db.atomically(() => {
     let previous = null;
     for (const [i, b] of bubbles.entries()) {
       const { row } = db.enqueueOutbound({
@@ -45,7 +46,7 @@ export async function sendWelcomeToOwner({ id = SEND_ID, router, marker = marker
       rows.push(row);
       previous = row.id;
     }
-  });
+  }); } catch (e) { rmSync(marker, { force: true }); return { outcome: "failed", why: (e?.message ?? String(e)).split("\n")[0] }; }
   const results = [];
   for (const [i, row] of rows.entries()) {
     if (i) await sleep(bubbles[i]?.welcome && bubbles[i - 1]?.welcome ? config.onboardingCardGapMs : config.onboardingGapMs);

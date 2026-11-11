@@ -310,8 +310,11 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
   // Nothing can go: the step stays where it is, and nothing is written as said that was not.
   if (!canSend) { log({ onboarding_not_sent: conversationId, why: `${route.channel} is not connected` }); return []; }
   const said = bubbles.map(b => typeof b === "string" ? b : (b.text || (b.media?.fallbackText ? `[picture card] ${b.media.fallbackText}` : "")));
+  // An earlier step still being sent (a card held on a retry): this one queues behind it and the
+  // outbox sends it in order, so a quick reply's answer never lands in the middle of the gallery.
+  const behind = db.pendingOnboardingTail(conversationId);
   db.atomically(() => {
-    let previous = null;
+    let previous = behind;
     if (canSend) {
       for (const [i, b] of bubbles.entries()) {
         const { row } = db.enqueueOutbound({
@@ -331,6 +334,7 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
     messages.push(...historyLines(said));
     db.saveConversation(conversationId, messages);
   });
+  if (behind) { log({ onboarding_send_held: conversationId, why: "an earlier step is still going out", after: behind }); return said; }
   for (const [i, { row, card }] of rows.entries()) {
     // The welcome cards go back to back, so iMessage stacks them; every other bubble a beat apart.
     if (i) await sleep(bubbles[i]?.welcome && bubbles[i - 1]?.welcome ? config.onboardingCardGapMs : pause());

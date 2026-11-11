@@ -3770,6 +3770,11 @@ export function defaultMode(conversationId) {
 }
 
 // ---------- the contact card (src/contact.js) ----------
+/** The newest first-chat message to this person still on its way (queued, sending or unknown), else null. */
+export function pendingOnboardingTail(conversationId) {
+  return db.prepare("SELECT id FROM outbox WHERE conversation_id = ? AND idem_key LIKE 'onboard:%' AND state IN ('queued','sending','unknown') ORDER BY id DESC LIMIT 1").get(conversationId)?.id ?? null;
+}
+
 /** The welcome cards went to this person (src/onboarding.js), from the first chat or the web setup's hand-off. */
 export function setWelcomeCards(conversationId, kind) {
   db.prepare("UPDATE accounts SET welcome_cards = COALESCE(welcome_cards, ?) WHERE conversation_id = ?").run(kind === "web" ? "web" : "direct", conversationId);
@@ -11268,12 +11273,13 @@ function historyFromOutbound(row) {
   if (HISTORY_EXCLUDED_KEYS.some(p => String(row.idem_key ?? "").startsWith(p))) return null;
   // A choice card is a picture Reason drew, kept on this machine, so Web can draw it in the thread too.
   const card = /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(row.media?.file ?? ""));
-  const media = !row.media ? []
+  // A welcome card (src/welcome.js) is history as its words: Web cannot draw the picture, and a blank file says nothing.
+  const media = !row.media || row.media.fallbackText ? []
     : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
       : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
-    externalId: row.message_id ?? null, outboxId: row.id, text: row.body ?? "", media, at: row.sent_at ?? clock.now(),
+    externalId: row.message_id ?? null, outboxId: row.id, text: row.body || (row.media?.fallbackText ? `(picture) ${row.media.fallbackText}` : ""), media, at: row.sent_at ?? clock.now(),
     chatId: row.chat_id ?? null, source: opsSourceOf(row.idem_key),
   });
 }

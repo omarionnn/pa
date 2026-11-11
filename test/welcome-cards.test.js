@@ -263,3 +263,39 @@ test("never twice, never to existing people: an account that already had them, o
   await h.router.deliver(text(num, "hey"));
   assert.equal(to(h, num).filter(m => m.media?.file).length, 0);
 });
+
+test("the process stops while a card is being sent: that card goes as its line, the rest of the set and the question still follow", async () => {
+  const h = harness({ hey: { kind: "greeting" } });
+  const real = h.channel.sendMedia.bind(h.channel);
+  // The fourth card's send never comes back (the process "stops" mid-send): its row stays 'sending'.
+  let crash = true;
+  h.channel.sendMedia = (a) => crash && a.filename === "shopping.jpg" ? new Promise(() => {}) : real(a);
+  const num = newNumber();
+  void h.router.deliver(text(num, "hey"));
+  for (let i = 0; i < 50 && to(h, num).length < 4; i++) await new Promise(r => setTimeout(r, 5));
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS.slice(0, 3)]);
+  // Restart: the stranded row is unknown; the sweep resolves it as its line and finishes the chain.
+  crash = false;
+  outbox.recoverStranded({});
+  for (let i = 0; i < 12; i++) await outbox.pass({ router: h.router });
+  const want = [ob.INTRO, ...PICS, ob.NAME_Q];
+  want[4] = LINES[3];
+  assert.deepEqual(to(h, num).map(show), want);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE state = 'failed'").get().n, 0);
+});
+
+test("a reply while the gallery is still held: its answer waits behind the rest, never lands in the middle", async () => {
+  const h = harness({ hey: { kind: "greeting" }, kofi: { kind: "answer", name: "Kofi" } });
+  const real = h.channel.sendMedia.bind(h.channel);
+  let down = true;
+  h.channel.sendMedia = async (a) => down && a.filename === "food.jpg" ? { ok: false, supported: true, retryable: true, error: "HTTP 429" } : real(a);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  await h.router.deliver(text(num, "kofi"));
+  assert.equal(to(h, num).length, 5, "nothing more until the held card goes");
+  down = false;
+  clock.skip(10 * 60_000);
+  for (let i = 0; i < 15; i++) await outbox.pass({ router: h.router });
+  assert.deepEqual(to(h, num).map(show), [ob.INTRO, ...PICS, ob.NAME_Q, ob.MET("Kofi"), ob.CARD_NAME_ASK]);
+});
