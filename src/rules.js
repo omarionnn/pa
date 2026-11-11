@@ -51,4 +51,5 @@ export const RULE_READERS = Object.freeze([
   { path: "a call Reason makes to a business or another person", file: "src/calls/voice.js", fn: "thirdPartyContext", exempt: "sealed by design: the other side's call carries the goal and approved facts only, nothing of the person's memory" },
   { path: "somebody with no account ringing Reason's number", file: "src/calls/stranger.js", exempt: "no account, so nobody's rules" },
   { path: "onboarding's read of a new person's first texts (its one-line answers are said to them)", file: "src/onboarding.js", fn: "readText" },
+  { path: "the Action Cards engine's one morning read (what to offer them, and the words on the card and in the text)", file: "src/actionengine.js", fn: "stage2" },
 ]);

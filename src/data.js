@@ -236,6 +236,9 @@ const TABLES = [
   // Action Cards (src/actioncards.js): the daily notes left for them, each card on them, the titles
   // they struck out, and the per-card log of views, taps, replies and dismisses.
   "action_digests", "action_cards", "action_card_dismissed", "action_card_events",
+  // The engine behind them (src/actionengine.js): each day's run and what it cost, where each card
+  // came from (sealed), and their standing "stop showing me X" rules.
+  "action_card_days", "action_card_sources", "card_skip_rules",
 ];
 
 /**

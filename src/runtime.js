@@ -57,6 +57,7 @@ import { sweep as sweepAlbums } from "./albums.js";
 import * as eventSchedule from "./eventschedule.js";
 import * as dailyEdition from "./daily.js";
 import * as dream from "./dream.js";
+import * as actionengine from "./actionengine.js";
 import * as webdraft from "./webdraft.js";
 import * as onboarding from "./onboarding.js";
 import * as opsDigest from "./opsdigest.js";
@@ -265,6 +266,9 @@ export class Runtime extends EventEmitter {
     // attachment really went — serve.js passes one; without it the "outbound" event is emitted and
     // the send is taken at face value, which is what the console and the tests want.
     this.deliver = deliver;
+    // The Action Cards engine's morning text and urgent single go out through this runtime's
+    // `_tell` and `mayInterrupt` (src/actionengine.js).
+    actionengine.useRuntime(this);
     this.queues = new Map();
     // Timers whose turn is running right now. Sweeps overlap — the interval does not wait for a
     // turn to finish — and a timer is no longer marked fired before its turn, so this is what
@@ -2310,7 +2314,19 @@ export class Runtime extends EventEmitter {
         conversationId: c, candidates: [...held, ...fresh], read: readWith, now, log: this.log,
       });
       out.handled += sifted.handled.length;
-      const inFront = sifted.keep;
+      let inFront = sifted.keep;
+      // Action Cards on for this person (Omari 2026-11-11, src/actionengine.js): the sweep's own
+      // unprompted texts are limited to time-critical calendar things — one of which may become an
+      // urgent single card — and everything else waits for the 7:30 page, so the day stays at two
+      // texts. The rest is held, not dropped: it folds into the next reply as before.
+      if (actionengine.cardsOnFor(c)) {
+        const urgent = actionengine.urgentFrom(c, inFront, { now, tz, settings, log: this.log });
+        if (urgent.queued) out.urgent_cards = (out.urgent_cards ?? 0) + 1;
+        const critical = inFront.filter(x => actionengine.timeCritical(x, now) || notice.THEIR_OWN_SCHEDULE.has(x.kind) || notice.KINDS[x.kind]?.speakable === false);
+        for (const x of inFront) if (x.id && !critical.includes(x)) db.holdNotice(x.id, now);
+        out.held += inFront.length - critical.length;
+        inFront = critical;
+      }
       if (!inFront.some(x => notice.KINDS[x.kind]?.speakable !== false)) continue;
 
       // They asked for one batched line instead. Everything is written down and held, and the
@@ -2395,6 +2411,11 @@ export class Runtime extends EventEmitter {
   /** The nightly memory review's sweep (src/dream.js sweepDreams). Never throws into the sweep. */
   dreams({ now = clock.now() } = {}) {
     try { return dream.sweepDreams({ now, log: this.log }); } catch (e) { this.log({ memory_review: "sweep_failed" }); return { queued: 0 }; }
+  }
+
+  /** The Action Cards engine's morning run (src/actionengine.js sweepCards). Never throws into the sweep. */
+  cards({ now = clock.now() } = {}) {
+    try { return actionengine.sweepCards({ now, log: this.log }); } catch (e) { this.log({ action_cards: "sweep_failed", why: (e?.message ?? String(e)).split("\n")[0] }); return { queued: 0 }; }
   }
 
   /** The daily edition's overnight write (src/daily.js sweepDaily). Never throws into the sweep. */
@@ -2955,9 +2976,12 @@ export class Runtime extends EventEmitter {
     // The nightly memory review (src/dream.js): at their quiet hour, on the background lane, on the
     // subscription only. Says nothing to anybody and never waits here.
     const dreams = this.dreams();
+    // The Action Cards morning run (src/actionengine.js): at 7:30 their time, on the background lane,
+    // on the subscription only. Queues and returns; the text goes out from the job itself.
+    const action_cards = this.cards();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_scheduled, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, retention };
+    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_scheduled, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, action_cards, retention };
   }
 
   start(everyMs = 15_000) {

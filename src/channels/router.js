@@ -47,6 +47,7 @@ import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
 import * as actioncards from "../actioncards.js";
+import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
@@ -884,7 +885,7 @@ export class Router {
       try {
         // The stall line is a reply too; a turn that died is not the task done (runtime.turnFailedSince).
         if (this.runtime?.turnFailedSince?.(conversationId, cardHit.at)) this.log({ action_card_turn_failed: cardHit.card.id });
-        else { actioncards.markDone(cardHit.card.id, conversationId); this.log({ action_card_done: cardHit.card.id }); }
+        else { actioncards.markDone(cardHit.card.id, conversationId); actionengine.noteDoneVia(cardHit.card.id, conversationId, "tap"); this.log({ action_card_done: cardHit.card.id }); }
       } catch (e) { this.log({ action_card_done_failed: cardHit.card.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
     }
     // After the turn: somebody in the first-chat onboarding who asked for something real gets the

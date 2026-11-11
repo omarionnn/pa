@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
 import * as cards from "../actioncards.js";
+import { settleHandled } from "../actionengine.js";
 import { zoneFor } from "../zone.js";
 import { PAPER, PAPER_GRAIN, BRAND_PEN } from "./brand.js";
 import { art } from "./actionart.js";
@@ -331,7 +332,13 @@ export async function actionCardsRequest({ method = "GET", path = "", headers = 
     if (method !== "GET" && method !== "HEAD") return JSON_(405, { error: "method not allowed" });
     // A view is a person opening the note: not a HEAD, and not the link-preview fetch iMessage makes
     // as the text is sent (Apple's LinkPresentation announces itself as facebookexternalhit).
-    if (method === "GET" && !PREVIEW_BOT.test(String(headers["user-agent"] ?? ""))) { cards.viewed(d, now); log({ action_cards_view: d.id }); }
+    if (method === "GET" && !PREVIEW_BOT.test(String(headers["user-agent"] ?? ""))) {
+      cards.viewed(d, now); log({ action_cards_view: d.id });
+      // A card they handled themselves since the note was left (the event cancelled, the thread
+      // answered) is checked off before the page is drawn, so it sinks with its pen-check rather
+      // than offering something already done (src/actionengine.js settleHandled; bounded, never slow).
+      try { if ((await settleHandled(d, { now, log })).handled) Object.assign(d, cards.digestById(d.id, { now }) ?? {}); } catch { /* drawn as it was */ }
+    }
     return HTML(200, actionCardsPage(d, { now }));
   }
   if (method !== "POST") return JSON_(405, { error: "method not allowed" });
