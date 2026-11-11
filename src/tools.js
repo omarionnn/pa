@@ -11,7 +11,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as db from "./db.js";
 import { recordToolUse } from "./tooldiet.js";
-import { clock, stamp, config, RECORDING_RIDES_MS, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
+import { clock, stamp, config, RECORDING_RIDES_MS, weekdayMismatch, normalizeNumber, normalizeHandle, isEmailHandle, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
 import * as permissions from "./permissions.js";
 import * as askedCall from "./askedcall.js";
@@ -1592,8 +1592,8 @@ export function addressedToOwner(conversationId, to) {
   const t = String(to ?? "").trim();
   if (SELF_TOKENS.has(t.toLowerCase())) return true;
   const mine = accounts.ownerOf(conversationId).address;
-  const n = normalizeNumber(t);
-  return !!n && !!mine && normalizeNumber(mine) === n;
+  const n = normalizeHandle(t);
+  return !!n && !!mine && normalizeHandle(mine) === n;
 }
 
 // The `to` values that name this conversation's own person. A schema token, not a reading of what
@@ -9885,8 +9885,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             error: `No phone provider is wired up${st?.missing?.length ? ` (no ${st.missing.join(", ")})` : ""}, so Reason cannot ring anyone at that time. Say that plainly and offer a text at that time instead — set that only if they want it.`,
           };
         }
-        if (!me.address || me.address === "console") {
-          return { ok: false, error: `There is no phone number on file for ${me.name}, so there is nobody to ring. Say so and offer a text instead.` };
+        if (!normalizeNumber(me.address) || me.address === "console") {
+          return { ok: false, error: `There is no phone number on file for ${me.name}${isEmailHandle(me.address) ? ` (they text from an Apple ID email)` : ""}, so there is nobody to ring. Say so and offer a text instead.` };
         }
         const pay = checkCallForPaymentDetails({ goal: callGoal, facts: [] });
         if (!pay.ok) return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };
@@ -11478,10 +11478,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       const toOwner = addressedToOwner(c, input.to);
-      const to = toOwner ? (me.address || "") : normalizeNumber(input.to);
+      // Nothing rings an email: a person whose Reason is reached by their Apple ID has no number
+      // on file until they give one, and the honest answer is to say so and offer a text.
+      const to = toOwner ? normalizeNumber(me.address) : normalizeNumber(input.to);
       if (!to) {
         return { ok: false, error: toOwner
-          ? `There is no number on file for ${me.name} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`
+          ? (isEmailHandle(me.address)
+            ? `${me.name} texts from an Apple ID email (${me.address}), not a phone number, so there is no number to ring. Say so plainly and offer a text instead — or ask for a number to call if they want a call.`
+            : `There is no number on file for ${me.name} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`)
           : `'${input.to}' is not a phone number. Use E.164, e.g. +12125551234.` };
       }
       // Every call is recorded, so a provider that cannot record is a provider Reason cannot call
@@ -12264,9 +12268,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      const number = normalizeNumber(input.number);
-      if (!number) return { ok: false, error: `'${input.number}' is not a phone number. Use E.164, e.g. +14155559876.` };
-      if (number === normalizeNumber(me.address)) {
+      const number = normalizeHandle(input.number);
+      if (!number) return { ok: false, error: `'${input.number}' is not a phone number or Apple ID email. Use E.164, e.g. +14155559876, or the email they text from.` };
+      if (number === normalizeHandle(me.address)) {
         return { ok: false, error: `That is ${config.ownerName}'s own number. They cannot do that to themselves — say so.` };
       }
 
@@ -12279,7 +12283,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       // The rest act on an existing account.
-      const rows = db.listAccountsOfPeople().filter(a => normalizeNumber(a.address) === number && !a.is_operator);
+      const rows = db.listAccountsOfPeople().filter(a => normalizeHandle(a.address) === number && !a.is_operator);
       const row = rows[0];
       if (!row) return { ok: false, error: `${number} does not have a Reason, so there is nothing to change. admin_requests shows who is waiting.` };
 

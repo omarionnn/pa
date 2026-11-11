@@ -66,7 +66,7 @@ test("an Apple ID email with an admitted user's digits does not land in their co
   assert.notEqual(accounts.conversationIdFor({ channel: "linq", address: "14155559876@attacker.example" }), `dm:linq:${USER}`);
 });
 
-test("Sendblue drops an Apple ID email with digits in it, like any other email", async () => {
+test("Sendblue keeps an Apple ID email with digits in it as its own address, never the number inside", async () => {
   config.sendblueKeyId = "k"; config.sendblueSecretKey = "s"; config.sendblueFrom = "+15122164639";
   config.sendblueWebhookSecret = "sec"; config.sendblueWebhookSecretHeader = "sb-signing-secret";
   try {
@@ -75,8 +75,9 @@ test("Sendblue drops an Apple ID email with digits in it, like any other email",
       rawBody: JSON.stringify({ content: "hey", is_outbound: false, status: "RECEIVED", message_handle: "H-digits", number: h, from_number: h, to_number: "+15122164639", group_id: "", media_url: "", service: "iMessage" }),
       headers: { "sb-signing-secret": "sec", "content-type": "application/json" },
     });
-    assert.deepEqual(out.inbound, []);
-    assert.match(out.body.ignored, /email address/);
+    assert.equal(out.inbound.length, 1);
+    assert.equal(out.inbound[0].from, h, "the email itself, not +12025551234");
+    assert.equal(accounts.isOperatorAddress(out.inbound[0].from), false);
   } finally {
     config.sendblueKeyId = ""; config.sendblueSecretKey = ""; config.sendblueFrom = ""; config.sendblueWebhookSecret = "";
   }

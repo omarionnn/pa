@@ -417,6 +417,10 @@ export const config = {
   // Paid events (src/eventpay.js): who may put a price on an event they organize. `owner`: the owner's
   // events only; 1/true/on/yes: any organizer's; anything else: off. An event already priced stays priced.
   paidEvents: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_PAID_EVENTS ?? "").trim().toLowerCase()),
+  // People who iMessage from an Apple ID email rather than a phone number (normalizeHandle). On by
+  // default: such a person is new to Reason, so there is no owner-only form of this. Off (0/false/
+  // off/no) drops them at the webhook as before 2026-11-11, with the reason in the journal this time.
+  emailHandles: !["0", "false", "off", "no"].includes(String(process.env.REASON_EMAIL_HANDLES ?? "").trim().toLowerCase()),
   // One private photo album per event (src/albums.js). On top of events. `owner`: only events the
   // owner organizes have one; 1/true/on/yes: every event's; anything else: off, and no model is told
   // albums exist. Nothing stored under off is touched: the sweep still closes an album at its expiry.
@@ -1193,6 +1197,38 @@ export function normalizeNumber(n) {
   else if (/^[a-z][a-z0-9+.-]*:(?!\s)/i.test(s)) return "";
   const digits = s.replace(/\D/g, "");
   return digits ? `+${digits}` : "";
+}
+
+/**
+ * The one form of an address a person can be reached at over iMessage: a phone number in E.164
+ * (normalizeNumber), or an Apple ID email, lowercased. Anything else is nothing.
+ *
+ * An iMessage can come from an Apple ID rather than a phone ("Can receive from iCloud email
+ * addresses" — Sendblue faq), and Sendblue sends back to one by passing the email as `number`.
+ * Until 2026-11-11 such a person was dropped at the webhook with no line in the journal, because
+ * normalizeNumber() is phone-only on purpose (the digits inside "12025551234@icloud.com" are not
+ * the person at +1 202 555 1234). This is the identity normalizer: wherever an address decides
+ * WHO somebody is — admission, conversation id, invites, sign-in, the access queue — an email
+ * handle and its re-capitalised or padded forms are one person. Dialing stays on normalizeNumber:
+ * nothing rings an email.
+ *
+ * Email-shaped means one "@", something on both sides, no whitespace, no scheme, no percent-encoded
+ * "@". Case is folded because Apple treats "Jane@iCloud.com" and "jane@icloud.com" as one Apple ID.
+ */
+export function normalizeHandle(n) {
+  const s = String(n ?? "").trim();
+  if (!s) return "";
+  const phone = normalizeNumber(s);
+  if (phone) return phone;
+  if (!config.emailHandles) return "";
+  if (!/^[^\s@＠%:/]+@[^\s@＠%:/]+\.[^\s@＠%:/]+$/.test(s)) return "";
+  return s.toLowerCase();
+}
+
+/** True for an address that is an email handle rather than a phone number. */
+export function isEmailHandle(n) {
+  const h = normalizeHandle(n);
+  return !!h && h.includes("@");
 }
 
 /**

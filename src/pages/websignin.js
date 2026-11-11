@@ -30,7 +30,7 @@ import { requestCode, readCookie, readCookies, cookieHeader, clearCookieHeader, 
 import { esc, renderNotFound, codeInputAttrs } from "./render.js";
 import { eventActor } from "./event.js";
 import { qrSvg } from "./qr.js";
-import { config, clock, normalizeNumber } from "../config.js";
+import { config, clock, normalizeNumber, normalizeHandle } from "../config.js";
 import { webPage, wordmark, label, hand, action, typed, textReason, WEB_FONTS, webFont, accountThemed } from "./webkit.js";
 import { securedCardTags } from "./securedcard.js";
 
@@ -75,8 +75,8 @@ export function codeLine(code) {
  */
 export function accountForNumber(number, { allowed = webAllowedFor } = {}) {
   const raw = String(number ?? "").trim();
-  let n = normalizeNumber(raw);
-  if (n.length === 11 && !raw.startsWith("+")) n = `+1${n.slice(1)}`;
+  let n = normalizeHandle(raw);
+  if (n.length === 11 && !n.includes("@") && !raw.startsWith("+")) n = `+1${n.slice(1)}`;
   if (!n) return null;
   const rows = db.accountsByAddress(n)
     .filter(a => a.channel && a.channel !== "console")

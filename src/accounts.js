@@ -23,21 +23,21 @@
 //     one person cannot spend the whole month.
 import * as db from "./db.js";
 import * as plan from "./plan.js";
-import { config, clock, normalizeNumber } from "./config.js";
+import { config, clock, normalizeNumber, normalizeHandle } from "./config.js";
 
 /** The console is always the operator: there is nobody else on the other end of a terminal. */
 export const CONSOLE_ADDRESS = "console";
 
 /** Where one person's Reason lives. The operator keeps the id their data is already under. */
 export function conversationIdFor({ channel, address }) {
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   if (isOperatorAddress(addr) || channel === "console") return config.ownerConversation;
   return `dm:${channel}:${addr}`;
 }
 
 /** Read from config only — nothing a message says can put a number on this list. */
 export function isOperatorAddress(address) {
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   if (!addr) return false;
   if (addr === CONSOLE_ADDRESS) return true;
   return config.operatorNumbers.some(n => normalizeNumber(n) === addr);
@@ -52,7 +52,7 @@ export function isOperatorAddress(address) {
  * auto-admitted into a fresh Reason, or put in front of the master as if new.
  */
 export function accountState(channel, address) {
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   if (!isOperatorAddress(addr)) {
     const stopped = db.stoppedStateOf(addr);
     if (stopped) return stopped;
@@ -71,12 +71,12 @@ export function accountState(channel, address) {
  */
 /** Did the master pre-approve this number by listing it in REASON_TEST_NUMBERS? */
 export function isPreApproved(address) {
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   return !!addr && config.testNumbers.some((n) => (normalizeNumber(n) || n) === addr);
 }
 
 export function admit({ channel, address, name = "" }) {
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   if (!addr) return { allow: false, reason: "no_address" };
 
   const operator = isOperatorAddress(addr);
@@ -243,7 +243,7 @@ export function countUse(conversationId, kind = "turn", amount = 1) {
  * on every message turns Reason into the thing sending unsolicited texts.
  */
 export function shouldTellAgain(address) {
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   const last = db.lastTurnedAway(addr);
   if (last && clock.now() - last < config.turnedAwayGapMin * 60_000) return false;
   db.recordTurnedAway(addr);

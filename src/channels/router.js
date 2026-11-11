@@ -36,7 +36,7 @@ import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { offerContactCard } from "../contact.js";
 import { tellNewLine, isReturning, LINE_CHANGE_CHANNEL } from "../linechange.js";
-import { clock, config, normalizeNumber, stamp } from "../config.js";
+import { clock, config, normalizeNumber, normalizeHandle, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
 import { withoutNoReply } from "../plain.js";
@@ -176,7 +176,7 @@ export class Router {
    * route answers the provider with.
    */
   async deliver(inbound) {
-    let address = normalizeNumber(inbound.from) || String(inbound.from ?? "").trim();
+    let address = normalizeHandle(inbound.from) || String(inbound.from ?? "").trim();
     // Whose Reason admission is asked about. For a text that is the line it arrived on; for a web
     // message it is the account's own channel and number, because web has neither.
     let admitAs = inbound.channel;

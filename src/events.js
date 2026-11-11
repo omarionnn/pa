@@ -29,7 +29,7 @@ import * as accounts from "./accounts.js";
 import { boundTo, codeHost, typedCode } from "./pages/access.js";
 import { atLocal, tzFor } from "./series.js";
 import * as eventpay from "./eventpay.js";
-import { config, clock, normalizeNumber, stamp } from "./config.js";
+import { config, clock, normalizeNumber, normalizeHandle, stamp } from "./config.js";
 
 // ---------- the switch ----------
 
@@ -470,8 +470,8 @@ export function signinCodeLine(ev, code, { what = "sign in to" } = {}) {
  */
 export function accountForNumber(number) {
   const raw = String(number ?? "").trim();
-  let n = normalizeNumber(raw);
-  if (n.length === 11 && !raw.startsWith("+")) n = `+1${n.slice(1)}`;
+  let n = normalizeHandle(raw);
+  if (n.length === 11 && !n.includes("@") && !raw.startsWith("+")) n = `+1${n.slice(1)}`;
   if (!n) return null;
   for (const acct of db.accountsByAddress(n)) {
     if (!acct.channel || acct.channel === "console") continue;

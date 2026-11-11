@@ -23,7 +23,7 @@
 // verification and the claim at once (src/channels/router.js `#claimInvite`). The account is then
 // made through the ordinary admission path, so the harm screen and onboarding run as for anybody.
 import * as db from "./db.js";
-import { config, normalizeNumber, stamp } from "./config.js";
+import { config, normalizeNumber, normalizeHandle, stamp } from "./config.js";
 import { shell, esc, renderNotFound, foot } from "./pages/render.js";
 import { inviteCardKey } from "./invitecard.js";
 import { CONFETTI_JS, CONFETTI_CSS } from "./pages/confetti.js";
@@ -243,7 +243,7 @@ export const CANCELED = "this invite was canceled by the person who sent it. ask
 export function claimByText({ channel, address, text, name = "" }) {
   const inv = inviteInText(text);
   if (!inv) return null;
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   const out = db.redeemInvite({ claimCode: inv.claim_code, channel, address: addr, name });
   if (!out.ok) {
     if (out.reason === "canceled") return { joined: false, reason: "canceled", toThem: CANCELED };
@@ -283,7 +283,7 @@ export function inviteForSetup(token) {
 export function claimForSetup({ inviteId, channel, address, name = "" }) {
   const inv = db.db.prepare("SELECT id, conversation_id, claim_code FROM invites WHERE id = ?").get(Number(inviteId)) ?? null;
   if (!inv) return { joined: false, reason: "not_found", toThem: ALREADY_CLAIMED };
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   const out = db.redeemInvite({ claimCode: inv.claim_code, channel, address: addr, name });
   if (!out.ok) {
     if (out.reason === "canceled") return { joined: false, reason: "canceled", toThem: CANCELED };

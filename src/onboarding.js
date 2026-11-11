@@ -60,7 +60,7 @@ import { makerName } from "./maker.js";
 import { reconnectLine } from "./strangercalls.js";
 import * as db from "./db.js";
 import * as outbox from "./outbox.js";
-import { config, clock, normalizeNumber, stamp } from "./config.js";
+import { config, clock, normalizeNumber, normalizeHandle, stamp } from "./config.js";
 import { askStructured, sideAskAllowed } from "./backends/side.js";
 import { rulesNote } from "./rules.js";
 import { contactCardUrl, lineNumber, RETRY_AFTER_MS, cardName, nameCase, DEFAULT_CARD_NAME } from "./contact.js";
@@ -133,7 +133,7 @@ const WORDS = new Set(["voice", "contact", "link"]);
 export function coversAddress(address) {
   if (config.onboarding === "on") return true;
   if (config.onboarding !== "test") return false;
-  const a = normalizeNumber(address) || String(address ?? "").trim();
+  const a = normalizeHandle(address) || String(address ?? "").trim();
   return !!a && config.onboardingNumbers.some(n => (normalizeNumber(n) || n) === a);
 }
 
