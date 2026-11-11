@@ -272,6 +272,18 @@ export class Router {
     // (#offerCardIfNamed, below the turn); the master's yes sends it after "you're in"; the startup
     // pass reaches accounts from before the card existed. Somebody in the first-chat onboarding gets
     // the card from it, after their name, with its own line.
+    // A sign-in waiting on the code they were asked for (src/signinemail.js, no Gmail connected): the
+    // code goes straight to the site HERE, at intake, and everything after — the dedupe row, the held
+    // queue, a mid-turn read, the history, the memory pass and the turn — sees a placeholder instead,
+    // so it is never written down anywhere Reason keeps words (cold review, 2026-11-11).
+    if (typeof inbound.text === "string") {
+      const handed = signinEmail.takeCodeReply(conversationId, inbound.text);
+      if (handed) {
+        inbound.text = handed;
+        if (typeof inbound.said === "string") inbound.said = handed;
+        this.log({ inbound: inbound.externalId, signin_email: "code_reply_taken" });
+      }
+    }
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
     // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
@@ -728,13 +740,6 @@ export class Router {
         try { t = await this.readContacts(t, h.attachments ?? [], { log: this.log, cover: reviewed.cover }); }
         catch (e) { this.log({ contact_read_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         texts.push(t);
-      }
-      // A sign-in waiting on the code they were asked for (src/signinemail.js, no Gmail connected): the
-      // code goes straight to the site, and the history, the memory pass and the turn all get a
-      // placeholder instead, so it is never written down anywhere Reason keeps words.
-      for (let i = 0; i < texts.length; i++) {
-        const handed = signinEmail.takeCodeReply(conversationId, texts[i]);
-        if (handed) { texts[i] = handed; this.log({ signin_email: "code_reply_taken", conversation: conversationId }); }
       }
       // Which text the reply answers, for a thread that can carry an inline reply: if the thread
       // has moved on by the time the reply is ready, it is pinned under this one (replies.js).

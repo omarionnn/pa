@@ -694,7 +694,7 @@ test("the page they land on says the provider said no, and offers the site's own
   const html = setupResultPage({ entry: amazon, ended: { how: "refused", state: "refused", provider: "google" }, thread: { reply: (r) => `sms:+14155550199&body=${encodeURIComponent(r)}` } });
   assert.match(html, /body=Google%20refused%20the%20sign-in/);
   assert.match(html, /Google said no to my browser\./);
-  assert.match(html, /email and password instead/);
+  assert.match(html, /signing you in with your .* email instead/);
   assert.doesNotMatch(html, /Couldn&#39;t tell|Couldn't tell/);
 });
 

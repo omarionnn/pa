@@ -91,6 +91,13 @@ test("senderMatches: the site's own domain with DKIM passing for it; never a loo
   assert.ok(!em.senderMatches({ from: "Notion <notify@notion.so.evil.com>", auth: ["dkim=pass header.i=@notion.so.evil.com"] }, allowed), "lookalike suffix");
   assert.ok(!em.senderMatches({ from: "Notion <notify@evilnotion.so>", auth: ["dkim=pass header.i=@evilnotion.so"] }, allowed), "lookalike prefix");
   assert.deepEqual(em.senderDomainsFor(signin.genericEntry("https://www.airbnb.com/login")), ["airbnb.com"]);
+  // Only Gmail's own verdict, the topmost header: a sender's forged "dkim=pass" below it does not count.
+  const good = "mx.google.com; dkim=pass header.i=@updates.notion.so";
+  assert.ok(!em.senderMatches({ from: "notify@updates.notion.so", auth: ["mx.google.com; dkim=none", good] }, allowed), "forged header under Gmail's");
+  assert.ok(!em.senderMatches({ from: "notify@updates.notion.so", auth: ["dkim=pass header.i=@updates.notion.so"] }, allowed), "not stamped by Gmail");
+  // A mail provider is never a site's sender: anybody passes DKIM for gmail.com.
+  assert.deepEqual(em.senderDomainsFor(signin.genericEntry("https://mail.google.com/")), []);
+  assert.deepEqual(em.senderDomainsFor(signin.genericEntry("https://outlook.com/")), []);
 });
 
 test("extractSignin: the code in the mail, a sign-in link only on the site, never an unsubscribe", () => {
@@ -115,6 +122,7 @@ test("codeFromGmail: newest mail from the site AFTER the request; earlier mail a
   const got = await em.codeFromGmail(CONV, NOTION, { since, tokens: g.tokens, api: g.api, sleep: async () => {} });
   assert.deepEqual(got, { connected: true, found: true, kind: "code", code: CODE });
   assert.match(g.asked[0].query.q, /^from:\(notion\.so OR notion\.com OR makenotion\.com\) newer_than:1d$/);
+  assert.equal(g.asked[0].query.includeSpamTrash, undefined, "spam is never searched: a forged code lands there");
 
   // Only the old one there: polled until the wait runs out, then nothing — never the earlier code.
   let t = since;
@@ -306,6 +314,8 @@ test("no Gmail: asked ONCE in one line; their reply goes to the site, the thread
   assert.doesNotMatch(notes[0], /check your email/i);
   // Ordinary words are not a code and go to the model as they are.
   assert.equal(em.takeCodeReply(CONV, "hold on, looking"), null);
+  assert.equal(em.takeCodeReply(CONV, "thank-you"), null, "a hyphenated word is not a code");
+  assert.equal(em.takeCodeReply(CONV, "follow-up"), null);
   assert.equal(em.takeCodeReply(THEIRS, "482 913"), null, "someone else's thread is not this sign-in");
   const placeholder = em.takeCodeReply(CONV, "482 913");
   assert.ok(placeholder && !placeholder.includes(CODE) && !placeholder.includes("482"), "the thread never sees the code");
@@ -317,14 +327,15 @@ test("no Gmail: asked ONCE in one line; their reply goes to the site, the thread
   assert.ok(!JSON.stringify({ logs, notes }).includes(CODE));
 });
 
-test("the router hands the code over before the history row, the memory pass and the turn", () => {
+test("the router hands the code over at intake: before the dedupe row, the held queue, a mid-turn read, history, memory and the turn", () => {
   const src = readFileSync(new URL("../src/channels/router.js", import.meta.url), "utf8");
-  const hook = src.indexOf("signinEmail.takeCodeReply(conversationId, texts[i])");
-  const history = src.indexOf("db.writeMessage({", hook);
-  const memory = src.indexOf("db.enqueueExtraction(conversationId", hook);
-  const turn = src.indexOf("this.runtime.inbound(conversationId, userText", hook);
-  assert.ok(hook > 0 && history > hook && memory > hook && turn > hook, "takeCodeReply swaps the text first");
-  assert.equal(src.slice(0, hook).includes("db.writeMessage({"), false, "no history row is written before it");
+  const hook = src.indexOf("signinEmail.takeCodeReply(conversationId, inbound.text)");
+  assert.ok(hook > 0);
+  for (const later of ["db.claimInbound({", "db.holdInbound({", "this.#readAccessAnswer(", "db.writeMessage({\n            conversationId, role: \"user\"", "db.enqueueExtraction(conversationId", "this.runtime.inbound(conversationId, userText"]) {
+    const at = src.indexOf(later, hook);
+    assert.ok(at > hook, `${later} comes after the hook`);
+    assert.equal(src.slice(0, hook).includes(later), false, `${later} never runs before it`);
+  }
 });
 
 test("Gmail connected but no mail came: nothing saved, plain line, never 'check your email'", async () => {

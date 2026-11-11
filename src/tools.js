@@ -14707,6 +14707,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           remote: signin.remoteSigninAnswer(entry.site), never_a_password: signin.refuseAPassword(),
         };
       }
+      if (signinEmail.emailSigninFor(c)) return { ok: false, busy: true, error: "Reason is signing them in to a site by email right now, on the same saved profile. Wait for that to finish." };
       if (signinRemote.remoteSessionFor(c)) {
         return { ok: false, error: "They are in the middle of signing in through a link, and their saved profile can be in one browser at a time. Wait for that to finish." };
       }
@@ -14787,6 +14788,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!me.known && c !== config.ownerConversation) {
         return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
       }
+      // The email sign-in (src/signinemail.js) holds their saved profile while it runs.
+      if (signinEmail.emailSigninFor(c)) return { ok: false, busy: true, error: "Reason is signing them in to a site by email right now, on the same saved profile. Wait for that to finish; you are told how it ends." };
       const by = signin.linkSignin();
       const reach = trust.SITE_REACHABLE[entry.site];
       // Where the social flag reaches them, the site's sign-in page is asked live before a link is

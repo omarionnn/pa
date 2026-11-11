@@ -861,7 +861,10 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
     // backed out of — its popup closed, the site's sign-in page opened again on its email route — and
     // the fresh page is what goes back. Recorded as a refusal, so Google is not tried here again.
     // Apple's / Microsoft's refusal ends the link as before, once a back-out has already been tried.
-    if (no.refused && (no.provider === "google" || !s.backedOut) && social.socialAllowedFor(s.conversationId) && !s.backingOut) {
+    // At most twice: a site that keeps sending the browser back to Google ends as refused rather than
+    // looping (cold review, 2026-11-11).
+    if (no.refused && (s.backOuts ?? 0) < 2 && (no.provider === "google" || !s.backedOut) && social.socialAllowedFor(s.conversationId) && !s.backingOut) {
+      s.backOuts = (s.backOuts ?? 0) + 1;
       s.backingOut = true;
       try {
         social.recordRefusal(s.conversationId, s.entry.site, no.provider);

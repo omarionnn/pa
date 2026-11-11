@@ -33,7 +33,7 @@ import * as restartGate from "./busy.js";
 export const MAIL_WAIT_MS = 90_000;
 export const MAIL_POLL_MS = 5_000;
 /** How long a code they were asked for is waited on. */
-export const REPLY_WAIT_MS = 10 * 60_000;
+export const REPLY_WAIT_MS = 5 * 60_000;
 /** Clock slack between this box and Gmail's receive time; a mail older than the request minus this is never taken. */
 export const SKEW_MS = 3_000;
 
@@ -54,9 +54,11 @@ export function registrableOf(host) {
   return /^(co|com|org|net|ac|gov)\.[a-z]{2}$/.test(two) ? parts.slice(-3).join(".") : two;
 }
 /** The domains a site's sign-in mail may come from. */
+/** Mail providers: anybody can send from them with a passing DKIM, so they are never a site's sender. */
+const MAILBOX_DOMAINS = new Set(["gmail.com", "googlemail.com", "google.com", "outlook.com", "hotmail.com", "live.com", "microsoft.com", "yahoo.com", "icloud.com", "me.com", "apple.com", "proton.me", "protonmail.com", "aol.com", "gmx.com", "mail.com", "zoho.com", "fastmail.com", "yandex.com"]);
 export function senderDomainsFor(entry) {
   const base = registrableOf(hostOf(entry?.signin_url) || hostOf(entry?.entry) || String(entry?.site ?? ""));
-  if (!base || !base.includes(".")) return [];
+  if (!base || !base.includes(".") || MAILBOX_DOMAINS.has(base)) return [];
   return SENDER_ALIASES[base] ?? [base];
 }
 const within = (domain, allowed) => {
@@ -75,11 +77,13 @@ export function fromDomain(from) {
  */
 export function senderMatches({ from = "", auth = [] } = {}, allowed = []) {
   if (!allowed.length || !within(fromDomain(from), allowed)) return false;
-  const lines = (Array.isArray(auth) ? auth : [auth]).map(a => String(a ?? "").toLowerCase());
-  return lines.some(l => {
-    for (const m of l.matchAll(/dkim=pass[^;]*?header\.(?:i|d)=@?([a-z0-9.-]+)/g)) if (within(m[1], allowed)) return true;
-    return false;
-  });
+  // Only the verdict Gmail itself wrote: the TOPMOST Authentication-Results, stamped mx.google.com.
+  // Gmail prepends its own and keeps the sender's below, so any other one may be the sender's forgery
+  // (cold review, 2026-11-11).
+  const top = String((Array.isArray(auth) ? auth : [auth])[0] ?? "").toLowerCase().trim();
+  if (!/^mx\.google\.com\s*;/.test(top)) return false;
+  for (const m of top.matchAll(/dkim=pass[^;]*?header\.(?:i|d)=@?([a-z0-9.-]+)/g)) if (within(m[1], allowed)) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------- the code or link in a mail
@@ -168,7 +172,7 @@ export async function codeFromGmail(conversationId, entry, { since, waitMs = MAI
   for (;;) {
     let best = null;
     for (const a of accounts) {
-      const list = await call(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q, maxResults: 5, includeSpamTrash: "true" } }).catch(() => null);
+      const list = await call(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q, maxResults: 5 } }).catch(() => null);
       for (const m of list?.ok ? (list.body?.messages ?? []) : []) {
         if (!m?.id || seen.has(`${a.account}:${m.id}`)) continue;
         const one = await call(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, { query: { format: "full" } }).catch(() => null);
@@ -334,7 +338,10 @@ export function takeCodeReply(conversationId, text) {
   const t = String(text ?? "").trim();
   if (!t || t.length > 40) return null;
   const tidy = t.replace(/^(it'?s|the code is|code:?|here:?)\s*/i, "").replace(/[.!]+$/, "").trim();
-  const looks = social.looksLikeCode(tidy) || /^[A-Za-z0-9]{4,12}$/.test(tidy) && /\d/.test(tidy) || /^[a-z0-9]{3,10}(-[a-z0-9]{3,10}){1,3}$/i.test(tidy);
+  // Digits, letters with a digit, or three-plus word groups ("brave-otter-lamp"): never "thank-you"
+  // or "follow-up", which are words (cold review, 2026-11-11).
+  const looks = social.looksLikeCode(tidy) || /^[A-Za-z0-9]{4,12}$/.test(tidy) && /\d/.test(tidy)
+    || /^[a-z0-9]{3,10}(-[a-z0-9]{3,10}){1,3}$/i.test(tidy) && (/\d/.test(tidy) || tidy.split("-").length >= 3);
   if (!looks) return null;
   const give = j.reply;
   j.reply = null;
