@@ -105,6 +105,21 @@ h1{margin:0;font-family:IS,Georgia,serif;font-style:italic;font-weight:400;font-
 <div class="say"><div class="b">${esc(c.example)}</div></div>
 </div></body></html>`;
 
+// The drawings on their own, as editable SVG (assets/welcome/art/<key>.svg): the same paths, the
+// same hand-drawn wobble filter, colours written in, so they open in Figma/Illustrator or drop into
+// a web page as-is. Written on every run, so they never drift from the cards.
+export const artSvg = (c, { size = 720 } = {}) => `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${Math.round(size * 190 / 240)}" viewBox="0 0 240 190">
+<!-- Reason welcome card ${c.n}: ${c.title}. Ink ${INK}, pen ${P}. Strokes 6.5/240 of the width, round caps and joins, no fills. -->
+<defs><filter id="wobble" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="${c.n * 7}"/><feDisplacementMap in="SourceGraphic" scale="3.2"/></filter></defs>
+<g filter="url(#wobble)" transform="translate(0 8)" fill="none" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+${DRAW[c.key].join("\n")}
+</g>
+</svg>
+`;
+const artDir = join(root, "assets/welcome/art");
+mkdirSync(artDir, { recursive: true });
+for (const c of CARDS) writeFileSync(join(artDir, `${c.key}.svg`), artSvg(c));
+
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1080, height: 1350 }, deviceScaleFactor: 1 });
 for (const c of CARDS) {

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="570" viewBox="0 0 240 190">
+<!-- Reason welcome card 2: Events. Ink #2a2520, pen #9c3b2e. Strokes 6.5/240 of the width, round caps and joins, no fills. -->
+<defs><filter id="wobble" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="14"/><feDisplacementMap in="SourceGraphic" scale="3.2"/></filter></defs>
+<g filter="url(#wobble)" transform="translate(0 8)" fill="none" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M58 154H190M74 152V102q0-6 6-6h88q6 0 6 6v50" stroke="#2a2520"/>
+<path d="M74 114q12 12 25 0t25 0 25 0 25 0" stroke="#9c3b2e"/>
+<path d="M100 96V72M124 96V68M148 96V72" stroke="#2a2520"/>
+<path d="M100 62q-7-8 0-17 7 9 0 17zM124 58q-7-8 0-17 7 9 0 17zM148 62q-7-8 0-17 7 9 0 17z" stroke="#9c3b2e"/>
+<path d="M14 22Q124 64 234 22" stroke="#2a2520"/>
+<path d="M40 33l8 16 8-12M86 45l7 16 9-14M134 47l6 16 10-15M182 38l5 16 11-13" stroke="#9c3b2e"/>
+</g>
+</svg>
