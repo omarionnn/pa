@@ -15,8 +15,8 @@
 //
 // "Worked" is read off the record, never off the model's words:
 //   email  a gmail_/calendar_/drive_ tool that came back ok, after the Google grant
-//   amazon a checkout on Amazon that reached `placed`, or a browser step on amazon that came back ok,
-//          after the sign-in (Crossmint store sign-in or Reason's own browser)
+//   amazon a checkout on Amazon that reached `placed`, after the store sign-in (a page merely opened on
+//          amazon is not an order)
 //   card   a checkout that reached `placed`, after the card was saved
 //
 // The page (GET /web/connect-all/{token}): each service with ✓ or a button. The button POSTs to
@@ -33,6 +33,8 @@ import { clock } from "./config.js";
 
 export const LINE = "nice, that worked. so i don't have to keep asking you one thing at a time, you can connect the rest here whenever";
 export const LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+// A task that worked longer ago than this is not "just now": the line would land out of the blue.
+export const FRESH_MS = 6 * 60 * 60 * 1000;
 export const SERVICES = ["email", "amazon", "card"];
 export const LABELS = { email: "Email", amazon: "Amazon", card: "Card" };
 const WHAT = {
@@ -136,19 +138,23 @@ export function noteTool(conversationId, name, input, out) {
   if (!conversationId || !okResult(out)) return;
   const n = String(name);
   if (/^(gmail_|calendar_|drive_)/.test(n)) return noteUse(conversationId, "email");
-  if (/^browser_/.test(n)) {
-    let where = "";
-    try { where = `${input?.url ?? ""} ${out?.url ?? ""} ${out?.page_url ?? ""}`; } catch {}
-    if (/(^|[./\s])amazon\.[a-z.]+/i.test(where)) noteUse(conversationId, "amazon");
-  }
 }
 
 /** A checkout reached `placed` (src/shopconnect.js setStage): the store and the card both did their job. */
 export function notePlaced(run) {
-  if (!run?.conversation_id) return;
+  if (!run?.conversation_id || !allowedFor(run.conversation_id)) return;
   if (run.store === "amazon") noteUse(run.conversation_id, "amazon");
   noteUse(run.conversation_id, "card");
+  // An order is usually placed in the background, after the turn that started it. Check again once the
+  // checkout's own "it's placed" text has gone, rather than on whatever they text next, days later.
+  if (lastRouter) {
+    const t = setTimeout(() => { afterTurn({ conversationId: run.conversation_id, router: lastRouter, log: lastLog }).catch(() => {}); }, PLACED_DELAY_MS);
+    t.unref?.();
+  }
 }
+export const PLACED_DELAY_MS = 20_000;
+let lastRouter = null;
+let lastLog = () => {};
 shop.onPlaced(notePlaced);
 
 /**
@@ -163,7 +169,8 @@ export function decide(conversationId, { failed = false } = {}) {
   const base = new Set(String(row.baseline).split(",").filter(Boolean));
   const at = connectedAt(conversationId);
   const uses = Object.fromEntries(q("SELECT service, ok_at FROM connect_after_uses WHERE conversation_id = ?").all(conversationId).map((r) => [r.service, r.ok_at]));
-  const won = SERVICES.find((s) => !base.has(s) && at[s] != null && uses[s] != null && uses[s] >= at[s]);
+  const now = clock.now();
+  const won = SERVICES.find((s) => !base.has(s) && at[s] != null && uses[s] != null && uses[s] >= at[s] && now - uses[s] <= FRESH_MS);
   if (!won) return { act: "none", why: "no_task_yet" };
   if (failed) return { act: "none", why: "turn_failed" };
   if (q("SELECT 1 AS x FROM shop_runs WHERE conversation_id = ? AND status = 'running' LIMIT 1").get(conversationId)) return { act: "none", why: "mid_task" };
@@ -192,6 +199,7 @@ export function linkFor(token, { now = clock.now() } = {}) {
  * drains at once cannot say it twice; one bubble, then the link on its own.
  */
 export async function afterTurn({ conversationId, router = null, failed = false, log = () => {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  if (router) { lastRouter = router; lastLog = log; }
   const d = decide(conversationId, { failed });
   if (d.act === "close") {
     q("UPDATE connect_after SET sent_at = ?, outcome = 'all_connected' WHERE conversation_id = ? AND sent_at IS NULL").run(clock.now(), conversationId);
@@ -217,10 +225,16 @@ export async function afterTurn({ conversationId, router = null, failed = false,
       sent++;
     }
   }
-  q("UPDATE connect_after SET outcome = ? WHERE conversation_id = ?").run(sent === bubbles.length ? `sent:${d.service}` : `held:${sent}`, conversationId);
+  if (!sent) {
+    // Nothing went (the channel refused, no channel): let a later turn try again, and say nothing in history.
+    q("UPDATE connect_after SET sent_at = NULL, outcome = 'held' WHERE conversation_id = ?").run(conversationId);
+    log({ connect_after: conversationId, outcome: "held", after: d.service });
+    return { ...d, act: "held", sent };
+  }
+  q("UPDATE connect_after SET outcome = ? WHERE conversation_id = ?").run(sent === bubbles.length ? `sent:${d.service}` : `partial:${sent}`, conversationId);
   try {
     const messages = db.loadConversation(conversationId);
-    messages.push({ role: "assistant", content: `${LINE}\n\n${url}` });
+    messages.push({ role: "assistant", content: bubbles.slice(0, sent).join("\n\n") });
     db.saveConversation(conversationId, messages);
   } catch { /* the history is best effort */ }
   log({ connect_after: conversationId, outcome: "sent", after: d.service, missing: d.missing.join(","), bubbles: sent });

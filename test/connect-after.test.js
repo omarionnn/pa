@@ -201,6 +201,39 @@ test("never: a failed read, a failed turn, a connection from before, everything 
   assert.equal(ca.decide(c).why, "already");
 });
 
+test("stale or unsent: a success over 6 h old says nothing; a send that went nowhere is tried again later", async () => {
+  const num = newNumber(); const c = conv(num);
+  db.upsertAccount({ conversationId: c, channel: "fake", address: num, name: "Akua" });
+  ca.beforeTurn(c);
+  shop.markConnected(c, "amazon");
+  ca.noteUse(c, "amazon");
+  clock.skip(ca.FRESH_MS + 60_000);
+  assert.equal(ca.decide(c).why, "no_task_yet", "a success from hours ago is not now");
+  ca.noteUse(c, "amazon");
+  // a router whose channel refuses: nothing went, so nothing is claimed and nothing goes in history
+  const refusing = { send: async () => ({ ok: false, error: "down" }) };
+  const held = await ca.afterTurn({ conversationId: c, router: refusing, sleep: async () => {} });
+  assert.equal(held.act, "held");
+  assert.equal(db.db.prepare("SELECT sent_at FROM connect_after WHERE conversation_id = ?").get(c).sent_at, null);
+  assert.ok(!JSON.stringify(db.loadConversation(c)).includes(ca.LINE));
+  const sent = [];
+  const ok = await ca.afterTurn({ conversationId: c, router: { send: async (m) => { sent.push(m.text); return { ok: true }; } }, sleep: async () => {} });
+  assert.equal(ok.act, "send");
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0], ca.LINE);
+});
+
+test("amazon counts on a placed order only, never on a page merely opened there", () => {
+  const num = newNumber(); const c = conv(num);
+  db.upsertAccount({ conversationId: c, channel: "fake", address: num, name: "Kwame" });
+  ca.beforeTurn(c);
+  shop.markConnected(c, "amazon");
+  ca.noteTool(c, "browser_open", { url: "https://www.amazon.com/s?k=towels" }, { ok: true, url: "https://www.amazon.com/s?k=towels" });
+  assert.equal(ca.decide(c).why, "no_task_yet");
+  ca.notePlaced({ conversation_id: c, store: "amazon" });
+  assert.equal(ca.decide(c).act, "send");
+});
+
 test("owner mode reaches only the owner; off reaches nobody", async () => {
   const num = newNumber(); const c = conv(num);
   db.upsertAccount({ conversationId: c, channel: "fake", address: num, name: "Esi" });
@@ -234,6 +267,7 @@ test("the page: ✓ or a button; a button makes that service's own link and goes
   const got = await page.connectAllRequest({ sub: token, method: "GET" });
   assert.equal(got.status, 200);
   assert.match(got.body, /Connect the rest/);
+  assert.match(got.headers["Content-Security-Policy"], /form-action 'self' https:/, "the button's 303 to the service's own page is not blocked");
   assert.match(got.body, /CONNECTED ✓/);
   assert.match(got.body, new RegExp(`/web/connect-all/${token}/go/amazon`));
   assert.doesNotMatch(got.body, /go\/email/, "email already on: no button");

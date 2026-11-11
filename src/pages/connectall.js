@@ -20,7 +20,11 @@ const CSS = `${PAPER_CSS}
 .ca-row form{margin:0;flex:0 0 auto}
 .ca-ok{font-family:ui-monospace,monospace;font-size:11px;letter-spacing:.12em}`;
 
-const html = (status, body) => ({ status, headers: { ...SECURITY_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }, body });
+// Web's headers, except where a form may land: a Connect button's 303 goes on to that service's own
+// page (Google's start page on the app host, Amazon's sign-in link), and Chrome holds a redirect after
+// a POST to form-action too, so 'self' alone would leave the button doing nothing.
+const HEADERS = { ...SECURITY_HEADERS, "Content-Security-Policy": SECURITY_HEADERS["Content-Security-Policy"].replace(/form-action [^;]*/, "form-action 'self' https:") };
+const html = (status, body) => ({ status, headers: { ...HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }, body });
 
 export function renderPage(token, rows) {
   const left = rows.filter((r) => !r.connected);
@@ -58,5 +62,5 @@ export async function connectAllRequest({ sub, method, headers = {}, log = () =>
   const out = ca.serviceLink(c, service);
   log({ connect_all_go: service, ok: !!out.ok, why: out.why ?? "" });
   if (!out.ok) return html(200, renderPage(token, ca.pageView(c)));
-  return { status: 303, headers: { ...SECURITY_HEADERS, location: out.url, "cache-control": "no-store" }, body: "" };
+  return { status: 303, headers: { ...HEADERS, location: out.url, "cache-control": "no-store" }, body: "" };
 }

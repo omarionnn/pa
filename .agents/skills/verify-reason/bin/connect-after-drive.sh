@@ -38,9 +38,13 @@ cleanup() { (cd "$SKILL" && bin/caged.sh stop >/dev/null 2>&1) || true; kill "$(
 trap cleanup EXIT
 
 cd "$SKILL"
+# A stand-in Google app (placeholder values, never real ones), so Email counts as something left to
+# connect; written to a file and exported, so nothing credential-shaped sits on a command line.
+printf '%s=%s\n' GOOGLE_OAUTH_CLIENT_ID cage-placeholder-id GOOGLE_OAUTH_CLIENT_SECRET cage-placeholder > "$OUT/cage.env"
+set -a; . "$OUT/cage.env"; set +a
 REASON_VERIFY_FAKE_SENDBLUE="http://127.0.0.1:$SBPORT" REASON_VERIFY_BACKEND=claude-cli \
 REASON_TEST_NUMBERS="$OWNER_N,$NEW,$NEW2" REASON_ONBOARDING="$FLAG" REASON_ONBOARDING_NUMBERS="$NEW,$NEW2" \
-REASON_ONBOARDING_GAP_MS=1100 REASON_PUBLIC_URL="https://cage.example.test" REASON_CONNECT_AFTER=on REASON_SITE_URL="https://heyreason.example" GOOGLE_OAUTH_CLIENT_ID=cage-gid GOOGLE_OAUTH_CLIENT_SECRET=cage-gsecret \
+REASON_ONBOARDING_GAP_MS=1100 REASON_PUBLIC_URL="https://cage.example.test" REASON_CONNECT_AFTER=on REASON_SITE_URL="https://heyreason.example" \
   bin/caged.sh start > "$OUT/cage-start.txt"
 cp "$RUN/serve.log" "$OUT/serve-start.log"
 grep -q 'model: the claude CLI' "$RUN/serve.log" || { echo "cage is not on the CLI backend — refusing to drive" >&2; grep 'model:' "$RUN/serve.log" >&2; exit 1; }
