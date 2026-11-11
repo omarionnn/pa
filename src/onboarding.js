@@ -424,6 +424,8 @@ function theCard(router, conversationId, picked) {
 }
 
 // AMAZON HOOK: the optional offer after the card (src/amazonconnect.js), REASON_INTRO_AMAZON=on only.
+// OFF on live since 11-11 (owner: nothing is connected up front; a task that needs Amazon sends its own
+// link then, and src/connectafter.js offers the rest once after it worked). Leave it off.
 export const amazonOfferOn = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_INTRO_AMAZON ?? "").trim().toLowerCase());
 // Per connection, not per person (owner 11-10): somebody who connected Amazon on the web setup (the store
 // sign-in through Crossmint, src/websetup.js; it moves to the account on the claim) is not offered it
