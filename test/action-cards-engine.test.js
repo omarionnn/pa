@@ -125,7 +125,6 @@ function fakeGoogle({ mail = [], threads = {}, events = [] } = {}) {
 }
 
 /** A scripted Stage 2: one card per candidate it is shown, verb by kind, shaped like the spec's. */
-const VERB_FOR = { mail_unread: "REPLY", mail_due: "PAY", alerts: "DIAGNOSE", calendar_rsvp: "REPLY", calendar_occasion: "PLAN", calendar_unbooked: "CONFIRM", calendar_place: "BOOK", chat: "CANCEL", flight_checkin: "CONFIRM", subscription_renewal: "RENEW", calendar_moved: "PLAN", calendar_new: "PLAN" };
 function scriptedAsk(custom = null) {
   const asked = [];
   const ask = async ({ prompt, system, schema, model, feature }) => {
@@ -133,7 +132,6 @@ function scriptedAsk(custom = null) {
     if (custom) return custom({ prompt, asked });
     const keys = [...prompt.matchAll(/^- \[([^\]]+)\]/gm)].map(m => m[1]).filter(k => !k.startsWith("chat:") || /cancel|need to/i.test(prompt.split(`[${k}]`)[1]?.split("\n")[0] ?? ""));
     const made = keys.map((key, i) => {
-      const kind = Object.keys(VERB_FOR).find(k => prompt.includes(`[${key}]`) && key.startsWith(k.split("_")[0] === "mail" ? "mail" : k.startsWith("calendar") ? "cal" : k === "chat" ? "chat" : "own")) ?? "mail_unread";
       const verb = key.startsWith("cal:") ? "PLAN" : key.startsWith("chat:") ? "CANCEL" : key.startsWith("own:flights") ? "CONFIRM" : key.startsWith("own:") ? "RENEW" : /alert|×/.test(prompt.split(`[${key}]`)[1]?.split("\n")[0] ?? "") ? "DIAGNOSE" : "REPLY";
       return { candidate_key: key, verb, title: `${verb[0]}${verb.slice(1).toLowerCase()} your thing number ${i + 1} by Nov 20`, why_now: `It is due soon and nothing is booked yet.`,
         lead: `your thing number ${i + 1} is due Nov 20`, prefill: `${verb[0]}${verb.slice(1).toLowerCase()} my thing number ${i + 1} by Nov 20`, offer: "want me to sort it?",
@@ -301,6 +299,7 @@ test("the morning run: digest through createDigest, sources sealed, day row with
   assert.equal(usage.reduce((n, u) => n + (u.turns ?? u.turn ?? 0), 0), 0);
   // Logs: counts and outcomes only.
   assert.doesNotMatch(JSON.stringify(logs), /thing number|Anthropic|Lease/);
+  assert.equal(db.noticeBudget(C, "2026-11-17").sent, 1, "counts against the watchful sweep's day too");
   // Same day again: nothing, not even a read.
   const again = await engine.runMorning(C, { now: NOW + HOUR, tz: TZ, read: g.read, tokensFor, ask, runtime: rt });
   assert.equal(again.skipped, "already_ran"); assert.equal(asked.length, 1); assert.equal(rt.sent.length, 1);
@@ -360,9 +359,24 @@ test("the scheduler: 7:30–9:30 their clock, once a day, never two at once, the
   assert.equal((await engine.runMorning(C, { now: at("2026-11-17T17:00:00Z"), tz: TZ, tokensFor: noGoogle })).skipped, "late");
   assert.equal(engine.dayRow(C, "2026-11-17").why, "late");
   db.db.exec("DELETE FROM action_card_days");
+  // Somebody who answered the hours question with a 9-to-22 day: their window opens at 9, not 7:30.
+  db.db.exec("DELETE FROM action_card_days");
+  fresh(); queued.length = 0;
+  db.setNoticeWindow(C, { start: 9, end: 22, askedAt: NOW - DAY, answeredAt: NOW - DAY });
+  assert.deepEqual(engine.runWindowFor(C), { start: 9 * 60, end: 11 * 60 });
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T12:30:00Z"), queue }).queued, 0, "7:30 is inside the hours they set");
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T14:00:00Z"), queue }).queued, 1, "9:00 their time");
+  db.setNoticeWindow(C, { start: null, end: null, askedAt: null, answeredAt: null });
+  db.db.exec("DELETE FROM action_card_days");
+  // The process was down through the whole window: written off as missed, once, with no job.
+  fresh();
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T15:00:00Z"), queue: parked }).skipped_days, 1);
+  assert.equal(engine.dayRow(C, "2026-11-17").why, "missed");
+  db.db.exec("DELETE FROM action_card_days");
   // The API backend: never.
   process.env.REASON_BACKEND = "api";
   assert.equal(engine.sweepCards({ now: at("2026-11-18T12:30:00Z"), queue }).skipped, "not_on_cli");
+  assert.equal((await engine.runMorning(C, { now: at("2026-11-18T12:30:00Z"), tz: TZ, tokensFor: noGoogle, dry: true })).skipped, "not_on_cli", "a dry run never asks the API");
   process.env.REASON_BACKEND = "claude-cli";
   // The flag off: nothing for anybody; owner: only the operator.
   process.env.REASON_ACTION_CARDS = "off";

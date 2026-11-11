@@ -14094,8 +14094,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (!hit) return { ok: false, error: "No card of theirs reads like that. Ask which one they mean, in a few words." };
         const digest = actioncards.digestById(hit.card.digest_id);
         const code = digest?.cards.find(x => x.id === hit.card.id)?.code;
-        const gone = code ? actioncards.dismiss(hit.card.digest_id, code) : null;
-        out.struck = { title: hit.card.title, was: hit.card.status, now: gone?.status ?? hit.card.status };
+        // dismiss() only moves an OPEN card; a card already done or struck stays what it was.
+        const gone = code && hit.card.status === "open" ? actioncards.dismiss(hit.card.digest_id, code) : null;
+        out.struck = { title: hit.card.title, was: hit.card.status, now: gone ? gone.status : hit.card.status };
       }
       if (input.stop_scope && String(input.stop_value ?? "").trim()) {
         const rule = actionengine.addSkipRule(c, { scope: input.stop_scope, value: input.stop_value, said: input.their_words ?? "" });
