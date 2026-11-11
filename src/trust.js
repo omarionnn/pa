@@ -15,6 +15,7 @@ import { githubStatus } from "./github.js";
 import { uberStatus, stateOf as uberStateOf } from "./uber.js";
 import { status as agentcardStatus } from "./agentcard.js";
 import * as spendcap from "./spendcap.js";
+import * as shop from "./shopconnect.js";
 
 // ---------- what an explicit yes looks like ----------
 // Not a word list. Which words appear in a reply says nothing about what it authorizes:
@@ -650,6 +651,11 @@ function uberRideAccess(conversationId) {
   return {};
 }
 
+/** The Crossmint-connected store row for this site (src/shopconnect.js), or null. Removed stores are not listed. */
+export function storeConnected(conversationId, name) {
+  try { return shop.connectedStores(conversationId).find((s) => s.store === name) ?? null; } catch { return null; }
+}
+
 export function accountStatus(conversationId, name) {
   const p = PROVIDERS[name];
   if (!p) return { name, status: "unknown_provider" };
@@ -677,6 +683,17 @@ export function accountStatus(conversationId, name) {
     };
     if (row && row.state === "signed_in") {
       return { ...common, status: "connected", scopes: JSON.parse(row.scopes), connected_at: stamp(row.connected_at), revoked_at: null };
+    }
+    // A store connected through Crossmint (shop_stores) is connected even though Reason's own browser
+    // never signed in to it. Same source src/connectafter.js connectedAt() reads, so this and the
+    // connect-the-rest page can never disagree. A removed store has status 'removed' and is not here.
+    const viaStore = storeConnected(conversationId, name);
+    if (viaStore) {
+      return {
+        ...common, status: "connected", via: "crossmint", scopes: common.scopes_available,
+        connected_at: stamp(viaStore.connectedAt), revoked_at: null,
+        note: `Connected through Crossmint, not Reason's own browser, so there is no own-browser sign-in to check: orders are placed with the saved ${viaStore.name} sign-in.`,
+      };
     }
     return {
       ...common,
