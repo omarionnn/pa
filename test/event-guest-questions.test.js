@@ -131,14 +131,15 @@ test("by text, adding a question takes the organizer's yes to exactly those word
   const first = await tool("event_questions", input, OWNER_C, h.runtime);
   assert.equal(first.blocked, "needs_confirmation");
   assert.match(first.use_target, /^add a question for guests of Rooftop Night \(event #\d+\): "T-shirt size\?" \(pick one: S \/ M \/ L\) \{[0-9a-f]{12}\}$/);
-  assert.deepEqual(first.asks, { guests_see: '"T-shirt size?" (pick one: S / M / L)', optional: true, guests_already_in: 2 });
+  assert.deepEqual(first.asks, { guests_see: '"T-shirt size?" (pick one: S / M / L)', required: false, optional: true, guests_already_in: 2 });
   assert.equal(db.eventQuestions(ev.id).length, 0, "nothing saved before the yes");
   // Other words are another target: a yes to one wording never saves another.
   assert.notEqual(tools.questionsTarget(OWNER_C, { ...input, choices: ["S", "M", "XL"] }), first.use_target);
   const done = await yes("event_questions", input, OWNER_C, h.runtime);
   assert.equal(done.ok, true, JSON.stringify(done));
   assert.match(done.note, /Nobody was texted/);
-  assert.match(done.note, /2 guests already in can answer on their event page/);
+  assert.match(done.note, /2 guests are already in: offer, in one short line, to have Reason text them/);
+  assert.equal(done.can_ask_guests, 2);
   assert.deepEqual(questions.questionsOf(ev).map(q => [q.kind, q.prompt, q.choices]), [["choice", "T-shirt size?", ["S", "M", "L"]]]);
   await settle();
   assert.equal(h.channel.sent.length, 0, "adding a question texts nobody");
@@ -377,9 +378,14 @@ test("the manage page adds, rewords and removes through a confirm step; a remova
   assert.match(shown, /The 2 guests already in aren't texted/);
   assert.equal(db.eventQuestions(ev.id).length, 0, "nothing saved by the review");
   const added = await post(h, ev, { action: "question", step: "do", prompt: "Any dietary needs?", kind: "choice", choices: "Vegetarian\nVegan\nNo restrictions" });
-  assert.equal(added.status, 303);
-  assert.match(added.headers.Location, /done=question_added&g=2#questions$/);
+  // Saved — and, with guests already in, the offer to text them comes next (its own confirm step; "Don't ask" texts nobody).
+  assert.equal(added.status, 200);
+  assert.match(unesc(added.body), /Ask the 2 guests already in\?/);
   const [q] = questions.questionsOf(ev);
+  const skip = await post(h, ev, { action: "question_ask", step: "edit", qid: String(q.question_id) });
+  assert.equal(skip.status, 303);
+  assert.match(skip.headers.Location, /done=question_not_asked&g=2#questions$/);
+  assert.equal(db.questionAskRows(q.question_id).length, 0, "declining owes nobody a text");
   assert.deepEqual(q.choices, ["Vegetarian", "Vegan", "No restrictions"]);
   assert.match(unesc((await req(h, ev, { cookie: COOKIE.owner, query: { done: "question_added", g: "2" } })).body), /Added\. New guests see it when they join, and nobody was texted\. The 2 guests already in/);
   // Reworded while unanswered.
@@ -440,5 +446,230 @@ test("answers are filed cleanly for join stats: one row per guest per question, 
   assert.deepEqual([now[0].choice, now[0].answer, now[0].conversation_id, now[0].event_id], [1, "Vegan", C.ama, ev.id]);
   const data = await import("../src/data.js");
   assert.ok(data.COVERAGE.deleted.includes("event_answers"), "a guest's delete takes their answers");
+  assert.ok(data.COVERAGE.deleted.includes("event_question_asks"), "and the text owed or sent to them about a question");
   assert.ok("event_questions" in data.COVERAGE.kept);
+});
+
+// ---------- required questions (owner decision 2026-11-11) ----------
+
+test("a required question: the yes names it, the join page won't go through without it, and a text join isn't finished until it's answered", async () => {
+  const h = harness();
+  const { ev } = await party(h, { asks: false });
+  const input = { event_id: ev.id, action: "add", kind: "choice", prompt: "Will you bring a plus-one?", choices: ["Yes", "No"], required: true };
+  const first = await tool("event_questions", input, OWNER_C, h.runtime);
+  assert.equal(first.blocked, "needs_confirmation");
+  assert.match(first.use_target, /"Will you bring a plus-one\?" \(pick one: Yes \/ No, required\) \{[0-9a-f]{12}\}$/);
+  assert.deepEqual(first.asks, { guests_see: '"Will you bring a plus-one?" (pick one: Yes / No, required)', required: true, optional: false, guests_already_in: 2 });
+  // Required and optional are different targets: a yes to one never saves the other.
+  assert.notEqual(tools.questionsTarget(OWNER_C, { ...input, required: false }), first.use_target);
+  const done = await yes("event_questions", input, OWNER_C, h.runtime);
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(done.question.required, true);
+  assert.match(done.note, /have to answer it to join; by text, Reason asks it before they're in/);
+  assert.match(done.note, /won't be held to it/);
+  const plus = questions.questionsOf(ev)[0];
+  const opt = questions.addQuestion(ev, { kind: "text", prompt: "Song request?" }).question;
+  await settle();
+  assert.equal(h.channel.sent.length, 0, "adding texts nobody");
+
+  // The join page: marked, required in the browser, and refused when blank anyway.
+  db.startPageSession("p-esi", "tok-esi-gq-00000001", { conversationId: C.esi });
+  const open = await req(h, ev);
+  assert.match(open.body, /THE HOST ASKS<\/p>/);
+  assert.match(open.body, /Will you bring a plus-one\?<small class="qt">REQUIRED<\/small>/);
+  assert.match(open.body, /Song request\?<small class="qt">OPTIONAL<\/small>/);
+  assert.match(open.body, new RegExp(`name="q_${plus.question_id}" value="0" required`));
+  assert.ok(!new RegExp(`name="q_${opt.question_id}"[^>]*required`).test(open.body), "the optional one stays optional");
+  const blank = await req(h, ev, { sub: "join", method: "POST", cookie: "reason_page=tok-esi-gq-00000001", body: form({ password: "skyline", [`q_${opt.question_id}`]: "Shaboozey" }) });
+  assert.match(unesc(blank.body), /Will you bring a plus-one\?: the host asks everyone this one before they're in/);
+  assert.equal(db.attendeeRow(ev.id, C.esi), null, "not in without it");
+  const ok = await req(h, ev, { sub: "join", method: "POST", cookie: "reason_page=tok-esi-gq-00000001", body: form({ password: "skyline", [`q_${plus.question_id}`]: "1", [`qv_${plus.question_id}`]: "1" }) });
+  assert.equal(ok.status, 200);
+  assert.equal(db.attendeeRow(ev.id, C.esi).state, "joined");
+  assert.deepEqual(db.answersOf(ev.id, db.attendeeRow(ev.id, C.esi).id).map(a => a.answer), ["No"]);
+
+  // By text: the password is right, but they're not in until they answer; a pass isn't possible.
+  db.upsertAccount({ conversationId: "dm:fake:+13475550009", channel: "fake", address: "+13475550009", name: "Yaw" });
+  db.upsertThread({ conversationId: "dm:fake:+13475550009", channel: "fake", address: "+13475550009", isOwner: false });
+  h.channel.sent.length = 0;
+  const held = await tool("event_join", { name: "Rooftop Night", password: "skyline" }, "dm:fake:+13475550009", h.runtime);
+  assert.equal(held.ok, false);
+  assert.equal(held.reason, "needs_answers");
+  assert.deepEqual(held.questions.map(x => [x.question, x.required, x.choices]), [["Will you bring a plus-one?", true, ["1. Yes", "2. No"]]]);
+  assert.match(held.error, /not in yet/);
+  assert.match(held.error, /can't be skipped/);
+  assert.match(held.error, /without the password/);
+  assert.equal(db.attendeeRow(ev.id, "dm:fake:+13475550009"), null, "not in");
+  await settle();
+  assert.equal(h.channel.sent.length, 0, "no welcome yet");
+  // A wrong answer is still missing; the right one, without the password, finishes the join and files it.
+  const still = await tool("event_join", { name: "Rooftop Night", answers: [{ question_id: plus.question_id, choice: 7 }] }, "dm:fake:+13475550009", h.runtime);
+  assert.equal(still.reason, "needs_answers");
+  const inNow = await tool("event_join", { name: "Rooftop Night", answers: [{ question_id: plus.question_id, choice: 1 }] }, "dm:fake:+13475550009", h.runtime);
+  assert.equal(inNow.ok, true, JSON.stringify(inNow));
+  assert.equal(inNow.joined, true);
+  const yaw = db.attendeeRow(ev.id, "dm:fake:+13475550009");
+  assert.equal(yaw.state, "joined");
+  assert.deepEqual(db.answersOf(ev.id, yaw.id).map(a => [a.answer, a.via]), [["Yes", "text"]]);
+  // Only the optional one is left to ask after "you're in".
+  assert.deepEqual(inNow.questions.map(x => x.question), ["Song request?"]);
+  assert.match(inNow.say, /also asks guests one short question, every one optional/);
+  await settle();
+  assert.ok(h.channel.sent.length >= 1, "the welcome went once they were in");
+  // A required answer can be changed, never taken back.
+  const clear = await tool("event_answer", { event_id: ev.id, question_id: plus.question_id, clear: true }, "dm:fake:+13475550009", h.runtime);
+  assert.equal(clear.ok, false);
+  assert.equal(clear.problem, "required");
+  assert.equal((await tool("event_answer", { event_id: ev.id, question_id: plus.question_id, choice: 2 }, "dm:fake:+13475550009", h.runtime)).saved, "No");
+  // Their own answers form offers no "No answer" for it, and a blank there is refused.
+  db.startPageSession("p-yaw", "tok-yaw-gq-00000001", { conversationId: "dm:fake:+13475550009" });
+  const own = await req(h, ev, { cookie: "reason_page=tok-yaw-gq-00000001" });
+  assert.ok(!new RegExp(`name="q_${plus.question_id}" value=""`).test(own.body), "no way to take a required answer back");
+  const wipe = await req(h, ev, { sub: "answers", method: "POST", cookie: "reason_page=tok-yaw-gq-00000001", origin: "https://files.example.test", body: form({ [`q_${plus.question_id}`]: "", [`qo_${plus.question_id}`]: "1", [`qv_${plus.question_id}`]: "1" }) });
+  assert.match(unesc(wipe.body), /can be changed but not taken back/);
+  assert.deepEqual(db.answersOf(ev.id, yaw.id).map(a => a.answer), ["No"]);
+});
+
+test("required is an organizer edit: on only while unanswered, off any time with answers standing; guests already in are never held to it", async () => {
+  const h = harness();
+  const { ev, g, q } = await party(h);
+  questions.answerQuestion(ev, g.ama, q.food.question_id, { choice: 0 });
+  // Answered: can't be made required (their answer was to an optional question); the words are untouched either way.
+  const no = await tool("event_questions", { event_id: ev.id, action: "change", question_id: q.food.question_id, required: true }, OWNER_C, h.runtime);
+  assert.equal(no.problem, "answered_required");
+  assert.ok(!no.blocked, "refused before any yes");
+  // Unanswered: a yes to exactly that, the words left out, and the version stays (no reword happened).
+  const ask = await tool("event_questions", { event_id: ev.id, action: "change", question_id: q.plus.question_id, required: true }, OWNER_C, h.runtime);
+  assert.equal(ask.blocked, "needs_confirmation");
+  assert.match(ask.use_target, /^change question #\d+ on Rooftop Night \(event #\d+\): "Your plus-one's name" \(free text, required\) \{[0-9a-f]{12}\}$/);
+  const on = await yes("event_questions", { event_id: ev.id, action: "change", question_id: q.plus.question_id, required: true }, OWNER_C, h.runtime);
+  assert.equal(on.ok, true, JSON.stringify(on));
+  assert.match(on.note, /Everyone joining has to answer it now\. Guests already in aren't held to it/);
+  assert.equal(db.eventQuestion(ev.id, q.plus.question_id).required, 1);
+  assert.equal(db.eventQuestion(ev.id, q.plus.question_id).version, 1, "not a reword");
+  // Ama and Kofi are in with no answer to it, and stay in; their own page saves the rest without it.
+  assert.equal(db.attendeeRow(ev.id, C.ama).state, "joined");
+  const saved = await req(h, ev, { sub: "answers", method: "POST", cookie: COOKIE.ama, origin: "https://files.example.test", body: form({ [`q_${q.food.question_id}`]: "2", [`qo_${q.food.question_id}`]: "0", [`qv_${q.food.question_id}`]: "1", [`q_${q.plus.question_id}`]: "", [`qo_${q.plus.question_id}`]: "", [`qv_${q.plus.question_id}`]: "1" }) });
+  assert.equal(saved.status, 303, saved.body?.slice(0, 200));
+  assert.deepEqual(db.answersOf(ev.id, g.ama.id).map(a => a.answer), ["No restrictions"]);
+  // Now answered and required: off again goes without a yes being refused, and the answer stands.
+  questions.answerQuestion(ev, g.kofi, q.plus.question_id, { text: "Adjoa" });
+  const off = await yes("event_questions", { event_id: ev.id, action: "change", question_id: q.plus.question_id, required: false }, OWNER_C, h.runtime);
+  assert.equal(off.ok, true, JSON.stringify(off));
+  assert.match(off.note, /optional now\. Answers already given stand/);
+  assert.equal(db.eventQuestion(ev.id, q.plus.question_id).required, 0);
+  assert.deepEqual(db.answersOf(ev.id, g.kofi.id).map(a => a.answer), ["Adjoa"]);
+  // The manage page: the box on the form, the confirm step names it, "Make it optional" on an answered required one.
+  const review = unesc((await post(h, ev, { action: "question", step: "review", prompt: "T-shirt size?", kind: "choice", choices: "S\nM\nL", required: "1" })).body);
+  assert.match(review, /Ask guests this\?/);
+  assert.match(review, /GUESTS SEE · REQUIRED/);
+  assert.match(review, /won't go through without it/);
+  const added = await post(h, ev, { action: "question", step: "do", prompt: "T-shirt size?", kind: "choice", choices: "S\nM\nL", required: "1" });
+  assert.equal(added.status, 200, "the offer to text the guests already in");
+  const tee = questions.questionsOf(ev).find(x => x.prompt === "T-shirt size?");
+  assert.equal(tee.required, true);
+  questions.answerQuestion(ev, g.ama, tee.question_id, { choice: 1 });
+  const pageNow = unesc((await req(h, ev, { cookie: COOKIE.owner })).body);
+  assert.match(pageNow, /Make it optional/);
+  const rev = unesc((await post(h, ev, { action: "question", step: "review", qid: String(tee.question_id), prompt: "T-shirt size?", kind: "choice", choices: "S\nM\nL" })).body);
+  assert.match(rev, /Make it optional\?/);
+  assert.match(rev, /Answers already given stand/);
+  const did = await post(h, ev, { action: "question", step: "do", qid: String(tee.question_id), prompt: "T-shirt size?", kind: "choice", choices: "S\nM\nL" });
+  assert.match(did.headers.Location, /done=question_optional/);
+  assert.equal(db.eventQuestion(ev.id, tee.question_id).required, 0);
+  assert.equal(db.questionAnswerCount(tee.question_id), 1);
+  await settle();
+  assert.equal(h.channel.sent.length, 0, "none of it texted anybody");
+});
+
+// ---------- asking the guests already in (owner decision 2026-11-11) ----------
+
+test("after adding, the organizer can have Reason text the guests already in: one yes pinned to the words and the guests, sent by the sweep's rules, never twice", async () => {
+  const h = harness();
+  const { ev, g } = await party(h, { asks: false });
+  db.updateAttendeeRow(g.kofi.id, { muted: 1 });
+  const esi = db.addAttendee({ eventId: ev.id, conversationId: C.esi, displayName: "Esi", inDirectory: true, via: "text" }).attendee;
+  const added = await yes("event_questions", { event_id: ev.id, action: "add", kind: "choice", prompt: "Any dietary needs?", choices: ["Vegetarian", "Vegan", "No restrictions"] }, OWNER_C, h.runtime);
+  assert.equal(added.can_ask_guests, 2, "Ama and Esi; Kofi muted the event");
+  const qid = added.question.question_id;
+  const q = db.eventQuestion(ev.id, qid);
+  // Esi answers on her own before the organizer decides: she is not asked.
+  questions.answerQuestion(ev, esi, qid, { choice: 1 });
+  const first = await tool("event_questions", { event_id: ev.id, action: "ask_guests", question_id: qid }, OWNER_C, h.runtime);
+  assert.equal(first.blocked, "needs_confirmation");
+  assert.match(first.use_target, /^ask 1 guest already in Rooftop Night \(event #\d+\) to answer "Any dietary needs\?" \(pick one: Vegetarian \/ Vegan \/ No restrictions\): Ama \{[0-9a-f]{12}\}$/);
+  assert.equal(first.asks.guests, 1);
+  assert.deepEqual(first.asks.names, ["Ama"]);
+  assert.equal(first.asks.muted_not_asked, 1);
+  assert.match(first.asks.text_they_get, /^Omari added a question for everyone going to Rooftop Night: "Any dietary needs\?" — Vegetarian, Vegan, No restrictions\. totally optional — if you'd like to answer, just text me/);
+  assert.equal(db.questionAskRows(qid).length, 0, "nothing owed before the yes");
+  // Somebody joining changes who it reaches: a different target.
+  const target0 = first.use_target;
+  const yaw = db.addAttendee({ eventId: ev.id, conversationId: "dm:fake:+13475550009", displayName: "Yaw", inDirectory: true, via: "text" }).attendee;
+  assert.notEqual(tools.questionsTarget(OWNER_C, { event_id: ev.id, action: "ask_guests", question_id: qid }), target0);
+  db.upsertAccount({ conversationId: "dm:fake:+13475550009", channel: "fake", address: "+13475550009", name: "Yaw" });
+  db.upsertThread({ conversationId: "dm:fake:+13475550009", channel: "fake", address: "+13475550009", isOwner: false });
+  const done = await yes("event_questions", { event_id: ev.id, action: "ask_guests", question_id: qid }, OWNER_C, h.runtime);
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(done.asked, 2);
+  assert.deepEqual(done.names, ["Ama", "Yaw"]);
+  assert.match(done.note, /not at night for them, and never twice/);
+  assert.equal(db.questionAskRows(qid).filter(r => r.state === "owed").length, 2);
+  // Not sent in the turn: owed to the sweep, which is quiet at night in the event's zone.
+  await settle();
+  assert.equal(h.channel.sent.length, 0);
+  clock.skip(10 * 60_000);
+  const night = new Date(clock.now()); // 17:00 UTC + 24h set by beforeEach = 13:00 New York: daytime
+  void night;
+  // The runtime's pass runs both sweeps (Runtime.eventListNotes); here the asks' own.
+  const sweep = await events.sweepQuestionAsks({ runtime: h.runtime });
+  assert.equal(sweep.queued + sweep.sent, 2, JSON.stringify(sweep));
+  assert.ok("asks" in (await h.runtime.eventListNotes()), "the runtime's event sweep carries the asks too");
+  await settle();
+  assert.equal(h.channel.sent.length, 2, "Ama and Yaw; Esi answered, Kofi muted");
+  assert.match(h.channel.sent[0].text, /Omari added a question for everyone going to Rooftop Night/);
+  assert.ok(h.channel.sent.every(m => [AMA, "+13475550009"].includes(m.to)), JSON.stringify(h.channel.sent.map(m => m.to)));
+  assert.deepEqual(db.questionAskRows(qid).map(r => r.state).sort(), ["sent", "sent"]);
+  // In their thread as Reason's own words, so the answer is read off it.
+  assert.ok(db.loadConversation(C.ama).some(m => m.role === "assistant" && /added a question/.test(m.content)));
+  // Never twice: nobody is left to ask, so it is refused before any yes.
+  const again = await tool("event_questions", { event_id: ev.id, action: "ask_guests", question_id: qid }, OWNER_C, h.runtime);
+  assert.equal(again.problem, "nobody_to_ask");
+  assert.ok(!again.blocked);
+  // A guest's leave drops a still-owed ask; a reword drops one too (the words they agreed to send are gone).
+  const second = questions.addQuestion(ev, { kind: "text", prompt: "Song request?" }).question;
+  const owed = events.oweQuestionAsks(ev, db.eventQuestion(ev.id, second.question_id));
+  assert.equal(owed.asked, 3, "Ama, Esi, Yaw");
+  db.leaveAttendee(db.attendeeRow(ev.id, C.esi).id);
+  assert.ok(questions.rewordQuestion(ev, { questionId: second.question_id, prompt: "Any song requests?" }).ok);
+  clock.skip(10 * 60_000);
+  h.channel.sent.length = 0;
+  const s2 = await events.sweepQuestionAsks({ runtime: h.runtime });
+  await settle();
+  assert.equal(h.channel.sent.length, 0, "the reworded question's asks are dropped, not sent");
+  assert.deepEqual(db.questionAskRows(second.question_id).map(r => r.state), ["dropped", "dropped", "dropped"]);
+  void s2;
+  // Night holds it: owed at 22:00 in New York, sent after the morning.
+  const third = questions.addQuestion(ev, { kind: "text", prompt: "Parking or transit?" }).question;
+  events.oweQuestionAsks(ev, db.eventQuestion(ev.id, third.question_id));
+  const base = clock.now();
+  const hourNY = (t) => Number(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", hourCycle: "h23" }).format(new Date(t)));
+  while (hourNY(clock.now()) !== 22) clock.skip(HOUR);
+  const late = await events.sweepQuestionAsks({ runtime: h.runtime });
+  assert.equal(late.later, late.later && db.questionAskRows(third.question_id).filter(r => r.state === "owed").length, "held for the morning");
+  assert.ok(late.later >= 1, JSON.stringify(late));
+  while (hourNY(clock.now()) !== 10) clock.skip(HOUR);
+  await events.sweepQuestionAsks({ runtime: h.runtime });
+  await settle();
+  assert.ok(h.channel.sent.length >= 1, "sent in the morning");
+  assert.ok(h.channel.sent.every(m => /Parking or transit\?/.test(m.text)));
+  void base;
+  // The event's share text and creation reply tell the organizer they can ask questions.
+  const made = await tool("event_create", { name: "Brunch", description: "eggs", starts_at: "2027-07-01T11:00", location: "Home", password: "mimosa", show_time_on_join: true, show_location_on_join: true, guest_list_visible: false }, C.ama, h.runtime);
+  assert.equal(made.ok, true, JSON.stringify(made));
+  assert.match(made.say, /ask people a few short questions when they join/);
+  assert.match(made.say, /up to 3/);
+  assert.ok(!/event_questions.*phrase/.test(made.say));
+  const def = tools.EVENT_TOOL_DEFS.find(d => d.name === "event_create").description;
+  assert.match(def, /Offer that, in one plain line, when the event sounds like one where it fits/);
 });

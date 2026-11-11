@@ -24,6 +24,7 @@
 import { scrypt as scryptCb, scryptSync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import * as db from "./db.js";
+import * as questions from "./eventquestions.js";
 import * as accounts from "./accounts.js";
 import { boundTo, codeHost, typedCode } from "./pages/access.js";
 import { atLocal, tzFor } from "./series.js";
@@ -695,7 +696,7 @@ export function admitExisting({ ev, conversationId, displayName, instagram = nul
  * The text and pasted-link routes for somebody already on Reason: password checked, then admitted.
  * Their account is the one they are texting from, and nothing about onboarding runs.
  */
-export async function joinExisting({ conversationId, name = null, link = null, password, organizer = null, displayName = null, instagram = null, inDirectory = true }) {
+export async function joinExisting({ conversationId, name = null, link = null, password, organizer = null, displayName = null, instagram = null, inDirectory = true, answers = null }) {
   if (!eventsOn()) return { ok: false, reason: "not_available" };
   const via = link ? "link" : "text";
   const actor = `conv:${conversationId}`;
@@ -703,7 +704,27 @@ export async function joinExisting({ conversationId, name = null, link = null, p
   if (!found.ok) return found;
   const shown = cleanDisplayName(displayName) || cleanDisplayName(db.getAccount(conversationId)?.name);
   if (!shown) return { ok: false, reason: "needs_display_name", event: publicView(found.event), event_ids: [found.event.id] };
-  return admitExisting({ ev: found.event, conversationId, displayName: shown, instagram: instagramHandle(instagram), inDirectory, via, actor });
+  const asked = requiredAnswers(found.event, conversationId, answers);
+  if (!asked.ok) return asked;
+  return withAnswers(admitExisting({ ev: found.event, conversationId, displayName: shown, instagram: instagramHandle(instagram), inDirectory, via, actor }), asked.answers);
+}
+
+/**
+ * A text join is not finished while a required question has no answer (owner decision 2026-11-11):
+ * `{ ok: false, reason: "needs_answers", questions }` names the ones still to ask, for the model to
+ * ask gently, one at a time. Somebody already in is never held: their row stands as it is.
+ */
+function requiredAnswers(ev, conversationId, answers) {
+  const read = questions.readTextAnswers(ev, answers);
+  if (read.missing.length && db.attendeeRow(ev.id, conversationId)?.state !== "joined") {
+    return { ok: false, reason: "needs_answers", event: publicView(ev), event_ids: [ev.id], questions: read.missing };
+  }
+  return { ok: true, answers: read.answers };
+}
+/** The answers given with the join, filed onto the new guest (never onto somebody who was already in). */
+function withAnswers(out, answers) {
+  if (out.ok && !out.already && answers?.length) questions.saveAnswers(out.event, out.attendee, answers, "text");
+  return out;
 }
 
 /**
@@ -711,7 +732,7 @@ export async function joinExisting({ conversationId, name = null, link = null, p
  * caller kept their ids, briefly — src/eventtools.js), narrowed by who is organizing, then admitted.
  * Never a way in without a password: only ids a right password produced reach here.
  */
-export function joinVerified({ conversationId, eventIds, organizer = null, displayName = null }) {
+export function joinVerified({ conversationId, eventIds, organizer = null, displayName = null, answers = null }) {
   if (!eventsOn()) return { ok: false, reason: "not_available" };
   let candidates = (eventIds ?? []).map(id => db.getEventRow(id)).filter(e => e && e.status !== "cancelled");
   if (organizer && candidates.length > 1) {
@@ -724,7 +745,9 @@ export function joinVerified({ conversationId, eventIds, organizer = null, displ
   const ev = candidates[0];
   const shown = cleanDisplayName(displayName) || cleanDisplayName(db.getAccount(conversationId)?.name);
   if (!shown) return { ok: false, reason: "needs_display_name", event: publicView(ev), event_ids: [ev.id] };
-  return admitExisting({ ev, conversationId, displayName: shown, inDirectory: true, via: "text", actor: `conv:${conversationId}` });
+  const asked = requiredAnswers(ev, conversationId, answers);
+  if (!asked.ok) return asked;
+  return withAnswers(admitExisting({ ev, conversationId, displayName: shown, inDirectory: true, via: "text", actor: `conv:${conversationId}` }), asked.answers);
 }
 
 // ---------- the guest-list note (owner decision 2026-10-25) ----------
@@ -941,6 +964,78 @@ export async function sweepListNotes({ runtime, now = clock.now() }) {
     queuedNotes.add(row.id);
     out.queued++;
     Promise.resolve(runtime.enqueue(row.conversation_id, go)).catch(() => {}).finally(() => queuedNotes.delete(row.id));
+  }
+  return out;
+}
+
+// ---------- "the organizer added a question": the one text to guests already in (owner decision 2026-11-11) ----------
+//
+// Adding a question texts nobody by itself. Right after, the organizer is offered one text to the
+// guests already in who have not answered it (event_questions ask_guests; the manage page's confirm
+// step after adding): their yes covers exactly those words and those guests. Each is owed once, ever
+// (event_question_asks), and goes by the list note's rules — not at night in the event's zone, never
+// to a guest who muted the event, dropped once it is moot (they answered, left, the question changed
+// or went, the event was cancelled). Their answer is read by the model off the thread, never by pattern.
+
+/** The text, or null once it is moot. Plain intent, never a phrase to type. */
+export function questionAskText(ev, q, att) {
+  if (!ev || ev.status === "cancelled" || !q || !att || att.state !== "joined" || att.muted || att.role === "organizer") return null;
+  const who = organizerName(ev);
+  const shaped = questions.shape(q);
+  const words = shaped.kind === "choice" ? `"${shaped.prompt}" — ${shaped.choices.join(", ")}` : `"${shaped.prompt}"`;
+  return `${who ? who : "the organizer"} added a question for everyone going to ${ev.name}: ${words}. `
+    + (shaped.required ? "they're asking everyone, so when you get a sec, just text me your answer." : "totally optional — if you'd like to answer, just text me, and i'll pass it on.");
+}
+
+/** Who asking would text, and the text, before anything changes. */
+export function questionAskPlan(ev, q) {
+  const plan = questions.askPlan(ev, q);
+  const sample = plan.guests[0] ?? { state: "joined", muted: 0, role: "guest" };
+  return { ...plan, body: questionAskText({ ...ev, status: ev.status === "cancelled" ? ev.status : "active" }, q, sample) };
+}
+
+/** Owe the text to exactly the guests the plan named, due after the backstop (the sweep sends it). How many are owed. */
+export function oweQuestionAsks(ev, q, { now = clock.now() } = {}) {
+  const plan = questions.askPlan(ev, q);
+  return { asked: db.oweQuestionAsks(ev.id, q, plan.guests, now + LIST_NOTE.backstopMs), names: plan.names, muted_not_asked: plan.muted_not_asked };
+}
+
+/** Send one owed ask now if it may go; compare-and-set, so two passes never both send it. `{ state }`: sent | dropped | later | none. */
+export async function sendQuestionAsk({ runtime, ask, now = clock.now() }) {
+  const row = db.questionAsk(ask.id);
+  if (!row || row.state !== "owed") return { state: "none" };
+  const ev = db.getEventRow(row.event_id);
+  const q = ev ? db.eventQuestion(ev.id, row.question_id) : null;
+  const att = ev ? db.attendeeRow(ev.id, row.conversation_id) : null;
+  const answered = q && att ? db.answersOf(ev.id, att.id).some(a => a.question_id === q.id) : false;
+  const stale = ev?.starts_at != null && now > ev.starts_at + LIST_NOTE.staleAfterStartMs;
+  const text = !q || q.version !== row.version || answered || stale ? null : questionAskText(ev, q, att);
+  if (!text) { db.settleQuestionAsk(row.id, "dropped"); return { state: "dropped" }; }
+  if (ev.status === "paused" || organizerStopped(ev) || listNoteQuiet(ev, now)) return { state: "later" };
+  if (!db.settleQuestionAsk(row.id, "sent")) return { state: "none" };
+  const message = db.insertEventMessage(ev.id, "question_ask", text);
+  const r = await deliver({ runtime, message, conversationId: row.conversation_id });
+  if (r.state !== "failed") intoThread({ runtime, conversationId: row.conversation_id, about: `a question the organizer of ${String(ev.name).slice(0, 80)} added for guests`, body: text });
+  return { state: "sent", delivery: r.state };
+}
+
+const queuedAsks = new Set();
+/** The sweep's pass over owed asks, the way list notes go: behind any running turn, not at night. */
+export async function sweepQuestionAsks({ runtime, now = clock.now() }) {
+  const out = { sent: 0, dropped: 0, later: 0, queued: 0 };
+  for (const row of db.owedQuestionAsks(now)) {
+    if (queuedAsks.has(row.id)) { out.queued++; continue; }
+    const ev = db.getEventRow(row.event_id);
+    if (ev && ev.status === "active" && listNoteQuiet(ev, now)) { out.later++; continue; }
+    const go = () => sendQuestionAsk({ runtime, ask: row });
+    if (typeof runtime?.enqueue !== "function") {
+      const r = await go();
+      if (out[r.state] != null) out[r.state]++;
+      continue;
+    }
+    queuedAsks.add(row.id);
+    out.queued++;
+    Promise.resolve(runtime.enqueue(row.conversation_id, go)).catch(() => {}).finally(() => queuedAsks.delete(row.id));
   }
   return out;
 }

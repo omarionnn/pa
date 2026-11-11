@@ -16,6 +16,7 @@
 //
 // Every action that texts guests, or cannot be taken back, is two posts: the first shows what will
 // happen in a plain sentence (and the exact text, when there is one), the second does it.
+import * as db from "../db.js";
 import * as events from "../events.js";
 import * as tools from "../eventtools.js";
 import * as rides from "../eventrides.js";
@@ -254,7 +255,7 @@ function deliveryLine(m) {
 /** The fixed sentences a finished action lands back on the page with. Numbers only ever come from the query. */
 const DONE_SECTION = { welcome: "welcome", welcome_cleared: "welcome", blast: "message",
   scheduled: "schedule", sched_changed: "schedule", sched_cancelled: "schedule", reminder_on: "schedule", reminder_off: "schedule", details: "details", details_quiet: "details", nothing: "details", release: "details", removed: "guests", list_shown: "guests", list_hidden: "guests", cap_saved: "guests", nothing_cap: "guests", rides_on: "more", rides_off: "more", cover_removed: "more", cover_discarded: "more",
-  question_added: "questions", question_reworded: "questions", question_removed: "questions" };
+  question_added: "questions", question_reworded: "questions", question_removed: "questions", question_required: "questions", question_optional: "questions", question_asked: "questions", question_not_asked: "questions" };
 function doneNote(q, ev) {
   const n = (k) => Math.max(0, Math.min(100000, Number.parseInt(q[k] ?? "0", 10) || 0));
   const reached = () => (n("g") ? `Reached ${n("n")} of ${n("g")}${n("f") ? `; ${n("f")} didn't go through` : ""}.` : "Nobody has joined yet, so nobody was texted.");
@@ -279,6 +280,10 @@ function doneNote(q, ev) {
     }
     case "question_added": return `Added. New guests see it when they join, and nobody was texted.${n("g") ? ` The ${plural(n("g"), "guest")} already in can answer it on their event page.` : ""}`;
     case "question_reworded": return "Reworded. Nobody had answered it yet, and nobody was texted.";
+    case "question_required": return "Saved. Everyone joining from now on answers it first. Guests already in aren't held to it, and nobody was texted.";
+    case "question_optional": return "Saved. It's optional now; answers already given stand. Nobody was texted.";
+    case "question_asked": return `Asked. Reason texts the ${plural(n("n"), "guest")} already in about it — not at night, and never twice. Their answers show up here.`;
+    case "question_not_asked": return `Added. Nobody was texted; the ${plural(n("g"), "guest")} already in can answer it on their event page.`;
     case "question_removed": return `Removed. New guests aren't asked it.${n("n") ? ` ${plural(n("n"), "answer")} went with it.` : ""}`;
     case "rides_on": return "Ride sharing is on. Reason asks each guest once, the day before.";
     case "rides_off": return "Ride sharing is off.";
@@ -389,12 +394,13 @@ function questionForm(q = {}, { qid = null, label = "Preview question" } = {}) {
     + `<label class="check"><input type="radio" name="kind" value="text"${kind === "text" ? " checked" : ""}> <span>Typing a short answer</span></label>`
     + `<label class="check"><input type="radio" name="kind" value="choice"${kind === "choice" ? " checked" : ""}> <span>Picking one of a few choices</span></label></fieldset>`
     + `<label class="mg-choices" for="q_choices_${id}">THE CHOICES · ONE PER LINE, ${questions.LIMITS.choicesMin} TO ${questions.LIMITS.choicesMax}<textarea id="q_choices_${id}" name="choices" rows="4" maxlength="400" placeholder="${esc("Vegetarian\nVegan\nNo restrictions")}">${esc(choices)}</textarea></label>`
+    + `<label class="check mg-req"><input type="checkbox" name="required" value="1"${q.required ? " checked" : ""}> <span>Everyone has to answer this one to join</span></label>`
     + `<div class="mg-row">${button(label, { busy: "Opening preview…" })}</div></form>`;
 }
 
 /** How guests see one question, for the confirm step. */
 function questionPreview(q) {
-  return `<div class="mg-qprev"><p class="lbl">GUESTS SEE · OPTIONAL</p><b>${esc(q.prompt)}</b>`
+  return `<div class="mg-qprev"><p class="lbl">GUESTS SEE · ${q.required ? "REQUIRED" : "OPTIONAL"}</p><b>${esc(q.prompt)}</b>`
     + (q.kind === "choice" ? `<ul class="mg-to">${q.choices.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : `<span class="line">Their answer</span>`)
     + `</div>`;
 }
@@ -420,24 +426,32 @@ function questionsSection(ev, { drafts }) {
     const editing = draft?.qid === q.question_id;
     const reword = q.answered === 0
       ? `<details class="mg-more"${editing ? " open" : ""}><summary>REWORD IT →</summary>${questionForm(editing ? draft : q, { qid: q.question_id, label: "Preview the new wording" })}</details>`
+      // Answered, so the words stay; one everyone has to answer can still be made optional (the answers stand).
+      : q.required
+        ? `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "question")}${hidden("step", "review")}${hidden("qid", q.question_id)}${hidden("prompt", q.prompt)}${hidden("kind", q.kind)}${hidden("choices", (q.choices ?? []).join("\n"))}<div class="mg-row">${button("Make it optional", { cls: "mg-btn quiet", busy: "…" })}</div></form>`
+        : "";
+    // The guests already in who have not answered and were never texted about it: one offer to ask them.
+    const plan = questions.askPlan(ev, { id: q.question_id, version: q.version });
+    const ask = plan.asked
+      ? `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "question_ask")}${hidden("step", "review")}${hidden("qid", q.question_id)}<div class="mg-row">${button(`Ask the ${plural(plan.asked, "guest")} already in →`, { cls: "mg-btn quiet", busy: "…" })}</div></form>`
       : "";
-    return `<div class="mg-q"><div class="mg-kv"><b>${esc(q.prompt)}</b><span class="mg-tag">${q.kind === "choice" ? "PICK ONE" : "FREE TEXT"}</span></div>`
+    return `<div class="mg-q"><div class="mg-kv"><b>${esc(q.prompt)}</b><span class="mg-tag">${q.kind === "choice" ? "PICK ONE" : "FREE TEXT"}</span>${q.required ? `<span class="mg-tag">REQUIRED</span>` : ""}</div>`
       + `<span class="mg-meta">${esc(q.guests ? `ANSWERED · ${q.answered} OF ${q.guests}` : "NOBODY HAS JOINED YET")}</span>`
-      + body + waiting + reword
+      + body + waiting + reword + ask
       + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "question_remove")}${hidden("step", "review")}${hidden("qid", q.question_id)}<div class="mg-row">${button("Remove", { cls: "mg-btn quiet", busy: "…" })}</div></form>`
       + `</div>`;
   }).join("");
   const room = list.length < questions.LIMITS.questions;
   const adding = draft && draft.qid == null;
   return `<h2 class="mg-h">${esc(list.length ? "What you ask guests" : "Ask guests something")}</h2>`
-    + p(`Up to ${questions.LIMITS.questions} short questions guests answer when they join, like dietary needs or a plus-one's name. Every one is optional, so joining stays quick. Only you see the answers: never other guests, never the guest list.`)
+    + p(`Up to ${questions.LIMITS.questions} short questions guests answer when they join, like dietary needs or a plus-one's name. Each is optional unless you say everyone has to answer it. Only you see the answers: never other guests, never the guest list.`)
     + items
     + (room
       ? (list.length
         ? `<details class="mg-more"${adding ? " open" : ""}><summary>ADD A QUESTION →</summary>${questionForm(adding ? draft : {})}</details>`
         : `<p class="lbl" style="margin-top:8px">ADD A QUESTION</p>${questionForm(adding ? draft : {})}`)
       : p(`That's the most an event can ask (${questions.LIMITS.questions}). Remove one to add another.`, "quiet"))
-    + p("Adding a question texts nobody. Guests already in see it on their event page and can answer there. Reason asks it too when someone joins by text.", "quiet");
+    + p("Adding a question texts nobody by itself. Guests already in see it on their event page and can answer there, and you can have Reason text them the question once. Reason asks it too when someone joins by text.", "quiet");
 }
 
 // ---------------------------------------------------------------- the page
@@ -585,6 +599,26 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   return madeDoc({ title: `Your event: ${ev.name}`, kicker: "YOUR EVENT", main, side, head: CSS, script: SCRIPT, foot: "Only you, the organizer, can see this page. Guests never see it. You can also change anything by texting Reason.", url: link });
 }
 
+/** A fingerprint of exactly who an ask would text right now, and the words it carries (the question's version). */
+const askPin = (ev, q) => { const plan = questions.askPlan(ev, q); return `${q.version}:${plan.ids.join(".") || "none"}`; };
+
+/** The offer to text the guests already in about a question: who, the exact text, and the two buttons. Declining texts nobody. */
+function askConfirm(ev, q, notice = null) {
+  const plan = events.questionAskPlan(ev, q);
+  return page(200, renderConfirm({
+    ev, title: `Ask the ${plural(plan.asked, "guest")} already in?`, notice,
+    sentences: [
+      `${plan.asked === 1 ? "One guest is" : `${plan.asked} guests are`} already in and ${plan.asked === 1 ? "hasn't" : "haven't"} answered it: ${andList(plan.names.slice(0, 15))}${plan.names.length > 15 ? ` and ${plan.names.length - 15} more` : ""}.`,
+      "Reason texts each of them once, when it isn't night for them. Anyone who answers on their event page first isn't texted.",
+      ...(plan.muted_not_asked ? [`${plural(plan.muted_not_asked, "guest")} muted the event and ${plan.muted_not_asked === 1 ? "isn't" : "aren't"} texted.`] : []),
+      "If you'd rather not, nobody is texted: they can still answer on their own event page.",
+    ],
+    preview: plan.body, previewLabel: plan.asked === 1 ? "THEY GET THIS TEXT" : "EACH OF THEM GETS THIS TEXT",
+    fields: { action: "question_ask", step: "do", qid: String(q.id), pin: askPin(ev, q) },
+    confirm: `Text ${plural(plan.asked, "guest")}`, back: "Don't ask",
+  }));
+}
+
 /** One question as the organizer's page reads it (joined guests' answers only), or null. */
 function db_question(ev, qid) {
   return questions.organizerSummary(ev).find(q => q.question_id === qid) ?? null;
@@ -659,7 +693,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
   const ctx = { conversationId: c, events: runtime, log };
   const run = (name, input) => tools.runEventTool(name, toolInput(own, input), ctx);
   const again = (notice, drafts = {}) => page(200, renderManage({ ev: own, conversationId: c, notice, drafts }));
-  const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", list: "guests", cap: "guests", question: "questions", question_remove: "questions", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more" };
+  const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", list: "guests", cap: "guests", question: "questions", question_remove: "questions", question_ask: "questions", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more" };
   const oops = (text, drafts = {}) => again({ text, error: true, section: SECTION[action] ?? null }, drafts);
   const valid = (name, input) => tools.EVENT_SCHEMAS[name].safeParse(toolInput(own, input)).success;
   log({ event_manage: own.id, action, step });
@@ -944,34 +978,63 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       const qidRaw = f.get("qid");
       const qid = qidRaw != null && /^\d{1,12}$/.test(qidRaw) ? Number(qidRaw) : null;
       const kind = f.get("kind") === "choice" ? "choice" : "text";
-      const draft = { qid, prompt: String(f.get("prompt") ?? "").slice(0, 400), kind, choices: String(f.get("choices") ?? "").slice(0, 600) };
+      const required = f.get("required") === "1";
+      const draft = { qid, prompt: String(f.get("prompt") ?? "").slice(0, 400), kind, choices: String(f.get("choices") ?? "").slice(0, 600), required };
       if (step === "edit") return again(null, { question: draft });
-      const input = { questionId: qid, kind, prompt: draft.prompt, choices: kind === "choice" ? draft.choices : null };
+      const input = { questionId: qid, kind, prompt: draft.prompt, choices: kind === "choice" ? draft.choices : null, required };
       const plan = questions.planQuestion(own, input);
       if (!plan.ok) return oops(questions.WHY[plan.problem] ?? "That question can't be saved.", { question: draft });
       const q = plan.question;
+      const onlyRequired = qid != null && !plan.words_change;
       if (step === "review") {
+        if (onlyRequired && !plan.required_change) return back(own, "questions");
         const already = questions.alreadyIn(own);
         return page(200, renderConfirm({
-          ev: own, title: qid != null ? "Change it to this?" : "Ask guests this?",
+          ev: own, title: onlyRequired ? (q.required ? "Ask everyone this one?" : "Make it optional?") : qid != null ? "Change it to this?" : "Ask guests this?",
           sentences: [
-            "New guests see it on the join page, under their name. It's optional: they can skip it, and joining never waits on it.",
-            "When someone joins by text, Reason asks it right after they're in.",
-            ...(qid == null && already ? [`The ${plural(already, "guest")} already in aren't texted. They can answer on their own event page.`] : []),
+            q.required
+              ? "New guests have to answer it to join: the join page won't go through without it, and by text Reason asks it before they're in."
+              : "New guests see it on the join page, under their name. It's optional: they can skip it, and joining never waits on it.",
+            ...(q.required ? [] : ["When someone joins by text, Reason asks it right after they're in."]),
+            ...(qid == null && already ? [`The ${plural(already, "guest")} already in aren't texted by this${q.required ? ", and aren't held to it" : ""}. You can have Reason text them the question next.`] : []),
+            ...(onlyRequired && q.required ? ["Guests already in aren't held to it, and nobody is texted."] : []),
+            ...(onlyRequired && !q.required ? ["Answers already given stand, and nobody is texted."] : []),
             "Only you will see the answers.",
           ],
           extra: questionPreview(q),
-          fields: { action: "question", step: "do", ...(qid != null ? { qid: String(qid) } : {}), prompt: q.prompt, kind: q.kind, choices: (q.choices ?? []).join("\n") },
-          confirm: qid != null ? "Save the new wording" : "Add the question", back: "Change it",
+          fields: { action: "question", step: "do", ...(qid != null ? { qid: String(qid) } : {}), prompt: q.prompt, kind: q.kind, choices: (q.choices ?? []).join("\n"), ...(q.required ? { required: "1" } : {}) },
+          confirm: onlyRequired ? (q.required ? "Ask everyone" : "Make it optional") : qid != null ? "Save the new wording" : "Add the question", back: "Change it",
         }));
       }
       if (step !== "do") return redirect(homePath(own));
       const out = await run("event_questions", qid != null
-        ? { action: "change", question_id: qid, prompt: q.prompt, kind: q.kind, ...(q.choices ? { choices: q.choices } : {}) }
-        : { action: "add", prompt: q.prompt, kind: q.kind, ...(q.choices ? { choices: q.choices } : {}) });
+        ? { action: "change", question_id: qid, prompt: q.prompt, kind: q.kind, ...(q.choices ? { choices: q.choices } : {}), required: q.required }
+        : { action: "add", prompt: q.prompt, kind: q.kind, ...(q.choices ? { choices: q.choices } : {}), required: q.required });
       if (!out?.ok) return oops(questions.WHY[out?.problem] ?? "That didn't save.", { question: draft });
-      log({ event_manage_question: own.id, reworded: qid != null });
-      return back(own, "questions", qid != null ? { done: "question_reworded" } : { done: "question_added", g: String(questions.alreadyIn(own)) });
+      log({ event_manage_question: own.id, reworded: qid != null, required: q.required });
+      if (qid != null) return back(own, "questions", onlyRequired ? { done: q.required ? "question_required" : "question_optional" } : { done: "question_reworded" });
+      // Added: the offer to text the guests already in, as a confirm step of its own (declining texts nobody).
+      const added = db.eventQuestion(own.id, out.question.question_id);
+      if (added && questions.askPlan(own, added).asked) return askConfirm(own, added);
+      return back(own, "questions", { done: "question_added", g: String(questions.alreadyIn(own)) });
+    }
+
+    case "question_ask": {
+      const qid = Number(f.get("qid"));
+      const q = Number.isInteger(qid) ? db.eventQuestion(own.id, qid) : null;
+      if (!q) return oops(questions.WHY.not_found);
+      if (step === "edit" || step === "skip") return back(own, "questions", { done: "question_not_asked", g: String(questions.alreadyIn(own)) });
+      if (step === "review") return questions.askPlan(own, q).asked ? askConfirm(own, q) : oops(questions.WHY.nobody_to_ask);
+      if (step !== "do") return redirect(homePath(own));
+      if (own.status === "paused") return oops("Reason's operator has paused this event, so nothing goes out to guests right now.");
+      // Who gets it is checked again: a guest who joined, answered, left or muted since the preview is shown first.
+      if (f.get("pin") !== askPin(own, q)) {
+        return questions.askPlan(own, q).asked ? askConfirm(own, q, "Who gets it changed since you looked. Check the list again before sending.") : oops(questions.WHY.nobody_to_ask);
+      }
+      const out = await run("event_questions", { action: "ask_guests", question_id: q.id });
+      if (!out?.ok) return oops(out?.error ?? "That didn't go through. Nobody was texted.");
+      log({ event_manage_question_ask: own.id, asked: out.asked });
+      return back(own, "questions", { done: "question_asked", n: String(out.asked ?? 0) });
     }
 
     case "question_remove": {

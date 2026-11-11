@@ -224,8 +224,9 @@ const TABLES = [
   // What an organiser scheduled for their guests (src/eventschedule.js): their own words, waiting to
   // go, and the record of which reminders went. Deleted, a waiting message never goes.
   "event_scheduled",
-  // Their answers to an organizer's questions (src/eventquestions.js): their own words, keyed by them.
-  "event_answers",
+  // Their answers to an organizer's questions (src/eventquestions.js): their own words, keyed by them,
+  // and the one "the organizer added a question" text owed or sent to them.
+  "event_answers", "event_question_asks",
   // Which of their calls, messages and actions they asked Reason to forget, so recall never reads
   // them again (src/db.js forgetFromRecall). Row ids only, theirs.
   "recall_forgotten",

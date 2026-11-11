@@ -161,30 +161,36 @@ const timeOnly = (ev) => new Date(ev.starts_at).toLocaleString("en-US", { timeZo
 
 /**
  * The organizer's questions as form fields (src/eventquestions.js): free text, or one pick from a few
- * choices with nothing picked to start. Every one optional — a blank is a skip, and nothing about
- * joining waits on it. `values` puts back what they typed (`q_<id>`); `qv_<id>` is the version of the
- * words they read, so an answer is never filed under words the organizer changed meanwhile.
- * `v2` draws them in the v2 pages' type; otherwise in the classic page's.
+ * choices with nothing picked to start. An optional one: a blank is a skip, and nothing about joining
+ * waits on it. A required one (owner decision 2026-11-11) is marked so, and the form does not go
+ * through without it — in the browser (`required`) and again when it is read (readForm `missing`).
+ * `values` puts back what they typed (`q_<id>`); `qv_<id>` is the version of the words they read, so
+ * an answer is never filed under words the organizer changed meanwhile. `v2` draws them in the v2
+ * pages' type; otherwise in the classic page's.
  */
-export function questionFields(ev, values = {}, { v2 = true, heading = "THE HOST ASKS · ALL OPTIONAL", own = false } = {}) {
+export function questionFields(ev, values = {}, { v2 = true, heading = null, own = false } = {}) {
   const list = questions.questionsOf(ev);
   if (!list.length) return "";
+  const anyRequired = list.some(q => q.required);
+  const head0 = heading ?? (anyRequired ? "THE HOST ASKS" : "THE HOST ASKS · ALL OPTIONAL");
+  const tag = (q) => anyRequired ? `<small class="qt">${q.required ? "REQUIRED" : "OPTIONAL"}</small>` : "";
   const field = (q) => {
     const name = `q_${q.question_id}`;
     const have = values[name] == null ? "" : String(values[name]);
+    const req = q.required ? " required" : "";
     // On a guest's own answers form, what the page showed: a field left as it was is not touched.
     const ver = `<input type="hidden" name="qv_${q.question_id}" value="${esc(q.version)}">${own ? `<input type="hidden" name="qo_${q.question_id}" value="${esc(have)}">` : ""}`;
     if (q.kind === "choice") {
-      const radio = (value, label) => `<label class="${v2 ? "check pick" : "pick"}"><input type="radio" name="${name}" value="${value}"${have === value ? " checked" : ""}> <span>${esc(label)}</span></label>`;
-      // Their own form can take an answer back: "No answer" is a pick of its own there.
-      const picks = q.choices.map((c, i) => radio(String(i), c)).join("") + (own ? radio("", "No answer") : "");
-      return `<fieldset class="qq"><legend>${esc(q.prompt)}</legend>${picks}${ver}</fieldset>`;
+      const radio = (value, label) => `<label class="${v2 ? "check pick" : "pick"}"><input type="radio" name="${name}" value="${value}"${have === value ? " checked" : ""}${req}> <span>${esc(label)}</span></label>`;
+      // Their own form can take an answer back: "No answer" is a pick of its own there — not for one the host asks everyone.
+      const picks = q.choices.map((c, i) => radio(String(i), c)).join("") + (own && !q.required ? radio("", "No answer") : "");
+      return `<fieldset class="qq"><legend>${esc(q.prompt)}${tag(q)}</legend>${picks}${ver}</fieldset>`;
     }
     return v2
-      ? `<label class="qq" for="${name}"><span class="qp">${esc(q.prompt)}</span><input id="${name}" name="${name}" type="text" maxlength="${questions.LIMITS.answer}" value="${esc(have)}"></label>${ver}`
-      : `<label for="${name}">${esc(q.prompt)}</label><input id="${name}" name="${name}" type="text" maxlength="${questions.LIMITS.answer}" value="${esc(have)}">${ver}`;
+      ? `<label class="qq" for="${name}"><span class="qp">${esc(q.prompt)}${tag(q)}</span><input id="${name}" name="${name}" type="text" maxlength="${questions.LIMITS.answer}" value="${esc(have)}"${req}></label>${ver}`
+      : `<label for="${name}">${esc(q.prompt)}${tag(q)}</label><input id="${name}" name="${name}" type="text" maxlength="${questions.LIMITS.answer}" value="${esc(have)}"${req}>${ver}`;
   };
-  const head = v2 ? `<p class="lbl qh">${esc(heading)}</p>` : `<p class="ev-note">${esc(heading.charAt(0) + heading.slice(1).toLowerCase())}</p>`;
+  const head = v2 ? `<p class="lbl qh">${esc(head0)}</p>` : `<p class="ev-note">${esc(head0.charAt(0) + head0.slice(1).toLowerCase())}</p>`;
   return `<div class="qs">${head}${list.map(field).join("")}<p class="quiet">${esc("Only the host sees your answers. Never other guests, and never the guest list.")}</p></div>`;
 }
 
@@ -643,9 +649,10 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   }
   const instagram = values.instagram.trim() ? events.instagramHandle(values.instagram) : null;
   if (values.instagram.trim() && !instagram) return again(200, "That doesn't look like an Instagram handle — just the username, like @yourname.");
-  // The host's questions: every one optional, so only an answer that can't be read is sent back.
+  // The host's questions: an answer that can't be read is sent back, and so is a required one left blank.
   const asked = questions.readForm(ev, (k) => form.get(k));
   if (asked.problems.length) return again(200, `${asked.problems[0].prompt}: ${questions.ANSWER_WHY[asked.problems[0].problem] ?? "that answer didn't read."}`);
+  if (asked.missing.length) return again(200, `${asked.missing[0]}: the host asks everyone this one before they're in.`);
 
   // Somebody already on Reason, recognized by their page session (sessionAccount only returns an
   // account Reason still serves): joined now, no signup, no code.

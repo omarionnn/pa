@@ -12635,6 +12635,32 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS event_answers_event ON event_answers(event_id, question_id);
 `);
 addColumnIfMissing("event_claims", "answers", "TEXT");
+// event_questions.required  1 when the organizer asks everyone this one (owner decision 2026-11-11): the
+//                  join page does not go through without an answer, and a text join is not finished until
+//                  it is answered. Only set while nobody has answered (an answer was given to an optional
+//                  question); made optional again any time. Guests already in are never taken off for it.
+addColumnIfMissing("event_questions", "required", "INTEGER NOT NULL DEFAULT 0");
+// event_question_asks  the one text to a guest who was already in when a question was added, offered to
+//                  the organizer after adding (owner decision 2026-11-11) and sent by the sweep (not at
+//                  night, never to a muted guest). One row per guest per question, ever: `state` owed |
+//                  sent | dropped; `version` the words the organizer agreed to send, so a reword first
+//                  drops it. `conversation_id` is the guest's, so it goes with them.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS event_question_asks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    attendee_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'owed',
+    due_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    settled_at INTEGER,
+    UNIQUE(question_id, attendee_id)
+  );
+  CREATE INDEX IF NOT EXISTS event_question_asks_due ON event_question_asks(state, due_at);
+`);
 
 /** An event's questions, in the order guests see them. */
 export function eventQuestions(eventId) {
@@ -12643,24 +12669,35 @@ export function eventQuestions(eventId) {
 export function eventQuestion(eventId, id) {
   return db.prepare("SELECT * FROM event_questions WHERE event_id = ? AND id = ?").get(Number(eventId), Number(id)) ?? null;
 }
-export function insertEventQuestion({ eventId, kind, prompt, choices = null }) {
+export function insertEventQuestion({ eventId, kind, prompt, choices = null, required = false }) {
   const now = clock.now();
   const pos = db.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS p FROM event_questions WHERE event_id = ?").get(Number(eventId)).p;
-  const id = Number(db.prepare("INSERT INTO event_questions (event_id, position, kind, prompt, choices, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)")
-    .run(Number(eventId), pos, kind, prompt, choices ? JSON.stringify(choices) : null, now, now).lastInsertRowid);
+  const id = Number(db.prepare("INSERT INTO event_questions (event_id, position, kind, prompt, choices, required, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
+    .run(Number(eventId), pos, kind, prompt, choices ? JSON.stringify(choices) : null, required ? 1 : 0, now, now).lastInsertRowid);
   return eventQuestion(eventId, id);
 }
 /** Reword a question nobody has answered yet; compare-and-set on there still being no answer. */
-export function rewordEventQuestion({ eventId, id, kind, prompt, choices = null }) {
-  const r = db.prepare(`UPDATE event_questions SET kind = ?, prompt = ?, choices = ?, version = version + 1, updated_at = ?
+export function rewordEventQuestion({ eventId, id, kind, prompt, choices = null, required = false }) {
+  const r = db.prepare(`UPDATE event_questions SET kind = ?, prompt = ?, choices = ?, required = ?, version = version + 1, updated_at = ?
     WHERE event_id = ? AND id = ? AND NOT EXISTS (SELECT 1 FROM event_answers WHERE question_id = event_questions.id)`)
-    .run(kind, prompt, choices ? JSON.stringify(choices) : null, clock.now(), Number(eventId), Number(id));
+    .run(kind, prompt, choices ? JSON.stringify(choices) : null, required ? 1 : 0, clock.now(), Number(eventId), Number(id));
+  return r.changes === 1 ? eventQuestion(eventId, id) : null;
+}
+/**
+ * Only whether everyone has to answer it, the words untouched (so `version` stays, and answers given
+ * stand). Making it required is compare-and-set on there being no answer; making it optional always goes.
+ */
+export function setEventQuestionRequired(eventId, id, required) {
+  const r = required
+    ? db.prepare("UPDATE event_questions SET required = 1, updated_at = ? WHERE event_id = ? AND id = ? AND NOT EXISTS (SELECT 1 FROM event_answers WHERE question_id = event_questions.id)").run(clock.now(), Number(eventId), Number(id))
+    : db.prepare("UPDATE event_questions SET required = 0, updated_at = ? WHERE event_id = ? AND id = ?").run(clock.now(), Number(eventId), Number(id));
   return r.changes === 1 ? eventQuestion(eventId, id) : null;
 }
 /** A question and every answer to it, in one go. How many answers went with it. */
 export function deleteEventQuestion(eventId, id) {
   db.exec("BEGIN IMMEDIATE");
   try {
+    db.prepare("DELETE FROM event_question_asks WHERE event_id = ? AND question_id = ?").run(Number(eventId), Number(id));
     const gone = db.prepare("DELETE FROM event_answers WHERE event_id = ? AND question_id = ?").run(Number(eventId), Number(id)).changes;
     const q = db.prepare("DELETE FROM event_questions WHERE event_id = ? AND id = ?").run(Number(eventId), Number(id)).changes;
     db.exec("COMMIT");
@@ -12692,6 +12729,33 @@ export function clearEventAnswer(questionId, attendeeId) {
 }
 export function questionAnswerCount(questionId) {
   return db.prepare("SELECT COUNT(*) AS n FROM event_answers WHERE question_id = ?").get(Number(questionId)).n;
+}
+
+// ---- the one "the organizer added a question" text to guests already in (src/events.js questionAsk*) ----
+
+/** Every ask ever made on this question, whatever became of it: a guest on it is never asked again. */
+export function questionAskRows(questionId) {
+  return db.prepare("SELECT * FROM event_question_asks WHERE question_id = ?").all(Number(questionId));
+}
+/** Owe the text to each of these guests, once ever per guest per question (a row already there stands). How many are newly owed. */
+export function oweQuestionAsks(eventId, question, attendees, dueAt) {
+  const ins = db.prepare(`INSERT OR IGNORE INTO event_question_asks (event_id, question_id, attendee_id, conversation_id, version, state, due_at, created_at)
+    VALUES (?, ?, ?, ?, ?, 'owed', ?, ?)`);
+  let n = 0;
+  for (const a of attendees) n += ins.run(Number(eventId), Number(question.id), Number(a.id), a.conversation_id, Number(question.version), dueAt, clock.now()).changes;
+  return n;
+}
+/** Owed asks that are due, on events that can still send. */
+export function owedQuestionAsks(now = clock.now(), { limit = 200 } = {}) {
+  return db.prepare(`SELECT k.* FROM event_question_asks k JOIN events e ON e.id = k.event_id AND e.status != 'paused'
+    WHERE k.state = 'owed' AND k.due_at <= ? ORDER BY k.due_at, k.id LIMIT ?`).all(now, limit);
+}
+export function questionAsk(id) {
+  return db.prepare("SELECT * FROM event_question_asks WHERE id = ?").get(Number(id)) ?? null;
+}
+/** Settle an owed ask, compare-and-set on it still being owed: the one caller that wins sends it. */
+export function settleQuestionAsk(id, outcome) {
+  return db.prepare("UPDATE event_question_asks SET state = ?, settled_at = ? WHERE id = ? AND state = 'owed'").run(outcome, clock.now(), Number(id)).changes === 1;
 }
 
 export function setAccountInstagram(conversationId, handle) {
@@ -13227,6 +13291,8 @@ export function leaveAttendee(id) {
 /** A guest's answers on the event they are leaving or were taken off. */
 export function dropAnswersOf(attendeeId) {
   db.prepare("DELETE FROM event_answers WHERE attendee_id = ?").run(Number(attendeeId));
+  // An ask still owed to somebody off the event is moot; one that went stays, so a rejoin is never asked twice.
+  db.prepare("UPDATE event_question_asks SET state = 'dropped', settled_at = ? WHERE attendee_id = ? AND state = 'owed'").run(clock.now(), Number(attendeeId));
 }
 
 const ATTENDEE_FIELDS = new Set(["display_name", "instagram", "in_directory", "muted", "state", "left_at", "list_chosen"]);

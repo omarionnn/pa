@@ -52,7 +52,7 @@ import * as said from "./said.js";
 import * as offers from "./offers.js";
 import { PROVIDER as GOOGLE } from "./google.js";
 import * as eventRides from "./eventrides.js";
-import { sweepListNotes } from "./events.js";
+import { sweepListNotes, sweepQuestionAsks } from "./events.js";
 import { sweep as sweepAlbums } from "./albums.js";
 import * as eventSchedule from "./eventschedule.js";
 import * as dailyEdition from "./daily.js";
@@ -2756,10 +2756,16 @@ export class Runtime extends EventEmitter {
     }
   }
 
-  /** Event guest-list notes held for the morning, or whose send after the join never happened (src/events.js). Logged, never thrown. */
+  /**
+   * Event guest-list notes held for the morning, or whose send after the join never happened, and the
+   * "the organizer added a question" texts owed to guests already in (src/events.js). Logged, never thrown.
+   */
   async eventListNotes({ now = clock.now() } = {}) {
     try {
-      return await sweepListNotes({ runtime: this, now });
+      const notes = await sweepListNotes({ runtime: this, now });
+      let asks = null;
+      try { asks = await sweepQuestionAsks({ runtime: this, now }); } catch (e) { this.log({ event_question_asks_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+      return asks ? { ...notes, asks } : notes;
     } catch (e) {
       this.log({ event_list_notes_failed: (e?.message ?? String(e)).split("\n")[0] });
       return { failed: true };
