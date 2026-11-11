@@ -405,7 +405,8 @@ export const EVENT_TOOL_DEFS = [
   {
     name: "event_list",
     description: "The events they are organizing and the ones they've joined, each with only what they are allowed to see. Use when they ask about their events in any words, or before acting on one so you have its event_id."
-      + " For an event they joined, a detail the organizer hasn't shared is marked hidden: say the organizer hasn't shared it yet, never guess it.",
+      + " For an event they joined, a detail the organizer hasn't shared is marked hidden: say the organizer hasn't shared it yet, never guess it."
+      + " For an event they organize: when they ask for their event page, or to manage, change or see their event on the web, send manage_page; send guest_list_page only when they ask specifically for the guest list (it only shows who's going).",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -433,7 +434,7 @@ export const EVENT_TOOL_DEFS = [
   },
   {
     name: "event_info",
-    description: "What they may know about one event they're going to or organizing: for a guest, only what the organizer has released (a hidden detail is marked hidden — say the organizer hasn't shared it yet, never guess it), plus the who's-going page link when the guest list is visible. Use for any question about an event they're in — when it is, where, who's going.",
+    description: "What they may know about one event they're going to or organizing: for a guest, only what the organizer has released (a hidden detail is marked hidden — say the organizer hasn't shared it yet, never guess it), plus the who's-going page link when the guest list is visible. Use for any question about an event they're in — when it is, where, who's going. For an event they organize: when they ask for their event page, or to manage, change or see their event on the web, send manage_page; send guest_list_page only when they ask specifically for the guest list (it only shows who's going).",
     input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED }, required: ["event_id"] },
   },
   {

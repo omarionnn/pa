@@ -183,6 +183,34 @@ test("the organizer's /e/{id} is the manage page; a guest and a stranger never s
   assert.ok(!/MESSAGE GUESTS|mg-sec|Elm St/.test(stranger.body));
 });
 
+test("the organizer's guest list page links back to the manage page; tools hand out manage_page (owner, 2026-11-11)", async () => {
+  const h = harness();
+  const ev = make(OWNER_C);
+  const ama = await join(AMA_C, ev);
+  const who = await req(h, ev, { sub: "who", query: { t: ev.organizer_token }, cookie: COOKIE.owner });
+  assert.equal(who.status, 200);
+  assert.match(who.body, new RegExp(`<a class="ev-manage" href="/e/${ev.public_id}">Manage your event →</a>`), "a way back to running the event");
+  const guestWho = await req(h, ev, { sub: "who", query: { t: ama.token }, cookie: COOKIE.ama });
+  assert.ok(!/Manage your event/.test(guestWho.body), "a guest's page has no manage link");
+  // Not signed in: the event link offers sign-in by number, and signing in lands on /e/{id}, the manage page.
+  const out = await req(h, ev);
+  assert.ok(out.body.includes(`href="/e/${ev.public_id}/signin"`), "a sign-in way for the organizer on a fresh browser");
+  // Every organizer result carries manage_page = the event link; a guest's never does.
+  const listed = await tools.runEventTool("event_list", {}, { conversationId: OWNER_C, events: h.runtime });
+  const mine = JSON.stringify(listed);
+  assert.ok(mine.includes(`"manage_page":"${events.eventUrl(ev)}"`), "event_list has manage_page");
+  assert.equal(events.organizerView(ev).manage_page, events.eventUrl(ev));
+  const info = await tools.runEventTool("event_info", { event_id: ev.id }, { conversationId: OWNER_C, events: h.runtime });
+  assert.equal((info.event ?? info).manage_page, events.eventUrl(ev), "event_info has manage_page");
+  const guestInfo = await tools.runEventTool("event_info", { event_id: ev.id }, { conversationId: AMA_C, events: h.runtime });
+  assert.ok(!JSON.stringify(guestInfo).includes("manage_page"), "a guest never gets manage_page");
+  for (const n of ["event_list", "event_info"]) {
+    const d = tools.EVENT_TOOL_DEFS.find(t => t.name === n).description;
+    assert.match(d, /send manage_page/, `${n} says to send manage_page`);
+    assert.match(d, /guest_list_page only when they ask specifically for the guest list/, `${n} keeps guest_list_page for the list`);
+  }
+});
+
 test("the welcome preview is welcomeText; saving and clearing go through event_update", async () => {
   const h = harness();
   const ev = make(OWNER_C);

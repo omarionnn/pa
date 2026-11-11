@@ -263,6 +263,9 @@ export function organizerView(ev) {
     going,
     status: ev.status,
     link: eventUrl(ev),
+    // The organizer's own page to run the event (src/pages/eventmanage.js): the same link, which opens
+    // as the manage page on a browser signed in as them and offers a texted-code sign-in otherwise.
+    manage_page: eventUrl(ev),
     guest_list_page: organizerPageUrl(ev),
     // Counts only, never who rides with whom (spec v3 §13); read off src/eventrides.js's tables.
     ...(ev.rides_enabled && (config.eventRides === true || config.eventRides === "owner") ? { rides: rideCounts(ev) } : {}),

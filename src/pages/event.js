@@ -59,6 +59,7 @@ const CSS = `
 .ev-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit;opacity:.8}
 /* Room for "Sending…" and its ring, so the line does not grow when it is tapped. */
 .ev-link[data-busy]{min-width:6.5rem;text-align:left}
+.ev-manage{display:block;text-align:center;margin:1rem 0;padding:.85rem;font-weight:600;border-radius:.6rem;border:1px solid var(--ink);color:var(--ink);text-decoration:none}
 .ev-form fieldset{border:0;margin:.8rem 0;padding:0}
 .ev-form legend{font-weight:600;padding:0;margin-bottom:.3rem}
 .ev-form .pick{display:flex;gap:.5rem;align-items:center;font-weight:400;margin:.35rem 0}
@@ -383,7 +384,9 @@ export function renderWho({ ev, att = null, organizer = false, token, saved = fa
   const head = organizer ? `<div class="t">${p("Your guest list, with everyone — including people who chose not to be listed. Phone numbers are never shown.")}</div>` : "";
   const details = att ? detailsBlock(ev, att) : `<div class="t">${p(`When: ${events.whenLine(ev) ?? "not set"}`)}${p(`Where: ${ev.location || "not set"}`)}</div>`;
   const paused = ev.status === "paused" ? `<div class="t">${p("This event is paused right now.")}</div>` : "";
-  const body = `<div class="hero"><p class="kicker">${organizer ? "Your event" : "An event"}</p><h1>${esc(ev.name)}</h1></div>${paused}${details}${head}${listBlock}${mine}`;
+  // The organizer's way back to running the event: this page only reads the list (owner, 2026-11-11).
+  const manage = organizer ? `<a class="ev-manage" href="${esc(`/e/${ev.public_id}`)}">Manage your event →</a>` : "";
+  const body = `<div class="hero"><p class="kicker">${organizer ? "Your event" : "An event"}</p><h1>${esc(ev.name)}</h1></div>${manage}${paused}${details}${head}${listBlock}${mine}`;
   return shell({ title: `${ev.name} — who's going`, body, pill: "Event", url: events.eventUrl(ev), css: CSS });
 }
 
