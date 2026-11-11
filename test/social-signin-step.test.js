@@ -95,7 +95,14 @@ test("Google's own email page ('Sign in to continue to Notion') is the email ste
 test("the site's own page with buttons AND an email box is the chooser; Google's own page with a box is its email step", () => {
   const n = social.stepOf({ url: "https://www.notion.so/login", text: "Log in to Notion Continue with Google Continue with Apple Continue with Microsoft Email Continue" }, { fields: [{ k: "email" }] });
   assert.equal(n.step, "chooser");
-  assert.deepEqual(n.offered, ["google", "apple", "microsoft"]);
+  assert.deepEqual(n.offered, ["apple", "microsoft"], "Google is never offered");
+  // A site page whose only provider is Google, with an email box: its email step, not a chooser.
+  const only = social.stepOf({ url: "https://www.example-shop.com/login", text: "Log in Continue with Google Email Continue" }, { fields: [{ k: "email" }] });
+  assert.equal(only.step, "email");
+  // Google only and no box: the chooser, with nothing offered (the email route is the one choice).
+  const bare = social.stepOf({ url: "https://www.example-shop.com/login", text: "Log in Continue with Google" }, { fields: [] });
+  assert.equal(bare.step, "chooser");
+  assert.deepEqual(bare.offered, []);
   const g = social.stepOf({ url: "https://accounts.google.com/v3/signin/identifier", text: "Sign in with Google Continue to Notion Email or phone" }, { provider: "google", fields: [{ k: "email" }] });
   assert.equal(g.step, "email");
 });
@@ -110,7 +117,7 @@ test("a site's own login page that names Google and 'password' is the chooser, n
   };
   const s = social.stepOf(raw, { provider: "google", fields: [{ k: "email" }] });
   assert.equal(s.step, "chooser");
-  assert.deepEqual(s.offered, ["google", "apple", "microsoft"]);
+  assert.deepEqual(s.offered, ["apple", "microsoft"], "Google is never offered");
   // and with nothing to go on off the provider's host: never Google's password/code/phone step
   for (const text of ["Check your phone and tap Yes", "Enter your password to sign in", "Enter the verification code"]) {
     const x = social.stepOf({ url: "https://www.notion.so/login", text }, { provider: "google", fields: [] });

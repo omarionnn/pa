@@ -148,10 +148,16 @@ test("the rules say what the spec says, line by line", () => {
   // when to ask
   assert.match(r, /EARN it through a real task/);
   assert.match(r, /first time a real task needs a site/);
-  assert.match(r, /DoorDash signs in through your Google account\. Want me to use it\?/);
+  assert.match(r, /Airbnb signs in through your Apple account\. Want me to use it\?/);
   assert.match(r, /Never during onboarding chit-chat, never mid-vent, never late at night unless they are actively asking/);
   assert.match(r, /never when the task can be done without signing in/);
-  assert.match(r, /Say "your Google login", never "social provider" or "OAuth"/);
+  assert.match(r, /Say "your Apple login", never "social provider" or "OAuth"/);
+  // never Google: the site's own email route instead, read from their Gmail by Reason
+  assert.match(r, /NO GOOGLE, EVER: never offer, suggest, ask for or use a Google sign-in for any site/);
+  assert.match(r, /Never say "Continue with Google" or "your Google login"/);
+  assert.match(r, /signed in to through that site's OWN email route instead/);
+  assert.match(r, /SIGN ME IN: .*call signin_email with the site/);
+  assert.match(r, /If it is Google, that is signin_email, not a Google ask/);
   // infer, then confirm
   assert.match(r, /signin_provider with action "infer"/);
   assert.match(r, /gmail_search for that site's welcome or receipt email/);
@@ -160,27 +166,28 @@ test("the rules say what the spec says, line by line", () => {
   assert.match(r, /do not ask about that provider again for 30 days unless they bring it up/);
   assert.match(r, /Never pressure, never repeat a declined ask/);
   // collecting
-  assert.match(r, /never a password, a code or a card number in this chat/);
-  assert.match(r, /Send the secure sign-in link \(signin_link/);
+  assert.match(r, /never a password or a card number in this chat/);
+  assert.match(r, /For an Apple, Facebook or Microsoft account, send the secure sign-in link \(signin_link/);
   assert.match(r, /saved only once the site says they are signed in, and which provider each site uses is written down/);
   // two-step
-  assert.match(r, /a Yes tap on their phone, then a code sent to an email you can read yourself \(gmail_search, gmail_read — never "check your email"\), then a texted code they forward/);
-  assert.match(r, /"Google will ping your phone\. Tap Yes\."/);
-  assert.match(r, /a "G-", spaces and dashes come off/);
+  assert.match(r, /a Yes tap on their phone, then a code sent to an email you can read yourself \(signin_email reads it for you — never "check your email"\), then a texted code they forward/);
+  assert.match(r, /"Apple will show a code on your iPhone or Mac\. Send it to me\."/);
+  assert.match(r, /spaces and dashes come off/);
   assert.match(r, /If a code fails twice, switch methods once; if that fails too, stop and say plainly what blocked it/);
-  assert.match(r, /warn them one more may come/);
   // after
   assert.match(r, /finish the task first\. Then, once, say what it unlocked/);
-  assert.match(r, /Now I can handle your DoorDash and Airbnb too/);
+  assert.match(r, /Now I can handle your Airbnb too, since it uses the same Apple sign-in/);
   assert.match(r, /sign back in yourself/);
-  assert.match(r, /only involve them for an approval tap or a code/);
+  assert.match(r, /only involve them for an approval tap or, without Gmail, a code/);
   // trust
   assert.match(r, /no curiosity browsing/);
   assert.match(r, /Never change passwords, security settings, recovery emails or connected apps/);
   assert.match(r, /Never grant a new third-party app access without asking/);
   assert.match(r, /Money, a message sent as them, and anything permanent still need their go-ahead/);
   assert.match(r, /answer honestly .* say how to revoke/);
-  assert.match(r, /Signing in with Google is not the same as reading their Gmail/);
+  assert.match(r, /Reading a sign-in code from their Gmail is for that one sign-in: signin_email reads only that site's code mail/);
+  // Google appears only in the lines that forbid it or route it to signin_email
+  assert.ok(r.split("\n").filter(l => /Google/.test(l)).every(l => /NO GOOGLE|signin_email/.test(l)), "no line suggests Google");
   // the jargon appears only inside the line that forbids it
   const jargon = r.match(/OAuth|social provider/g) ?? [];
   assert.equal(jargon.length, 2, "OAuth and social provider are named once each, in the never-say line");
@@ -325,6 +332,8 @@ function makeLink({ conversationId = CONV, entry = amazon, provider = "", frames
     mouse: { click: async (x, y) => { did.push(["click", x, y]); }, wheel: async () => {} },
     keyboard: { type: async (t) => { did.push(["type", t]); }, press: async (k) => { did.push(["key", k]); } },
     goBack: async () => {},
+    goto: async (url) => { did.push(["goto", url]); return { status: () => 200 }; },
+    waitForTimeout: async () => {},
   };
   const checks = [];
   const timers = { set: (fn, ms) => ({ fn, ms }), clear: () => {} };
@@ -380,22 +389,31 @@ test("with the flag off the typed text is never touched", async () => {
 // ---------- 6. the button, on a link and on a lapse ----------
 
 test("a link with a provider presses that button on start, and the finished sign-in records it", async () => {
-  const { token, did, checks } = makeLink({ provider: "google" });
+  const { token, did, checks } = makeLink({ provider: "apple", button: "Sign in with Apple" });
   assert.equal(did.length, 0, "nothing pressed before Start");
   const cookie = await start(token);
-  assert.deepEqual(did[0], ["press", "google"]);
+  assert.deepEqual(did[0], ["press", "apple"]);
   const r = await req(token, "done", { method: "POST", cookie });
   assert.equal(r.status, 200);
-  assert.deepEqual(checks[0][2], { provider: "google" }, "the check is told which button");
+  assert.deepEqual(checks[0][2], { provider: "apple" }, "the check is told which button");
   const note = notes().pop();
-  assert.match(note, /saved as a Google sign-in/);
+  assert.match(note, /saved as an? Apple sign-in/);
   assert.match(note, /say once what else that unlocks/);
 });
 
-test("a link whose page has no such button leaves the site's own form, and says so on the note", async () => {
-  const { token, did } = makeLink({ provider: "google", button: "Sign in with Apple" });
+test("a link made with Google presses nothing: Google is never pressed, the site's own form is what opens", async () => {
+  const { token, did, checks } = makeLink({ provider: "google" });
   const cookie = await start(token);
-  assert.deepEqual(did[0], ["press", "google"]);
+  assert.equal(did.filter(d => d[0] === "press").length, 0, "the Google button is never pressed");
+  await req(token, "done", { method: "POST", cookie });
+  assert.deepEqual(checks[0][2], { provider: "" }, "and no Google provider goes on the check");
+  assert.ok(!notes().pop().includes("Google sign-in"));
+});
+
+test("a link whose page has no such button leaves the site's own form, and says so on the note", async () => {
+  const { token, did } = makeLink({ provider: "apple", button: "Continue with Google" });
+  const cookie = await start(token);
+  assert.deepEqual(did[0], ["press", "apple"]);
   await req(token, "done", { method: "POST", cookie });
   assert.match(notes().pop(), /had no such button/);
 });
@@ -411,13 +429,20 @@ test("a provider on a link is dropped for someone the flag does not reach", asyn
 
 test("signin_link and signin_open carry the provider through, and the window's command is told it", async () => {
   const made = [];
-  const link = await call("signin_link", { site: "amazon", provider: "google" }, CONV, { createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; } });
-  assert.equal(made[0].provider, "google");
-  assert.equal(link.provider, "google");
-  assert.match(link.expect, /Google will ping your phone\. Tap Yes\./);
+  const seam = { createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; } };
+  const link = await call("signin_link", { site: "amazon", provider: "microsoft" }, CONV, seam);
+  assert.equal(made[0].provider, "microsoft");
+  assert.equal(link.provider, "microsoft");
+  assert.match(link.expect, /Microsoft will ping the Authenticator app\. Tap Approve\./);
   assert.match(link.second_code, /one more may come/);
   assert.match(link.second_code, /fails twice, switch methods once/);
-  assert.match(link.say, /Google button pressed/);
+  assert.match(link.say, /Microsoft button pressed/);
+
+  // Asked for Google: the link is made on the site's own form, with no provider and no Google button.
+  const g = await call("signin_link", { site: "amazon", provider: "google" }, CONV, seam);
+  assert.equal(made[1].provider, "", "google is dropped");
+  assert.equal(g.provider, undefined);
+  assert.doesNotMatch(g.say ?? "", /Google button pressed/);
 
   const opened = [];
   const w = await call("signin_open", { site: "amazon", provider: "apple" }, CONV, { openSigninWindow: async (a) => { opened.push(a); return { ok: true, site: "amazon", opened_at: 1 }; } });
@@ -427,8 +452,8 @@ test("signin_link and signin_open carry the provider through, and the window's c
   // The real window hands the provider to the sign-in command through its environment.
   const spawned = [];
   const spawnImpl = (bin, args, opts) => { const ch = new EventEmitter(); ch.pid = 1; ch.kill = () => true; spawned.push({ args, opts }); return ch; };
-  await win.openSigninWindow({ conversationId: CONV, entry: amazon, spawnImpl, provider: "google", timers: { set: () => ({}), clear: () => {} } });
-  assert.equal(spawned[0].opts.env.REASON_SIGNIN_PROVIDER, "google");
+  await win.openSigninWindow({ conversationId: CONV, entry: amazon, spawnImpl, provider: "apple", timers: { set: () => ({}), clear: () => {} } });
+  assert.equal(spawned[0].opts.env.REASON_SIGNIN_PROVIDER, "apple");
   assert.ok(!("REASON_SIGNIN_PROVIDER" in process.env), "and not through the parent's environment");
 });
 
@@ -460,39 +485,57 @@ test("infer: reads the site's page, or the text they gave, then says to confirm"
   assert.equal(out.read, doordash.signin_url);
   assert.match(out.say, /gmail_search/);
   assert.match(out.say, /confirm in one line/);
-  assert.match(out.say, /your Google login/);
+  assert.match(out.say, /offers Apple sign-in/);
+  assert.doesNotMatch(out.say, /offers Google|your Google login/, "Google is never suggested");
+  assert.match(out.say, /a Google account: signin_email/);
+  assert.match(out.google, /Google is never used.*signin_email/);
   const own = await call("signin_provider", { action: "infer", site: "doordash" }, CONV, { readSigninPage: async () => "Email\nPassword\nSign in" });
   assert.deepEqual(own.providers_offered, []);
-  assert.match(own.say, /the site's own form/);
+  assert.match(own.say, /its own email route: signin_email/);
+  assert.equal(own.google, undefined);
   const mail = await call("signin_provider", { action: "infer", text: "Thanks for signing up with Google! Your first order…" });
   assert.deepEqual(mail.providers_offered, ["google"]);
+  assert.match(mail.say, /never used: sign them in with signin_email/);
+  const apple = await call("signin_provider", { action: "infer", text: "Thanks for signing up with Apple!" });
+  assert.match(apple.say, /your Apple login — want me to use it\?/);
   const dead = await call("signin_provider", { action: "infer", site: "doordash" }, CONV, { readSigninPage: async () => { throw new Error("net::ERR_TIMED_OUT"); } });
   assert.equal(dead.ok, false);
   assert.match(dead.error, /could not be read/);
 });
 
 test("a lapsed session is signed in again by pressing the saved button, before anyone is asked", async () => {
-  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "google" });
+  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "apple" });
   // The recheck finds the session gone; the provider was read before the probe revoked the row.
-  const page = fakePage({ button: "Continue with Google" });
+  const page = fakePage({ button: "Sign in with Apple" });
   const out = await call("signin_status", { site: "amazon", recheck: true }, CONV, { pageFor: async () => page });
   assert.equal(out.signed_in_again, true);
   assert.equal(out.state, "signed_in");
-  assert.match(out.signin_again, /signed back in yourself through the Google button/);
-  assert.deepEqual(page.did.filter(d => d[0] === "press"), [["press", "google"]]);
-  assert.equal(row(CONV, "amazon").provider, "google", "the row is live again, with the button on it");
-  assert.equal(social.providerOf(CONV, "amazon"), "google");
+  assert.match(out.signin_again, /signed back in yourself through the Apple button/);
+  assert.deepEqual(page.did.filter(d => d[0] === "press"), [["press", "apple"]]);
+  assert.equal(row(CONV, "amazon").provider, "apple", "the row is live again, with the button on it");
+  assert.equal(social.providerOf(CONV, "amazon"), "apple");
+});
+
+test("a lapsed Google login is never pressed: it is sent to signin_email instead", async () => {
+  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "google" });
+  const page = fakePage({ button: "Continue with Google" });
+  const out = await call("signin_status", { site: "amazon", recheck: true }, CONV, { pageFor: async () => page });
+  assert.equal(out.state, "signed_out");
+  assert.equal(out.signed_in_again, undefined);
+  assert.equal(out.signin_again, undefined);
+  assert.match(out.sign_back_in, /Google is never pressed: sign them back in yourself with signin_email/);
+  assert.equal(page.did.filter(d => d[0] === "press").length, 0, "the Google button is never pressed");
 });
 
 test("when the button lands on the provider's page, the person is asked — with the one-line expectation", async () => {
-  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "google" });
-  const page = fakePage({ button: "Continue with Google", signedIn: false });
+  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "apple" });
+  const page = fakePage({ button: "Sign in with Apple", signedIn: false });
   const out = await call("signin_status", { site: "amazon", recheck: true }, CONV, { pageFor: async () => page });
   assert.equal(out.signed_in_again, false);
   assert.equal(out.state, "signed_out");
-  assert.match(out.signin_again, /Google wants them/);
-  assert.match(out.signin_again, /signin_link with provider 'google'/);
-  assert.match(out.signin_again, /Google will ping your phone\. Tap Yes\./);
+  assert.match(out.signin_again, /Apple wants them/);
+  assert.match(out.signin_again, /signin_link with provider 'apple'/);
+  assert.match(out.signin_again, /Apple will show a code on your iPhone or Mac\. Send it to me\./);
 });
 
 test("no provider on record, or the flag off: a lapse is reported as before, nothing pressed", async () => {
@@ -515,10 +558,19 @@ test("no provider on record, or the flag off: a lapse is reported as before, not
 test("signInAgain on its own: no provider, no page, or a page that will not load", async () => {
   assert.deepEqual(await social.signInAgain(fakePage(), CONV, amazon), { ok: false, tried: false, why: "no provider is on record for this site" });
   const dead = { goto: async () => { throw new Error("net::ERR_NAME_NOT_RESOLVED"); } };
-  const out = await social.signInAgain(dead, CONV, amazon, { provider: "google" });
+  const out = await social.signInAgain(dead, CONV, amazon, { provider: "apple" });
   assert.equal(out.tried, true);
   assert.match(out.why, /did not load/);
   assert.equal(out.ok, false);
+  // Google: nothing is loaded or pressed; the answer is the email route.
+  const page = fakePage();
+  const g = await social.signInAgain(page, CONV, amazon, { provider: "google" });
+  assert.equal(g.ok, false);
+  assert.equal(g.tried, false);
+  assert.equal(g.email_route, true);
+  assert.equal(g.provider, "google");
+  assert.match(g.why, /signin_email/);
+  assert.equal(page.did.length, 0, "the page is not touched");
 });
 
 // ---------- 8. the provider refuses Reason's browser ----------
@@ -546,52 +598,92 @@ test("providerRefused: Google's 'may not be secure', Apple's and Microsoft's 'br
   assert.equal(social.providerRefused({ url: "https://login.microsoftonline.com/common", text: "We couldn't sign you in. Your browser is currently set to block cookies." }).refused, false);
 });
 
-test("a link that lands on Google's refusal ends at once: nothing checked or saved, one plain line, the site's own form offered, no retry", async () => {
-  const { token, did, checks } = makeLink({ provider: "google", frames: [GOOGLE_REFUSED] });
+/** A /view answer: JSON when the link ended or moved, else a frame `[4-byte length][JSON meta][JPEG]`. */
+function viewBody(r) {
+  if (!Buffer.isBuffer(r.body)) return JSON.parse(r.body);
+  return { frame: true, ...JSON.parse(r.body.subarray(4, 4 + r.body.readUInt32BE(0)).toString("utf8")) };
+}
+
+const APPLE_REFUSED = {
+  url: "https://appleid.apple.com/auth/authorize?client_id=com.amazon",
+  text: "Sign in with Apple\nYour browser is not supported.\nTry a different browser.",
+  fields: [],
+};
+
+test("a link that lands on Google's refusal backs out of it: the refusal never ends the link or reaches them, the site's email route opens", async () => {
+  // Google is never pressed, but a site can still bounce the browser onto Google's refusal page.
+  const { token, did, checks } = makeLink({ frames: [GOOGLE_REFUSED, AMAZON_EMAIL_STEP] });
   const cookie = await start(token);
+  const r = await req(token, "view", { cookie });
+  assert.equal(r.status, 200);
+  const body = viewBody(r);
+  assert.equal(body.frame, true, "the fresh page goes back, not an ended link");
+  assert.notEqual(body.over, true, "the link does not end");
+  assert.doesNotMatch(JSON.stringify(body), /refused|may not be secure/i, "the refusal is never shown");
+  assert.ok(did.some(d => d[0] === "goto" && d[1] === amazon.signin_url), "the site's sign-in page is opened again");
+  assert.equal(did.filter(d => d[0] === "press").length, 0, "Google is never pressed");
+  assert.equal(checks.length, 0, "nothing checked");
+  assert.equal(row(CONV, "amazon"), undefined, "no saved login");
+  assert.ok(!notes().some(n => /refused/.test(n)), "no refusal note for Reason to pass on");
+  assert.equal(social.refusedRecently(CONV, "amazon", "google"), true, "recorded, so Google is not tried here again");
+  // The link is still live: a second look is the email step, not an ended link.
+  const again = await req(token, "view", { cookie });
+  assert.equal(again.status, 200);
+  assert.notEqual(viewBody(again).over, true);
+});
+
+test("an Apple refusal is backed out of once; a second refusal ends the link: one plain line, the email route offered, no retry", async () => {
+  const { token, did, checks } = makeLink({ provider: "apple", button: "Sign in with Apple", frames: [APPLE_REFUSED] });
+  const cookie = await start(token);
+  assert.equal(did.filter(d => d[0] === "press").length, 1, "pressed once, on Start");
+  const first = await req(token, "view", { cookie });
+  assert.equal(first.status, 200);
+  assert.notEqual(viewBody(first).over, true, "the first refusal is backed out of, not the end");
+  assert.ok(did.some(d => d[0] === "goto" && d[1] === amazon.signin_url));
   const r = await req(token, "view", { cookie });
   assert.equal(r.status, 200);
   assert.deepEqual(JSON.parse(r.body), { over: true, state: "refused" });
   assert.equal(checks.length, 0, "the account page is never asked, so nothing can be recorded");
   assert.equal(row(CONV, "amazon"), undefined, "no saved login");
   const note = notes().pop();
-  assert.match(note, /Google refused my browser for Amazon/);
-  assert.match(note, /sign in with your Amazon email and password instead/);
-  assert.match(note, /signin_link with site "amazon" and NO provider/);
+  assert.match(note, /Apple refused my browser for Amazon, so I'm signing you in with your Amazon email instead/);
+  assert.match(note, /signin_email with site "amazon"/);
+  assert.match(note, /never Google/);
   assert.match(note, /will not be tried again/);
-  assert.equal(did.filter(d => d[0] === "press").length, 1, "pressed once, on Start, never again");
-  // A second ask for the Google route is refused without a link; the site's own form still works.
+  assert.equal(did.filter(d => d[0] === "press").length, 1, "never pressed again");
+  // A second ask for the Apple route is refused without a link; the site's own form still works.
   const made = [];
   const seam = { createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/y", good_for_minutes: 10, reachable_from_a_phone: true }; } };
-  const again = await call("signin_link", { site: "amazon", provider: "google" }, CONV, seam);
+  const again = await call("signin_link", { site: "amazon", provider: "apple" }, CONV, seam);
   assert.equal(again.ok, false);
-  assert.equal(again.refused, "google");
-  assert.match(again.say, /Google refused my browser for Amazon/);
+  assert.equal(again.refused, "apple");
+  assert.match(again.say, /Apple refused my browser for Amazon/);
   assert.deepEqual(made, []);
   const own = await call("signin_link", { site: "amazon" }, CONV, seam);
   assert.equal(own.ok, true);
   assert.equal(made[0].provider, "");
   // Another provider, or another site, is not held against it.
-  assert.equal(social.refusedRecently(CONV, "amazon", "apple"), false);
-  assert.equal(social.refusedRecently(CONV, "opentable", "google"), false);
+  assert.equal(social.refusedRecently(CONV, "amazon", "microsoft"), false);
+  assert.equal(social.refusedRecently(CONV, "opentable", "apple"), false);
   // Seven days later it may be tried again.
-  assert.equal(social.refusedRecently(CONV, "amazon", "google", clock.now() + 8 * 86_400_000), false);
+  assert.equal(social.refusedRecently(CONV, "amazon", "apple", clock.now() + 8 * 86_400_000), false);
 });
 
-test("a lapse whose Google button lands on the refusal: nothing saved, said plainly, not pressed again", async () => {
-  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "google" });
-  const page = fakePage({ button: "Continue with Google", signedIn: false });
+test("a lapse whose Apple button lands on the refusal: nothing saved, said plainly, not pressed again", async () => {
+  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "apple" });
+  const page = fakePage({ button: "Sign in with Apple", signedIn: false });
   let pressedOnce = false;
   const inner = page.evaluate;
-  page.evaluate = async (js, arg) => { const out = await inner(js, arg); if (String(js).includes("findProviderButton")) pressedOnce = true; return pressedOnce && typeof js === "function" ? GOOGLE_REFUSED.text : out; };
-  page.url = () => (pressedOnce ? GOOGLE_REFUSED.url : amazon.signin_url);
+  page.evaluate = async (js, arg) => { const out = await inner(js, arg); if (String(js).includes("findProviderButton")) pressedOnce = true; return pressedOnce && typeof js === "function" ? APPLE_REFUSED.text : out; };
+  page.url = () => (pressedOnce ? APPLE_REFUSED.url : amazon.signin_url);
   const out = await call("signin_status", { site: "amazon", recheck: true }, CONV, { pageFor: async () => page });
   assert.equal(out.state, "signed_out");
-  assert.equal(out.provider_refused, "google");
-  assert.match(out.say, /Google refused my browser for Amazon/);
-  assert.equal(social.refusedRecently(CONV, "amazon", "google"), true);
+  assert.equal(out.provider_refused, "apple");
+  assert.match(out.say, /Apple refused my browser for Amazon/);
+  assert.match(out.instead, /signin_email/);
+  assert.equal(social.refusedRecently(CONV, "amazon", "apple"), true);
   // Asked again: the button is not pressed a second time.
-  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "google" });
+  db.recordSiteSignin(CONV, "amazon", { state: "signed_in", evidence: "t", provider: "apple" });
   const before = page.did.filter(d => d[0] === "press").length;
   await call("signin_status", { site: "amazon", recheck: true }, CONV, { pageFor: async () => page });
   assert.equal(page.did.filter(d => d[0] === "press").length, before);
@@ -607,6 +699,7 @@ test("the page they land on says the provider said no, and offers the site's own
 });
 
 test("the rules say what a refusal means", () => {
-  assert.match(social.RULES, /REFUSED: Google \(or Apple\/Microsoft\) sometimes refuses Reason's browser/);
-  assert.match(social.RULES, /never retry it, and offer that site's own email\/password sign-in/);
+  assert.match(social.RULES, /REFUSED: Apple or Microsoft sometimes refuses Reason's browser/);
+  assert.match(social.RULES, /never retry it, and sign them in through the site's own email route instead \(signin_email\)/);
+  assert.match(social.RULES, /Google's refusal page is backed out of automatically and never shown to them/);
 });

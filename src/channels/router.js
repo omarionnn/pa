@@ -49,6 +49,7 @@ import * as onboarding from "../onboarding.js";
 import * as actioncards from "../actioncards.js";
 import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
+import * as signinEmail from "../signinemail.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -727,6 +728,13 @@ export class Router {
         try { t = await this.readContacts(t, h.attachments ?? [], { log: this.log, cover: reviewed.cover }); }
         catch (e) { this.log({ contact_read_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         texts.push(t);
+      }
+      // A sign-in waiting on the code they were asked for (src/signinemail.js, no Gmail connected): the
+      // code goes straight to the site, and the history, the memory pass and the turn all get a
+      // placeholder instead, so it is never written down anywhere Reason keeps words.
+      for (let i = 0; i < texts.length; i++) {
+        const handed = signinEmail.takeCodeReply(conversationId, texts[i]);
+        if (handed) { texts[i] = handed; this.log({ signin_email: "code_reply_taken", conversation: conversationId }); }
       }
       // Which text the reply answers, for a thread that can carry an inline reply: if the thread
       // has moved on by the time the reply is ready, it is pinned under this one (replies.js).

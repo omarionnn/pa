@@ -76,6 +76,8 @@ export const PROVIDER_MARKS = {
   facebook: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11.5" fill="#fff"/><path fill="#0866FF" d="M24 12.07C24 5.41 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.04V9.41c0-3.02 1.8-4.7 4.54-4.7 1.31 0 2.68.24 2.68.24v2.97h-1.5c-1.5 0-1.96.93-1.96 1.89v2.26h3.32l-.53 3.5h-2.8V24C19.62 23.1 24 18.1 24 12.07"/></svg>`,
   microsoft: `<svg viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#F25022"/><rect x="11" y="1" width="9" height="9" fill="#7FBA00"/><rect x="1" y="11" width="9" height="9" fill="#00A4EF"/><rect x="11" y="11" width="9" height="9" fill="#FFB900"/></svg>`,
 };
+/** A provider Reason's page may show a button for: one it has a mark for, never Google (it refuses Reason's browser). */
+const shownProvider = (p) => !!PROVIDER_MARKS[p] && p !== "google";
 const PROVIDER_NAME = { google: "Google", apple: "Apple", facebook: "Facebook", microsoft: "Microsoft" };
 /** The one-line heads-up for each provider's two-step, matching src/socialsignin.js expectLine. */
 const PROVIDER_EXPECT = { google: "Google may ping your phone. Tap Yes.", apple: "Apple may show a code on your iPhone or Mac.", microsoft: "Microsoft may ping the Authenticator app.", facebook: "Facebook may ask you to confirm it's you." };
@@ -89,7 +91,7 @@ const PROVIDER_EXPECT = { google: "Google may ping your phone. Tap Yes.", apple:
  */
 export function setupStartPage({ entry, action, offered = [], mine = "" }) {
   const n = entry.label;
-  const pv = (offered ?? []).filter(p => PROVIDER_MARKS[p]);
+  const pv = (offered ?? []).filter(shownProvider);
   const buttons = pv.length
     ? `<div class="ss-pv">${pv.map(p => `<button type="submit" name="via" value="${p}" data-ss-busy="1">${PROVIDER_MARKS[p]}<span>Continue with ${PROVIDER_NAME[p]}</span>${p === mine ? `<span class="mine">YOURS</span>` : ""}</button>`).join("")}</div>`
       + `<p class="pf-l ss-or">OR</p>`
@@ -148,8 +150,14 @@ export function nativeStepPanel(step = {}, { entry } = {}) {
   switch (step.step) {
     case "chooser":
       return eyebrow(`SIGN IN TO ${upper(n)}`) + headline("How do you sign in?")
-        + `<div class="ss-pv" id="np-choose">${((step.offered ?? []).filter(p => PROVIDER_MARKS[p]).length ? step.offered.filter(p => PROVIDER_MARKS[p]) : Object.keys(PROVIDER_MARKS)).map(p => `<button type="button" data-via="${p}">${PROVIDER_MARKS[p]}<span>Continue with ${PROVIDER_NAME2[p]}</span></button>`).join("")}</div>`
-        + `<p class="pf-l ss-or">OR</p>` + actions(two(`Use my ${n} email`, { attrs: ` data-via=""` }));
+        + (() => {
+          // Only the providers the site's page really has, never Google (src/socialsignin.js
+          // NEVER_PRESSED); none left, the email route is the one choice.
+          const pv = (step.offered ?? []).filter(shownProvider);
+          return pv.length
+            ? `<div class="ss-pv" id="np-choose">${pv.map(p => `<button type="button" data-via="${p}">${PROVIDER_MARKS[p]}<span>Continue with ${PROVIDER_NAME2[p]}</span></button>`).join("")}</div><p class="pf-l ss-or">OR</p>` + actions(two(`Use my ${n} email`, { attrs: ` data-via=""` }))
+            : actions(go(`Use my ${n} email`, { type: "button", attrs: ` data-via=""` }));
+        })();
     case "email":
       return provLine + eyebrow(`${upper(pname || n)} · YOUR EMAIL`) + say
         + `<label class="np-field"><span>Email${step.say && /number/.test(step.say) ? " or phone" : ""}</span><input id="np-in" type="text" inputmode="email" autocomplete="username" enterkeyhint="next" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="you@example.com"></label>`
@@ -306,7 +314,7 @@ export function setupResultPage({ entry, ended, back = "", thread = null, card =
     const again = t ? "Ask Reason for a fresh link to try again." : "You can try again from your setup.";
     const prov = ended?.provider ? ({ google: "Google", apple: "Apple", microsoft: "Microsoft", facebook: "Facebook" })[ended.provider] ?? "The provider" : "The provider";
     const [h1, why, reply] = state === "refused"
-      ? [`${prov} said no to my browser.`, `${prov} refused my browser for ${n}, so nothing was saved and I won't try it again. ${t ? `Reason will text you a secure link to sign in with your ${n} email and password instead.` : `You can sign in with your ${n} email and password from your setup.`}`, `${prov} refused the sign-in`]
+      ? [`${prov} said no to my browser.`, `${prov} refused my browser for ${n}, so nothing was saved and I won't try it again. ${t ? `Reason is signing you in with your ${n} email instead.` : `You can sign in with your ${n} email and password from your setup.`}`, `${prov} refused the sign-in`]
       : state === "blocked"
       ? [`${n} is blocking my browser right now.`, `${n} stopped my browser with a security check before its sign-in page loaded. That's ${n}'s choice, not something you did${t ? ", and a fresh link would hit the same wall." : "."}${instead ? ` ${instead}` : ""}${t ? (instead ? " Reason will text you about it." : " Reason will text you what works instead.") : ""}`, `${n} blocked the sign-in`]
       : state === "signed_out"

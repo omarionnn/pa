@@ -29,6 +29,7 @@ import { flightProviders } from "./flightproviders.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
+import * as signinEmail from "./signinemail.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
 import * as uber from "./uber.js";
@@ -423,7 +424,7 @@ export function cardsToolVisible(name, conversationId) {
 // Signing in through a Google/Apple/Facebook/Microsoft account (src/socialsignin.js,
 // REASON_SOCIAL_SIGNIN): the provider tool is only shown where the flag reaches this person. The
 // `provider` argument on signin_link / signin_open is ignored for everybody else.
-export const SOCIAL_TOOLS = new Set(["signin_provider"]);
+export const SOCIAL_TOOLS = new Set(["signin_provider", "signin_email"]);
 export function socialToolVisible(name, conversationId) {
   return !SOCIAL_TOOLS.has(name) || social.socialAllowedFor(conversationId);
 }
@@ -3077,7 +3078,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     const anySite = social.socialAllowedFor(conversationId);
     const savedAny = anySite ? [...saved, ...signin.savedGenericSignins(conversationId).filter(s => s.state === "signed_in")] : saved;
     signins.what = anySite
-      ? `sign in to ANY site for a real task, Notion and Airbnb included, not only a listed one: signin_link makes a private secure link they open on their phone, on the site's own sign-in page (by its web address when it is not on signin_link's list), with their Google, Apple, Facebook or Microsoft button pressed when that is how they sign in; they sign in themselves and Reason keeps the session in their own browser profile for later errands. Ask in one line first, per the sign-in rules.`
+      ? `sign in to ANY site for a real task, Notion and Airbnb included, not only a listed one: signin_email signs them in with the site's own emailed code, which Reason reads from their Gmail itself (by the site's web address when it is not on signin_link's list) — never through Google; signin_link makes a private secure link they open on their phone, with their Apple, Facebook or Microsoft button pressed when that is how they sign in. Reason keeps the session in their own browser profile for later errands. Per the sign-in rules.`
         + ` Signed in right now: ${savedAny.length ? savedAny.map(s => s.site).join(", ") : "nothing"}.`
         + ` Reason never takes a password — not in a message, not anywhere — and says so rather than storing one`
       : (route.can_sign_in
@@ -5316,7 +5317,19 @@ export const tools = [
       type: "object",
       properties: {
         site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango, or a subscription service cancel_route knows. Where your instructions carry the Google/Apple/Facebook/Microsoft sign-in rules: ANY other site too, by its web address — its sign-in page if you know it (https://www.notion.so/login), else its domain (airbnb.com)." },
-        provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form." },
+        provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Apple's (or Facebook's, Microsoft's) own page. Never google: Google refuses this browser, so a Google account is signin_email instead (google here is ignored and the site's own email route opens). Only when they said so or signin_provider found it; omit for the site's own form." },
+      },
+      required: ["site"],
+    },
+  },
+  {
+    name: "signin_email",
+    description: "Sign them in to a site with the site's OWN emailed code or link — the way to do \"sign me into notion\", and the way for any site whose account uses Google (Google is never used). Runs in your browser in the background: it opens the site's sign-in page, types their email, asks the site for a code, reads the code from their connected Gmail itself (only that site's mail, only mail that arrived after the ask) and enters it. Returns at once; you are told how it ends — never say they are signed in before that. Without their Gmail connected you are told to ask them for the code in ONE plain line; their reply goes to the site without you. The code never reaches you. Never say \"check your email\".",
+    input_schema: {
+      type: "object",
+      properties: {
+        site: { type: "string", description: "A name signin_link knows, or any site's web address — its sign-in page if you know it (https://www.notion.so/login), else its domain." },
+        email: { type: "string", description: "The email their account on this site uses, when they said it. Omit to use the one Reason knows for them." },
       },
       required: ["site"],
     },
@@ -7344,6 +7357,7 @@ const S = {
   signin_status: z.object({ site: z.string().max(300).optional(), recheck: z.boolean().optional() }),
   signin_open: z.object({ site: z.string().min(1).max(300), provider: z.enum(social.PROVIDERS).optional() }),
   signin_link: z.object({ site: z.string().min(1).max(300), provider: z.enum(social.PROVIDERS).optional() }),
+  signin_email: z.object({ site: z.string().min(1).max(300), email: z.string().email().max(200).optional() }),
   signin_provider: z.object({
     action: z.enum(["ask_check", "declined", "infer", "unlocks"]),
     provider: z.enum(social.PROVIDERS).optional(),
@@ -9100,6 +9114,7 @@ function targetOf(name, input) {
     case "signin_status": return input.site ? `site:${input.site}` : "";
     case "signin_open": return `site:${input.site}`;
     case "signin_link": return `site:${input.site}`;
+    case "signin_email": return `site:${input.site}`;
     case "subscriptions_scan": return `subscriptions:scan:${input.months ?? 12}m${input.account ? `:${input.account}` : ""}`;
     case "subscription_cancel_start": return `subscription:${input.merchant}`;
     case "subscription_cancel_commit": return input.what ?? `subscription:${input.merchant}`;
@@ -9332,7 +9347,7 @@ function signinBlockedAnswer(entry) {
  * and for Uber, the connect card named instead.
  */
 async function socialWallFor(c, entry, provider, ctx) {
-  const prov = social.socialAllowedFor(c) ? social.providerKey(provider) : "";
+  const prov = social.socialAllowedFor(c) ? social.usableProvider(provider) : "";
   if (!prov) return { in: false, answer: signinBlockedAnswer(entry) };
   let wall;
   try { wall = await (ctx.signinWall ?? social.signinWall)(entry); } catch (e) { wall = { in: false, why: (e?.message ?? String(e)).split("\n")[0] }; }
@@ -14696,7 +14711,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, error: "They are in the middle of signing in through a link, and their saved profile can be in one browser at a time. Wait for that to finish." };
       }
       const reach = trust.SITE_REACHABLE[entry.site];
-      const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
+      const provider = social.socialAllowedFor(c) ? social.usableProvider(input.provider) : "";
       if (provider && social.refusedRecently(c, entry.site, provider)) {
         return { ok: false, refused: provider, ...social.refusalAnswer(entry, provider), error: `${social.LABELS[provider]} refused Reason's browser for ${entry.label} recently; not tried again.` };
       }
@@ -14719,6 +14734,36 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * A link that shows the person Reason's own browser so they can sign in from their phone.
      * Nothing is launched here; the browser starts when they tap Start on the page.
      */
+    case "signin_email": {
+      // The site's own emailed code, read from their Gmail by Reason (src/signinemail.js). Only where
+      // the social sign-in flag reaches them; the tool is not even shown to anybody else.
+      if (!social.socialAllowedFor(c)) return { ok: false, error: "Not available." };
+      const entry = signinSite(c, input.site);
+      if (!entry) return noSigninSite(c, input.site);
+      const offNet = await genericSiteRefused(entry, ctx);
+      if (offNet) return offNet;
+      if (entry.signin_blocked) return { ok: false, blocked: true, site: entry.site, error: `${entry.label} blocks Reason's browser from its sign-in page, so no code can be asked for there.`, say: `${entry.label} is blocking my browser from its sign-in page right now, so I can't sign you in there.` };
+      if (!me.known && c !== config.ownerConversation) return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
+      if (signinRemote.remoteSessionFor(c) || signinWindow.openWindowFor(c)) return { ok: false, busy: true, error: "A sign-in is already open on their saved profile. Let it finish first." };
+      // Their email: the one they named, else their Google account's address (the default one).
+      const named = String(input.email ?? "").trim();
+      const known = named || (() => { const r = google.resolveAccount(c); return r.ok ? r.account : ""; })();
+      if (!known || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(known)) {
+        return { ok: false, needs_email: true, site: entry.site, ask: `Ask them ONCE, in one plain line, which email their ${entry.label} account uses (like "Which email do you use for ${entry.label}?"), then call signin_email again with it as \`email\`.` };
+      }
+      const out = (ctx.startEmailSignin ?? signinEmail.startEmailSignin)({
+        conversationId: c, entry, email: known, log: ctx.log ?? (() => {}),
+        launch: ctx.launchSigninBrowser ?? signinRemote.launchProfileBrowser,
+        closeBrowser: browser.closeBrowser,
+      });
+      trust.ledgerWrite({ conversationId: c, action: "signin_email", input: { site: input.site }, out: { ok: out.ok, site: entry.site }, target: `site:${entry.site}` });
+      if (!out.ok) return out;
+      return {
+        ok: true, started: true, site: entry.site, email: known,
+        say: `Say ONE short line like "Signing you in to ${entry.label} with your email, one sec." — nothing about codes, never "check your email". You are told how it ends; do not say it worked before that.`,
+      };
+    }
+
     case "signin_link": {
       // Both registries: the ten errand sites and the services whose subscriptions cancel on the
       // web. Signing in is the same act either way — the person does it themselves on the site's
@@ -14768,7 +14813,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Which button their account signs in through (src/socialsignin.js): the page opens with it
       // pressed, and the saved login records it once the site says signed in. Dropped where the flag
       // does not reach this person.
-      const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
+      // Never Google (src/socialsignin.js NEVER_PRESSED): asked for it, the link opens on the site's email route.
+      const provider = social.socialAllowedFor(c) ? social.usableProvider(input.provider) : "";
       if (provider && social.refusedRecently(c, entry.site, provider)) {
         return { ok: false, refused: provider, ...social.refusalAnswer(entry, provider), error: `${social.LABELS[provider]} refused Reason's browser for ${entry.label} recently; no ${social.LABELS[provider]} link is made again.` };
       }
@@ -14851,6 +14897,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ok: true, site: entry.site, state: out.state, why: out.why,
           checked: out.checked_url, landed: out.landed, just_checked: true,
           ...(out.provider ? { provider: out.provider } : {}),
+          ...(again?.email_route && out.state !== "signed_in" ? { sign_back_in: `Their ${entry.label} login was a Google one, and Google is never pressed: sign them back in yourself with signin_email (${entry.label}'s own emailed code).` } : {}),
           ...(again?.refused ? { provider_refused: again.provider, ...social.refusalAnswer(entry, again.provider) } : again?.tried ? {
             signed_in_again: again.state === "signed_in",
             signin_again: again.state === "signed_in"
@@ -14928,7 +14975,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const blocked = list.filter(p => !providers[p].ask_allowed);
         return {
           ok: true, providers,
-          rule: `Ask only the first time a real task needs a site whose account uses one of these — tied to that task, one line, "${social.loginWords(provider || "google")}" — never during onboarding, mid-vent, late at night unless they are asking you to do something right then, or when the task can be done without signing in.`,
+          rule: `Ask only the first time a real task needs a site whose account uses one of these — tied to that task, one line, "${social.loginWords(provider || "apple")}" — never during onboarding, mid-vent, late at night unless they are asking you to do something right then, or when the task can be done without signing in.`,
           ...(blocked.length ? { do_not_ask: `They said no to ${blocked.map(p => social.LABELS[p]).join(" and ")} inside the last ${social.DECLINE_DAYS} days: do not ask; finish another way.` } : {}),
           collecting: "Never a password, code or card number in the chat: signin_link with the provider makes the secure page they sign in on. The login is saved only once the site says signed in.",
         };
@@ -14946,7 +14993,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (input.action === "infer") {
         if (input.text) {
           const offered = social.providersOffered(input.text);
-          return { ok: true, read: "the text you gave", providers_offered: offered, ...(offered.length ? { say: `Confirm in one line before using it: "looks like you sign in to that with ${social.loginWords(offered[0])} — want me to use it?"` } : { say: "Nothing in that text names a provider. Read the site's sign-in page (infer with site) or ask them." }) };
+          const usable = offered.filter(social.usableProvider);
+          return { ok: true, read: "the text you gave", providers_offered: offered, ...(usable.length ? { say: `Confirm in one line before using it: "looks like you sign in to that with ${social.loginWords(usable[0])} — want me to use it?"` } : offered.length ? { say: "That account uses Google, which is never used: sign them in with signin_email (the site's own emailed code)." } : { say: "Nothing in that text names a provider. Read the site's sign-in page (infer with site) or ask them." }) };
         }
         const entry = input.site ? signinSite(c, input.site) : null;
         if (!entry) return input.site ? noSigninSite(c, input.site) : { ok: false, error: `infer needs a site (or text). Known: ${signin.signinNames().join(", ")}.` };
@@ -14960,12 +15008,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         }
         const offered = social.providersOnPage(text);
         const known = social.providerOf(c, entry.site);
+        const google = offered.includes("google") || known === "google";
+        const usable = offered.filter(social.usableProvider);
         return {
           ok: true, site: entry.site, read: entry.signin_url, providers_offered: offered,
           ...(known ? { saved_login_uses: known } : {}),
-          say: offered.length
-            ? `${entry.label} offers ${offered.map(p => social.LABELS[p]).join(", ")} sign-in${offered.length > 1 ? "s" : ""} as well as its own form. Which one THEIR account uses is not on the page: a welcome or receipt email from ${entry.label} in their mail (gmail_search) usually says, and then confirm in one line — "looks like you sign in to ${entry.label} with ${social.loginWords(offered[0])}, want me to use it?"`
-            : `${entry.label}'s sign-in page offers no Google, Apple, Facebook or Microsoft button that could be read, so their account there uses the site's own form. signin_link without a provider.`,
+          ...(google ? { google: `Google is never used (it refuses Reason's browser): if their ${entry.label} account is a Google one, sign them in with signin_email — ${entry.label}'s own emailed code — and never offer Google.` } : {}),
+          say: usable.length
+            ? `${entry.label} offers ${usable.map(p => social.LABELS[p]).join(", ")} sign-in as well as its own email sign-in. Which one THEIR account uses is not on the page: a welcome or receipt email from ${entry.label} in their mail (gmail_search) usually says; then confirm in one line. Their own email, or a Google account: signin_email.`
+            : `${entry.label}'s sign-in page offers no Apple, Facebook or Microsoft button that could be read, so their account there is signed in to through its own email route: signin_email.`,
         };
       }
       return { ok: false, error: "action is ask_check | declined | infer | unlocks" };

@@ -49,6 +49,7 @@ import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
+import * as emailRoute from "./signinemail.js";
 import { readSignedInState } from "./sites.js";
 import { profileDirFor, guardContext } from "./browser.js";
 import * as restartGate from "./busy.js";
@@ -120,6 +121,9 @@ async function realLaunch({ conversationId, url }) {
   return { page, shot, close: () => context.close().catch(() => {}) };
 }
 
+/** The same browser for the email sign-in (src/signinemail.js): their saved profile, headless, guarded. */
+export const launchProfileBrowser = (args) => realLaunch(args);
+
 export function remoteSigninStatus() {
   // The link a person taps lives on the website (heyreason.com/s/* is proxied to this server), else
   // the files domain, never the server's own address when either is set (owner rule, 2026-11-01).
@@ -155,13 +159,14 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
   // `provider`: which button this site's account signs in through (google/apple/facebook/microsoft,
   // src/socialsignin.js). Only where that flag reaches this person: the button is pressed for them
   // when the page opens, and the provider goes on the saved-login row once the site says signed in.
-  const prov = social.socialAllowedFor(conversationId) ? social.providerKey(provider) : "";
+  // Never Google (src/socialsignin.js NEVER_PRESSED): a link asked for Google opens on the site's email route.
+  const prov = social.socialAllowedFor(conversationId) ? social.usableProvider(provider) : "";
   const s = {
     token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
     provider: prov, pressProvider, pressed: "", lastFields: [],
     // The "Continue with" choices the intro page shows (src/socialsignin.js offeredFor); the one
     // tapped replaces `provider` at Start, and the email button clears it. None without the flag.
-    offered: social.socialAllowedFor(conversationId) ? [...new Set([prov, ...(offered ?? []).map(social.providerKey)].filter(Boolean))] : [],
+    offered: social.socialAllowedFor(conversationId) ? [...new Set([prov, ...(offered ?? []).map(social.usableProvider)].filter(Boolean))] : [],
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
     ended: null, startedAt: null, timer: null, signedInRun: 0,
   };
@@ -271,7 +276,7 @@ async function end(s, how) {
     // A sign-in that went through a provider button: the row now says which, so the same login can
     // open the person's other sites through that provider (src/socialsignin.js RULES: say so once).
     const unlocked = s.ended.state === "signed_in" && s.provider
-      ? ` Their ${entry.label} login is saved as a ${social.LABELS[s.provider]} sign-in${s.pressed ? "" : " (the site's own form had no such button, so this is what you were told rather than what was pressed)"}.`
+      ? ` Their ${entry.label} login is saved as ${s.provider === "apple" ? "an" : "a"} ${social.LABELS[s.provider]} sign-in${s.pressed ? "" : " (the site's own form had no such button, so this is what you were told rather than what was pressed)"}.`
         + ` After the task is done, say once what else that unlocks: any site of theirs that signs in with ${social.LABELS[s.provider]} can be opened the same way now without asking again.`
       : "";
     note = s.ended.state === "signed_in"
@@ -771,8 +776,22 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       // The native chooser: press the site's own "Continue with <provider>" for them. Only the four
       // providers, only on a page that is theirs (checked above), only while the real page is still
       // the chooser, and nothing else is pressed.
-      const p = social.providerKey(input.p);
-      if (!p || !nativeOn(s)) return json(400, { error: "not a provider" });
+      if (!nativeOn(s)) return json(400, { error: "not a provider" });
+      // "Use my <site> email": the site's own email route (its "Continue with email" pressed, or its
+      // email box already there). Google is never pressed.
+      if (String(input.p ?? "") === "") {
+        const { pressed, moved } = await inTurn(s, async () => {
+          if (stepNow(s, await readRaw(page)).step !== "chooser") return { pressed: "", moved: true };
+          const f = await page.evaluate(emailRoute.emailPage, "route").catch(() => ({ did: "", email: false }));
+          return { pressed: f.did || (f.email ? "email box" : "") };
+        }).catch(() => ({ pressed: "" }));
+        if (moved) return json(409, { moved: true });
+        if (pressed) { s.provider = ""; s.pressed = ""; s.emailRoute = true; }
+        s.log({ signin_remote: "email_route", site: s.entry.site, pressed: !!pressed, native: true });
+        return json(200, { ok: true, pressed: !!pressed });
+      }
+      const p = social.usableProvider(input.p);
+      if (!p) return json(400, { error: "not a provider" });
       const { pressed, moved } = await inTurn(s, async () => {
         if (stepNow(s, await readRaw(page)).step !== "chooser") return { pressed: "", moved: true };
         return s.pressProvider(page, p);
@@ -838,6 +857,33 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
   // once, nothing saved, nothing pressed again (src/socialsignin.js providerRefused).
   if (s.provider || social.socialAllowedFor(s.conversationId)) {
     const no = social.providerRefused(got.raw);
+    // Google's "This browser or app may not be secure" (owner, 2026-11-11: the person never sees it):
+    // backed out of — its popup closed, the site's sign-in page opened again on its email route — and
+    // the fresh page is what goes back. Recorded as a refusal, so Google is not tried here again.
+    // Apple's / Microsoft's refusal ends the link as before, once a back-out has already been tried.
+    if (no.refused && (no.provider === "google" || !s.backedOut) && social.socialAllowedFor(s.conversationId) && !s.backingOut) {
+      s.backingOut = true;
+      try {
+        social.recordRefusal(s.conversationId, s.entry.site, no.provider);
+        s.log({ signin_remote: "backed_out", site: s.entry.site, provider: no.provider });
+        await inTurn(s, async () => {
+          for (const p of s.pages ?? []) if (p !== s.pages[0]) await p.close?.().catch?.(() => {});
+          s.pages = (s.pages ?? []).slice(0, 1);
+          if (s.pages[0]) s.browser.page = s.pages[0];
+          const pg = s.browser.page;
+          await pg.goto?.(s.entry.signin_url, { waitUntil: "domcontentloaded", timeout: 45_000 })?.catch?.(() => {});
+          await pg.waitForTimeout?.(1500)?.catch?.(() => {});
+          await pg.evaluate(emailRoute.emailPage, "route").catch(() => null);
+        });
+        s.provider = ""; s.pressed = ""; s.backedOut = true; s.emailRoute = true;
+        s.npKey = "";
+      } finally { s.backingOut = false; }
+      // The refusal picture never goes out: the fresh page (the site's email route) is read and sent
+      // instead; if even that cannot be read, an empty answer and the next /view tries again.
+      const fresh = await readView(s).catch(() => null);
+      if (fresh && !social.providerRefused(fresh.raw).refused) return viewAnswer(s, fresh, h, extra, { judge });
+      return json(200, { moved: true, backed_out: true });
+    }
     if (no.refused) {
       s.refusal = no;
       const ended = await end(s, "refused");
