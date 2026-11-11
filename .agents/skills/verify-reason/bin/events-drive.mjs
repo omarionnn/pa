@@ -103,6 +103,7 @@ const kofiTry = await tool("event_create", { name: "x", description: "x", starts
 step("REASON_EVENTS=owner: Kofi cannot create", kofiTry.blocked === "not_available");
 const made = await tool("event_create", { name: "Halloween Party", description: "costumes mandatory", starts_at: "2026-10-31T21:00", location: "12 Elm St", welcome_message: "so glad you're coming!", password: "pumpkin", show_time_on_join: true, show_location_on_join: false, guest_list_visible: true }, C.owner);
 step("owner creates with per-detail release", made.ok && made.event.time_shown_to_guests === true && made.event.location_shown_to_guests === false, made.share?.link);
+step("organizer result carries manage_page (the event link) beside guest_list_page", made.event?.manage_page === made.share?.link && /\/who\?t=/.test(made.event?.guest_list_page ?? ""));
 const ev = db.getEventRow(made.event.event_id);
 step("password stored only as scrypt", /^scrypt\$/.test(ev.password_hash) && !JSON.stringify(ev).includes("pumpkin"));
 
