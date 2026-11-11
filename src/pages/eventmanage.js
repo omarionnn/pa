@@ -378,7 +378,7 @@ function ticketsSection(ev, { conversationId, drafts, sec, paused }) {
           + policyFields
           + `<div class="mg-row">${button(priced ? "Save changes" : "Set the price", { busy: "Checking…" })}${priced ? `</div></form><form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "free")}${hidden("step", "review")}<div class="mg-row">${button("Make it free again", { cls: "mg-btn quiet", busy: "Opening…" })}` : ""}</div>`))
       + (priced || s.paid_count
-        ? `<p class="lbl" style="margin-top:8px">SO FAR</p>`
+        ? `<p class="lbl" id="sales" style="margin-top:8px">SO FAR</p>`
           + `<div class="mg-kv"><span class="lbl">SOLD</span><span>${esc(plural(s.sold_count, "ticket"))}${s.open_holds ? ` · ${esc(plural(s.open_holds, "spot"))} held while someone pays` : ""}</span></div>`
           + `<div class="mg-kv"><span class="lbl">GROSS</span><span>${esc(eventpay.dollars(s.gross_cents))}</span></div>`
           + `<div class="mg-kv"><span class="lbl">REFUNDED</span><span>${esc(s.refunded_count ? `${eventpay.dollars(s.refunded_cents)} · ${plural(s.refunded_count, "ticket")}` : "None")}</span></div>`
