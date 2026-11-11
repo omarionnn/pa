@@ -145,6 +145,18 @@ export const ASK_FRESH_MS = 3 * 24 * 3_600_000;
 /** A priced join whose payment never came through this long is let go. */
 export const PAY_FRESH_MS = 2 * 24 * 3_600_000;
 
+/**
+ * Is their next text a reply to one of Reason's own onboarding lines — "how was it?" (fresh) or the
+ * call offer (fresh)? That reply is Reason's conversation, not theirs (owner, 2026-11-11): it is not
+ * counted toward the monthly free tier and is never stopped by its ceiling (router #drainHeld).
+ */
+export function awaitingReply(conversationId, now = clock.now()) {
+  const row = settleStale(rowOf(conversationId), now);
+  if (!inPlay(row)) return false;
+  if (row.state === "asked") return true;
+  return row.state === "offered" && now - (row.cards_at ?? 0) <= OFFER_FRESH_MS;
+}
+
 /** A row whose moment has passed is ended here, so nothing hangs on it (frame, card hold, B/C). */
 function settleStale(row, now = clock.now()) {
   if (!row) return row;

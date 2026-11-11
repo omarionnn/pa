@@ -1123,9 +1123,10 @@ export class Runtime extends EventEmitter {
    * conversations on the operator's bill is Reason's. Checked before the model call, so a capped
    * person costs nothing.
    */
-  mayInterrupt(conversationId) {
+  mayInterrupt(conversationId, { paywall = true } = {}) {
     // Past the free trial and unpaid (src/plan.js): nothing Reason starts goes out until they pay.
-    if (plan.blocked(conversationId)) { this.log({ proactive_held: conversationId, why: "trial over, unpaid" }); return false; }
+    // `paywall: false`: an event guest's morning after, which is the event's, not their allowance's.
+    if (paywall && plan.blocked(conversationId)) { this.log({ proactive_held: conversationId, why: "trial over, unpaid" }); return false; }
     const cap = accounts.withinCap(conversationId, "proactive");
     if (!cap.ok) this.log({ proactive_capped: conversationId, used: cap.used, limit: cap.limit });
     return cap.ok;
@@ -1220,7 +1221,9 @@ export class Runtime extends EventEmitter {
     if (!t || t.fired_at || t.cancelled_at) return false;
     // Lapsed on the free trial (src/plan.js): their reminders and calls wait, unfired, and run on the
     // first sweep after they pay — not dropped, so nothing they set up is lost to the hold.
-    if (plan.blocked(t.conversation_id)) return false;
+    // Not the event morning-after (src/eventonboarding.js): it is the event's line, not their allowance's
+    // (owner, 2026-11-11), so it goes to a guest over the ceiling too.
+    if (t.label !== eventonb.LABEL && plan.blocked(t.conversation_id)) return false;
 
     // The proactive ceiling is for things Reason starts. A call they asked for at a time is not
     // one of those, and a wake-up call quietly dropped because the day's proactive texts were
@@ -1347,7 +1350,7 @@ export class Runtime extends EventEmitter {
     // nothing at all if they have moved on since it was set.
     // An event guest's morning after (src/eventonboarding.js): code's line, no model turn.
     if (t.label === eventonb.LABEL) {
-      return await eventonb.fire({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log, mayInterrupt: (c) => this.mayInterrupt(c) });
+      return await eventonb.fire({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log, mayInterrupt: (c) => this.mayInterrupt(c, { paywall: false }) });
     }
     if (t.label === db.ONBOARDING_NUDGE_LABEL) {
       return await onboarding.fireNudge({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log });

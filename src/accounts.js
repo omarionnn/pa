@@ -228,11 +228,12 @@ export function withinCap(conversationId, kind = "turn") {
  * Count one use. `amount` is the only argument that is ever anything but 1: call minutes are
  * counted in real seconds, once, when the call has ended and its length is a settled fact.
  */
-export function countUse(conversationId, kind = "turn", amount = 1) {
+export function countUse(conversationId, kind = "turn", amount = 1, { visit = true } = {}) {
   const cap = CAPS[kind] ?? CAPS.turn;
   // A turn of theirs is also a visit for the free trial (src/plan.js): a new session when 30 minutes
-  // have passed. A refund (negative) is not a visit. Never allowed to cost the turn.
-  if (kind === "turn" && amount > 0) { try { plan.noteTurn(conversationId); } catch { /* the count above still stands */ } }
+  // have passed. A refund (negative) is not a visit. Never allowed to cost the turn. `visit: false`:
+  // a reply to Reason's own event onboarding line, which is not one of their conversations.
+  if (kind === "turn" && amount > 0 && visit) { try { plan.noteTurn(conversationId); } catch { /* the count above still stands */ } }
   return db.bumpUsage(conversationId, today(), cap.column, amount);
 }
 
