@@ -269,13 +269,35 @@ export function warmCheck(conversationId, { now = clock.now() } = {}) {
   } catch { return null; }
 }
 
+/** Words too common to tie a draft to a claim: a draft and a claim sharing only these share nothing. */
+const COMMON = new Set(["that", "this", "with", "your", "have", "what", "will", "want", "just", "from", "they", "them", "there", "here", "about", "like", "when", "then", "than", "also", "into", "some", "more", "been", "were", "said", "still", "only", "over", "again", "know", "think", "make", "need", "sure", "okay", "yeah", "thanks", "thank", "sorry", "done", "good", "would", "could", "should", "right", "which", "where", "while", "else", "much", "many", "well", "back", "down", "give", "take", "look", "looks", "going", "come", "most", "very", "really", "same", "though", "those", "these", "other", "their", "yours", "mine", "ours"]);
+const contentWords = (s) => new Set((String(s ?? "").toLowerCase().match(/[a-z][a-z'’]{3,}/g) ?? []).map(w => w.replace(/[’']/g, "")).filter(w => !COMMON.has(w)));
+
+/**
+ * REASON_FAST_REPLY: can the reader find nothing in this draft? True when the draft carries no figure
+ * at all and not one content word (four letters or more, the common ones aside) of any standing
+ * claim's subject or value, or of any closed or declined question. Exported for the tests.
+ */
+export function cannotMatch(draft, claims = [], closed = []) {
+  const text = String(draft ?? "");
+  if (/\d/.test(text)) return false;
+  const words = contentWords(text);
+  for (const c of claims) {
+    for (const w of contentWords(`${c.subject ?? ""} ${c.value ?? ""}`)) if (words.has(w)) return false;
+  }
+  for (const q of closed) {
+    for (const w of contentWords(q.question)) if (words.has(w)) return false;
+  }
+  return true;
+}
+
 /**
  * Is this draft safe to send against what was already said? `{ ok: true }`, or `{ ok: false, note }`
  * with the instruction for one recompose. Only asked when something is standing or closed in the
  * last few hours, on the subscription (the turn's `warm` CLI when it has one). Any failure is ok —
  * this is a backstop, the turn's own block is the main rule.
  */
-export async function checkDraft({ conversationId, draft, log = () => {}, now = clock.now(), warm = null, acts = null, userText = "" }) {
+export async function checkDraft({ conversationId, draft, log = () => {}, now = clock.now(), warm = null, acts = null, userText = "", fast = false }) {
   try {
     if (!config.saidLedger || !String(draft ?? "").trim()) return { ok: true };
     const since = now - CHECK_WINDOW_MS;
@@ -288,6 +310,15 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
     const claimCheck = !!config.claimCheck && Array.isArray(acts) && (config.claimCheck === "all" || acts.some(a => a.acting));
     if (!claims.length && !closed.length && !claimCheck) return { ok: true };
     closed.push(...db.declinedQuestions(conversationId, { since: now - DECLINED_WINDOW_MS, limit: 5 }));
+    // REASON_FAST_REPLY (src/fastreply.js §4): with no claim to check and a draft that shares not one
+    // figure or content word with anything standing, closed or declined, the reader has nothing it
+    // could point at — a value is changed in a line about that value, a question is re-asked in its
+    // own words. ~2.3 s off that reply; the warm CLI is put down unasked (never reached the model).
+    if (fast && !claimCheck && cannotMatch(draft, claims, closed)) {
+      warm?.cancel?.();
+      log({ said_check_skipped: conversationId, why: "nothing_to_match", claims: claims.length, closed: closed.length });
+      return { ok: true, skipped: "nothing_to_match" };
+    }
     if (!checker && !sideModelOn()) return { ok: true, skipped: "no_model" };
     const started = Date.now();
     const jobs = claimCheck ? jobsOnRecord(conversationId) : "";

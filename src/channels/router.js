@@ -54,6 +54,7 @@ import * as websetup from "../websetup.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
+import * as timing from "../replytiming.js";
 
 /** What somebody whose event code did not work is told, by why. */
 const EVENT_CLAIM_LINES = {
@@ -700,6 +701,10 @@ export class Router {
     let onbReply = false;
     try { onbReply = last.channel !== web.WEB && eventonb.claimFreeReply(conversationId); } catch { onbReply = false; }
     accounts.countUse(conversationId, "turn", 1, { visit: !onbReply });
+    // The reply's timing line (src/replytiming.js) starts at the last text's arrival: everything
+    // from here to the send is one stage or another of it. Numbers only.
+    timing.begin(conversationId, { at: last.arrived_at ?? Date.now(), now: last.arrived_at ?? Date.now() });
+    timing.mark(conversationId, "hold");
     // Over this month's free conversations (REASON_FREE_TIER=monthly): no turn at all — one line and the
     // pay link, once a conversation; anything else they text in it is kept in their history and left.
     if (!onbReply) try {
@@ -750,6 +755,7 @@ export class Router {
         catch (e) { this.log({ contact_read_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         texts.push(t);
       }
+      timing.mark(conversationId, "hear");
       // Which text the reply answers, for a thread that can carry an inline reply: if the thread
       // has moved on by the time the reply is ready, it is pinned under this one (replies.js).
       const inline = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
@@ -858,6 +864,7 @@ export class Router {
         db.enqueueExtraction(conversationId, evId);
       } catch { /* best-effort */ }
 
+      timing.mark(conversationId, "prep");
       try {
         reply = await this.runtime.inbound(conversationId, userText, {
           channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
@@ -914,6 +921,8 @@ export class Router {
       onethought.end(fold);
       await bubble.stop();
       this.bubbles.delete(conversationId);
+      // A turn that never sent (an outage, a refusal, onboarding's own bubbles) leaves no timing line.
+      timing.drop(conversationId);
     }
     // The Action Card this text answered is done once its turn has replied (src/actioncards.js): the
     // page sinks it below the open ones and the link's picture is drawn again.
