@@ -61,6 +61,27 @@ export async function sendWelcomeToOwner({ id = SEND_ID, router, marker = marker
   return { outcome: results.every(x => x.ok) && results.length === rows.length ? "sent" : "partly", sent: results.filter(x => x.ok).length, of: rows.length, pictures, carousel, results };
 }
 
+/**
+ * One card alone, once (11-11: the redrawn Events card), so the owner sees a change without the whole
+ * welcome again. Same picture send as the fall-back path; marker per card + its set version.
+ *   sudo -u reason node --env-file=.env scripts/welcome-to-owner.js --card=events --confirm=welcome-1111
+ */
+export async function sendCardToOwner({ key, router, dataDir = config.dataDir }) {
+  if (welcome.mode() === "off") return { outcome: "refused", why: "REASON_WELCOME_CARDS is off" };
+  const c = welcome.CARDS.find(x => x.key === key);
+  if (!c) return { outcome: "failed", why: `no card called ${key}` };
+  const marker = join(dataDir, `welcome-to-owner-card-${key}-${welcome.setVersion()}.sent`);
+  try { writeFileSync(marker, "pending\n", { flag: "wx" }); } catch (e) {
+    return e?.code === "EEXIST" ? { outcome: "already" } : { outcome: "failed", why: `cannot write ${marker}: ${e?.code ?? e}` };
+  }
+  let r;
+  try { r = ownerRecipient(); } catch (e) { rmSync(marker, { force: true }); return { outcome: "failed", why: (e?.message ?? String(e)).split("\n")[0] }; }
+  const res = await router.sendMedia({ channel: r.channel, to: r.address, text: "", file: c.file, mimeType: "image/jpeg", filename: `${c.key}.jpg`, conversationId: r.conversationId, toOwner: true, idempotencyKey: `welcome-owner-card:${key}:${welcome.setVersion()}` }).catch(e => ({ ok: false, error: e?.message }));
+  if (!res?.ok && !res?.queued) { rmSync(marker, { force: true }); return { outcome: "failed", why: res?.error ?? "unknown" }; }
+  writeFileSync(marker, `${new Date().toISOString()} ${res.ok ? "sent" : "queued"}\n`);
+  return { outcome: res.ok ? "sent" : "queued" };
+}
+
 async function main() {
   if (!process.argv.includes(`--confirm=${SEND_ID}`)) {
     console.error(`refusing to send: add --confirm=${SEND_ID} to say you mean it`);
@@ -73,10 +94,16 @@ async function main() {
   const router = new Router({ log: () => {} });
   router.register(new SendblueChannel());
   router.register(new LinqChannel());
+  const card = process.argv.find(a => a.startsWith("--card="))?.slice(7);
+  if (card) {
+    const one = await sendCardToOwner({ key: card, router });
+    console.log(`card ${card} to owner: ${one.outcome}${one.why ? ` — ${one.why}` : ""}`);
+    process.exit(["sent", "queued", "already"].includes(one.outcome) ? 0 : 1);
+  }
   const r = await sendWelcomeToOwner({ router, log: (x) => { if (x.sent_as_text || x.failed) console.log(JSON.stringify(x)); } });
   console.log(`welcome to owner: ${r.outcome}${r.of ? ` ${r.sent}/${r.of} messages, ${r.carousel ? "cards as ONE carousel" : `${r.pictures} cards as single pictures`}` : ""}${r.why ? ` — ${r.why}` : ""}`);
   for (const x of r.results ?? []) if (!x.ok) console.log(`  #${x.n} held: ${String(x.why).slice(0, 160)}`);
-  process.exit(process.exitCode ?? 0); // the database and channel keep handles open
+  process.exit(["sent", "partly", "already"].includes(r.outcome) ? 0 : 1); // the database and channel keep handles open
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

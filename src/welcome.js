@@ -28,7 +28,7 @@ const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "welco
 
 export const CARDS = Object.freeze([
   { key: "calls", eyebrow: "CALLS", title: "Calls", note: "i make the call for you", example: "Call my dentist and move my cleaning to next week." },
-  { key: "events", eyebrow: "EVENTS", title: "Events", note: "a page, a guest list, reminders", example: "Make a page for my birthday dinner Saturday so my friends can join." },
+  { key: "events", eyebrow: "EVENTS", title: "Events", note: "a page, a guest list, reminders", example: "Make an event for my birthday party Saturday." },
   { key: "reminders", eyebrow: "REMINDERS", title: "Reminders", note: "once, or every month", example: "Remind me to pay rent on the 1st." },
   { key: "shopping", eyebrow: "SHOPPING", title: "Shopping", note: "nothing is bought without your yes", example: "Reorder my CeraVe lotion." },
   { key: "food", eyebrow: "FOOD", title: "Food", note: "you see the total before it's placed", example: "Get me a chicken burrito for dinner." },

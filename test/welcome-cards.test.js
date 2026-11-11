@@ -111,6 +111,9 @@ test("seven cards, in the agreed order, each a small JPEG on disk with a title a
   assert.equal(welcome.eyebrowOf(welcome.CARDS[0]), "01 / 07 · CALLS");
   assert.equal(welcome.textLine(welcome.CARDS[0]), 'Calls: "Call my dentist and move my cleaning to next week."');
   assert.ok(!welcome.CARDS.some(c => /message|inbox|email|whatsapp/i.test(`${c.title} ${c.example}`)), "no card promises reading their messages or inbox");
+  // Owner 11-11: the Events card asks for an event, never "a page".
+  assert.equal(welcome.CARDS[1].example, "Make an event for my birthday party Saturday.");
+  assert.ok(!/\bpage\b/i.test(welcome.CARDS[1].example));
 });
 
 test("the switch: off by default, owner, on", () => {
