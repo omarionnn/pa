@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="570" viewBox="0 0 240 190">
+<!-- Reason welcome card 6: Booking. Ink #2a2520, pen #9c3b2e. Strokes 6.5/240 of the width, round caps and joins, no fills. -->
+<defs><filter id="wobble" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="42"/><feDisplacementMap in="SourceGraphic" scale="3.2"/></filter></defs>
+<g filter="url(#wobble)" transform="translate(0 8)" fill="none" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M46 100H194M54 100q2 22-6 32M186 100q-2 22 6 32M72 132v26M168 132v26" stroke="#2a2520"/>
+<path d="M14 158V92M14 126h30v32M226 158V92M226 126h-30v32" stroke="#2a2520"/>
+<path d="M114 100V74h12v26" stroke="#2a2520"/>
+<path d="M120 66q-8-9 0-19 8 10 0 19z" stroke="#9c3b2e"/>
+<path d="M78 100V86M70 100h16M70 64q8 26 16 0zM162 100V86M154 100h16M154 64q8 26 16 0z" stroke="#2a2520"/>
+</g>
+</svg>
