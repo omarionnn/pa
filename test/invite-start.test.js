@@ -322,3 +322,33 @@ test("welcome cards off: the hello names the inviter instead", async () => {
   await h.router.deliver(text(num, ws.firstText({ user: "kofi", reasonName: "jarvis", code: s.code })));
   assert.equal(to(h, num)[0].text, "hey kofi, good to meet you. you're in, invited by Omari");
 });
+
+// ---------- an Apple ID email instead of a phone number (REASON_EMAIL_HANDLES, 2026-11-11) ----------
+
+test("invite → /start → first text FROM AN APPLE ID EMAIL: the same flow, end to end, addressed to the email", async () => {
+  const h = harness();
+  const inv = ownerLink();
+  const s = await newSetup({ invite: inv.token, user: "alvin", reasonName: "mike" });
+  const mail = "asante.alvin@icloud.com";
+  // The webhook lowercases; the router normalizes again, so a differently-capitalised sender is one person.
+  const out = await h.router.deliver(text("Asante.Alvin@iCloud.com", ws.firstText({ user: "alvin", reasonName: "mike", code: s.code })));
+  assert.equal(out.onboarding, "awaiting_first");
+  assert.equal(out.conversationId, `dm:fake:${mail}`);
+  assert.deepEqual(to(h, mail).map(show), ["hey alvin, Mike here. you're in, invited by Omari. picking up from your setup, here's what i can do for you", ...PICS, welcome.HELP_FIRST]);
+  const acct = db.getAccount(`dm:fake:${mail}`);
+  assert.equal(acct.address, mail);
+  assert.equal(acct.name, "Alvin");
+  assert.equal(acct.contact_card_name, "Mike");
+  assert.equal(acct.invited_by, config.ownerConversation);
+  assert.equal(inviteRow(inv.id).redeemed_by, `dm:fake:${mail}`);
+  assert.deepEqual(h.toInviter.map(x => x.t), ["Alvin just joined with your invite 🎉"]);
+  assert.equal(h.turns.length, 0);
+  // Their first reply: the turn, then the contact card (a .vcf by address) named Mike, to the email.
+  const before = to(h, mail).length;
+  await h.router.deliver(text(mail, "book a table for two friday at 8"));
+  assert.equal(h.turns.length, 1);
+  const after = to(h, mail).slice(before);
+  assert.deepEqual(after.map(show), ["on it", `${ob.WEB_CARD} [card]`, amazon.OFFER]);
+  assert.match(after[1].media.url, /\/reason-[0-9a-f]{8}(-[A-Za-z0-9_-]{16})?\.vcf$/);
+  assert.equal(db.getAccount(`dm:fake:${mail}`).onboarding, "awaiting_amazon");
+});
