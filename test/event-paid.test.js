@@ -480,7 +480,7 @@ test("a new guest on the page: the finishing text proves the phone and is answer
   assert.ok(conv, "the account was made by the text");
   assert.equal(db.attendeeRow(ev.id, conv), null, "not on the event yet");
   const got = sentTo(h, NEW1);
-  assert.ok(got.some(t => /\$25 per person \(\$26\.06 with processing\)\. your spot is held for 15 minutes/.test(t)), JSON.stringify(got));
+  assert.ok(got.some(t => /\$25 per person \(\$26\.06 with processing\)\. refunds until 48 hours before it starts\. your spot is held for 15 minutes/.test(t)), JSON.stringify(got));
   assert.ok(got.some(t => /^https:\/\/checkout\.stripe\.test\/c\/pay\/cs_test_1$/.test(t)), "the link went as its own message");
   const claim = db.eventClaimByCode(/code ([A-Z0-9-]+)/i.exec(codeText)[1].replace("-", ""));
   assert.equal(claim.state, "used");

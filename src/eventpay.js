@@ -192,7 +192,7 @@ export function ticketPolicy(ev, row) {
 
 /** "48 hours" / "2 days" / "1 hour". */
 export function hoursWords(h) {
-  if (h % 24 === 0 && h >= 24) return `${h / 24} day${h === 24 ? "" : "s"}`;
+  if (h % 24 === 0 && h > 48) return `${h / 24} day${h === 24 ? "" : "s"}`;
   return `${h} hour${h === 1 ? "" : "s"}`;
 }
 
