@@ -83,6 +83,10 @@ export const SENSITIVE2 = [
   // tap types, and the titles they struck out.
   { table: "action_cards", cols: ["title", "why_now", "prefill"], owner: "conversation_id" },
   { table: "action_card_dismissed", cols: ["title"], owner: "conversation_id" },
+  // The engine (src/actionengine.js): where a card came from (account, thread or event id, a first
+  // name) and the sentence behind a "stop showing me X" rule.
+  { table: "action_card_sources", cols: ["refs", "first_name"], owner: "conversation_id" },
+  { table: "card_skip_rules", cols: ["value", "said"], owner: "conversation_id" },
 ];
 /**
  * Phase 3 (11-10), behind REASON_ENCRYPT_REST3=on, which needs phase 1 on. A person's own name, the

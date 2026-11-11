@@ -77,6 +77,8 @@ import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
+import * as actioncards from "./actioncards.js";
+import * as actionengine from "./actionengine.js";
 import * as rhythms from "./rhythms.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
@@ -405,9 +407,17 @@ export function toolsFor(conversationId) {
     && foodToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
+    && cardsToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+}
+
+// Action Cards (src/actioncards.js, src/actionengine.js, REASON_ACTION_CARDS): the two card tools are
+// only shown where the flag reaches this person; nobody else's model hears that cards exist.
+export const CARD_TOOLS = new Set(["action_card_source", "action_card_forget"]);
+export function cardsToolVisible(name, conversationId) {
+  return !CARD_TOOLS.has(name) || actioncards.allowedFor(conversationId);
 }
 
 // Signing in through a Google/Apple/Facebook/Microsoft account (src/socialsignin.js,
@@ -4979,6 +4989,38 @@ export const tools = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "action_card_source",
+    description: "Where one of their Action Cards came from (the daily note of things you offered to take off their plate, src/actioncards.js)."
+      + " Call it when they ask 'where did this come from', 'how do you know that', 'what's this about' of a card. It answers as a source class and a day"
+      + " ('from a mail on Tuesday', 'on your calendar for Nov 24', 'you mentioned it Thursday') with at most a first name: say exactly that and nothing more"
+      + " — never a subject line, an address or a company they did not already see on the card. With show_source true (they asked to SEE it: 'show me the email',"
+      + " 'open it') it also returns the handle their own tools open it with (gmail_read the thread_id, calendar_events the event); open it on this turn and say what is there.",
+    input_schema: {
+      type: "object",
+      properties: {
+        words: { type: "string", description: "The card as they named it or as it reads ('the Anthropic key one', 'replace my key before Nov 18')." },
+        show_source: { type: "boolean", description: "true only when they asked to see the mail or the event itself." },
+      },
+      required: ["words"],
+    },
+  },
+  {
+    name: "action_card_forget",
+    description: "They want an Action Card gone: 'forget it', 'not that one', 'drop the lease thing'. Strikes that card out so it is never offered again."
+      + " When they say to stop a WHOLE kind of thing ('stop showing me invoices', 'never cards about mail from Acme', 'no more calendar stuff'), give"
+      + " stop_scope and stop_value too: that becomes a standing rule — it is in front of you from then on and on their memory page, where they can delete it."
+      + " One short line back; do not argue, do not list what else you might show.",
+    input_schema: {
+      type: "object",
+      properties: {
+        words: { type: "string", description: "The card as they named it. Empty when they are only setting a standing rule." },
+        stop_scope: { type: "string", enum: ["sender", "subject", "kind", "calendar"], description: "What the standing rule is about: a sender (a name or an address), words in a subject, a kind of thing ('invoices', 'birthdays'), or calendar events mentioning something." },
+        stop_value: { type: "string", description: "The name, address, word or phrase, as they said it." },
+        their_words: { type: "string", description: "Their sentence, word for word, when a standing rule is being set." },
+      },
+    },
+  },
+  {
     name: "time_zone",
     description: "Keep the time zone they confirmed or named. Call it when they answer your zone question (yes to your guess → that zone; \"no, I'm in Denver\" → America/Denver),"
       + " when they tell you their zone changed (they moved, or said yes to switching while travelling), or any time they correct it."
@@ -7224,6 +7266,13 @@ const S = {
     urgent_why: z.string().max(300).optional(),
   }),
   notice_status: z.object({}),
+  action_card_source: z.object({ words: z.string().min(1).max(300), show_source: z.boolean().optional() }),
+  action_card_forget: z.object({
+    words: z.string().max(300).optional(),
+    stop_scope: z.enum(["sender", "subject", "kind", "calendar"]).optional(),
+    stop_value: z.string().max(120).optional(),
+    their_words: z.string().max(500).optional(),
+  }),
   time_zone: z.object({ zone: z.string().min(1).max(64), their_words: z.string().min(1).max(500) }),
   notice_settings: z.object({
     per_day: z.number().int().min(0).max(20).optional(),
@@ -10905,6 +10954,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!out.ok) {
         return { ...out, error: `${out.error} Call memory_page for the real numbers rather than guessing at one.` };
       }
+      // A rule that mirrored an Action Cards "stop showing me X" (src/actionengine.js) takes the
+      // structured skip rule with it: dropped on the memory page means dropped in the engine too.
+      if (input.row === "rule") { try { actionengine.retireSkipRuleByTreatRule(c, input.id); } catch { /* the rule itself is gone */ } }
       const words = input.row === "rule" ? out.was.rule : (out.was.fact ?? out.was.guess ?? out.was.words ?? out.was.why ?? "");
       const cleared = words ? db.scrubToolResults(c, { tools: db.MEMORY_TOOL_NAMES, mentioning: [words] }) : 0;
       const rewritten = words ? db.redactFromReplies(c, [words]) : 0;
@@ -14023,6 +14075,36 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + ` Say NOTHING now: reply with exactly NO_REPLY. Do not tell them you have scheduled anything, and do not`
           + ` mention it at all.`,
       };
+    }
+    case "action_card_source": {
+      const hit = actionengine.findCard(c, input.words);
+      if (!hit) return { ok: false, error: "No card of theirs reads like that. Ask which one they mean, in a few words; their open cards are on the note's page." };
+      const src = actionengine.sourceOf(c, hit.card.id, { showSource: !!input.show_source });
+      return {
+        ok: true, card: { title: hit.card.title, status: hit.card.status }, ...src,
+        say: input.show_source && src.open_with
+          ? "Open it now with the tool named in open_with and say what is there. Still never read a subject line or an address back as where the card came from."
+          : `Say only: "${src.from}". No subject line, no address, no company unless the card already names it.`,
+      };
+    }
+    case "action_card_forget": {
+      const out = { ok: true };
+      if (String(input.words ?? "").trim()) {
+        const hit = actionengine.findCard(c, input.words);
+        if (!hit) return { ok: false, error: "No card of theirs reads like that. Ask which one they mean, in a few words." };
+        const digest = actioncards.digestById(hit.card.digest_id);
+        const code = digest?.cards.find(x => x.id === hit.card.id)?.code;
+        // dismiss() only moves an OPEN card; a card already done or struck stays what it was.
+        const gone = code && hit.card.status === "open" ? actioncards.dismiss(hit.card.digest_id, code) : null;
+        out.struck = { title: hit.card.title, was: hit.card.status, now: gone ? gone.status : hit.card.status };
+      }
+      if (input.stop_scope && String(input.stop_value ?? "").trim()) {
+        const rule = actionengine.addSkipRule(c, { scope: input.stop_scope, value: input.stop_value, said: input.their_words ?? "" });
+        if (!rule.ok) return { ok: false, error: rule.error };
+        out.standing_rule = { id: rule.rule.id, scope: rule.rule.scope, value: rule.rule.value, already: !!rule.already, memory_rule_id: rule.treat_rule_id };
+      }
+      if (!out.struck && !out.standing_rule) return { ok: false, error: "Nothing to do: name the card in 'words', or give stop_scope and stop_value for a standing rule." };
+      return { ...out, say: "One short line: it is gone (and, if a rule was set, that you will not offer those again). Nothing else." };
     }
     case "notice_status": {
       // "Connected" is read the same way the capability list reads it, so the two cannot disagree.

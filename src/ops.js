@@ -37,6 +37,7 @@ import { config, clock, callbackUrl, isOwnLine } from "./config.js";
 import { aboutThem } from "./outbox.js";
 import { flightProviders, LEDGER as FLIGHT_LEDGER, monthOf } from "./flightproviders.js";
 import * as subusage from "./subusage.js";
+import * as actionengine from "./actionengine.js";
 import * as incidents from "./incidents.js";
 import * as digest from "./opsdigest.js";
 import { join } from "node:path";
@@ -322,6 +323,8 @@ function aliveChecks({ runtime, router, now }) {
     out.push(check("sweep", "alive", "Sweep", late ? "bad" : "ok",
       late ? `last pass ${ago(now - last)} ago — stuck` : `every ${Math.round(config.sweepEveryMs / 1000)}s${last != null ? ` · last pass ${ago(now - last)} ago` : ""}`));
   }
+  // The Action Cards engine (src/actionengine.js): today's morning runs, counts only.
+  try { const a = actionengine.opsLine({ now }); out.push(check("action_cards", "alive", "Action Cards", a.state, a.detail)); } catch { /* never the page's problem */ }
 
   for (const s of router?.statuses?.() ?? []) {
     if (s.name === "console") continue;
