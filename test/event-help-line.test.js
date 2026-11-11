@@ -34,6 +34,7 @@ process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_EVENTS = "on";
 process.env.REASON_PAGES_V2 = "1";
 process.env.REASON_ONBOARDING = "on";
+process.env.REASON_EVENT_HELP_LINE = "on"; // the flag tests at the end set owner / off
 delete process.env.REASON_AUTO_ADMIT;
 
 const events = await import("../src/events.js");
@@ -73,6 +74,8 @@ beforeEach(() => {
     DELETE FROM inbound_messages; DELETE FROM page_sessions; DELETE FROM invite_allowances; DELETE FROM access_requests;
     DELETE FROM event_helpline_contacts; DELETE FROM event_helpline_asks;`);
   helpline._missesForTests().clear();
+  process.env.REASON_EVENT_HELP_LINE = "on";
+  delete process.env.REASON_EARLY_ACCESS;
   db.upsertAccount({ conversationId: OWNER_C, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   for (const [c, a, n] of [[C.ama, AMA, "Ama"], [C.org, ORG, "Kwame"]]) {
     db.upsertAccount({ conversationId: c, channel: "fake", address: a, name: n });
@@ -451,4 +454,72 @@ test("the manage page's Help line block: link, QR, ticket link, texted-in count,
   // A stranger's browser never sees the block.
   const pub = (await req(h, ev)).body;
   assert.ok(!pub.includes("texted in") && !pub.includes("help_link"));
+});
+
+// ---------- REASON_EVENT_HELP_LINE (Omari 2026-11-11: flag-gated) ----------
+
+const EARLY1 = "dm:sendblue:+16162167647", EARLY2 = "dm:sendblue:asantealvin@icloud.com";
+
+test("flag owner: the operator and early-access ids pass the gate, a random organizer doesn't; early access gets nothing else", () => {
+  process.env.REASON_EVENT_HELP_LINE = "owner";
+  process.env.REASON_EARLY_ACCESS = `${EARLY1},${EARLY2}`;
+  assert.equal(helpline.allowedFor(OWNER_C), true);
+  assert.equal(helpline.allowedFor(EARLY1), true);
+  assert.equal(helpline.allowedFor(EARLY2), true);
+  assert.equal(helpline.allowedFor(C.org), false);
+  assert.equal(helpline.allowedFor("dm:sendblue:+15555550199"), false);
+  assert.equal(helpline.allowedFor(""), false);
+  // Early access stays per feature: paid events and the help line, never another owner feature or operator.
+  for (const id of [EARLY1, EARLY2]) {
+    assert.equal(accounts.featureOwner(id, "paidEvents"), true);
+    assert.equal(accounts.featureOwner(id, "eventHelpLine"), true);
+    assert.equal(accounts.featureOwner(id), false);
+    for (const f of ["socialSignin", "directions", "iosApi", "events", "albums"]) assert.equal(accounts.featureOwner(id, f), false, f);
+    assert.equal(accounts.ownerOf(id).isOperator, false);
+  }
+  process.env.REASON_EVENT_HELP_LINE = "on";
+  assert.equal(helpline.allowedFor(C.org), true);
+  process.env.REASON_EVENT_HELP_LINE = "";
+  assert.equal(helpline.allowedFor(OWNER_C), false, "unset = off, for the operator too");
+  process.env.REASON_EVENT_HELP_LINE = "yes";
+  assert.equal(helpline.mode(), "off", "anything else is off");
+});
+
+test("flag owner, random organizer: no tools, can't turn it on, no page buttons, no manage block, a code isn't served", async () => {
+  const h = harness();
+  const ev = await lagosNight(h); // made while on, so the code and ticket link are set
+  process.env.REASON_EVENT_HELP_LINE = "owner";
+  const names = toolsFor(C.org).map(t => t.name);
+  assert.ok(!names.includes("event_help_line") && !names.includes("event_help_reply"), "organizer tools hidden");
+  const tried = await tool("event_help_line", { event_id: ev.id, action: "on" }, C.org, h.runtime);
+  assert.equal(tried.ok, false);
+  const pub = (await req(h, ev)).body;
+  assert.ok(!pub.includes("Get tickets") && !pub.includes("Get the address") && !pub.includes("Questions? <a"), "no buttons");
+  assert.match(pub, /og:description" content="You&#39;re invited/, "the preview line is the plain one");
+  assert.equal((await req(h, ev, { sub: "text" })).status, 404);
+  const manage = (await req(h, ev, { cookie: COOKIE.org })).body;
+  assert.ok(!manage.includes("HELP LINE") && !manage.includes("Turn on the help line"), "no Help line section");
+  const NEW = "+16465550177";
+  await h.router.deliver(texts(NEW, helpline.firstText(ev)));
+  await settle();
+  const acct = db.accountByAddress("fake", NEW);
+  assert.ok(!acct || acct.helpline_event == null, "no help-line account");
+  assert.equal(helpline.contactCount(ev), 0);
+  // The same organizer named for early access: all of it comes back.
+  process.env.REASON_EARLY_ACCESS = C.org;
+  assert.ok(toolsFor(C.org).map(t => t.name).includes("event_help_line"));
+  const pub2 = (await req(h, ev)).body;
+  assert.ok(pub2.includes("Get tickets →") && pub2.includes("Get the address and updates →"));
+  assert.equal((await req(h, ev, { sub: "text" })).status, 200);
+});
+
+test("flag off: the public event page is the same as an event with no help line, ticket link and code set or not", async () => {
+  const h = harness();
+  const plain = await lagosNight(h, { on: false, ticket: null });
+  const withLine = await lagosNight(h);
+  process.env.REASON_EVENT_HELP_LINE = "off";
+  const strip = (b, ev) => b.split(ev.public_id).join("ID").replace(/[0-9a-f]{16,}/g, "X");
+  const a = strip((await req(h, plain)).body, plain), b = strip((await req(h, withLine)).body, withLine);
+  assert.equal(b, a, "identical page");
+  assert.equal(helpline.lineForText({ address: "+16465550178", text: helpline.firstText(withLine) }), null);
 });

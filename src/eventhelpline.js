@@ -66,11 +66,31 @@ const HOUR = 60 * 60_000;
 
 // ---------- the switch, the code, the link ----------
 
-/** The help line exists only where events do (REASON_EVENTS). */
-export function on() { return events.eventsOn(); }
+/**
+ * REASON_EVENT_HELP_LINE = off | owner | on (default off; Omari 2026-11-11: flag-gated). "owner" = the
+ * operator plus early-access ids named for "eventHelpLine" (accounts.featureOwner). Read at call time.
+ */
+export function mode() {
+  const v = String(process.env.REASON_EVENT_HELP_LINE ?? "").trim().toLowerCase();
+  return v === "on" || v === "owner" ? v : "off";
+}
 
-/** Is this event's help line taking texts? */
-export function lineOn(ev) { return !!ev?.help_code && ev.status !== "cancelled"; }
+/** May this organizer have a help line (turn it on, show its buttons, take texts for it)? */
+export function allowedFor(organizerConversationId) {
+  const m = mode();
+  if (m === "on") return !!organizerConversationId;
+  if (m === "owner") return accounts.featureOwner(organizerConversationId, "eventHelpLine");
+  return false;
+}
+
+/** Does this event's organizer pass the flag? Everything an event shows or answers for its help line asks this. */
+export function eventAllowed(ev) { return !!ev && allowedFor(ev.organizer_conversation_id); }
+
+/** The help line exists only where events do (REASON_EVENTS), and only while its flag isn't off. */
+export function on() { return events.eventsOn() && mode() !== "off"; }
+
+/** Is this event's help line taking texts? Off with the flag, or for an organizer the flag doesn't reach. */
+export function lineOn(ev) { return !!ev?.help_code && ev.status !== "cancelled" && on() && eventAllowed(ev); }
 
 function newCode() {
   let s = "";
@@ -259,7 +279,7 @@ export function activeLine(conversationId, now = clock.now()) {
   const row = db.db.prepare("SELECT event_id, last_at FROM event_helpline_contacts WHERE conversation_id = ? AND last_at >= ? ORDER BY last_at DESC LIMIT 1")
     .get(conversationId, now - LIMITS.voiceDays * DAY);
   const ev = row ? db.getEventRow(row.event_id) : null;
-  return ev && ev.status !== "cancelled" ? ev : null;
+  return ev && ev.status !== "cancelled" && eventAllowed(ev) ? ev : null;
 }
 
 /** Did the help line make this account (a brand-new number's first text)? */

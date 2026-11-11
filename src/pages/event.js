@@ -129,7 +129,7 @@ export function headFor(ev, { line = previewLine(ev) } = {}) {
  * invitation line. Never a time, a place or anybody's name.
  */
 export function previewLine(ev) {
-  if (ev.status === "active" && ev.ticket_url) {
+  if (ev.status === "active" && ev.ticket_url && helpline.eventAllowed(ev)) {
     return helpline.lineOn(ev) ? "Get tickets, then text for the address and updates." : "Get tickets on the event page.";
   }
   return INVITE_LINE;
@@ -142,7 +142,8 @@ export function previewLine(ev) {
  * open Messages straight from here, in the shape this phone reads (helpline.smsHref).
  */
 export function helpLineBlock(ev, { lineNumber = null, userAgent = "", v2 = true } = {}) {
-  if (ev.status !== "active") return "";
+  // REASON_EVENT_HELP_LINE: nothing here unless this event's organizer passes the flag.
+  if (ev.status !== "active" || !helpline.eventAllowed(ev)) return "";
   const ticket = ev.ticket_url || "";
   const text = helpline.lineOn(ev) && lineNumber ? helpline.smsHref(lineNumber, helpline.firstText(ev), userAgent) : "";
   if (!ticket && !text) return "";

@@ -92,7 +92,7 @@ export function eventToolVisible(name, conversationId) {
   if (!events.eventsOn()) return false;
   if (EVENT_CREATE_TOOLS.has(name)) return events.canCreate(conversationId);
   if (EVENT_HELP_GUEST_TOOLS.has(name)) return !!helpline.activeLine(conversationId);
-  if (EVENT_HELP_ORGANIZER_TOOLS.has(name)) return events.canCreate(conversationId) || db.eventsOrganizedBy(conversationId).length > 0;
+  if (EVENT_HELP_ORGANIZER_TOOLS.has(name)) return helpline.allowedFor(conversationId) && (events.canCreate(conversationId) || db.eventsOrganizedBy(conversationId).length > 0);
   if (EVENT_ORGANIZER_TOOLS.has(name)) return events.canCreate(conversationId) || db.eventsOrganizedBy(conversationId).length > 0;
   // Rides only where they could be used: an organizer whose events may turn them on (or who may make
   // one that could), and a guest of an event that has them on.
@@ -807,6 +807,7 @@ async function runHelpTool(name, input, { c, runtime }) {
     return { ok: true, ask_id: out.ask_id, passed_to: helpline.hostName(ev), say: `Tell them you've sent it to ${helpline.hostName(ev)} and they'll hear back here. Don't promise when.` };
   }
   if (name === "event_help_reply") {
+    if (!helpline.allowedFor(c)) return { ok: false, error: "The help line isn't available to them." };
     const out = await helpline.replyToAsk({ runtime, organizerConversationId: c, askId: input.ask_id, message: input.message });
     if (!out.ok) return { ok: false, error: out.reason === "empty" ? "Nothing to send; ask what they want to say." : "That help question isn't one of theirs. Check the number in the text Reason sent." };
     return { ok: true, sent_to: out.to, delivered: out.sent, say: "Tell them it's on its way, in a few words." };
@@ -815,6 +816,8 @@ async function runHelpTool(name, input, { c, runtime }) {
   const ev = events.managed(c, input.event_id);
   if (!ev) return { ok: false, error: "That isn't one of the events they organize." };
   if (ev.status === "cancelled") return { ok: false, error: "That event was cancelled; its help line is off." };
+  // REASON_EVENT_HELP_LINE: off, or "owner" and this organizer isn't the operator or early access.
+  if (!helpline.eventAllowed(ev)) return { ok: false, error: "The help line isn't available for this event yet." };
   const action = input.action ?? "status";
   let now = ev;
   if (action === "on") now = helpline.turnOn(ev);

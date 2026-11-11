@@ -546,7 +546,9 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + `</div>`;
   const banner = (paused ? `<p class="mg-note">Reason's operator has paused this event, so joining is closed and nothing goes out to guests until it's resumed. That isn't something you can undo from here.</p>` : "")
     + (done?.text && !done.section ? noteHtml(done) : "");
-  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE GUESTS"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["questions", "QUESTIONS"], ...(money ? [["money", "TICKETS"]] : []), ["access", "SHARING"], ["help", "HELP LINE"], ["more", "MORE"]]
+  // REASON_EVENT_HELP_LINE: the Help line section only for an organizer the flag reaches.
+  const helpHere = helpline.eventAllowed(ev);
+  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE GUESTS"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["questions", "QUESTIONS"], ...(money ? [["money", "TICKETS"]] : []), ["access", "SHARING"], ...(helpHere ? [["help", "HELP LINE"]] : []), ["more", "MORE"]]
     .map(([id, l]) => `<li><a href="#${id}">${l}</a></li>`).join("")}</ul>`;
 
   // 01 — the welcome
@@ -640,13 +642,14 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
       + `<div class="mg-row">${button("Change password", { cls: "mg-btn alt", busy: "Opening…" })}</div>`));
 
   // The help line (src/eventhelpline.js): one link for the ticket page and socials, its QR, the ticket link, and who texted in.
-  const help = sec("help", money ? "09" : "08", "Help line", helpLineSection(ev, { drafts }));
+  const help = helpHere ? sec("help", money ? "09" : "08", "Help line", helpLineSection(ev, { drafts })) : "";
+  const moreNo = (money ? 9 : 8) + (helpHere ? 1 : 0);
 
   // 06 — the rest
   const hasPicture = cover.hasUploaded(ev);
   const pending = cover.pendingOf(ev);
   const ridesHere = rides.canEnable(ev);
-  const more = sec("more", money ? "10" : "09", "More",
+  const more = sec("more", String(moreNo).padStart(2, "0"), "More",
     `<h2 class="mg-h">The rest</h2>`
     + `<p class="lbl">THE LINK'S CARD</p>`
     + `<img class="mg-cover" src="${esc(cover.coverUrl(ev))}" alt="The picture on your event link's card">`

@@ -106,11 +106,11 @@ export function admit({ channel, address, name = "" }) {
 /**
  * REASON_EARLY_ACCESS: comma-separated conversation ids (e.g. dm:sendblue:+15551234567) that get the
  * EARLY_ACCESS_FEATURES below while their flag says "owner", as if they were the owner. Per feature on
- * purpose (Omari, 2026-11-11: a tester gets paid events only, not every owner-only feature). FEATURE
+ * purpose (Omari, 2026-11-11: a tester gets paid events only, not every owner-only feature; the event help line added the same day). FEATURE
  * GATING ONLY: never operator powers, ops pages, owner-routed sends, instance ownership, billing
  * exemptions or anything else that asks `isOperator`. Read at call time; nothing announces it.
  */
-export const EARLY_ACCESS_FEATURES = new Set(["paidEvents"]);
+export const EARLY_ACCESS_FEATURES = new Set(["paidEvents", "eventHelpLine"]);
 export function earlyAccessIds() {
   return String(process.env.REASON_EARLY_ACCESS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 }

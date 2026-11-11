@@ -19,6 +19,7 @@ process.env.REASON_ONBOARDING ??= "off";
 // Paid events (src/eventpay.js): on for the `pay:` steps, against a fake Stripe on this machine. The API
 // base is forced to the fake whatever key the env carries, so nothing here can reach Stripe.
 process.env.REASON_PAID_EVENTS = "on";
+process.env.REASON_EVENT_HELP_LINE ??= "on"; // the hl: steps (src/eventhelpline.js); live starts at owner
 process.env.STRIPE_SECRET_KEY = "sk_test_drive_fake";
 process.env.STRIPE_WEBHOOK_SECRET = "whsec_drive_fake";
 const stripeCalls = [];
