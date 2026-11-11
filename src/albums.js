@@ -63,7 +63,7 @@ export function albumsOn() {
 /** May THIS event have an album? `owner`: only the owner's events. */
 export function albumFor(ev) {
   if (!albumsOn() || !ev) return false;
-  if (config.eventAlbums === "owner") return accounts.ownerOf(ev.organizer_conversation_id).isOperator;
+  if (config.eventAlbums === "owner") return accounts.featureOwner(ev.organizer_conversation_id);
   return true;
 }
 

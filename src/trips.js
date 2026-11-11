@@ -41,7 +41,7 @@ const clockIn = (ms, tz) => new Date(ms).toLocaleTimeString("en-US", { timeZone:
 /** Is directions on for this conversation? "owner": the owner's only. */
 export function tripsOnFor(conversationId) {
   if (config.directionsOn === true) return true;
-  return config.directionsOn === "owner" && !!conversationId && accounts.ownerOf(conversationId).isOperator;
+  return config.directionsOn === "owner" && accounts.featureOwner(conversationId);
 }
 
 /** The bare link (the preview's address) and the owner's link (with the key), on the pages host. */

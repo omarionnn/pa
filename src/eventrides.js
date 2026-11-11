@@ -48,7 +48,7 @@ export function ridesOn() {
 /** May this event's organizer turn rides on? `owner`: only on the owner's own events. */
 export function canEnable(ev) {
   if (!ev || !ridesOn()) return false;
-  if (config.eventRides === "owner") return accounts.ownerOf(ev.organizer_conversation_id).isOperator;
+  if (config.eventRides === "owner") return accounts.featureOwner(ev.organizer_conversation_id);
   return true;
 }
 

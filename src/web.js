@@ -27,7 +27,7 @@ export function webOn() {
  */
 export function webAllowedFor(conversationId) {
   if (!conversationId) return false;
-  if (config.web === "owner") return accounts.ownerOf(conversationId).isOperator;
+  if (config.web === "owner") return accounts.featureOwner(conversationId);
   return config.web === true;
 }
 

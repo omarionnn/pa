@@ -57,7 +57,7 @@ export function passkeyMode() {
 export function passkeyAllowedFor(conversationId) {
   if (!conversationId) return false;
   const mode = passkeyMode();
-  if (mode === "owner") return accounts.ownerOf(conversationId).isOperator;
+  if (mode === "owner") return accounts.featureOwner(conversationId);
   return mode === "on";
 }
 
