@@ -393,14 +393,14 @@ async function actOn(event, ctx) {
     case "checkout.session.async_payment_failed": {
       const row = rowBySession(obj.id);
       if (!row) return { ok: true, matched: false };
-      if (row.status === "open") q("UPDATE event_payments SET status = 'failed', updated_at = ? WHERE id = ?").run(ctx.now, row.id);
+      if (row.status === "open") q("UPDATE event_payments SET status = 'failed', answers = NULL, updated_at = ? WHERE id = ?").run(ctx.now, row.id);
       tell(ctx, row.conversation_id, `that payment for ${eventName(row)} didn't go through, so you're not in yet. open the event link again whenever you'd like to try another way to pay.`);
       return { ok: true, matched: true, failed: true };
     }
     case "checkout.session.expired": {
       const row = rowBySession(obj.id);
       if (!row) return { ok: true, matched: false };
-      if (row.status === "open") q("UPDATE event_payments SET status = 'expired', updated_at = ? WHERE id = ?").run(ctx.now, row.id);
+      if (row.status === "open") q("UPDATE event_payments SET status = 'expired', answers = NULL, updated_at = ? WHERE id = ?").run(ctx.now, row.id);
       return { ok: true, matched: true, expired: true };
     }
     case "charge.refunded": {
@@ -521,10 +521,11 @@ export async function refund({ ev, row, why = "organizer", fetchImpl = globalThi
 
 /** The row goes refunded, the guest leaves the event (unless the payment never got them in: `leave` false), and is told (unless the caller says it). */
 async function afterRefund(row, { refundId = null, why = "organizer", tellGuest = true, cancelled = false, leave = true }, { runtime = null, now = clock.now(), log = () => {} }) {
-  q("UPDATE event_payments SET status = 'refunded', refund_id = ?, refund_error = NULL, refunded_at = ?, updated_at = ? WHERE id = ? AND status = 'paid'").run(refundId, now, now, row.id);
+  q("UPDATE event_payments SET status = 'refunded', refund_id = ?, refund_error = NULL, answers = NULL, refunded_at = ?, updated_at = ? WHERE id = ? AND status = 'paid'").run(refundId, now, now, row.id);
   const ev = db.getEventRow(row.event_id);
   const att = ev ? db.attendeeRow(ev.id, row.conversation_id) : null;
-  if (leave && att?.state === "joined" && att.role === "guest") {
+  // They leave only when no payment of theirs still stands (a refunded duplicate never costs a spot that is paid for).
+  if (leave && att?.state === "joined" && att.role === "guest" && !paidRow(ev.id, row.conversation_id)) {
     db.leaveAttendee(att.id);
     try { const rides = await import("./eventrides.js"); await rides.leftEvent({ runtime, ev, conversationId: row.conversation_id }); } catch { /* rides are optional */ }
   }
@@ -550,7 +551,7 @@ export async function refundAll({ ev, runtime = null, log = () => {}, fetchImpl 
 // ---------- the sweep: holds that ran out ----------
 
 async function expireRow(row, { fetchImpl = globalThis.fetch, now = clock.now(), log = () => {} }) {
-  q("UPDATE event_payments SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'open'").run(now, row.id);
+  q("UPDATE event_payments SET status = 'expired', answers = NULL, updated_at = ? WHERE id = ? AND status = 'open'").run(now, row.id);
   if (!row.checkout_session_id) return;
   // Best effort: the page stops taking payment. A payment that lands anyway is settled and, with no
   // spot left, refunded (settlePaid).
