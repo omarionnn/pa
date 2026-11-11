@@ -46,12 +46,13 @@ const VOICE_STYLE = "A young woman with a light, natural British (London) accent
  * The opener's words. `about` is the model's own few words finishing "I'm calling …" ("to ask about a
  * massage for low back pain"); without them only the hello, and the live voice says why right after.
  */
-export function openerText({ about = "", notice = false } = {}) {
+export function openerText({ about = "", notice = false, disclose = "" } = {}) {
   let a = String(about ?? "").replace(/\s+/g, " ").trim().replace(/[.!?…,;:]+$/, "");
   a = a.replace(/^(?:hi( there)?[,!.]?\s*)?(?:i'?m|i am)\s+calling\s+/i, "");
   // Payment details are never said, even from a row the pre-dial screen did not see: hello only.
   if (a.length > 140 || /[[\]{}<>]|https?:|@/.test(a) || findPaymentDetails(a).length) a = "";
-  const hello = notice ? "Hi there — just so you know, this call's recorded." : "Hi there!";
+  // The call manner (./manner.js `disclosureLine`): "Hi there, this is Reason, an AI assistant calling for …".
+  const hello = disclose ? String(disclose).trim() : notice ? "Hi there — just so you know, this call's recorded." : "Hi there!";
   if (!a) return { text: hello, kind: "hello" };
   return { text: `${hello} I'm calling ${a}.`, kind: "about" };
 }
@@ -157,10 +158,10 @@ const ready = new Map();
  * that is not ready at pickup is simply not used. The hello-only clip is made too (cached once ever),
  * as the fallback when the "about" words cannot be spoken for any reason.
  */
-export function prepare(row, { notice = false, make = makeClip, log = () => {} } = {}) {
+export function prepare(row, { notice = false, disclose = "", make = makeClip, log = () => {} } = {}) {
   if (!openerFor(row)) return null;
-  const want = openerText({ about: row.pickup_about, notice });
-  const hello = openerText({ notice });
+  const want = openerText({ about: row.pickup_about, notice, disclose });
+  const hello = openerText({ notice, disclose });
   const t0 = Date.now();
   const job = (async () => {
     const [main, fallback] = await Promise.all([make(want.text), want.kind === "hello" ? null : make(hello.text)]);
