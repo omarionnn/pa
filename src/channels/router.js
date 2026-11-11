@@ -46,6 +46,7 @@ import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
+import * as actioncards from "../actioncards.js";
 import * as websetup from "../websetup.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
@@ -709,6 +710,10 @@ export class Router {
     // A real request somebody made mid-way through the first-chat onboarding: the turn does it, and
     // the step still pending follows its reply (src/onboarding.js afterTask).
     let onboardAfter = null;
+    // An open Action Card this text answers (src/actioncards.js matchInbound): the words of a tap's
+    // prefill, or near enough. The turn runs on the text as it is — it already IS the request, in
+    // their own voice — and the card is checked off once that turn has replied.
+    let cardHit = null;
     try {
       // A voice note is listened to here, with the bubble already up, so the turn reads what was
       // said rather than a line saying sound arrived. Never allowed to cost the turn: if listening
@@ -730,6 +735,12 @@ export class Router {
       // the burst line, which asks for one, stays the inline channels'.
       const canPin = inline || (last.channel === web.WEB && webReplyAllowedFor(conversationId));
       const said = texts.filter(Boolean);
+      if (last.channel !== web.WEB) {
+        try {
+          cardHit = actioncards.matchInbound(conversationId, said);
+          if (cardHit) { cardHit.at = clock.now(); actioncards.replied(cardHit.card); this.log({ action_card_reply: cardHit.card.id, score: Math.round(cardHit.score * 100) / 100 }); }
+        } catch (e) { this.log({ action_card_match_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
+      }
       // REASON_THREADING (src/threading.js): parts of one send are one text, their attachments are
       // numbered in the order sent, and jobs still running are named with the text that started each.
       const threaded = threading.threadingOn({ isOperator: !!last.is_operator });
@@ -866,6 +877,15 @@ export class Router {
       onethought.end(fold);
       await bubble.stop();
       this.bubbles.delete(conversationId);
+    }
+    // The Action Card this text answered is done once its turn has replied (src/actioncards.js): the
+    // page sinks it below the open ones and the link's picture is drawn again.
+    if (cardHit && reply !== null) {
+      try {
+        // The stall line is a reply too; a turn that died is not the task done (runtime.turnFailedSince).
+        if (this.runtime?.turnFailedSince?.(conversationId, cardHit.at)) this.log({ action_card_turn_failed: cardHit.card.id });
+        else { actioncards.markDone(cardHit.card.id, conversationId); this.log({ action_card_done: cardHit.card.id }); }
+      } catch (e) { this.log({ action_card_done_failed: cardHit.card.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
     }
     // After the turn: somebody in the first-chat onboarding who asked for something real gets the
     // step still pending now that it is done; their card comes from the flow, under the name they pick.

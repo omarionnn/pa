@@ -233,6 +233,9 @@ const TABLES = [
   // Exchanges a forget asked recall to index again without the forgotten line (src/recallindex.js).
   // Row ids only, theirs.
   "recall_reindex",
+  // Action Cards (src/actioncards.js): the daily notes left for them, each card on them, the titles
+  // they struck out, and the per-card log of views, taps, replies and dismisses.
+  "action_digests", "action_cards", "action_card_dismissed", "action_card_events",
 ];
 
 /**

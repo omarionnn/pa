@@ -1045,6 +1045,15 @@ export class Runtime extends EventEmitter {
   }
 
   /**
+   * Did a turn for this person die since `since`? `inbound` answers a dead turn with the stall line,
+   * so its caller sees a reply either way; this is how code that must not take that line for a
+   * finished task (an Action Card's done, src/actioncards.js) tells the two apart.
+   */
+  turnFailedSince(conversationId, since) {
+    return (Number(db.opsGet(stallKey(conversationId))) || 0) >= since;
+  }
+
+  /**
    * Inbound text from a person, with anything they attached to it. Resolves to Reason's reply (or
    * null for silence).
    *
