@@ -5,7 +5,7 @@
 // until the owner typed a yes, in their own words, after Reason described the action.
 import * as db from "./db.js";
 import * as incidents from "./incidents.js";
-import { clock, config, stamp, normalizeNumber } from "./config.js";
+import { clock, config, stamp, normalizeNumber, normalizeHandle } from "./config.js";
 import { sealTravelers } from "./privacy.js";
 import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
@@ -199,7 +199,7 @@ const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
  * read_back (fixed choices) and max_minutes only shape how it asks.
  */
 export function personPin(name, input = {}) {
-  const who = normalizeNumber(input.to) || String(input.to ?? "").trim();
+  const who = normalizeHandle(input.to) || String(input.to ?? "").trim();
   if (name === "message_send") return `${who}: ${oneLine(input.text)}`;
   if (name === "voice_note_send") return `${who}: voice note ${oneLine(input.file)}${oneLine(input.text) ? ` with "${oneLine(input.text)}"` : ""}`;
   const parts = [oneLine([input.goal, ...(Array.isArray(input.facts) ? input.facts : [])].join(" "))];

@@ -27,7 +27,7 @@ import { makeDeliver, ORDER_CARD_FAILED } from "./deliver.js";
 import { backfillContactCards } from "./contact.js";
 import { endAllRemoteSignins } from "./signin-remote.js";
 import { resetBusy } from "./busy.js";
-import { subscriptionBackendBlock } from "./backends/guard.js";
+import { subscriptionBackendBlock, modelBannerLines } from "./backends/guard.js";
 import { retentionSays } from "./privacy.js";
 import { startOps, watchFetch } from "./ops.js";
 import { config, stamp } from "./config.js";
@@ -169,10 +169,7 @@ server.listen(config.port, config.host, () => {
     }).catch((e) => log({ catch_up_error: ch.name, error: (e?.message ?? String(e)).split("\n")[0] }));
   }
   if (config.backend === "claude-cli") {
-    console.log(`  model: the claude CLI on ${config.ownerName}'s subscription — ${config.ownerName}'s own testing only.`);
-    console.log(`         ONLY these numbers get answers: ${config.testNumbers.join(", ") || "(none — serve would have refused to start)"}`);
-    console.log(`         Every other number gets one "not available yet" line and no model turn.`);
-    console.log(`         An Anthropic API key with credit is required before anybody else is served.`);
+    for (const line of modelBannerLines()) console.log(line);
   } else {
     console.log(`  model: the Anthropic API (${config.model})${process.env.ANTHROPIC_API_KEY ? "" : " — NO ANTHROPIC_API_KEY set, so no turn can run"}`);
   }

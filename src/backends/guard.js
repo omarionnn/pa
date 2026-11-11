@@ -15,7 +15,7 @@
 //
 // With no test numbers set there is nobody it could legitimately answer, so it still refuses to
 // start rather than running a service nobody can use.
-import { config, normalizeNumber } from "../config.js";
+import { config, normalizeNumber, normalizeHandle } from "../config.js";
 
 // Channels that only ever reach the operator. An ALLOWLIST, so a channel adapter added later is
 // treated as external by default instead of needing to be remembered here.
@@ -67,6 +67,26 @@ export function subscriptionBackendBlock({ backend, channels = [], testNumbers =
 }
 
 /**
+ * What `serve` prints under "model:" on the subscription backend. Pure, so the words can be checked.
+ *
+ * Until 2026-11-11 it said "ONLY these numbers get answers" even with REASON_AUTO_ADMIT=1, under
+ * which servesOnThisBackend answers everybody and the test-number list decides nothing — a banner
+ * that reads as a promise the process is not keeping.
+ */
+export function modelBannerLines({ ownerName = config.ownerName, testNumbers = config.testNumbers, autoAdmit = config.autoAdmit } = {}) {
+  const lines = [`  model: the claude CLI on ${ownerName}'s subscription — ${ownerName}'s own testing only.`];
+  if (autoAdmit) {
+    lines.push(`         REASON_AUTO_ADMIT=1: EVERYBODY who texts is admitted and answered on this subscription.`);
+    lines.push(`         The test-number list (${testNumbers.join(", ") || "none"}) restricts nothing while that is set.`);
+  } else {
+    lines.push(`         ONLY these numbers get answers: ${testNumbers.join(", ") || "(none — serve would have refused to start)"}`);
+    lines.push(`         Every other number gets one "not available yet" line and no model turn.`);
+  }
+  lines.push(`         An Anthropic API key with credit is required before anybody else is served.`);
+  return lines;
+}
+
+/**
  * May this number be served on the backend that is running?
  *
  * On the API backend everybody who is admitted is served — that is what an API key with credit
@@ -81,7 +101,7 @@ export function servesOnThisBackend(address, { backend = config.backend, testNum
   // Auto-admit means everyone with the number was given it by the owner — they are all testers.
   if (config.autoAdmit) return { serves: true };
 
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
   // The console is the operator typing on the machine the subscription belongs to.
   if (addr === "console" || !addr) return { serves: true };
 

@@ -92,7 +92,7 @@ import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
 import { isAudio, cannotHearLine } from "../voice.js";
 import { checkReaction, checkSendStyle } from "../expressive.js";
-import { config, clock, normalizeNumber } from "../config.js";
+import { config, clock, normalizeNumber, normalizeHandle } from "../config.js";
 import { reverseGeocode } from "../places.js";
 import { isLinkPreviewAttachment } from "../linkpreview.js";
 import { readPlain, plainStat } from "../restfiles.js";
@@ -402,8 +402,8 @@ export class SendblueChannel extends Channel {
     if (missing.length) {
       return { ok: false, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
     }
-    const number = normalizeNumber(to);
-    if (!number) return { ok: false, retryable: false, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
+    const number = normalizeHandle(to);
+    if (!number) return { ok: false, retryable: false, error: `'${to}' is not an address Sendblue can send to. It needs a phone number in E.164, e.g. +14155559876, or an Apple ID email.` };
     // "must be less than 18996 characters", so 18996 is already too many. Not retryable: the same
     // bytes are the same length tomorrow.
     if (String(text ?? "").length >= MAX_TEXT_CHARS) {
@@ -457,8 +457,8 @@ export class SendblueChannel extends Channel {
     if (missing.length) {
       return { ok: false, supported: true, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
     }
-    const number = normalizeNumber(to);
-    if (!number) return { ok: false, supported: true, retryable: false, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
+    const number = normalizeHandle(to);
+    if (!number) return { ok: false, supported: true, retryable: false, error: `'${to}' is not an address Sendblue can send to. It needs a phone number in E.164, e.g. +14155559876, or an Apple ID email.` };
     const url = String(mediaUrl ?? "").trim();
     if (!/^https?:\/\/\S+$/.test(url)) return { ok: false, supported: true, retryable: false, error: `'${mediaUrl}' is not an address Sendblue can fetch a file from.` };
 
@@ -486,8 +486,8 @@ export class SendblueChannel extends Channel {
     if (missing.length) {
       return { ok: false, supported: true, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
     }
-    const number = normalizeNumber(to);
-    if (!number) return { ok: false, supported: true, retryable: false, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
+    const number = normalizeHandle(to);
+    if (!number) return { ok: false, supported: true, retryable: false, error: `'${to}' is not an address Sendblue can send to. It needs a phone number in E.164, e.g. +14155559876, or an Apple ID email.` };
     const urls = (mediaUrls ?? []).map(u => String(u ?? "").trim());
     if (urls.length < 2 || urls.length > 20 || urls.some(u => !/^https:\/\/\S+$/.test(u))) {
       return { ok: false, supported: true, retryable: false, error: "a carousel needs 2 to 20 HTTPS picture addresses" };
@@ -552,8 +552,8 @@ export class SendblueChannel extends Channel {
     if (missing.length) {
       return { ok: false, supported: true, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
     }
-    const number = normalizeNumber(to);
-    if (!number) return { ok: false, supported: true, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
+    const number = normalizeHandle(to);
+    if (!number) return { ok: false, supported: true, error: `'${to}' is not an address Sendblue can send to. It needs a phone number in E.164, e.g. +14155559876, or an Apple ID email.` };
 
     let size;
     try { size = this.statFile(file).size; }
@@ -653,8 +653,8 @@ export class SendblueChannel extends Channel {
   async typing({ to, chatId = null, on, maxDurationMs = null }) {
     void chatId;
     if (this.missing().length) return { ok: true, supported: false };
-    const number = normalizeNumber(to);
-    if (!number) return { ok: false, supported: true, error: "Sendblue's typing indicator needs the recipient's number in E.164." };
+    const number = normalizeHandle(to);
+    if (!number) return { ok: false, supported: true, error: "Sendblue's typing indicator needs the recipient's number in E.164 or their Apple ID email." };
 
     if (!on) {
       const r = await this.#postJson("/api/send-typing-indicator", { number, from_number: this.from, state: "stop" });
@@ -801,8 +801,8 @@ export class SendblueChannel extends Channel {
    */
   async markRead({ to }) {
     if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
-    const number = normalizeNumber(to);
-    if (!number) return { ok: false, supported: true, error: `'${to}' is not a number in E.164, so there is no conversation to mark read` };
+    const number = normalizeHandle(to);
+    if (!number) return { ok: false, supported: true, error: `'${to}' is not a number in E.164 or an Apple ID email, so there is no conversation to mark read` };
 
     const r = await this.#postJson("/api/mark-read", { number, from_number: this.from });
     if (r.transport) return { ok: false, supported: true, error: `Sendblue could not be reached: ${r.transport}` };
@@ -832,8 +832,8 @@ export class SendblueChannel extends Channel {
    */
   async readLocation({ number: raw }) {
     if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
-    const number = normalizeNumber(raw);
-    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164` };
+    const number = normalizeHandle(raw);
+    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164 or an Apple ID email` };
 
     const q = new URLSearchParams({ from_number: this.from });
     let res;
@@ -877,8 +877,8 @@ export class SendblueChannel extends Channel {
    */
   async requestLocation({ number: raw }) {
     if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
-    const number = normalizeNumber(raw);
-    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164` };
+    const number = normalizeHandle(raw);
+    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164 or an Apple ID email` };
 
     const r = await this.#postJson("/api/request-location", { number, from_number: this.from });
     if (r.transport) return { ok: false, supported: true, error: `Sendblue could not be reached: ${r.transport}` };
@@ -908,8 +908,8 @@ export class SendblueChannel extends Channel {
    */
   async findSent({ to, text, since, until }) {
     if (this.missing().length) return { ok: false, error: "Sendblue is not connected, so it cannot be asked" };
-    const number = normalizeNumber(to);
-    if (!number) return { ok: false, error: `'${to}' is not a number Sendblue could have sent to` };
+    const number = normalizeHandle(to);
+    if (!number) return { ok: false, error: `'${to}' is not an address Sendblue could have sent to` };
     const body = String(text ?? "");
     if (!body) return { ok: false, error: "there is no text to match on, so Sendblue cannot be asked whether this one went" };
 
@@ -1049,15 +1049,15 @@ export class SendblueChannel extends Channel {
     // `number` is the field the docs define as "your end-user (not the Sendblue-provided phone
     // number)", so it is the sender even on a payload where from_number happens to match.
     const said = String(event.number || event.from_number || "").trim();
-    const from = normalizeNumber(said);
-    const externalId = String(event.message_handle ?? "");
-
     // An iMessage can come from an Apple ID rather than a phone ("Can receive from iCloud email
-    // addresses" — faq), and an address is not a number: normalizeNumber strips it to nothing.
-    // Said out loud as its own reason, because a real person texting from their Apple ID being
-    // dropped as a malformed payload is the kind of silence that takes a night to find.
+    // addresses" — faq). Since 2026-11-11 that email IS the person's address (normalizeHandle;
+    // Sendblue sends back to it by passing it as `number`). With REASON_EMAIL_HANDLES off it is
+    // dropped as before, but said out loud as its own reason: a real person texting from their
+    // Apple ID being dropped as a malformed payload is the kind of silence that takes a night to find.
+    const from = normalizeHandle(said);
+    const externalId = String(event.message_handle ?? "");
     if (externalId && !from && said.includes("@")) {
-      return { status: 200, body: { ok: true, ignored: "sender is an email address, not a phone number", from: said }, inbound: [] };
+      return { status: 200, body: { ok: true, ignored: "sender is an email address, not a phone number (REASON_EMAIL_HANDLES is off)", from: said }, inbound: [] };
     }
     if (!externalId || !from) {
       return { status: 200, body: { ok: true, ignored: "no message_handle or sender" }, inbound: [] };
@@ -1135,7 +1135,7 @@ export class SendblueChannel extends Channel {
   async confirmUnsigned(event, { windowMs = 15 * 60_000 } = {}) {
     if (this.missing().length) return { ok: false, why: "Sendblue is not connected, so it cannot be asked" };
     const handle = String(event?.message_handle ?? "");
-    const from = normalizeNumber(String(event?.number || event?.from_number || ""));
+    const from = normalizeHandle(String(event?.number || event?.from_number || ""));
     if (!handle || !from) return { ok: false, why: "no message_handle or sender to look up" };
     const q = new URLSearchParams({
       number: from, is_outbound: "false", limit: "50",
@@ -1201,7 +1201,7 @@ export class SendblueChannel extends Channel {
       if (m.is_outbound) continue;
       if (m.group_id) continue;
       const handle = String(m.message_handle ?? "");
-      const from = normalizeNumber(m.number || m.from_number || "");
+      const from = normalizeHandle(m.number || m.from_number || "");
       if (!handle || !from) continue;
       if (previewOnly(m)) continue;
       const { base, partIndex } = splitHandle(handle);

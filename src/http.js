@@ -856,7 +856,14 @@ export function createServer({ router, runtime, log = () => {} }) {
         // and held in the database (and the sweep finishes it if this process stops), so "I have
         // this" is true, and the turn carries on after the provider has its answer.
         const running = router.webhook({ channel: hook[1], rawBody, rawBytes, headers: req.headers });
-        const done = (out) => log({ webhook: hook[1], status: out.status, delivered: out.body?.delivered ?? 0 });
+        // A delivery that carried a message but became no turn says why, in the journal. Before
+        // 2026-11-11 a real person texting from their Apple ID left only {status:200, delivered:0}
+        // behind, and it took a day of looking to learn the adapter had dropped them on purpose.
+        const done = (out) => {
+          const ignored = out.body?.ignored ? String(out.body.ignored) : "";
+          if (ignored) ops.noteDroppedInbound(hook[1], ignored);
+          log({ webhook: hook[1], status: out.status, delivered: out.body?.delivered ?? 0, ...(ignored ? { ignored } : {}) });
+        };
         const early = await Promise.race([running, new Promise(r => setTimeout(r, config.webhookAnswerMs, null))]);
         if (early) {
           done(early);

@@ -23,7 +23,7 @@ import * as db from "./db.js";
 import * as trust from "./trust.js";
 import * as accounts from "./accounts.js";
 import { servesOnThisBackend } from "./backends/guard.js";
-import { config, clock, normalizeNumber, stamp } from "./config.js";
+import { config, clock, normalizeNumber, normalizeHandle, stamp } from "./config.js";
 
 /**
  * The one thing a brand-new person is told about how to talk to Reason.
@@ -55,7 +55,7 @@ export function requestInFrontOfMaster() {
  * say to the master. Never runs a model turn, and never puts their words in front of the model.
  */
 export function handleUnknown({ channel, address, displayName = "", text, chatId = null }) {
-  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  const addr = normalizeHandle(address) || String(address ?? "").trim();
 
   // Blocked is blocked: no line, no request, no announcement, nothing.
   if (db.isBlocked(addr)) return { action: "ignore", reason: "blocked" };

@@ -421,8 +421,8 @@ test("a voice note is called a voice note, and Reason is told it has not heard i
 test("an iMessage from an Apple ID is not dropped as a malformed payload", async () => {
   configure();
   try {
-    // "Can receive from iCloud email addresses" (faq). Reason is keyed by phone number, so this
-    // cannot become a turn — but it has to be refused with its own reason, not look like a bug.
+    // "Can receive from iCloud email addresses" (faq). Since 2026-11-11 the email is the person's
+    // address (REASON_EMAIL_HANDLES, src/config.js normalizeHandle): it parses as a message from it.
     const out = await new SendblueChannel().receive({
       rawBody: JSON.stringify({
         content: "hey", is_outbound: false, status: "RECEIVED", message_handle: "H-mail",
@@ -432,9 +432,9 @@ test("an iMessage from an Apple ID is not dropped as a malformed payload", async
       headers: headers(),
     });
     assert.equal(out.status, 200);
-    assert.match(out.body.ignored, /email address/);
-    assert.equal(out.body.from, "someone@icloud.com");
-    assert.deepEqual(out.inbound, []);
+    assert.equal(out.body.ignored, undefined);
+    assert.equal(out.inbound.length, 1);
+    assert.equal(out.inbound[0].from, "someone@icloud.com");
   } finally { unconfigure(); }
 });
 
@@ -579,7 +579,8 @@ test("a non-number and an over-long message are refused before any request is ma
     let called = 0;
     const ch = new SendblueChannel({ fetchImpl: async () => { called++; return { ok: true, status: 200, text: async () => "{}" }; } });
 
-    const bad = await ch.send({ to: "omari@example.com", text: "hi" });
+    // An email IS an address since 2026-11-11 (REASON_EMAIL_HANDLES); "not a number" means nonsense.
+    const bad = await ch.send({ to: "not-anybody", text: "hi" });
     assert.equal(bad.ok, false);
     assert.match(bad.error, /E\.164/);
 

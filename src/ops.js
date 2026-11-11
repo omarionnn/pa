@@ -468,6 +468,18 @@ export function startLoopWatch(everyMs = 1000) {
   lagTimer.unref?.();
 }
 
+// Inbound webhook deliveries that became no turn, by the adapter's own reason, since this process
+// started. Counts only — never who. Most are routine (outbound echoes, typing indicators, status
+// callbacks); the one worth a look is a reason naming a person, like an email sender dropped
+// with REASON_EMAIL_HANDLES off.
+const dropped = new Map();
+export function noteDroppedInbound(channel, reason) {
+  const key = `${channel}: ${String(reason ?? "").slice(0, 80)}`;
+  if (!dropped.has(key) && dropped.size >= 50) return;
+  dropped.set(key, (dropped.get(key) ?? 0) + 1);
+}
+export function droppedInbound() { return Object.fromEntries([...dropped].sort((a, b) => b[1] - a[1])); }
+
 /**
  * The lightweight answer the watchdog reads every minute: no probes and no queries beyond one, so
  * it is cheap enough to ask often and only slow when the process itself is.
@@ -485,6 +497,7 @@ export function alive({ runtime = null, now = clock.now() } = {}) {
     sweep_stuck: !!runtime?.interval && last != null && now - last > stuckAfter,
     sweep_stuck_after_ms: stuckAfter,
     open_alerts: openAlerts,
+    dropped_inbound: droppedInbound(),
   };
 }
 
