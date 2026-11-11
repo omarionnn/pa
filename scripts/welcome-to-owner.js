@@ -15,7 +15,7 @@ import { config } from "../src/config.js";
 import * as welcome from "../src/welcome.js";
 import { ownerRecipient } from "./announce.js";
 
-export const SEND_ID = "welcome-1110";
+export const SEND_ID = "welcome-1111"; // 11-11: the carousel; 11-10 "welcome-1110" was the one-by-one pictures
 export const markerFor = (id, dataDir = config.dataDir) => join(dataDir, `welcome-to-owner-${id}.sent`);
 
 export async function sendWelcomeToOwner({ id = SEND_ID, router, marker = markerFor(id), sleep = (ms) => new Promise(r => setTimeout(r, ms)), log = () => {} }) {
@@ -54,9 +54,11 @@ export async function sendWelcomeToOwner({ id = SEND_ID, router, marker = marker
     results.push({ n: i + 1, ok: !!res.ok, ...(res.ok ? {} : { why: res.error ?? res.skipped ?? "unknown" }) });
     if (!res.ok) break; // the live outbox sweep finishes the chain in order
   }
-  const pictures = rows.filter(row => db.getOutbound(row.id)?.media?.file && db.getOutbound(row.id)?.state === "sent").length;
-  writeFileSync(marker, `${new Date().toISOString()} ${results.filter(x => x.ok).length}/${rows.length} sent, ${pictures} as pictures\n`);
-  return { outcome: results.every(x => x.ok) && results.length === rows.length ? "sent" : "partly", sent: results.filter(x => x.ok).length, of: rows.length, pictures, results };
+  const sentRows = db.db.prepare("SELECT media FROM outbox WHERE conversation_id = ? AND idem_key LIKE ? AND state = 'sent'").all(r.conversationId, `welcome-owner:${id}#%`).map(x => JSON.parse(x.media || "null"));
+  const pictures = sentRows.filter(m => m?.file).length;
+  const carousel = sentRows.some(m => Array.isArray(m?.carousel));
+  writeFileSync(marker, `${new Date().toISOString()} ${results.filter(x => x.ok).length}/${rows.length} sent, ${carousel ? "as ONE carousel" : `${pictures} as pictures`}\n`);
+  return { outcome: results.every(x => x.ok) && results.length === rows.length ? "sent" : "partly", sent: results.filter(x => x.ok).length, of: rows.length, pictures, carousel, results };
 }
 
 async function main() {
@@ -72,8 +74,9 @@ async function main() {
   router.register(new SendblueChannel());
   router.register(new LinqChannel());
   const r = await sendWelcomeToOwner({ router, log: (x) => { if (x.sent_as_text || x.failed) console.log(JSON.stringify(x)); } });
-  console.log(`welcome to owner: ${r.outcome}${r.of ? ` ${r.sent}/${r.of}, ${r.pictures} pictures` : ""}${r.why ? ` — ${r.why}` : ""}`);
+  console.log(`welcome to owner: ${r.outcome}${r.of ? ` ${r.sent}/${r.of} messages, ${r.carousel ? "cards as ONE carousel" : `${r.pictures} cards as single pictures`}` : ""}${r.why ? ` — ${r.why}` : ""}`);
   for (const x of r.results ?? []) if (!x.ok) console.log(`  #${x.n} held: ${String(x.why).slice(0, 160)}`);
+  process.exit(process.exitCode ?? 0); // the database and channel keep handles open
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

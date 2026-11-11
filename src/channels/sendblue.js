@@ -475,6 +475,34 @@ export class SendblueChannel extends Channel {
     return { ok: true, supported: true, delivered: this.#deliveredFrom(r, { number, chatId, idempotencyKey, media: { media_url: url, renders_as: /\.vcf$|\.vcard$/i.test(url) ? "contact card" : "attachment" } }) };
   }
 
+  /**
+   * Several pictures as ONE swipeable carousel (api-v2/carousel): POST /api/send-carousel with
+   * `media_urls`, 2–20 HTTPS addresses Sendblue fetches. V2 lines only; on a V1 line Sendblue answers
+   * "Carousel messaging is only available on V2 lines", which comes back here as a plain failure so
+   * the caller can send the pictures one by one instead (src/outbox.js). No words go with it.
+   */
+  async sendCarousel({ to, mediaUrls, chatId = null, idempotencyKey = null }) {
+    const missing = this.missing();
+    if (missing.length) {
+      return { ok: false, supported: true, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
+    }
+    const number = normalizeNumber(to);
+    if (!number) return { ok: false, supported: true, retryable: false, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
+    const urls = (mediaUrls ?? []).map(u => String(u ?? "").trim());
+    if (urls.length < 2 || urls.length > 20 || urls.some(u => !/^https:\/\/\S+$/.test(u))) {
+      return { ok: false, supported: true, retryable: false, error: "a carousel needs 2 to 20 HTTPS picture addresses" };
+    }
+    const r = await this.#postJson("/api/send-carousel", { number, from_number: this.from, media_urls: urls });
+    if (!r.ok || r.json?.status === "DECLINED" || r.json?.status === "ERROR") {
+      const why = this.#why(r);
+      return {
+        ok: false, supported: true, error: why.line, error_key: why.key, error_code: why.code,
+        http_status: r.status, retryable: why.retryable,
+      };
+    }
+    return { ok: true, supported: true, delivered: this.#deliveredFrom(r, { number, chatId, idempotencyKey, media: { media_urls: urls, renders_as: "carousel" } }) };
+  }
+
   #deliveredFrom(r, { number, chatId, idempotencyKey, media = null, replyDropped = null }) {
     return {
       channel: this.name,

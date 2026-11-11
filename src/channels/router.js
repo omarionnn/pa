@@ -1396,7 +1396,7 @@ export class Router {
    * those turn into once the bookkeeping is done. It is also the honest path for the console and
    * for the handful of code-written lines that belong to no conversation.
    */
-  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, mediaUrl = null, sendStyle = null, replyTo = null }) {
+  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, mediaUrl = null, carousel = null, sendStyle = null, replyTo = null }) {
     const ch = this.get(channel);
     if (!ch) return { ok: false, retryable: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
     // The last step before an adapter, so the silence marker is checked here too, for the console,
@@ -1410,6 +1410,12 @@ export class Router {
     try {
       // A file the provider fetches by address (the contact card on an onboarding outbox row,
       // src/onboarding.js): the words and the card are one message, so neither goes without the other.
+      // Several pictures as one swipeable carousel (the welcome cards, src/welcome.js). A channel
+      // without one says so, not retryable, and the outbox sends the pictures one by one instead.
+      if (Array.isArray(carousel)) {
+        if (typeof ch.sendCarousel !== "function") return { ok: false, retryable: false, supported: false, error: `${channel} cannot send a carousel` };
+        return await ch.sendCarousel({ to, mediaUrls: carousel, chatId, idempotencyKey });
+      }
       if (mediaUrl) {
         if (typeof ch.sendMediaUrl !== "function") return { ok: false, retryable: false, supported: false, error: `${channel} cannot send a file by address` };
         return await ch.sendMediaUrl({ to, text, mediaUrl, chatId, idempotencyKey });

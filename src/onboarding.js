@@ -309,7 +309,7 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
   const canSend = live(router, route.channel);
   // Nothing can go: the step stays where it is, and nothing is written as said that was not.
   if (!canSend) { log({ onboarding_not_sent: conversationId, why: `${route.channel} is not connected` }); return []; }
-  const said = bubbles.map(b => typeof b === "string" ? b : (b.text || (b.media?.fallbackText ? `[picture card] ${b.media.fallbackText}` : "")));
+  const said = bubbles.map(b => typeof b === "string" ? b : (b.text || (b.media?.fallbackText ? `[picture card] ${b.media.fallbackText}` : b.media?.historyText ?? "")));
   // An earlier step still being sent (a card held on a retry): this one queues behind it and the
   // outbox sends it in order, so a quick reply's answer never lands in the middle of the gallery.
   const behind = db.pendingOnboardingTail(conversationId);
