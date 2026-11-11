@@ -69,6 +69,7 @@ import * as amazon from "./amazonconnect.js"; // AMAZON HOOK
 import * as shop from "./shopconnect.js"; // AMAZON HOOK: connected on the web setup → no offer
 import * as setups from "./websetupstore.js";
 import * as welcome from "./welcome.js";
+import { inviterName } from "./invites.js";
 
 export const STATES = ["not_started", "awaiting_first", "awaiting_name", "awaiting_card_name", "awaiting_amazon", "complete"];
 const ACTIVE = new Set(["not_started", "awaiting_first", "awaiting_name", "awaiting_card_name", "awaiting_amazon"]);
@@ -436,8 +437,20 @@ const realAmazonLink = (conversationId, { log } = {}) => { const r = amazon.conn
 /** Did this person do the setup on heyreason.com/start (src/websetup.js)? Read off the claim, REASON_WEB_SETUP only. */
 export const handledOnWeb = (conversationId) => /^(1|true|on|yes)$/i.test(String(process.env.REASON_WEB_SETUP ?? "").trim()) && !!setups.claimedBy(conversationId);
 
-/** The hello after a web setup: their name back to them, nothing asked. */
-export const WEB_HELLO = (user) => user ? `hey ${String(user).toLowerCase()}, good to meet you` : "hey, good to meet you";
+/** The hello after a web setup: their name back to them, nothing asked (and who invited them, when somebody did). */
+export const WEB_HELLO = (user, invitedBy = null) => `${user ? `hey ${String(user).toLowerCase()}, good to meet you` : "hey, good to meet you"}${invitedBy ? `. you're in, invited by ${invitedBy}` : ""}`;
+
+/**
+ * The setup was started from an invite link (REASON_INVITE_START) and that invite is how this account
+ * was made: the inviter's name for the first line, else null. Read off the claimed setup and the
+ * account (db.redeemInvite set invited_by), so nothing the page sent decides it.
+ */
+export function webInvitedBy(setup, account) {
+  if (!setup?.invite_id || !account?.invited_by) return null;
+  const inv = db.db.prepare("SELECT conversation_id, redeemed_by FROM invites WHERE id = ?").get(setup.invite_id);
+  if (!inv || inv.conversation_id !== account.invited_by || inv.redeemed_by !== account.conversation_id) return null;
+  return inviterName(inv.conversation_id) || "a friend";
+}
 export const WEB_CARD = "here's my card, save it so you can always find me";
 
 /**
@@ -453,7 +466,7 @@ function webHandoff(router, conversationId) {
   const account = db.getAccount(conversationId);
   const name = account.contact_card_name || cardName(setup?.reason_name);
   const url = cardUrl(router, account, name);
-  const hello = WEB_HELLO(setup?.user_name || account.name);
+  const hello = WEB_HELLO(setup?.user_name || account.name, webInvitedBy(setup, account));
   if (!url) return { bubbles: [hello, TRY_LINE], next: "complete", name: null };
   const card = { text: WEB_CARD, mediaUrl: url };
   if (amazonCanOffer(conversationId)) return { bubbles: [hello, card, amazon.OFFER], next: "awaiting_amazon", name }; // AMAZON HOOK
@@ -470,7 +483,7 @@ function webWelcome(router, conversationId, route) {
   const setup = setups.claimedBy(conversationId);
   const account = db.getAccount(conversationId);
   const reasonName = account.contact_card_name || cardName(setup?.reason_name);
-  const intro = welcome.WEB_INTRO({ user: setup?.user_name || account.name, reasonName });
+  const intro = welcome.WEB_INTRO({ user: setup?.user_name || account.name, reasonName, invitedBy: webInvitedBy(setup, account) });
   return { bubbles: [...withCards(router, route, intro, conversationId), welcome.HELP_FIRST], next: "awaiting_first", name: null };
 }
 

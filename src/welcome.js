@@ -46,8 +46,8 @@ export const textLine = (c) => `${c.title}: "${c.example}"`;
 export const HELP_FIRST = "What would you like help with first?";
 
 /** The line before the cards for somebody who came from the web setup: picks up where the page left off. */
-export const WEB_INTRO = ({ user = "", reasonName = "Reason" } = {}) =>
-  `${user ? `hey ${String(user).toLowerCase()}` : "hey"}, ${reasonName || "Reason"} here. picking up from your setup, here's what i can do for you`;
+export const WEB_INTRO = ({ user = "", reasonName = "Reason", invitedBy = null } = {}) =>
+  `${user ? `hey ${String(user).toLowerCase()}` : "hey"}, ${reasonName || "Reason"} here. ${invitedBy ? `you're in, invited by ${invitedBy}. ` : ""}picking up from your setup, here's what i can do for you`;
 
 export function mode() {
   const v = String(process.env.REASON_WELCOME_CARDS ?? "").trim().toLowerCase();
