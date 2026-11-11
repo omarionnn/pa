@@ -305,7 +305,7 @@ const live = (router, channel) => router?.get?.(channel)?.status?.().status === 
  * in turn, a beat apart; the first that does not go stops the loop, and the sweep sends the rest in
  * order once it does (outbox `after_id`). Returns what was said.
  */
-async function commitStep({ router, conversationId, route, bubbles, key, write, historyLines, sleep, log }) {
+export async function commitStep({ router, conversationId, route, bubbles, key, write, historyLines, sleep, log }) {
   const rows = [];
   const canSend = live(router, route.channel);
   // Nothing can go: the step stays where it is, and nothing is written as said that was not.

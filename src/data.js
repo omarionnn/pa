@@ -238,6 +238,8 @@ const TABLES = [
   "action_digests", "action_cards", "action_card_dismissed", "action_card_events",
   // Connect the rest (src/connectafter.js): the once-ever record, the uses that proved a connection, its page links.
   "connect_after", "connect_after_uses", "connect_after_links",
+  // Event guests' onboarding (src/eventonboarding.js): the once-ever row of where they are in it.
+  "event_onboarding",
   // The engine behind them (src/actionengine.js): each day's run and what it cost, where each card
   // came from (sealed), and their standing "stop showing me X" rules.
   "action_card_days", "action_card_sources", "card_skip_rules",

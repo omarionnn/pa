@@ -60,6 +60,7 @@ import * as dream from "./dream.js";
 import * as actionengine from "./actionengine.js";
 import * as webdraft from "./webdraft.js";
 import * as onboarding from "./onboarding.js";
+import * as eventonb from "./eventonboarding.js";
 import * as opsDigest from "./opsdigest.js";
 import { withPlainPath, sealLike } from "./restfiles.js";
 
@@ -1224,14 +1225,15 @@ export class Runtime extends EventEmitter {
     // The proactive ceiling is for things Reason starts. A call they asked for at a time is not
     // one of those, and a wake-up call quietly dropped because the day's proactive texts were
     // used up is the worst version of a missed alarm — so a call timer goes past it.
-    if (!t.call_goal && !this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
+    if (!t.call_goal && t.label !== eventonb.LABEL && !this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
     // Nobody to say it to. A person who has opted out, or whose last few messages all failed for
     // good, cannot get this one either — so the turn is not run (it was real research, every few
     // hours, for Agu, who had opted out a week before), their standing check-ins are paused, and
     // the master is told once.
     // Never the master's own thread: an opt-out there has been a carrier hiccup they fixed the same
     // day (10-17), and quietly pausing their own check-ins would be worse than a failed send.
-    const gone = t.conversation_id === config.ownerConversation ? null : db.unreachable(t.conversation_id);
+    // The event morning-after judges this itself (src/eventonboarding.js), and lets its row go.
+    const gone = t.conversation_id === config.ownerConversation || t.label === eventonb.LABEL ? null : db.unreachable(t.conversation_id);
     if (gone) {
       db.markTimerFired(t.id);
       await this._stopForUnreachable(t.conversation_id, gone);
@@ -1256,7 +1258,8 @@ export class Runtime extends EventEmitter {
     }
     // Too late to be worth anything. Held by a pause or a lapse, or the process was down, and its
     // moment has gone: it is skipped, never sent 17-26 hours after its time (seen live, 2026-11).
-    if (timerTooLate(t)) return await this._skipLateTimer(t);
+    // Not the event morning-after: it judges its own lateness (src/eventonboarding.js LATE_MS).
+    if (timerTooLate(t) && t.label !== eventonb.LABEL) return await this._skipLateTimer(t);
     // Out of tries before this one starts, which is what a turn that killed the process leaves.
     if (t.attempts >= config.timerMaxAttempts) {
       return await this._giveUpOnTimer(t, t.last_error ?? "the process stopped in the middle of the turn");
@@ -1342,6 +1345,10 @@ export class Runtime extends EventEmitter {
     const key = timerKey(t.id);
     // The first-chat onboarding's one nudge (src/onboarding.js): code's line, no model turn, and
     // nothing at all if they have moved on since it was set.
+    // An event guest's morning after (src/eventonboarding.js): code's line, no model turn.
+    if (t.label === eventonb.LABEL) {
+      return await eventonb.fire({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log, mayInterrupt: (c) => this.mayInterrupt(c) });
+    }
     if (t.label === db.ONBOARDING_NUDGE_LABEL) {
       return await onboarding.fireNudge({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log });
     }
@@ -1492,7 +1499,7 @@ export class Runtime extends EventEmitter {
   async _skipLateTimer(t) {
     const late = Math.round((clock.now() - t.fire_at) / 60_000);
     const owned = db.noticeByTimer(t.id);
-    const theirs = !t.series_id && t.chained_from == null && !owned && t.label !== db.ONBOARDING_NUDGE_LABEL;
+    const theirs = !t.series_id && t.chained_from == null && !owned && t.label !== db.ONBOARDING_NUDGE_LABEL && t.label !== eventonb.LABEL;
     this.log({ timer: t.id, skipped_late_min: late, ...(t.series_id ? { series: t.series_id } : {}), ...(t.chained_from != null ? { chain: true } : {}) });
     if (owned && !owned.said_at && !owned.resolved_at) db.unparkNotice(owned.id);
     if (theirs) {
@@ -1517,6 +1524,8 @@ export class Runtime extends EventEmitter {
   async _giveUpOnTimer(t, why) {
     const owned = db.noticeByTimer(t.id);
     this.log({ timer: t.id, gave_up: why, attempts: t.attempts, ...(owned ? { notice: owned.key } : {}) });
+    // The event morning-after is code's own, not their reminder: let go quietly, never a "missed" line.
+    if (t.label === eventonb.LABEL) { eventonb.gaveUp(t.conversation_id); db.markTimerGaveUp(t.id, { error: why }); return true; }
     if (owned && !owned.said_at && !owned.resolved_at) {
       db.unparkNotice(owned.id);
       db.markTimerGaveUp(t.id, { error: why });

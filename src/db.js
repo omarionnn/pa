@@ -2235,7 +2235,7 @@ export function setItemBlurb(kind, conversationId, id, blurb) {
 }
 export function listTimers(conversationId) {
   // Not the onboarding's nudge (src/onboarding.js): that one is code's, not a reminder of theirs.
-  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') != 'onboarding:nudge' ORDER BY fire_at").all(conversationId);
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after') ORDER BY fire_at").all(conversationId);
 }
 export function cancelTimer(conversationId, id) {
   const t = getTimer(conversationId, id);
@@ -3774,7 +3774,7 @@ export function defaultMode(conversationId) {
 export function pendingOnboardingTail(conversationId) {
   // The end of the chain (the row nothing waits on), not the newest id: a carousel turned into its
   // pictures has rows newer than the question that follows them.
-  return db.prepare(`SELECT o.id FROM outbox AS o WHERE o.conversation_id = ? AND o.idem_key LIKE 'onboard:%' AND o.state IN ('queued','sending','unknown')
+  return db.prepare(`SELECT o.id FROM outbox AS o WHERE o.conversation_id = ? AND (o.idem_key LIKE 'onboard:%' OR o.idem_key LIKE 'eventonb:%') AND o.state IN ('queued','sending','unknown')
     AND NOT EXISTS (SELECT 1 FROM outbox AS n WHERE n.after_id = o.id AND n.conversation_id = o.conversation_id AND n.state IN ('queued','sending','unknown'))
     ORDER BY o.id DESC LIMIT 1`).get(conversationId)?.id ?? null;
 }
