@@ -728,6 +728,7 @@ export class Router {
     // the step still pending follows its reply (src/onboarding.js afterTask).
     let onboardAfter = null;
     let eventAfter = null;
+    let eventNoCard = false;
     // An open Action Card this text answers (src/actioncards.js matchInbound): the words of a tap's
     // prefill, or near enough. The turn runs on the text as it is — it already IS the request, in
     // their own voice — and the card is checked off once that turn has replied.
@@ -801,6 +802,7 @@ export class Router {
           screen: thread ? ({ text }) => this.runtime.screen?.({ text, messages: thread, who: who === "the person I work for" ? "them" : who }) ?? { verdict: "clear" } : null,
         }).catch(e => { this.log({ event_onboarding_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); return null; });
         if (eo?.frame) onboardFrame = eo.frame;
+        if (eo?.noCard) eventNoCard = true;
         if (eo?.after) eventAfter = { channel: last.channel, to: last.address, chatId: last.chat_id ?? null };
       }
       if (last.channel !== web.WEB && !fold.webChat && onboarding.active(conversationId)) {
@@ -926,14 +928,14 @@ export class Router {
     }
     // An event guest's reply to "how was it?" has its answer: now "i can do more than events", the
     // seven cards and the surprise-call offer (src/eventonboarding.js).
-    if (eventAfter && reply !== null) {
+    if (eventAfter && reply !== null && !this.runtime?.turnFailedSince?.(conversationId, turnStartedAt)) {
       await eventonb.afterReply({ router: this, conversationId, route: eventAfter, log: this.log, sleep: this.onboard?.sleep })
         .catch(e => this.log({ event_onboarding_after_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
     }
     // Otherwise: if this person now has a name and hasn't gotten their card, send it.
     // Fires here rather than before the turn so the card arrives after "nice to meet you" — and only
     // after a turn that actually said something, so it never follows a failure line or silence.
-    if (reply !== null && !onboarding.active(conversationId)) void this.#offerCardIfNamed(conversationId);
+    if (reply !== null && !eventNoCard && !onboarding.active(conversationId)) void this.#offerCardIfNamed(conversationId);
     // The free trial's 25th-session bubbles, after that session's reply has answered them, and the
     // hold once they have lapsed (src/plan.js). Nothing under REASON_PAYWALL=off; never throws here.
     await plan.afterTurn({ conversationId, router: this, log: this.log })
@@ -1125,8 +1127,8 @@ export class Router {
     // the payment link — their words first, the link as its own message. They are in once Stripe says
     // so (eventpay.settlePaid sends the welcome then); nothing else is said now.
     if (out.pending_payment) {
-      eventonb.onPendingPay({ conversationId: conv, address, ev: out.event, newAccount: out.newAccount });
       const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", answers: out.answers ?? null, log: this.log });
+      if (pay.ok) eventonb.onPendingPay({ conversationId: conv, address, ev: out.event, newAccount: out.newAccount });
       const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote), pay.url]
         : [{ full: "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one." }[pay.reason]
           ?? "i couldn't start the payment for that event just now. nothing was charged — open the event link again in a minute to try again."];

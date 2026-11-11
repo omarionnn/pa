@@ -1232,7 +1232,8 @@ export class Runtime extends EventEmitter {
     // the master is told once.
     // Never the master's own thread: an opt-out there has been a carrier hiccup they fixed the same
     // day (10-17), and quietly pausing their own check-ins would be worse than a failed send.
-    const gone = t.conversation_id === config.ownerConversation ? null : db.unreachable(t.conversation_id);
+    // The event morning-after judges this itself (src/eventonboarding.js), and lets its row go.
+    const gone = t.conversation_id === config.ownerConversation || t.label === eventonb.LABEL ? null : db.unreachable(t.conversation_id);
     if (gone) {
       db.markTimerFired(t.id);
       await this._stopForUnreachable(t.conversation_id, gone);
@@ -1523,6 +1524,8 @@ export class Runtime extends EventEmitter {
   async _giveUpOnTimer(t, why) {
     const owned = db.noticeByTimer(t.id);
     this.log({ timer: t.id, gave_up: why, attempts: t.attempts, ...(owned ? { notice: owned.key } : {}) });
+    // The event morning-after is code's own, not their reminder: let go quietly, never a "missed" line.
+    if (t.label === eventonb.LABEL) { eventonb.gaveUp(t.conversation_id); db.markTimerGaveUp(t.id, { error: why }); return true; }
     if (owned && !owned.said_at && !owned.resolved_at) {
       db.unparkNotice(owned.id);
       db.markTimerGaveUp(t.id, { error: why });

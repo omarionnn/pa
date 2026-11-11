@@ -66,12 +66,12 @@ beforeEach(() => {
 });
 
 /** `other`: what the side read says about their texts since the join. */
-function harness({ other = false, reply = "glad it was fun!" } = {}) {
+function harness({ other = false, reply = "glad it was fun!", verdict = "clear" } = {}) {
   const turns = [];
   const reads = [];
   const runtime = new Runtime({
     runTurn: async ({ conversationId, text }) => { turns.push({ conversationId, text }); return reply; },
-    screen: async () => ({ verdict: "clear" }),
+    screen: async () => ({ verdict }),
   });
   const ask = async ({ prompt, system }) => {
     reads.push({ prompt, system });
@@ -451,4 +451,31 @@ test("no carousel on the line: the cards' fall-backs, in the same place between 
   const iB = got.indexOf(eo.MORE_LINE), iC = got.indexOf(eo.CALL_LINE);
   assert.ok(iB > 0 && iC > iB, got.join(" | "));
   assert.equal(iC - iB - 1, welcome.CARDS.length, "seven cards between B and C");
+});
+
+test("a reply to A days later is not its answer: no cards, no call offer", async () => {
+  const h = harness({ reply: "sure" });
+  withCarousel(h);
+  const ev = makeEvent();
+  const num = newNumber();
+  await joinByText(h, ev, num);
+  await toMorningAfter(h, ev, conv(num));
+  clock.skip(eo.ASK_FRESH_MS + 3_600_000);
+  await h.router.deliver(texts(num, "can you find me a plumber"));
+  assert.ok(!sentTo(h, num).some(m => m.text === eo.MORE_LINE || m.carousel || m.text === eo.CALL_LINE));
+  assert.doesNotMatch(h.turns.at(-1).text, /how was/);
+  assert.equal(eo.rowOf(conv(num)).state, "done");
+});
+
+test("a reply to A that needs care (the harm screen): no cards, no call offer, no contact card", async () => {
+  const h = harness({ reply: "i'm here. are you safe right now?", verdict: "crisis" });
+  withCarousel(h);
+  const ev = makeEvent();
+  const num = newNumber();
+  await joinByText(h, ev, num);
+  await toMorningAfter(h, ev, conv(num));
+  await h.router.deliver(texts(num, "honestly awful, i want to disappear"));
+  await new Promise(r => setTimeout(r, 30));
+  assert.ok(!sentTo(h, num).some(m => m.text === eo.MORE_LINE || m.carousel || m.text === eo.CALL_LINE || m.media));
+  assert.equal(eo.rowOf(conv(num)).state, "done");
 });

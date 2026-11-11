@@ -3774,7 +3774,7 @@ export function defaultMode(conversationId) {
 export function pendingOnboardingTail(conversationId) {
   // The end of the chain (the row nothing waits on), not the newest id: a carousel turned into its
   // pictures has rows newer than the question that follows them.
-  return db.prepare(`SELECT o.id FROM outbox AS o WHERE o.conversation_id = ? AND o.idem_key LIKE 'onboard:%' AND o.state IN ('queued','sending','unknown')
+  return db.prepare(`SELECT o.id FROM outbox AS o WHERE o.conversation_id = ? AND (o.idem_key LIKE 'onboard:%' OR o.idem_key LIKE 'eventonb:%') AND o.state IN ('queued','sending','unknown')
     AND NOT EXISTS (SELECT 1 FROM outbox AS n WHERE n.after_id = o.id AND n.conversation_id = o.conversation_id AND n.state IN ('queued','sending','unknown'))
     ORDER BY o.id DESC LIMIT 1`).get(conversationId)?.id ?? null;
 }

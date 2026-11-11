@@ -98,6 +98,7 @@ const NOT_SPEAKING = {
   "src/shoptools.js": "answers a checkout form's fields",
   "src/spend.js": "usage accounting",
   "src/subusage.js": "subscription usage accounting",
+  "src/eventonboarding.js": "judges whether an event guest's texts were about the event; says nothing to them",
   "src/ticketcheck.js": "reads an e-ticket email",
   "src/tools.js": "tools run inside a turn whose model already carries the rules",
   "src/watch.js": "judges whether a watched page changed",

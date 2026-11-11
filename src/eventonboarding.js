@@ -134,12 +134,24 @@ function inPlay(row) {
 
 /** While the event lasts, and until they have answered the call offer: no contact card, no pitch. */
 export function holdsCard(conversationId) {
-  const row = rowOf(conversationId);
+  const row = settleStale(rowOf(conversationId));
   return inPlay(row) && ["pending_pay", "joined", "asked", "offered"].includes(row.state);
 }
 
 /** The call offer is read as just asked for this long; a text after that is not an answer to it. */
 export const OFFER_FRESH_MS = 2 * 24 * 3_600_000;
+/** "how was it?" is answered inside this long, or not at all: a text a week later is not its answer. */
+export const ASK_FRESH_MS = 3 * 24 * 3_600_000;
+/** A priced join whose payment never came through this long is let go. */
+export const PAY_FRESH_MS = 2 * 24 * 3_600_000;
+
+/** A row whose moment has passed is ended here, so nothing hangs on it (frame, card hold, B/C). */
+function settleStale(row, now = clock.now()) {
+  if (!row) return row;
+  if (row.state === "asked" && now - (row.asked_at ?? 0) > ASK_FRESH_MS) return setState(row.conversation_id, "done", { why: "no_reply" });
+  if (row.state === "pending_pay" && now - row.updated_at > PAY_FRESH_MS) return skip(row.conversation_id, "never_paid");
+  return row;
+}
 
 // ---------- when ----------
 
@@ -162,7 +174,7 @@ export function morningAfter(ev, conversationId) {
 }
 
 /** No time on the event yet: look again this often. */
-export const RECHECK_MS = 24 * 3_600_000;
+export const RECHECK_MS = 6 * 3_600_000;
 /** Past its morning after by more than this (the process was down, the event moved back), it is let go. */
 export const LATE_MS = 10 * 3_600_000;
 /** A row waiting on an event with no time this long is let go. */
@@ -267,7 +279,9 @@ function stoppedWhy(acct, att) {
   if (acct.state === "paused" || acct.state === "removed") return `account_${acct.state}`;
   if (db.stoppedStateOf(acct.address)) return "stopped";
   if (acct.paused_at) return "paused";
-  if (db.unreachable(acct.conversation_id)?.optedOut) return "opted_out";
+  const gone = db.unreachable(acct.conversation_id);
+  if (gone?.optedOut) return "opted_out";
+  if (gone) return "unreachable";
   if (att?.muted) return "muted";
   return null;
 }
@@ -318,7 +332,8 @@ export async function fire({ timer, router, key, ask = router?.onboard?.ask ?? a
     }
     if (other) { skip(conv, "already_using_reason"); return null; }
   }
-  if (!router) return null;
+  // No channels to send on: tried again by the timer system (and let go quietly when it gives up).
+  if (!router) throw new Error("no channels to send on");
   // Written as asked first, so a retried firing can never ask twice.
   setState(conv, "asked");
   const thread = db.getThread?.(conv) ?? null;
@@ -330,6 +345,12 @@ export async function fire({ timer, router, key, ask = router?.onboard?.ask ?? a
   return r;
 }
 
+/** The timer system gave up on the morning after (Runtime._giveUpOnTimer): let go, nothing said. */
+export function gaveUp(conversationId) {
+  const row = rowOf(conversationId);
+  if (row?.state === "joined") skip(conversationId, "timer_gave_up");
+}
+
 // ---------- their texts, while the row is live ----------
 
 /**
@@ -338,7 +359,7 @@ export async function fire({ timer, router, key, ask = router?.onboard?.ask ?? a
  * screen; anything it does not call clear ends the flow before B.
  */
 export async function beforeTurn({ conversationId, text = "", screen = null, log = () => {} }) {
-  const row = rowOf(conversationId);
+  const row = settleStale(rowOf(conversationId));
   if (!inPlay(row)) return null;
   const ev = db.getEventRow(row.event_id);
   const name = String(ev?.name ?? "the event").slice(0, 80);
@@ -353,7 +374,8 @@ export async function beforeTurn({ conversationId, text = "", screen = null, log
     if (verdict !== "clear" && verdict !== "unscreened") {
       setState(conversationId, "done", { why: `screen_${verdict}` });
       log({ event_onboarding: conversationId, to: "done", why: `screen_${verdict}` });
-      return null;
+      // Nothing of Reason's own after a message that needed care: not the card on this turn either.
+      return { noCard: true };
     }
     return {
       frame: `[Reason texted them "how was ${name}?" the morning after the event; this is their reply. Answer it naturally and briefly: a short warm line, or a real answer if they asked something. Do not say what else Reason can do and do not ask them anything: Reason follows with that itself right after your reply.]`,
