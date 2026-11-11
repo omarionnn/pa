@@ -595,7 +595,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const body = await readBody();
     if (body != null && String(body).length > 8000) return page(413, renderNotFound());
     const form = new URLSearchParams(body ?? "");
-    const read = questions.readForm(ev, (k) => form.get(k));
+    const read = questions.readForm(ev, (k) => form.get(k), { own: true });
     const shown = (error) => page(200, renderJoined({ ev, att: mine.att, error }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
     if (read.problems.length) return shown(`${read.problems[0].prompt}: ${questions.ANSWER_WHY[read.problems[0].problem] ?? "that answer didn't read."}`);
     // A question reworded since this page was opened: nothing is saved, and the page shows the new words.

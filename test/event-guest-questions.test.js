@@ -483,6 +483,12 @@ test("a required question: the yes names it, the join page won't go through with
   const blank = await req(h, ev, { sub: "join", method: "POST", cookie: "reason_page=tok-esi-gq-00000001", body: form({ password: "skyline", [`q_${opt.question_id}`]: "Shaboozey" }) });
   assert.match(unesc(blank.body), /Will you bring a plus-one\?: the host asks everyone this one before they're in/);
   assert.equal(db.attendeeRow(ev.id, C.esi), null, "not in without it");
+  // A crafted "left as the page showed it" field doesn't skip the check on a join form (review, 2026-11-11).
+  const crafted = await req(h, ev, { sub: "join", method: "POST", cookie: "reason_page=tok-esi-gq-00000001", body: form({ password: "skyline", [`q_${plus.question_id}`]: "", [`qo_${plus.question_id}`]: "" }) });
+  assert.match(unesc(crafted.body), /the host asks everyone this one/);
+  assert.equal(db.attendeeRow(ev.id, C.esi), null, "a qo_ field is not a join form's to send");
+  const craftedClaim = await req(h, ev, { sub: "join", method: "POST", body: form({ password: "skyline", display_name: "Nana", [`q_${plus.question_id}`]: "", [`qo_${plus.question_id}`]: "" }) });
+  assert.ok(!/Last step/.test(craftedClaim.body), "no claim without the required answer");
   const ok = await req(h, ev, { sub: "join", method: "POST", cookie: "reason_page=tok-esi-gq-00000001", body: form({ password: "skyline", [`q_${plus.question_id}`]: "1", [`qv_${plus.question_id}`]: "1" }) });
   assert.equal(ok.status, 200);
   assert.equal(db.attendeeRow(ev.id, C.esi).state, "joined");

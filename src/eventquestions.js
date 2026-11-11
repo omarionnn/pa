@@ -247,11 +247,13 @@ export function answerQuestion(ev, att, questionId, { choice = null, text = null
  * answer }], problems, cleared: [{ id, was }], missing: [prompt] }` — answers in the shape a join
  * claim keeps (db.fileClaimAnswers), problems and missing for the page to say.
  */
-export function readForm(ev, get) {
+export function readForm(ev, get, { own = false } = {}) {
   const answers = [], problems = [], cleared = [], missing = [];
   for (const q of db.eventQuestions(ev.id)) {
     const raw = get(`q_${q.id}`);
-    const was = get(`qo_${q.id}`);
+    // `qo_` is only ever a joined guest's own form: on a join form nothing was "shown", so a crafted
+    // `qo_` can't make a blank required answer read as "left as it was" (review, 2026-11-11).
+    const was = own ? get(`qo_${q.id}`) : null;
     const v = Number(get(`qv_${q.id}`) ?? q.version);
     const val = raw == null ? "" : String(raw).trim();
     if (was != null && val === String(was)) continue;

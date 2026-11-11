@@ -493,7 +493,7 @@ export const EVENT_TOOL_DEFS = [
   },
   {
     name: "event_answer",
-    description: "A guest's own answer to one of the organizer's questions for an event they joined (event_info lists them with their answers). Use when they answer one you asked, in any words, or want to change or take back an answer. For a choice question pass choice: the number of the choice they meant (1 = the first), read from what they said; for a text question pass text, their answer in their words. clear true takes their answer back. Every question is optional: if they'd rather not answer, call nothing. Only the organizer sees answers, never other guests.",
+    description: "A guest's own answer to one of the organizer's questions for an event they joined (event_info lists them with their answers). Use when they answer one you asked, in any words, or want to change or take back an answer. For a choice question pass choice: the number of the choice they meant (1 = the first), read from what they said; for a text question pass text, their answer in their words. clear true takes their answer back — not for one marked required, which can be changed but not taken back. An optional question is theirs to skip: if they'd rather not answer, call nothing. Only the organizer sees answers, never other guests.",
     input_schema: {
       type: "object",
       properties: {
@@ -1109,7 +1109,7 @@ export async function runEventTool(name, input, ctx) {
       const asked = v.role === "guest" ? questions.guestQuestions(v.ev, v.att) : [];
       if (asked.length) {
         view.questions = asked.map(guestQuestionView);
-        view.questions_note = "The organizer's questions, with their own answers (null = not answered). All optional; event_answer changes or clears one. Only the organizer sees answers.";
+        view.questions_note = "The organizer's questions, with their own answers (null = not answered). event_answer changes one, or clears an optional one (a required one can be changed, not cleared; they were never held to one that became required after they joined). Only the organizer sees answers.";
       }
       return v.role === "guest" ? organizerWords(view, v.ev) : view;
     }
