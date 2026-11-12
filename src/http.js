@@ -1437,12 +1437,12 @@ export async function bankDonePage(state, { log = () => {}, waitMs = 8000 } = {}
     outcome = plaid.linkOutcome(state);
   }
   if (outcome === "connected" || outcome === "reconnected") {
-    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Head back to Messages: Reason will text you there in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. Text "disconnect my bank" any time to remove it.</p>` };
+    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Head back to Messages: Reason will text you there in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. You can ask Reason to disconnect it any time.</p>` };
   }
   if (outcome === "open") {
     return { title: "Almost there", body: `<h1>Not connected yet.</h1><p>If you finished signing in, give it a moment: Reason will text you when it's through. If you backed out, the link in your messages still works for a little while.</p>` };
   }
-  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Text Reason "connect my bank" for a fresh one.</p>` };
+  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Ask Reason in Messages and it will send a fresh one.</p>` };
 }
 
 export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {

@@ -177,7 +177,7 @@ test("first sync: the webhook is verified, the token exchanged server-side and s
   const res = await http.plaidWebhookRequest({ ...hook, log: (e) => logged.push(e) });
   assert.deepEqual(res, { status: 200, body: { ok: true, handled: true } });
   assert.equal(fx.callsTo("/item/public_token/exchange").length, 1);
-  assert.deepEqual(said, [{ c: A, text: `First Platypus Bank is connected. i can see balances and transactions, nothing else, and i can't move money. ask me anything, like "how much did i spend this week?"` }]);
+  assert.deepEqual(said, [{ c: A, text: `First Platypus Bank is connected. i can see balances and transactions, nothing else, and i can't move money. ask me what you spent this week, what your subscriptions are, anything like that` }]);
   // On disk: the token is sealed (twice: the token key, then their own key), and so is what was synced.
   const item = raw("SELECT * FROM plaid_items")[0];
   assert.match(item.access_token, /^enc:u1:/);
@@ -717,7 +717,7 @@ test("asked about more than 60 days: wholly older gets \"i only keep the last 60
   const out = await bank(A, { action: "spending", from: "2026-06-01", to: "2026-11-12" });
   assert.equal(out.ok, true);
   assert.deepEqual([out.from, out.to, out.only_last_60_days], ["2026-09-13", "2026-11-12", true]);
-  assert.match(out.window_note, /i only keep the last 60 days/);
+  assert.match(out.window_note, /you only keep the last 60 days/);
   // Inside the window: no caveat.
   assert.equal((await bank(A, { action: "spending", period: "last_60_days" })).only_last_60_days, undefined);
   assert.equal(plaid.PLAID_SCHEMAS.bank.safeParse({ action: "spending", period: "last_90_days" }).success, false, "there is no 90-day period to ask for");

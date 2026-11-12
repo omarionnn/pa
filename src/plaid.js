@@ -321,7 +321,7 @@ async function finishOnce(row, publicTokens) {
     say(c, "that bank connection didn't go through on my end. want me to send a fresh link?");
     return { ok: false, outcome: "failed" };
   }
-  say(c, `${names.join(" and ")} is connected. i can see balances and transactions, nothing else, and i can't move money. ask me anything, like "how much did i spend this week?"`);
+  say(c, `${names.join(" and ")} is connected. i can see balances and transactions, nothing else, and i can't move money. ask me what you spent this week, what your subscriptions are, anything like that`);
   return { ok: true, outcome: "connected", banks: names };
 }
 /** What the done page may know about a link: how it ended, and nothing about the person or the bank. */
@@ -850,7 +850,7 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
     const d = input.from && input.to ? { from: input.from, to: input.to } : periodDays(input.period ?? "this_month", { now, tz });
     const cut = cutoffDay(now);
     if (d.to < cut) return null;
-    return d.from < cut ? { from: cut, to: d.to, limited: { only_last_60_days: true, window_note: `They asked about more than you keep. This covers ${cut} onward only; say "i only keep the last 60 days" in a few words.` } } : d;
+    return d.from < cut ? { from: cut, to: d.to, limited: { only_last_60_days: true, window_note: `They asked about more than you keep. This covers ${cut} onward only; tell them in a few words that you only keep the last 60 days.` } } : d;
   };
   const reconnectNote = stale.length ? { needs_reconnect: stale.map(i => i.institution), note: `${stale.map(i => i.institution).join(" and ")} needs them to sign in again, so its numbers may be behind. Say that in a few words and offer the reconnect link (bank connect with bank).` } : {};
   try {
