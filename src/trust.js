@@ -604,8 +604,10 @@ export const PROVIDERS = {
 export const SITE_REACHABLE = {
   opentable: { loads: false, why: "drops the connection on an automated browser (ERR_HTTP2_PROTOCOL_ERROR), and answers plain curl with 403" },
   uber: { loads: true, why: "m.uber.com loads; the ride form is visible signed out, prices and cars are not" },
+  // Probed again 2026-11-12 (docs/site-probe-2026-11-12-food.json): Cloudflare's check, never clearing,
+  // in the same headless browser from a home connection too. It is the automated browser, not the server's address.
   doordash: { loads: false, why: "answers 403 on every page" },
-  uber_eats: { loads: false, why: "answers 403 on every page" },
+  uber_eats: { loads: false, why: "its sign-in page answers 403; only the signed-out home page loads" },
   amazon: { loads: true, why: "loads, and the order-history page redirects to Amazon's sign-in exactly as the probe expects" },
   delta: { loads: false, why: "answers Access Denied (HTTP 444) on every page" },
   united: { loads: false, why: "drops the connection on an automated browser and on plain curl too" },

@@ -558,6 +558,12 @@ export const config = {
   ttsModel: process.env.REASON_TTS_MODEL || "gemini-3.8-flash-tts",
   ttsVoice: process.env.REASON_TTS_VOICE || "Puck",
   ttsTimeoutMs: Number(process.env.REASON_TTS_TIMEOUT_MS || 60_000),
+  // One identity (src/identity.js): the name they gave their Reason is used on every surface, and a
+  // texted voice note is spoken in the voice their calls use. off (default) | owner | on.
+  oneIdentity: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_ONE_IDENTITY ?? "").trim().toLowerCase()),
+  // The Gemini voice closest to the call voice, for a voice note when OpenAI's speech cannot make it
+  // (one identity only). Chosen by ear against "marin": a light, easy-going woman's voice.
+  ttsCloseVoice: process.env.REASON_TTS_CLOSE_VOICE || "Aoede",
   // How long a voice note has to be before the transcript keeps timestamps. Under it, a note is a
   // sentence or two and [0:00] markers are noise in the middle of what should read as their own
   // message; over it, "where did they say that" is a real question somebody might want checked.
@@ -662,6 +668,13 @@ export const config = {
   callManner: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_MANNER ?? "").trim().toLowerCase()),
   // What a call carries into the next call and the text after it (call audit 11-11, src/calls/carryover.js): owner | on | off (unset = off).
   callCarryover: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_CARRYOVER ?? "").trim().toLowerCase()),
+  // The nightly memory review (src/dream.js) reads what they said on their own phone calls, cited
+  // like their texts: off (default) | owner | on.
+  reviewCalls: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_REVIEW_CALLS ?? "").trim().toLowerCase()),
+  // Things that recur in what they said across days (repeated asks, routines, Reason's repeated
+  // mistakes, preferences), kept as guesses with the messages they rest on (src/dream.js
+  // noticePatterns): off (default) | owner | on. "on" still needs their own yes to patterns.
+  reviewPatterns: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_REVIEW_PATTERNS ?? "").trim().toLowerCase()),
   // Calls Reason makes to businesses and other people, and places ringing back about them, on GPT-Live
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
   // Unset, those calls are the provider's.

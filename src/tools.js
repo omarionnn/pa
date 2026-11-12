@@ -78,7 +78,7 @@ import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDir
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "./tableimage.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
-import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool } from "./food.js";
+import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
@@ -87,6 +87,7 @@ import * as notice from "./notice.js";
 import * as actioncards from "./actioncards.js";
 import * as actionengine from "./actionengine.js";
 import * as rhythms from "./rhythms.js";
+import * as identity from "./identity.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
 import * as goals from "./goals.js";
@@ -406,6 +407,7 @@ export function toolsFor(conversationId) {
   // Crossmint on: it is the only way to buy here, so AgentCard's buying tools go (src/shoptools.js).
   const crossmint = shopConnect.connectAllowedFor(conversationId);
   const bookingOk = flightbook.bookingEnabled(conversationId);
+  const namingOk = identity.oneIdentityFor(conversationId);
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
@@ -423,9 +425,20 @@ export function toolsFor(conversationId) {
     && cueToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
+    .map(t => (t.name === "remember" && namingOk ? rememberWithName(t) : t))
     .map(t => (t.name === "signin_link" && !social.socialAllowedFor(conversationId) ? plainSigninLink(t) : t))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+}
+
+// One identity (src/identity.js, REASON_ONE_IDENTITY): only a person the switch covers is told that
+// `remember` can keep a name for Reason. Everybody else is shown the tool exactly as it was before
+// (their prompt is cached on those bytes), and the dispatch refuses the kind for them too.
+const REMEMBER_KIND_NAMED = Object.freeze({ type: "string", enum: ["fact", "how_to_treat_me", "your_name"], description: "'fact' (default); 'how_to_treat_me' for a rule about how you behave with them, from their correction; 'your_name' when they give YOU a name or rename you ('call yourself Huey', 'i'm going to call you Huey'): the name alone in 'fact'." });
+function rememberWithName(t) {
+  const schema = t.input_schema;
+  if (!schema?.properties?.kind) return t;
+  return { ...t, input_schema: { ...schema, properties: { ...schema.properties, kind: REMEMBER_KIND_NAMED } } };
 }
 
 // Action Cards (src/actioncards.js, src/actionengine.js, REASON_ACTION_CARDS): the two card tools are
@@ -6963,7 +6976,7 @@ const S = {
     about: z.string().min(1).max(100),
     fact: z.string().min(1).max(500),
     source: z.enum(["they_said", "i_saw_it_in_a_photo", "i_worked_it_out"]).optional(),
-    kind: z.enum(["fact", "how_to_treat_me"]).optional(),
+    kind: z.enum(["fact", "how_to_treat_me", "your_name"]).optional(),
     why: z.string().max(300).optional(),
   }),
   recall: z.object({ about: z.string().max(100).optional() }),
@@ -10689,6 +10702,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const credential = looksLikeACredential(`${input.about} ${input.fact}`);
       if (credential) return refuseCredential(credential, { what: "that", ownerName: me.name });
 
+      // The name they gave their Reason (src/identity.js): kept on their account on their own word,
+      // and — where REASON_ONE_IDENTITY covers them — said on every surface from the next turn on.
+      if (input.kind === "your_name") {
+        // Off for this person: nothing is written, exactly as before the switch existed.
+        if (!identity.oneIdentityFor(c)) return { ok: false, refused: "not_saved", error: "Nothing was saved: 'kind' is 'fact' or 'how_to_treat_me' here." };
+        const set = identity.setGivenName(c, input.fact);
+        if (!set.ok) return { ok: false, refused: "not_saved", error: set.error };
+        return {
+          ok: true, kind: "your_name", name: set.name, ...(set.was && set.was !== set.name ? { was: set.was } : {}),
+          note: set.used
+            ? `Saved: with them you are ${set.name} from now on — in texts, on the web and on calls. To anybody else you are still Reason, their assistant.`
+            : `Saved as the name they gave you. Use ${set.name} with them in this conversation.`,
+        };
+      }
+
       // A rule about how Reason behaves with them, from their own correction (src/dream.js reviews
       // these nightly). Rides on every later turn (src/memorynote.js), sealed to this conversation.
       if (input.kind === "how_to_treat_me") {
@@ -11441,10 +11469,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (thread.service && !/^imessage$/i.test(thread.service)) {
         return { ok: false, supported: false, error: `this thread is ${thread.service}, and a voice note only plays as one on iMessage. ${asText}` };
       }
-      const st = voiceIO.speakingStatus();
+      // One voice (src/identity.js): the voice their calls use, where the switch covers them.
+      const as = identity.noteVoiceFor(c);
+      const st = voiceIO.speakingStatus({ as });
       if (!st.ok) return { ok: false, supported: false, missing: st.missing, error: `${st.why}. ${asText}` };
 
-      const spoken = await (ctx.speak ?? voiceIO.speak)({ text: input.text });
+      const spoken = await (ctx.speak ?? voiceIO.speak)({ text: input.text, ...(as ? { as } : {}) });
+      if (as) ctx.log?.({ voice_note_voice: spoken.voice ?? null, provider: spoken.provider ?? null, matched_call_voice: !!spoken.matched, ...(spoken.fell_back ? { fell_back: spoken.fell_back } : {}) });
       if (!spoken.ok) return { ok: false, ...(spoken.missing ? { missing: spoken.missing } : {}), error: spoken.error, note: "Nothing was sent." };
 
       // The thread's own address and nothing the model supplied: this only ever goes back to the
@@ -12277,7 +12308,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- food orders (src/food.js, REASON_FOOD) ----------
     case "food_order":
-      return await runFoodTool(name, input, { ...ctx, conversationId: c });
+      return await runFoodTool(name, input, {
+        ...ctx, conversationId: c,
+        // Past orders are read from their receipts (src/food.js pastOrders): the mail search is the
+        // same gmail_search the model has, every connected account, headers only.
+        mailSearch: ctx.mailSearch ?? (async (query, limit) => {
+          const out = await dispatch("gmail_search", { query, limit }, ctx, c, me);
+          return out?.ok ? { ok: true, messages: out.content?.messages ?? out.messages ?? [] } : out;
+        }),
+      });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
@@ -15098,7 +15137,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           site_note: reach?.why ?? "",
           signed_in: !row?.revoked_at && row?.state === "signed_in",
           ...(reach?.loads === false
-            ? { cannot_be_used: `${p.label} refuses Reason's browser (${reach.why}). The errand cannot be done this way. Say that the site blocks it — not that Reason is broken — and do not try to get around it.` }
+            ? {
+              cannot_be_used: `${p.label} refuses Reason's browser (${reach.why}). The errand cannot be done this way. Say that the site blocks it — not that Reason is broken — and do not try to get around it.`,
+              // A food app's wall is not the end of a food errand (src/food.js): what works is said here,
+              // so the reply is the working route and not the block.
+              ...(foodOn(c) && social.isFoodApp(p.site) ? { instead: social.wallInstead(p).tool } : {}),
+            }
             : {}),
         };
       };
