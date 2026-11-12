@@ -339,7 +339,9 @@ export async function requestCode(page, entry, email, { conversationId = "", log
       if ((s === 403 || s === 429) && within(hostOf(res.url()), siteDomainsFor(entry)) && ["document", "xhr", "fetch"].includes(res.request().resourceType())) refusedStatus ||= s;
     } catch { /* a response that cannot be read says nothing */ }
   };
-  const blocked = (f2, at2) => ({ ok: false, at: at2, state: "blocked", detail: refusedStatus === 429 ? "rate_limited" : "refused_after_email", why: `${entry.label} refused Reason's browser after the email was submitted${refusedStatus ? ` (HTTP ${refusedStatus})` : ""}${(f2.text.match(SITE_REFUSED) ?? [""])[0] ? `: "${f2.text.match(SITE_REFUSED)[0].slice(0, 60)}"` : ""}` });
+  // "Too many attempts" and a 429 are a limit on THIS address or this hour, not the site refusing
+  // everybody: said as a block to this person, never written down for the others (startEmailSignin).
+  const blocked = (f2, at2) => ({ ok: false, at: at2, state: "blocked", detail: refusedStatus === 429 || /too many|rate limit/i.test((f2.text.match(SITE_REFUSED) ?? [""])[0]) ? "rate_limited" : "refused_after_email", why: `${entry.label} refused Reason's browser after the email was submitted${refusedStatus ? ` (HTTP ${refusedStatus})` : ""}${(f2.text.match(SITE_REFUSED) ?? [""])[0] ? `: "${f2.text.match(SITE_REFUSED)[0].slice(0, 60)}"` : ""}` });
   await read(page, "mark_email");
   await page.fill('[data-reason-box="email"]', email);
   const at = clock.now();
@@ -361,12 +363,14 @@ export async function requestCode(page, entry, email, { conversationId = "", log
     if (f.email && kind === "rejected") break;
     // A generic failure, a rate limit or a challenge: believed from the second read on, so a toast
     // that flashes while the page is still working is not taken as the answer.
-    if ((kind === "refused" || (!f.email && CHALLENGE.test(f.text))) && i >= 1) return blocked(f, at);
+    // A password box in place of the email box means the site took the email: that is not a refusal.
+    const movedOn = f.password && !f.email;
+    if (((kind === "refused" && !movedOn) || (!f.email && !f.password && CHALLENGE.test(f.text))) && i >= 1) return blocked(f, at);
   }
   const kind = failureKind(f.text, before);
   const said = (f.text.match(REJECTED_LINE) ?? [""])[0].trim();
   if (f.email && kind === "rejected" && said) return { ok: false, at, state: "rejected", why: `${entry.label} would not take that email: "${said.slice(0, 80)}"` };
-  if (kind === "refused" || (!f.email && !f.password && CHALLENGE.test(f.text))) return blocked(f, at);
+  if ((kind === "refused" && !(f.password && !f.email)) || (!f.email && !f.password && CHALLENGE.test(f.text))) return blocked(f, at);
   if (f.password && !f.email) return { ok: false, at, state: "password", why: `${entry.label} asked for a password rather than sending a code` };
   // Nothing on the page says why, but the site answered the press with 403 / 429.
   if (refusedStatus) return blocked(f, at);
@@ -472,7 +476,7 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
           // The site refused Reason's browser. Written down with today's date so nothing tries again
           // until it is old, and said as what it is: never a wrong email, never another address.
           const kind = asked.detail === "wall_before_form" ? "walled" : "refuses_after_email";
-          findings.recordFinding(entry, { kind, why: asked.why });
+          if (asked.detail !== "rate_limited") findings.recordFinding(entry, { kind, why: asked.why });
           const w = findings.blockedWords(entry, { kind }, { instead: !social.isFoodApp(entry.site) && social.wallInstead(entry).say ? social.wallInstead(entry) : null });
           return finish(`the ${entry.label} email sign-in stopped: ${asked.why}. This is ${entry.label} blocking automated sign-in, NOT a wrong email. Nothing was saved. ${w.never} Say ONE honest line, like: "${w.say}" Then the best route left: ${w.instead}`, "blocked", asked.detail);
         }

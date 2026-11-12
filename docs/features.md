@@ -546,6 +546,14 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
   a 403/429 on the sign-in or account page writes a new one. `signin_status` gives each site a
   `signin_here` (blocked / open / unknown) with its date; the old top-level `can_sign_in_here`, which
   was about the person being at the Mac, is now `window_on_this_mac`.
+- **The live ask is short and never guesses** (`src/socialsignin.js` `signinWall`, review of #521):
+  at most 2.5 s for everybody's `signin_link` / `signin_open` / `signin_email`, through the network
+  guard, one fetch per page at a time, 400 KB of body at most. Only a 403, a 429 or a challenge page
+  served as an error is a wall. A timeout, a failed lookup, a redirect loop, a bare 503 or a 404 is
+  "unknown": nothing is stored and the link is still made. A finding speaks only for the sign-in page
+  it was seen on (a one-way mark, never the address), a refusal seen on one person's run lasts a day,
+  "too many attempts" is never stored, and the table is capped at 2,000 sites
+  (`test/signin-live-check.test.js`, 13 tests).
 - **Google, as it is.** Google refuses Reason's browser on its own sign-in page after the email is
   typed, whoever types it (proved on Notion 2026-11-10), so there is no Google route: not pressed for
   the person, and not completable by the person on the secure link either. A site that offers Google

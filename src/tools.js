@@ -9396,7 +9396,10 @@ function signinBlockedAnswer(entry) {
 }
 
 /** The live ask about a site's sign-in page: handed in by a test, never the real network under test. */
-const liveWallFn = (ctx) => ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? null : social.signinWall);
+/** The most the live ask may add to a sign-in tool. No answer in that time is "unknown", never "blocked". */
+export const SIGNIN_LIVE_CHECK_MS = 2500;
+const quickWall = (entry) => social.signinWall(entry, { timeoutMs: SIGNIN_LIVE_CHECK_MS });
+const liveWallFn = (ctx) => ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? null : quickWall);
 /**
  * Where a site's sign-in stands for Reason's browser (src/sitefindings.js): a dated finding that is
  * still fresh, else the site asked now and the answer written down. Never a finding trusted forever.

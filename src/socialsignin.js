@@ -423,45 +423,91 @@ const WALL_TTL_MS = 10 * 60_000;
 const WALL_BLOCKED_TTL_MS = 30_000;
 const CHALLENGE = /performing security verification|just a moment|challenge-platform|cf-chl|attention required|access denied/i;
 const walls = new Map();
-export function _resetWalls() { walls.clear(); }
-/** The last live answer for a site, or null when nobody has asked (or it has gone stale). */
-export function wallCached(site) {
+const asking = new Map();
+/** The most sites kept in memory: the site can be any address a person named, so the map is capped. */
+const WALLS_MAX = 500;
+/** The most of a sign-in page that is read: enough for its words, never a download. */
+const WALL_BODY_MAX = 400_000;
+export function _resetWalls() { walls.clear(); asking.clear(); }
+/** The last live answer for a site, or null when nobody has asked (or it has gone stale, or it was about another page). */
+export function wallCached(site, url = null) {
   const hit = walls.get(site);
   if (!hit) return null;
+  if (url != null && hit.url !== url) return null;
   return clock.now() - hit.at < (hit.out.in ? WALL_TTL_MS : WALL_BLOCKED_TTL_MS) ? hit.out : null;
+}
+/** A response's body as text, stopped at `max` bytes: a huge or endless body is cut off, not downloaded. */
+async function cappedText(res, max, signal) {
+  const body = res?.body;
+  if (!body?.getReader) return String((await res?.text?.()) ?? "").slice(0, max);
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let out = "";
+  let n = 0;
+  try {
+    while (n < max) {
+      if (signal?.aborted) throw new Error("no answer in time");
+      const { done, value } = await reader.read();
+      if (done) break;
+      n += value?.byteLength ?? 0;
+      out += dec.decode(value, { stream: true });
+    }
+  } finally { try { await reader.cancel(); } catch { /* already closed */ } }
+  return out.slice(0, max);
 }
 export async function signinWall(entry, { fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
   const site = entry?.site ?? "";
   const url = entry?.signin_url ?? "";
   if (!site || !url) return { in: false, status: 0, why: "the site has no sign-in page on record", providers_offered: [], checked_at: clock.now() };
-  const hit = wallCached(site);
+  const hit = wallCached(site, url);
   if (hit) return hit;
-  let out;
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  // One ask per page at a time: everybody who asks while it is out gets the same answer.
+  const key = `${site}\n${url}`;
+  const going = asking.get(key);
+  if (going) return going;
   const label = entry.label ?? site;
-  try {
+  const ctl = new AbortController();
+  let timer;
+  // The cap covers everything, the name lookup included (a lookup cannot be aborted, so it is raced).
+  const late = new Promise((_, no) => { timer = setTimeout(() => { ctl.abort(); no(new Error(`no answer in ${Math.round(timeoutMs / 100) / 10}s`)); }, timeoutMs); });
+  const work = (async () => {
     // Through the network guard (src/netguard.js): since #454 the page can be any site the model
     // named by its address, so neither it nor a redirect from it may reach this machine's network.
     const got = await guardedFetch(url, { signal: ctl.signal, fetchImpl, httpsOnly: true, headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36", Accept: "text/html" } });
-    if (!got.ok) return { in: false, status: 0, why: `${label}'s sign-in page was not fetched: ${got.why}`, providers_offered: [], checked_at: clock.now() };
+    if (!got.ok) return { nocache: true, out: { in: false, status: 0, why: `${label}'s sign-in page was not fetched: ${got.why}`, providers_offered: [], checked_at: clock.now() } };
     const res = got.res;
     const status = Number(res?.status ?? 0);
-    const html = String((await res.text().catch(() => "")) ?? "").slice(0, 400_000);
+    const refusal = status === 403 || status === 429;
+    // A refusal's status says it all; its body is only read for the marker, and never waited on.
+    let html = "";
+    try { html = await cappedText(res, WALL_BODY_MAX, ctl.signal); } catch (e) { if (!refusal) throw e; }
     const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
     const marker = CHALLENGE.exec(text)?.[0] ?? "";
-    if (marker || status === 403 || status === 429 || status === 503) {
-      out = { in: false, status, why: `${label}'s sign-in page answers Reason's browser from here with a bot check (HTTP ${status}${marker ? `, "${marker}"` : ""}), so a link would show the wall and nothing else.`, providers_offered: [], checked_at: clock.now() };
-    } else if (status >= 200 && status < 300) {
-      out = { in: true, status, why: "", providers_offered: providersOffered(text), checked_at: clock.now() };
-    } else {
-      out = { in: false, status, why: `${label}'s sign-in page answered HTTP ${status} from here.`, providers_offered: [], checked_at: clock.now() };
+    // A wall is the site REFUSING: 403, 429, or a challenge page served as an error. A bare 503 is an
+    // outage, and a page that loaded (2xx) with "just a moment" in its words is a page that loaded
+    // strangely: neither is called a bot check, so neither is ever written down as a block.
+    if (refusal || (marker && status >= 400)) {
+      return { out: { in: false, status, why: `${label}'s sign-in page answers Reason's browser from here with a bot check (HTTP ${status}${marker ? `, "${marker}"` : ""}), so a link would show the wall and nothing else.`, providers_offered: [], checked_at: clock.now() } };
     }
-  } catch (e) {
-    out = { in: false, status: 0, why: `${label}'s sign-in page could not be reached from here: ${(e?.message ?? String(e)).split("\n")[0]}`, providers_offered: [], checked_at: clock.now() };
-  } finally { clearTimeout(timer); }
-  walls.set(site, { at: clock.now(), out });
-  return out;
+    if (status >= 200 && status < 300 && !marker) return { out: { in: true, status, why: "", providers_offered: providersOffered(text), checked_at: clock.now() } };
+    if (status >= 200 && status < 300) return { out: { in: false, status, why: `${label}'s sign-in page loaded from here but its words could not be told from a check page ("${marker}"), so nothing is concluded.`, providers_offered: [], checked_at: clock.now() } };
+    return { out: { in: false, status, why: `${label}'s sign-in page answered HTTP ${status} from here.`, providers_offered: [], checked_at: clock.now() } };
+  })();
+  work.catch(() => {}); // when the cap wins the race, the fetch's own abort is not an unhandled rejection
+  const run = (async () => {
+    let got;
+    try { got = await Promise.race([work, late]); }
+    catch (e) { got = { out: { in: false, status: 0, why: `${label}'s sign-in page could not be reached from here: ${(e?.message ?? String(e)).split("\n")[0]}`, providers_offered: [], checked_at: clock.now() } }; }
+    finally { clearTimeout(timer); asking.delete(key); }
+    if (!got.nocache) {
+      walls.delete(site);
+      walls.set(site, { at: clock.now(), url, out: got.out });
+      while (walls.size > WALLS_MAX) walls.delete(walls.keys().next().value);
+    }
+    return got.out;
+  })();
+  asking.set(key, run);
+  return run;
 }
 
 // ---------------------------------------------------------------- Uber

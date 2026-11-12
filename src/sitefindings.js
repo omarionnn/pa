@@ -23,13 +23,15 @@
 // Nothing here gets around a wall. A wall is read, dated and believed until it is old.
 import { clock } from "./config.js";
 import * as db from "./db.js";
+import { createHash } from "node:crypto";
 
 const DAY = 86_400_000;
 /** How long each kind of finding is believed before the site is asked again. */
 export const MAX_AGE_MS = {
   probe: 14 * DAY,              // a probe run's wall
   live_walled: 1 * DAY,         // a wall the service hit itself
-  live_refuses_after_email: 7 * DAY, // each re-try submits their email again, so this one is slower
+  // One person's run is what writes this, and it shuts the emailed code for everybody: a day, like a wall.
+  live_refuses_after_email: 1 * DAY,
   open: 6 * 60 * 60_000,        // a page that loaded
 };
 
@@ -68,9 +70,22 @@ db.db.exec(`
     kind TEXT NOT NULL,
     status INTEGER,
     why TEXT NOT NULL DEFAULT '',
-    seen_at INTEGER NOT NULL
+    seen_at INTEGER NOT NULL,
+    page TEXT NOT NULL DEFAULT ''
   );
 `);
+if (!db.db.prepare("PRAGMA table_info(site_findings)").all().some(c => c.name === "page")) db.db.exec("ALTER TABLE site_findings ADD COLUMN page TEXT NOT NULL DEFAULT ''");
+/** The most rows kept. The site can be any address a person named, so the table is capped and old rows go. */
+export const MAX_ROWS = 2000;
+const KEEP_MS = 14 * DAY;
+/**
+ * Which sign-in page a finding is about, as a short one-way mark (never the address itself). The
+ * table is shared by every account, and for a site named by its address the page is whatever the
+ * person typed: a finding only speaks for the page it was seen on, so one person naming a page that
+ * answers 403 (their own page on a shared host, an admin path) cannot mark the site blocked for
+ * people who named its real sign-in page.
+ */
+export const pageMark = (entry) => createHash("sha256").update(String(entry?.signin_url ?? "")).digest("hex").slice(0, 16);
 /** For tests: forget what the service saw itself. */
 export function _resetFindings() { db.db.exec("DELETE FROM site_findings"); }
 
@@ -100,7 +115,7 @@ function probeFor(entry) {
 export function signinFinding(entry, now = clock.now()) {
   if (!entry?.site) return null;
   const p = probeFor(entry);
-  const row = db.db.prepare("SELECT kind, status, why, seen_at FROM site_findings WHERE site = ?").get(entry.site);
+  const row = db.db.prepare("SELECT kind, status, why, seen_at FROM site_findings WHERE site = ? AND page = ?").get(entry.site, pageMark(entry));
   const live = row ? { ...row, source: "live" } : null;
   const f = p && live ? (live.seen_at >= p.seen_at ? live : p) : (live ?? p);
   if (!f) return null;
@@ -112,14 +127,25 @@ export function signinFinding(entry, now = clock.now()) {
 /** Write down what the service just saw. `kind`: walled | refuses_after_email | open. */
 export function recordFinding(entry, { kind, status = null, why = "" } = {}, now = clock.now()) {
   if (!entry?.site || !["walled", "refuses_after_email", "open"].includes(kind)) return null;
-  db.db.prepare("INSERT INTO site_findings (site, kind, status, why, seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(site) DO UPDATE SET kind = excluded.kind, status = excluded.status, why = excluded.why, seen_at = excluded.seen_at")
-    .run(entry.site, kind, Number.isFinite(Number(status)) && status != null ? Number(status) : null, String(why ?? "").slice(0, 300), now);
+  db.db.prepare("INSERT INTO site_findings (site, kind, status, why, seen_at, page) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(site) DO UPDATE SET kind = excluded.kind, status = excluded.status, why = excluded.why, seen_at = excluded.seen_at, page = excluded.page")
+    .run(String(entry.site).slice(0, 255), kind, Number.isFinite(Number(status)) && status != null ? Number(status) : null, String(why ?? "").slice(0, 300), now, pageMark(entry));
+  // Bounded: nothing older than any finding is believed, and never more than MAX_ROWS sites.
+  db.db.prepare("DELETE FROM site_findings WHERE seen_at < ?").run(now - KEEP_MS);
+  if (db.db.prepare("SELECT COUNT(*) AS n FROM site_findings").get().n > MAX_ROWS) {
+    db.db.prepare("DELETE FROM site_findings WHERE site NOT IN (SELECT site FROM site_findings ORDER BY seen_at DESC LIMIT ?)").run(MAX_ROWS);
+  }
   return signinFinding(entry, now);
 }
 
-/** Is a live answer (signinWall's shape) a wall? 403/429/503 or a challenge page; an outage or a 404 is not. */
+/**
+ * Is a live answer (signinWall's shape) a wall? 403/429, or a challenge page served as an error
+ * (signinWall words that as a "bot check"). A bare 503, a timeout, a name that does not resolve, a
+ * 404 and a page that loaded are not: an outage is never written down as the site blocking anybody.
+ */
 export function isWall(wall) {
-  return !!wall && !wall.in && ([403, 429, 503].includes(Number(wall.status)) || /bot check/.test(String(wall.why ?? "")));
+  if (!wall || wall.in) return false;
+  const s = Number(wall.status) || 0;
+  return s === 403 || s === 429 || (/bot check/.test(String(wall.why ?? "")) && !(s >= 200 && s < 300));
 }
 
 /**
