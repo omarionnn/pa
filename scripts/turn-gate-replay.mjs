@@ -6,11 +6,13 @@
 //   node scripts/turn-gate-replay.mjs            # the report
 //   node scripts/turn-gate-replay.mjs --json     # the same, as JSON
 //
-// What it answers: how often does the verdict land before the voice's first audio, how often inside
-// the gate's budget, how often does a mid-thought "Go on" still reach the phone, how often is a good
-// reply held by mistake, and how much delay does the gate add. The one thing it cannot know is how
-// late GPT-Live's transcript really is, so it runs three assumptions for that lag; the first real
-// call's `gptlive_turn_gate` log lines (transcript_ms, decision_ms, lead_ms) say which one is true.
+// What it answers, for a turn where they pause mid-thought, carry on, and then finish:
+//   - in the pause: was a short acknowledgement heard, did it sit in the pause or land on their words,
+//     and did a full reply to half the thought reach the phone;
+//   - when they finished: was the real reply prompt, or delayed, and by how much.
+// The one thing it cannot know is how late GPT-Live's transcript really is, so it runs three
+// assumptions for that lag; the first real call's `gptlive_turn_gate` log lines (transcript_ms,
+// decision_ms, lead_ms, pause_ms) say which one is true.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,7 +97,8 @@ async function load() {
  *   { at, said: "words" }                a piece of the voice's own transcript arrives
  * Returns what reached the phone and what the gate logged.
  */
-export async function replayOne(events, { gate = "on", row = null, until = null, beforeStart = null, setup = null } = {}) {
+export async function replayOne(events, { gate = "on", row = null, until = null, beforeStart = null, setup = null, react = 600 } = {}) {
+  events = [...events];
   const { gl, db, config } = await load();
   const before = config.callTurnGate;
   config.callTurnGate = gate;
@@ -121,6 +124,8 @@ export async function replayOne(events, { gate = "on", row = null, until = null,
     const zero = timers.now();
     // 20 ms slots: who is making sound in each.
     const end = until ?? Math.max(...events.map(e => e.at + (e.them ?? e.voice ?? 0))) + 2500;
+    let seen = 0;
+    const asked = [];
     const at = (ms) => events.filter(e => e.at >= ms && e.at < ms + 20);
     const span = (key, ms) => events.some(e => e[key] && ms >= e.at && ms < e.at + e[key]);
     for (let ms = 0; ms < end; ms += 20) {
@@ -132,13 +137,34 @@ export async function replayOne(events, { gate = "on", row = null, until = null,
             event: e.failed ? { type: "decision.failed", error: { message: "synthetic" } } : { type: "decision.completed", decision: { answers: [{ type: "predicate", name: "finished", probability: e.finished }, ...(e.asks ? [{ type: "choice", name: "asks", choice: e.asks }] : [])] } } });
         }
       }
-      say({ event: "media", media: { payload: span("them", ms) ? LOUD : SILENT } });
+      // The voice does as it is asked: told to say only a word, it says it `react` ms later (0 = never).
+      for (; seen < live.sent.length; seen++) {
+        const m = /say only "([^"]+)"/.exec(String(live.sent[seen].content ?? ""));
+        // Asked, it says that and not something of its own (what it had not yet begun is not said).
+        // (An instruction stops what it is saying, per the docs: its own run ends here.)
+        if (m && react) events = events.filter(e => !(e.own && e.at > ms)).map(e => (e.own && e.voice && e.at + e.voice > ms ? { ...e, voice: Math.max(0, ms - e.at) } : e));
+        if (m && react) { asked.push(ms); events.push({ at: ms + react, voice: 400, asked: true }, { at: ms + react + 100, said: m[1] }); }
+      }
+      // Their speech has the gaps speech has (60 ms in every 300): a steady tone is line noise to the relay, as it should be.
+      const theirs = events.find(e => e.them && ms >= e.at && ms < e.at + e.them);
+      say({ event: "media", media: { payload: theirs && ((ms - theirs.at) % 300 < 240 || ms >= theirs.at + theirs.them - 60) ? LOUD : SILENT } });
       if (span("voice", ms)) emit({ type: "session.output_audio.delta", delta: LOUD });
       timers.advance(20);
     }
     call.done = true;
     const played = sentTwilio.filter(m => m.event === "media" && m.media?.payload && m.media.payload !== SILENT).map(m => m.at - zero);
-    return { played, lines, live, sentTwilio, zero, call, gate: lines.filter(l => l.gptlive_turn_gate != null) };
+    // What the phone plays, and when: Twilio plays what it is sent in order, 20 ms a frame, and a clear empties what has not played.
+    const heard = [];
+    let head = 0;
+    for (const m of sentTwilio) {
+      const at = m.at - zero;
+      if (m.event === "clear") { while (heard.length && heard.at(-1) >= at) heard.pop(); head = at; continue; }
+      if (m.event !== "media" || !m.media?.payload) continue;
+      head = Math.max(head, at);
+      if (m.media.payload !== SILENT) heard.push(head);
+      head += 20;
+    }
+    return { played, heard, asked, lines, live, sentTwilio, zero, call, events, gate: lines.filter(l => l.gptlive_turn_gate != null) };
   } finally {
     config.callTurnGate = before;
   }
@@ -158,58 +184,74 @@ const WARMUP = [
 const T0 = 6000;
 
 /**
- * One synthetic turn of theirs, ending at `T0 + talk`: the transcript in two pieces (the last words
- * `lag` behind their voice, the piece before it 600 ms earlier), a decision on each, and the voice
- * starting `onset` after their last sound.
- *   finished: a whole thought; the voice's reply should reach the phone, undelayed.
- *   mid:      they stop mid-thought; the voice's "Go on" should never reach the phone. They carry on 2.4 s later.
+ * One synthetic turn of theirs: they talk for `talk`, pause mid-thought for `pause`, carry on for
+ * `more`, and stop — finished. Their transcript comes in pieces, the last words of each stretch `lag`
+ * behind their voice, with a decision on each (`right`: whether each verdict is the true one).
+ * In the pause the voice does one of three things (`voice`): "ack" a short sound of its own, "reply" a
+ * full answer to half the thought, or "none" (code then asks it for one). After they finish, the
+ * voice's real reply starts `onset` later.
  */
-export function turn({ kind, lag, onset, d1, d2, right = true, talk = 1800 }) {
-  const stop = T0 + talk;
-  const finished = kind === "finished";
-  const verdict = (finished ? right : !right) ? 0.97 : 0.03;
-  return {
-    stop, kind,
-    events: [
-      ...WARMUP,
-      { at: T0, them: talk },
-      { at: Math.max(T0 + 200, stop - 600 + lag), heard: "p1", end: stop - 600 },
-      { at: Math.max(T0 + 200, stop - 600 + lag) + d1, decision: "p1", finished: 0.03 },
-      { at: stop + lag, heard: "p2", end: stop },
-      { at: stop + lag + d2, decision: "p2", finished: verdict },
-      { at: stop + onset, voice: finished ? 1200 : 500 },
-      ...(finished ? [] : [{ at: stop + 2400, them: 1500 }]),
-    ],
-  };
+export function turn({ talk = 4000, pause = 1800, more = 2000, lag, onset, pauseOnset, voice = "ack", d = [200, 200, 200], right = [true, true], said = "Mm-hm." }) {
+  const stop1 = T0 + talk;
+  const resume = stop1 + pause;
+  const stop2 = resume + more;
+  const events = [
+    ...WARMUP,
+    { at: T0, them: talk },
+    { at: Math.max(T0 + 200, stop1 - 600 + lag), heard: "p1", end: stop1 - 600 },
+    { at: Math.max(T0 + 200, stop1 - 600 + lag) + d[0], decision: "p1", finished: 0.03 },
+    { at: stop1 + lag, heard: "p2", end: stop1 },
+    { at: stop1 + lag + d[1], decision: "p2", finished: right[0] ? 0.03 : 0.97 },
+    { at: resume, them: more },
+    { at: stop2 + lag, heard: "p3", end: stop2 },
+    { at: stop2 + lag + d[2], decision: "p3", finished: right[1] ? 0.97 : 0.03 },
+    { at: stop2 + onset, voice: 1400, reply: true },
+    { at: stop2 + onset + 200, said: "Okay, so here's what I'd do." },
+  ];
+  if (voice === "ack") events.push({ at: stop1 + pauseOnset, voice: 400, own: true }, { at: stop1 + pauseOnset + 100, said, own: true });
+  if (voice === "reply") events.push({ at: stop1 + pauseOnset, voice: 1800, own: true }, { at: stop1 + pauseOnset + 200, said: "Sure, I can do that for you now.", own: true });
+  return { events, stop1, resume, stop2, replyAt: stop2 + onset };
 }
 
 const pct = (n, d) => (d ? `${Math.round((100 * n) / d)}%` : "–");
 const q = (xs, p) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 
-/** `n` finished turns and `n` mid-thought turns under one assumption about the transcript's lag. */
-export async function scenario(lagRange, { n = 150, seed = 7 } = {}) {
+/** What the phone played in one replayed turn, read against when they were talking. */
+export function measure(t, res) {
+  const inPause = res.heard.filter(ms => ms >= t.stop1 && ms < t.resume);
+  // Voice audio begun in the pause (or asked for in it) that was still playing once they had carried on.
+  const onSpeech = res.heard.filter(ms => ms >= t.resume && ms < t.stop2).length * 20;
+  const reply = res.heard.filter(ms => ms >= t.replyAt - 20);
+  return {
+    ackMs: inPause.length * 20, ackAt: inPause.length ? inPause[0] - t.stop1 : null, onSpeech,
+    fullReply: inPause.length * 20 + onSpeech > 700,
+    replied: reply.length > 0, replyDelay: reply.length ? Math.max(0, reply[0] - t.replyAt - 20) : null,
+  };
+}
+
+/** `n` turns under one assumption about the transcript's lag: a third each of the voice's three behaviours in the pause. */
+export async function scenario(lagRange, { n = 150, seed = 7, gate = "on" } = {}) {
   const r = rng(seed);
   const pick = () => DECISION_MS[Math.floor(r() * DECISION_MS.length)];
-  const out = { turns: 2 * n, finished: { n, before: 0, inBudget: 0, played: 0, heldWrong: 0, delays: [] }, mid: { n, before: 0, inBudget: 0, kept: 0, slipped: 0 } };
-  for (const kind of ["finished", "mid"]) {
-    for (let i = 0; i < n; i++) {
-      // The voice's reply to a finished sentence starts about a second after it; a listening sound into a pause, sooner.
-      const onset = between(r, kind === "finished" ? [700, 1300] : [500, 1000]);
-      const lag = between(r, lagRange);
-      const d2 = pick();
-      const t = turn({ kind, lag, onset, d1: pick(), d2, right: r() < ACCURACY });
-      const res = await replayOne(t.events, { until: t.stop + 2300 });
-      const first = t.stop + onset;
-      const verdictAt = t.stop + lag + d2;
-      const heard = res.played.filter(ms => ms >= first - 20);
-      const o = out[kind];
-      if (verdictAt <= first) o.before++;
-      if (verdictAt <= first + 500) o.inBudget++;
-      if (kind === "finished") {
-        // Played when its audio reached the phone before the turn's window closed.
-        if (heard.length) { o.played++; o.delays.push(Math.max(0, heard[0] - first - 20)); } else o.heldWrong++;
-      } else if (heard.length) o.slipped++; else o.kept++;
-    }
+  const out = { n, pauses: { ack: 0, ackInPause: 0, ackOnSpeech: 0, onSpeechMs: [], ackAt: [], none: 0, fullReplies: 0, fullHeard: 0 }, finished: { n: 0, prompt: 0, delayed: 0, never: 0, delays: [] } };
+  for (let i = 0; i < n; i++) {
+    const voice = ["ack", "reply", "none"][i % 3];
+    const t = turn({
+      talk: between(r, [2500, 9000]), pause: between(r, [1200, 2800]), more: between(r, [1500, 4000]), voice,
+      lag: between(r, lagRange), onset: between(r, [700, 1300]), pauseOnset: between(r, [500, 1000]),
+      d: [pick(), pick(), pick()], right: [r() < ACCURACY, r() < ACCURACY], said: ["Mm-hm.", "Yeah.", "Go on."][Math.floor(r() * 3)],
+    });
+    const m = measure(t, await replayOne(t.events, { gate, until: t.replyAt + 2600 }));
+    const p = out.pauses;
+    if (voice === "reply") { p.fullReplies++; if (m.fullReply) p.fullHeard++; }
+    if (m.ackMs || m.onSpeech) {
+      if (!m.fullReply) { p.ack++; if (m.onSpeech > 40) p.ackOnSpeech++; else p.ackInPause++; if (m.ackAt != null) p.ackAt.push(m.ackAt); }
+      p.onSpeechMs.push(m.onSpeech);
+    } else p.none++;
+    const f = out.finished;
+    f.n++;
+    if (!m.replied) f.never++;
+    else { f.delays.push(m.replyDelay); if (m.replyDelay <= 100) f.prompt++; else f.delayed++; }
   }
   return out;
 }
@@ -217,17 +259,20 @@ export async function scenario(lagRange, { n = 150, seed = 7 } = {}) {
 export async function report({ n = 150, seed = 7 } = {}) {
   const rows = {};
   for (const [name, range] of Object.entries(LAGS)) rows[name] = await scenario(range, { n, seed });
+  rows["gate off (as live today), transcript 0.5–1.5 s behind"] = await scenario(LAGS["transcript 0.5–1.5 s behind (the repo's notes)"], { n, seed, gate: "off" });
   return rows;
 }
 
 export function render(rows) {
-  const lines = ["Turn gate replay — synthetic timelines through the real relay (REASON_CALL_TURN_GATE=on)", ""];
+  const lines = ["Turn gate replay — synthetic turns through the real relay: they talk, pause mid-thought, carry on, finish", "(in the pause the voice gives a short sound of its own, starts a full reply, or says nothing: a third each)", ""];
   for (const [name, s] of Object.entries(rows)) {
-    const all = s.finished.n + s.mid.n;
-    lines.push(name, `  verdict in before the voice's first audio: ${pct(s.finished.before + s.mid.before, all)}; inside the 500 ms budget: ${pct(s.finished.inBudget + s.mid.inBudget, all)}`,
-      `  mid-thought pauses (${s.mid.n}): "Go on" kept off the phone ${pct(s.mid.kept, s.mid.n)}, slipped through ${pct(s.mid.slipped, s.mid.n)}`,
-      `  finished thoughts (${s.finished.n}): reply played ${pct(s.finished.played, s.finished.n)}, held by mistake ${pct(s.finished.heldWrong, s.finished.n)}`,
-      `  delay added to a played reply: median ${q(s.finished.delays, 0.5)} ms, p90 ${q(s.finished.delays, 0.9)} ms, worst ${q(s.finished.delays, 1)} ms`, "");
+    const p = s.pauses;
+    const f = s.finished;
+    lines.push(name,
+      `  mid-thought pauses (${s.n}): an acknowledgement heard in ${pct(p.ack, s.n)} — ${p.ackInPause} wholly in the pause, ${p.ackOnSpeech} still playing when they carried on; nothing heard in ${pct(p.none, s.n)}`,
+      `  an acknowledgement began ${q(p.ackAt, 0.5) ?? "–"} ms into the pause (median); voice audio on top of their words: worst ${q(p.onSpeechMs, 1) ?? 0} ms`,
+      `  full replies to half a thought (${p.fullReplies}): reached the phone ${pct(p.fullHeard, p.fullReplies)}`,
+      `  when they finished (${f.n}): real reply prompt (≤100 ms added) ${pct(f.prompt, f.n)}, delayed ${pct(f.delayed, f.n)}, not within 2.5 s ${pct(f.never, f.n)}; added delay median ${q(f.delays, 0.5)} ms, p90 ${q(f.delays, 0.9)} ms, worst ${q(f.delays, 1)} ms`, "");
   }
   return lines.join("\n");
 }
