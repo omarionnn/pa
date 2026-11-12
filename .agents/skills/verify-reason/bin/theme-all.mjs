@@ -35,8 +35,8 @@ const { chromium } = createRequire(new URL("package.json", root))("playwright");
 const shots = process.argv.includes("--shots") ? process.argv[process.argv.indexOf("--shots") + 1] : null;
 if (shots) mkdirSync(shots, { recursive: true });
 
-const e = { id: 1, public_id: "abcdEFGH12345678", name: "Game Night", place: "Somewhere", description: "Board games", guest_list_visible: 1, organizer_token: "x", status: "active", organizer_conversation_id: "console:x" };
-const att = { id: 1, display_name: "Ama", instagram: "", in_directory: 1 };
+const e = { id: 1, tz: "America/New_York", public_id: "abcdEFGH12345678", name: "Game Night", place: "Somewhere", description: "Board games", guest_list_visible: 1, organizer_token: "x", status: "active", organizer_conversation_id: "console:x" };
+const att = { id: 1, conversation_id: "console:guest", display_name: "Ama", instagram: "", in_directory: 1 };
 const html = (r) => typeof r === "string" ? r : r.body;
 const filesPage = { id: 1, title: "Coffee at home", subtitle: "", created_at: Date.now(), blocks: [{ type: "text", text: "Beans, grind, water." }] };
 const pages = {

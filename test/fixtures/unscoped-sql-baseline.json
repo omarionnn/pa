@@ -49,6 +49,7 @@
  "src/db.js | SELECT SELECT * FROM call_quotes WHERE id = ?": 1,
  "src/db.js | SELECT SELECT * FROM call_turns WHERE call_id = ? ORDER BY turn_index ASC, id ASC": 1,
  "src/db.js | SELECT SELECT * FROM calls WHERE (state IN ('placing', 'ringing') AND created_at < ?) OR (state = 'in_progress' AND created_at < ?) ORDER BY id ASC": 1,
+ "src/db.js | SELECT SELECT * FROM calls WHERE created_at >= ? AND pt(to_number) = ? ORDER BY id ASC": 1,
  "src/db.js | SELECT SELECT * FROM calls WHERE provider = ? AND external_id = ? ORDER BY id DESC LIMIT 1": 1,
  "src/db.js | SELECT SELECT * FROM calls WHERE settle_started_at IS NOT NULL AND settled_at IS NULL AND settle_resumes = 0 AND settle_started_at >= ? AND state NOT IN ('placing', 'r": 1,
  "src/db.js | SELECT SELECT * FROM calls WHERE state IN ('placing','ringing','in_progress') AND created_at >= ? AND pt(to_number) = ? ORDER BY id DESC LIMIT 1": 1,
