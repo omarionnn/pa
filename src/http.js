@@ -122,6 +122,16 @@ import { readPlain } from "./restfiles.js";
 
 const MAX_BODY = 1_000_000;
 
+/**
+ * A promise that rejects with nobody catching it is written to the log and the process carries
+ * on. Node's default ends the process, which loses every reply in flight. Returns the remover.
+ */
+export function logUnhandledRejections(log) {
+  const onRejection = (e) => log({ unhandled_rejection: (e?.stack ?? String(e)).split("\n").slice(0, 4).join(" | ") });
+  process.on("unhandledRejection", onRejection);
+  return () => process.off("unhandledRejection", onRejection);
+}
+
 export function createServer({ router, runtime, log = () => {} }) {
   // A new stamp is mentioned in the thread through the runtime's own send, and only while REASON_WEB_DAILY is on (never at REASON_STAMPS_ALL alone).
   stamps.installStamps({ tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null, log });
@@ -154,7 +164,15 @@ export function createServer({ router, runtime, log = () => {} }) {
   }
   return server;
   async function handleRequest(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+    // A URL or Host header that will not parse (scanners send `//%2e%2e%2f%2eenv`) is a 400, never a throw.
+    let url;
+    try {
+      url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+    } catch {
+      guardResponse(res);
+      res.writeHead(400, { "Content-Type": "text/plain", "Connection": "close" });
+      return void res.end("Bad request");
+    }
     // The status page's key goes out on the status page only: never on Web, a page, or anything else (src/opsredact.js).
     if (url.pathname !== "/ops" && url.pathname !== "/ops.json") guardResponse(res);
     const send = (status, body) => {
