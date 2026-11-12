@@ -1,0 +1,252 @@
+{
+ "label": "airline",
+ "startUrl": "https://www.jetblue.com/",
+ "task": "Book ONE one-way flight for 1 adult from New York (JFK or LGA) to Boston (BOS) on Wednesday, December 2, 2026: the cheapest nonstop departing between 8am and 6pm, in the lowest standard economy fare. No seat selection that costs money, no bags, no insurance, no extras, no account or loyalty sign-up; continue as a guest. Pay by card.",
+ "events": [
+  {
+   "t": 1,
+   "started": "668420e0-0560-4737-84a7-c065564a309f"
+  },
+  {
+   "t": 4,
+   "status": "running"
+  },
+  {
+   "t": 93,
+   "status": "awaiting_input"
+  },
+  {
+   "t": 93,
+   "question": "Three nonstop JetBlue JFK→BOS flights on Wed Dec 2 fit your window and all cost the same $119 in Main (standard seat). Which departure should I book?",
+   "kind": "form",
+   "expiresAt": "2026-11-12T03:24:45.285Z",
+   "fields": [
+    {
+     "key": "flight",
+     "label": "Departure (all $119 Main, nonstop, 1h 16m–1h 18m)",
+     "required": true,
+     "handling": "standard",
+     "input": "choice",
+     "options": [
+      "B6 318 — 9:30am → 10:46am",
+      "B6 418 — 12:35pm → 1:48pm",
+      "B6 618 — 3:45pm → 5:03pm"
+     ]
+    }
+   ]
+  },
+  {
+   "t": 94,
+   "answered": [
+    "flight"
+   ],
+   "http": 202
+  },
+  {
+   "t": 98,
+   "status": "running"
+  },
+  {
+   "t": 135,
+   "status": "awaiting_input"
+  },
+  {
+   "t": 135,
+   "question": "JetBlue needs the passenger's details for the ticket (TSA secure flight) plus a contact address and phone. Please fill in the traveler's information — I'll enter it as given.",
+   "kind": "form",
+   "expiresAt": "2026-11-12T03:25:28.240Z",
+   "fields": [
+    {
+     "key": "title",
+     "label": "Title (Mr / Ms / Mrs / Miss / Dr)",
+     "required": true,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "first_name",
+     "label": "First name (as on government ID)",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "last_name",
+     "label": "Last name (as on government ID)",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "email",
+     "label": "Email address (ticket confirmation goes here)",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "gender",
+     "label": "Gender (as on government ID: Male / Female / Undisclosed)",
+     "required": true,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "dob",
+     "label": "Date of birth (MM/DD/YYYY)",
+     "required": true,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "address1",
+     "label": "Address line 1 (street)",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "address2",
+     "label": "Address line 2 (optional)",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "city",
+     "label": "City",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "state",
+     "label": "State (e.g. NY)",
+     "required": true,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "zip",
+     "label": "ZIP code",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    },
+    {
+     "key": "phone",
+     "label": "Phone number (US)",
+     "required": false,
+     "handling": "standard",
+     "input": "text",
+     "options": []
+    }
+   ]
+  },
+  {
+   "t": 138,
+   "answered": [
+    "title",
+    "first_name",
+    "last_name",
+    "email",
+    "gender",
+    "dob",
+    "address1",
+    "address2",
+    "city",
+    "state",
+    "zip",
+    "phone"
+   ],
+   "http": 202
+  },
+  {
+   "t": 141,
+   "status": "running"
+  },
+  {
+   "t": 226,
+   "status": "awaiting_input"
+  },
+  {
+   "t": 226,
+   "payment_request": {
+    "question": "Please approve your card for the JetBlue one-way JFK→BOS flight on Wed Dec 2, 2026 (B6 318, 9:30am, Main fare). Total $118.40.",
+    "expiresAt": "2026-11-12T03:26:59.189Z",
+    "interaction": {
+     "method": "card",
+     "amount": {
+      "kind": "exact",
+      "value": "118.40",
+      "currency": "USD"
+     },
+     "merchant": {
+      "name": "JetBlue",
+      "countryCode": "US",
+      "url": "https://www.jetblue.com/"
+     },
+     "kind": "payment",
+     "purpose": "checkout_payment"
+    }
+   }
+  },
+  {
+   "t": 228,
+   "cancel": "reached the payment request; not answered",
+   "http": 202
+  }
+ ],
+ "outcome": "reached_payment",
+ "seconds": 232,
+ "final": {
+  "status": "cancelled",
+  "result": {
+   "outcome": "cancelled",
+   "summary": "The checkout was cancelled."
+  }
+ },
+ "messages": [
+  {
+   "role": "user",
+   "type": "text",
+   "text": "Book ONE one-way flight for 1 adult from New York (JFK or LGA) to Boston (BOS) on Wednesday, December 2, 2026: the cheapest nonstop departing between 8am and 6pm, in the lowest standard economy fare. No seat selection that costs money, no bags, no insurance, no extras, no account or loyalty sign-up; continue as a guest. Pay by card."
+  },
+  {
+   "role": "assistant",
+   "type": "input_request",
+   "text": "Three nonstop JetBlue JFK→BOS flights on Wed Dec 2 fit your window and all cost the same $119 in Main (standard seat). Which departure should I book?"
+  },
+  {
+   "role": "assistant",
+   "type": "input_request",
+   "text": "Three nonstop JetBlue JFK→BOS flights on Wed Dec 2 fit your window and all cost the same $119 in Main (standard seat). Which departure should I book?"
+  },
+  {
+   "role": "assistant",
+   "type": "input_request",
+   "text": "JetBlue needs the passenger's details for the ticket (TSA secure flight) plus a contact address and phone. Please fill in the traveler's information — I'll enter it as given."
+  },
+  {
+   "role": "assistant",
+   "type": "input_request",
+   "text": "JetBlue needs the passenger's details for the ticket (TSA secure flight) plus a contact address and phone. Please fill in the traveler's information — I'll enter it as given."
+  }
+ ],
+ "_recorded": {
+  "from": "Crossmint Agent Checkouts, production, a throwaway user with no saved card and no browser profile",
+  "at": "2026-11-12T03:21Z",
+  "what": "One no-purchase price check on jetblue.com: run to the payment request, record it, cancel. The payment request was never answered. Passenger details were fake (Testy Spikeson)."
+ }
+}

@@ -151,7 +151,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["shop_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -399,7 +399,7 @@ export function toolsFor(conversationId) {
   const invitesOk = invitesOpenFor(conversationId);
   // Crossmint on: it is the only way to buy here, so AgentCard's buying tools go (src/shoptools.js).
   const crossmint = shopConnect.connectAllowedFor(conversationId);
-  const bookingOk = flightbook.bookingEnabled(conversationId) && !crossmint;
+  const bookingOk = flightbook.bookingEnabled(conversationId);
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
@@ -416,6 +416,7 @@ export function toolsFor(conversationId) {
     && todoToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
+    .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
 
@@ -482,7 +483,7 @@ export function planToolVisible(name, conversationId) {
 // OUTSIDE_WORLD / ALWAYS_NEEDS_CONFIRMATION; one that only schedules has to be named here.
 const LAPSED_EXTRA = new Set(["timer_set", "series_pause", "series_resume", "resume_everything", "watch_set", "deal_watch_set", "task_start", "call_errand_start",
   "page_create", "document_create", "notice_send", "commitment_set", "uber_request", "store_checkout", "shop_handoff", "purchase", "purchase_confirm",
-  "flight_checkin_start", "research", "gmail_draft", "calendar_create", "calendar_change", "apple_calendar_create", "apple_calendar_change",
+  "flight_book", "flight_checkin_start", "research", "gmail_draft", "calendar_create", "calendar_change", "apple_calendar_create", "apple_calendar_change",
   "x_post", "x_reply", "x_dm", "drive_create", "drive_upload", "drive_share", "github_issue_create", "github_issue_comment", "spotify_playlist_create", "spotify_send_link", "important_add"]);
 // Leave the machine but change nothing and make nothing: a reply after only these does not wait for
 // the claim check (src/said.js; review 11-06 — a search reply should not pay ~2 s for it).
@@ -495,13 +496,16 @@ export function lapsedBlocked(name) {
     || /^event_/.test(n) || /^(shop_|store_|browser_)/.test(n);
 }
 
-// A flight search is search only: the Google Flights link is the one way to book. There is no booking
-// route — AgentCard's was removed 2026-11-11 (Crossmint is the only buy route; docs/flight-booking.md).
-//
-// The traveler tools a booking route will reuse. Dark unless REASON_FLIGHT_BOOKING is on (`owner` =
-// the owner's conversation only) AND a booking route exists (src/flightbook.js bookingEnabled) — and
-// none does, so nobody's model is told these exist and the dispatch refuses them.
-export const FLIGHT_BOOKING_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget"]);
+// How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
+// way to book. On: two ways, and which one is the person's choice — Reason offers both and pushes neither.
+const FLIGHT_SEARCH_ONLY = "SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves.";
+const FLIGHT_SEARCH_BOTH = "Two ways to finish, and which one is THEIR choice: the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves; or, only when they ask you to book it, flight_book — Reason books it on the airline's own site, and nothing is charged until they approve the airline's exact total. Keep the link on every option and offer both without pushing either. Never say a flight is booked until a tool tells you a ticket was issued.";
+
+// Booking flights, dark until REASON_FLIGHT_BOOKING is on AND there is a route for this person (the
+// shopping path: src/flightbook.js bookingEnabled; `owner` = the owner's conversation only). Off,
+// nobody's model is told these exist and the dispatch refuses them, so a flight search hands over the
+// Google Flights link and nothing else — the search-only feature exactly.
+export const FLIGHT_BOOKING_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
 
 // Every invite tool, and the ones only the master decides with. Named once, here, for the same
 // reason as REMOTE_TOOLS: the visibility filter and the refusal in `runTool` read the same sets.
@@ -4841,7 +4845,7 @@ export const tools = [
   },
   {
     name: "flight_traveler_confirm",
-    description: "They said the travelers' details you read back are right — for a new traveler after flight_traveler_save, or for saved travelers before a repeat trip (read them back from flight_travelers first and ask whether they still apply: saved details are NEVER reused silently). `said` is their own words from THIS message, copied exactly; the read-back has to have gone out on an earlier message. Without this, no booking is ever built for them.",
+    description: "They said the travelers' details you read back are right — for a new traveler after flight_traveler_save, or for saved travelers before a repeat trip (read them back from flight_travelers first and ask whether they still apply: saved details are NEVER reused silently). `said` is their own words from THIS message, copied exactly; the read-back has to have gone out on an earlier message. Without this, flight_book refuses.",
     input_schema: {
       type: "object",
       properties: {
@@ -4860,6 +4864,20 @@ export const tools = [
     name: "flight_traveler_forget",
     description: "Delete one saved traveler's details for good, when they ask you to forget them.",
     input_schema: { type: "object", properties: { traveler_id: { type: "integer" } }, required: ["traveler_id"] },
+  },
+  {
+    name: "flight_book",
+    description: "Start booking ONE flight they picked from a flight search and asked you to book, on the airline's own website. NOTHING IS BOOKED OR CHARGED BY THIS TOOL. Only when THEY asked you to book it: a suggestion or a watched route is never a reason to call this. It first re-runs that exact search and checks the same flights are still there at the price you quoted; then it starts the checkout for exactly those flights and the travelers they confirmed (flight_traveler_confirm). The checkout then runs on its own, like any store_checkout: it answers the airline's passenger form from the confirmed details, it may ask you something (shop_answer), and when it reaches payment they get the airline's exact total to approve — that approval is the only thing that pays. The total is ONE number; never invent a fare, tax or fee breakdown. Afterwards an order the airline took is NOT a ticket: say booked only when you are told a ticket was issued.",
+    input_schema: {
+      type: "object",
+      properties: {
+        search_id: { type: "integer", description: "The flight_search result's search_id they picked from." },
+        option: { type: "integer", description: "The option number they picked in that search." },
+        traveler_ids: { type: "array", items: { type: "integer" }, description: "The confirmed travelers flying, from flight_traveler_confirm. One per seat." },
+        continue_at_new_price: { type: "boolean", description: "Only true after they said to go ahead at the NEW price the re-check found." },
+      },
+      required: ["search_id", "option", "traveler_ids"],
+    },
   },
   {
     name: "offer_check",
@@ -7185,6 +7203,12 @@ const S = {
   flight_traveler_confirm: z.object({ traveler_ids: z.array(z.number().int()).min(1).max(9), said: z.string().min(1).max(500) }),
   flight_travelers: z.object({}),
   flight_traveler_forget: z.object({ traveler_id: z.number().int() }),
+  flight_book: z.object({
+    search_id: z.number().int(),
+    option: z.number().int().min(1),
+    traveler_ids: z.array(z.number().int()).min(1).max(9),
+    continue_at_new_price: z.boolean().optional(),
+  }),
   offer_check: z.object({ url: z.string().max(2000).optional(), from_browser: z.boolean().optional() }),
   shop_handoff: z.object({ offer_id: z.number().int(), why: z.string().max(300).optional() }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
@@ -13616,10 +13640,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
-    // ---------- flights: travelers (src/flightbook.js) ----------
+    // ---------- flights: travelers, and the start of a booking (src/flightbook.js, src/flightcheckout.js) ----------
     //
-    // The money is NOT here, and neither is a booking: these keep who flies, read back and confirmed
-    // in their own words, for the booking route that will use them. There is none today.
+    // The money is NOT here. flight_book starts a checkout on the airline's site; the exact total, the
+    // yes, the daily cap and the Face ID approval are the shopping path's (shop_pay), the one payment path.
     case "flight_traveler_save": {
       const t = {
         given_name: input.given_name, family_name: input.family_name, born_on: input.born_on, gender: input.gender,
@@ -13663,7 +13687,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       db.reconfirmFlightTravelers(c, input.traveler_ids, input.said);
       return {
         ok: true, confirmed: rows.map(r => ({ traveler_id: r.id, who: r.label, read_back: flightbook.readBack(r) })),
-        note: "Confirmed for this booking.",
+        note: "Confirmed for this booking. flight_book can use these traveler_ids now.",
       };
     }
 
@@ -13683,6 +13707,89 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return gone
         ? { ok: true, note: "Deleted. Those details are gone from Reason. AgentCard keeps its own copy of passenger details from any booking it made; say so if they want that gone too." }
         : { ok: false, error: `No traveler ${input.traveler_id} on ${me.name}'s record.` };
+    }
+
+    case "flight_book": {
+      // A suggestion never books. A turn a timer, a watch or Reason itself started is not them asking.
+      const turn = offers.turnState(c);
+      if (turn.kind !== "user") {
+        return { ok: false, blocked: "not_their_turn", error: "A flight is only booked when they asked to book it, on their own message. Watching a route or suggesting a fare is never a reason to. Nothing was done." };
+      }
+      const search = db.getFlightSearch(c, input.search_id);
+      const opt = search?.kind === "flights" ? search.options?.find(o => o.option === input.option) ?? null : null;
+      if (!opt) return { ok: false, error: `There is no option ${input.option} in flight search ${input.search_id} for ${me.name}. Run the search again and use what it returns.` };
+      const link = opt.link || "";
+      const handover = link ? ` The Google Flights link is the way to book it themselves: ${link}` : "";
+
+      // Who is flying: every traveler theirs, complete, and confirmed in their words for this trip.
+      const travelers = input.traveler_ids.map(id => db.getFlightTraveler(c, id));
+      const missing = input.traveler_ids.filter((id, i) => !travelers[i]);
+      if (missing.length) return { ok: false, error: `No traveler ${missing.join(", ")} on ${me.name}'s record. Nothing was started.` };
+      const unconfirmed = travelers.filter(t => !t.confirmed_at || clock.now() - t.confirmed_at > flightbook.TRAVELER_CONFIRM_MS);
+      if (unconfirmed.length) {
+        return {
+          ok: false, blocked: "travelers_not_confirmed",
+          error: `Not yet: ${unconfirmed.map(t => t.label).join(", ")} ${unconfirmed.length > 1 ? "have" : "has"} not been confirmed for this trip. Read the details back — ${unconfirmed.map(t => `"${flightbook.readBack(t)}"`).join("; ")} — ask whether they are exactly right, and call flight_traveler_confirm with their answer on their next message. Nothing was started.`,
+        };
+      }
+      const party = search.params?.sent ?? {};
+      const extra = Number(party.children ?? 0) + Number(party.infants_in_seat ?? 0) + Number(party.infants_on_lap ?? 0);
+      if (extra) return { ok: false, blocked: "party_not_supported", error: `Reason only books adults, and this search has children or infants in it. Nothing was started.${handover}` };
+      const seats = Number(party.adults ?? 1);
+      if (seats !== travelers.length) {
+        return { ok: false, blocked: "traveler_count", error: `The search was for ${seats} traveler${seats === 1 ? "" : "s"} and ${travelers.length} ${travelers.length === 1 ? "was" : "were"} given. Every seat needs its own confirmed traveler. Nothing was started.` };
+      }
+      const flightCheckout = await import("./flightcheckout.js");
+      const airline = flightCheckout.airlineFor(opt);
+      if (!airline) {
+        return { ok: false, blocked: "not_offered", error: `Reason can't book that one: it books a flight on the airline's own site, and this option is on more than one airline or one it doesn't book with. Nothing was started. Say so plainly.${handover}` };
+      }
+      // One flight checkout at a time: a second would be a second ticket.
+      const open = shopConnect.runsOf(c, { sinceMs: 2 * 3600_000, limit: 10 }).find(r => r.status === "running" && flightCheckout.isFlightRun(r.run_id, c));
+      if (open) return { ok: false, blocked: "booking_in_progress", run_id: open.run_id, error: "A flight booking is already running for them. Nothing new was started. shop_status says where it is; if they want a different flight, shop_decline its payment or wait for it to end first." };
+
+      // The fresh quote: the same search again, the same flights, the price now.
+      let v;
+      const verify = ctx.flightVerify ?? ((cc, inp) => flightSearch.runVerify(cc, inp, { sidecar: flightProviders(), db, today: flightToday(cc), now: () => clock.now() }));
+      try { v = await verify(c, { search_id: input.search_id, option: input.option }); }
+      catch (e) { v = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+      if (!v?.ok || v.stale) {
+        return { ok: false, blocked: "quote_unverified", error: `Could not re-check that flight just now (${v?.error || "the search did not answer"}), and a booking is never started on an unchecked price. Say so.${handover}` };
+      }
+      if (!v.still_there) {
+        return { ok: false, blocked: "flight_gone", fresh_options: v.fresh_options, error: "That exact flight didn't come back on the re-check — it may have sold out. Nothing was started. Say so and offer what the fresh search shows." };
+      }
+      if (v.moved && !input.continue_at_new_price) {
+        return {
+          ok: false, blocked: "price_moved", price_then: v.price_then, price_now: v.price_now, change: v.change,
+          error: `The price moved on the re-check: it's ${v.price_now} now (was ${v.price_then}). Nothing was started. Tell them the new number and ask whether to continue; only if they say yes, call flight_book again with continue_at_new_price true.`,
+        };
+      }
+      const priceNow = String(v.price_now ?? opt.price ?? "");
+      const dollars = Number(priceNow.replace(/[^0-9.]/g, ""));
+      if (!Number.isFinite(dollars) || dollars <= 0) {
+        return { ok: false, blocked: "quote_unverified", error: `The search shows no price for that flight, and a booking is never started without one. Nothing was started.${handover}` };
+      }
+      // The most the checkout may reach, enforced by the provider: the searched price and a margin for
+      // what a search leaves out. Never a price anyone agreed to — the yes is for the exact total.
+      const maxUsd = Math.ceil(dollars * 1.25 + 30);
+      const cabin = String(party.cabin ?? "ECONOMY").toLowerCase().replace(/_/g, " ");
+      const fp = flightbook.travelerFingerprint(travelers);
+      const item = flightCheckout.itemFor(opt, travelers);
+      shopConnect.noteStore({ store: airline.key, name: airline.name, url: airline.url });
+      const out = await shopConnect.startCheckout({ conversationId: c, store: airline.key, startUrl: airline.url, what: flightCheckout.taskFor(opt, { seats, cabin, price: priceNow }), item, maxUsd });
+      if (!out.ok) return { ok: false, error: `The booking could not be started (${out.error || "no answer"}). Nothing was booked or charged.${handover}`, ...(link ? { link } : {}) };
+      flightCheckout.linkRun({ conversationId: c, runId: out.runId, searchId: input.search_id, option: input.option, travelerIds: input.traveler_ids, travelerFp: fp, carrier: airline.code, what: item });
+      shopConnect.follow(out.runId);
+      return {
+        ok: true, run_id: out.runId, airline: airline.name, flight: opt.flights ?? item,
+        travelers: travelers.map(t => flightbook.readBack(t)), searched_price: priceNow,
+        ...(link ? { google_flights_link: link } : {}),
+        note: `Started on ${airline.name}'s own site. Nothing is booked, held or charged. Tell them in one line you're on it; don't promise a time (it takes a few minutes).`
+          + ` When it reaches payment they get ${airline.name}'s exact total to approve — ONE number; never break it into fare, tax or fees yourself, and never quote the searched price as the total.`
+          + ` Fare rules (changes, cancellation, bags) were not verified: say so if they ask, and never promise free cancellation.`
+          + ` If the checkout asks something, answer with shop_answer from what they said or by asking them. After they pay, an order ${airline.name} took is not a ticket: say booked only when you are told a ticket was issued.`,
+      };
     }
 
     case "purchases_recent": {

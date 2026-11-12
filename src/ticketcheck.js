@@ -170,7 +170,7 @@ export function passengerMatches(printed, travelers) {
  * passenger proves nothing.
  */
 export function evidenceFrom(readOut, facts) {
-  const none = { tickets: [], pnr: "", carrier: "" };
+  const none = { tickets: [], covers: [], pnr: "", carrier: "" };
   if (!readOut || typeof readOut !== "object") return none;
   const sameTrip = String(readOut.origin ?? "").toUpperCase() === facts.origin
     && String(readOut.destination ?? "").toUpperCase() === facts.destination
@@ -182,7 +182,11 @@ export function evidenceFrom(readOut, facts) {
   // A locator is theirs only when the email names one of their passengers; another traveller's
   // booking on the same flight is somebody else's record.
   const ours = [...(readOut.passengers ?? []), ...(readOut.tickets ?? []).map(t => t?.passenger)].some(n => passengerMatches(n, facts.travelers));
-  return { tickets, pnr: ours ? locator(readOut.record_locator) : "", carrier: String(readOut.carrier ?? "").slice(0, 60) };
+  // Which of the order's passengers a ticket on this email is for, by their place in the order.
+  const covers = readOut.is_ticket_email
+    ? facts.travelers.map((tr, i) => ((readOut.tickets ?? []).some(t => ticketNumber(t?.number) && passengerMatches(t?.passenger, [tr])) ? i : -1)).filter(i => i >= 0)
+    : [];
+  return { tickets, covers, pnr: ours ? locator(readOut.record_locator) : "", carrier: String(readOut.carrier ?? "").slice(0, 60) };
 }
 
 // ---------- the words ----------
@@ -255,6 +259,7 @@ async function runWatch(w, row, { now, tell, log, gmail, read, out, placed = tru
   if (q) {
     out.checked++;
     let read_ = 0;
+    const seenTickets = []; const seenFor = new Set();
     for (const a of accounts.accounts) {
       if (read_ >= READ_PER_CHECK) break;
       if (a.scopes && !google.covers(a.scopes, [google.GMAIL_SCOPE])) continue; // calendar + Drive only, no mail granted (2026-11-11)
@@ -276,12 +281,17 @@ async function runWatch(w, row, { now, tell, log, gmail, read, out, placed = tru
         // goes on. (If it really was AgentCard's, ticketed ahead of its own status, the cost is one
         // "check with the airline" text — never a false "issued".)
         if (ev.tickets.length && !placed) { db.ticketNotOurs(w.id, m.id, now); log({ ticket_check: "ticket_before_placed", watch: w.id }); continue; }
+        // Issued only when a ticket has been seen for EVERY passenger on the order — one email or
+        // several. Until then the tickets seen are kept in hand and the watch goes on.
+        for (const t of ev.tickets) if (!seenTickets.includes(t)) seenTickets.push(t);
+        for (const i of ev.covers) seenFor.add(i);
+        if (ev.tickets.length && seenFor.size < facts.travelers.length) { log({ ticket_check: "some_passengers_only", watch: w.id, have: seenFor.size, of: facts.travelers.length }); continue; }
         if (ev.tickets.length) {
           const pnr = ev.pnr || w.pnr || "";
-          db.ticketIssued(w.id, { tickets: ev.tickets, pnr, carrier: ev.carrier || facts.carrier, messageId: m.id }, now);
+          db.ticketIssued(w.id, { tickets: seenTickets, pnr, carrier: ev.carrier || facts.carrier, messageId: m.id }, now);
           db.markAgentcardPurchase(row.buy_conversation_id, { ticketingState: "issued" });
           out.issued++;
-          return tellIssued(w, { tickets: ev.tickets, pnr }, { now, tell, log });
+          return tellIssued(w, { tickets: seenTickets, pnr }, { now, tell, log });
         }
       }
     }
