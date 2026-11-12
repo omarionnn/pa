@@ -522,6 +522,11 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   friend gives back theirs to the buyer's card; cancel refunds the rest). **Not provable offline:** Stripe's real
   partial refund with reverse_transfer on a live connected account, Messages' rendering of the seat link card, a real
   friend text through Sendblue.
+  Ship review 2026-11-12: a seat whose refund is at Stripe (`refunding_at` inside 10 min) can't be claimed (`not_found`), and
+  `afterRefund` reads each seat as it is now; `settlePaid` marks a payment that got nobody in `refund_error = 'owed back: …'`
+  as it lands, and the sweep's `refundOwed` re-asks for those and for payments still standing on a cancelled event (after 2
+  min, `REFUND_RETRIES` = 5 definite noes at most; result key `refunds_owed_paid`); an account delete drops a seat invite owed
+  to that person (`invite_conversation_id` cleared). Pinned by the last four tests of `test/event-buy-friends.test.js`.
 
 ## How to get to it (user POV)
 

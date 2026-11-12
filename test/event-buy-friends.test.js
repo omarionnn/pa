@@ -714,3 +714,132 @@ test("two Checkout pages both paid (another ticket count asked meanwhile): the s
   // The event reads full to joins once unclaimed seats are counted (capacityState).
   assert.equal(events.capacityState(db.getEventRow(ev.id)).held_for_friends, 1);
 });
+
+// ---- ship review 2026-11-12 ----
+
+test("a seat whose refund is at Stripe right now can't be claimed: nobody ends up on the event with a ticket that went back", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const row = await amaBuys(h, ev, 2);
+  const [, s1] = eventpay.seatsOfPayment(row.id);
+  // The buyer's give-back is in flight (Stripe has not answered) when the friend taps the link.
+  const going = eventpay.seatRefund({ ev: db.getEventRow(ev.id), buyerConversationId: C.ama, seatId: s1.id, runtime: h.runtime });
+  assert.ok(eventpay.seatById(s1.id).refunding_at, "marked before Stripe is asked");
+  const got = eventpay.claimSeat({ ev: db.getEventRow(ev.id), seatId: s1.id, token: s1.claim_token, conversationId: C.kofi, displayName: "Kofi" });
+  assert.deepEqual(got, { ok: false, reason: "not_found" });
+  assert.equal((await going).ok, true);
+  await settle();
+  assert.equal(eventpay.seatById(s1.id).state, "refunded");
+  assert.equal(db.attendeeRow(ev.id, C.kofi), null, "the friend is not on the event");
+  assert.equal(eventpay.unclaimedSeats(ev.id), 0);
+  // A refund Stripe turns down frees the seat again: the same link claims it.
+  const row2 = await amaBuys(h, ev, 2, C.esi);
+  const [, t1] = eventpay.seatsOfPayment(row2.id);
+  failNext = "/v1/refunds";
+  assert.equal((await eventpay.seatRefund({ ev: db.getEventRow(ev.id), buyerConversationId: C.esi, seatId: t1.id, runtime: h.runtime })).ok, false);
+  assert.equal(eventpay.claimSeat({ ev: db.getEventRow(ev.id), seatId: t1.id, token: t1.claim_token, conversationId: C.kofi, displayName: "Kofi" }).ok, true);
+});
+
+test("a payment that never got anybody in and whose refund Stripe turned down is refunded by the sweep: once, a few tries at most", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h, { over: { capacity: 2 } });
+  await tool("event_join", { name: "Supper Club", password: "truffle", tickets: 2 }, C.ama, h.runtime);
+  const row = db.db.prepare("SELECT * FROM event_payments WHERE conversation_id = ?").get(C.ama);
+  clock.skip(16 * MIN);
+  await eventpay.sweep({ log: () => {} });
+  await tool("event_price", { event_id: ev.id, free: true }, OWNER_C, h.runtime);
+  db.addAttendee({ eventId: ev.id, conversationId: C.kofi, displayName: "Kofi", via: "text" });
+  // The late payment lands with no room for both, and Stripe says no to the refund.
+  failNext = "/v1/refunds";
+  await paidFor(h, row);
+  await settle();
+  assert.equal(eventpay.paymentRow(row.id).status, "paid", "the money is still owed back");
+  assert.ok(eventpay.paymentRow(row.id).refund_error, "and marked so");
+  assert.equal(eventpay.seatsOfPayment(row.id).length, 0);
+  assert.equal(db.attendeeRow(ev.id, C.ama), null);
+  const before = calls.filter(c => c.path === "/v1/refunds").length;
+  // Not at once (the first try may still be going), then on the next sweep after two minutes.
+  assert.equal((await eventpay.sweep({ log: () => {}, runtime: h.runtime })).refunds_owed_paid, undefined);
+  assert.equal(calls.filter(c => c.path === "/v1/refunds").length, before);
+  clock.skip(3 * MIN);
+  h.channel.sent.length = 0;
+  assert.equal((await eventpay.sweep({ log: () => {}, runtime: h.runtime })).refunds_owed_paid, 1);
+  await settle();
+  const rf = calls.filter(c => c.path === "/v1/refunds");
+  assert.equal(rf.length, before + 1);
+  assert.equal(rf.at(-1).form.amount, undefined, "the whole charge, both tickets");
+  assert.notEqual(rf.at(-1).idem, rf.at(-2).idem, "a new request after a definite no");
+  assert.equal(eventpay.paymentRow(row.id).status, "refunded");
+  assert.equal(db.attendeeRow(ev.id, C.ama), null);
+  assert.equal(eventpay.summary(db.getEventRow(ev.id)).sold_count, 0);
+  // Done is done: no third request.
+  clock.skip(3 * MIN);
+  await eventpay.sweep({ log: () => {}, runtime: h.runtime });
+  assert.equal(calls.filter(c => c.path === "/v1/refunds").length, before + 1);
+  // Stripe saying no every time stops after REFUND_RETRIES.
+  db.db.prepare("UPDATE event_payments SET status = 'paid', refund_error = 'fake decline', refund_attempts = ? WHERE id = ?").run(eventpay.REFUND_RETRIES, row.id);
+  await eventpay.sweep({ log: () => {}, runtime: h.runtime });
+  assert.equal(calls.filter(c => c.path === "/v1/refunds").length, before + 1);
+  // A payment with no seats that nobody ever tried to refund is never the sweep's to refund.
+  db.db.prepare("UPDATE event_payments SET refund_error = NULL, refund_attempts = 0 WHERE id = ?").run(row.id);
+  await eventpay.sweep({ log: () => {}, runtime: h.runtime });
+  assert.equal(calls.filter(c => c.path === "/v1/refunds").length, before + 1);
+  // Landed with no room and the process died before the refund was asked for: it was marked owed as it landed, so the sweep pays it.
+  db.db.prepare("UPDATE event_payments SET refund_error = 'owed back: full' WHERE id = ?").run(row.id);
+  assert.equal((await eventpay.sweep({ log: () => {}, runtime: h.runtime })).refunds_owed_paid, 1);
+  assert.equal(eventpay.paymentRow(row.id).status, "refunded");
+  assert.equal(eventpay.paymentRow(row.id).refund_error, null);
+});
+
+test("a cancelled event's refund that failed is asked again by the sweep: what still stands goes back, every holder told once; a standing payment on a live event is never touched", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const row = await amaBuys(h, ev, 3);
+  const [, s1] = eventpay.seatsOfPayment(row.id);
+  eventpay.claimSeat({ ev, seatId: s1.id, conversationId: C.kofi, displayName: "Kofi" });
+  // While the event is on, the sweep leaves a paid payment alone however old it is.
+  clock.skip(30 * MIN);
+  const none = calls.filter(c => c.path === "/v1/refunds").length;
+  await eventpay.sweep({ log: () => {}, runtime: h.runtime });
+  assert.equal(calls.filter(c => c.path === "/v1/refunds").length, none);
+  assert.equal(eventpay.paymentRow(row.id).status, "paid");
+  failNext = "/v1/refunds";
+  const out = await tool("event_cancel", { event_id: ev.id }, OWNER_C, h.runtime);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.refunds.failed, 1);
+  await settle();
+  assert.equal(eventpay.paymentRow(row.id).status, "paid");
+  h.channel.sent.length = 0;
+  clock.skip(3 * MIN);
+  assert.equal((await eventpay.sweep({ log: () => {}, runtime: h.runtime })).refunds_owed_paid, 1);
+  await settle();
+  assert.equal(eventpay.paymentRow(row.id).status, "refunded");
+  assert.deepEqual(eventpay.seatsOfPayment(row.id).map(s => s.state), ["refunded", "refunded", "refunded"]);
+  assert.equal(Number(lastCall("/v1/refunds").form.amount ?? row.total_cents * 3), row.total_cents * 3);
+  assert.equal(sentTo(h, AMA).filter(t => /cancelled/.test(t) && /refunded/.test(t)).length, 1, JSON.stringify(sentTo(h, AMA)));
+  assert.equal(sentTo(h, KOFI).filter(t => /cancelled/.test(t) && /refunded to their card/.test(t)).length, 1, JSON.stringify(sentTo(h, KOFI)));
+  const n = calls.filter(c => c.path === "/v1/refunds").length;
+  clock.skip(3 * MIN);
+  await eventpay.sweep({ log: () => {}, runtime: h.runtime });
+  assert.equal(calls.filter(c => c.path === "/v1/refunds").length, n);
+});
+
+test("deleting an account: the ticket rows stay (money), but a text owed to that person about a friend's ticket is dropped and no longer points at them", async () => {
+  const h = harness();
+  const ev = await pricedEvent(h);
+  const row = await amaBuys(h, ev, 2);
+  const [, s1] = eventpay.seatsOfPayment(row.id);
+  assert.equal(eventpay.oweSeatInvite({ ev, buyerConversationId: C.ama, seatId: s1.id, number: YAW }).queued, true);
+  assert.equal(eventpay.seatById(s1.id).invite_conversation_id, C.yaw);
+  const { deleteData } = await import("../src/data.js");
+  await deleteData({ conversation: C.yaw });
+  const st = eventpay.seatById(s1.id);
+  assert.equal(st.invite_conversation_id, null);
+  assert.equal(st.invite_state, "dropped");
+  assert.equal(st.state, "open", "the ticket itself stands, still Ama's to hand out");
+  h.channel.sent.length = 0;
+  clock.skip(60 * MIN);
+  await eventpay.sweep({ log: () => {}, runtime: h.runtime });
+  await settle();
+  assert.deepEqual(sentTo(h, YAW), []);
+});

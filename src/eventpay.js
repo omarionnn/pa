@@ -164,6 +164,9 @@ if (seatsNew) db.db.exec(`INSERT INTO event_seats (payment_id, event_id, seat_no
 // Unclaimed seats hold their places for every join (db.addAttendeeTx).
 db.setReservedPlaces((eventId) => unclaimedSeats(eventId));
 
+/** How long a refund sent to Stripe is taken to be still in flight (its seat is marked `refunding_at`). */
+const REFUND_FLIGHT_MS = 10 * 60_000;
+
 export const DEFAULT_TICKET_MAX = 4;
 export const TICKET_MAX_LIMIT = 10;
 /** How many tickets one buyer may get at once on this event: the organizer's number, else 4. 1 = no extra tickets. */
@@ -699,7 +702,7 @@ async function actOn(event, ctx) {
       const charged = Number(obj.amount ?? row.total_cents * Math.max(1, Number(row.quantity ?? 1)));
       if (row.status === "paid" && (obj.refunded || Number(obj.amount_refunded ?? 0) >= charged)) {
         // A refund of ours still in flight (its seat is marked) is ours to finish: the last ticket of a payment makes the charge "fully refunded" too.
-        const ours = seatsOfPayment(row.id).some(st => st.state !== "refunded" && st.refunding_at != null && ctx.now - st.refunding_at < 10 * 60_000);
+        const ours = seatsOfPayment(row.id).some(st => st.state !== "refunded" && st.refunding_at != null && ctx.now - st.refunding_at < REFUND_FLIGHT_MS);
         if (ours) return { ok: true, matched: true, ours: true };
         await afterRefund(row, { refundId: obj.refunds?.data?.[0]?.id ?? null, why: "dashboard" }, ctx);
         return { ok: true, matched: true, refunded: true };
@@ -764,6 +767,9 @@ export async function settlePaid(row, { intentId = null, total = null }, ctx) {
           VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`).run(row.id, ev.id, i, row.conversation_id, db.newEventToken(24), now, now);
       }
     }
+    // No place for it (no room, closed, or they were already in): the money is owed back from this moment,
+    // written with the payment itself so a crash before the refund below still leaves it for the sweep (refundOwed).
+    if (!added.ok || added.already) q("UPDATE event_payments SET refund_error = ? WHERE id = ?").run(`owed back: ${added.ok ? "already" : added.reason}`, row.id);
     db.db.exec("COMMIT");
   } catch (e) {
     try { db.db.exec("ROLLBACK"); } catch { /* already rolled back */ }
@@ -890,7 +896,7 @@ export async function refund({ ev, row = null, seat = null, why = "organizer", f
   if (amount !== full) body.amount = amount;
   // A refund of one of these tickets already in flight (another tap, the organizer at the same moment) goes
   // first: a second one now, under a different key, would refund the ticket twice (review 2026-11-11).
-  if (targets.some(st => st.refunding_at != null && now - st.refunding_at < 10 * 60_000)) return { ok: false, reason: "busy", error: "a refund of that ticket is already going through" };
+  if (targets.some(st => st.refunding_at != null && now - st.refunding_at < REFUND_FLIGHT_MS)) return { ok: false, reason: "busy", error: "a refund of that ticket is already going through" };
   // Marked first, so Stripe's charge.refunded for this very refund (which can beat our own answer) is left to us.
   for (const st of targets) q("UPDATE event_seats SET refunding_at = ?, updated_at = ? WHERE id = ?").run(now, now, st.id);
   // The key carries the attempt, so a retry after Stripe said no is a new request, not the replayed no.
@@ -932,6 +938,35 @@ export async function refundPending({ now = clock.now(), log = () => {}, fetchIm
     if (r.ok) settled++;
   }
   return settled;
+}
+
+/**
+ * Money owed back that nobody is asking for any more, asked for again by the sweep: a payment that
+ * never got anybody in (it landed with no room, or for somebody already in — it has no seats, so no
+ * page lists it; settlePaid marks it owed as it lands, so a crash before the refund is covered and a
+ * payment nobody ever tried to refund is never touched) whose refund did not go through, and a payment still standing on a cancelled event
+ * (its refund failed, or another refund on it was in flight when the event was cancelled). A few
+ * tries each (a definite no moves the count on); after that it is the organizer's Stripe dashboard.
+ */
+export const REFUND_RETRIES = 5;
+export async function refundOwed({ now = clock.now(), log = () => {}, fetchImpl = globalThis.fetch, runtime = null } = {}) {
+  const rows = q(`SELECT p.id, e.status AS event_status FROM event_payments p JOIN events e ON e.id = p.event_id
+    WHERE p.status = 'paid' AND p.payment_intent_id IS NOT NULL AND p.refund_pending IS NULL AND p.refund_attempts < ? AND p.paid_at <= ?
+      AND ((e.status = 'cancelled' AND COALESCE(e.cancelled_at, 0) <= ?)
+        OR (p.refund_error IS NOT NULL AND NOT EXISTS (SELECT 1 FROM event_seats s WHERE s.payment_id = p.id)))
+    ORDER BY p.id LIMIT 20`).all(REFUND_RETRIES, now - 2 * 60_000, now - 2 * 60_000);
+  let done = 0;
+  for (const { id, event_status } of rows) {
+    const pay = paymentRow(id);
+    const ev = db.getEventRow(pay.event_id);
+    const neverIn = !seatsOfPayment(id).length;
+    // Never in: they were told when it landed; nobody leaves. A cancellation: every holder is told, as on the day.
+    const r = neverIn
+      ? await refund({ ev, row: pay, why: event_status === "cancelled" ? "cancelled" : "no_room", fetchImpl, runtime, log, now, tellGuest: false, leave: false })
+      : await refund({ ev, row: pay, why: "cancelled", cancelled: true, fetchImpl, runtime, log, now });
+    if (r.ok) { done++; log({ event_refund_owed_paid: id, never_in: neverIn }); }
+  }
+  return done;
 }
 
 /** Stripe said no for certain (a 4xx): a retry may be a new request. A timeout or a 5xx may have gone through. */
@@ -1015,7 +1050,9 @@ async function afterRefund(pay, { seats = null, whole = true, refundId = null, w
   const selfCancel = guestCancels(why) ? pay : null;
   const list = seats ?? seatsOfPayment(pay.id).filter(st => st.state !== "refunded");
   const changed = [];
-  for (const st of list) {
+  for (const given of list) {
+    // The seat as it is now, not as the caller read it before asking Stripe: whoever holds it by now is the one who leaves and is told.
+    const st = seatById(given.id) ?? given;
     const r = q(`UPDATE event_seats SET state = 'refunded', claim_token = NULL, refund_id = ?, refund_why = ?, refund_error = NULL, refunding_at = NULL, refunded_at = ?, updated_at = ?,
       invite_state = CASE WHEN invite_state = 'owed' THEN 'dropped' ELSE invite_state END WHERE id = ? AND state != 'refunded'`).run(refundId, String(why).slice(0, 20), now, now, st.id);
     if (r.changes === 1) changed.push(st);
@@ -1214,6 +1251,9 @@ export function claimSeat({ ev, seatId, version = null, token = null, conversati
     const pay = st ? paymentRow(st.payment_id) : null;
     if (!st || !ev || st.event_id !== ev.id || pay?.status !== "paid") return fail("not_found");
     if (st.state !== "open" || !st.claim_token) return fail("used");
+    // Its money is on the way back (the buyer's give-back or the organizer's refund is at Stripe right now):
+    // claimed in that moment, the friend would be on the event with a ticket nobody paid for.
+    if (st.refunding_at != null && now - st.refunding_at < REFUND_FLIGHT_MS) return fail("not_found");
     if ((version != null && Number(version) !== st.version) || (token != null && token !== st.claim_token)) return fail("changed");
     const fresh = db.getEventRow(ev.id);
     if (fresh.status !== "active") return fail(fresh.status);
@@ -1329,10 +1369,12 @@ export async function sweep({ now = clock.now(), log = () => {}, fetchImpl = glo
   const invites = await sweepSeatInvites({ runtime, now, log });
   // Refunds Stripe may have done (no answer, 5xx): replayed under their own key until Stripe answers.
   const pendingDone = await refundPending({ now, log, fetchImpl, runtime });
+  // And money owed back that no page lists or nobody is retrying (never got in; a cancelled event's leftovers).
+  const owedDone = await refundOwed({ now, log, fetchImpl, runtime });
   // Reason's 2.5% still owed back to an organizer after a guest's own cancel (Stripe said no, or didn't answer).
   let feesBack = 0;
   for (const row of q("SELECT id FROM event_payments WHERE fee_back_owed_cents > 0 AND fee_back_seq < 30 LIMIT 20").all()) if ((await feeBack(row.id, { fetchImpl, log, now })).ok) feesBack++;
-  return { expired: rows.length, ...(invites.sent || invites.dropped ? { seat_invites: invites } : {}), ...(feesBack ? { fees_back: feesBack } : {}), ...(pendingDone ? { refunds_settled: pendingDone } : {}) };
+  return { expired: rows.length, ...(invites.sent || invites.dropped ? { seat_invites: invites } : {}), ...(feesBack ? { fees_back: feesBack } : {}), ...(pendingDone ? { refunds_settled: pendingDone } : {}), ...(owedDone ? { refunds_owed_paid: owedDone } : {}) };
 }
 
 // ---------- what the organizer sees ----------

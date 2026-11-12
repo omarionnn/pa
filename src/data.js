@@ -629,6 +629,12 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     try { db.prepare("UPDATE events SET remind_day_before = 0, remind_soon = 0 WHERE organizer_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
   }
 
+  // A ticket somebody else bought stays (KEPT_ON_DELETE: money), but the one text Reason owed this
+  // person about it is dropped and the row no longer points at them (src/eventpay.js oweSeatInvite).
+  if (conversation && present("event_seats")) {
+    try { db.prepare("UPDATE event_seats SET invite_conversation_id = NULL, invite_state = CASE WHEN invite_state = 'owed' THEN 'dropped' ELSE invite_state END WHERE invite_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
+  }
+
   const rows = {};
   const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {
