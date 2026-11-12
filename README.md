@@ -718,6 +718,25 @@ two bursts. The "…" bubble goes up when the first text lands, so it is showing
 still typing, and comes down only after the reply has gone. `GET /health` shows what is being held
 and whether it is due. Set `REASON_BURST_QUIET_MS=0` to turn holding off entirely.
 
+**Every reply writes one timing line** (`reply_timing`, src/replytiming.js): milliseconds for each
+stage — the burst hold, voice notes heard, the prep, the queue, the memory lookup, pictures and files,
+the notes, the history anchor, the tool server, the model run, the said check, a rewrite, the send,
+and the total. Numbers only; never a word of the message or a figure from it. It is how the 11-11
+slowdown was taken apart: 2.5 s of hold, ~0.5 s of memory lookup, 11–18 s of model depending on
+whether the history anchor was a cache hit, ~2.6 s of said check, ~0.5 s of send.
+
+**`REASON_FAST_REPLY`** (`off` default | `owner` | `on`; src/fastreply.js) is the reply-speed pass of
+2026-11-11. The model is handed the same bytes in the same order; only the clock changes. Behind it:
+the history anchor is *fitted* when the system prompt plus the whole window would pass the argument
+limit (the oldest lines that fit are anchored, the rest ride in the message) instead of dropped — on
+11-11 the drop (`history_anchor: too_long`) happened on 30 owner turns, each ~3.6 s slower in the
+model and writing 40k tokens of cache against 15k; anchors are written to `data/cli-anchors.json` so a
+deploy does not make the first turn of every thread write the whole history again; the turn's CLI is
+spawned before the memory lookup and the notes are in and reads its message off stdin once they are
+(its boot overlaps them); the said check is skipped when no tool acted and the draft shares not one
+figure or content word with anything standing, closed or declined (`said_check_skipped`); and the
+background lane (extraction) stays paused through the check and the send, not only the model's run.
+
 **Parts of one message are one message.** Paste a link into iMessage and your phone sends one
 bubble — but Sendblue delivers it as several webhooks ten seconds apart: your words and the link,
 then the link card's preview images, each with its own handle ending `_1`, `_2`. Reason used to

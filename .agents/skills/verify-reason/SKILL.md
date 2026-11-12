@@ -527,6 +527,17 @@ added to `test/fixtures/unscoped-sql-baseline.json`. **Not provable here:** Conn
 "You can only create new accounts if you've signed up for Connect" (test mode, 2026-11-11); real Checkout, Apple Pay,
 real webhooks, the Express onboarding page.
 
+### Baseline — paid events round two: refund policy + sales summary (2026-11-11, PR event-refund-sales, not merged)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Refund policy + sales summary". Offline:
+`test/event-refund-sales.test.js` 10/10 and `test/event-paid.test.js` 18/18 against a fake Stripe (now also
+`GET /v1/balance` + `/v1/payouts`, recording the `stripe-account` header). `bin/events-drive.mjs` under `env -i` + temp
+DB: all ok, 124 steps, 21 `pay:` (4 new: policy on Stripe's page + receipt; "how are ticket sales" with the payout asked
+on the connected account; tightening to no refunds spares a sold ticket; no ticket → no guest refund).
+`event_ticket_refund` added to `ALWAYS_NEEDS_CONFIRMATION` + `GATED_ACTIONS` + `NEVER_STANDING`. Same flag as paid events
+(`REASON_PAID_EVENTS`), no new one. **Not provable here:** Stripe's real rendering of `custom_text`, a live connected
+account's balance/payouts, a real refund.
+
 ### Baseline — table pictures (render_table, PR #463, 2026-11-10, not merged, flag off)
 
 Offline suite in the worktree (fresh `npm ci`, `ANTHROPIC_API_KEY=` + paid-key guard): 6,352 tests, 6,212 pass,

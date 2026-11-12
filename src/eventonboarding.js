@@ -145,6 +145,32 @@ export const ASK_FRESH_MS = 3 * 24 * 3_600_000;
 /** A priced join whose payment never came through this long is let go. */
 export const PAY_FRESH_MS = 2 * 24 * 3_600_000;
 
+/**
+ * Is their next text a reply to one of Reason's own onboarding lines — "how was it?" (fresh) or the
+ * call offer (fresh)? That reply is Reason's conversation, not theirs (owner, 2026-11-11): it is not
+ * counted toward the monthly free tier and is never stopped by its ceiling (router #drainHeld).
+ */
+export function awaitingReply(conversationId, now = clock.now()) {
+  const row = settleStale(rowOf(conversationId), now);
+  if (!inPlay(row)) return false;
+  if (row.state === "asked") return true;
+  return row.state === "offered" && now - (row.cards_at ?? 0) <= OFFER_FRESH_MS;
+}
+
+/**
+ * The router's claim on that exemption: once per line of Reason's (the "how was it?" it sent, the call
+ * offer it sent), so a row stuck in `asked` — its send failed, the turn errored — never hands out more
+ * than one uncounted turn (review 2026-11-11). True when this drain is the free reply.
+ */
+export function claimFreeReply(conversationId, now = clock.now()) {
+  if (!awaitingReply(conversationId, now)) return false;
+  const row = rowOf(conversationId);
+  const key = `eventonb:free:${conversationId}:${row.state}:${row.state === "asked" ? row.asked_at ?? 0 : row.cards_at ?? 0}`;
+  if (db.opsGet(key)) return false;
+  db.opsSet(key, now);
+  return true;
+}
+
 /** A row whose moment has passed is ended here, so nothing hangs on it (frame, card hold, B/C). */
 function settleStale(row, now = clock.now()) {
   if (!row) return row;

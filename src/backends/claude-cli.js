@@ -46,6 +46,10 @@ import { adoptWebChatAsks, expiredAsksNote } from "../trust.js";
 import { whileTurn } from "../background.js";
 import { startMcpHttp } from "./mcp-http.js";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import * as timing from "../replytiming.js";
+import { fastReplyOn } from "../fastreply.js";
 
 const MAX_HISTORY = 40;
 
@@ -109,7 +113,44 @@ export const ANCHOR_MAX_MS = 2 * 60 * 60_000;
 export const SYSTEM_MAX_BYTES = 110_000;
 const ANCHOR_HEAD = "The conversation so far, oldest first. Anything said after these lines is in the message below, under \"The conversation so far, continued\"; the new message is there too.";
 
-export function historyParts(historyId, messages, { system = "", now = Date.now(), log = () => {} } = {}) {
+/**
+ * REASON_FAST_REPLY §2: anchors outlive the process. Every deploy forgot them, and the first turn of
+ * each thread after it wrote the whole history to the cache again (8 "new" anchors on 2026-11-11,
+ * ~70k tokens written each) when the cache on the other end was still warm. Written aside and
+ * renamed over, so a reader never sees half a file; read once, at the first turn after a boot.
+ * Never throws: a missing or broken file is exactly the restart it always was.
+ */
+const anchorsFile = () => join(config.dataDir, "cli-anchors.json");
+let anchorsRead = false;
+function readAnchors() {
+  if (anchorsRead) return;
+  anchorsRead = true;
+  try {
+    const file = anchorsFile();
+    if (!existsSync(file)) return;
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    for (const [id, a] of Object.entries(saved ?? {})) {
+      if (!anchors.has(id) && a && typeof a.text === "string" && Array.isArray(a.lines) && Number.isFinite(a.at)) anchors.set(id, a);
+    }
+  } catch { /* a restart that forgets is what it always did */ }
+}
+function writeAnchors() {
+  try {
+    const file = anchorsFile();
+    mkdirSync(config.dataDir, { recursive: true });
+    const aside = `${file}.${process.pid}.tmp`;
+    writeFileSync(aside, JSON.stringify(Object.fromEntries(anchors)), { mode: 0o600 });
+    renameSync(aside, file);
+  } catch { /* the in-memory anchor still stands for this process */ }
+}
+/** For tests: forget what was read from disk, so the next historyParts reads it again. */
+export const forgetReadAnchors = () => { anchorsRead = false; };
+
+/** The fewest lines worth anchoring when the whole window will not fit (§1). */
+export const ANCHOR_MIN_LINES = 8;
+
+export function historyParts(historyId, messages, { system = "", now = Date.now(), log = () => {}, fast = false } = {}) {
+  if (fast) readAnchors();
   const lines = renderHistory(messages);
   const a = anchors.get(historyId);
   if (a && now - a.at < ANCHOR_MAX_MS) {
@@ -130,19 +171,47 @@ export function historyParts(historyId, messages, { system = "", now = Date.now(
       if (same) { start = s; break; }
     }
     const after = start >= 0 ? all.length - start - n : -1;
-    if (start >= 0 && start <= all.length - lines.length && after <= ANCHOR_RECENT_MAX) {
+    // A fitted anchor (§1) holds only the oldest part of the window it was set against: the lines
+    // of that window after it are expected, and only what came after THEM counts against the cap.
+    const expected = Math.max(0, (a.window ?? n) - n);
+    // And only while it still fits beside the system prompt: one read back from disk (§2) may have
+    // been set under a shorter prompt than this process runs with.
+    const fits = Buffer.byteLength(system) + Buffer.byteLength(ANCHOR_HEAD) + Buffer.byteLength(a.text) + 4 <= SYSTEM_MAX_BYTES;
+    if (fits && start >= 0 && start <= all.length - lines.length && after - expected <= ANCHOR_RECENT_MAX) {
       log({ history_anchor: "kept", recent: after, conversation: historyId });
       return { anchor: a.text, recent: all.slice(start + n) };
     }
   }
-  if (!lines.length) { anchors.delete(historyId); return { anchor: "", recent: [] }; }
+  if (!lines.length) { anchors.delete(historyId); if (fast) writeAnchors(); return { anchor: "", recent: [] }; }
   const text = lines.join("\n");
-  if (Buffer.byteLength(system) + Buffer.byteLength(ANCHOR_HEAD) + Buffer.byteLength(text) + 4 > SYSTEM_MAX_BYTES) {
+  const room = SYSTEM_MAX_BYTES - Buffer.byteLength(system) - Buffer.byteLength(ANCHOR_HEAD) - 4;
+  if (Buffer.byteLength(text) > room) {
+    // REASON_FAST_REPLY §1: the oldest lines that fit are anchored and the rest ride in the message,
+    // so the model reads the same window in the same order and the cache keeps most of it. Before
+    // this, one byte over meant no anchor at all: 30 owner turns on 2026-11-11 wrote the whole
+    // history again (40k tokens each against 15k with an anchor kept).
+    if (fast) {
+      let k = 0, bytes = 0;
+      for (const l of lines) {
+        const b = Buffer.byteLength(l) + (k ? 1 : 0);
+        if (bytes + b > room) break;
+        bytes += b; k++;
+      }
+      if (k >= ANCHOR_MIN_LINES) {
+        const head = lines.slice(0, k);
+        anchors.set(historyId, { text: head.join("\n"), lines: head, at: now, window: lines.length });
+        writeAnchors();
+        log({ history_anchor: a ? "refitted" : "fitted", lines: k, of: lines.length, conversation: historyId });
+        return { anchor: head.join("\n"), recent: lines.slice(k) };
+      }
+    }
     anchors.delete(historyId);
+    if (fast) writeAnchors();
     log({ history_anchor: "too_long", lines: lines.length, conversation: historyId });
     return { anchor: "", recent: lines };
   }
   anchors.set(historyId, { text, lines, at: now });
+  if (fast) writeAnchors();
   log({ history_anchor: a ? "reset" : "new", lines: lines.length, conversation: historyId });
   return { anchor: text, recent: [] };
 }
@@ -235,7 +304,10 @@ async function runTurnOnCli({
   // `seen` is what the history keeps about the ones that were, after the bytes are gone.
   // What it already knows about them (src/memorynote.js), started now so its one network call
   // runs while the pictures are fetched rather than after. Prompt only, never the saved thread.
+  const recallStarted = Date.now();
   const remembering = kind === "event" ? Promise.resolve([]) : recall(conversationId, text, { log });
+  // How long the lookup took, on its own clock: it runs beside the pictures (src/replytiming.js).
+  Promise.resolve(remembering).then(() => timing.note(conversationId, "recall", Date.now() - recallStarted), () => {});
   // What they have really bought (src/purchasesnote.js) — the same block as the API path. No side
   // call: it rides whenever they have a purchase on record, and the model judges if it is relevant.
   const purchasesPending = startPurchasesNote(conversationId, { text, kind, log });
@@ -272,6 +344,7 @@ async function runTurnOnCli({
   const videoResult = await videos(attachments, { log, cover: reviewed.cover });
   notes.push(...videoResult.notes);
   seen.push(...videoResult.seen);
+  timing.mark(conversationId, "media");
   const said = [`${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
   // The history says the looking has already happened, so a later turn does not offer to go back
   // and check a picture that is out of reach by then. The model's own copy of this turn says where
@@ -335,23 +408,33 @@ async function runTurnOnCli({
     // API path carried would be a note nobody ever got: that is exactly how the back guide went
     // unoffered on 2026-10-06. Prompt only, never the saved conversation.
     const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
+    // REASON_FAST_REPLY (src/fastreply.js): read once for the turn.
+    const fast = fastReplyOn({ conversationId });
     // What they have really bought (src/purchasesnote.js) — the same block as the API path. The
     // thread can still say "ordered" about an order since cancelled.
-    const purchases = await purchasesPending;
-    // The block is Reason's own record, written by code: a figure in it is sourced for the reply check.
-    if (purchases) noteOfferSource(conversationId, purchases);
-    const standing = [purchases,
-      // What it has already told them that still stands, and its open and settled questions
-      // (src/said.js) — the same block as the API path.
-      ...(kind === "event" ? [saidLedger.declinedNote(conversationId), rulesNote(conversationId)] : [reconnectNote(conversationId), openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
+    // The notes the prompt carries, awaited where the turn needs them: before the CLI starts, or (fast)
+    // while it boots.
+    const buildStanding = async () => {
+      const purchases = await purchasesPending;
+      // The block is Reason's own record, written by code: a figure in it is sourced for the reply check.
+      if (purchases) noteOfferSource(conversationId, purchases);
+      const standing = [purchases,
+        // What it has already told them that still stands, and its open and settled questions
+        // (src/said.js) — the same block as the API path.
+        ...(kind === "event" ? [saidLedger.declinedNote(conversationId), rulesNote(conversationId)] : [reconnectNote(conversationId), openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
+      timing.mark(conversationId, "notes");
+      return standing;
+    };
+    const standingFirst = fast ? null : await buildStanding();
 
     // The history: its older part at the end of the system prompt, where the cache keeps it, and
     // what came after that here (see historyParts).
     const systemBase = systemFor(me);
-    const parts = historyParts(historyId, before, { system: systemBase, log });
+    const parts = historyParts(historyId, before, { system: systemBase, log, fast });
     const system = systemWithAnchor(systemBase, parts.anchor);
     const history = parts.recent.join("\n");
-    const prompt = (history
+    timing.mark(conversationId, "anchor");
+    const promptFor = (standing) => (history
       ? `${parts.anchor ? "The conversation so far, continued (the earlier part is at the end of your instructions)" : "The conversation so far"}:\n${history}\n\n`
       : parts.anchor ? "The conversation so far is at the end of your instructions.\n\n" : "")
       + (pending.length ? `Questions you already asked and are still waiting on:\n${pending.join("\n")}\nIf the new message answers one of these, confirm_record THAT id. Do not ask again.\n\n` : "")
@@ -362,6 +445,7 @@ async function runTurnOnCli({
       + standing.map(n => `[${n}]\n\n`).join("")
       + `Reply as Reason, in one short text. Use your tools for anything real.`
       + ` If nothing is worth sending, reply with exactly NO_REPLY.`;
+    let prompt = standingFirst ? promptFor(standingFirst) : null;
 
     // One MCP server per turn, in this process, on a loopback port. Keeping the tools here is
     // what lets a browser stay open across turns and the database have one writer, and it means
@@ -381,6 +465,7 @@ async function runTurnOnCli({
     const onToolStart = () => { tookPart = true; };
     const onTool = (e) => { tookPart = true; log(e); };
     const mcp = await startMcp({ conversationId, channels, calls, onTool, onToolStart, toolCtx: { kind, ...toolCtx } });
+    timing.mark(conversationId, "mcp");
     // Every fresh turn runs under a session id of Reason's choosing, so the rewrite can name it.
     const sessionId = randomUUID();
     const stored = continueSession ? sessions.get(historyId) : null;
@@ -397,7 +482,25 @@ async function runTurnOnCli({
       // is not, and a resume the CLI refuses prints nothing of the model's at all.
       const heard = draft ? (e) => { if (e?.type === "assistant" || e?.type === "user" || e?.type === "stream_event") tookPart = true; draft.feed(e); } : null;
       const common = { system, mcpUrl: mcp.url, mcpHeaders: mcp.headers ?? null, images: blocks, log, feature, ...(heard ? { onEvent: heard } : {}) };
-      if (resuming) {
+      if (fast && !resuming) {
+        // REASON_FAST_REPLY §3: the CLI is started NOW, under the system prompt (the anchor is in it
+        // already), and reads its message off stdin once the notes are in — the memory lookup, the
+        // purchases block and what stands all finish while it boots and lists the tools, instead of
+        // before it exists. The same stdin route a turn with pictures has always used (cliInvocation).
+        // Anything that breaks while the message is being built puts the CLI down unasked.
+        let sendPrompt;
+        const input = new Promise((res) => { sendPrompt = res; });
+        const running = run({ ...common, input, sessionId });
+        try {
+          prompt = promptFor(await buildStanding());
+          sendPrompt(JSON.stringify({ type: "user", message: { role: "user", content: [...blocks, { type: "text", text: prompt }] } }) + "\n");
+        } catch (e) {
+          sendPrompt(null);
+          throw e;
+        }
+        r = await running;
+      } else if (resuming) {
+        if (prompt == null) prompt = promptFor(await buildStanding());
         sessions.delete(historyId);
         // Under the system prompt the session was started with, anchor and all: the same bytes, so
         // the whole prefix is a cache hit, even if the anchor has moved on since.
@@ -422,6 +525,7 @@ async function runTurnOnCli({
         r = await run({ ...common, prompt, sessionId });
       }
     } finally {
+      timing.mark(conversationId, "model");
       await mcp.close();
     }
     // A turn that finished is the one a rewrite would continue. A resumed turn is not kept: a
@@ -490,6 +594,7 @@ async function runTurnOnCli({
       ...along.map(content => ({ role: "assistant", content })),
       { role: "assistant", content: reply },
     ]);
+    timing.mark(conversationId, "post");
 
     return quiet.silent ? null : reply;
   } catch (e) {
