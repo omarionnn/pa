@@ -104,12 +104,18 @@ export class Bed {
     return buf.toString("base64");
   }
 
-  /** Room-only frames to send now, or null: enough to be LEAD_MS ahead, once less than FILL_BELOW_MS is. */
-  fill(now) {
+  /**
+   * Room-only frames to send now, or null: enough to be LEAD_MS ahead, once less than FILL_BELOW_MS is.
+   * `talking` — Reason is mid-sentence (the end of its last piece is held for the next): a top-up now
+   * would be played between two pieces of a word, 40–80 ms of room in the middle of it, when the next
+   * piece is only a little late (2026-11-12). Then nothing is sent while anything at all is queued, and
+   * one tick of room at a time once the line has run dry.
+   */
+  fill(now, { talking = false } = {}) {
     if (this.off) return null;
     const lead = this.at - now;
-    if (lead >= FILL_BELOW_MS) return null;
-    const ms = Math.ceil((LEAD_MS - Math.max(0, lead)) / TICK_MS) * TICK_MS;
+    if (talking ? lead > 0 : lead >= FILL_BELOW_MS) return null;
+    const ms = talking ? TICK_MS : Math.ceil((LEAD_MS - Math.max(0, lead)) / TICK_MS) * TICK_MS;
     const room = this.#take(ms * 8);
     this.at = Math.max(this.at, now) + ms;
     return Buffer.from(Array.from(room, v => pcmToUlaw(Math.round(v)))).toString("base64");
