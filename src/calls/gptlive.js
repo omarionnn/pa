@@ -30,6 +30,7 @@ import { config, clock, normalizeNumber } from "../config.js";
 import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
+import * as carryover from "./carryover.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
 import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voice-prompt.js";
@@ -137,6 +138,7 @@ export function whoFor(call) {
   return {
     name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
     manner: manner.mannerFor(call.conversation_id),
+    carry: own && carryover.carryoverFor(call.conversation_id),
     ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
   };
 }
@@ -216,6 +218,9 @@ export function recentChatLines(conversationId, { max = 6, chars = 700 } = {}) {
 export function preCallBrief(call, { place = "" } = {}) {
   if (Number(call?.is_owner) !== 1) return "";
   const lines = [];
+  // What day and time it is (call 94: "you're off at 8, yeah?" from a Thursday-to-Sunday fact, on a Wednesday).
+  const nowIs = carryover.nowLine(call);
+  if (nowIs) lines.push(nowIs);
   if (call.direction !== "in") {
     const goal = clip(call.goal, 300);
     if (goal) lines.push(`Why you rang them: ${goal}`);
@@ -230,6 +235,12 @@ export function preCallBrief(call, { place = "" } = {}) {
   // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
   if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
+  // Their own earlier calls (call 85 -> 86: a call is never in "today so far", which reads texts), and
+  // what is due or still open (./carryover.js, REASON_CALL_CARRYOVER).
+  const earlier = carryover.earlierCallsNote(call);
+  if (earlier) lines.push(earlier);
+  const comingUp = carryover.comingUpNote(call);
+  if (comingUp) lines.push(comingUp);
   if (place) lines.push(placeLine(place));
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
@@ -347,7 +358,7 @@ export const OWN_CALL56_LINES = CALL56_LINES.map(l => l === NO_HOLDING_LINE ? OW
  * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", manner: mannered = false } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", manner: mannered = false, carry = false } = {}) {
   const own = owner;
   // The call manner (./manner.js) on their own call: its persona, filler and wrap-up lines stand in for
   // the older ones they cover, and its spoken-out-loud, wit, bad-news and never lines are added.
@@ -387,6 +398,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     ...HEARING_LINES,
     ...(own ? OWN_CALL_LINES : []),
     ...(mm ? manner.OWN_MANNER_LINES : []),
+    ...(own && carry ? carryover.CARRY_VOICE_LINES : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     mm ? "Never read out links, internal IDs or anything in square brackets, and never say the words NO_REPLY. A code they asked for is said in small groups, as Reason gives it."
@@ -548,10 +560,10 @@ export function lineAnnouncement(ann) {
 export const ACK_DELAY_MS = 800;
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false, carry = false } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered }),
+    instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered, carry }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     // Room to cancel the voice's automatic "one moment" before it is generated: a line call never has
     // one, and on every other call code decides whether a wait gets a line at all (call 79, `holdLine`).
@@ -3720,10 +3732,12 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   fromcall.onCallEnded(settled, { log });
   // How the call went is the model's read (./goalmet.js, started by the settle): waited for, briefly,
   // so the owner is told what really happened — a mailbox that isn't set up is one text of its own.
-  const judging = goalPending(settled.id);
-  if (judging) {
+  // Their own call is read for what it carries over (./carryover.js) in the same wait: the turn after
+  // the call is handed what Reason said it would do, and the next call starts with it.
+  const reads = [goalPending(settled.id), carryover.settleCarry(settled, { log })].filter(Boolean);
+  if (reads.length) {
     let wait;
-    try { await Promise.race([judging, new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
+    try { await Promise.race([Promise.allSettled(reads), new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
     finally { clearTimeout(wait); }
   }
   const read = db.getCall(settled.conversation_id, settled.id) ?? settled;

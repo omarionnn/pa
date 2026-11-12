@@ -44,6 +44,7 @@ import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
 import * as errand from "./errand.js";
 import { QUOTE_TOOL } from "./errand.js";
 import { briefLines, buildBrief, todaySoFarNote } from "./brief.js";
+import { earlierCallsNote, CARRY_TURN_LINE } from "./carryover.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
 import { rulesNote } from "../rules.js";
@@ -551,6 +552,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const { systemFor } = contextDeps;
 
   const lang = callLanguage(call);
+  const earlier = earlierCallsNote(call);
   const parts = [
     // `onCall`: the text-thread rules (src/threading.js) are about bubbles and pins, not a call.
     systemFor({ ...me, onCall: true }),
@@ -592,6 +594,9 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
     todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }),
+    // Their own earlier calls: a call is written to the thread one line per fragment and this turn
+    // reads only its newest few, so the morning's call is gone by the afternoon (call 85 -> 86).
+    ...(earlier ? [earlier, CARRY_TURN_LINE] : []),
   ];
   return {
     kind: "owner",

@@ -24,6 +24,7 @@ import { SPOKE_TO_SOMETHING } from "./provider.js";
 import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
+import { promisedNote } from "./carryover.js";
 
 /**
  * At boot: the calls a restart cut off between the thread and the owner's turn, finished once.
@@ -360,6 +361,8 @@ export function ownerEvent({ row, live = null }) {
       ? `\nIf on the call they said yes to something you offered to do later (a check before they leave, a reminder) and it is`
         + ` not set up yet, set it up now with your tools and say so in one line; if you can't, say that instead.`
       : "")
+    // What the call's own read says Reason said it would do (./carryover.js; call 85's checklist was never made).
+    + promisedNote(row)
     + (String(row.verify_deferred ?? "").trim()
       ? `\nSomething IS owed: on the call they asked for something that could not be done by voice and waits for this text:`
         + ` "${String(row.verify_deferred).replace(/"/g, "'")}". Pick it up now, in one short message: the caller was not verified,`
