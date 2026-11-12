@@ -137,7 +137,13 @@ startOps({ runtime, router, log });
   if (plaid.plaidMode() !== "off") {
     plaid.attach({ say: (c, text) => runtime.say(c, text), log });
     // A disconnect Plaid could not confirm at the time (their data is already gone here): tried again hourly.
-    setInterval(() => { plaid.retryRemovals().then(n => { if (n) log({ plaid_removals_retried: n }); }).catch(() => {}); }, 3600_000).unref();
+    // And the 60-day rule (plaid.purgeOld): transactions older than that are deleted, at start and every hour.
+    const sweep = () => {
+      try { const n = plaid.purgeOld(); if (n) log({ plaid_old_transactions_deleted: n }); } catch (e) { log({ plaid_purge_failed: String(e?.message ?? e).split("\n")[0].slice(0, 120) }); }
+      plaid.retryRemovals().then(n => { if (n) log({ plaid_removals_retried: n }); }).catch(() => {});
+    };
+    sweep();
+    setInterval(sweep, 3600_000).unref();
   }
 }
 

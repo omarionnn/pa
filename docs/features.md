@@ -209,6 +209,29 @@ the real `plaid` SDK v51); there are no Plaid keys on any machine yet, so nothin
   "<bank> is connected...". Plaid opens `/bank/done` whether they finished or backed out, so that
   page asks Plaid which it was (it also covers a lost webhook) and shows only connected / not yet /
   closed. No bank name, balance or transaction is on it.
+- **Several banks and cards.** Each connection is its own Plaid Item: its own sealed token, sync
+  cursor, webhooks and update-mode link. Spending, categories and subscriptions cover all of them
+  together. Nothing is counted twice: Plaid's `TRANSFER_IN` / `TRANSFER_OUT` and
+  `LOAN_PAYMENTS_CREDIT_CARD_PAYMENT` are not spending, and a move whose two sides are both visible
+  (the same amount out of one of their accounts and into another within three days, where Plaid
+  called at least one side a transfer or loan payment) is left out even when Plaid mislabelled the
+  other side. With only one side connected there is nothing to match, so Plaid's category decides:
+  a card payment or transfer it labelled is left out and the answer carries `not_counted` (how much
+  went to a card Reason cannot see, whose purchases are therefore not in the total, and how much was
+  transferred out); one it labelled as something else counts as spending. Accounts are named by
+  bank, account name and last four (`by_account`, and on each listed transaction); a run of five or
+  more digits in a bank's account name is taken out.
+- **60 days.** Raw transactions are kept for 60 days. A sync never stores an older one (the first
+  sync brings months), and a sweep at start and every hour deletes what has aged past it
+  (`purgeOld`). Asked about a stretch wholly older, Reason says "i only keep the last 60 days" and
+  gives no number; partly older, it answers from the cutoff and says so. A monthly subscription is
+  spotted from two charges inside the window or from Plaid's recurring data; a yearly one is named
+  only when Plaid's recurring data reports it. Plaid itself is still asked for 180 days of history
+  (`days_requested`), because that is what its recurring detection works from; none of it older than
+  60 days is stored here.
+- **Disconnecting with more than one.** "disconnect my bank" lists them (bank, account name, last
+  four) and asks which; a last four or an unambiguous bank name picks one; "disconnect all" removes
+  each Item at Plaid and deletes each token and its data.
 - **Answers.** `bank` actions: `spending` (a period or two days, optional category or word; the
   total first, by category; card payments, transfers between accounts and income are not counted),
   `transactions`, `subscriptions` (Plaid's `/transactions/recurring/get` when the plan has that
@@ -216,7 +239,7 @@ the real `plaid` SDK v51); there are no Plaid keys on any machine yet, so nothin
   expected and `gone_out_this_month`, which is what "has rent gone out yet" reads), `balance`
   (always `/accounts/balance/get`, never a kept number: there is no column for one), `status`,
   `disconnect`. Categories come from Plaid's `personal_finance_category`. No bank connected → the
-  link is offered, never a guess. No investment, tax or insurance advice (prompt rule and tool text).
+  link is offered, never a guess. No investment, tax or insurance advice (the tool's description; nothing is added to the system prompt).
 - **Kept fresh.** `POST /plaid/webhook`, verified the documented way (ES256 JWT in
   `Plaid-Verification`, key by `kid`, five-minute `iat`, SHA-256 of the raw body, constant-time).
   `SYNC_UPDATES_AVAILABLE` syncs from the saved cursor. `ITEM_LOGIN_REQUIRED` (webhook or met on a
@@ -245,7 +268,7 @@ the real `plaid` SDK v51); there are no Plaid keys on any machine yet, so nothin
   questionnaire), the Recurring Transactions add-on (a product access request), and OAuth
   institution registration (Chase, Capital One and others need it and can take weeks). Balance is
   billed per call in production; Transactions per connected Item per month.
-- Tests: `test/plaid.test.js` (20).
+- Tests: `test/plaid.test.js` (27).
 
 ### Food ordering (`REASON_FOOD`, `src/food.js`)
 

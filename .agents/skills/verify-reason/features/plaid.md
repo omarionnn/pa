@@ -6,7 +6,7 @@
   Routes in `src/http.js`: `POST /plaid/webhook` (`plaidWebhookRequest`), `GET /bank/done` (`bankDonePage`).
   The pay-step check is in `src/shoptools.js` (`shop_pay`). Memory exclusion: `src/runtime.js`
   (`financeReply`), `src/dream.js` (`withoutFinanceReplies`). Delete/export: `src/data.js`.
-- Offline proof: `node --test test/plaid.test.js` (20), against `test/fixture-plaid.js` through the
+- Offline proof: `node --test test/plaid.test.js` (27), against `test/fixture-plaid.js` through the
   real `plaid` SDK. `SHAPES_FROM` in the fixture says whether its shapes are from the docs or a real
   Sandbox run.
 - Live proof (needs `PLAID_CLIENT_ID` / `PLAID_SECRET` for Sandbox in `.env`): not yet run. The

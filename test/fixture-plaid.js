@@ -7,7 +7,7 @@ export const SHAPES_FROM = "docs";
 
 const b64 = (o) => Buffer.from(typeof o === "string" ? o : JSON.stringify(o)).toString("base64url");
 
-export function makePlaid() {
+export function makePlaid({ now = () => Date.now() } = {}) {
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const jwk = publicKey.export({ format: "jwk" });
   const KID = "bfbd5111-8e33-4643-8ced-b2e642a72f3c";
@@ -22,12 +22,13 @@ export function makePlaid() {
   const err = (error_code, error_type = "ITEM_ERROR", status = 400) => ({ status, body: { error_type, error_code, error_message: `${error_code} (fixture)`, display_message: null, request_id: "req_fixture" } });
 
   /** A bank with one checking account, as /accounts/get documents it. `number` is a full account number that must never surface. */
-  function addBank({ institution = "First Platypus Bank", mask = "0000", available = 100, current = 110, number = "1111222233330000" } = {}) {
+  function addBank({ institution = "First Platypus Bank", mask = "0000", available = 100, current = 110, number = "1111222233330000", kind = "checking" } = {}) {
+    const KIND = { checking: ["Plaid Checking", "depository", "checking"], savings: ["Plaid Saving", "depository", "savings"], credit: ["Plaid Credit Card", "credit", "credit card"] }[kind];
     const n = ++state.n;
     const access = `access-sandbox-${String(n).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`;
     const item = {
       item_id: `item_${n}_wz666MBjYWTp2PDzzggYhM6oWWmBb`, institution,
-      accounts: [{ account_id: `acc_${n}_checking`, balances: { available, current, limit: null, iso_currency_code: "USD", unofficial_currency_code: null }, mask, name: "Plaid Checking", official_name: `Plaid Gold Standard 0% Interest Checking ${number}`, type: "depository", subtype: "checking" }],
+      accounts: [{ account_id: `acc_${n}_checking`, balances: { available: kind === "credit" ? null : available, current, limit: kind === "credit" ? 2000 : null, iso_currency_code: "USD", unofficial_currency_code: null }, mask, name: KIND[0], official_name: `Plaid Gold Standard 0% Interest ${number}`, type: KIND[1], subtype: KIND[2] }],
       pages: [], recurring: null, failWith: null, removed: false, number,
     };
     state.items.set(access, item);
@@ -94,7 +95,7 @@ export function makePlaid() {
   }
 
   /** A webhook body and its Plaid-Verification header, signed the documented way (ES256 over the body's SHA-256, `iat`). */
-  function signed(event, { iat = Math.floor(Date.now() / 1000), kid = KID, alg = "ES256", tamper = false } = {}) {
+  function signed(event, { iat = Math.floor(now() / 1000), kid = KID, alg = "ES256", tamper = false } = {}) {
     const rawBody = JSON.stringify(event, null, 2);
     const head = b64({ alg, kid, typ: "JWT" });
     const claims = b64({ iat, request_body_sha256: createHash("sha256").update(rawBody).digest("hex") });

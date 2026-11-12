@@ -61,7 +61,9 @@ export function plaidOn(conversationId) {
 }
 /** sandbox unless PLAID_ENV says production. Anything else reads as sandbox: a typo never reaches real banks. */
 export const plaidEnv = () => (String(process.env.PLAID_ENV ?? "sandbox").trim().toLowerCase() === "production" ? "production" : "sandbox");
-export const configured = () => !!(String(process.env.PLAID_CLIENT_ID ?? "").trim() && String(process.env.PLAID_SECRET ?? "").trim());
+/** PLAID_SECRET, or the one named for the environment (PLAID_SECRET_SANDBOX / PLAID_SECRET_PRODUCTION). */
+const secret = () => String(process.env.PLAID_SECRET || (plaidEnv() === "sandbox" ? process.env.PLAID_SECRET_SANDBOX : process.env.PLAID_SECRET_PRODUCTION) || "").trim();
+export const configured = () => !!(String(process.env.PLAID_CLIENT_ID ?? "").trim() && secret());
 
 // ---------------------------------------------------------------- tables
 db.db.exec(`
@@ -146,13 +148,13 @@ let cached = null;
 /** Tests: every Plaid request goes to this fetch, through the real SDK. */
 export function _setFetch(fn) { fetchImpl = fn; cached = null; keyCache.clear(); }
 async function client() {
-  if (!configured()) throw Object.assign(new Error("Plaid keys are not set (PLAID_CLIENT_ID, PLAID_SECRET)."), { code: "not_configured" });
-  const sig = `${plaidEnv()}:${sha(process.env.PLAID_CLIENT_ID + ":" + process.env.PLAID_SECRET).slice(0, 12)}`;
+  if (!configured()) throw Object.assign(new Error("Plaid keys are not set (PLAID_CLIENT_ID, PLAID_SECRET or PLAID_SECRET_SANDBOX)."), { code: "not_configured" });
+  const sig = `${plaidEnv()}:${sha(process.env.PLAID_CLIENT_ID + ":" + secret()).slice(0, 12)}`;
   if (cached?.sig === sig) return cached.client;
   const { PlaidClient, PlaidEnvironment } = await import("plaid");
   const c = new PlaidClient({
     environment: plaidEnv() === "production" ? PlaidEnvironment.Production : PlaidEnvironment.Sandbox,
-    clientId: process.env.PLAID_CLIENT_ID.trim(), secret: process.env.PLAID_SECRET.trim(),
+    clientId: process.env.PLAID_CLIENT_ID.trim(), secret: secret(),
     timeoutInSeconds: 30, maxRetries: 1,
     // The SDK's own logger is off: a request body carries the secret and the access token.
     logging: { silent: true },
@@ -178,15 +180,22 @@ export const accountsOf = (c, itemId = null) => (itemId
   ? q("SELECT * FROM plaid_accounts WHERE conversation_id = ? AND item_id = ? ORDER BY rowid").all(c, itemId)
   : q("SELECT * FROM plaid_accounts WHERE conversation_id = ? ORDER BY rowid").all(c));
 export const hasBank = (c) => itemsOf(c).length > 0;
-/** "Chase checking ••1234": the only way an account is ever named. */
-export const accountLabel = (a, institution = "") => [institution, a.subtype || a.type || a.name, a.mask ? `••${last4(a.mask)}` : ""].filter(Boolean).join(" ");
+/** An account's own name, with any long run of digits a bank put in it taken out (the last four are shown beside it). */
+const safeName = (s) => String(s ?? "").replace(/[x*•.#-]*\d{5,}/gi, "").replace(/\s+/g, " ").trim().slice(0, 40);
+/** "Chase Total Checking ••1234": bank, account name, last four. The only way an account is ever named. */
+export const accountLabel = (a, institution = "") => [institution, safeName(a.name) || a.subtype || a.type, a.mask ? `••${last4(a.mask)}` : ""].filter(Boolean).join(" ");
+/** Every account of theirs, across every connected bank: its label and its kind. */
+function accountMap(c) {
+  const inst = new Map(itemsOf(c).map(i => [i.itemId, i.institution]));
+  return new Map(accountsOf(c).map(a => [a.account_id, { label: accountLabel(a, inst.get(a.item_id) ?? ""), type: a.type }]));
+}
 
 function saveAccounts(c, itemId, list = []) {
   for (const a of list) {
     if (!a?.account_id) continue;
     q(`INSERT INTO plaid_accounts (conversation_id, item_id, account_id, name, mask, type, subtype) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (conversation_id, account_id) DO UPDATE SET name = excluded.name, mask = excluded.mask, type = excluded.type, subtype = excluded.subtype, item_id = excluded.item_id`)
-      .run(c, itemId, a.account_id, sealCell("plaid_accounts", "name", c, String(a.name ?? "")), sealCell("plaid_accounts", "mask", c, last4(a.mask)), String(a.type ?? ""), String(a.subtype ?? ""));
+      .run(c, itemId, a.account_id, sealCell("plaid_accounts", "name", c, safeName(a.name)), sealCell("plaid_accounts", "mask", c, last4(a.mask)), String(a.type ?? ""), String(a.subtype ?? ""));
   }
 }
 
@@ -209,6 +218,8 @@ export async function createLink(c, { itemId = "" } = {}) {
   const req = {
     client_name: "Reason", language: "en", country_codes: ["US"],
     user: { client_user_id: clientUserId(c) },
+    // 180 days is what Plaid's recurring detection wants to work from (its docs); it is Plaid's own
+    // history. Reason stores the last 60 days of it and nothing older (cutoffDay).
     ...(update ? { access_token: update } : { products: ["transactions"], transactions: { days_requested: 180 } }),
     ...(hook ? { webhook: hook } : {}),
     hosted_link: { completion_redirect_uri: callbackUrl(`/bank/done?s=${state}`), url_lifetime_seconds: LINK_TTL_S, is_mobile_app: false },
@@ -339,6 +350,16 @@ export async function askReconnect(c, itemId, { force = false } = {}) {
   return { ok: true, url: link.url, institution: it.institution };
 }
 
+// ---------------------------------------------------------------- retention: 60 days of transactions
+export const KEEP_DAYS = 60;
+/** The oldest day kept. A transaction dated before it is never stored, and is deleted once it ages past. */
+export const cutoffDay = (now = clock.now()) => addDays(new Date(now).toISOString().slice(0, 10), -KEEP_DAYS);
+/** The retention sweep (src/serve.js, at start and hourly): everybody's transactions older than 60 days go. */
+export function purgeOld({ now = clock.now() } = {}) {
+  // Cross-person on purpose: a retention sweep by date.
+  return Number(q("DELETE FROM plaid_transactions WHERE date < ?").run(cutoffDay(now)).changes);
+}
+
 // ---------------------------------------------------------------- sync
 const slim = (t) => ({
   amount: Number(t.amount) || 0, currency: t.iso_currency_code || t.unofficial_currency_code || "USD",
@@ -375,11 +396,15 @@ export async function sync(c, itemId) {
     }
     db.db.exec("BEGIN");
     try {
+      const cutoff = cutoffDay();
       for (const t of [...added, ...modified]) {
         if (!t?.transaction_id) continue;
+        // Older than 60 days: never stored (the first sync brings months of history), and dropped if it was.
+        if (String(t.date ?? "").slice(0, 10) < cutoff) { drop.run(c, t.transaction_id); continue; }
         put.run(c, itemId, String(t.account_id ?? ""), t.transaction_id, String(t.date ?? "").slice(0, 10), t.pending ? 1 : 0, sealCell("plaid_transactions", "data", c, JSON.stringify(slim(t))));
       }
       for (const r of removed) if (r?.transaction_id) drop.run(c, r.transaction_id);
+      q("DELETE FROM plaid_transactions WHERE conversation_id = ? AND date < ?").run(c, cutoff);
       q("UPDATE plaid_items SET cursor = ?, synced_at = ?, status = CASE WHEN status = 'login_required' THEN 'ok' ELSE status END WHERE conversation_id = ? AND item_id = ?").run(cursor ?? "", clock.now(), c, itemId);
       db.db.exec("COMMIT");
     } catch (e) { db.db.exec("ROLLBACK"); throw e; }
@@ -415,14 +440,14 @@ export function periodDays(period, { now = clock.now(), tz = "America/New_York" 
     case "last_week": return { from: addDays(today, -dow - 7), to: addDays(today, -dow - 1) };
     case "last_month": { const end = addDays(monthStart, -1); return { from: `${end.slice(0, 8)}01`, to: end }; }
     case "last_30_days": return { from: addDays(today, -29), to: today };
-    case "last_90_days": return { from: addDays(today, -89), to: today };
+    case "last_60_days": return { from: addDays(today, -59), to: today };
     case "this_month": default: return { from: monthStart, to: today };
   }
 }
 const money = (n) => `$${(Math.round(n * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 function rowsIn(c, from, to) {
   return q("SELECT account_id, item_id, transaction_id, date, pending, data FROM plaid_transactions WHERE conversation_id = ? AND date >= ? AND date <= ? ORDER BY date DESC")
-    .all(c, from, to).map(r => { let d = {}; try { d = JSON.parse(r.data); } catch { /* unreadable row: skipped below */ } return { ...d, date: r.date, pending: !!r.pending, account_id: r.account_id, item_id: r.item_id }; })
+    .all(c, from, to).map(r => { let d = {}; try { d = JSON.parse(r.data); } catch { /* unreadable row: skipped below */ } return { ...d, date: r.date, pending: !!r.pending, account_id: r.account_id, item_id: r.item_id, transaction_id: r.transaction_id }; })
     .filter(t => typeof t.amount === "number");
 }
 /** A word they used ("food", "groceries", "uber") against a transaction: our category, Plaid's finer one, or the merchant. */
@@ -432,31 +457,69 @@ function matches(t, word) {
   if (categoryOf(t) === w || categoryOf(t).replace(/s$/, "") === w) return true;
   return t.detailed.toLowerCase().replace(/_/g, " ").includes(w) || t.name.toLowerCase().includes(w);
 }
-/** What they spent between two days: the total, by category, and the biggest few. Their rows only. */
+const MOVES = new Set(["TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS"]);
+const isCardPayment = (t) => t.detailed === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT";
+/**
+ * Money moved between their OWN connected accounts, found by both sides being visible: an amount
+ * out of one account and the same amount into another within three days, where Plaid called at
+ * least one side a transfer or a loan payment. (That last condition is what keeps a $20 purchase on
+ * one card and a $20 refund on another from being read as a transfer.) Each side is used once.
+ * Returns the transaction ids of both sides.
+ */
+function ownMoves(rows) {
+  const internal = new Set();
+  const ins = rows.filter(t => t.amount < 0);
+  for (const out of rows.filter(t => t.amount > 0)) {
+    const hit = ins.find(u => !internal.has(u.transaction_id) && u.account_id !== out.account_id && Math.abs(u.amount + out.amount) < 0.005
+      && Math.abs(Date.parse(u.date) - Date.parse(out.date)) <= 3 * 86400_000 && (MOVES.has(out.primary) || MOVES.has(u.primary)));
+    if (hit) { internal.add(out.transaction_id); internal.add(hit.transaction_id); }
+  }
+  return internal;
+}
+/**
+ * What they spent between two days, across EVERY connected account: the total, by category, by
+ * account, and the biggest few. Their rows only. Not counted, so nothing is counted twice:
+ *   - anything Plaid categorises TRANSFER_IN / TRANSFER_OUT, income, loan money arriving, and a
+ *     credit card payment (the purchases on that card are the spending, when the card is connected);
+ *   - both sides of a move between their own accounts (ownMoves), even when Plaid mislabelled one.
+ * When only ONE side is connected there is nothing to match, so Plaid's category is all there is:
+ * a transfer or card payment Plaid labelled correctly is left out, and `not_counted` says how much
+ * went to a card Reason cannot see (what was bought on it is not in the total) and how much was
+ * transferred out. One that Plaid labelled as something else is counted as spending.
+ */
 export function spending(c, { from, to, category = "" } = {}) {
-  const all = rowsIn(c, from, to).filter(isSpend).filter(t => matches(t, category));
+  const accts = accountMap(c);
+  const wide = rowsIn(c, addDays(from, -3), addDays(to, 3));
+  const internal = ownMoves(wide);
+  const inRange = wide.filter(t => t.date >= from && t.date <= to);
+  const all = inRange.filter(isSpend).filter(t => !internal.has(t.transaction_id)).filter(t => matches(t, category));
   const total = all.reduce((s, t) => s + t.amount, 0);
-  const by = new Map();
-  for (const t of all) by.set(categoryOf(t), (by.get(categoryOf(t)) ?? 0) + t.amount);
-  const merchants = new Map();
-  for (const t of all) merchants.set(t.name, (merchants.get(t.name) ?? 0) + t.amount);
+  const sumBy = (key) => { const m = new Map(); for (const t of all) m.set(key(t), (m.get(key(t)) ?? 0) + t.amount); return m; };
   const top = (m, n) => [...m].sort((a, b) => b[1] - a[1]).slice(0, n);
+  const byAccount = sumBy(t => accts.get(t.account_id)?.label ?? "an account");
+  const outside = inRange.filter(t => t.amount > 0 && !internal.has(t.transaction_id));
+  const unseenCard = outside.filter(t => isCardPayment(t) && accts.get(t.account_id)?.type === "depository").reduce((s, t) => s + t.amount, 0);
+  const sentOut = outside.filter(t => t.primary === "TRANSFER_OUT").reduce((s, t) => s + t.amount, 0);
   return {
     from, to, total: money(total), count: all.length,
-    by_category: top(by, 8).map(([name, n]) => ({ category: name, amount: money(n) })),
-    top_merchants: top(merchants, 5).map(([name, n]) => ({ name, amount: money(n) })),
+    by_category: top(sumBy(categoryOf), 8).map(([name, n]) => ({ category: name, amount: money(n) })),
+    ...(byAccount.size > 1 ? { by_account: top(byAccount, 8).map(([account, n]) => ({ account, amount: money(n) })) } : {}),
+    top_merchants: top(sumBy(t => t.name), 5).map(([name, n]) => ({ name, amount: money(n) })),
     pending_included: all.some(t => t.pending),
+    ...(!category && (unseenCard || sentOut) ? { not_counted: {
+      ...(unseenCard ? { paid_to_cards_not_connected: money(unseenCard) } : {}), ...(sentOut ? { transfers_out: money(sentOut) } : {}),
+      note: `${unseenCard ? "They paid toward a card that isn't connected, so what was bought on that card isn't in this total. " : ""}${sentOut ? "Transfers out (to another account or a person) aren't counted as spending. " : ""}Mention it in a few words only if it matters to what they asked.` } } : {}),
   };
 }
 /** Their transactions in a stretch, newest first, optionally narrowed by a word. Account shown as last four. */
 export function transactions(c, { from, to, search = "", limit = 20 } = {}) {
-  const masks = new Map(accountsOf(c).map(a => [a.account_id, last4(a.mask)]));
+  const accts = accountMap(c);
   const rows = rowsIn(c, from, to).filter(t => matches(t, search));
   return {
     from, to, count: rows.length,
     transactions: rows.slice(0, Math.max(1, Math.min(50, limit))).map(t => ({
       date: t.date, name: t.name, amount: t.amount < 0 ? `+${money(-t.amount)}` : money(t.amount), category: NOT_SPENDING.has(t.primary) ? t.primary.toLowerCase().replace(/_/g, " ") : categoryOf(t),
-      ...(t.pending ? { pending: true } : {}), ...(masks.get(t.account_id) ? { account: `••${masks.get(t.account_id)}` } : {}),
+      ...(t.pending ? { pending: true } : {}), ...(accts.get(t.account_id) ? { account: accts.get(t.account_id).label } : {}),
     })),
   };
 }
@@ -464,18 +527,22 @@ export function transactions(c, { from, to, search = "", limit = 20 } = {}) {
 // ---------------------------------------------------------------- reading: subscriptions
 const FREQ_DAYS = { WEEKLY: 7, BIWEEKLY: 14, SEMI_MONTHLY: 15, MONTHLY: 30, ANNUALLY: 365 };
 const perMonth = (amount, freq) => (FREQ_DAYS[freq] ? amount * (30.44 / FREQ_DAYS[freq]) : amount);
-/** Recurring charges worked out from the synced rows: same name, about the same amount, about monthly, three times or more. */
+/**
+ * Recurring charges worked out from the 60 days kept, across every account: the same name, about the
+ * same amount, twice, about a month apart. A yearly charge cannot be seen this way; only Plaid's
+ * recurring endpoint can name one.
+ */
 export function localRecurring(c, { now = clock.now(), tz = "America/New_York" } = {}) {
   const today = ymd(now, tz);
   const groups = new Map();
-  for (const t of rowsIn(c, addDays(today, -200), today).filter(isSpend).filter(t => !t.pending)) {
+  for (const t of rowsIn(c, cutoffDay(now), today).filter(isSpend).filter(t => !t.pending)) {
     const k = t.name.toLowerCase();
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(t);
   }
   const out = [];
   for (const list of groups.values()) {
-    if (list.length < 3) continue;
+    if (list.length < 2) continue;
     const days = list.map(t => t.date).sort();
     const gaps = days.slice(1).map((d, i) => (Date.parse(d) - Date.parse(days[i])) / 86400_000);
     const amounts = list.map(t => t.amount);
@@ -718,17 +785,10 @@ export async function handleWebhook(event = {}) {
 }
 
 // ---------------------------------------------------------------- the model's rules and the tool
-export const PLAID_RULES = `
-THEIR BANK (bank tool; read-only through Plaid, you can never move money with it):
-- Money questions about their own accounts ("how much did i spend this week", "what subscriptions do i have", "what's my balance", "has rent gone out") → bank, never a guess and never from memory. No bank connected → offer the connect link in one line instead of guessing.
-- Answer in your normal voice: the number first, then at most a short breakdown if it helps. Accounts are named by bank and last four only.
-- Explain their numbers; never investment, tax or insurance advice, and never what to buy, sell or invest in. If they ask, say that's not something you do and offer what the numbers show.
-- What you read from their bank is for this answer. Never remember it, and never put it on a page, an event, a card or anything another person can see.`;
-export const plaidRules = (me) => (plaidOnFor({ isOperator: typeof me === "object" && !!me?.isOperator, onCall: !!me?.onCall }) ? PLAID_RULES : "");
-
+// No rule in the system prompt (it is at its size budget): everything the model needs is in the tool's description.
 export const PLAID_TOOLS = new Set(["bank"]);
 export const plaidToolVisible = (name, conversationId) => !PLAID_TOOLS.has(name) || plaidOn(conversationId);
-const PERIODS = ["today", "yesterday", "this_week", "last_week", "this_month", "last_month", "last_30_days", "last_90_days"];
+const PERIODS = ["today", "yesterday", "this_week", "last_week", "this_month", "last_month", "last_30_days", "last_60_days"];
 export const PLAID_TOOL_DEFS = [{
   name: "bank",
   description: "Their own bank accounts, READ-ONLY through Plaid: balances and transactions. It cannot pay, transfer or move money, and never returns a full account or routing number (last four only). Actions: "
@@ -738,8 +798,10 @@ export const PLAID_TOOL_DEFS = [{
     + "\"transactions\" lists them, optionally narrowed by `search`. "
     + "\"subscriptions\" lists recurring charges with what each costs, when it last went out and when the next is expected (gone_out_this_month answers \"has rent gone out yet\"). "
     + "\"balance\" fetches balances fresh from the bank (it takes a few seconds). "
-    + "\"disconnect\" removes a bank at Plaid and deletes its stored token and everything synced from it; with more than one bank and none named, ask which or pass all. Only when they ask. "
-    + "No bank connected → offer the connect link, never a guess. Never give investment, tax or insurance advice from these numbers, and never save them with remember.",
+    + "\"disconnect\" removes a connection at Plaid and deletes its stored token and everything synced from it. With more than one connected and none named, it answers with the list: ask which one, naming each by bank, account name and last four; `bank` takes the bank's name or an account's last four, `all` true is \"disconnect all\". Only when they ask. "
+    + "They can connect several banks and cards; every answer covers all of them together, and moves between their own accounts and card payments are not counted twice. When it helps, say which account a charge came from, by the account label given (name and last four) and nothing more. "
+    + "You keep only the last 60 days of transactions: asked about anything older, say so plainly (\"i only keep the last 60 days\"). A yearly subscription shows only when the bank data reports it. "
+    + "No bank connected → offer the connect link, never a guess. Any question about their own money (what they spent, subscriptions, a balance, whether rent went out) is answered from this tool, never from a guess or memory; the number first, short, in your normal voice. Explain their numbers; never investment, tax or insurance advice, and never what to buy, sell or invest in. What you read is for this answer only: never save it with remember, and never put it on a page, an event, a card or anything another person can see.",
   input_schema: {
     type: "object",
     properties: {
@@ -749,7 +811,7 @@ export const PLAID_TOOL_DEFS = [{
       to: { type: "string", description: "Last day, YYYY-MM-DD, instead of period." },
       category: { type: "string", description: "For spending: one category or a word to narrow by." },
       search: { type: "string", description: "For transactions: a merchant or word to narrow by." },
-      bank: { type: "string", description: "For connect (reconnect) and disconnect: the bank's name as status gave it." },
+      bank: { type: "string", description: "For connect (reconnect) and disconnect: the bank's name as status gave it, or an account's last four digits." },
       all: { type: "boolean", description: "For disconnect: every connected bank." },
     },
     required: ["action"],
@@ -764,7 +826,18 @@ export const PLAID_SCHEMAS = {
 };
 
 const NO_BANK = { ok: false, error: "no_bank_connected", say: "No bank is connected, so there is nothing to read. Don't guess a number. Offer in one line to send a secure link to connect their bank (read-only), and call bank connect when they say yes or if they already asked to connect." };
-const pickBank = (list, name) => { const w = String(name ?? "").trim().toLowerCase(); return w ? list.find(i => i.institution.toLowerCase().includes(w) || w.includes(i.institution.toLowerCase())) ?? null : null; };
+const BEYOND = { ok: false, error: "beyond_60_days", say: `You only keep the last ${KEEP_DAYS} days of their transactions, so there is nothing for that period. Say that plainly in one line ("i only keep the last 60 days") and offer what you can see. Never estimate.` };
+/** Which connection they mean: an account's last four first (two cards at one bank), then the bank's name. Null when none or more than one fits. */
+function pickBank(c, list, name) {
+  const w = String(name ?? "").trim().toLowerCase();
+  if (!w) return null;
+  const four = (w.match(/\d{4}/g) ?? []).pop();
+  const byFour = four ? list.filter(i => accountsOf(c, i.itemId).some(a => last4(a.mask) === four)) : [];
+  if (byFour.length === 1) return byFour[0];
+  const byName = list.filter(i => i.institution.toLowerCase().includes(w) || w.includes(i.institution.toLowerCase()));
+  return byName.length === 1 ? byName[0] : null;
+}
+const listing = (c, list) => list.map(i => ({ bank: i.institution, accounts: accountsOf(c, i.itemId).map(a => accountLabel(a, "")) }));
 
 export async function runPlaidTool(name, input = {}, { conversationId: c, now = clock.now() } = {}) {
   if (!plaidOn(c)) return { ok: false, error: "Not available." };
@@ -772,12 +845,18 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
   const mine = itemsOf(c);
   const tz = zoneFor(c) || "America/New_York";
   const stale = mine.filter(i => i.status === "login_required");
-  const days = () => (input.from && input.to ? { from: input.from, to: input.to } : periodDays(input.period ?? "this_month", { now, tz }));
+  // The stretch asked about, held to the 60 days kept: wholly older → nothing to read; partly older → from the cutoff, and said.
+  const days = () => {
+    const d = input.from && input.to ? { from: input.from, to: input.to } : periodDays(input.period ?? "this_month", { now, tz });
+    const cut = cutoffDay(now);
+    if (d.to < cut) return null;
+    return d.from < cut ? { from: cut, to: d.to, limited: { only_last_60_days: true, window_note: `They asked about more than you keep. This covers ${cut} onward only; say "i only keep the last 60 days" in a few words.` } } : d;
+  };
   const reconnectNote = stale.length ? { needs_reconnect: stale.map(i => i.institution), note: `${stale.map(i => i.institution).join(" and ")} needs them to sign in again, so its numbers may be behind. Say that in a few words and offer the reconnect link (bank connect with bank).` } : {};
   try {
     switch (input.action) {
       case "connect": {
-        const target = pickBank(mine, input.bank) ?? (stale.length === 1 && !input.bank ? stale[0] : null);
+        const target = pickBank(c, mine, input.bank) ?? (stale.length === 1 && !input.bank ? stale[0] : null);
         const link = target ? await askReconnect(c, target.itemId, { force: true }) : await createLink(c);
         if (!link.ok) return { ok: false, error: link.error, say: "The link could not be made just now. Say so in one line and offer to try again in a minute." };
         return { ok: true, url: link.url, minutes: LINK_TTL_S / 60, ...(target ? { reconnecting: target.institution } : {}),
@@ -787,22 +866,26 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
       }
       case "status":
         if (!mine.length) return NO_BANK;
-        return { ok: true, banks: mine.map(i => ({ bank: i.institution, status: i.status === "ok" ? "connected" : "needs_reconnect", accounts: accountsOf(c, i.itemId).map(a => accountLabel(a, "")), ...(i.syncedAt ? { last_synced: new Date(i.syncedAt).toISOString() } : {}) })), can: "read balances and transactions", cannot: "move money" };
+        return { ok: true, keeps: `the last ${KEEP_DAYS} days of transactions`, banks: mine.map(i => ({ bank: i.institution, status: i.status === "ok" ? "connected" : "needs_reconnect", accounts: accountsOf(c, i.itemId).map(a => accountLabel(a, "")), ...(i.syncedAt ? { last_synced: new Date(i.syncedAt).toISOString() } : {}) })), can: "read balances and transactions", cannot: "move money" };
       case "spending": {
         if (!mine.length) return NO_BANK;
+        const d = days();
+        if (!d) return BEYOND;
         noteRead(c);
-        return { ok: true, ...spending(c, { ...days(), category: input.category ?? "" }), ...reconnectNote, say: "Lead with the total, lowercase and short, then a brief breakdown only if it helps. No advice about what to do with their money beyond what they asked." };
+        return { ok: true, ...spending(c, { from: d.from, to: d.to, category: input.category ?? "" }), ...(d.limited ?? {}), ...reconnectNote, say: "Lead with the total, lowercase and short, then a brief breakdown only if it helps. No advice about what to do with their money beyond what they asked." };
       }
       case "transactions": {
         if (!mine.length) return NO_BANK;
+        const d = days();
+        if (!d) return BEYOND;
         noteRead(c);
-        return { ok: true, ...transactions(c, { ...days(), search: input.search ?? "" }), ...reconnectNote };
+        return { ok: true, ...transactions(c, { from: d.from, to: d.to, search: input.search ?? "" }), ...(d.limited ?? {}), ...reconnectNote };
       }
       case "subscriptions": {
         if (!mine.length) return NO_BANK;
         noteRead(c);
         const out = await subscriptions(c, { now });
-        return { ok: true, ...out, ...reconnectNote, say: `Lead with how many and the monthly total, then the list, short.${out.source === "worked_out_here" ? " This list was worked out from their recent transactions, so say it may miss yearly ones." : ""}` };
+        return { ok: true, ...out, ...reconnectNote, say: `Lead with how many and the monthly total, then the list, short.${out.source === "worked_out_here" ? " This list was worked out from the last 60 days of their transactions, so say it may miss yearly ones." : ""}` };
       }
       case "balance": {
         if (!mine.length) return NO_BANK;
@@ -813,9 +896,9 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
       }
       case "disconnect": {
         if (!mine.length) return { ok: false, error: "no_bank_connected", say: "No bank is connected, so there is nothing to disconnect. Say so in one line." };
-        const target = pickBank(mine, input.bank) ?? (mine.length === 1 ? mine[0] : null);
-        if (!target && !input.all) return { ok: false, error: "which_bank", banks: mine.map(i => i.institution), say: "They have more than one bank connected. Ask in one line which to disconnect, or all of them." };
-        const out = await disconnect(c, input.all && !target ? { all: true } : { itemId: target.itemId });
+        const target = input.all ? null : pickBank(c, mine, input.bank) ?? (mine.length === 1 && !input.bank ? mine[0] : null);
+        if (!target && !input.all) return { ok: false, error: "which_bank", connections: listing(c, mine), say: "Nothing was disconnected. Ask in one line which one, naming each by bank, account name and last four, or whether they mean all of them." };
+        const out = await disconnect(c, input.all ? { all: true } : { itemId: target.itemId });
         return { ...out, say: `Say in one short line that ${out.removed.join(" and ")} is disconnected and what you had from it is deleted.` };
       }
       default: return { ok: false, error: "unknown action" };
