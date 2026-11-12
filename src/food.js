@@ -819,6 +819,103 @@ export function history(c, { now = clock.now() } = {}) {
     note: "Allergies and diet are in their saved facts too; the cart check reads both. 'My usual' = the last_two of that restaurant, proposed back in one line, added only after they confirm.",
   };
 }
+// ---------------------------------------------------------------- past orders, from their receipts
+// "What did I last order on DoorDash?" (owner, 2026-11-12). The apps' own order pages are behind a
+// sign-in Reason's browser never reaches (DoorDash, Uber's sign-in and Toast answer it with a
+// Cloudflare check that does not clear, from a home connection as much as from the server: probe of
+// 2026-11-12, docs/site-probe-2026-11-12-food.json). Every order still leaves a receipt in their
+// mail, and their mail is theirs to read. So the past orders come from there, whichever app took them.
+// Senders are structure (a mail host), and a receipt's subject is a machine's template, not a
+// person's meaning: reading them by pattern is reading a form.
+export const RECEIPT_SENDERS = [
+  { platform: "doordash", name: "DoorDash", hosts: ["doordash.com"] },
+  { platform: "ubereats", name: "Uber Eats", hosts: ["uber.com"] },
+  { platform: "grubhub", name: "Grubhub", hosts: ["grubhub.com"] },
+  { platform: "seamless", name: "Seamless", hosts: ["seamless.com"] },
+  { platform: "postmates", name: "Postmates", hosts: ["postmates.com"] },
+  { platform: "caviar", name: "Caviar", hosts: ["trycaviar.com"] },
+  { platform: "toast", name: "Toast", hosts: ["toasttab.com"] },
+  { platform: "chownow", name: "ChowNow", hosts: ["chownow.com"] },
+  { platform: "square", name: "Square", hosts: ["squareup.com", "square.site"] },
+  { platform: "slice", name: "Slice", hosts: ["slicelife.com"] },
+  { platform: "olo", name: "Olo", hosts: ["olo.com"] },
+];
+export const RECEIPT_DAYS = 365;
+/** The Gmail search for food receipts: mail from the ordering senders that names an order or a receipt. */
+export function receiptQuery({ platform = "", days = RECEIPT_DAYS } = {}) {
+  const want = RECEIPT_SENDERS.filter((s) => !platform || s.platform === platform);
+  const hosts = (want.length ? want : RECEIPT_SENDERS).flatMap((s) => s.hosts);
+  return `from:(${hosts.join(" OR ")}) subject:(order OR receipt) newer_than:${Math.max(1, Math.round(days))}d`;
+}
+const senderOf = (from) => {
+  const m = String(from ?? "").toLowerCase().match(/@([a-z0-9.-]+)/);
+  const host = m ? m[1] : "";
+  return RECEIPT_SENDERS.find((s) => s.hosts.some((b) => under(host, b))) ?? null;
+};
+// Mail from the same senders that is not an order: a code, a password, an ad, a survey.
+const NOT_AN_ORDER = /verification|security code|password|sign[- ]?in|log[- ]?in|welcome|% off|\$\d+ off|promo|deal|offer|save |free delivery|rate your|how was|survey|review your|dashpass|uber one|grubhub\+|membership|refer|gift card|account/i;
+// Later mail about an order already counted: the order itself is the confirmation or the receipt.
+const ORDER_TAIL = /\s+(?:is|has|was|will|are)\s+(?:being|been|on|out|ready|confirmed|delivered|arriving|complete|completed|cancell?ed|refunded)\b.*$|\s*[-–—|(].*$|[.!]+$/i;
+const moneyIn = (s) => { const m = String(s ?? "").match(/\btotal(?:\s+charged)?:?\s*\$\s?(\d{1,4}\.\d{2})/i); return m ? `$${m[1]}` : ""; };
+/**
+ * One mail header read as a food order: { platform, app, restaurant, total, when, subject }, or null
+ * when it is not an order (a code, an ad). A restaurant the subject does not name is "" rather than a
+ * guess: the body (gmail_read) names it.
+ */
+export function readReceipt({ from = "", subject = "", date = "", snippet = "" } = {}) {
+  const sender = senderOf(from);
+  const subj = clean(subject, 200);
+  if (!sender || !subj || NOT_AN_ORDER.test(subj) || !/\border|\breceipt/i.test(subj)) return null;
+  // Uber's sender also sends ride receipts: only its Eats mail is food.
+  if (sender.platform === "ubereats" && !/eats|order/i.test(`${subj} ${from}`)) return null;
+  if (/cancell?ed|refund/i.test(subj)) return null;
+  let restaurant = "";
+  const named = subj.match(/\b(?:order|receipt|confirmation)\b.*?\b(?:from|at)\s+(.+)$/i) ?? subj.match(/^(?:your\s+)?(.+?)\s+(?:order|receipt)\b/i);
+  if (named) {
+    restaurant = named[1].replace(ORDER_TAIL, "").trim();
+    // "Order Confirmation for Omari from Joe's Pizza" reads from "from"; a bare app name is not a restaurant.
+    if (/^(?:your|the|new|online|recent|uber eats|doordash|grubhub|seamless|toast|slice)?$/i.test(restaurant) || /\border\b|\bwith uber eats\b|\b(?:morning|afternoon|evening|night)\b/i.test(restaurant)) restaurant = "";
+  }
+  const t = Date.parse(String(date ?? ""));
+  return { platform: sender.platform, app: sender.name, restaurant: clean(restaurant, 80), total: moneyIn(snippet), when: Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : "", at: Number.isFinite(t) ? t : 0, subject: subj };
+}
+/**
+ * Their past food orders from their own mail, newest first. `search(query, limit)` is the mail search
+ * (src/tools.js gmail_search); it answers { ok, messages } or the mail tool's own refusal, which goes
+ * back unchanged (mail not connected is its sentence to say, not this one's).
+ */
+export async function pastOrders(c, { search, platform = "", restaurant = "", limit = 8 } = {}) {
+  if (typeof search !== "function") return { ok: false, error: "no_mail_search" };
+  const key = String(platform ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  const which = RECEIPT_SENDERS.find((s) => s.platform === key || nameKey(s.name).replace(/ /g, "") === key)?.platform ?? "";
+  const query = receiptQuery({ platform: which });
+  const got = await search(query, 25);
+  if (!got?.ok) return { ...(got ?? {}), ok: false, from: "their mail", say: got?.say ?? "Their mail could not be searched, so their past orders are not readable right now. Say that plainly; offer to connect their mail if it is not connected. Never ask for a screenshot of the app." };
+  const seen = new Set();
+  const want = nameKey(restaurant);
+  const orders = [];
+  for (const m of [...(got.messages ?? [])].map((m) => ({ m, r: readReceipt(m) })).filter((x) => x.r).sort((a, b) => b.r.at - a.r.at)) {
+    if (want && !nameKey(m.r.restaurant).includes(want) && !nameKey(m.r.subject).includes(want)) continue;
+    // One order sends several mails (confirmed, receipt): the same place on the same day is one order.
+    const k = `${m.r.platform}|${nameKey(m.r.restaurant) || m.r.subject.toLowerCase()}|${m.r.when}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const { at, ...shown } = m.r;
+    orders.push({ ...shown, account: m.m.account ?? "", message_id: m.m.id ?? "" });
+    if (orders.length >= limit) break;
+  }
+  const mine = history(c);
+  const where = which ? appName(which) === "the app" ? RECEIPT_SENDERS.find((s) => s.platform === which).name : appName(which) : "a food app or a restaurant's own ordering";
+  if (!orders.length) {
+    return { ok: true, count: 0, orders: [], searched: query, placed_through_reason: mine.orders,
+      say: `No order receipt from ${where} in their mail in the last ${RECEIPT_DAYS} days (searched: ${query}). Say exactly that, and that receipts may go to an email address that is not connected here; ask which address their ${which ? where : "food app"} account uses, in one line. Never ask for a screenshot.` };
+  }
+  return {
+    ok: true, count: orders.length, orders, searched: query, placed_through_reason: mine.orders,
+    say: `These are their order receipts, newest first; the first is their last order. The items are in the mail itself: gmail_read the newest one (message_id, account) before naming a dish, and name only what it lists. To get it again: food_order start, find the restaurant's own ordering (place), record the cart, then store_checkout; the checkout runs on Crossmint's browser, which the ordering sites let in, and stops at payment for their yes.`,
+  };
+}
+
 function zoneSafe(c) { try { return zoneFor(c) || config.tz; } catch { return config.tz; } }
 function localHour(ms, c) { try { return Number(new Intl.DateTimeFormat("en-US", { timeZone: zoneSafe(c), hour: "numeric", hourCycle: "h23" }).format(ms)); } catch { return 12; } }
 
@@ -893,6 +990,7 @@ FOOD ORDERS (craving → food at the door, fewest texts; never money without a y
 - Approval is by code: one card picture and one line ("$31.42 to your Visa 4821, here by 8:15. Place it?") with any allergy or diet flag before the question. Yes, place it, a 👍 or similar approves THAT card only; silence never does. Any change (item, address, card) or a new total → a new checkout and a fresh card, never a yes carried over. The hold is 15 minutes.
 - After placing: the confirmation goes by code. Never send the order number unless they ask. Tracking stays quiet; one check comes after the latest arrival time. Complaint, refund (original card first, platform credit only if refused) or cancel only on their yes. Missing or wrong item they report: file it on the platform when you can and tell them what support said.
 - Failures: an unavailable item → say which and offer the closest swap or ordering without it; never substitute silently. A restaurant that cancels → bring a fix (the same cart at another nearby place), not just the problem. A sign-in wall → the link goes by code; ask for a code in one line if one is needed. Anything that loops twice: stop, ❌, say plainly what blocked it.
+- Past orders ("what did I last order", "get that again", "sign into my DoorDash and check"): food_order "history" has what you placed; food_order "past_orders" reads their receipts from their mail, whichever app took the order. Answer from those. A delivery app refusing your own browser is never the answer to them and never a reason to stop: do not send a sign-in link for the app, do not ask for a screenshot, do not explain the block unless they ask why. Ordering is not done in your browser: store_checkout runs on Crossmint's, which DoorDash, Grubhub, Toast and Square let in; an app that needs their account (DoorDash has no guest checkout) gets them the sign-in link by code.
 - After every order, and whenever they say it: keep allergies and dislikes with remember; places they turned down ("not that place again"), favourites and delivery instructions with food_order "note".`;
 export const foodRules = (me) => (foodOnFor({ isOperator: typeof me === "object" && !!me?.isOperator, onCall: !!me?.onCall }) ? FOOD_RULES : "");
 
@@ -901,17 +999,18 @@ export const FOOD_TOOLS = new Set(["food_order"]);
 export const foodToolVisible = (name, conversationId) => !FOOD_TOOLS.has(name) || foodOn(conversationId);
 export const FOOD_TOOL_DEFS = [{
   name: "food_order",
-  description: "Food delivery orders. Nothing is charged by this tool. Actions: start (a new food request; ⏳ on their message), history (their past orders, usual per restaurant, each place's own ordering link, addresses, tip, normal cost, notes), place (keep a restaurant's own ordering link, or no_direct true when it has none: direct first, the apps only as fallback), why_direct (they ask why not an app, or suggest one: the one line, from the record), options (2–3 dishes as ONE numbered picture; real photo_url from a tool result each), cart (record the cart as built, before store_checkout: checks every item against their allergies and diet), status (needs | failed | cancelled, as a tapback on their request), note (rejected | liked | disliked | instructions | allergy).",
+  description: "Food delivery orders. Nothing is charged by this tool. Actions: start (a new food request; ⏳ on their message), history (their past orders, usual per restaurant, each place's own ordering link, addresses, tip, normal cost, notes), past_orders (their past food orders read from the receipts in their mail, newest first, any app: for 'what did I last order' or 'get that again'; optional platform or restaurant), place (keep a restaurant's own ordering link, or no_direct true when it has none: direct first, the apps only as fallback), why_direct (they ask why not an app, or suggest one: the one line, from the record), options (2–3 dishes as ONE numbered picture; real photo_url from a tool result each), cart (record the cart as built, before store_checkout: checks every item against their allergies and diet), status (needs | failed | cancelled, as a tapback on their request), note (rejected | liked | disliked | instructions | allergy).",
   input_schema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["start", "history", "place", "why_direct", "options", "cart", "status", "note"] },
+      action: { type: "string", enum: ["start", "history", "past_orders", "place", "why_direct", "options", "cart", "status", "note"] },
       order_id: { type: "integer", description: "From start. cart/status default to the open order." },
       status: { type: "string", enum: ["needs", "failed", "cancelled"] },
       note_kind: { type: "string", enum: ["rejected", "liked", "disliked", "instructions", "allergy"] },
       note: { type: "string" },
       options: { type: "array", maxItems: 3, items: { type: "object", properties: { dish: { type: "string" }, restaurant: { type: "string" }, price: { type: "string" }, eta: { type: "string" }, photo_url: { type: "string" }, page_url: { type: "string" } }, required: ["dish", "restaurant", "photo_url"] } },
       restaurant: { type: "string" },
+      platform: { type: "string", description: "past_orders: only this app (DoorDash, Uber Eats, Grubhub, Toast…). Omit for all of them." },
       store_url: { type: "string", description: "place: the restaurant's own ordering page. cart: the page the cart is built on (its own ordering first; an app's page only as fallback)." },
       no_direct: { type: "boolean", description: "place: you looked and it has no ordering of its own." },
       menu_checked: { type: "boolean", description: "place: you read its menu, hours and prices on that page." },
@@ -935,7 +1034,7 @@ export const FOOD_TOOL_DEFS = [{
 const str = (n) => z.string().max(n).optional();
 export const FOOD_SCHEMAS = {
   food_order: z.object({
-    action: z.enum(["start", "history", "place", "why_direct", "options", "cart", "status", "note"]),
+    action: z.enum(["start", "history", "past_orders", "place", "why_direct", "options", "cart", "status", "note"]),
     order_id: z.number().int().positive().optional(),
     status: z.enum(["needs", "failed", "cancelled"]).optional(),
     note_kind: z.enum(["rejected", "liked", "disliked", "instructions", "allergy"]).optional(),
@@ -949,11 +1048,12 @@ export const FOOD_SCHEMAS = {
   }),
 };
 
-export async function runFoodTool(name, input, { conversationId: c, check, fetchPhoto, shoot } = {}) {
+export async function runFoodTool(name, input, { conversationId: c, check, fetchPhoto, shoot, mailSearch } = {}) {
   if (name !== "food_order" || !foodOn(c)) return { ok: false, error: "Not available." };
   const a = input?.action;
   if (a === "start") return await startOrder(c);
   if (a === "history") return history(c);
+  if (a === "past_orders") return await pastOrders(c, { search: mailSearch, platform: input.platform, restaurant: input.restaurant });
   if (a === "place") return notePlace(c, { restaurant: input.restaurant, url: input.store_url, noDirect: !!input.no_direct, menuChecked: !!input.menu_checked });
   if (a === "why_direct") return whyDirect(c, { restaurant: input.restaurant, reason: input.why_reason === "suggested_app" ? "suggested" : "asked" });
   if (a === "options") return await showOptions(c, input.options, { fetchPhoto, ...(shoot ? { shoot } : {}) });

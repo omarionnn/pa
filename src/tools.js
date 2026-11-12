@@ -77,7 +77,7 @@ import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDir
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "./tableimage.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
-import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool } from "./food.js";
+import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
@@ -12223,7 +12223,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- food orders (src/food.js, REASON_FOOD) ----------
     case "food_order":
-      return await runFoodTool(name, input, { ...ctx, conversationId: c });
+      return await runFoodTool(name, input, {
+        ...ctx, conversationId: c,
+        // Past orders are read from their receipts (src/food.js pastOrders): the mail search is the
+        // same gmail_search the model has, every connected account, headers only.
+        mailSearch: ctx.mailSearch ?? (async (query, limit) => {
+          const out = await dispatch("gmail_search", { query, limit }, ctx, c, me);
+          return out?.ok ? { ok: true, messages: out.content?.messages ?? out.messages ?? [] } : out;
+        }),
+      });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
@@ -15023,7 +15031,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           site_note: reach?.why ?? "",
           signed_in: !row?.revoked_at && row?.state === "signed_in",
           ...(reach?.loads === false
-            ? { cannot_be_used: `${p.label} refuses Reason's browser (${reach.why}). The errand cannot be done this way. Say that the site blocks it — not that Reason is broken — and do not try to get around it.` }
+            ? {
+              cannot_be_used: `${p.label} refuses Reason's browser (${reach.why}). The errand cannot be done this way. Say that the site blocks it — not that Reason is broken — and do not try to get around it.`,
+              // A food app's wall is not the end of a food errand (src/food.js): what works is said here,
+              // so the reply is the working route and not the block.
+              ...(foodOn(c) && social.isFoodApp(p.site) ? { instead: social.wallInstead(p).tool } : {}),
+            }
             : {}),
         };
       };
