@@ -1568,7 +1568,7 @@ export async function declinePayment({ conversationId, paymentId, by = "them" })
   if (!row || row.conversation_id !== conversationId || row.status !== "asked") return { ok: false, error: "not_open" };
   const part = { type: "input_response", requestId: row.request_id, action: "decline" };
   await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
-  q("UPDATE shop_payments SET status = 'declined', answered_at = ?, stopped_by = ? WHERE id = ?").run(clock.now(), by === "reason" ? "reason" : "them", row.id);
+  q("UPDATE shop_payments SET status = 'declined', answered_at = ?, stopped_by = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), by === "reason" ? "reason" : "them", row.id, conversationId);
   return { ok: true };
 }
 
