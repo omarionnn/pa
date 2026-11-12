@@ -379,13 +379,18 @@ export function choiceLine(entry, offered, recorded = "") {
 
 /** Sites that only deliver food: walled, the restaurant's own ordering still works (src/food.js, #449). */
 const FOOD_APPS = new Set(["doordash", "uber_eats", "grubhub", "postmates", "caviar", "seamless"]);
+/** A delivery app (by its site key): its wall has a working route around it that is not the browser. */
+export const isFoodApp = (site) => FOOD_APPS.has(String(site ?? ""));
 /**
  * What works instead when a site walls Reason's browser off its sign-in page, for the page and the
  * text alike. Plain words, no "bot", no blame on them.
  */
 export function wallInstead(entry) {
   const site = entry?.site ?? "";
-  if (FOOD_APPS.has(site)) return { say: "Ordering straight from the restaurant's own site still works, and it's often cheaper.", tool: "food_order: build the order direct at the restaurant's own ordering page (route direct), with the delivery app only as the fallback it already is." };
+  if (FOOD_APPS.has(site)) return {
+    say: "I can still order for you, from the restaurant's own site or through my checkout, and I can read what you ordered before from your receipts.",
+    tool: "Do not stop at the block and do not ask for a screenshot. Past orders (\"what did I last order\", \"get that again\"): food_order past_orders reads their receipts from their mail. Ordering: food_order, direct at the restaurant's own ordering page first; store_checkout runs on Crossmint's browser, which the ordering sites let in, and where the app needs their account the sign-in link is sent by code.",
+  };
   if (site === "uber" || site === "uber_eats") return { say: "Connecting Uber with its own Connect button still works.", tool: "uber_connect with they_asked_to_connect true; for a ride, uber_link needs no sign-in." };
   return { say: "", tool: "Offer what does not need a sign-in here, or say plainly this one has to be done by them on their own phone." };
 }

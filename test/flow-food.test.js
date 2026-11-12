@@ -4,6 +4,8 @@
 //                                      an open "what are you in the mood for?", nothing bought
 //   "my usual from <place>"          → their last order from there proposed back in one line, nothing
 //                                      added to a cart or started before they confirm
+//   "sign into my DoorDash and tell   → their last order named from the receipt in their mail; never the
+//    me what I last ordered"            block as the answer, never a screenshot ask, no sign-in link
 //   the allergy check (haiku)        → a sesame allergy flags the tahini dish they picked; plain fries pass
 //
 // The money rules are code's and proved offline (test/food-order.test.js). Asserts what happened
@@ -105,6 +107,30 @@ test("'my usual from Habibi' is proposed back in one line, nothing started befor
     assert.match(out[0], /\?/, "asks to confirm");
     assert.equal(q("SELECT COUNT(*) AS n FROM shop_runs").get().n, 0, "no checkout started before the yes");
   } finally { await rt.shutdown(); }
+});
+
+test("'sign into my DoorDash and tell me what I last ordered' is answered from their receipts, never with the block or a screenshot ask", { skip }, async () => {
+  const { rt, fake, says } = harness();
+  // No order was placed through Reason on DoorDash here: the answer can only come from their mail.
+  q("DELETE FROM food_orders").run();
+  const searched = [];
+  rt.turnExtras.mailSearch = async (query) => {
+    searched.push(query);
+    return { ok: true, messages: [
+      { account: "omari@example.com", id: "m-code", from: "DoorDash <no-reply@doordash.com>", subject: "Your verification code", date: "Tue, 10 Nov 2026 15:20:00 +0000", snippet: "" },
+      { account: "omari@example.com", id: "m-joes", from: "DoorDash <no-reply@doordash.com>", subject: "Order Confirmation for Omari from Joe's Pizza", date: "Sat, 7 Nov 2026 23:41:00 +0000", snippet: "Thanks for your order. Total: $23.41" },
+      { account: "omari@example.com", id: "m-thai", from: "DoorDash <no-reply@doordash.com>", subject: "Order Confirmation for Omari from Thai Nara", date: "Sun, 1 Nov 2026 23:41:00 +0000", snippet: "Total: $27.10" },
+    ] };
+  };
+  try {
+    await says("H-9", "Sign into my DoorDash and tell me what I last ordered");
+    const out = texts(fake).join("\n");
+    if (process.env.FLOW_DEBUG) console.log("TEXTS", JSON.stringify(texts(fake)), "SEARCHED", JSON.stringify(searched));
+    assert.ok(searched.length >= 1, "their receipts were searched");
+    assert.match(out, /joe'?s pizza/i, `the last order is named (got ${JSON.stringify(out)})`);
+    assert.doesNotMatch(out, /screenshot/i, "never a screenshot ask");
+    assert.equal(q("SELECT COUNT(*) AS n FROM shop_runs").get().n, 0, "nothing bought or started");
+  } finally { delete rt.turnExtras.mailSearch; await rt.shutdown(); }
 });
 
 test("the allergy check (real model): a sesame allergy flags the tahini dish they picked, plain fries pass", { skip }, async () => {

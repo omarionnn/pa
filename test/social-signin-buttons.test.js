@@ -262,6 +262,6 @@ test("signin_link without the flag: no live check, no choices (as before)", asyn
 test("the blocked page says the site is blocking Reason's browser right now and what still works", () => {
   const page = setupResultPage({ entry: doordash, ended: { state: "blocked" }, thread: { reply: () => "sms:+1" }, instead: social.wallInstead(doordash).say });
   assert.match(page, /DoorDash is blocking my browser right now\./);
-  assert.match(page, /restaurant(&#39;|')s own site still works/);
+  assert.match(page, /I can still order for you, from the restaurant(&#39;|')s own site or through my checkout/);
   assert.ok(Object.keys(PROVIDER_MARKS).length === 4);
 });

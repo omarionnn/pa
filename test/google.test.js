@@ -1587,7 +1587,9 @@ test("the list of tools a disconnect clears is every tool that reads out of the 
   // that leave content in the account (a draft, a new document) count as reads for this purpose.
   const reads = [...names].filter(n => /^(gmail|calendar|drive)_/.test(n)
     && !["gmail_send", "gmail_archive", "gmail_mark", "gmail_label", "gmail_trash", "calendar_create", "calendar_change", "calendar_delete"].includes(n));
-  assert.deepEqual([...reads].sort(), [...google.READ_TOOLS].sort());
+  // food_order is not a Google tool, but its past_orders answers with their receipts' subjects
+  // (src/food.js): a copy of their mail, cleared with the rest.
+  assert.deepEqual([...reads, "food_order"].sort(), [...google.READ_TOOLS].sort());
 });
 
 test("an email that tries it on is flagged, named, and on the ledger — and nothing it asked for happens", async () => {

@@ -159,7 +159,8 @@ all of these come *after* saved logins exist:
   of making a link. The route that cannot be bot-checked — Uber's own sign-in on the person's
   phone, with Reason holding a token — is being built as a separate connector. Lyft was removed on
   2026-10-15: no web ride flow, no developer programme, no sign-in page reachable from here.
-- **DoorDash** and **Uber Eats** — food, delivered.
+- **DoorDash** and **Uber Eats** — food, delivered. Not through this browser: see "Food ordering"
+  just below.
 - **Amazon** — find something and order it.
 - **Airlines** — flights, on the airline's own site.
 - **Ticketmaster** — event tickets.
@@ -169,6 +170,34 @@ None of this is built. Every one of them is in the connected-accounts registry t
 connected**, with what it would do and what the owner has to supply, so asking Reason what it can
 reach gets an honest answer now rather than a guess. Nothing about any of their APIs has been
 assumed: where the credentials are not known yet, the registry says that instead of naming one.
+
+
+### Food ordering (`REASON_FOOD`, `src/food.js`)
+
+What was seen to work and what was not, as of 2026-11-12. No food order has yet been paid for
+through Reason; every run below was stopped at the payment request and cancelled.
+
+- **Reason's own browser is not the route.** DoorDash, Uber's sign-in page, Toast and order.online
+  answer it with Cloudflare's check (HTTP 403, "Performing security verification", never clearing),
+  and they answer the same headless browser the same way from a home connection, so it is the
+  automated browser and not the server's address. ChowNow refuses the server's network outright
+  (error 1005) and loads from a home connection. Grubhub, Uber Eats' signed-out home page, Square
+  Online and Slice load. The run is `docs/site-probe-2026-11-12-food.json`. Nothing is done to get
+  around a check (the no-stealth rule).
+- **The checkout is Crossmint's** (`store_checkout`), which runs on Crossmint's browser. It reached an
+  exact total, stopped at payment, at: Feel it Healthy Spot on Square Online ($10.83, pickup,
+  2026-11-10), Nizza on Toast ($22.87, one Margherita, delivery, 2026-11-12, about 3 minutes) and
+  Roma Pizza on Slice ($17.45, one 12" cheese pizza, delivery, 2026-11-12, as a guest).
+  On DoorDash and on Grubhub it got in, set the address and built the cart, then the app asked for
+  an account: neither has a guest checkout, so an order there needs the person's own sign-in, given
+  on the link Reason sends (the password goes to Crossmint, never to Reason). That signed-in step
+  has not been seen through to a total. On Uber Eats the guest cart was built and priced, and Uber
+  Eats' own card form then failed to load, so no payment request was made.
+- **Past orders come from their mail** (`food_order` `past_orders`): the receipts every app and
+  ordering system sends, newest first, for "what did I last order" and "get that again". It needs
+  their mail connected and the receipts to be in a connected mailbox.
+- **Money** is the shopping gate unchanged: Crossmint's exact amount, their yes to that amount, Face
+  ID where set up, the daily cap.
 
 ### Wave 3 — the assistant that makes things
 
