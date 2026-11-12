@@ -17,7 +17,8 @@ Tests: `test/tapback-ack.test.js` (14), `test/delivery-gated.test.js` (9),
 ## Sub-features
 
 - **A — fixed tapback vocabulary** (`REASON_TAPBACK_ACK`). One frozen map in `src/tapbackack.js`:
-  👀 seen / on it (put on their text as its turn starts), 🔍 looking it up (a lookup tool ran),
+  👀 seen / on it (put on their text the moment its turn runs its FIRST tool; a turn that answers
+  from what it knows uses no tool and gets no tapback at all — owner, 11-11), 🔍 looking it up (a lookup tool ran),
   ⏰ reminder set (timer_set worked), ✅ done (an action of this turn worked with no job left running,
   or the background job their text started finished). A swap is `-old` then `new` on the SAME
   message, serialised per thread. The target is the thread's base handle, so a three-part text gets
@@ -44,9 +45,10 @@ Tests: `test/tapback-ack.test.js` (14), `test/delivery-gated.test.js` (9),
 ## Prove
 
 - Offline: `node --test test/tapback-ack.test.js test/delivery-gated.test.js test/quick-correction.test.js`
-  → 32/32. Flag off: no channel call for A, old tool wording for B, nothing scheduled for C.
+  → 35/35. Flag off: no channel call for A, old tool wording for B, nothing scheduled for C.
 - Live (owner): `grep REASON_TAPBACK_ACK /opt/reason/.env`; text "find me a table for 2 tonight" →
-  👀 on your text within a second, 🔍 while it looks, and a reply with no bare "on it".
+  👀 on your text as the first tool runs, 🔍 while it looks, and a reply with no bare "on it".
+  Text "thanks" (no tool) → no tapback, just the reply.
   `journalctl -u reason --since '10 min ago' | grep -c tapback_ack` counts them.
 - Live (B): `journalctl -u reason --since '10 min ago' | grep '"delivery"'` after an owner text;
   `sqlite3 /opt/reason/data/reason.db "select id,state,delivery_status from outbox order by id desc limit 5"`.

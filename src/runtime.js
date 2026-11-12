@@ -548,12 +548,8 @@ export class Runtime extends EventEmitter {
       // reply is thrown away unsent, the thread is put back as it was, and the line back is code's.
       const screened = this._screen({ conversationId, text, kind, meta });
       let refusedHarm = false;
-      // REASON_TAPBACK_ACK (src/tapbackack.js): their text is going to the model, which is more than a
-      // few seconds, so 👀 goes on it now. Their own texts only, never Web, never an event turn; not
-      // awaited — the module serialises its own sends and nothing here waits on a tapback.
-      if (kind === "user" && meta.channel !== "web") {
-        void tapbackack.mark(conversationId, "seen", { channels: this.turnExtras?.channels ?? null, log: this.log });
-      }
+      // REASON_TAPBACK_ACK (src/tapbackack.js): 👀 goes on their text the moment this turn runs its
+      // first tool (runTool → noteTool), not here — a turn that answers from what it knows gets none.
       // One thought, one answer (src/onethought.js). A text of theirs that lands while this turn is
       // working, and is read as adding to what it is working on, is handed to this turn — on its
       // next tool result, or by a recompose before anything is sent — instead of getting a turn and

@@ -1,7 +1,8 @@
-// REASON_TAPBACK_ACK (src/tapbackack.js): a fixed-meaning tapback on their text the moment it goes
-// to the model, swapped when the state changes, and never doubled by a text saying the same thing.
+// REASON_TAPBACK_ACK (src/tapbackack.js): a fixed-meaning tapback on their text the moment its turn
+// runs a tool, swapped when the state changes, and never doubled by a text saying the same thing.
 //
 //   is the vocabulary one map with one meaning each?            (yes — ACK, and the test pins it)
+//   does a turn that uses no tool get no tapback?               (yes — the reply is the acknowledgement)
 //   does a swap take the old one off the SAME message first?    (yes — "-👀" then "✅" on one handle)
 //   does a text that arrived in parts get it on the message?    (yes — the thread's base handle)
 //   is a bare "on it" after 👀 dropped?                          (yes — the tapback was that reply)
@@ -126,21 +127,56 @@ test("a text that arrived as three parts gets its tapback on the message, never 
 
 // ---------- the turn ----------
 
-test("their text to the model gets 👀 as the turn starts, and the real reply still goes", async () => {
+/** A turn that reads something (a tool that neither looks anything up nor acts), then answers. */
+const readThenAnswer = (reply) => async (ctx) => {
+  ack.noteTool({ ...ctx, conversationId: CONV }, "memory_read", { ok: true, notes: [] });
+  return reply;
+};
+
+test("a turn that answers from what it knows — no tool — gets no tapback; the reply is the acknowledgement", async () => {
   arrived("H-1");
   const { runtime, fake } = harness({ turn: async () => "they've got 8pm, want it?" });
   try {
     await runtime.inbound(CONV, "can you find me a table", { channel: "fake", to: OWNER, fromOwner: true });
     await ack.settled(CONV);
-    assert.deepEqual(reactions(fake), ["H-1:👀"]);
+    assert.deepEqual(reactions(fake), [], "not one tapback");
+    assert.equal(ack.current(CONV), null);
     assert.equal(fake.sent.length, 1, "the words went");
     assert.match(fake.sent[0].text, /8pm/);
   } finally { await runtime.shutdown(); }
 });
 
-test("a reply that is only 'on it' after 👀 went is dropped: the tapback was that reply", async () => {
+test("the turn's FIRST tool puts 👀 on their text; a second tool adds nothing; the reply still goes", async () => {
   arrived("H-1");
-  const { runtime, fake, logs } = harness({ turn: async () => "on it" });
+  const { runtime, fake } = harness({
+    turn: async (ctx) => {
+      ack.noteTool({ ...ctx, conversationId: CONV }, "memory_read", { ok: true });
+      ack.noteTool({ ...ctx, conversationId: CONV }, "calendar_list", { ok: true });
+      return "they've got 8pm, want it?";
+    },
+  });
+  try {
+    await runtime.inbound(CONV, "can you find me a table", { channel: "fake", to: OWNER, fromOwner: true });
+    await ack.settled(CONV);
+    assert.deepEqual(reactions(fake), ["H-1:👀"], "one 👀, however many tools");
+    assert.equal(fake.sent.length, 1, "the words went");
+  } finally { await runtime.shutdown(); }
+});
+
+test("a no-tool 'on it' goes as words — nothing else acknowledged the text", async () => {
+  arrived("H-1");
+  const { runtime, fake } = harness({ turn: async () => "on it" });
+  try {
+    await runtime.inbound(CONV, "book me the usual", { channel: "fake", to: OWNER, fromOwner: true });
+    await ack.settled(CONV);
+    assert.deepEqual(reactions(fake), []);
+    assert.equal(fake.sent.length, 1, "the words are the acknowledgement");
+  } finally { await runtime.shutdown(); }
+});
+
+test("a reply that is only 'on it' after a tool turn's 👀 is dropped: the tapback was that reply", async () => {
+  arrived("H-1");
+  const { runtime, fake, logs } = harness({ turn: readThenAnswer("on it") });
   try {
     await runtime.inbound(CONV, "book me the usual", { channel: "fake", to: OWNER, fromOwner: true });
     await ack.settled(CONV);
@@ -152,13 +188,22 @@ test("a reply that is only 'on it' after 👀 went is dropped: the tapback was t
 
 test("with 👀 refused by the line, 'on it' in words still goes — nothing said it twice", async () => {
   arrived("H-1");
-  const { runtime, fake } = harness({ turn: async () => "on it", channelOpts: { reactAs: "line" } });
+  const { runtime, fake } = harness({ turn: readThenAnswer("on it"), channelOpts: { reactAs: "line" } });
   try {
     await runtime.inbound(CONV, "book me the usual", { channel: "fake", to: OWNER, fromOwner: true });
     await ack.settled(CONV);
     assert.equal(ack.current(CONV), null, "nothing is on their message");
     assert.equal(fake.sent.length, 1, "so the words are the acknowledgement");
   } finally { await runtime.shutdown(); }
+});
+
+test("a Web message's turn gets no tapback, tools or not", async () => {
+  arrived("H-1");
+  const { router } = harness();
+  ack.noteTool({ conversationId: CONV, channels: router, channel: "web" }, "memory_read", { ok: true });
+  ack.noteTool({ conversationId: CONV, channels: router, kind: "event" }, "memory_read", { ok: true });
+  await ack.settled(CONV);
+  assert.equal(ack.current(CONV), null);
 });
 
 test("a turn whose action worked ends ✅; a turn that only answered leaves 👀", async () => {
@@ -178,7 +223,7 @@ test("a turn whose action worked ends ✅; a turn that only answered leaves 👀
 
   ack.reset();
   arrived("H-2");
-  const plain = harness({ turn: async () => "it's at 7 on 5th ave" });
+  const plain = harness({ turn: readThenAnswer("it's at 7 on 5th ave") });
   try {
     await plain.runtime.inbound(CONV, "where is it", { channel: "fake", to: OWNER, fromOwner: true });
     await ack.settled(CONV);
@@ -186,11 +231,14 @@ test("a turn whose action worked ends ✅; a turn that only answered leaves 👀
   } finally { await plain.runtime.shutdown(); }
 });
 
-test("a lookup during the turn swaps 👀 for 🔍", async () => {
+test("a lookup during the turn swaps 👀 for 🔍 — even as the turn's first tool, and in that order", async () => {
   arrived("H-1");
   const { router, fake } = harness();
-  await ack.mark(CONV, "seen", { channels: router });
   ack.noteTool({ conversationId: CONV, channels: router }, "web_search", { ok: true, results: [] });
+  await ack.settled(CONV);
+  assert.deepEqual(reactions(fake), ["H-1:👀", "H-1:-👀", "H-1:🔍"]);
+  // A second lookup on the same text: 🔍 is already there.
+  ack.noteTool({ conversationId: CONV, channels: router }, "web_read", { ok: true });
   await ack.settled(CONV);
   assert.deepEqual(reactions(fake), ["H-1:👀", "H-1:-👀", "H-1:🔍"]);
 });

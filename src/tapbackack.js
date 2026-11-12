@@ -1,11 +1,14 @@
-// A fixed-meaning tapback the moment a text is handed to the model (REASON_TAPBACK_ACK).
+// A fixed-meaning tapback on a text whose turn does real work (REASON_TAPBACK_ACK).
 //
-// Anything that reaches the model takes more than a few seconds, and the typing bubble says only
-// "something is happening". A tapback on their own message says WHAT: seen, looking something up,
+// A turn that reaches for a tool takes more than a few seconds, and the typing bubble says only
+// "something is happening". A tapback on their own message says WHAT: on it, looking something up,
 // done, a reminder set. The vocabulary is one map, here, and nowhere else — the model never picks
 // these (its own tapbacks are the `react` tool, src/tapbacks.js, and stay the model's).
 //
-//   👀  seen / on it          put on their text as its turn starts
+// A turn that answers from what it already knows uses no tool and gets NO tapback (owner, 11-11):
+// the reply itself is the acknowledgement, and a 👀 on every text is noise.
+//
+//   👀  seen / on it          put on their text the moment the turn runs its FIRST tool
 //   🔍  looking it up         swapped in when the turn runs a lookup tool
 //   ⏰  reminder or timer set  swapped in when timer_set succeeds
 //   ✅  done                   swapped in when an action of this turn worked, or when the background
@@ -48,16 +51,27 @@ export function isBareAck(text) {
   return t.length > 0 && t.length <= 40 && BARE_ACK.test(t);
 }
 
-/** conversationId → { handle, state, chain } — what is on their last message right now. */
+/**
+ * conversationId → what is on their message right now, and what has been asked for:
+ *   handle, state      what the last send actually left there (set as each send resolves)
+ *   wantedHandle,      what was last ASKED for, set the moment it is queued — so a decision made
+ *   wanted             mid-turn (a lookup after a 👀 still in flight) reads the right thing
+ *   ackedHandle        the message 👀 was asked for on, so one text earns one 👀 and never a second
+ *   chain              the per-conversation queue
+ */
 const live = new Map();
 /** taskId → handle: the text that started a background job, so its finish can land a ✅ on it. */
 const byTask = new Map();
 
 const entry = (c) => {
   let e = live.get(c);
-  if (!e) { e = { handle: null, state: null, chain: Promise.resolve() }; live.set(c, e); }
+  if (!e) { e = { handle: null, state: null, wantedHandle: null, wanted: null, ackedHandle: null, chain: Promise.resolve() }; live.set(c, e); }
   return e;
 };
+
+/** The message a turn's tapbacks belong on: the text it is answering, else the thread's last inbound (base handle). */
+const targetFor = (conversationId, ctx = null) =>
+  ctx?.answering?.handle ?? db.getThread(conversationId)?.last_inbound_id ?? null;
 
 /** What is on their message now (the state name), or null. For the bare-ack rule and for tests. */
 export function current(conversationId) {
@@ -78,9 +92,10 @@ export function mark(conversationId, state, { channels, handle = null, log = () 
   if (!emoji) return Promise.resolve({ ok: false, skipped: `no such state '${state}'` });
   if (!tapbackAckOn(conversationId)) return Promise.resolve({ ok: false, skipped: "off" });
   const e = entry(conversationId);
+  // Decided now, not when the queue gets to it: a caller that asks twice in one tick must see the first.
+  const target = handle ?? targetFor(conversationId);
+  if (target) { e.wantedHandle = target; e.wanted = state; if (state === "seen") e.ackedHandle = target; }
   const run = async () => {
-    const thread = db.getThread(conversationId);
-    const target = handle ?? thread?.last_inbound_id ?? null;
     if (!target) return { ok: false, skipped: "no message of theirs" };
     // The same thing again, on the same message: nothing to do.
     if (e.handle === target && e.state === state) return { ok: true, state, handle: target, unchanged: true };
@@ -130,32 +145,43 @@ export function taskDone(conversationId, taskId, { channels, log = () => {} } = 
 }
 
 /**
- * One tool of a turn ran. A lookup tool means "looking it up"; a timer set means "reminder set"; a
- * job started is remembered; a job finished `done` is the swap to ✅. Called from runTool
- * (src/tools.js); never awaited there.
+ * One tool of a turn ran — which is what earns their text its 👀: the first tool of a turn puts it on
+ * (once per message, however many tools follow). Then a lookup tool means "looking it up"; a timer
+ * set means "reminder set"; a job started is remembered; a job finished `done` is the swap to ✅.
+ * Called from runTool (src/tools.js); never awaited there. Their own texts only: never a Web
+ * message (its tab shows "on it." already), never an event turn.
  */
 export function noteTool(ctx, name, out) {
   const c = ctx?.conversationId;
   if (!c || !tapbackAckOn(c)) return;
+  if ((ctx.kind && ctx.kind !== "user") || ctx.channel === "web") return;
   const opts = { channels: ctx.channels ?? null, log: ctx.log ?? (() => {}) };
   const ok = out && typeof out === "object" && out.ok !== false && !out.error && !out.blocked;
   const n = String(name);
-  if (LOOKUP_TOOLS.has(n) && current(c) === "seen") { void mark(c, "looking", opts); return; }
-  if (n === "timer_set" && ok) { void mark(c, "timer", opts); return; }
+  const target = targetFor(c, ctx);
+  if (!target) return;
+  const e = entry(c);
+  // The first tool of this text's turn: 👀 goes on now. A second tool on the same text adds nothing.
+  if (e.ackedHandle !== target) void mark(c, "seen", { ...opts, handle: target });
+  const onThis = e.wantedHandle === target ? e.wanted : null;
+  if (LOOKUP_TOOLS.has(n) && onThis === "seen") { void mark(c, "looking", { ...opts, handle: target }); return; }
+  if (n === "timer_set" && ok) { void mark(c, "timer", { ...opts, handle: target }); return; }
   if (n === "task_start" && ok && out.task?.id != null) { noteTask(c, out.task.id, { handle: ctx.answering?.handle ?? null }); return; }
   if (n === "task_finish" && ok && out.task?.state === "done" && out.task?.id != null) { void taskDone(c, out.task.id, opts); }
 }
 
 /**
  * The turn's words went out. An action of this turn that worked — and no job left running — is done:
- * 👀/🔍 → ✅. A turn that only answered leaves what is there: "seen" and "looked it up" stay true.
+ * 👀/🔍 → ✅. A turn that only answered leaves what is there: "seen" and "looked it up" stay true,
+ * and a turn that used no tool has nothing there at all.
  */
-export function afterReply(conversationId, { acts = [], tasks = null, channels, log = () => {} } = {}) {
-  if (!tapbackAckOn(conversationId)) return Promise.resolve({ ok: false, skipped: "off" });
+export async function afterReply(conversationId, { acts = [], tasks = null, channels, log = () => {} } = {}) {
+  if (!tapbackAckOn(conversationId)) return { ok: false, skipped: "off" };
   const acted = (acts ?? []).some(a => a.acting && a.ok);
   const running = tasks && typeof tasks.size === "number" ? tasks.size > 0 : false;
+  await settled(conversationId);
   const state = current(conversationId);
-  if (!acted || running || !state || state === "done" || state === "timer") return Promise.resolve({ ok: false, skipped: "nothing to swap" });
+  if (!acted || running || !state || state === "done" || state === "timer") return { ok: false, skipped: "nothing to swap" };
   return mark(conversationId, "done", { channels, log });
 }
 
