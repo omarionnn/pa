@@ -668,6 +668,13 @@ export const config = {
   callManner: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_MANNER ?? "").trim().toLowerCase()),
   // What a call carries into the next call and the text after it (call audit 11-11, src/calls/carryover.js): owner | on | off (unset = off).
   callCarryover: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_CARRYOVER ?? "").trim().toLowerCase()),
+  // The nightly memory review (src/dream.js) reads what they said on their own phone calls, cited
+  // like their texts: off (default) | owner | on.
+  reviewCalls: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_REVIEW_CALLS ?? "").trim().toLowerCase()),
+  // Things that recur in what they said across days (repeated asks, routines, Reason's repeated
+  // mistakes, preferences), kept as guesses with the messages they rest on (src/dream.js
+  // noticePatterns): off (default) | owner | on. "on" still needs their own yes to patterns.
+  reviewPatterns: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_REVIEW_PATTERNS ?? "").trim().toLowerCase()),
   // Calls Reason makes to businesses and other people, and places ringing back about them, on GPT-Live
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
   // Unset, those calls are the provider's.
