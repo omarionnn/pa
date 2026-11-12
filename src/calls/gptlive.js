@@ -1056,10 +1056,31 @@ const SILENCE_100MS = Buffer.alloc(800, 0xff).toString("base64");
 
 /** The end of a spoken line: faded over this many samples (30 ms at 8 kHz) up to where its sound stops. */
 export const FADE_SAMPLES = 240;
-/** A held piece with nothing after it this long is faded and sent. */
-export const FADE_FLUSH_MS = 60;
+/**
+ * A held end with nothing after it this long is faded and sent. Well over the gap between two pieces:
+ * GPT-Live sends 100 ms of audio every 100 ms (measured from the live host, 2026-11-12: 800 bytes a
+ * piece, 93–105 ms apart, one 175). At 60 ms — written for 20 ms pieces — this ran out before every
+ * next piece, so every piece of a sentence was faded to silence: the voice dipped ten times a second.
+ */
+export const FADE_FLUSH_MS = 250;
 /** Below this a sample is the quiet after the words, not the words. */
 const FADE_FLOOR = 300;
+/** A piece that opens with this much quiet (5 ms) does not carry on the sound before it. */
+const QUIET_START = 40;
+
+/** A μ-law buffer's last sound faded out, in place (see `fadeOut`). */
+function fadeBuf(buf) {
+  let end = buf.length - 1;
+  while (end >= 0 && Math.abs(ulawToPcm(buf[end])) <= FADE_FLOOR) end--;
+  if (end < 0) return buf;
+  const from = Math.max(0, end - FADE_SAMPLES + 1);
+  const n = end - from + 1;
+  for (let i = from; i <= end; i++) {
+    const g = 0.5 * (1 + Math.cos(Math.PI * (i - from + 1) / n));
+    buf[i] = pcmToUlaw(Math.round(ulawToPcm(buf[i]) * g));
+  }
+  return buf;
+}
 
 /**
  * A μ-law piece with its last sound faded out: a raised-cosine ramp over the FADE_SAMPLES before the
@@ -1067,16 +1088,19 @@ const FADE_FLOOR = 300;
  */
 export function fadeOut(b64) {
   const buf = Buffer.from(String(b64 ?? ""), "base64");
-  let end = buf.length - 1;
-  while (end >= 0 && Math.abs(ulawToPcm(buf[end])) <= FADE_FLOOR) end--;
-  if (end < 0) return b64;
-  const from = Math.max(0, end - FADE_SAMPLES + 1);
-  const n = end - from + 1;
-  for (let i = from; i <= end; i++) {
-    const g = 0.5 * (1 + Math.cos(Math.PI * (i - from + 1) / n));
-    buf[i] = pcmToUlaw(Math.round(ulawToPcm(buf[i]) * g));
-  }
-  return buf.toString("base64");
+  return buf.some(u => Math.abs(ulawToPcm(u)) > FADE_FLOOR) ? fadeBuf(buf).toString("base64") : b64;
+}
+
+/** How many samples of quiet a μ-law buffer opens with (`max` at most) and ends with. */
+function quietLead(buf, max = buf.length) {
+  let n = 0;
+  while (n < buf.length && n < max && Math.abs(ulawToPcm(buf[n])) <= FADE_FLOOR) n++;
+  return n;
+}
+function quietTail(buf) {
+  let n = 0;
+  while (n < buf.length && Math.abs(ulawToPcm(buf[buf.length - 1 - n])) <= FADE_FLOOR) n++;
+  return n;
 }
 /** The greeting is over once the voice has been quiet this long after speaking; the session is then paused. */
 export const WARM_QUIET_MS = 700;
@@ -1567,6 +1591,8 @@ export class GptLiveCall {
     this.lastOutTextAt = 0;
     this.utter = "";
     this.playheadAt = 0;
+    /** Samples of silence sent ahead of a held end and not yet taken back (`voiceOut`). */
+    this.voiceLead = 0;
     this.mute = null;
     this.guardTrips = 0;
     this.seconds = 0;
@@ -1671,25 +1697,58 @@ export class GptLiveCall {
   }
 
   /**
-   * The voice's audio to Twilio, one piece behind (call 80): GPT-Live often stops a line at full level
-   * and drops to digital silence in 5–10 ms, which on the phone sounds like the line going dead. A piece
-   * with speech in it is held until the next arrives — the session streams silence between words, so
-   * that is a frame or so — and when the next has no speech, or none comes within FADE_FLUSH_MS, the
-   * held piece's last FADE_SAMPLES before its sound ends are faded out (`fadeOut`).
+   * The voice's audio to Twilio, with the end of a line faded (call 80): GPT-Live often stops a line at
+   * full level and drops to digital silence in 5–10 ms, which on the phone sounds like the line going
+   * dead. Whether a piece is the end of a line is only known when the next arrives, so the last
+   * FADE_SAMPLES of a piece whose sound runs to its end wait for it: more sound after them and they go
+   * out as they came; quiet after them, or nothing within FADE_FLUSH_MS, and they are faded
+   * (`fadeOut`). A sound that stops inside a piece is faded there and then.
+   *
+   * Only that end is held, never the whole piece (2026-11-12): pieces are 100 ms long and 100 ms apart,
+   * so a whole piece held "until the next, or 60 ms" was always sent by the timer — faded. What is sent
+   * ahead of a held end is 30 ms short of real time, which Twilio would play as a gap inside the word,
+   * so that much silence goes out before a run's first piece (`voiceLead`) and is taken back out of the
+   * quiet after it.
    */
   voiceOut(b64, speech) {
     // A business line's audio is gated word by word (`gateOpen`, `ownOpener`): it goes as it is.
     if (this.line) return this.toTwilio({ event: "media", media: { payload: b64 } });
+    const send = (payload) => { if (payload) this.toTwilio({ event: "media", media: { payload } }); };
     const held = this.voiceTail;
     this.voiceTail = null;
     if (this.tailTimer) { this.timers.clearTimeout(this.tailTimer); this.tailTimer = null; }
-    if (held) this.toTwilio({ event: "media", media: { payload: speech ? held : fadeOut(held) } });
-    if (!speech) return this.toTwilio({ event: "media", media: { payload: b64 } });
-    this.voiceTail = b64;
+    const piece = Buffer.from(String(b64 ?? ""), "base64");
+    if (!speech) {
+      // Quiet after the held end: that was the end of the line. A piece that opens with sound carries it on.
+      if (held) send(quietLead(piece, QUIET_START) >= Math.min(QUIET_START, piece.length) ? fadeOut(held) : held);
+      // The silence put in ahead of the run comes back out of the quiet after it.
+      const cut = Math.min(this.voiceLead, quietLead(piece, this.voiceLead));
+      this.voiceLead -= cut;
+      return send(cut ? piece.subarray(cut).toString("base64") : b64);
+    }
+    if (quietTail(piece) >= FADE_SAMPLES) {
+      // Its sound stops inside it: faded where it stops (the ramp may reach back into the held end).
+      const was = held ? Buffer.from(held, "base64") : Buffer.alloc(0);
+      const all = fadeBuf(Buffer.concat([was, piece]));
+      send(all.subarray(0, was.length).toString("base64"));
+      return send(all.subarray(was.length).toString("base64"));
+    }
+    const keep = Math.min(FADE_SAMPLES, piece.length);
+    const head = piece.subarray(0, piece.length - keep);
+    const was = held ? Buffer.from(held, "base64").length : 0;
+    // Something goes out now and its end does not: the line must be that far ahead, or it runs dry.
+    const short = head.length || was ? keep - was - Math.max(0, this.voiceLead - was) : 0;
+    if (short > 0) {
+      send(Buffer.alloc(short, 0xff).toString("base64"));
+      this.voiceLead += short;
+    }
+    send(held);
+    send(head.toString("base64"));
+    this.voiceTail = head.length ? piece.subarray(piece.length - keep).toString("base64") : b64;
     this.tailTimer = this.timers.setTimeout(() => this.flushTail(), FADE_FLUSH_MS);
   }
 
-  /** The held piece, faded, now (nothing came after it). */
+  /** The held end, faded, now (nothing came after it). */
   flushTail() {
     this.tailTimer = null;
     const held = this.voiceTail;
@@ -1697,16 +1756,17 @@ export class GptLiveCall {
     if (held && !this.done) this.toTwilio({ event: "media", media: { payload: fadeOut(held) } });
   }
 
-  /** The held piece thrown away with everything else unplayed (a clear). */
+  /** The held end thrown away with everything else unplayed (a clear). */
   dropTail() {
     this.voiceTail = null;
+    this.voiceLead = 0;
     if (this.tailTimer) { this.timers.clearTimeout(this.tailTimer); this.tailTimer = null; }
   }
 
   /** The room under the call (src/calls/ambience.js): topped up every TICK_MS while the call is up. */
   roomTick() {
     if (!this.bed || this.done) return;
-    const frames = this.streamSid && !this.rejoining ? this.bed.fill(this.now()) : null;
+    const frames = this.streamSid && !this.rejoining ? this.bed.fill(this.now(), { talking: !!this.voiceTail }) : null;
     if (frames) this.twilio.send(JSON.stringify({ event: "media", streamSid: this.streamSid, media: { payload: frames } }));
     this.roomTimer = this.timers.setTimeout(() => this.roomTick(), ambience.TICK_MS);
   }

@@ -490,6 +490,50 @@ test("7. on the line: a piece with speech is held until the next; faded when sil
   assert.equal(media().length, 4, "a clear throws the held piece away with the rest");
 });
 
+// GPT-Live's real pieces (measured from the live host, 2026-11-12): 800 bytes, 100 ms apart.
+const tone = (n, from = 0) => Buffer.from(Array.from({ length: n }, (_, k) => gl.pcmToUlaw(Math.round(8000 * Math.sin(2 * Math.PI * 400 * (from + k) / 8000)))));
+const sentBytes = (s) => Buffer.concat(s.twilio.sent.filter(m => m.event === "media").map(m => Buffer.from(m.media.payload, "base64")));
+
+test("7. a sentence in 100 ms pieces, 100 ms apart, reaches the line as it came: no piece of it is faded (the voice breaking up, 2026-11-12)", async () => {
+  assert.ok(gl.FADE_FLUSH_MS > 150, "the wait for the next piece is longer than the gap between two pieces");
+  const s = startCall({ brain: () => new Promise(() => {}) });
+  const pieces = Array.from({ length: 10 }, (_, i) => tone(800, i * 800));
+  for (const p of pieces) {
+    s.live.emit({ type: "session.output_audio.delta", delta: p.toString("base64") });
+    await s.timers.advance(100);
+  }
+  const out = sentBytes(s);
+  const said = Buffer.concat(pieces);
+  assert.deepEqual([...out.subarray(0, gl.FADE_SAMPLES)], Array(gl.FADE_SAMPLES).fill(0xff), "30 ms of silence ahead of the first piece, so the line never runs dry behind the held end");
+  assert.equal(out.subarray(gl.FADE_SAMPLES).equals(said.subarray(0, said.length - gl.FADE_SAMPLES)), true, "every sample sent is the sample that came, in order");
+  assert.equal(Buffer.from(s.call.voiceTail, "base64").equals(said.subarray(said.length - gl.FADE_SAMPLES)), true, "only the last 30 ms wait for what follows");
+  // Twilio plays in order as it arrives: after each arrival, what has been sent covers the 100 ms to the next.
+  assert.equal(out.length, said.length, "sent keeps pace with what came, piece for piece");
+  // The line ends: the held end is faded, and the silence put in ahead comes back out of the quiet after.
+  s.live.emit({ type: "session.output_audio.delta", delta: Buffer.alloc(800, 0xff).toString("base64") });
+  const all = sentBytes(s);
+  assert.equal(all.length, said.length + 800, "nothing added to the call's timeline once the line has ended");
+  const end = all.subarray(gl.FADE_SAMPLES + said.length - gl.FADE_SAMPLES, gl.FADE_SAMPLES + said.length);
+  assert.ok(Math.abs(gl.ulawToPcm(end.at(-1))) < 100 && !end.equals(said.subarray(said.length - gl.FADE_SAMPLES)), "the end of the line is faded");
+  assert.equal(s.call.voiceLead, 0);
+  assert.equal(s.call.voiceTail, null);
+});
+
+test("7. a sound that stops inside a piece is faded there and nothing waits; a piece that carries the sound on leaves the held end as it came", () => {
+  const s = startCall({ brain: () => new Promise(() => {}) });
+  const stop = Buffer.concat([tone(400), Buffer.alloc(400, 0xff)]);
+  s.live.emit({ type: "session.output_audio.delta", delta: stop.toString("base64") });
+  assert.equal(s.call.voiceTail, null, "nothing held: the end is already known");
+  assert.equal(sentBytes(s).equals(Buffer.from(gl.fadeOut(stop.toString("base64")), "base64")), true, "faded where its sound stops");
+  // A quiet stretch of a word (under the speech peak, over the floor) after a held end: not the end of a line.
+  const s2 = startCall({ brain: () => new Promise(() => {}) });
+  const loud = tone(800);
+  const soft = Buffer.alloc(800, gl.pcmToUlaw(900));
+  s2.live.emit({ type: "session.output_audio.delta", delta: loud.toString("base64") });
+  s2.live.emit({ type: "session.output_audio.delta", delta: soft.toString("base64") });
+  assert.equal(sentBytes(s2).subarray(gl.FADE_SAMPLES).equals(Buffer.concat([loud, soft])), true, "the held end goes out unfaded when the sound carries on");
+});
+
 test("7. the voice is told no 'uh', 'um' or 'let me check' of its own — on his call and a stranger's", () => {
   assert.match(gl.NO_FILLER, /no "uh", "um", "er" or "hmm"/);
   assert.match(gl.NO_FILLER, /never say "let me check", "one sec"/);
