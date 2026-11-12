@@ -254,6 +254,9 @@ export function preCallBrief(call, { place = "" } = {}) {
   if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
   const rules = rulesNote(call.conversation_id);
   if (rules) lines.push(rules);
+  // Where they are based, said outright (./carryover.js): an unclear place name is heard as a local one.
+  const area = carryover.areaNote(call);
+  if (area) lines.push(area);
   const where = whereaboutsNote(call);
   if (where) lines.push(where);
   if (!lines.length) return "";
@@ -371,6 +374,10 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
       : l === "When you both say goodbye, sign off warmly and briefly." ? manner.MANNER_WRAP_UP : l;
   // A warmer goodbye (./carryover.js), with the manner off: the same line swapped.
   const bye = (l) => own && carry && !mm && l === "When you both say goodbye, sign off warmly and briefly." ? carryover.CARRY_GOODBYE : l;
+  // Two lines reworded (./carryover.js, call 95): small talk, and "never a therapist" without the phrases it bans.
+  const reword = (l) => !(own && carry) ? l
+    : l === "Small talk is yours: if they ask how you are, answer warmly and ask them back." ? carryover.CARRY_SMALL_TALK
+      : l === OWN_CALL_LINES[1] ? carryover.CARRY_NO_PROBING : l;
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -398,10 +405,10 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
     ...split,
     "While the backend works, do not fill the silence with guesses.",
-    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap).map(bye),
+    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap).map(bye).map(reword),
     PIECES_LINE,
     ...HEARING_LINES,
-    ...(own ? OWN_CALL_LINES : []),
+    ...(own ? OWN_CALL_LINES.map(reword) : []),
     ...(mm ? manner.OWN_MANNER_LINES : []),
     ...(own && carry ? carryover.CARRY_VOICE_LINES : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
