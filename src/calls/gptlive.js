@@ -31,6 +31,7 @@ import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generat
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
 import * as carryover from "./carryover.js";
+import * as turngate from "./turngate.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
 import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voice-prompt.js";
@@ -140,6 +141,8 @@ export function whoFor(call) {
     manner: manner.mannerFor(call.conversation_id),
     carry: own && carryover.carryoverFor(call.conversation_id),
     ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
+    // The turn gate (./turngate.js, REASON_CALL_TURN_GATE): absent unless it is on for this call.
+    ...(turngate.turnGateFor(call) ? { turnGate: turngate.turnGateFor(call) } : {}),
   };
 }
 
@@ -581,7 +584,7 @@ export function lineAnnouncement(ann) {
 export const ACK_DELAY_MS = 800;
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false, carry = false } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false, carry = false, turnGate = "" } = {}) {
   const session = {
     model: config.gptliveModel,
     instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered, carry }),
@@ -593,6 +596,9 @@ export function sessionConfig({ name, named, owner = false, identity = false, br
   if (greeting) {
     session.input = [{ type: "message", role: "developer", content: [{ type: "input_text", text: greetingInstruction(greeting, purpose) }] }];
   }
+  // The turn gate: Live asks Decisions about their words as they are transcribed (./turngate.js).
+  const triggers = turngate.turnTriggers(turnGate);
+  if (triggers.length) session.triggers = triggers;
   return session;
 }
 
@@ -1241,6 +1247,14 @@ export class WarmSession {
       this.seconds = e.usage.seconds;
     } else if (e.type === "error") {
       this.log({ gptlive_error: this.row.id, warm: true, code: e.error?.code ?? "", message: String(e.error?.message ?? "").slice(0, 200) });
+      // The turn gate fails open: a start refused with its trigger in it is sent again without it.
+      if (!this.started && this.who?.turnGate && !this.closed) {
+        this.who = { ...this.who, turnGate: "" };
+        this.noTurnGate = true;
+        const instructions = preopenInstructions(this.row);
+        this.live.send({ type: "session.start", event_id: `start_${this.row.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
+        this.log({ gptlive_turn_gate_off: this.row.id, why: "start refused", warm: true });
+      }
     }
   }
 
@@ -1513,6 +1527,16 @@ export class GptLiveCall {
     this.runsAfterThem = 0;
     this.talkOvers = 0;
     this.talkOverDrops = 0;
+    // The turn gate (./turngate.js, REASON_CALL_TURN_GATE): null unless it is on for this call (set below).
+    this.turnGate = null;
+    this.tg = null;
+    this.gateOpenUntil = 0;
+    this.gateMisses = 0;
+    // Their audio given to the session so far, in ms: the session's own timeline (transcript pieces are timed on it).
+    this.fedMs = 0;
+    this.fedSkew = 0;
+    this.theirSpeechFedMs = null;
+    this.askedAt = -Infinity;
     this.log = log;
     this.now = now;
     this.finishCall = finish;
@@ -1570,6 +1594,8 @@ export class GptLiveCall {
     if (!persona && !this.line && warm?.hold && warm.greeting) this.greeting = warm.greeting;
     // On a line call the greeting is not seeded: what was said comes from what was really played.
     this.turns = this.greeting && !this.line ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
+    // The turn gate: their own call, or a business call Reason talks on (a puppet line has no turns of its own to gate).
+    if (this.who?.turnGate && (this.who.turnGate === "own" ? !this.line : this.talk)) this.turnGate = new turngate.TurnGate({ mode: this.who.turnGate });
     this.tape = new CallTape();
     // Their side as the model hears it: quiet speech lifted (call 76). REASON_CALL_HEARING=off sends it raw.
     this.hearing = config.callHearing ? new Hearing() : null;
@@ -1672,6 +1698,7 @@ export class GptLiveCall {
         // A new stretch of theirs begins after a real gap; pauses for breath or thought stay inside one.
         if (st - this.theirSpeechAt > LONG_TURN_GAP_MS) this.theirStretchFrom = st;
         this.theirSpeechAt = st;
+        if (this.turnGate) this.theirSpeechFedMs = this.fedMs + buf.length / 8;
       }
       // A made greeting waiting for its moment: their hello is not sent (the greeting answers it); kept
       // in case they talk on and the greeting is dropped instead (`skipPregreet`).
@@ -1780,7 +1807,7 @@ export class GptLiveCall {
   clearPlayback(why) {
     // A run held back for talk-over goes with everything else unplayed when the guard stops a claim. A
     // barge-in leaves it alone: it is already waiting for them to finish (`overTalk`).
-    if (why === "guard") this.overDiscard();
+    if (why === "guard") { this.gateDiscard(); this.overDiscard(); }
     this.dropTail();
     this.toTwilio({ event: "clear" });
     this.tape.cut();
@@ -1810,13 +1837,25 @@ export class GptLiveCall {
     this.openFresh();
   }
 
+  /** The turn gate's clock: every piece of audio given to the session moves its timeline on by that much. */
+  countFed() {
+    if (!this.turnGate) return;
+    const live = this.live;
+    this.live = {
+      send: (o) => { if (o?.type === "session.input_audio.append") this.fedMs += Buffer.from(String(o.audio ?? ""), "base64").length / 8; live.send(o); },
+      close: () => live.close(),
+      on: (name, fn) => live.on(name, fn),
+    };
+  }
+
   /** A session of the call's own, opened on the stream (no warm one, or a pre-opened one that died). */
   openFresh() {
     this.live = this.openLive();
+    this.countFed();
     const openedAt = this.now();
     this.live.on("open", () => {
       this.log({ gptlive_live_open: this.call.id, ms: this.now() - openedAt });
-      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line }) });
+      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: this.turnGate?.mode ?? "" }) });
     });
     this.live.on("event", (e) => this.fromLive(e));
     this.live.on("close", (code) => this.liveClosed(code));
@@ -1831,6 +1870,10 @@ export class GptLiveCall {
     w.handOver(this);
     this.live = w.live;
     this.adopted = true;
+    // Its start went out without the trigger (refused with it): no decisions will come.
+    if (w.noTurnGate) this.turnGate = null;
+    this.fedMs = w.fedMs ?? 0;
+    this.countFed();
     // A held session (REASON_GPTLIVE_PRERING) has said nothing: it greets now, as a cold one would.
     // A gated session not started by pickup has not been asked to greet either: it is asked when it starts.
     this.adoptedHold = (!!w.hold && !w.holdGreetEarly) || (!!w.gate && !w.started);
@@ -1911,7 +1954,16 @@ export class GptLiveCall {
         return this.timeTurn("reason", e);
       case "session.input_transcript.delta":
         this.textIn(String(e.delta ?? ""));
+        // The turn gate: the words its next verdict will be about.
+        if (this.turnGate && String(e.delta ?? "").trim()) {
+          // A piece cannot end past the audio the session has been given: if it does, our count is behind.
+          if (Number.isFinite(e.end_ms) && e.end_ms > this.fedMs + this.fedSkew) this.fedSkew = e.end_ms - this.fedMs;
+          this.turnGate.heard(e.event_id ?? e.id, this.now(), e.end_ms);
+        }
         return this.timeTurn("them", e);
+      case "decision.event":
+        if (this.turnGate) this.gateDecision(e);
+        return;
       case "session.delegation.created":
         return void this.delegate(e.delegation?.id).catch((err) => this.log({ gptlive_delegation_failed: this.call.id, why: (err?.message ?? String(err)).split("\n")[0] }));
       case "session.instructions.appended":
@@ -1930,6 +1982,12 @@ export class GptLiveCall {
         return;
       case "error":
         this.log({ gptlive_error: this.call.id, code: e.error?.code ?? "", message: String(e.error?.message ?? "").slice(0, 200) });
+        // The turn gate fails open: a start refused with its trigger in it is sent again without it.
+        if (this.turnGate && !this.started && !this.adopted && !this.done) {
+          this.turnGate = null;
+          this.live.send({ type: "session.start", event_id: `start_${this.call.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: "" }) });
+          this.log({ gptlive_turn_gate_off: this.call.id, why: "start refused" });
+        }
         return;
       default:
     }
@@ -1962,6 +2020,8 @@ export class GptLiveCall {
         this.voiceRunFrom = t;
         // Begun while they were speaking: not a reply to them (a reply waits for their pause).
         this.voiceRunOverThem = t - this.callerSpeechAt < VOICE_RUN_GAP_MS;
+        // The turn gate on a business call only watches: what it would have said about this reply.
+        if (this.turnGate?.mode === "line" && this.talking) this.gateLog(this.gateRead(t), { observe: true });
       }
       this.voiceSpeechAt = t;
     }
@@ -3084,6 +3144,8 @@ export class GptLiveCall {
    */
   overTalk(t, b64) {
     if (this.overFlushing) return false;
+    // The turn gate is holding this run for its verdict (`gateRun`): the rest of it waits with it.
+    if (this.tg) { this.tg.frames.push(b64); if (hasSpeech(b64)) this.tg.lastAt = t; return true; }
     const o = this.over;
     const speech = hasSpeech(b64);
     if (o?.dropped) {
@@ -3107,7 +3169,12 @@ export class GptLiveCall {
     const long = this.longTurn();
     const wait = long ? LONG_TURN_QUIET_MS : first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
     // Never while the call is ending: a goodbye is said, and the hang-up waits on it.
-    if (!afterThem || this.ending || t - this.theirSpeechAt >= wait) { this.noteRun(t, afterThem); return false; }
+    if (!afterThem || this.ending || t - this.theirSpeechAt >= wait) {
+      // They have stopped making sound — but have they finished? (the turn gate, ./turngate.js)
+      if (this.turnGate && afterThem && this.gateRun(t, [b64], t)) return true;
+      this.noteRun(t, afterThem);
+      return false;
+    }
     // Where the voice's words stood when this run began, so a drop takes back only this run's words.
     const last = this.turns.findLast(x => x.who === "reason" && !x.seeded) ?? null;
     const mark = last ? { turn: last, len: last.text.length } : null;
@@ -3156,6 +3223,8 @@ export class GptLiveCall {
     // "I'm —" and nothing more: the voice stopped when they went on, so playing it now is call 79 again.
     const words = this.overText(o).trim();
     if (words && words.split(/\s+/).length <= 2 && !/[.!?…]["”’)]*$/.test(words) && this.now() - o.lastAt > 300) return this.overDrop("a fragment");
+    // Quiet now — but mid-thought? The turn gate takes the held run from here (`gateRun`).
+    if (this.turnGate && !o.gated && this.gateRun(this.now(), o.frames, o.since, o)) return;
     this.over = null;
     if (this.overTimer) { this.timers.clearTimeout(this.overTimer); this.overTimer = null; }
     const t = this.now();
@@ -3188,7 +3257,10 @@ export class GptLiveCall {
       if (o.mark?.turn === last) last.text = last.text.slice(0, o.mark.len);
       else if ((last.from ?? last.at) >= o.since - 1500) this.turns.splice(this.turns.lastIndexOf(last), 1);
     }
-    this.live.send({ type: "session.thinking.append", event_id: `over_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: OVER_NOTE });
+    // Held by the turn gate: told to stop and stay silent (an instruction can stop speech in progress; a quiet note cannot).
+    if (o.gate) this.live.send({ type: "session.instructions.append", event_id: `turn_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: turngate.TURN_GATE_NOTE });
+    else this.live.send({ type: "session.thinking.append", event_id: `over_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: OVER_NOTE });
+    this.overNudgeGate = !!o.gate;
     this.log({ gptlive_talkover_dropped: this.call.id, why, held_ms: t - o.since, first: o.first });
     if (this.overNudgeTimer) this.timers.clearTimeout(this.overNudgeTimer);
     this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(t), OVER_TICK_MS);
@@ -3200,6 +3272,7 @@ export class GptLiveCall {
     if (this.done || this.ending) return;
     const t = this.now();
     if (this.lastVoiceAt > droppedAt || this.pending.size) return;
+    if (this.overNudgeGate) return this.gateNudge(droppedAt);
     // A newer run is being held (it goes out when they stop), or they are still talking: look again soon.
     if ((this.over && !this.over.dropped) || t - this.theirSpeechAt < OVER_NUDGE_QUIET_MS) {
       if (t - droppedAt < OVER_NUDGE_GIVE_UP_MS) this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(droppedAt), OVER_TICK_MS * 5);
@@ -3207,6 +3280,164 @@ export class GptLiveCall {
     }
     this.live.send({ type: "session.commentary.append", event_id: `overnudge_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: OVER_NUDGE });
     this.log({ gptlive_talkover_nudged: this.call.id, ms: t - droppedAt });
+  }
+
+  // --- the turn gate (./turngate.js, REASON_CALL_TURN_GATE) ---
+
+  /** Is a run of the voice's own, starting now in answer to them, the gate's to judge? */
+  gateApplies(t) {
+    // Their own call only. Never Reason's answer being said (a hand-off running or just answered), a
+    // goodbye, a claim the guard is correcting, or the reply the gate itself has just asked for.
+    return this.turnGate?.mode === "own" && this.ownTalk() && !this.pending.size && t - this.lastResultAt > 4000
+      && !this.ending && !this.mute && t >= this.gateOpenUntil;
+  }
+
+  /**
+   * A run of the voice's is about to reach the phone (straight away, or after the talk-over hold `from`
+   * has let it go). Returns true when the gate takes it: mid-thought, it is dropped (`gateDrop`); with
+   * no verdict on their latest words yet, it waits for one, TURN_GATE_BUDGET_MS at most (`gateCheck`),
+   * then goes out as it would have. A finished thought, a failed decision, or a gate that has gone
+   * unanswered returns false at once: the run goes out with nothing added.
+   */
+  gateRun(t, frames, since, from = null) {
+    if (!this.gateApplies(t)) return false;
+    const r = this.gateRead(t);
+    // Decisions not answering (never yet, or not in time three replies running): no more waiting on them.
+    if (r.state === "wait" && (!this.turnGate.verdict || this.gateMisses >= 3)) { this.gateLog({ ...r, state: "open", why: "decisions quiet" }, { waited: 0 }); return false; }
+    if (r.state === "finished" || r.state === "open") {
+      if (r.state === "finished") this.gateMisses = 0;
+      this.gateLog(r, { waited: 0 });
+      return false;
+    }
+    let mark = from?.mark;
+    if (mark === undefined) {
+      // Where the voice's words stood when this run began, so a drop takes back only this run's words.
+      const last = this.turns.findLast(x => x.who === "reason" && !x.seeded) ?? null;
+      mark = last ? { turn: last, len: last.text.length } : null;
+    }
+    if (from) { this.over = null; if (this.overTimer) { this.timers.clearTimeout(this.overTimer); this.overTimer = null; } }
+    this.tg = { since, waitFrom: t, frames: [...frames], lastAt: from?.lastAt ?? t, mark, timer: null };
+    if (r.state === "unfinished") { this.gateDrop(r); return true; }
+    this.tg.timer = this.timers.setTimeout(() => this.gateCheck(), OVER_TICK_MS);
+    return true;
+  }
+
+  /** The gate's read of their latest words, against where their last sound sits on the session's timeline. */
+  gateRead(t) {
+    return this.turnGate.read(t, { speechAt: this.theirSpeechAt, speechMs: this.theirSpeechFedMs == null ? null : this.theirSpeechFedMs + this.fedSkew });
+  }
+
+  /** A verdict has arrived (`decision.event`). */
+  gateDecision(e) {
+    const t = this.now();
+    const v = this.turnGate.decided(e, t);
+    if (!v) return;
+    if (this.turnGate.mode === "line") return this.gateAsked(v, t);
+    if (this.tg) this.gateCheck();
+  }
+
+  /**
+   * A run waiting on the gate: dropped the moment their latest words are judged mid-thought, played
+   * the moment they are judged finished (or the decision failed), and played exactly as it would have
+   * been when the budget runs out with no verdict (fail open).
+   */
+  gateCheck() {
+    const g = this.tg;
+    if (!g || this.done) return;
+    if (g.timer) { this.timers.clearTimeout(g.timer); g.timer = null; }
+    const t = this.now();
+    const r = this.gateRead(t);
+    if (r.state === "unfinished") { this.gateMisses = 0; return this.gateDrop(r); }
+    if (r.state === "wait" && t - g.waitFrom < this.turnGate.budgetMs) {
+      g.timer = this.timers.setTimeout(() => this.gateCheck(), OVER_TICK_MS);
+      return;
+    }
+    if (r.state === "wait") this.gateMisses++; else this.gateMisses = 0;
+    this.gateLog(r.state === "wait" ? { ...r, state: "none" } : r, { waited: t - g.waitFrom });
+    this.gatePlay();
+  }
+
+  /** The held run goes out now, whole — or, if they have started again meanwhile, to the talk-over hold. */
+  gatePlay() {
+    const g = this.tg;
+    this.tg = null;
+    if (g.timer) this.timers.clearTimeout(g.timer);
+    const t = this.now();
+    if (t - this.theirSpeechAt < TALKOVER_QUIET_MS && !this.ending) {
+      this.over = { since: g.since, frames: g.frames, lastAt: g.lastAt, wait: TALKOVER_QUIET_MS, first: false, mark: g.mark, long: false, gated: true };
+      this.overTimer = this.timers.setTimeout(() => this.overCheck(), OVER_TICK_MS);
+      return;
+    }
+    this.noteRun(t, true);
+    this.overFlushing = true;
+    try { for (const f of g.frames) this.audioOut(f); } finally { this.overFlushing = false; }
+  }
+
+  /** Mid-thought: the run never reaches the phone, its words come off the record, and the voice is told to stay silent. */
+  gateDrop(r) {
+    const g = this.tg;
+    this.tg = null;
+    if (g.timer) this.timers.clearTimeout(g.timer);
+    this.turnGate.dropped(r.seq);
+    this.gateLog(r, { waited: this.now() - g.waitFrom, dropped: true });
+    // The talk-over drop does the rest: the rest of the run dropped as it arrives, the words taken back.
+    this.over = { since: g.since, frames: [], lastAt: g.lastAt, mark: g.mark, first: false, gate: true };
+    this.overDrop("mid-thought");
+  }
+
+  /** The guard cleared everything unplayed: a run waiting on the gate goes with it. */
+  gateDiscard() {
+    const g = this.tg;
+    if (!g) return;
+    this.tg = null;
+    if (g.timer) this.timers.clearTimeout(g.timer);
+    this.over = { dropped: true, discarded: true, lastAt: this.now(), frames: [] };
+  }
+
+  /**
+   * After a reply held back mid-thought, with nothing said since: once newer words of theirs are a
+   * finished thought and they have stopped, the voice is asked to answer; or, when they have simply
+   * gone quiet for TURN_GATE_QUIET_MS, told a few words are welcome now. Never dead air for good.
+   */
+  gateNudge(droppedAt) {
+    const t = this.now();
+    const again = () => { if (t - droppedAt < OVER_NUDGE_GIVE_UP_MS) this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(droppedAt), OVER_TICK_MS * 5); };
+    if ((this.over && !this.over.dropped) || this.tg || !this.turnGate) return again();
+    const quiet = t - this.theirSpeechAt;
+    const finished = this.gateRead(t).state === "finished" && quiet >= OVER_NUDGE_QUIET_MS;
+    // A noisy line never reads as quiet: no words of theirs for that long (plus the transcript's lag) counts too.
+    const wordless = t - Math.max(this.lastCallerAt, droppedAt) >= turngate.TURN_GATE_QUIET_MS + TALKOVER_NOISE_MS;
+    if (!finished && quiet < turngate.TURN_GATE_QUIET_MS && !wordless) return again();
+    // What it says next was asked for: not held a second time.
+    this.gateOpenUntil = t + 4000;
+    this.live.send({ type: "session.commentary.append", event_id: `turnnudge_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: finished ? OVER_NUDGE : turngate.TURN_GATE_QUIET_NUDGE });
+    this.log({ gptlive_turn_gate_nudged: this.call.id, why: finished ? "finished" : "quiet", ms: t - droppedAt });
+  }
+
+  /** A business call: they asked whether this is a machine, or who is calling — the truth, at once. */
+  gateAsked(v, t) {
+    if (!this.talking || this.done || this.ending || (v.asks !== "asks_ai" && v.asks !== "asks_who")) return;
+    // One answer per question: the same question's later pieces are not a second one.
+    if (t - this.askedAt < turngate.ASKED_AGAIN_MS) return;
+    this.askedAt = t;
+    this.askedN = (this.askedN ?? 0) + 1;
+    this.live.send({ type: "session.instructions.append", event_id: `asked_${this.call.id}_${this.askedN}`, delegation_id: null, content: turngate.honestAnswerNote(v.asks, this.who?.named ? this.who.name : "") });
+    this.log({ gptlive_turn_gate_asked: this.call.id, asks: v.asks, decision_ms: Math.round(v.latencyMs) });
+  }
+
+  /**
+   * One line per gated turn, and never a word of the call: the verdict (finished / unfinished / none
+   * = no verdict inside the budget / open = nothing to go on), how long the decision took from the
+   * transcript piece it was about, how long that piece trailed their voice, how long before the
+   * voice's first audio the verdict was in (`lead_ms`), how long the audio waited, and whether it was dropped.
+   */
+  gateLog(r, { waited = 0, dropped = false, observe = false } = {}) {
+    this.log({
+      gptlive_turn_gate: this.call.id, verdict: r.state, ...(r.why ? { why: r.why } : {}),
+      decision_ms: r.decisionMs ?? null, transcript_ms: r.transcriptMs ?? null, lead_ms: r.leadMs ?? null,
+      waited_ms: Math.round(waited), dropped, ...(r.p != null ? { p: Math.round(r.p * 100) / 100 } : {}),
+      ...(r.matched === false ? { matched: false } : {}), ...(observe ? { observe: true } : {}),
+    });
   }
 
   /** No more audio came for a held sound: it was short (dropped) unless it already ran long. */
