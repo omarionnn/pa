@@ -29,8 +29,10 @@ export class FakeChannel extends Channel {
    *   `findSentAs`  what this channel says when asked whether an interrupted message went out.
    *                 Left null it says it cannot tell, which is the base Channel's honest default.
    */
-  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null, markReadAs = null, reactAs = null, number = null, inlineReplies = true, replyAs = null, rendersMarkdown = false } = {}) {
+  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null, markReadAs = null, reactAs = null, number = null, inlineReplies = true, replyAs = null, rendersMarkdown = false, reportsDelivery = false } = {}) {
     super();
+    /** `true` makes it a carrier that reports delivery later, the way Sendblue does (REASON_DELIVERY_GATED). */
+    this.delivers = reportsDelivery;
     /** Whether this fake can pin a message under another one at all. */
     this.canReply = inlineReplies;
     /** `true` makes it a channel that draws markdown, so the stripping is skipped — the one case no real channel has. */
@@ -75,6 +77,8 @@ export class FakeChannel extends Channel {
   get inlineReplies() { return this.canReply; }
 
   get rendersMarkdown() { return this.drawsMarkdown; }
+
+  get reportsDelivery() { return this.delivers; }
 
   async send({ to, text, chatId = null, idempotencyKey = null, replyTo = null, sendStyle = null }) {
     this.attempts.push({ to, text, chatId, idempotencyKey, replyTo, sendStyle, at: clock.now() });

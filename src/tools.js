@@ -64,6 +64,9 @@ import * as callOutcome from "./calls/outcome.js";
 import { settleGoal, goalPending } from "./calls/goalmet.js";
 import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
+import * as tapbackack from "./tapbackack.js";
+import * as verifications from "./verifications.js";
+import { deliveryGatedOn } from "./trustflags.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
 import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal } from "./eventtools.js";
@@ -8907,15 +8910,34 @@ async function handOverDocument({ doc, to, say = "", ctx, c, me, name = "documen
 
   // It really went. Only now.
   db.markDocumentSent(doc.id);
+  const gatedDoc = deliveryNote(c, router, channelName, r);
   return {
     ok: true,
     out: {
       sent: true, sent_to: toOwner ? "owner" : address, delivered: r.delivered,
-      note: toOwner
-        ? `That is in this thread now, as a real ${doc.filename.split(".").pop()} file they can open. Say in ONE line what it is and that it is in the thread — nothing about links, codes or downloads, and do not repeat what is inside it.`
-        : `The ${what} went to ${address} as an attachment. Tell ${me.name} it went, and to whom.`,
+      ...(gatedDoc ? { delivery: "pending" } : {}),
+      note: gatedDoc
+        ? `The ${what} is on its way${toOwner ? " into this thread" : ` to ${address}`} as an attachment, and ${gatedDoc}`
+        : toOwner
+          ? `That is in this thread now, as a real ${doc.filename.split(".").pop()} file they can open. Say in ONE line what it is and that it is in the thread — nothing about links, codes or downloads, and do not repeat what is inside it.`
+          : `The ${what} went to ${address} as an attachment. Tell ${me.name} it went, and to whom.`,
     },
   };
+}
+
+/**
+ * REASON_DELIVERY_GATED: a carrier that reports delivery later (Sendblue's outbound status webhook)
+ * has ACCEPTED the message, which is not the same as it having arrived. The result says so, in the
+ * words the model is to use, until the carrier says DELIVERED. Null when the switch is off for this
+ * person or the channel never reports delivery (the console, Linq) — then accepted is all there is.
+ */
+function deliveryNote(c, router, channelName, r) {
+  if (!deliveryGatedOn(c)) return null;
+  if (!router?.get?.(channelName)?.reportsDelivery) return null;
+  const status = String(r?.delivered?.status ?? "").toUpperCase();
+  if (status === "DELIVERED") return null;
+  return `${channelName} has accepted it but has NOT confirmed delivery yet${status ? ` (status ${status})` : ""}.`
+    + ` Say it is on its way / sending — do not say "sent" or "delivered". You will be told if it does not get there.`;
 }
 
 /**
@@ -8956,6 +8978,7 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
 
   const batch = `${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
   let went = 0;
+  let lastSend = null;
   for (let i = 0; i < n; i++) {
     const img = images[i];
     let r;
@@ -8968,6 +8991,7 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
     } catch (e) {
       r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
+    lastSend = r;
     if (r?.ok && !r.queued) { went++; continue; }
 
     if (r?.queued) {
@@ -8983,9 +9007,14 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
       note: `Only ${went} of the ${n} pictures arrived in their thread; the rest could not be sent (${why}). Say exactly that — do not say they all went, and do not give a link for the missing ones.`,
     };
   }
+  // REASON_DELIVERY_GATED: the carrier took them; "in their thread" waits for its word.
+  const gatedPics = deliveryNote(c, router, thread.channel, lastSend);
   return {
     ok: true, sent: true, sent_count: n, made: n, model, ...(line ? { said: line } : {}),
-    note: `${n > 1 ? `All ${n} pictures are` : "The picture is"} in their thread now, as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}. You may say you sent ${n > 1 ? "them" : "it"}. Do not also send a link, and never call it a photo: it is a generated picture. If you have nothing to add, reply NO_REPLY.`,
+    ...(gatedPics ? { delivery: "pending" } : {}),
+    note: gatedPics
+      ? `${n > 1 ? `All ${n} pictures are` : "The picture is"} on the way into their thread as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}, and ${gatedPics} Do not also send a link, and never call it a photo: it is a generated picture.`
+      : `${n > 1 ? `All ${n} pictures are` : "The picture is"} in their thread now, as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}. You may say you sent ${n > 1 ? "them" : "it"}. Do not also send a link, and never call it a photo: it is a generated picture. If you have nothing to add, reply NO_REPLY.`,
   };
 }
 
@@ -9455,6 +9484,8 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   if (ctx?.turnTasks) { const t = taskOfCall(name, rawInput, out); if (t) ctx.turnTasks.add(t); }
   // What this call came to, for the check in front of the reply (src/said.js): no "done" without it.
   if (ctx?.turnActs) said.noteAct(ctx.turnActs, name, out, { acting: lapsedBlocked(name) && !CLAIM_CHECK_READS.has(String(name)) });
+  // REASON_TAPBACK_ACK (src/tapbackack.js): a lookup is 🔍, a timer set is ⏰, a job finished is ✅. Never throws, never waited on.
+  if (ctx?.conversationId) { try { tapbackack.noteTool(ctx, name, out); } catch {} }
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
   // Anything they texted since the last tool call rides on this result, first, so the turn has it
   // while it can still change the work.
@@ -11127,11 +11158,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
+      // A text to somebody else is checked later (REASON_QUICK_CORRECTION): the carrier's word on it.
+      if (!toOwner) verifications.schedule(c, "text", { outbox_id: r.outbox_id ?? null, to });
+      const gated = deliveryNote(c, router, channelName, r);
       return {
         ok: true, sent_to: to, text, delivered: r.delivered,
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
-        note: "This actually went out. You may say you sent it.",
+        ...(gated ? { delivery: "pending", note: gated } : { note: "This actually went out. You may say you sent it." }),
       };
     }
 
@@ -11471,9 +11505,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       if (!r.ok) return { ...r, note: "Nothing was sent. Tell them exactly that, and what it said." };
+      const gatedVoice = deliveryNote(c, router, channelName, r);
       return {
         ok: true, sent_to: to, file: picked.file, converted: picked.converted, delivered: r.delivered,
-        note: "That went as a real voice note — it will play inline on an iPhone. You may say you sent it.",
+        ...(gatedVoice
+          ? { delivery: "pending", note: `A real voice note (it plays inline on an iPhone), and ${gatedVoice}` }
+          : { note: "That went as a real voice note — it will play inline on an iPhone. You may say you sent it." }),
       };
     }
 
@@ -11498,9 +11535,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
       if (!r.ok) return { ...r, note: "The picture did not go. Say that plainly." };
+      const gatedUrl = deliveryNote(c, router, channelName, r);
       return {
         ok: true, sent_to: to, url, delivered: r.delivered,
-        note: "That went as a picture in their iMessage thread. You may say you sent it.",
+        ...(gatedUrl
+          ? { delivery: "pending", note: `A picture, on its way into their iMessage thread, and ${gatedUrl}` }
+          : { note: "That went as a picture in their iMessage thread. You may say you sent it." }),
       };
     }
 
@@ -16375,6 +16415,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         body: { raw, ...(threadId ? { threadId } : {}) },
       });
       if (!sent.ok) return gmailError(sent, "send that email");
+      // Gmail took it; a bounce comes later, into the same thread. Checked in a few minutes
+      // (REASON_QUICK_CORRECTION, src/verifications.js) and said in one line if it bounced.
+      verifications.schedule(c, "email", {
+        account: tok.account, message_id: sent.body?.id ?? null, thread_id: sent.body?.threadId ?? null,
+        to: input.to?.length ? input.to : (replying ? [replying.to] : []), subject: replying ? replying.subject : (input.subject ?? ""),
+      });
       return {
         ok: true, status: "sent", account: tok.account, from: tok.account,
         message_id: sent.body?.id ?? null, thread_id: sent.body?.threadId ?? null,
@@ -16623,6 +16669,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         eventId: made.body?.id,
         asked: { summary: input.summary, start: when.start.value, end: when.end.value, time_zone: when.zone || undefined },
       });
+      // Read back now; read again in a couple of minutes (REASON_QUICK_CORRECTION, src/verifications.js),
+      // because an event that is gone or cancelled later is news the person would otherwise never get.
+      verifications.schedule(c, "calendar", { account: cal.account, event_id: made.body?.id ?? null, summary: input.summary, start: when.start.value });
       return {
         ok: true, status: "created", account: cal.account, time_zone: cal.timeZone,
         ...(cal.zoneFrom ? { time_zone_from: cal.zoneFrom } : {}),

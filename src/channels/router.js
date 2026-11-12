@@ -1619,10 +1619,17 @@ export class Router {
     // Refused deliveries (a rotated secret, a missing header) raise an alert after a few; an
     // accepted one closes it (src/webhookalert.js). Never in the way of the answer.
     try { webhookAlert.note({ channel, status: parsed.status, error: parsed.body?.error ?? "", request: { headers, rawBody: rawBody ?? rawBytes?.toString?.("utf8") ?? "" } }); } catch { /* never blocks */ }
+    // The carrier's later word on a message it took (REASON_DELIVERY_GATED): read by the outbox,
+    // never a turn. Best-effort, and never in the way of the 200 the provider is waiting for.
+    let delivery = null;
+    if (parsed.delivery) {
+      try { delivery = outbox.noteDelivery({ ...parsed.delivery, log: this.log }); }
+      catch (e) { this.log({ delivery_note_failed: channel, why: (e?.message ?? String(e)).split("\n")[0] }); }
+    }
     const delivered = [];
     for (const inbound of parsed.inbound ?? []) {
       delivered.push(await this.deliver({ ...inbound, channel, arrivedAt }));
     }
-    return { status: parsed.status, body: { ...parsed.body, delivered: delivered.length }, results: delivered };
+    return { status: parsed.status, body: { ...parsed.body, delivered: delivered.length }, results: delivered, ...(delivery ? { delivery } : {}) };
   }
 }
