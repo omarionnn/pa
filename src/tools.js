@@ -11660,7 +11660,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
       // skipped: "I didn't ring them because of the hour" is a useful sentence; a call that silently
       // did not happen is the false-progress failure.
-      const hours = withinCallingHours({ toOwner });
+      // The hour is the callee's (the place's zone from a lookup, else the number's area code), else the
+      // account holder's — never the server's.
+      const callee = toOwner ? null : zone.calleeZone(to, c);
+      const hours = withinCallingHours({ toOwner, ...(callee ? { tz: callee.zones ?? callee.zone, whose: callee.source } : {}) });
       if (!hours.ok) return { ok: false, status: "quiet_hours", error: hours.error };
 
       // Did this already happen? The owner's rule — never book twice, never leave two voicemails — and
@@ -18576,6 +18579,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         cuisine: input.cuisine, name: input.name, radius: input.radius,
       });
       if (!out.ok) return out;
+      // A place's number is timed by the place's own clock if it is rung later (zone.calleeZone).
+      for (const r of out.results ?? []) if (r?.phone) try { zone.notePlace(r); } catch { /* the area code still answers */ }
       return markOutside(out, {
         source: "OpenStreetMap nearby-places results",
         text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),
