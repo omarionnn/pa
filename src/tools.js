@@ -501,8 +501,6 @@ export function lapsedBlocked(name) {
     || /^event_/.test(n) || /^(shop_|store_|browser_)/.test(n);
 }
 
-// How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
-// way to book. On: two ways, and which one is the person's choice — Reason offers both and pushes neither.
 // signin_link's `provider` argument, as its schema words it. Where REASON_SOCIAL_SIGNIN reaches the
 // person: never Google, signin_email instead. Everybody else keeps the words they had before
 // signin_email existed (the argument is ignored for them, and they have no such tool to be sent to).
@@ -512,6 +510,9 @@ const SIGNIN_LINK_PROVIDER_PLAIN = "Which button their account on this site sign
 function plainSigninLink(t) {
   return { ...t, input_schema: { ...t.input_schema, properties: { ...t.input_schema.properties, provider: { ...t.input_schema.properties.provider, description: SIGNIN_LINK_PROVIDER_PLAIN } } } };
 }
+
+// How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
+// way to book. On: two ways, and which one is the person's choice — Reason offers both and pushes neither.
 const FLIGHT_SEARCH_ONLY = "SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves.";
 const FLIGHT_SEARCH_BOTH = "Two ways to finish, and which one is THEIR choice: the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves; or, only when they ask you to book it, flight_book — Reason books it on the airline's own site, and nothing is charged until they approve the airline's exact total. Keep the link on every option and offer both without pushing either. Never say a flight is booked until a tool tells you a ticket was issued.";
 
