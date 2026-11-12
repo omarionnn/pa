@@ -1,6 +1,7 @@
 // The body: one real Chromium per conversation, in its own profile directory so logins stick.
 // Playwright is imported lazily, so the rest of Reason runs fine on a machine where
 // `npx playwright install chromium` was never run — the browser tools just say so.
+import { findProviderButton } from "./providerbutton.js";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { config } from "./config.js";
@@ -317,9 +318,9 @@ export async function readPageLabels(url, { timeoutMs = 20_000, settleMs = 2000 
       const page = await ctx.newPage();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
       await page.waitForTimeout(settleMs);
-      return await page.evaluate(() => [...document.querySelectorAll("button, a, [role=button], input[type=submit]")]
-        .map(e => [(e.innerText || e.value || "").trim(), e.getAttribute("aria-label") || "", e.getAttribute("title") || ""].filter(Boolean).join(" | "))
-        .filter(Boolean).slice(0, 200));
+      // Every control's label, with false provider buttons left out: a footer "Facebook" link to the
+      // site's social page is not a sign-in button (src/providerbutton.js).
+      return await page.evaluate(findProviderButton, { labels: true });
     })();
     const cap = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`no answer in ${Math.round(timeoutMs / 1000)}s`)), timeoutMs); });
     return await Promise.race([work, cap]);

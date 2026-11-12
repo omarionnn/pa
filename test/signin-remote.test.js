@@ -761,10 +761,17 @@ test("signin_link works for somebody who is not at the machine, which is the poi
 
 test("the honest warnings: no public address, a site that refuses the browser, nobody's conversation", async () => {
   config.publicUrl = "";
-  const local = await runTool("signin_link", { site: "doordash" }, { conversationId: CONV, channels: null });
+  // Delta: refused at the last probe, no dated sign-in finding, and (under test) not asked live.
+  const local = await runTool("signin_link", { site: "delta" }, { conversationId: CONV, channels: null });
   assert.equal(local.ok, true);
   assert.match(local.warning, /from their phone this link will not open/);
-  assert.match(local.site_warning, /DoorDash refuses an automated browser/);
+  assert.match(local.site_warning, /Delta Air Lines refuses an automated browser/);
+  // DoorDash walled Reason's browser at the 2026-11-12 probe: no link at all, for anybody.
+  const walled = await runTool("signin_link", { site: "doordash" }, { conversationId: CONV, channels: null });
+  assert.equal(walled.ok, false);
+  assert.equal(walled.blocked, true);
+  assert.equal(walled.seen, "2026-11-12");
+  assert.match(walled.say, /DoorDash blocks automated sign-in/);
   assert.equal(signin.linkSignin().available, false);
 
   const nobody = await runTool("signin_link", { site: "amazon" }, { conversationId: "dm:fake:+19990001111", channels: null });

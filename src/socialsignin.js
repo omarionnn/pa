@@ -17,9 +17,11 @@
 //   - **a no is remembered** per provider for 30 days (social_declines), and the model is told not to
 //     ask again until then;
 //   - **the provider button is pressed for them** when a link or a re-check opens a site whose saved
-//     login says "google": the person lands on Google's own page rather than a username box they would
-//     have to skip past. A lapsed session on such a site is tried again the same way before anybody is
-//     asked for anything (`signInAgain`, the one piece that works without the person);
+//     login says Apple, Facebook or Microsoft: the person lands on the provider's own page rather than
+//     a username box they would have to skip past. NEVER Google (NEVER_PRESSED below): Google refuses
+//     Reason's browser on its own sign-in page whoever is typing, so there is no Google route at all —
+//     not pressed for them, and not completable by them on the link either. A lapsed session is tried
+//     again the same way before anybody is asked for anything (`signInAgain`);
 //   - **a code is normalised** before it is typed: "G-123 456" → "123456"
 //     (`normalizeCode`, used by the sign-in page's typed text when a code box is focused).
 //
@@ -29,6 +31,7 @@ import { clock, config } from "./config.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { guardedFetch } from "./netguard.js";
+import { findProviderButton } from "./providerbutton.js";
 
 // ---------------------------------------------------------------- the flag
 const OFF = ["", "0", "off", "false", "no"];
@@ -66,13 +69,15 @@ export const NEVER_PRESSED = new Set(["google"]);
 /** A provider Reason may offer or press: one of the four, never Google. "" otherwise. */
 export function usableProvider(p) { const k = providerKey(p); return k && !NEVER_PRESSED.has(k) ? k : ""; }
 
-/** "your Google login" — the words the rules use; never "OAuth", never "social provider", to the person. */
-export const loginWords = (p) => `your ${LABELS[providerKey(p)] ?? "Google"} login`;
+/** "your Apple login" — the words the rules use; never "OAuth", never "social provider", to the person. */
+export const loginWords = (p) => `your ${LABELS[providerKey(p)] ?? "Apple"} login`;
 
 /** The one-line expectation for the two-step check, by provider, least effort first. */
 export function expectLine(p) {
   const name = LABELS[providerKey(p)] ?? "The site";
-  if (name === "Google") return "Google will ping your phone. Tap Yes.";
+  // Google is never pressed and cannot be completed in Reason's browser (NEVER_PRESSED): no line
+  // may promise what Google will do next, so this says what is true instead.
+  if (name === "Google") return "Google won't let my browser sign in, so I'll use the site's own emailed code instead.";
   if (name === "Apple") return "Apple will show a code on your iPhone or Mac. Send it to me.";
   if (name === "Microsoft") return "Microsoft will ping the Authenticator app. Tap Approve.";
   return `${name} will ask you to confirm it's you on your phone. Tap Yes.`;
@@ -119,31 +124,12 @@ export function providersOffered(text) {
 
 /**
  * Runs inside the page: find the site's own "Continue with <provider>" control and press it. Returns
- * what it pressed (the control's text) or "" when there is none. Only visible buttons, links and
- * role=button elements whose own text or aria-label names the provider; never a form field. Browser
- * globals only — Playwright serialises the function's source across and calls it with the provider.
- * (A real function, not a string: Playwright evaluates a string as an expression and never calls
- * it, which the hand-made Uber page in test/social-signin-uber.test.js was the first to show.)
+ * what it pressed (the control's text) or "" when there is none. Lives in src/providerbutton.js: a
+ * control only counts when it is on the sign-in form or goes to the provider's sign-in endpoint — a
+ * footer "Facebook" link to the site's social page is not a sign-in button (Marriott, 2026-11-12).
+ * (A real function, not a string: Playwright evaluates a string as an expression and never calls it.)
  */
-export function findProviderButton(provider) {
-  var want = String(provider || "").toLowerCase();
-  if (!want) return "";
-  var els = document.querySelectorAll('button,a[href],[role="button"],input[type="button"],input[type="submit"]');
-  for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    var txt = ((el.innerText || el.value || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "") + " " + (el.getAttribute("data-provider") || "")).replace(/\s+/g, " ").trim().toLowerCase();
-    if (!txt || txt.indexOf(want) < 0) continue;
-    if (txt.length > 80) continue;
-    if (!/(continue|sign|log|use|with|account|via)/.test(txt) && txt !== want) continue;
-    var r = el.getBoundingClientRect();
-    if (r.width < 20 || r.height < 12) continue;
-    var cs = window.getComputedStyle(el);
-    if (cs.visibility === "hidden" || cs.display === "none") continue;
-    el.click();
-    return txt.slice(0, 80);
-  }
-  return "";
-}
+export { findProviderButton };
 /** The finder's source, for anything that wants to read it; `String(fn)` is what Playwright sends. */
 export const PROVIDER_BUTTON_JS = String(findProviderButton);
 
@@ -464,7 +450,7 @@ export async function signinWall(entry, { fetchImpl = fetch, timeoutMs = 15_000 
     const html = String((await res.text().catch(() => "")) ?? "").slice(0, 400_000);
     const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
     const marker = CHALLENGE.exec(text)?.[0] ?? "";
-    if (marker || status === 403 || status === 503) {
+    if (marker || status === 403 || status === 429 || status === 503) {
       out = { in: false, status, why: `${label}'s sign-in page answers Reason's browser from here with a bot check (HTTP ${status}${marker ? `, "${marker}"` : ""}), so a link would show the wall and nothing else.`, providers_offered: [], checked_at: clock.now() };
     } else if (status >= 200 && status < 300) {
       out = { in: true, status, why: "", providers_offered: providersOffered(text), checked_at: clock.now() };
@@ -554,6 +540,7 @@ export const RULES = [
   `- ANY SITE: this works on any site with an email sign-in — Notion, Airbnb, Canva, a gym's booking site — not only the sites signin_link names. For a site not on its list, pass the site's web address as \`site\` (its sign-in page if you know it, e.g. https://www.notion.so/login, else its domain); signin_email, signin_link, signin_provider infer and signin_status take the address the same way. When a real task needs their account on a site you are not signed in to, the answer is signin_email — never "I can't get into it" or "that site isn't supported", and capabilities listing no saved sign-in for it does not mean it cannot be signed in to. Do not promise a particular site works until it has.`,
   `- HOW IT IS COLLECTED: never a password or a card number in this chat. For an Apple, Facebook or Microsoft account, send the secure sign-in link (signin_link, with the provider as its \`provider\`) and they sign in on the provider's own page inside it. The login is saved only once the site says they are signed in, and which provider each site uses is written down with it; you are told when that happens.`,
   `- TWO-STEP VERIFICATION: expect it. Least effort first: a Yes tap on their phone, then a code sent to an email you can read yourself (signin_email reads it for you — never "check your email"), then a texted code they forward to you. Tell them what to expect in one line: "Apple will show a code on your iPhone or Mac. Send it to me." A forwarded code is cleaned before it is typed (spaces and dashes come off), so take it as they send it. If a code fails twice, switch methods once; if that fails too, stop and say plainly what blocked it.`,
+  `- BLOCKED SITES: some sites refuse your browser (signin_status says signin_here "blocked", or a sign-in tool answers blocked). Say ONE honest line — the site blocks automated sign-in, their choice, nothing the person did — then go to what the tool names instead: an answer from their mail, or their own sign-in where the tool says that works. A site's "something went wrong", "try again", "too many attempts" or a captcha is the site refusing your browser, NEVER a wrong email: do not ask which email they use over it and never retry with another address (that can lock their account). A site that only offers Google cannot be signed in to here: say that plainly, and never say you will press or use their Google login.`,
   `- REFUSED: Apple or Microsoft sometimes refuses Reason's browser on its own page ("this browser is not supported"). You are told when that happens. Then say it in one plain line, never retry it, and sign them in through the site's own email route instead (signin_email). Google's refusal page is backed out of automatically and never shown to them.`,
   `- AFTER ACCESS: finish the task first. Then, once, say what it unlocked when it was a provider login: "Now I can handle your Airbnb too, since it uses the same Apple sign-in." When a session lapses, sign back in yourself (signin_status with recheck, or signin_email again); only involve them for an approval tap or, without Gmail, a code.`,
   `- UBER: never ask for any provider login for Uber. Connecting their Uber account is the Uber connect card (uber_connect), only when they ask to connect it; a ride is uber_link, every time, as before.`,

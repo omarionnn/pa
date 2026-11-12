@@ -285,6 +285,7 @@ export const KEPT_ON_DELETE = {
  * coverage test can tell "nobody's" from "forgotten". A whole-install delete leaves them, as before.
  */
 export const INSTALL_WIDE = {
+  site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain; nothing in it says who asked.",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
   channel_limits: "what each channel refused, learned once for everyone",
   flight_provider_usage: "monthly search counts per flight provider",

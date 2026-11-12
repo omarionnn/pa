@@ -40,7 +40,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   remote.forgetAllRemoteSignins();
-  db.db.exec("DELETE FROM timers; DELETE FROM accounts; DELETE FROM threads; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals;");
+  db.db.exec("DELETE FROM timers; DELETE FROM accounts; DELETE FROM threads; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals; DELETE FROM site_findings;");
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
   config.publicUrl = "https://reason.example";
@@ -173,10 +173,11 @@ test("email chosen on a browser not yet proved stays email after the code (no Ap
   assert.match(r.body, /<input type="hidden" name="via" value="">/);
 });
 
-test("signin_link: a 404 or an outage on a walled-listed site is not called blocking", async () => {
+test("signin_link: a 404 or an outage is not called blocking", async () => {
   const made = [];
-  const out = await call("signin_link", { site: "doordash" }, CONV, {
-    signinWall: async () => ({ in: false, status: 502, why: "DoorDash's sign-in page answered HTTP 502 from here.", providers_offered: [] }),
+  // Delta: refused at the last probe, with no dated sign-in wall on record.
+  const out = await call("signin_link", { site: "delta" }, CONV, {
+    signinWall: async () => ({ in: false, status: 502, why: "Delta's sign-in page answered HTTP 502 from here.", providers_offered: [] }),
     createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; },
   });
   assert.equal(out.ok, true);
@@ -232,13 +233,16 @@ test("signin_link: a site walling Reason's browser right now gets no link, a pla
   assert.equal(out.ok, false);
   assert.equal(out.blocked, true);
   assert.equal(made.length, 0, "no link to a wall");
-  assert.match(out.say, /DoorDash is blocking my browser from its sign-in page right now/);
+  assert.match(out.say, /DoorDash blocks automated sign-in, so I can't sign you in there myself/);
   assert.match(out.say, /restaurant's own site/);
+  assert.match(out.never, /do NOT try another address/);
   assert.match(out.instead, /food_order/);
 });
 
 test("signin_link: a walled site whose wall has lifted gets its link with the choices", async () => {
   const made = [];
+  // The 2026-11-12 wall is believed for 14 days; after that the site is asked again, and it loads.
+  clock.skip(15 * 86_400_000);
   const out = await call("signin_link", { site: "doordash" }, CONV, {
     signinWall: async () => ({ in: true, status: 200, providers_offered: ["google", "apple", "facebook"] }),
     createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; },
@@ -247,7 +251,7 @@ test("signin_link: a walled site whose wall has lifted gets its link with the ch
   assert.deepEqual(made[0].offered, ["apple", "facebook"], "Google left off");
 });
 
-test("signin_link without the flag: no live check, no choices (as before)", async () => {
+test("signin_link without the flag: the wall is still asked (nobody is sent a link into one), but no choices are read or offered", async () => {
   delete process.env.REASON_SOCIAL_SIGNIN;
   let asked = 0;
   const made = [];
@@ -255,7 +259,7 @@ test("signin_link without the flag: no live check, no choices (as before)", asyn
     signinWall: async () => { asked++; return { in: true, status: 200, providers_offered: ["google"] }; },
     createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; },
   });
-  assert.equal(asked, 0);
+  assert.equal(asked, 1, "one ask: is the sign-in page walled");
   assert.deepEqual(made[0].offered, []);
 });
 

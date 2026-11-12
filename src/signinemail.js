@@ -4,8 +4,10 @@
 // of src/socialsignin.js.
 //
 // Why: Google refuses Reason's server browser on its own sign-in page by policy (see NEVER_PRESSED in
-// src/socialsignin.js). Notion, Airbnb, Canva, Spotify, Uber Eats and DoorDash all offer an emailed
-// code or link that works however the account was made (research 2026-11-11). So:
+// src/socialsignin.js). Many sites offer an emailed code or link that works however the account was
+// made (research 2026-11-11). Offering one is not the same as letting Reason's browser use it: the
+// 2026-11-12 probe found Canva, DoorDash and Uber's sign-in walled outright and Spotify refusing
+// after the email went in (src/sitefindings.js). Where the route is open:
 //
 //   1. Reason opens the site's sign-in page in the person's own saved profile (headless, the same
 //      guarded browser the sign-in link uses) and takes its email route: the email box, or a
@@ -28,6 +30,8 @@ import * as db from "./db.js";
 import * as social from "./socialsignin.js";
 import * as signin from "./signin.js";
 import * as restartGate from "./busy.js";
+import * as findings from "./sitefindings.js";
+import { logAttempt } from "./signinlog.js";
 
 /** How long Gmail is polled for the site's mail, and how often. */
 export const MAIL_WAIT_MS = 90_000;
@@ -246,9 +250,38 @@ export function emailPage(act) {
 }
 
 const SENT = /(we('ve| have)? (just )?(sent|emailed)|check your (inbox|email)|enter (the |your )?(\d+[- ]digit )?(code|verification)|(login|sign-?in|temporary|verification) code|magic link|code (was )?sent|sent (a |you a )?(code|link))/i;
-/** The site turning the email down ("Invalid email domain", "No account found"), read off the page. */
-const REJECTED = /invalid email|not a valid|isn'?t valid|enter a valid|no account|couldn'?t find|doesn'?t exist|not recogni[sz]ed|try again|something went wrong|too many/i;
-const REJECTED_LINE = /(invalid email|not a valid|isn'?t valid|enter a valid|no account|couldn'?t find|doesn'?t exist|not recogni[sz]ed|try again|something went wrong|too many)(\s+[a-z]+){0,1}/i;
+/**
+ * The site turning THE EMAIL down, in words that are about the email ("Invalid email domain", "No
+ * account found"). Only these are a rejected email.
+ */
+const REJECTED = /invalid e-?mail|not a valid|isn'?t valid|enter a valid|no account|couldn'?t find (an? |your )?account|account (does not|doesn'?t) exist|e-?mail (does not|doesn'?t) exist|not recogni[sz]ed|not registered/i;
+const REJECTED_LINE = /(invalid e-?mail|not a valid|isn'?t valid|enter a valid|no account|couldn'?t find (an? |your )?account|account (does not|doesn'?t) exist|e-?mail (does not|doesn'?t) exist|not recogni[sz]ed|not registered)(\s+[a-z]+){0,1}/i;
+/**
+ * The site refusing REASON'S BROWSER: a generic failure with nothing about the email in it, a rate
+ * limit, a captcha or challenge page. Spotify answered "Something went wrong" after the email went
+ * in (2026-11-12) and the old pattern read that as a wrong email, asked which email they use and
+ * tried another address — which is how an account gets locked. None of this is ever a rejected email.
+ */
+export const SITE_REFUSED = /something went wrong|went wrong|try again( later)?|too many (attempts|requests|tries|times)|unusual (activity|traffic)|suspicious activity|an? (unexpected |unknown )?error (has )?occurr?ed|unable to (process|complete) (your |this )?request|request (was )?blocked|access denied|temporarily (blocked|unavailable|locked)|rate limit|oops/i;
+/** A challenge standing where the form should be: read only when the page has no email box and no code box. */
+const CHALLENGE = /performing security verification|just a moment|verify(ing)? you(?:'re| are) (?:a )?human|i'?m not a robot|are you a (human|robot)|press (?:and|&) hold|unusual traffic|attention required|access denied|checking your browser|complete the (captcha|security check)/i;
+/** The site turning the CODE down. */
+const WRONG_CODE = /(incorrect|invalid|wrong|expired)[^.\n]{0,24}\b(code|passcode)\b|\b(code|passcode)\b[^.\n]{0,30}(is |was |has )?(incorrect|invalid|wrong|expired|not valid|didn'?t match|doesn'?t match)/i;
+/**
+ * What a sign-in page's words say went wrong after the email was submitted. `before`: the page's
+ * words before the press, so copy that was always there ("Having trouble? Try again") is not news.
+ * Words about the email win over a generic failure: "Invalid email. Try again." is a wrong email.
+ *   → "rejected" | "refused" | ""
+ */
+export function failureKind(text, before = "") {
+  const t = String(text ?? "");
+  const b = String(before ?? "");
+  // Any match that was not already on the page: the first match may be old copy with the news after it.
+  const fresh = (re) => [...t.matchAll(new RegExp(re.source, "gi"))].some(m => !b.toLowerCase().includes(m[0].toLowerCase()));
+  if (fresh(REJECTED)) return "rejected";
+  if (fresh(SITE_REFUSED)) return "refused";
+  return "";
+}
 const wait = (page, ms) => (page?.waitForTimeout ? page.waitForTimeout(ms).catch(() => {}) : new Promise(r => setTimeout(r, ms)));
 const read = async (page, act = "") => { try { return await page.evaluate(emailPage, act); } catch { return { did: "", email: false, code: false, split: false, password: false, route: false, instead: false, text: "", url: "" }; } };
 
@@ -288,10 +321,31 @@ export async function requestCode(page, entry, email, { conversationId = "", log
   await backOutOfProvider(page, entry, conversationId, log);
   let f = await read(page);
   if (!f.email && f.route) { await read(page, "route"); await wait(page, settleMs); f = await read(page); }
-  if (!f.email) return { ok: false, state: "none", why: `${entry.label}'s sign-in page shows no email box Reason can use` };
+  if (!f.email) {
+    // A challenge where the form should be: the site refused the browser before any email was typed.
+    if (!f.code && CHALLENGE.test(f.text)) return { ok: false, state: "blocked", detail: "wall_before_form", why: `${entry.label} put a bot check where its sign-in form should be` };
+    // A page whose only way in is Google: there is no route Reason's browser can take (Google
+    // refuses it), and a sign-in link would only walk the person into that refusal.
+    const offered = social.providersOffered(f.text);
+    if (offered.length && !offered.some(social.usableProvider)) return { ok: false, state: "google_only", why: `${entry.label}'s sign-in page offers only Google, and Google refuses Reason's browser` };
+    return { ok: false, state: "none", why: `${entry.label}'s sign-in page shows no email box Reason can use` };
+  }
+  const before = f.text;
+  // The site's own 403 / 429 to the press that asks for the code: a refusal of the browser.
+  let refusedStatus = 0;
+  const onResponse = (res) => {
+    try {
+      const s = Number(res.status());
+      if ((s === 403 || s === 429) && within(hostOf(res.url()), siteDomainsFor(entry)) && ["document", "xhr", "fetch"].includes(res.request().resourceType())) refusedStatus ||= s;
+    } catch { /* a response that cannot be read says nothing */ }
+  };
+  const blocked = (f2, at2) => ({ ok: false, at: at2, state: "blocked", detail: refusedStatus === 429 ? "rate_limited" : "refused_after_email", why: `${entry.label} refused Reason's browser after the email was submitted${refusedStatus ? ` (HTTP ${refusedStatus})` : ""}${(f2.text.match(SITE_REFUSED) ?? [""])[0] ? `: "${f2.text.match(SITE_REFUSED)[0].slice(0, 60)}"` : ""}` });
   await read(page, "mark_email");
   await page.fill('[data-reason-box="email"]', email);
   const at = clock.now();
+  try { page.on?.("response", onResponse); } catch { /* a page with no events */ }
+  try { return await afterPress(); } finally { try { page.off?.("response", onResponse); } catch { /* same */ } }
+  async function afterPress() {
   const pressed = await read(page, "submit");
   if (!pressed.did) await page.press('[data-reason-box="email"]', "Enter").catch(() => {});
   for (let i = 0; i < 6; i++) {
@@ -303,12 +357,21 @@ export async function requestCode(page, entry, email, { conversationId = "", log
     // on its first page for password managers (seen live 2026-11-11).
     if (f.password && !f.email && f.instead) { await read(page, "codeinstead"); continue; }
     if (SENT.test(f.text)) return { ok: true, at, state: "sent" };
-    if (f.email && REJECTED.test(f.text)) break;
+    const kind = failureKind(f.text, before);
+    if (f.email && kind === "rejected") break;
+    // A generic failure, a rate limit or a challenge: believed from the second read on, so a toast
+    // that flashes while the page is still working is not taken as the answer.
+    if ((kind === "refused" || (!f.email && CHALLENGE.test(f.text))) && i >= 1) return blocked(f, at);
   }
+  const kind = failureKind(f.text, before);
   const said = (f.text.match(REJECTED_LINE) ?? [""])[0].trim();
-  if (f.email && said) return { ok: false, at, state: "rejected", why: `${entry.label} would not take that email: "${said.slice(0, 80)}"` };
+  if (f.email && kind === "rejected" && said) return { ok: false, at, state: "rejected", why: `${entry.label} would not take that email: "${said.slice(0, 80)}"` };
+  if (kind === "refused" || (!f.email && !f.password && CHALLENGE.test(f.text))) return blocked(f, at);
   if (f.password && !f.email) return { ok: false, at, state: "password", why: `${entry.label} asked for a password rather than sending a code` };
+  // Nothing on the page says why, but the site answered the press with 403 / 429.
+  if (refusedStatus) return blocked(f, at);
   return { ok: false, at, state: "none", why: `${entry.label} did not show that it sent a code` };
+  }
 }
 
 /** Type the code into the site's box (one box, or split one-character boxes) and press its continue. */
@@ -322,7 +385,9 @@ export async function enterCode(page, code, { settleMs = 3000 } = {}) {
   // Many code boxes submit themselves on the last character; only press continue if still there.
   if (after.code) { const s = await read(page, "submit"); if (!s.did) await page.press('[data-reason-box="code"]', "Enter").catch(() => {}); }
   await wait(page, settleMs);
-  return { ok: true };
+  // The site saying the code is wrong or expired, on a page that still shows the code box.
+  const end = await read(page);
+  return { ok: true, wrong: end.code && WRONG_CODE.test(end.text) && !WRONG_CODE.test(f.text) };
 }
 
 /** Open the mailed link in the same browser — only ever on the site's own domains, https. */
@@ -381,10 +446,15 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
   jobs.set(conversationId, job);
   const id = `email:${conversationId}:${clock.now()}`;
   restartGate.hold(id, { kind: "signin_email", site: entry.site });
-  const finish = (text, state) => {
+  const startedAt = clock.now();
+  let route = "emailed_code";
+  // The one line every attempt leaves (src/signinlog.js): host, route, outcome class, timing.
+  const OUTCOME = { signed_in: "signed_in", blocked: "blocked_by_site", google_only: "no_email_route", no_mail: "code_not_found", no_reply: "abandoned", wrong_code: "wrong_code", rejected: "email_rejected", no_route: "no_email_route" };
+  const finish = (text, state, detail = "") => {
     job.done = true; job.state = state;
     restartGate.release(id);
     log({ signin_email: "ended", site: entry.site, state });
+    logAttempt(entry, { route, outcome: OUTCOME[state] ?? "failed", startedAt, detail });
     if (text) { try { tell(conversationId, text); } catch { /* the log still says */ } }
   };
   const run = (async () => {
@@ -398,8 +468,19 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       log({ signin_email: "requested", site: entry.site, ok: asked.ok, state: asked.state });
       if (!asked.ok) {
         const pw = asked.state === "password";
+        if (asked.state === "blocked") {
+          // The site refused Reason's browser. Written down with today's date so nothing tries again
+          // until it is old, and said as what it is: never a wrong email, never another address.
+          const kind = asked.detail === "wall_before_form" ? "walled" : "refuses_after_email";
+          findings.recordFinding(entry, { kind, why: asked.why });
+          const w = findings.blockedWords(entry, { kind }, { instead: !social.isFoodApp(entry.site) && social.wallInstead(entry).say ? social.wallInstead(entry) : null });
+          return finish(`the ${entry.label} email sign-in stopped: ${asked.why}. This is ${entry.label} blocking automated sign-in, NOT a wrong email. Nothing was saved. ${w.never} Say ONE honest line, like: "${w.say}" Then the best route left: ${w.instead}`, "blocked", asked.detail);
+        }
+        if (asked.state === "google_only") {
+          return finish(`the ${entry.label} email sign-in could not start: ${asked.why}. There is no route Reason's browser can take there, and a sign-in link would only walk them into Google's refusal, so do not send one. Say ONE honest line, like: "${entry.label} only lets you in with Google, and Google won't let my browser sign in, so I can't get into ${entry.label} for you." Then offer what is left: an answer from their mail if ${entry.label}'s notices are there (gmail_search), or them doing it in their own browser. Never say you will use or press their Google login.`, "google_only", "google_only");
+        }
         if (asked.state === "rejected") return finish(`the ${entry.label} email sign-in stopped: ${asked.why}. Nothing was saved. Ask them ONCE, in one plain line, which email their ${entry.label} account uses, then signin_email again with it. Never offer Google.`, "rejected");
-        return finish(`the ${entry.label} email sign-in could not ask for a code: ${asked.why}. Nothing was saved. Say it in ONE plain line${pw ? `, and offer the secure sign-in link (signin_link with site "${entry.site}", no provider) where they can type their ${entry.label} password themselves` : `, and offer the secure sign-in link (signin_link with site "${entry.site}", no provider)`}. Never offer Google.`, "failed");
+        return finish(`the ${entry.label} email sign-in could not ask for a code: ${asked.why}. Nothing was saved. Say it in ONE plain line${pw ? `, and offer the secure sign-in link (signin_link with site "${entry.site}", no provider) where they can type their ${entry.label} password themselves` : `, and offer the secure sign-in link (signin_link with site "${entry.site}", no provider)`}. Never offer Google.`, "no_route", pw ? "wants_password" : "no_email_box");
       }
       job.state = "waiting_mail";
       const mail = await gmail(conversationId, entry, { since: asked.at });
@@ -421,6 +502,7 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
         if (!code) return finish(`the ${entry.label} sign-in waited ${Math.round(replyWaitMs / 60_000)} minutes for the code and none came. Nothing was saved. Do not chase them about it; if they bring it up, offer to start again (signin_email).`, "no_reply");
         got = { kind: "code", code };
       }
+      if (got.kind === "link") route = "emailed_link";
       job.state = "entering";
       // Only into the site's own page (a mailed link is checked by openLink itself).
       if (got.kind !== "link" && !onSite(page, entry)) {
@@ -431,6 +513,7 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       const entered = got.kind === "link" ? await openLink(page, got.url, entry) : await enterCode(page, got.code);
       got = null; // the code is not kept a moment longer than it is needed
       if (!entered.ok) return finish(`the ${entry.label} sign-in got its code but could not use it: ${entered.why}. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link, no provider).`, "failed");
+      if (entered.wrong) return finish(`the ${entry.label} sign-in entered the code and ${entry.label} said the code was wrong or expired. Nothing was saved. Say it in ONE plain line and offer to start again (signin_email asks ${entry.label} for a fresh code). Do not ask them to re-send the same code.`, "wrong_code");
       await backOutOfProvider(page, entry, conversationId, log);
       const out = await check(page, conversationId, entry.site);
       const state = out?.ok === false ? "unknown" : out?.state ?? "unknown";

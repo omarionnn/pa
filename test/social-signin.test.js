@@ -187,7 +187,7 @@ test("the rules say what the spec says, line by line", () => {
   assert.match(r, /answer honestly .* say how to revoke/);
   assert.match(r, /Reading a sign-in code from their Gmail is for that one sign-in: signin_email reads only that site's code mail/);
   // Google appears only in the lines that forbid it or route it to signin_email
-  assert.ok(r.split("\n").filter(l => /Google/.test(l)).every(l => /NO GOOGLE|signin_email/.test(l)), "no line suggests Google");
+  assert.ok(r.split("\n").filter(l => /Google/.test(l)).every(l => /NO GOOGLE|signin_email|never say you will press or use their Google login/.test(l)), "no line suggests Google");
   // the jargon appears only inside the line that forbids it
   const jargon = r.match(/OAuth|social provider/g) ?? [];
   assert.equal(jargon.length, 2, "OAuth and social provider are named once each, in the never-say line");
@@ -203,7 +203,8 @@ test("the rules sit with the other sign-in rules in the prompt, and nowhere twic
 });
 
 test("the one-line expectation and the words, by provider", () => {
-  assert.equal(social.expectLine("google"), "Google will ping your phone. Tap Yes.");
+  assert.doesNotMatch(social.expectLine("google"), /ping your phone|Tap Yes/, "Google is never pressed, so nothing promises what Google will do");
+  assert.match(social.expectLine("google"), /Google won't let my browser sign in/);
   assert.match(social.expectLine("microsoft"), /Authenticator/);
   assert.match(social.expectLine("apple"), /code on your iPhone or Mac/);
   assert.equal(social.loginWords("google"), "your Google login");
