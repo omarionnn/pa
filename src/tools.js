@@ -60,6 +60,7 @@ import { checkCallForPaymentDetails, checkBriefForPaymentDetails } from "./calls
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
+import * as carryover from "./calls/carryover.js";
 import * as callOutcome from "./calls/outcome.js";
 import { settleGoal, goalPending } from "./calls/goalmet.js";
 import { endFieldsFor } from "./calls/metrics.js";
@@ -8367,21 +8368,27 @@ export function callEndFields(row, live) {
  */
 export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
   if (LIVE_STATES.includes(row.state)) return { queued: false, why: "still going" };
-  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail";
+  // Carry-over on for them: an answering machine is nobody too, and the phone rings once more before any text.
+  const carry = carryover.carryoverFor(conversationId);
+  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail" && !(carry && carryover.missedScheduled(row));
   if (reached) return { queued: false, why: "they picked up" };
+  const again = carryover.reringIfMissed(row, { log });
+  if (again) return { queued: false, why: "ringing once more", rering: again.timerId };
+  const twice = carry && carryover.isRering(row);
   const who = db.getAccount(conversationId);
   const address = who?.address && who.address !== "console" ? who.address : "";
   const channel = who?.channel && who.channel !== "console" ? who.channel : "";
   if (!address || !channel) return { queued: false, why: "no texting channel on this conversation" };
   if (!db.markMissedCallTold(row.id)) return { queued: false, why: "already told" };
-  const how = row.state === "voicemail" ? "it went to voicemail"
+  const how = carry && row.outcome_kind === "line_silent" ? "nobody came on the line"
+    : row.state === "voicemail" || (carry && SPOKE_TO_SOMETHING.includes(row.state)) ? "it went to voicemail"
     : row.state === "busy" ? "the line was busy"
       : ["no_answer", "declined"].includes(row.state) ? "you didn't pick up"
         : "the call didn't connect";
   const { row: queued } = db.enqueueOutbound({
     idemKey: `timer:${row.timer_id}:call_missed`,
     conversationId, channel, address,
-    body: `tried calling u just now — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}. so this is the text instead.`,
+    body: `tried calling u ${twice ? "twice" : "just now"} — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}${twice ? " both times" : ""}. so this is the text instead.`,
     toOwner: true, maxAttempts: config.outboxMaxAttempts,
   });
   log({ scheduled_call_missed: row.id, timer: row.timer_id, state: row.state, outbox: queued.id });
@@ -11649,6 +11656,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // "hey Omari, what's up?" on a call Reason placed about his photos).
       const because = toOwner ? String(input.opening ?? "").trim() || (scheduled ? input.goal : "") : "";
       let announcement = announcementFor({ ownerName: me.name, toOwner, because });
+      // No reason of its own to say: the plain greeting, fitted to the time of day (src/calls/carryover.js).
+      if (toOwner && !because) announcement = carryover.greetingFor({ conversationId: c, name: me.name, direction: "out" }) || announcement;
       // The goal is the model's words, and the provider refuses an owner greeting that reads like
       // the stranger line ("...a call for the airport" trips "call for"). The plain greeting then,
       // and the voice turn still knows why it rang (placedCallNote in src/calls/voice.js).
@@ -19337,3 +19346,6 @@ export async function roughPlaceFor(conversationId, ctx = {}, { now = clock.now(
   const geo = await (ctx.reverseGeocode ?? reverseGeocode)(last.latitude, last.longitude, { timeoutMs: 2500 }).catch(() => null);
   return [geo?.neighbourhood, geo?.city].filter(Boolean).join(", ");
 }
+
+// The settle's second look at a scheduled call, once how it went has been read (src/calls/carryover.js).
+carryover.setMissedTeller((conversationId, row, log) => queueMissedScheduledCall(conversationId, row, log));

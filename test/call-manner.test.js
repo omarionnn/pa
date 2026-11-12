@@ -451,3 +451,28 @@ test("CallTape.stop: keeps everything before the cut, nothing after, and Reason'
   assert.equal(t.seconds(), 1.5);
   assert.equal(t.wav().length, 44 + 12000 * 2);
 });
+
+test("manner OFF, call carry-over off / owner / on: a business call still opens with the disclosure and still honours an objection — for the owner and anyone else", async () => {
+  for (const carry of ["off", "owner", "on"]) {
+    Object.assign(config, { callManner: "off", callCarryover: carry });
+    for (const [conv, first] of [[C, "Omari"], [OTHER, "Ama"]]) {
+      const row = lineRow(conv);
+      let asked = 0;
+      const s = start({ row, objectionJudge: async () => { asked++; return true; } });
+      const line = manner.disclosureLine(first);
+      const ins = s.live.of("session.start")[0].session.instructions;
+      assert.ok(ins.includes(line), `carry=${carry} ${first}: the voice opens with it`);
+      assert.equal(gl.voiceInstructionsFor(row), ins);
+      assert.equal(db.getCall(conv, row.id).announcement, line, `carry=${carry} ${first}: the row's opening line`);
+      assert.match(ins, /rather not be recorded/);
+      for (const re of MANNER_ONLY) assert.doesNotMatch(ins, re);
+      assert.equal(s.call.manner, false);
+      assert.equal(s.call.longTurn(), false, "the long-turn wait is their own call's only");
+      s.live.emit({ type: "session.input_transcript.delta", delta: " Please don't record this." });
+      await s.timers.advance(2000);
+      assert.equal(asked, 1);
+      assert.equal(s.call.tape.stopped, true, `carry=${carry} ${first}: the objection stops the recording`);
+    }
+  }
+  config.callCarryover = "off";
+});
