@@ -18565,7 +18565,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "nearby_places": {
       const { nearbyPlaces } = await import("./places.js");
       const out = await nearbyPlaces(input.latitude, input.longitude, input.type, {
-        cuisine: input.cuisine, name: input.name, radius: input.radius,
+        cuisine: input.cuisine, name: input.name, radius: input.radius, fetchImpl: ctx.fetchImpl,
       });
       if (!out.ok) return out;
       return markOutside(out, {
