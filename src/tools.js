@@ -406,6 +406,7 @@ export function toolsFor(conversationId) {
   // Crossmint on: it is the only way to buy here, so AgentCard's buying tools go (src/shoptools.js).
   const crossmint = shopConnect.connectAllowedFor(conversationId);
   const bookingOk = flightbook.bookingEnabled(conversationId);
+  const namingOk = identity.oneIdentityFor(conversationId);
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
@@ -423,9 +424,20 @@ export function toolsFor(conversationId) {
     && cueToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
+    .map(t => (t.name === "remember" && namingOk ? rememberWithName(t) : t))
     .map(t => (t.name === "signin_link" && !social.socialAllowedFor(conversationId) ? plainSigninLink(t) : t))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+}
+
+// One identity (src/identity.js, REASON_ONE_IDENTITY): only a person the switch covers is told that
+// `remember` can keep a name for Reason. Everybody else is shown the tool exactly as it was before
+// (their prompt is cached on those bytes), and the dispatch refuses the kind for them too.
+const REMEMBER_KIND_NAMED = Object.freeze({ type: "string", enum: ["fact", "how_to_treat_me", "your_name"], description: "'fact' (default); 'how_to_treat_me' for a rule about how you behave with them, from their correction; 'your_name' when they give YOU a name or rename you ('call yourself Huey', 'i'm going to call you Huey'): the name alone in 'fact'." });
+function rememberWithName(t) {
+  const schema = t.input_schema;
+  if (!schema?.properties?.kind) return t;
+  return { ...t, input_schema: { ...schema, properties: { ...schema.properties, kind: REMEMBER_KIND_NAMED } } };
 }
 
 // Action Cards (src/actioncards.js, src/actionengine.js, REASON_ACTION_CARDS): the two card tools are
@@ -3797,7 +3809,7 @@ export const tools = [
           enum: ["they_said", "i_saw_it_in_a_photo", "i_worked_it_out"],
           description: "Where this came from. 'they_said' means somebody said it to you in words, which is the only kind of thing that gets saved. The other two are refused on purpose: say what you think in the conversation instead, or ask, and save their answer.",
         },
-        kind: { type: "string", enum: ["fact", "how_to_treat_me", "your_name"], description: "'fact' (default); 'how_to_treat_me' for a rule about how you behave with them, from their correction; 'your_name' when they give YOU a name or rename you ('call yourself Huey', 'i'm going to call you Huey'): the name alone in 'fact'." },
+        kind: { type: "string", enum: ["fact", "how_to_treat_me"], description: "'fact' (default), or 'how_to_treat_me' for a rule about how you behave with them, from their correction." },
         why: { type: "string", description: "how_to_treat_me only: what the rule came from, in a few words ('said a 7am text was too early')." },
       },
       required: ["about", "fact"],
@@ -10663,6 +10675,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // The name they gave their Reason (src/identity.js): kept on their account on their own word,
       // and — where REASON_ONE_IDENTITY covers them — said on every surface from the next turn on.
       if (input.kind === "your_name") {
+        // Off for this person: nothing is written, exactly as before the switch existed.
+        if (!identity.oneIdentityFor(c)) return { ok: false, refused: "not_saved", error: "Nothing was saved: 'kind' is 'fact' or 'how_to_treat_me' here." };
         const set = identity.setGivenName(c, input.fact);
         if (!set.ok) return { ok: false, refused: "not_saved", error: set.error };
         return {

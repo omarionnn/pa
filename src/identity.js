@@ -40,8 +40,22 @@ export function oneIdentityFor(conversationId) {
 export function givenName(conversationId) {
   if (!conversationId) return "";
   let n = "";
-  try { n = String(db.getAccount(conversationId)?.contact_card_name ?? "").trim(); } catch { return ""; }
+  try { n = promptName(db.getAccount(conversationId)?.contact_card_name); } catch { return ""; }
   return n && n.toLowerCase() !== DEFAULT_CARD_NAME.toLowerCase() ? n : "";
+}
+
+/**
+ * A stored name made safe to sit inside a prompt, whoever wrote the row (the first chat and the web
+ * setup write this column too, without this file's checks): one line, no control or invisible
+ * characters, no quotes or brackets that could close the sentence it is quoted in, at most four
+ * words and 40 characters. "" when nothing is left.
+ */
+export function promptName(raw) {
+  const typed = String(raw ?? "").trim();
+  if (!typed) return "";
+  // cardName answers "Reason" for a name with nothing left in it, which givenName reads as none.
+  const n = cardName(typed.replace(/["“”„«»\\[\]{}|]/g, " ")).split(" ").slice(0, 4).join(" ").trim();
+  return n;
 }
 
 /** What Reason goes by with this person: their name for it when the switch covers them, else "Reason". */
@@ -58,7 +72,7 @@ export function setGivenName(conversationId, raw) {
   if (!typed) return { ok: false, error: "Nothing was saved: the name goes in 'fact', on its own." };
   if (typed.split(/\s+/).length > 4) return { ok: false, error: "Nothing was saved: 'fact' must be the name alone (a word or two), not a sentence." };
   const was = givenName(conversationId);
-  const name = cardName(typed);
+  const name = promptName(typed);
   const set = db.setContactCardName(conversationId, name);
   if (!set) return { ok: false, error: "Nothing was saved: there is no account here to keep it on." };
   return { ok: true, name, was, used: oneIdentityFor(conversationId) };
