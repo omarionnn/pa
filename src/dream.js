@@ -232,6 +232,13 @@ export function inDreamHour(at, tz) {
   return h >= DREAM_HOUR && h < DREAM_HOUR + DREAM_WINDOW_H;
 }
 
+/** When today's window closed where they are (only asked after it has: no clock change falls between). */
+function windowClosedAt(at, tz) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", second: "numeric", hour12: false })
+    .formatToParts(new Date(at)).map(x => [x.type, Number(x.value)]));
+  return at - (((p.hour % 24) - (DREAM_HOUR + DREAM_WINDOW_H)) * 3600_000 + p.minute * 60_000 + p.second * 1000);
+}
+
 /** Why the review cannot ask a model right now, or null when it can. Never the API. */
 export function whyNot() {
   if (!onCli()) return "not_on_cli";
@@ -274,7 +281,11 @@ export function sweepDreams({ now = clock.now(), log = () => {}, queue = backgro
         if (sinceAsk < CATCHUP_GAP_MS || uptimeMs < CATCHUP_SETTLE_MS || out.caught_up >= CATCHUP_PER_SWEEP) continue;
       } else if (sinceAsk < RETRY_GAP_MS) continue;
       if (db.memoryReviewPassesOn(c, day) >= MAX_PASSES_PER_DAY) continue;
-      if (!db.hasEventsSince(c, state.last_event_id, { calls: reviewCallsFor(c) })) continue;
+      // A night is only "missed" if there was something to read when its window closed. Somebody who
+      // had said nothing by then and texts at noon is read tonight, as always: not one more pass, in
+      // the middle of their day, for every person every day.
+      const before = late && !unfinished ? windowClosedAt(now, tz) : null;
+      if (!db.hasEventsSince(c, state.last_event_id, { calls: reviewCallsFor(c), before })) continue;
       // Written before the model is asked: a restart mid-pass finds it and waits its turn.
       try { db.noteMemoryReviewAttempt(c, now); } catch { continue; }
       reviewing.add(c);

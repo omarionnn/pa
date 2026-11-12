@@ -14311,10 +14311,11 @@ export function markPatternPass(conversationId, at = clock.now()) {
 export const saidOnOwnCall = (alias) => `(${alias}.role = 'call_user' AND ${alias}.channel = 'call' AND EXISTS (SELECT 1 FROM calls k
   WHERE k.id = CAST(${alias}.message_id AS INTEGER) AND k.conversation_id = ${alias}.conversation_id AND k.is_owner = 1))`;
 
-/** Has anything been said since `afterId`? One indexed query. `calls`: what they said on their own calls counts too. */
-export function hasEventsSince(conversationId, afterId = 0, { calls = false } = {}) {
-  return !!db.prepare(`SELECT 1 FROM event_log e WHERE e.conversation_id = ? AND e.id > ? AND (e.role = 'user'${calls ? ` OR ${saidOnOwnCall("e")}` : ""}) LIMIT 1`)
-    .get(conversationId, Number(afterId) || 0);
+/** Has anything been said since `afterId`? One indexed query. `calls`: what they said on their own calls counts too. `before`: only what was said before that time. */
+export function hasEventsSince(conversationId, afterId = 0, { calls = false, before = null } = {}) {
+  const until = Number.isFinite(before) ? " AND e.at < ?" : "";
+  return !!db.prepare(`SELECT 1 FROM event_log e WHERE e.conversation_id = ? AND e.id > ?${until} AND (e.role = 'user'${calls ? ` OR ${saidOnOwnCall("e")}` : ""}) LIMIT 1`)
+    .get(...[conversationId, Number(afterId) || 0, ...(until ? [before] : [])]);
 }
 
 /**

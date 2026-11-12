@@ -122,6 +122,21 @@ test("(2) a missed window is caught up later the same day, once", async () => {
   assert.equal(asks, 1);
 });
 
+test("(2a) nothing said by the end of the window is no missed night: a text at noon waits for tonight", async () => {
+  // Reviewed two nights ago, silent since; then one text at 11am today (after the 4-7am window).
+  say(K, "user", "an old thing", NIGHT - 3 * DAY);
+  await dream.reviewOne(K, { now: NIGHT - 2 * DAY, rebuild: noRebuild, ask: async () => ({ value: empty }) });
+  say(K, "user", "what's the weather", NOON - 3600_000);
+  let asks = 0;
+  dream.setDreamAsk(async () => { asks++; return { value: empty }; });
+  assert.equal((await sweep(NOON)).queued, 0, "not reviewed in the middle of their day");
+  assert.equal((await sweep(NOON + 8 * 3600_000)).queued, 0, "nor that evening");
+  assert.equal(asks, 0);
+  // Tonight's window reads it.
+  assert.equal((await sweep(NIGHT + DAY)).queued, 1);
+  assert.equal(asks, 1);
+});
+
 test("(2b) before tonight's hour nothing is due", async () => {
   say(K, "user", "hello there", NIGHT - 3 * 3600_000);
   dream.setDreamAsk(async () => ({ value: empty }));
