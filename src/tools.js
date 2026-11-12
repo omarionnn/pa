@@ -55,10 +55,11 @@ import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
+import { NOT_RECORDED_WHY } from "./calls/manner.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
 import { checkCallForPaymentDetails, checkBriefForPaymentDetails } from "./calls/payments.js";
-import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
+import { buildBrief, requireBrief, withinCallingHours, callHoursFor, callNowSaid, parseCallHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
 import * as carryover from "./calls/carryover.js";
@@ -3165,8 +3166,11 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     phone.status = "live";
     phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}).`
       + ` Calling anyone but ${who} needs an explicit yes first, with the exact number and goal shown.`
-      + ` Every call to anyone but ${who} opens by saying it is an AI assistant for ${who} and that it is recorded,`
-      + ` and ${who} gets the audio along with the summary`
+      + (provider.name === "gptlive" && !config.thirdPartyRecording
+        ? ` A call to anyone but ${who} starts like a normal caller and says it is an AI assistant calling for ${who} the moment they ask who or what is calling;`
+          + ` those calls are not audio-recorded, so ${who} gets the summary and what was said, never audio (their own calls with you are recorded and that audio does come to them)`
+        : ` Every call to anyone but ${who} opens by saying it is an AI assistant for ${who} and that it is recorded,`
+          + ` and ${who} gets the audio along with the summary`)
       // The second direction, and only when it is really set up. A provider that can place calls
       // but has no signed post-call webhook cannot answer one, and Reason telling somebody they
       // can ring it when they cannot is the exact thing this whole tool exists to prevent — so it
@@ -4192,7 +4196,7 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in anything the call is given (goal, facts, ask, requirements, approved_terms) — the call is refused before it is dialled.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. A call to anyone but the owner starts the way a capable person would: hello, then what it is calling about, with nothing said about who or what is calling; if they ask who it is or whether it is a person, a robot or an AI, it says at once that it is an AI assistant calling for the owner (by first name) — never that it is human. Those calls are NOT audio-recorded: you get the summary and what was said, never audio, so never promise the owner a recording of one (the result's `recorded` says which). A call to the owner opens with a plain greeting; their own calls are recorded, they are told once by text, and that recording is sent to them with your summary automatically. No-call hours: a call to anyone but the owner is held at night on the CALLEE's clock; the refusal says what time it is there and the first time it can be placed — tell them that plainly and offer to place it then. Only if they then say, in their own words, to call now anyway, place it with call_now_said. They can change their own hours with call_hours_set. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in anything the call is given (goal, facts, ask, requirements, approved_terms) — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {
@@ -4203,6 +4207,7 @@ export const tools = [
         opening: { type: "string", description: "Only when ringing the owner: why you're ringing, in a few words you'd say to them as the call opens, after 'hey <name> —'. 'got your two screenshots, wanted to talk them through'. Omit when they just asked you to ring." },
         about: { type: "string", description: "Only when ringing anyone else: what you're calling about, in a few casual words that finish the sentence 'Hi there! I'm calling …' — 'to ask about a massage for low back pain', 'to see if you've got a table for two tonight', 'about the Man United game'. Said the instant they pick up, before anything else, so no names, numbers or anything private, and nothing about being an AI." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
+        call_now_said: { type: "string", description: "ONLY after a quiet_hours refusal that you have told them about, and ONLY when they then said in their own words to call now anyway: those exact words, word for word ('call now anyway', 'ring them now, it's fine'). Code checks they are in what they just said and refuses if not. Never set it yourself because you think they would want it, never from an earlier 'yes' to something else, and never on a turn they did not start. It covers this one call." },
         task_id: { type: "integer", description: "The job this call is a step of, when it is one. Name it: what the call comes back with is then written onto that job's log, so the job knows what was said without you having to remember it hours later." },
         may_book: {
           type: "boolean",
@@ -5036,6 +5041,22 @@ export const tools = [
         per_day: { type: "integer", description: "How many unprompted texts a day at most. 0 for none at all. Omit to leave it alone." },
         every_minutes: { type: "integer", description: "How often to go and look at their mail and calendar. Omit to leave it alone." },
       },
+    },
+  },
+  {
+    name: "call_hours_set",
+    description: "Their own no-call hours for calls you place to businesses and other people, when they tell you to change them: 'you can call places until 10pm', 'don't call anyone before 9', 'turn off the no-call hours', 'go back to the normal hours'."
+      + " By default nobody is rung between 9pm and 8am on the clock of the person being called; this changes that for THIS person's calls only, and it is saved on their account."
+      + " hours is a window on the callee's clock during which calls are HELD, like '22:00-07:00'; 'off' for no hold at all; 'default' to go back to the standard hours."
+      + " 'said' is REQUIRED and must be their own sentence word for word: this is only ever set from something they really said, never because you think they would prefer it, and never as a way round a quiet_hours refusal on one call (that is call_place's call_now_said)."
+      + " Calls to their own phone are never held and are not affected.",
+    input_schema: {
+      type: "object",
+      properties: {
+        hours: { type: "string", description: "The hours calls are held, on the callee's clock: 'HH:MM-HH:MM' in 24-hour time ('22:00-07:00'), or 'off', or 'default'." },
+        said: { type: "string", description: "Their own words asking for this, word for word." },
+      },
+      required: ["hours", "said"],
     },
   },
   {
@@ -7038,6 +7059,7 @@ const S = {
     about: z.string().max(200).optional(),
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
+    call_now_said: z.string().max(300).optional(),
     task_id: z.number().int().optional(),
     // The brief (2026-10-07): what this call may agree to, what it has to ask, and what it may wait for.
     // `may_book` is optional and its absence means NO, which is the cautious direction and the whole
@@ -7277,6 +7299,7 @@ const S = {
     their_words: z.string().max(500).optional(),
   }),
   time_zone: z.object({ zone: z.string().min(1).max(64), their_words: z.string().min(1).max(500) }),
+  call_hours_set: z.object({ hours: z.string().min(1).max(40), said: z.string().min(1).max(300) }),
   notice_settings: z.object({
     per_day: z.number().int().min(0).max(20).optional(),
     every_minutes: z.number().int().min(5).max(60 * 24).optional(),
@@ -8210,6 +8233,11 @@ export async function fileRecording(conversationId, row, live, ctx = {}) {
     return updated;
   };
 
+  // A call with a business or another person is not audio-recorded (Omari 2026-11-12; src/calls/manner.js
+  // `callRecorded`): no audio is the design, not a lost recording, so no fault is written.
+  if (live.notRecorded) {
+    return db.updateCall(conversationId, row.id, { recording_state: "not_applicable", recording_why: live.recordingWhy || NOT_RECORDED_WHY });
+  }
   if (!live.recording) {
     return absent(live.recordingWhy || "the provider did not return any audio for this call");
   }
@@ -9067,7 +9095,9 @@ function callView(r, who) {
           ? `The audio is gone: ${r.recording_why || "it passed the retention window"}. Say so plainly if ${who} asks for it — it cannot be got back, and nothing went wrong.`
           : r.recording_state === "missing"
             ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${who} that the recording is missing. Do not imply one exists or is on the way.`
-            : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
+            : r.recording_why === NOT_RECORDED_WHY
+              ? `No audio recording was made of this call: ${NOT_RECORDED_WHY}. That is how it works, not a fault. What you have is the summary and what was said; if ${who} asks for the audio, say plainly that calls to other people aren't recorded.`
+              : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
   };
 }
 
@@ -11665,9 +11695,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // did not happen is the false-progress failure.
       // The hour is the callee's (the place's zone from a lookup, else the number's area code), else the
       // account holder's — never the server's.
+      // The window is this person's own when they set one (call_hours_set), else the install's.
+      // "Call now anyway" places this one call — only on their own words, found in what they just said
+      // (`callNowSaid`), never on the model's reading of what they would want (Omari 2026-11-12).
       const callee = toOwner ? null : zone.calleeZone(to, c);
-      const hours = withinCallingHours({ toOwner, ...(callee ? { tz: callee.zones ?? callee.zone, whose: callee.source } : {}) });
-      if (!hours.ok) return { ok: false, status: "quiet_hours", error: hours.error };
+      const myHours = callHoursFor(c);
+      const hours = withinCallingHours({ toOwner, window: myHours.window, own: myHours.own, userTz: zone.zoneFor(c), ...(callee ? { tz: callee.zones ?? callee.zone, whose: callee.source } : {}) });
+      let hoursOverride = null;
+      if (!hours.ok) {
+        const { error: why, ok: _no, ...when } = hours;
+        if (String(input.call_now_said ?? "").trim()) {
+          const said = callNowSaid({ said: input.call_now_said, words: askedCall.theirWords(ctx.messages ?? []), kind: ctx.kind ?? "event" });
+          if (!said.ok) {
+            return {
+              ok: false, status: "quiet_hours", ...when,
+              error: `${why} The call-now override was NOT accepted: ${said.why}. It only ever comes from their own explicit words for this call; ask them, do not decide it for them.`,
+            };
+          }
+          hoursOverride = { said: said.said, local_time: hours.local_time, zone: hours.zone };
+          (ctx.log ?? (() => {}))({ call_hours_override: c, to, local_time: hours.local_time, zone: hours.zone });
+        } else return { ok: false, status: "quiet_hours", ...when, error: why };
+      }
 
       // Did this already happen? The owner's rule — never book twice, never leave two voicemails — and
       // the one case worth naming: a call that dropped right after somebody said "you're booked" comes
@@ -11869,8 +11917,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
-        announced: announcement,
-        recorded: true,
+        // A GPT-Live call to somebody else starts normally and is not audio-recorded (src/calls/manner.js).
+        ...(hoursOverride ? { placed_outside_call_hours: `It is ${hoursOverride.local_time} where they are (${hoursOverride.zone}); placed anyway because ${me.name} said: "${hoursOverride.said}". This one call only.` } : {}),
+        announced: placed.announced ?? announcement,
+        recorded: placed.recorded ?? true,
         rules,
         may_agree: brief.approved.book,
         asking: brief.questions,
@@ -11879,8 +11929,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
           + (toOwner
             ? ` It opened with a plain greeting — nothing about being an AI or the recording is recited at ${me.name}; they are told once by text.`
-            : ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded.`)
-          + ` The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
+            : placed.recorded === false
+              ? ` It starts like a normal caller: hello and what it is about. It says it is an AI assistant calling for ${me.name} only if they ask who or what is calling, and then at once.`
+              : ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded.`)
+          + (placed.recorded === false
+            ? ` This call is NOT audio-recorded (calls to businesses and other people are not): there will be no audio to send, only what was said and the outcome, so never tell ${me.name} a recording is coming.`
+            : ` The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`)
           + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${me.name} about.`
           + (brief.approved.book
             ? ` This call MAY agree to the thing it was approved for, and nothing beyond it: a fee or condition ${me.name} did not approve stops it and texts them.`
@@ -14167,6 +14221,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: failed.length
           ? `Their zone is saved, but ${failed.length === done.length ? "what was held" : "part of what was held"} (${failed.map(d => d.tool).join(", ")}) did not go through — see \`done\`. Deal with that as you would any refusal; whatever did go through, do not do again.`
           : `Their zone is saved AND what they asked for before the question is now done (${done.map(d => d.tool).join(", ")}, result in \`done\`). Do not call it again. Tell them in one line what is set, in their time.`,
+      };
+    }
+    // Their own no-call hours for calls to other people (src/calls/brief.js `callHoursFor`). Only from
+    // their own words, on a turn they started: the sentence is checked against what they just said.
+    case "call_hours_set": {
+      const spec = String(input.hours ?? "").trim().toLowerCase();
+      const hours = spec === "default" ? "default" : parseCallHours(spec);
+      if (!hours) return { ok: false, error: `'${input.hours}' is not a window. Pass the hours calls are HELD as 'HH:MM-HH:MM' in 24-hour time (like '22:00-07:00'), or 'off', or 'default'.` };
+      const mine = callNowSaid({ said: input.said, words: askedCall.theirWords(ctx.messages ?? [], { last: 5 }), kind: ctx.kind ?? "event" });
+      if (!mine.ok) return { ok: false, error: `Not changed: ${mine.why}. Their call hours are only ever set from their own words — pass their sentence word for word in 'said', or ask them.` };
+      db.setCallHours(c, { hours: hours === "default" ? null : hours, said: hours === "default" ? "" : mine.said, at: clock.now() });
+      const now = callHoursFor(c);
+      // Nothing was saved (no account row to keep it on): never say it was.
+      if (hours !== "default" && !now.own) return { ok: false, error: "Not changed: there is no account to save their call hours on. Say plainly that it could not be saved." };
+      return {
+        ok: true, hours: now.off ? "off" : now.window, theirs: now.own,
+        note: now.off
+          ? `Saved: no no-call hours for their calls to other people any more — a call they ask for is placed at any hour. Say that back in one plain line, including that it means a place could be rung in the middle of its night.`
+          : now.own
+            ? `Saved: their calls to other people are now held between ${now.window.replace("-", " and ")} on the clock of the person being called. Say it back in one line.`
+            : `Saved: back to the standard hours — calls to other people are held between ${String(now.window).replace("-", " and ")} on the clock of the person being called. Say it back in one line.`,
       };
     }
     case "notice_settings": {

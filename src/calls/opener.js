@@ -10,10 +10,10 @@
 // plays it as soon as their hello ends — or ~0.6 s into a silent line — while the live voice connects.
 // The live voice is told what was said, so it never says it again (src/calls/gptlive.js `playOpener`).
 //
-// The words follow the business-call identity rules (gptlive.js `lineTalkInstructions`, Omari
-// 2026-10-31): a normal person calling, no "I'm an AI" and no "calling for <name>" unless asked; the
-// recording line only where the law wants it (./consent.js). What it is calling about is the model's
-// own few words (call_place `about`), never parsed out of the goal by code.
+// The words follow the business-call rules (gptlive.js `lineTalkInstructions`, Omari 2026-11-12): a
+// normal person calling, no "I'm an AI" and no "calling for <name>" unless asked; a recording notice
+// in front only on a call that is recorded (./manner.js `RECORDING_NOTICE_LINE`). What it is calling
+// about is the model's own few words (call_place `about`), never parsed out of the goal by code.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -51,7 +51,7 @@ export function openerText({ about = "", notice = false, disclose = "" } = {}) {
   a = a.replace(/^(?:hi( there)?[,!.]?\s*)?(?:i'?m|i am)\s+calling\s+/i, "");
   // Payment details are never said, even from a row the pre-dial screen did not see: hello only.
   if (a.length > 140 || /[[\]{}<>]|https?:|@/.test(a) || findPaymentDetails(a).length) a = "";
-  // The call manner (./manner.js `disclosureLine`): "Hi there, this is Reason, an AI assistant calling for …".
+  // `disclose`: the recording notice, only on a recorded call (./manner.js `RECORDING_NOTICE_LINE`).
   const hello = disclose ? String(disclose).trim() : notice ? "Hi there — just so you know, this call's recorded." : "Hi there!";
   if (!a) return { text: hello, kind: "hello" };
   return { text: `${hello} I'm calling ${a}.`, kind: "about" };

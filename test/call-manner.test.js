@@ -1,7 +1,9 @@
 // The call manner (Omari's call voice spec, 2026-11-11; src/calls/manner.js), REASON_CALL_MANNER off|owner|on.
 // Both directions: their own call (the voice's prompt, Reason's call turn, a soft line by ~3 s of quiet)
-// and a call to a business (says it's Reason, an AI, may be recorded; an objection stops the recording and
-// nothing after it is kept). No network: voice, Twilio and the judges are stand-ins.
+// and a call to a business that IS recorded (REASON_THIRDPARTY_RECORDING=on, which this file runs under:
+// told at the start it may be recorded; an objection stops the recording and nothing after it is kept).
+// Since 2026-11-12 the default is no notice and no audio at all: test/call-plain-open.test.js.
+// No network: voice, Twilio and the judges are stand-ins.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,7 +27,7 @@ const opener = await import("../src/calls/opener.js");
 const voice = await import("../src/calls/voice.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
-const { announcementFor } = await import("../src/calls/provider.js");
+const NOTICE = "Hi there — just so you know, this call may be recorded.";
 
 const C = config.ownerConversation;
 const OTHER = "sendblue:+13105550000";
@@ -39,7 +41,7 @@ beforeEach(() => {
   db.saveConversation(OTHER, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari Test", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { callManner: "owner", lineTalk: true, callIdentity: false, callVoice: "gptlive", thirdPartyVoice: "owner", callCacheWarm: false, callHearing: true, pickupOpener: false, ...TWILIO });
+  Object.assign(config, { callManner: "owner", lineTalk: true, callIdentity: false, callVoice: "gptlive", thirdPartyVoice: "owner", callCacheWarm: false, callHearing: true, pickupOpener: false, thirdPartyRecording: true, ...TWILIO });
 });
 
 function fakeTimers() {
@@ -91,7 +93,7 @@ const ownRow = (conv = C) => db.createCall(conv, { provider: "gptlive", toNumber
 const lineRow = (conv = C) => {
   const row = db.createCall(conv, {
     provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "ask whether they have a table for two at 7 tonight",
-    facts: [], announcement: gl.lineAnnouncement(announcementFor({ ownerName: "Omari" })), state: "placing",
+    facts: [], announcement: gl.lineAnnouncement(), state: "placing",
   });
   db.updateCall(row.conversation_id, row.id, { opening_waits: 1 });
   return db.getCall(row.conversation_id, row.id);
@@ -208,32 +210,33 @@ test("own call silence: flag off keeps the old 7.5 s late line", async () => {
 
 // ---------- a business call ----------
 
-test("business opener: 'Hi there, this is Reason, an AI assistant calling for <first name>. … may be recorded.' — clip, voice and Reason's turn", () => {
-  assert.equal(manner.disclosureLine("Omari Test"), "Hi there, this is Reason, an AI assistant calling for Omari. Just so you know, this call may be recorded.");
-  const clip = opener.openerText({ about: "to ask about a table for two", disclose: manner.disclosureLine("Omari") });
-  assert.equal(clip.text, "Hi there, this is Reason, an AI assistant calling for Omari. Just so you know, this call may be recorded. I'm calling to ask about a table for two.");
-  assert.equal(opener.openerText({ about: "to ask" }).text, "Hi there! I'm calling to ask.", "off: as before");
-  const on = gl.lineTalkInstructions({ name: "Omari Test", named: true, goal: "a table", manner: true });
-  assert.ok(on.includes(manner.disclosureLine("Omari")));
-  assert.doesNotMatch(on, /Don't open by saying you're an AI/);
+test("recorded business call: the notice is 'Hi there — just so you know, this call may be recorded.' — no AI-assistant intro — clip, voice and Reason's turn", () => {
+  assert.equal(manner.RECORDING_NOTICE_LINE, NOTICE);
+  const clip = opener.openerText({ about: "to ask about a table for two", disclose: NOTICE });
+  assert.equal(clip.text, "Hi there — just so you know, this call may be recorded. I'm calling to ask about a table for two.");
+  assert.equal(opener.openerText({ about: "to ask" }).text, "Hi there! I'm calling to ask.", "not recorded: a plain hello");
+  const on = gl.lineTalkInstructions({ name: "Omari Test", named: true, goal: "a table", manner: true, disclose: true });
+  assert.match(on, /just so you know, this call may be recorded/);
+  assert.doesNotMatch(on, /this is Reason, an AI assistant calling for/);
   assert.match(on, /one notch more polite/);
   assert.match(on, /No jokes unless they joke first/);
   assert.match(on, /never agree to a charge, deposit or commitment Omari hasn't approved/);
   assert.match(on, /rather not be recorded/);
   const off = gl.lineTalkInstructions({ name: "Omari Test", named: true, goal: "a table" });
-  assert.match(off, /Don't open by saying you're an AI/);
+  assert.match(off, /don't open by saying you're an AI/);
+  assert.doesNotMatch(off, /rather not be recorded/);
   const frame = prompt.thirdPartyFrame({ ownerName: "Omari Test", goal: "a table", rules: ["r"], manner: true });
   assert.match(frame, /one notch more polite/);
   assert.doesNotMatch(prompt.thirdPartyFrame({ ownerName: "Omari Test", goal: "a table", rules: ["r"] }), /one notch more polite/);
 });
 
-test("business call: the row's opening line is the disclosure, even in a one-party state — every account, not only the flag's (flag=owner)", () => {
+test("recorded business call: the row's opening line is the recording notice, even in a one-party state — every account, not only the flag's (flag=owner)", () => {
   const s = start({ row: lineRow(C) });
   assert.equal(s.call.notice.notice, true);
-  assert.equal(s.call.call.announcement, manner.disclosureLine("Omari"));
-  assert.equal(db.getCall(C, s.call.call.id).announcement, manner.disclosureLine("Omari"));
+  assert.equal(s.call.call.announcement, NOTICE);
+  assert.equal(db.getCall(C, s.call.call.id).announcement, NOTICE);
   const o = start({ row: lineRow(OTHER) });
-  assert.equal(o.call.call.announcement, manner.disclosureLine("Ama"));
+  assert.equal(o.call.call.announcement, NOTICE);
   assert.equal(o.call.manner, false, "the manner itself stays the flag's");
 });
 
@@ -281,19 +284,18 @@ test("business call: a read that can't be made fails closed (the voice may have 
 
 const MANNER_ONLY = [/one notch more polite/, /No jokes unless they joke first/, /corporate assistant voice/, /Wit: a dry one-liner/, /say in a few words what happens next/, /A light, natural filler/];
 
-test("manner OFF, a call Reason places to a business: opens with the AI + may-be-recorded disclosure, for every account — voice, row, Reason's turn, the pickup clip", () => {
+test("manner OFF, a recorded call Reason places to a business: opens with the may-be-recorded notice (no AI intro), for every account — voice, row, Reason's turn, the pickup clip", () => {
   config.callManner = "off";
   for (const [conv, first] of [[C, "Omari"], [OTHER, "Ama"]]) {
     const row = lineRow(conv);
     assert.equal(manner.mannerFor(conv), false);
     const s = start({ row });
-    const line = manner.disclosureLine(first);
-    assert.equal(line, `Hi there, this is Reason, an AI assistant calling for ${first}. Just so you know, this call may be recorded.`);
+    const line = NOTICE;
     // The voice that talks.
     const ins = s.live.of("session.start")[0].session.instructions;
-    assert.ok(ins.includes(line), "the voice is told to say it in its first reply");
-    assert.doesNotMatch(ins, /Don't open by saying you're an AI/);
-    assert.doesNotMatch(ins, /Don't bring up that the call is recorded/);
+    assert.match(ins, /just so you know, this call may be recorded/, "the voice is told to say it in its first reply");
+    assert.doesNotMatch(ins, /this is Reason, an AI assistant calling for/);
+    assert.ok(ins.includes(manner.askedLine(first)));
     assert.match(ins, /rather not be recorded/);
     assert.match(ins, new RegExp(`Never say you are ${first}`));
     assert.equal(gl.voiceInstructionsFor(row), ins, "a session opened ahead of the call gets the same words");
@@ -309,8 +311,8 @@ test("manner OFF, a call Reason places to a business: opens with the AI + may-be
     assert.match(ins, /Never read out links, codes, IDs/);
   }
   // Reason's call turn: told an objection is honoured where code stops the recording, and no manner lines.
-  const frame = prompt.thirdPartyFrame({ ownerName: "Ama", goal: "a table", rules: ["r"], announcement: manner.disclosureLine("Ama"), openingOwed: true, recordingOff: true });
-  assert.ok(frame.includes(manner.disclosureLine("Ama")));
+  const frame = prompt.thirdPartyFrame({ ownerName: "Ama", goal: "a table", rules: ["r"], announcement: NOTICE, openingOwed: true, recordingOff: true });
+  assert.ok(frame.includes(NOTICE));
   assert.match(frame, /rather not be recorded/);
   for (const re of MANNER_ONLY) assert.doesNotMatch(frame, re);
   assert.doesNotMatch(prompt.thirdPartyFrame({ ownerName: "Ama", goal: "a table", rules: ["r"] }), /rather not be recorded/, "never promised where code can't stop it");
@@ -321,7 +323,7 @@ test("manner OFF, a business call that never said it: the voice is told to — i
   const s = start({ row: lineRow(OTHER) });
   s.call.notice && s.call.checkNotice();
   const nudge = s.live.of("session.instructions.append").at(-1);
-  assert.ok(nudge.content.includes(manner.disclosureLine("Ama")));
+  assert.match(nudge.content, /just so you know, this call may be recorded/);
 });
 
 test("manner OFF, a business objects to the recording: it stops, nothing after their words is kept, the voice is told it's off", async () => {
@@ -418,7 +420,6 @@ test("business call: reads are one at a time; the voice's own 'I'll turn it off'
 });
 
 test("prompts (cold review): no-name opener, business turn keeps the plain rules, codes said in groups, recording line only where code stops it", () => {
-  assert.equal(manner.disclosureLine(""), "Hi there, this is Reason, an AI assistant. Just so you know, this call may be recorded.");
   const rules = prompt.voiceRules({ manner: true });
   assert.doesNotMatch(rules, /or a code out loud/);
   assert.match(rules, /small groups/);
@@ -459,9 +460,9 @@ test("manner OFF, call carry-over off / owner / on: a business call still opens 
       const row = lineRow(conv);
       let asked = 0;
       const s = start({ row, objectionJudge: async () => { asked++; return true; } });
-      const line = manner.disclosureLine(first);
+      const line = NOTICE;
       const ins = s.live.of("session.start")[0].session.instructions;
-      assert.ok(ins.includes(line), `carry=${carry} ${first}: the voice opens with it`);
+      assert.match(ins, /just so you know, this call may be recorded/, `carry=${carry} ${first}: the voice opens with it`);
       assert.equal(gl.voiceInstructionsFor(row), ins);
       assert.equal(db.getCall(conv, row.id).announcement, line, `carry=${carry} ${first}: the row's opening line`);
       assert.match(ins, /rather not be recorded/);
@@ -482,12 +483,12 @@ test("manner OFF, call carry-over off / owner / on: a business call still opens 
 const ringBackRow = (conv = OTHER) => {
   const row = db.createCall(conv, {
     provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "They are ringing back about: a table for two at 7 tonight",
-    facts: [], announcement: gl.lineAnnouncement(announcementFor({ ownerName: conv === C ? "Omari" : "Ama" })), state: "in_progress", direction: "in",
+    facts: [], announcement: gl.lineAnnouncement(), state: "in_progress", direction: "in",
   });
   return db.getCall(row.conversation_id, row.id);
 };
 
-test("a place ringing back hears the disclosure, and its objection to the recording is honoured: it stops, nothing after their words is kept (manner off, any account)", async () => {
+test("a recorded ring-back hears the recording notice, and its objection to the recording is honoured: it stops, nothing after their words is kept (manner off, any account)", async () => {
   config.callManner = "off";
   for (const conv of [C, OTHER]) {
     const row = ringBackRow(conv);
@@ -495,7 +496,7 @@ test("a place ringing back hears the disclosure, and its objection to the record
     const reads = [];
     const s = start({ row, objectionJudge: async (t) => { reads.push(t); return /don't record/.test(t); } });
     assert.equal(s.call.talk, false, "a ring-back keeps the puppet line");
-    assert.match(s.call.greeting, /this is Reason, an AI assistant calling for (Omari|Ama)\..*recorded/);
+    assert.match(s.call.greeting, /^Hi there — just so you know, this call may be recorded\. You're calling back about/);
     for (let i = 0; i < 200; i++) { s.twilio.say({ event: "media", media: { payload: QUIET } }); await s.timers.advance(20); }
     s.live.emit({ type: "session.input_transcript.delta", delta: " Hi, yes, we do have that table." });
     for (let i = 0; i < 100; i++) { s.twilio.say({ event: "media", media: { payload: QUIET } }); await s.timers.advance(20); }

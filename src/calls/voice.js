@@ -32,7 +32,7 @@ import * as harm from "../harm.js";
 import { ledgerWrite } from "../trust.js";
 import { config, clock, stamp } from "../config.js";
 import { callRulesFor } from "./provider.js";
-import { mannerFor } from "./manner.js";
+import { mannerFor, callRecorded } from "./manner.js";
 import {
   VOICE_RULES, voiceRules, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame, callIdentityFor,
 } from "./voice-prompt.js";
@@ -655,7 +655,9 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
   const facts = Array.isArray(call.facts) ? call.facts : [];
   // The language the disclosure still owes being said in, claimed as it is read so it is asked for
   // exactly once. Empty on a call that never changed language, which is almost all of them.
-  const owed = announcementOwedIn(call);
+  // Only a call that is recorded has a disclosure at all (./manner.js `callRecorded`, Omari 2026-11-12).
+  const recorded = callRecorded(call);
+  const owed = recorded ? announcementOwedIn(call) : "";
   // What this call may agree to, and the questions it has to come back with. Off the row, so a call
   // placed an hour ago is still held to the brief it was placed under rather than to a default.
   const brief = callBrief(call);
@@ -677,7 +679,8 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
       openingOwed,
       manner: mannerFor(call.conversation_id),
       // Code stops the recording on an objection on a GPT-Live business call that talks, and on a place ringing back (./gptlive.js).
-      recordingOff: call.provider === "gptlive" && (call.direction === "in" || !!config.lineTalk),
+      recordingOff: recorded && call.provider === "gptlive" && (call.direction === "in" || !!config.lineTalk),
+      recorded,
     }),
     `--- you are ON A PHONE CALL right now ---`,
     // The own-call swaps (task_start, "my bad", texting them) are not for a business (cold review 11-11).
@@ -1013,7 +1016,9 @@ export function runCallTool(name, input = {}, { call, context, log = () => {}, t
         return {
           ok: true, alreadyDone: true,
           say: `You have already done that for the person now on the line. Do NOT call this again this turn.`
-            + ` Say it out loud now: who you are, that the call is recorded, then one sentence on what you`
+            + (callRecorded(call)
+              ? ` Say it out loud now: who you are, that the call is recorded, then one sentence on what you`
+              : ` Say it out loud now: one sentence on what you`)
             + ` are calling about and what is already settled.`,
         };
       }

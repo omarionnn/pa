@@ -30,6 +30,7 @@ import { config, clock } from "../config.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { announcementFor } from "./provider.js";
+import { callRecorded } from "./manner.js";
 
 /** Whose Reason a call belongs to, falling back to the install's owner in a test with no account. */
 function ownerNameFor(call) {
@@ -362,7 +363,7 @@ export function newParty(call, { who = "", same = false, now = clock.now(), owne
     log({ call_first_person: call.id, who: String(who).slice(0, 60) });
     return {
       newPerson: true, announce: false, party: currentParty(call),
-      note: `This is the first person you have reached on this call. Who you are and that the call is recorded`
+      note: `This is the first person you have reached on this call. That the call may be recorded`
         + ` is said for you, word for word, just before your words: do not say it yourself. Then, in ONE`
         + ` sentence, say what you are calling about.`,
     };
@@ -377,6 +378,17 @@ export function newParty(call, { who = "", same = false, now = clock.now(), owne
   // own, and the announcement names the person the call is actually for.
   const owner = ownerName || ownerNameFor(call);
   const owed = !told.includes(party);
+  // A call that started normally and is not recorded (Omari 2026-11-12): nothing to announce to the new
+  // person either. They are caught up in a sentence; who or what is calling is said only if they ask.
+  if (!callRecorded(call)) {
+    return {
+      newPerson: true, announce: false, party,
+      note: `This is a NEW person. Greet them briefly and, in ONE sentence, say what you are calling about and what has`
+        + ` already been settled, so they are caught up without you starting over. Do not introduce who or what you are`
+        + ` unless they ask. Everything you have been told still applies and everything already agreed still stands.`
+        + ` Do not ask them to repeat things the last person already told you.`,
+    };
+  }
   if (!owed) {
     return { newPerson: true, announce: false, party, note: `Already introduced yourself to this person. Carry on.` };
   }

@@ -21,6 +21,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
 import { SPOKE_TO_SOMETHING } from "./provider.js";
+import { NOT_RECORDED_WHY } from "./manner.js";
 import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
@@ -305,7 +306,9 @@ export function thirdPartyEvent({ row, live }) {
     ? `The recording is saved and goes out attached to this message automatically — you do not attach it and you may say it is there.`
     : row.recording_state === "missing"
       ? `There is NO audio for this call: ${row.recording_why || "the provider never gave it to Reason"}. Every call is meant to be recorded, so say that plainly rather than implying a recording exists.`
-      : `There is no audio, because nobody was on the call.`;
+      : row.recording_why === NOT_RECORDED_WHY
+        ? `No audio recording was made of this call (${NOT_RECORDED_WHY}), and that is not a fault: do not mention a recording or offer one. What was said is below.`
+        : `There is no audio, because nobody was on the call.`;
   // Only a machine answered (2026-10-27, call 45). Said outright, because the transcript's "Them:"
   // lines read like a person, and the next step is whatever the recording offered instead of a person.
   const heard = String(row.machine_heard ?? "").trim();

@@ -9,9 +9,9 @@
 //
 // His decisions on the spec (11-11): no backchannel ("mm-hm" while they talk) for now; a soft "give me a
 // sec" line by ~3 s of quiet instead of the old 7.5 s late line; the user's own calls stay recorded; a
-// business hears up front that it's Reason, an AI assistant calling for <first name>, and that the call
-// may be recorded — and if they object, recording stops for that call and nothing after the objection is
-// kept (read by meaning, `judgeObjection`, never a word list).
+// business call that IS recorded (REASON_THIRDPARTY_RECORDING=on; off since 11-12) hears up front that the
+// call may be recorded — and if they object, recording stops for that call and nothing after the objection
+// is kept (read by meaning, `judgeObjection`, never a word list).
 
 import * as accounts from "../accounts.js";
 import { config } from "../config.js";
@@ -80,18 +80,41 @@ export const OWN_TURN_MANNER = [
 
 // ---------- a call Reason places to a business ----------
 //
-// NOT behind the flag (Omari 11-11, after the manner was cancelled): `disclosureLine`, the objection
-// read below (`judgeObjection`) and `RECORDING_OBJECTION_LINE` are on for every call Reason places to a
-// business or another person, for every account, whatever REASON_CALL_MANNER says. It is a public
-// promise ("says it's an AI calling for you, and that the call is recorded"). The tone lines
-// (`lineMannerLines`) stay behind the flag.
+// Omari 2026-11-12, every account (replaces the 11-11 opening line "this is Reason, an AI assistant
+// calling for <name> … this call may be recorded"):
+//   1. The call starts NORMALLY: hello, then what it is calling about. Nothing about who or what is
+//      calling. Asked who is calling, or whether it is a person / a robot / an AI, it says at once that it
+//      is an AI assistant calling for <first name>, and carries on (`askedLine`). Never human, never a
+//      made-up name, never a dodge. The same for a place ringing back.
+//   2. No notice at the start means no audio is kept: calls with businesses and other people are not
+//      audio-recorded (`callRecorded`). REASON_THIRDPARTY_RECORDING=on brings back the notice
+//      (`RECORDING_NOTICE_LINE`), the recording, and the objection read below, together and only together.
+// The tone lines (`lineMannerLines`) stay behind REASON_CALL_MANNER.
 
-/** What a business hears first, from Reason (the pickup opener and the row's opening line). */
-export function disclosureLine(first) {
-  const who = String(first ?? "").trim().split(/\s+/)[0];
-  return who ? `Hi there, this is Reason, an AI assistant calling for ${who}. Just so you know, this call may be recorded.`
-    : "Hi there, this is Reason, an AI assistant. Just so you know, this call may be recorded.";
+/** Is the audio of this call kept? Their own call: yes. A GPT-Live call with somebody else: only with the notice (REASON_THIRDPARTY_RECORDING). */
+export function callRecorded(call) {
+  if (!call || Number(call.is_owner) === 1) return true;
+  if (String(call.provider ?? "") !== "gptlive") return true; // an older provider announces and records itself
+  return config.thirdPartyRecording === true;
 }
+
+/** Why a call with somebody else has no audio (the call row's `recording_why`; read by call_status and the post-call note). */
+export const NOT_RECORDED_WHY = "calls with businesses and other people are not audio-recorded";
+
+/** Only where the call IS recorded: what they hear first (the pickup opener and the row's opening line). */
+export const RECORDING_NOTICE_LINE = "Hi there — just so you know, this call may be recorded.";
+
+/** How every call to somebody else opens and answers "who is this?" — for the voice that talks and for Reason's call turn. */
+export function plainOpenLine() {
+  return "Open the way a capable person calling would: a quick hello, then straight to what you're calling about (\"Hi, I'd like to book a table for two tonight at eight\")."
+    + " No preamble about who or what you are: don't open by saying you're an AI, an assistant, or who you're calling for.";
+}
+export function askedLine(first) {
+  return `If they ask who is calling, or whether you're a real person, a robot, an AI, a recording or automated, answer honestly and at once — "I'm an AI assistant calling for ${first}" — then carry on with the call.`
+    + ` Never say or imply you are human, never make up a person's name or a life of your own, and never dodge the question or change the subject. If they ask your name, it's Reason. Never say you are ${first}.`;
+}
+/** A call that is not audio-recorded: what to say if recording comes up. */
+export const NOT_RECORDED_LINE = "This call's audio is not being recorded, so say nothing about recording. If they ask whether it is recorded, say no, the audio isn't being recorded — you're only noting what's agreed.";
 
 /** Said to the voice and to Reason's call turn wherever code really stops the recording (./gptlive.js `readObjection`). */
 export const RECORDING_OBJECTION_LINE = "If they say they'd rather not be recorded, or object to it in any way, say at once that's fine and you'll turn the recording off, then carry on with the call.";
