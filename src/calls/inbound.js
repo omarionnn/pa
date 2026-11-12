@@ -105,7 +105,10 @@ export function whoseCallIsThis(address) {
 export function callingBack(address, { within = CALLBACK_WINDOW_MS, now = clock.now(), limit = MAX_RING_BACKS } = {}) {
   const number = String(address ?? "").trim();
   if (!number) return null;
-  const calls = db.callsToNumber(config.ownerConversation, { toNumber: number });
+  // Anybody's errand, not only the operator's: every account's Reason places calls, and the place it
+  // rang returns the call to the same number. A call older than the window cannot open one, and the
+  // ring-backs counted below are all newer than the call they answer, so two windows back is everything.
+  const calls = db.callsWithNumber({ toNumber: number, since: now - 2 * within });
   // Only a call Reason PLACED opens the window. A ring-back is written as a call row to the same
   // number, and letting it count would let every ring-back reopen the day for the next one, so a
   // caller who never settles the errand could keep the line open for ever (security audit lead 30).
@@ -116,9 +119,15 @@ export function callingBack(address, { within = CALLBACK_WINDOW_MS, now = clock.
     // A call that was already settled as "they said no" is not an open question. One that ran out of
     // hold, got voicemail, or dropped before it was confirmed is exactly the kind they ring back about.
     if (["refused_by_them", "confirmed"].includes(call.outcome_kind)) continue;
-    // A ring-back runs on the operator's conversation, which the daily call caps exempt by default, so
-    // this is the bound: a few return calls per call Reason made, then they are a stranger again.
-    const rungBack = calls.filter(c => c.direction === "in" && !c.is_owner && c.id > call.id).length;
+    // Somebody who has since left has no errand to come back to (their row is gone or stopped).
+    if (call.conversation_id !== config.ownerConversation) {
+      const acct = db.getAccount(call.conversation_id);
+      if (!acct || (acct.state && acct.state !== "active")) continue;
+    }
+    // A ring-back runs on the conversation of the person the call was for; the operator's is exempt
+    // from the daily call caps by default, so this is the bound: a few return calls per call Reason
+    // made, then they are a stranger again.
+    const rungBack = calls.filter(c => c.direction === "in" && !c.is_owner && c.id > call.id && c.conversation_id === call.conversation_id).length;
     if (rungBack >= limit) return null;
     return { call };
   }
