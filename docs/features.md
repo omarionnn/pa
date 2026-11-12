@@ -2616,6 +2616,47 @@ offer coming back.
 Not added to the announceable list, by that list's own rule: nothing here has been watched working on
 a real phone yet.
 
+## It thinks a step ahead when life comes up (added 2026-11-11)
+
+Behind `REASON_CUES` (`off` | `owner` | `on`), **off by default**. Code: `src/cues.js`. Tests: `test/cues.test.js`, `test/flow-cues.test.js`.
+
+```
+Omari:  i'm flying to miami on the 20th
+Reason: nice. want me to find u a place to stay?
+        ...
+(the 19th, 9:30am)
+Reason: want a nudge when check-in opens for miami?
+```
+
+When somebody says something is coming up, Reason offers ONE thing that helps in the reply they are already reading, and holds the rest for the moment each is useful. Never a menu.
+
+**The cues and their offers** (data in `CUES`; adding one is an entry, not code):
+
+| Cue | Offers, in priority order (when a held one goes) |
+| --- | --- |
+| trip (flight, train, drive) | a place to stay (2 days after it was mentioned) · check-in reminder, flights only (24h before) · a ride to the airport or station (6pm the evening before) · weather and packing (6pm two days before) · a table for the first night (3 days before) |
+| move | change-of-address checklist · a few movers to get quotes from (3 weeks before) · utilities and internet reminders (10 days before) |
+| birthday | a reminder and a gift idea, for somebody else's (7 and 10 days before) · a table (5 days before) · an event page (2 weeks before) |
+| interview | a calendar hold · a prep reminder the evening before · directions and a leave-by time, in person only (3 hours before) |
+| guest visiting | a plan for the days · a table for one night · a reminder of when to leave for the pickup (the evening before) |
+
+**Who decides what.** The model hears the cue (`cue_note`; there is no word list anywhere) and picks which one offer suits, or none. Code decides everything else:
+
+- **Only what they said.** A cue needs their own sentence on the row. Never one worked out from a calendar, mail or a booking.
+- **Nothing sensitive.** The kinds are a closed list, and a cue that rests on health, money trouble, a relationship, a loss or anything legal writes nothing.
+- **Only what they can get.** Each offer names the tools it needs; one whose tools this person is not shown is never offered. An account not connected (Uber for the ride, Google for the calendar hold) is offered as a connect once per person, ever, and only inside a reply.
+- **One offer now.** `cue_offer` refuses a second while the first is unanswered, anything not on the list it was handed, and any offer on a turn they did not start. After a call nothing is texted: one offer waits and rides on their next reply.
+- **The rest are rows with a moment**, on the unprompted path that already exists: a `notice_seen` row (kind `cue_offer`) on a one-off timer, said only through `notice_send`. So the daily budget and hard cap, quiet hours, digest, snooze, "off", the daily proactive ceiling and one-nudge-per-thing apply unchanged. At most 3 are held per cue; a moment in their night moves to their morning; every offer of one cue shares one `thing`, so if the last one went unanswered the next waits until they speak.
+- **A no is kept.** Never again for that cue; "never" (`i always drive myself`) mutes that offer on every later cue; two noes on one cue drop what was still held.
+- **It ends** when its date passes, when they say it is off (`cue_end`), or after a few weeks with no date. Checked again when a held offer comes due, along with whether they can still get it.
+- **They can turn it off** by text (`cues_setting`) or in Settings → Thinking ahead. Off deletes what was held.
+- **A yes is only a yes to the offer.** Booking, buying, calling and texting other people still need the confirmations they always needed.
+
+Rows: `cues`, `cue_offers`, `cue_prefs`, `cue_mutes`; all four are in the data export and removed by a delete.
+
+Not built: hearing a cue live during a call (it is noted from the call's words afterwards, by the after-call turn); a cue from a booking Reason itself made (those already get the follow-on offer above).
+
+
 ## The meeting moved to 3, your calendar still says 2 (added 2026-10-08)
 
 Four more things the watchful sweep can find, and all four are a different SHAPE from everything it
