@@ -519,6 +519,28 @@ test("7. a sentence in 100 ms pieces, 100 ms apart, reaches the line as it came:
   assert.equal(s.call.voiceTail, null);
 });
 
+test("7. a line that ends with nothing after it (no quiet piece, the timer fades it): the next line gets its 30 ms ahead again, so it never runs dry behind its first piece", async () => {
+  const s = startCall({ brain: () => new Promise(() => {}) });
+  const say = async () => {
+    const before = sentBytes(s).length;
+    const got = [];
+    for (let i = 0; i < 5; i++) {
+      s.live.emit({ type: "session.output_audio.delta", delta: tone(800, i * 800).toString("base64") });
+      got.push(sentBytes(s).length - before);
+      await s.timers.advance(100);
+    }
+    return got;
+  };
+  const first = await say();
+  await s.timers.advance(gl.FADE_FLUSH_MS + 150);
+  assert.equal(s.call.voiceTail, null, "the held end went out, faded, on the timer");
+  assert.equal(s.call.voiceLead, 0, "the silence sent ahead was played while nothing came");
+  const second = await say();
+  // After each arrival, what has been sent since the line began covers the 100 ms to the next arrival.
+  assert.deepEqual(first, [800, 1600, 2400, 3200, 4000]);
+  assert.deepEqual(second, [800, 1600, 2400, 3200, 4000], "the second line keeps pace from its first piece");
+});
+
 test("7. a sound that stops inside a piece is faded there and nothing waits; a piece that carries the sound on leaves the held end as it came", () => {
   const s = startCall({ brain: () => new Promise(() => {}) });
   const stop = Buffer.concat([tone(400), Buffer.alloc(400, 0xff)]);

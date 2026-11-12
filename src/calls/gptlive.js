@@ -1753,6 +1753,9 @@ export class GptLiveCall {
     this.tailTimer = null;
     const held = this.voiceTail;
     this.voiceTail = null;
+    // Nothing came for FADE_FLUSH_MS: the line has run dry and the silence sent ahead has been played.
+    // Left counted, the next line would send no lead and run 30 ms short behind its first piece.
+    this.voiceLead = 0;
     if (held && !this.done) this.toTwilio({ event: "media", media: { payload: fadeOut(held) } });
   }
 
