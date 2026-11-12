@@ -29,6 +29,7 @@ const db = await import("../src/db.js");
 const onethought = await import("../src/onethought.js");
 const said = await import("../src/said.js");
 const { config, clock } = await import("../src/config.js");
+const DEFAULT_FAST_MS = config.burstQuietFastMs;
 
 const OWNER = "+12025551234";
 const C = "dm:owner";
@@ -85,8 +86,15 @@ const lookUp = (args) => runTool("request_done", { id: -1 }, { conversationId: a
 const WORK = "No I want to watch when I leave work so somewhere around work";
 const TUESDAY = "And I'd watch it on Tuesday";
 
-test("the window: 0.3 s where the switch reaches, the configured one elsewhere, never longer than it, and off stays off", () => {
-  assert.equal(config.burstQuietFastMs, 300);
+test("the shorter hold is its own switch: unset (the default), the window is the configured one even with REASON_FAST_REPLY on", () => {
+  config.burstQuietFastMs = DEFAULT_FAST_MS;
+  assert.equal(DEFAULT_FAST_MS, null, "unset by default");
+  assert.equal(quietWindowFor("fake", { conversationId: C, isOperator: true }), 1_000);
+  assert.equal(quietWindowFor("sendblue", { conversationId: KOFI_C }), 1_000);
+  assert.equal(quietWindowFor(WEB, { conversationId: C }), 500);
+});
+
+test("the window, once a shorter one is set: 0.3 s where the switch reaches, the configured one elsewhere, never longer than it, and off stays off", () => {
   assert.equal(quietWindowFor("fake", { conversationId: C, isOperator: true }), 300);
   assert.equal(quietWindowFor("sendblue", { conversationId: KOFI_C }), 300, "on is everyone");
   assert.equal(quietWindowFor(WEB, { conversationId: C }), 300, "a Web message never waits longer than a text");

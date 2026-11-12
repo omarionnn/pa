@@ -739,9 +739,9 @@ background lane (extraction) stays paused through the check and the send, not on
 Since 2026-11-12 it also covers: the loaded tool set stands for as long as the CLI's cache really
 lives (an hour, read off the wire, not six minutes) and across a restart, and the tools a person
 really called are loaded before whole packs (the owner's most-used tools were not loaded and cost a
-search round each use); a changed set is logged (`toolset`, with `idle_ms`); and a text waits 0.3 s
-for the rest of its thought instead of 1 s (`REASON_BURST_QUIET_FAST_MS`, never longer than
-`REASON_BURST_QUIET_MS`) — a bubble that lands later is still folded into the running turn.
+search round each use); and a changed set is logged (`toolset`, with `idle_ms`). The hold before a
+reply is NOT changed by this switch: a shorter one exists only when `REASON_BURST_QUIET_FAST_MS` is
+set (unset by default; never longer than `REASON_BURST_QUIET_MS`), and is not approved for live.
 
 **`REASON_KEEP_SESSION`** (`off` default | `owner` | `on`; src/fastreply.js, "The kept session" in
 src/backends/claude-cli.js): a reply continues the CLI session the last reply of the same thread

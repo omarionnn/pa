@@ -98,7 +98,8 @@ test("the next reply continues the last one's session: same instructions, and on
   assert.ok(!/WHAT YOU KNOW ABOUT THEM/.test(second.prompt), "nor a note that reads the same as last time");
   assert.match(second.prompt, /The new message:\n\[[^\]]+\] Omari: and where/, "the new message, with its timestamp");
   assert.match(second.prompt, /Reply as Reason, in one short text/);
-  assert.match(second.prompt, /anything saved or live .* is still read from its tool/, "saved state is never answered from an old result");
+  assert.match(second.prompt, /anything that moves with time \(weather, prices[^)]*\)\s+and anything saved or live \([^)]*\) is read from its tool again/, "neither saved state nor anything that moves with time is answered from an old result");
+  assert.ok(!/It is now/.test(second.prompt), "a reply seconds after the last says nothing about a gap");
   const kept = b.logs.find(e => e.session_kept === C);
   assert.deepEqual({ turns: kept.turns, since: kept.since, sent: kept.notes_sent, same: kept.notes_same, gone: kept.notes_gone }, { turns: 2, since: 0, sent: 0, same: 1, gone: 0 });
 
@@ -315,4 +316,57 @@ test("with REASON_FAST_REPLY on, the continued session is started before its mes
   assert.ok(b.calls[1].input, "started early");
   assert.equal(b.calls[1].resume, b.calls[0].sessionId);
   assert.match(b.calls[1].prompt, /^The new message:\n/);
+});
+
+test("a saved fact or rule retired, reworded or deleted since the last reply starts afresh; one only ADDED does not", async () => {
+  const facts = () => db.listFacts(C, { limit: 500 });
+  // Added since: the session is continued, and the new fact reaches it through the notes.
+  db.remember(C, "Maya", "is allergic to peanuts");
+  let profile = PROFILE;
+  let b = backend(undefined, { notes: () => [profile] });
+  await b.turn("is it still 7?");
+  db.remember(C, "Maya", "lives in Oakland");
+  profile = `${PROFILE}\n- Maya lives in Oakland`;
+  await b.turn("and where");
+  assert.equal(b.calls[1].resume, b.calls[0].sessionId, "a fact added is not a reason to read everything again");
+  assert.match(b.calls[1].prompt, /Maya lives in Oakland/, "and it is handed over, whole");
+
+  // Retired (the nightly review, "forget that", the memory page).
+  const oakland = facts().find(f => /Oakland/.test(f.fact));
+  assert.equal(db.retireFact(C, oakland.id).ok, true);
+  await b.turn("ok");
+  assert.equal(b.calls[2].resume, undefined, "the session read the retired fact: not continued");
+  assert.match(b.calls[2].prompt, /The conversation so far|at the end of your instructions/);
+  assert.ok(b.logs.some(e => e.session_fresh === C && e.why === "memory_removed"));
+
+  // Reworded: a correction retires the old row and writes a new one.
+  await b.turn("one more");
+  assert.equal(b.calls[3].resume, b.calls[2].sessionId, "and the fresh session is continued in its turn");
+  const peanuts = facts().find(f => /peanuts/.test(f.fact));
+  assert.equal(db.correctFact(C, peanuts.id, { fact: "is allergic to tree nuts, not peanuts" }).ok, true);
+  await b.turn("again");
+  assert.equal(b.calls[4].resume, undefined, "a reworded fact: not continued");
+
+  // A rule about how they want to be treated, dropped.
+  const rule = db.addRule(C, { rule: "never use emoji" });
+  await b.turn("and again");
+  assert.equal(b.calls[5].resume, b.calls[4].sessionId, "a rule added: continued");
+  assert.ok(db.dropRule(C, rule.id ?? rule.rule?.id ?? db.activeRules(C)[0].id));
+  await b.turn("last");
+  assert.equal(b.calls[6].resume, undefined, "a rule dropped: not continued");
+
+  // A record written before the mark existed is never trusted.
+  await b.turn("x");
+  const c = chainOf(C); delete c.memory;
+  await b.turn("y");
+  assert.equal(b.calls.at(-1).resume, undefined);
+});
+
+test("after a gap the continued session is told what time it is and how old everything it holds is", async () => {
+  const b = backend();
+  await b.turn("is it still 7?");
+  chainOf(C).at = Date.now() - 20 * 60_000;
+  await b.turn("and now?");
+  assert.equal(b.calls[1].resume, b.calls[0].sessionId);
+  assert.match(b.calls[1].prompt, /^\[It is now [^\]]+\. Everything above, your tool results included, is from 20 minutes ago or earlier\.\]/);
 });

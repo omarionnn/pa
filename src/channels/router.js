@@ -93,11 +93,13 @@ export const EVENT_CARD_LINE = "save me as Reason so you can find me for event u
  * turns it off everywhere, and a test that widens the window to hold everything holds Web too.
  */
 export function quietWindowFor(channel, who = null) {
-  // REASON_FAST_REPLY §7: the text window is 0.3 s where the switch reaches. In ~180 live turns
-  // (11-08 → 11-12) the 1 s window joined one burst, and 14 late texts were folded in mid-turn
-  // (src/onethought.js), which is what catches a second bubble however late it lands. Never longer
-  // than the configured window, so REASON_BURST_QUIET_MS=0 still turns holding off.
-  const text = who && fastReplyOn(who) ? Math.min(config.burstQuietFastMs, config.burstQuietMs) : config.burstQuietMs;
+  // REASON_FAST_REPLY §7: a shorter text window where the switch reaches, ONLY when one is set
+  // (REASON_BURST_QUIET_FAST_MS; unset, the default, the hold is exactly what it was). In ~180 live
+  // turns (11-08 → 11-12) the 1 s window joined one burst, and 14 late texts were folded in mid-turn
+  // (src/onethought.js). Never longer than the configured window, so REASON_BURST_QUIET_MS=0 still
+  // turns holding off.
+  const shorter = config.burstQuietFastMs;
+  const text = who && shorter != null && Number.isFinite(shorter) && fastReplyOn(who) ? Math.min(shorter, config.burstQuietMs) : config.burstQuietMs;
   return channel === web.WEB ? Math.min(config.burstQuietWebMs, text) : text;
 }
 

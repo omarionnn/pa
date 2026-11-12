@@ -22,7 +22,7 @@
 import { config, stamp } from "../config.js";
 import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
-import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, unmarkUndeliveredTold, outboxMark, ownerTextsSince } from "../db.js";
+import { db as rawDb, loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, unmarkUndeliveredTold, outboxMark, ownerTextsSince } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "../media.js";
 import { docsFor } from "../docread.js";
@@ -263,6 +263,35 @@ const sha = (text) => createHash("sha256").update(String(text)).digest("hex").sl
 /** The thread as the lines a session is compared on. A code re-ask's line is taken out again right after its turn. */
 const threadLines = (messages) => messages.map(renderLine).filter(Boolean).filter(l => !l.split("\n")[0].endsWith(CODE_LINE));
 
+/**
+ * What is saved about them, as a mark a later turn can check: how many facts and rules are active,
+ * and the newest of each. Saved facts are only ever added to or retired (a correction retires the
+ * old row and writes a new one; the nightly review, "forget that", the memory page and a merge all
+ * retire), so "fewer of the ones the session could have been shown are active now" is exactly
+ * "something it may hold was removed or reworded". A fact ADDED since reaches the model through
+ * the notes (the profile, the memories picked for the message); one REMOVED cannot be taken back
+ * out of a session that read it, so that session is not continued. Null when it cannot be read:
+ * then nothing is claimed and the session is not continued either.
+ */
+export function memoryMark(conversationId) {
+  try {
+    const f = rawDb.prepare(`SELECT COUNT(*) AS n, COALESCE(MAX(f.id), 0) AS top FROM person_facts f JOIN people p ON p.id = f.person_id
+      WHERE p.conversation_id = ? AND f.status = 'active'`).get(conversationId);
+    const r = rawDb.prepare("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS top FROM treat_rules WHERE conversation_id = ? AND status = 'active'").get(conversationId);
+    return { facts: f.n, factTop: f.top, rules: r.n, ruleTop: r.top };
+  } catch { return null; }
+}
+/** Has anything the session could have been shown been retired, reworded or deleted since `mark`? */
+export function memoryRemovedSince(conversationId, mark) {
+  if (!mark) return true;
+  try {
+    const f = rawDb.prepare(`SELECT COUNT(*) AS n FROM person_facts f JOIN people p ON p.id = f.person_id
+      WHERE p.conversation_id = ? AND f.status = 'active' AND f.id <= ?`).get(conversationId, mark.factTop).n;
+    const r = rawDb.prepare("SELECT COUNT(*) AS n FROM treat_rules WHERE conversation_id = ? AND status = 'active' AND id <= ?").get(conversationId, mark.ruleTop).n;
+    return f < mark.facts || r < mark.rules;
+  } catch { return true; }
+}
+
 const chainsFile = () => join(config.dataDir, "cli-sessions.json");
 let chainsRead = false;
 function readChains() {
@@ -307,7 +336,7 @@ export function forgetCliThreads(conversationId) {
  * The session this turn may continue, or null with the reason logged. `all` is the thread as it
  * stands before this turn's line (threadLines), `base` the instructions without the anchor.
  */
-export function chainFor(historyId, { base, all, count = all.length, now = Date.now(), log = () => {} }) {
+export function chainFor(historyId, { base, all, count = all.length, now = Date.now(), log = () => {}, conversationId = null }) {
   readChains();
   const c = chains.get(historyId);
   const fresh = (why) => { if (c) dropChain(historyId); log({ session_fresh: historyId, why }); return null; };
@@ -316,6 +345,10 @@ export function chainFor(historyId, { base, all, count = all.length, now = Date.
   if (c.turns >= CHAIN_MAX_TURNS) return fresh("turns");
   if (c.grown >= CHAIN_MAX_GROWN) return fresh("grown");
   if (c.base !== sha(base)) return fresh("instructions_changed");
+  // A saved fact or rule retired, reworded or deleted since (the nightly review, "forget that", the
+  // memory page, a correction): the session may hold the old words in a note or a tool result, and
+  // nothing sent now can take them back out. The fresh turn shows only what stands.
+  if (conversationId && memoryRemovedSince(conversationId, c.memory)) return fresh("memory_removed");
   const have = all.map(sha);
   // Its lines, less the oldest `cut` the thread has dropped since, must open the thread as it is now.
   // Tried whole first, then without its own last line: a draft taken back before it was sent
@@ -564,6 +597,8 @@ async function runTurnOnCli({
     const fast = fastReplyOn({ conversationId });
     // REASON_KEEP_SESSION: read once for the turn too.
     const keepSession = keepSessionOn({ conversationId });
+    // What was saved about them before this turn read any of it (see memoryMark).
+    const memoryAtStart = keepSession ? memoryMark(conversationId) : null;
     // What they have really bought (src/purchasesnote.js) — the same block as the API path. The
     // thread can still say "ordered" about an order since cancelled.
     // The notes the prompt carries, awaited where the turn needs them: before the CLI starts, or (fast)
@@ -592,7 +627,7 @@ async function runTurnOnCli({
     const systemBase = systemFor(me);
     // The kept session, when this reply may continue one (see "The kept session" above). The said
     // check's rewrite (continueSession) has its own, older route to the same session, below.
-    let chain = keepSession && !continueSession ? chainFor(historyId, { base: systemBase, all: threadLines(before), count: before.length, log }) : null;
+    let chain = keepSession && !continueSession ? chainFor(historyId, { base: systemBase, all: threadLines(before), count: before.length, log, conversationId }) : null;
     // A continued session runs under the instructions it started with, anchor and all (the same
     // bytes, so the whole prefix is read from the cache); the anchor is left as it stands for the
     // next fresh turn. Read lazily: a fresh turn after a session that would not continue needs it.
@@ -610,7 +645,11 @@ async function runTurnOnCli({
     let chainNotes = null;
     const chainPromptFor = (entries) => {
       chainNotes = notesForChain(entries, chain.notes, kind);
-      return (chain.retracted ? "[Your last reply above was NOT sent.]\n\n"
+      // How long ago the session last read anything, said outright: what a tool returned then is
+      // that old now, and the model must not have to work it out from two stamps.
+      const idleMin = Math.round((Date.now() - chain.at) / 60_000);
+      const gap = idleMin >= 2 ? `[It is now ${stamp()}. Everything above, your tool results included, is from ${idleMin >= 90 ? `${Math.round(idleMin / 60)} hours` : `${idleMin} minutes`} ago or earlier.]\n\n` : "";
+      return gap + (chain.retracted ? "[Your last reply above was NOT sent.]\n\n"
         : chain.changed && chain.lastLine ? `[Your last reply was changed by code before it was sent. What they received:\n${chain.lastLine}]\n\n` : "")
         + (chain.since.length ? `Added to the conversation since your last reply, oldest first (these did not come through you):\n${chain.since.join("\n")}\n\n` : "")
         + (pendingText || (chain.pending ? "None of your earlier questions is waiting on an answer any more.\n\n" : ""))
@@ -620,7 +659,9 @@ async function runTurnOnCli({
         + (turnNote ? `[${turnNote}]\n\n` : "")
         + chainNotes.text
         + CLOSING
-        + ` A page or a search you already read above need not be fetched again; anything saved or live (reminders, tasks, orders, mail, calendar, where they are) is still read from its tool.`;
+        + ` What you already read above (a page, a search result) need not be fetched again ONLY if it cannot have changed since:`
+        + ` anything that moves with time (weather, prices, stock, hours and whether a place is open now, scores, traffic, a flight or a delivery)`
+        + ` and anything saved or live (reminders, tasks, orders, mail, calendar, memory, where they are) is read from its tool again, as if for the first time.`;
     };
     const promptFor = (entries, { anchor, recent } = freshParts(), standing = entries.map(e => e.t), history = recent.join("\n")) => (history
       ? `${anchor ? "The conversation so far, continued (the earlier part is at the end of your instructions)" : "The conversation so far"}:\n${history}\n\n`
@@ -848,6 +889,10 @@ async function runTurnOnCli({
           // said check's rewrite sends none of its own.
           notes: viaResume ? (was?.notes ?? {}) : notesAfter(entriesSent ?? [], continued ? was.notes : {}, kind),
           pending: viaResume ? !!was?.pending : pending.length > 0,
+          // What was saved about them as this turn ended (its own "remember" included): the next
+          // reply continues only if none of it has been removed since (memoryRemovedSince).
+          // Null (something was removed while this very turn ran, after it had read its notes) is never continued.
+          memory: memoryRemovedSince(conversationId, memoryAtStart) ? null : memoryMark(conversationId),
           // The words they received are not the words the session holds (the figures check, a recited
           // first line dropped, a marker tidied): the next reply is told what went.
           changed: !quiet.silent && raw !== reply.trim(),

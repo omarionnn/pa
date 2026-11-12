@@ -25,8 +25,9 @@
 //   6. The tool set stands for as long as the CLI's cache really lives (src/tooldiet.js): an hour,
 //      not six minutes, and across a restart; and the tools a person really called are loaded
 //      before whole packs, so the ones used most stop costing a search round each time.
-//   7. A text waits 0.3 s for the rest of its thought, not 1 s (src/channels/router.js
-//      quietWindowFor). A bubble that lands later is still folded into the running turn.
+//   7. Only when REASON_BURST_QUIET_FAST_MS is set (unset by default: the hold is unchanged): a text
+//      waits that long for the rest of its thought instead of the configured window
+//      (src/channels/router.js quietWindowFor). Not approved for live; #519 decides the hold.
 //
 // REASON_KEEP_SESSION (off | owner | on; default off), 2026-11-12 — its own switch because it
 // changes what the model is handed, not only when: a reply continues the CLI session the last reply
