@@ -45,6 +45,8 @@
 // **What it cannot do.** Face ID, a passkey or a security key belong to the device doing the
 // signing in, and that device is the machine, not the phone — so those will not work here and the
 // page says so. A password, a code by text or email, and "is this you" taps all do.
+import * as findings from "./sitefindings.js";
+import { logAttempt } from "./signinlog.js";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
@@ -288,6 +290,16 @@ async function end(s, how) {
     note = `the ${entry.label} sign-in link you sent was never opened and has expired. Do not chase them about it; if they bring it up, offer a fresh one.`;
   }
   s.log({ signin_remote: "ended", how, site: entry.site, conversation: c, state: s.ended.state });
+  // A wall met by the link's own browser is a dated finding (src/sitefindings.js): no fresh link is
+  // made into it until it is old enough to ask again.
+  if (s.ended.state === "blocked") { try { findings.recordFinding(entry, { kind: "walled", why: s.ended.why }); } catch { /* the note still goes */ } }
+  // One line per attempt that reached a browser (src/signinlog.js): host, route, outcome, timing.
+  if (s.startedAt || s.ended.state) {
+    const st = s.ended.state;
+    const outcome = st === "signed_in" ? "signed_in" : st === "blocked" || st === "refused" ? "blocked_by_site"
+      : how === "done" || how === "finished" ? "failed" : "abandoned";
+    logAttempt(entry, { route: s.provider ? "provider" : "password_link", outcome, startedAt: s.startedAt ?? s.createdAt, detail: st === "refused" ? "provider_refused" : st === "blocked" ? "wall_before_form" : how === "done" || how === "finished" ? "" : String(how) });
+  }
   // Only news is worth a message. A link that was replaced unopened, or that simply lapsed, is not.
   // A web setup's sign-in (src/websetup.js) has no thread to wake: how it ended goes on the setup.
   if (s.onEnd) { try { s.onEnd(s.ended); } catch { /* the page reads the site's own check anyway */ } }

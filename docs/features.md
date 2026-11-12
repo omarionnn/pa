@@ -526,6 +526,41 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
   presses the visible "Continue with Google" there and not the phone box, the hidden copy or the
   footer's "Google Privacy Policy" link (`test/social-signin-uber.test.js`, 7 tests).
 
+**Sign-in probe fixes (2026-11-12, after a probe of 44 sites; `docs/site-probe-2026-11-12-signin.json`):**
+
+- **A bot rejection is not a wrong email.** "Something went wrong", "try again", "too many attempts",
+  a captcha or challenge page, or the site's own 403/429 to the press that asks for the code is the
+  site refusing Reason's browser (`src/signinemail.js` `failureKind`, state `blocked`). Reason never
+  asks "which email do you use" over it and never tries another address. The person hears one line —
+  "Spotify blocks automated sign-in, so I can't sign you in there myself" — and gets the best route
+  left: an answer from their mail, or their own sign-in on the secure link where the page itself loads.
+- **One log line per attempt**, always printed (`src/signinlog.js`): the site's host, the route
+  (`emailed_code` / `emailed_link` / `provider` / `password_link`), the outcome class (`signed_in`,
+  `blocked_by_site`, `code_not_found`, `wrong_code`, `abandoned`, plus `email_rejected`,
+  `no_email_route`, `failed`) and the time it took. Never an email, a code, a number or a conversation.
+- **A footer link is not a sign-in button** (`src/providerbutton.js`): a control is a provider button
+  only on the sign-in form or dialog, or when it goes to the provider's sign-in endpoint. Marriott's
+  footer "Facebook" link to its social page is neither.
+- **Whether a site can be signed in to is a dated finding** (`src/sitefindings.js`): the probe's walls
+  are believed for 14 days, a wall the service meets itself for a day, then the site is asked again;
+  a 403/429 on the sign-in or account page writes a new one. `signin_status` gives each site a
+  `signin_here` (blocked / open / unknown) with its date; the old top-level `can_sign_in_here`, which
+  was about the person being at the Mac, is now `window_on_this_mac`.
+- **The live ask is short and never guesses** (`src/socialsignin.js` `signinWall`, review of #521):
+  at most 2.5 s for everybody's `signin_link` / `signin_open` / `signin_email`, through the network
+  guard, one fetch per page at a time, 400 KB of body at most. Only a 403, a 429 or a challenge page
+  served as an error is a wall. A timeout, a failed lookup, a redirect loop, a bare 503 or a 404 is
+  "unknown": nothing is stored and the link is still made. A finding speaks only for the sign-in page
+  it was seen on (a one-way mark, never the address), a refusal seen on one person's run lasts a day,
+  "too many attempts" is never stored, and the table is capped at 2,000 sites
+  (`test/signin-live-check.test.js`, 13 tests).
+- **Google, as it is.** Google refuses Reason's browser on its own sign-in page after the email is
+  typed, whoever types it (proved on Notion 2026-11-10), so there is no Google route: not pressed for
+  the person, and not completable by the person on the secure link either. A site that offers Google
+  plus its own email sign-in is signed in to by its emailed code. A site that offers ONLY Google
+  cannot be signed in to; Reason says so in one line and sends no link. No wording promises to press
+  or use a Google login.
+
 **Not proved:** no real site has been signed in to through a real provider button here, and Uber's
 real sign-in page still bot-walls Reason's browser from the live box (2026-11-10), so the Google
 step on Uber has not been reached (see `docs/unverified.md`).

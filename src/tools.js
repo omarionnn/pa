@@ -29,6 +29,7 @@ import { flightProviders } from "./flightproviders.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
+import * as findings from "./sitefindings.js";
 import * as signinEmail from "./signinemail.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
@@ -521,7 +522,7 @@ export function lapsedBlocked(name) {
 // person: never Google, signin_email instead. Everybody else keeps the words they had before
 // signin_email existed (the argument is ignored for them, and they have no such tool to be sent to).
 const SIGNIN_LINK_PROVIDER_SOCIAL = "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Apple's (or Facebook's, Microsoft's) own page. Never google: Google refuses this browser, so a Google account is signin_email instead (google here is ignored and the site's own email route opens). Only when they said so or signin_provider found it; omit for the site's own form.";
-const SIGNIN_LINK_PROVIDER_PLAIN = "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form.";
+const SIGNIN_LINK_PROVIDER_PLAIN = "Which button their account on this site signs in through, when it is one of these. It is recorded only; nothing is pressed for them, and the link opens the site's own sign-in form. Never promise to press or use their Google login: Google refuses this browser, so a Google-only site cannot be signed in to here. Only when they said so; omit for the site's own form.";
 /** signin_link with its `provider` argument worded for somebody the social sign-in flag does not reach. */
 function plainSigninLink(t) {
   return { ...t, input_schema: { ...t.input_schema, properties: { ...t.input_schema.properties, provider: { ...t.input_schema.properties.provider, description: SIGNIN_LINK_PROVIDER_PLAIN } } } };
@@ -9394,6 +9395,34 @@ function signinBlockedAnswer(entry) {
   };
 }
 
+/** The live ask about a site's sign-in page: handed in by a test, never the real network under test. */
+/** The most the live ask may add to a sign-in tool. No answer in that time is "unknown", never "blocked". */
+export const SIGNIN_LIVE_CHECK_MS = 2500;
+const quickWall = (entry) => social.signinWall(entry, { timeoutMs: SIGNIN_LIVE_CHECK_MS });
+const liveWallFn = (ctx) => ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? null : quickWall);
+/**
+ * Where a site's sign-in stands for Reason's browser (src/sitefindings.js): a dated finding that is
+ * still fresh, else the site asked now and the answer written down. Never a finding trusted forever.
+ */
+const signinAccessFor = (entry, ctx) => findings.signinAccess(entry, { live: liveWallFn(ctx) });
+/**
+ * The answer when a site refuses Reason's browser: no link, no window, no emailed code. One honest
+ * line, the date it was seen, the best route left, and never another email address.
+ */
+function siteBlockedAnswer(c, entry, access) {
+  if (entry.signin_blocked && access.kind === "walled") return { ...signinBlockedAnswer(entry), seen: access.seen, ...(access.checked_live ? { checked_live: true } : {}), ...(access.stale ? { stale: `Last seen ${access.seen}; it could not be asked again just now.` } : {}) };
+  const alt = social.wallInstead(entry);
+  const w = findings.blockedWords(entry, access, { instead: (social.isFoodApp(entry.site) ? (foodOn(c) || social.socialAllowedFor(c)) : !!alt.say) ? alt : null });
+  return {
+    ok: false, blocked: true, site: entry.site, kind: access.kind, seen: access.seen,
+    ...(access.checked_live ? { checked_live: true } : {}),
+    ...(access.stale ? { stale: `Last seen ${access.seen}; it could not be asked again just now, so say it as of that date.` } : {}),
+    error: `${entry.label} blocks automated sign-in (${access.checked_live ? "asked just now" : `seen ${access.seen}`}): ${access.why || "its sign-in page refuses Reason's browser"}. Nothing was tried and nothing was sent to ${entry.label}.`,
+    say: w.say, instead: w.instead, never: w.never,
+    never_a_password: signin.refuseAPassword(),
+  };
+}
+
 /**
  * A blocked site asked for with a provider button, where the social flag reaches this person: ask
  * the site live (src/socialsignin.js signinWall) instead of trusting the dated finding. `in` when
@@ -9402,7 +9431,13 @@ function signinBlockedAnswer(entry) {
  */
 async function socialWallFor(c, entry, provider, ctx) {
   const prov = social.socialAllowedFor(c) ? social.usableProvider(provider) : "";
-  if (!prov) return { in: false, answer: signinBlockedAnswer(entry) };
+  if (!prov) {
+    // The registry's note has a date on it: once it is old the site is asked again, and a wall that
+    // has come down lets the link be made.
+    const access = await signinAccessFor(entry, ctx);
+    if (access.state === "open" && access.checked_live) return { in: true, wall: access.wall };
+    return { in: false, answer: { ...signinBlockedAnswer(entry), seen: access.seen || entry.signin_blocked.seen, ...(access.checked_live ? { checked_live: true } : {}) } };
+  }
   let wall;
   try { wall = await (ctx.signinWall ?? social.signinWall)(entry); } catch (e) { wall = { in: false, why: (e?.message ?? String(e)).split("\n")[0] }; }
   if (wall?.in) return { in: true, wall };
@@ -14788,6 +14823,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (entry.signin_blocked) {
         const wall = await socialWallFor(c, entry, input.provider, ctx);
         if (!wall.in) return wall.answer;
+      } else {
+        const access = await signinAccessFor(entry, ctx);
+        if (access.state === "blocked" && access.kind === "walled") return siteBlockedAnswer(c, entry, access);
       }
       const route = signin.signinRoute(c);
       if (!route.can_sign_in) {
@@ -14834,7 +14872,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!entry) return noSigninSite(c, input.site);
       const offNet = await genericSiteRefused(entry, ctx);
       if (offNet) return offNet;
-      if (entry.signin_blocked) return { ok: false, blocked: true, site: entry.site, error: `${entry.label} blocks Reason's browser from its sign-in page, so no code can be asked for there.`, say: `${entry.label} is blocking my browser from its sign-in page right now, so I can't sign you in there.` };
+      // A site that refuses Reason's browser — at the page, or after the email goes in — is never
+      // sent an email address: each try there is one more failed sign-in against their account.
+      const access = await signinAccessFor(entry, ctx);
+      if (access.state === "blocked") return siteBlockedAnswer(c, entry, access);
       if (!me.known && c !== config.ownerConversation) return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
       if (signinRemote.remoteSessionFor(c) || signinWindow.openWindowFor(c)) return { ok: false, busy: true, error: "A sign-in is already open on their saved profile. Let it finish first." };
       // Their email: the one they named, else their Google account's address (the default one).
@@ -14875,6 +14916,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const wall = await socialWallFor(c, entry, input.provider, ctx);
         if (!wall.in) return wall.answer;
         liveWall = wall.wall ?? null;
+      } else {
+        // Everybody, flag or not: a wall on record (dated, still fresh) or seen just now means no link.
+        const access = await signinAccessFor(entry, ctx);
+        if (access.state === "blocked" && access.kind === "walled") return siteBlockedAnswer(c, entry, access);
+        if (access.checked_live) liveWall = access.wall ?? null;
       }
       if (!me.known && c !== config.ownerConversation) {
         return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
@@ -14888,20 +14934,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // for the link's own page to offer the same choices; and, for a site the probe found walled
       // (DoorDash, Uber Eats…), whether it still is — then no link, one plain line, and what works.
       // Under test only a handed-in probe runs: tests never touch the real network (src/netguard.js).
-      const probe = ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? null : social.signinWall);
+      const probe = liveWallFn(ctx);
       if (social.socialAllowedFor(c) && !liveWall && probe) {
         try { liveWall = await probe(entry); } catch (e) { liveWall = { in: false, why: (e?.message ?? String(e)).split("\n")[0], providers_offered: [] }; }
-        // Only a real wall refuses the link: a 403/503 or a challenge page. A 404, an outage or no
+        // Only a real wall refuses the link: a 403/429/503 or a challenge page. A 404, an outage or no
         // answer at all is not "blocking", and the link's own page still reads the wall live.
-        const walledNow = liveWall && !liveWall.in && (liveWall.status === 403 || liveWall.status === 503 || /bot check/.test(liveWall.why ?? ""));
-        if (reach && !reach.loads && walledNow) {
-          const instead = social.wallInstead(entry);
-          return {
-            ok: false, blocked: true, site: entry.site, checked_live: true,
-            error: `${entry.label}'s sign-in page refuses Reason's browser from here right now, so no link is made: it would only show the wall. ${liveWall.why ?? ""}`,
-            say: `${entry.label} is blocking my browser from its sign-in page right now, so I can't sign you in there. That's ${entry.label}'s choice, not something you did.${instead.say ? ` ${instead.say}` : ""}`,
-            instead: instead.tool,
-          };
+        if (findings.isWall(liveWall)) {
+          const got = findings.recordWall(entry, liveWall);
+          return siteBlockedAnswer(c, entry, { state: "blocked", kind: "walled", seen: got?.seen ?? "", why: liveWall.why ?? "", checked_live: true, stale: false });
         }
       }
       // Which button their account signs in through (src/socialsignin.js): the page opens with it
@@ -14986,6 +15026,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           if (again?.tried && again.state) out = { ...out, state: again.state, why: again.why || out.why, signed_in_again: again.state === "signed_in" };
           if (again?.refused) out = { ...out, state: "signed_out", why: again.why };
         }
+        // The account page itself answered 403 / 429: that is the site refusing the browser, not a
+        // page that failed to load. It is written down with today's date and said as a block.
+        const walledNow = out.ok && out.state === "unknown" && [403, 429].includes(Number(out.status));
+        if (walledNow) findings.recordFinding(entry, { kind: "walled", status: out.status, why: `its account page answered Reason's browser with HTTP ${out.status}` });
+        const blockedNow = walledNow ? siteBlockedAnswer(c, entry, { state: "blocked", kind: "walled", seen: findings.signinFinding(entry)?.seen ?? "", why: `its account page answered HTTP ${out.status}`, checked_live: true, stale: false }) : null;
         trust.ledgerWrite({ conversationId: c, action: "signin_status", input, out: { ...out, ...(again ? { signin_again: { provider: again.provider, pressed: !!again.pressed, state: again.state ?? null } } : {}) }, target: `site:${entry.site}` });
         return {
           ok: true, site: entry.site, state: out.state, why: out.why,
@@ -15001,7 +15046,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ...(out.inferred ? { inferred: "Read from the absence of a sign-in prompt rather than from anything positive on the page. Nobody has loaded a signed-in page on this site here to learn what one looks like." } : {}),
           ...(reach ? { site_loads_for_reason: reach.loads, site_note: reach.why } : {}),
           ...(entry.ride_access ? { ride_access: entry.ride_access } : {}),
-          ...(out.state === "unknown" ? { could_not_check: true, say: `Reason could not read ${entry.label}'s account page just now (${out.why}), so whether they are signed in is not known. Say you could not check right now and can try again in a bit. Do not say they are signed out and do not ask them to sign in.` } : {}),
+          ...(blockedNow ? { blocked: true, signin_here: "blocked", seen: blockedNow.seen, say: blockedNow.say, instead: blockedNow.instead, never: blockedNow.never }
+            : out.state === "unknown" ? { could_not_check: true, say: `Reason could not read ${entry.label}'s account page just now (${out.why}), so whether they are signed in is not known. Say you could not check right now and can try again in a bit. Do not say they are signed out and do not ask them to sign in.` } : {}),
           ...(out.state === "signed_in" || out.state === "unknown" ? {} : { how_to_sign_in: route.can_sign_in ? signin.signinCommand(entry.site) : null, remote: route.can_sign_in ? null : signin.remoteSigninAnswer(entry.site) }),
           never_a_password: never,
         };
@@ -15027,9 +15073,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ...(live ? {} : { how_to_sign_in: `signin_link with site '${also.site}', which they open on their phone` }),
         }];
       }
+      // Whether each SITE lets Reason's browser sign in, from a dated finding (src/sitefindings.js).
+      // One site asked about by name is asked live when its finding is old or missing; a list is
+      // answered from what is stored, and says so.
+      const hereFor = new Map();
+      for (const r of rows) {
+        const e = signinSite(c, r.site);
+        if (!e) continue;
+        hereFor.set(r.site, { entry: e, access: input.site ? await signinAccessFor(e, ctx) : findings.signinAccessStored(e) });
+      }
       return {
         ok: true,
-        can_sign_in_here: route.can_sign_in,
+        // About the PERSON, not about any site: are they at the Mac a sign-in window would open on.
+        // It was called can_sign_in_here until 2026-11-12, and was read as "DoorDash can be signed in
+        // to here" while DoorDash answered 403 on every page. Each site's own answer is `signin_here`.
+        window_on_this_mac: route.can_sign_in,
         by_link: route.by_link,
         how: route.can_sign_in ? route.how : null,
         ...(route.can_sign_in ? {} : { remote: signin.remoteSigninAnswer("") }),
@@ -15038,14 +15096,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           // even when its row here says never_signed_in; say so, so "not signed in here" is never
           // repeated to the person as "not connected" (and no sign-in link is offered for it).
           const viaStore = r.state === "signed_in" ? null : trust.storeConnected(c, r.site);
+          const here = hereFor.get(r.site);
+          const a = here?.access;
+          const blocked = a?.state === "blocked" && r.state !== "signed_in";
+          const told = blocked ? siteBlockedAnswer(c, here.entry, a) : null;
           return {
             ...r,
+            // blocked: the site refuses Reason's browser (dated). open: its sign-in page loaded when
+            // last asked. unknown: nobody has asked, or the answer is too old to repeat.
+            ...(a ? { signin_here: a.state, ...(a.seen ? { signin_here_seen: a.seen } : {}), ...(a.checked_live ? { signin_here_checked_now: true } : {}), ...(a.stale ? { signin_here_stale: true } : {}) } : {}),
+            ...(blocked ? {
+              how_to_sign_in: undefined,
+              ...(a.kind === "walled" ? {} : { signin_link_may_work: true }),
+              blocked_say: told.say, instead: told.instead ?? told.handoff, never: told.never,
+            } : {}),
             ...(viaStore ? { connected_via_crossmint: true, connected_at: stamp(viaStore.connectedAt), how_to_sign_in: undefined, note: `${viaStore.name} is connected through Crossmint (orders use the saved sign-in). This row only describes Reason's own browser; do not tell them it is not connected.` } : {}),
             ...(trust.SITE_REACHABLE[r.site] ? { site_loads_for_reason: trust.SITE_REACHABLE[r.site].loads } : {}),
           };
         }),
         never_a_password: never,
-        note: "These are from the last check, not from right now — `last_checked` says when. A session can expire quietly, so before an errand that depends on being signed in, call this again with recheck: true.",
+        note: "These are from the last check, not from right now — `last_checked` says when. A session can expire quietly, so before an errand that depends on being signed in, call this again with recheck: true. `signin_here` is whether the SITE lets your browser sign in at all, as of `signin_here_seen`: blocked means do not offer a sign-in there, say the site blocks automated sign-in and go to `instead`; unknown means nobody has checked lately, so ask with the site named before promising anything.",
       };
     }
 
@@ -15131,10 +15201,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const p = sites.playbook(name);
         const reach = trust.SITE_REACHABLE[name];
         const row = db.lastSigninCheck(c, name);
+        const f = findings.signinAccessStored(sites.site(name));
         return {
           ...p,
           site_loads: reach?.loads ?? null,
           site_note: reach?.why ?? "",
+          ...(reach?.seen ? { site_note_seen: reach.seen } : {}),
+          ...(f.state !== "unknown" ? { signin_here: f.state, signin_here_seen: f.seen, ...(f.stale ? { signin_here_stale: "Old: signin_status with this site asks it again before you repeat it." } : {}) } : {}),
           signed_in: !row?.revoked_at && row?.state === "signed_in",
           ...(reach?.loads === false
             ? {
@@ -15154,7 +15227,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true,
         sites: sites.siteNames().map(one),
         gate: "Browsing, searching and filling a form are ordinary clicks and need no yes. The one click that commits goes through browser_submit, and on these sites it will not go through unless the details you approved name the total the page shows.",
-        probed: "The site_loads field is from npm run probe:sites on 2026-10-05, headless and signed out. docs/site-probe-2026-10-05.json is the run.",
+        probed: "site_loads is from the probe run on each row's site_note_seen date (docs/site-probe-*.json), headless and signed out. A finding is a fact about that day: say the date when it is old, and signin_status with the site named asks it again.",
       };
     }
 

@@ -602,17 +602,20 @@ export const PROVIDERS = {
  * `npm run probe:sites` should be changing one list and not hunting through two.
  */
 export const SITE_REACHABLE = {
-  opentable: { loads: false, why: "drops the connection on an automated browser (ERR_HTTP2_PROTOCOL_ERROR), and answers plain curl with 403" },
-  uber: { loads: true, why: "m.uber.com loads; the ride form is visible signed out, prices and cars are not" },
+  opentable: { seen: "2026-11-12", loads: false, why: "drops the connection on an automated browser (ERR_HTTP2_PROTOCOL_ERROR), and answers plain curl with 403" },
+  uber: { seen: "2026-10-05", loads: true, why: "m.uber.com loads; the ride form is visible signed out, prices and cars are not" },
+  // `seen` is the day of the probe run the line comes from. OpenTable, DoorDash, Uber Eats and
+  // Ticketmaster were probed again 2026-11-12 (docs/site-probe-2026-11-12-signin.json); whether a
+  // SIGN-IN may be offered is src/sitefindings.js, which expires and re-asks.
   // Probed again 2026-11-12 (docs/site-probe-2026-11-12-food.json): Cloudflare's check, never clearing,
   // in the same headless browser from a home connection too. It is the automated browser, not the server's address.
-  doordash: { loads: false, why: "answers 403 on every page" },
-  uber_eats: { loads: false, why: "its sign-in page answers 403; only the signed-out home page loads" },
-  amazon: { loads: true, why: "loads, and the order-history page redirects to Amazon's sign-in exactly as the probe expects" },
-  delta: { loads: false, why: "answers Access Denied (HTTP 444) on every page" },
-  united: { loads: false, why: "drops the connection on an automated browser and on plain curl too" },
-  ticketmaster: { loads: false, why: "answers 403 on every page" },
-  fandango: { loads: true, why: "loads, and the account page redirects to Fandango's sign-in exactly as the probe expects" },
+  doordash: { seen: "2026-11-12", loads: false, why: "answers 403 on every page" },
+  uber_eats: { seen: "2026-11-12", loads: false, why: "its sign-in page answers 403; only the signed-out home page loads" },
+  amazon: { seen: "2026-10-05", loads: true, why: "loads, and the order-history page redirects to Amazon's sign-in exactly as the probe expects" },
+  delta: { seen: "2026-10-05", loads: false, why: "answers Access Denied (HTTP 444) on every page" },
+  united: { seen: "2026-10-05", loads: false, why: "drops the connection on an automated browser and on plain curl too" },
+  ticketmaster: { seen: "2026-11-12", loads: false, why: "answers 403 on every page" },
+  fandango: { seen: "2026-10-05", loads: true, why: "loads, and the account page redirects to Fandango's sign-in exactly as the probe expects" },
 };
 
 export function missingCredentials(name) {

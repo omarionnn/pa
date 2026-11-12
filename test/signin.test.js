@@ -159,7 +159,8 @@ test("signin_status reports every site, when it was checked, and how to sign in"
   db.recordSiteSignin(OMARI, "amazon", { state: "signed_in", evidence: "order history loaded" });
   const out = await call("signin_status", {});
   assert.equal(out.ok, true);
-  assert.equal(out.can_sign_in_here, true);
+  assert.equal(out.window_on_this_mac, true, "about the person being at the Mac, not about any site");
+  assert.equal(out.can_sign_in_here, undefined, "the old name read as 'this site can be signed in to'");
   assert.equal(out.sites.length, 9);
 
   const amazon = out.sites.find(s => s.site === "amazon");
@@ -252,7 +253,7 @@ test("the operator is told the command; anybody else is told the truth", () => {
 test("for somebody who is not at the Mac, signin_status offers the honest answer and no form", async () => {
   const out = await call("signin_status", { site: "amazon" }, AMA);
   assert.equal(out.ok, true);
-  assert.equal(out.can_sign_in_here, false);
+  assert.equal(out.window_on_this_mac, false);
   assert.equal(out.how, null);
   assert.equal(out.remote.possible, false);
   assert.match(out.remote.for_now, /Ask Omari to do the bit that needs an account/i);
