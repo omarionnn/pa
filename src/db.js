@@ -3404,7 +3404,7 @@ export function unexecutedGatesFor(conversationId, task) {
 // Calls and texts to somebody else: about "now". See config.askTtlReachH.
 const REACH_ASKS = new Set(["call_place", "message_send", "voice_note_send", "x_dm"]);
 // Spending, or committing to something priced. See config.askTtlMoneyH.
-const MONEY_ASKS = new Set(["purchase", "purchase_confirm", "uber_request", "flight_book", "browser_submit", "subscription_cancel_commit"]);
+const MONEY_ASKS = new Set(["purchase", "purchase_confirm", "uber_request", "browser_submit", "subscription_cancel_commit"]);
 
 /** How long this ask stays answerable, in ms, by what it is for. */
 export function askTtlMs(row) {
