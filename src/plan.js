@@ -355,6 +355,41 @@ export function onFreeTier(conversationId, now = clock.now()) {
   return !!st.monthly && (st.status === "trial" || st.status === "lapsed");
 }
 
+/**
+ * Would their next text, once counted, be over this month's free conversations? Asked BEFORE the count
+ * (noteTurn), by the things that may let a text through uncounted (src/eventbusiness.js).
+ */
+export function overNext(conversationId, now = clock.now()) {
+  if (!onFreeTier(conversationId, now)) return false;
+  const r = row(conversationId);
+  const m = monthOf(r, now);
+  const fresh = !r?.last_inbound_at || now - r.last_inbound_at >= SESSION_GAP_MS;
+  return (!m.current ? 1 : m.conversations + (fresh ? 1 : 0)) > FREE_CONVERSATIONS;
+}
+
+// The lapsed gate stood down for named tools, for one turn (the router sets it before the turn and
+// clears it after): a guest's event tools in a free event-business turn (src/eventbusiness.js).
+const waivers = new Map();
+export function waive(conversationId, names) { if (conversationId) waivers.set(planId(conversationId), new Set(names)); }
+export function unwaive(conversationId) { if (conversationId) waivers.delete(planId(conversationId)); }
+
+// A call that is on Reason (owner, 2026-11-11): the first call after a yes to the surprise-call offer
+// in the event onboarding (src/eventonboarding.js) is free and is not one of the month's FREE_CALLS.
+// One at a time, good until `until`; call_place spends it (useGiftCall) instead of counting the call.
+const giftKey = (conversationId) => `plan:gift_call:${planId(conversationId)}`;
+export function giftCall(conversationId, { until }) { if (conversationId) db.opsSet(giftKey(conversationId), Number(until)); }
+export function giftedCall(conversationId, now = clock.now()) {
+  if (!conversationId) return false;
+  const until = Number(db.opsGet(giftKey(conversationId)) ?? 0);
+  return until > now;
+}
+/** Spend it: true when this call was the free one (so it is not counted against the month's calls). */
+export function useGiftCall(conversationId, now = clock.now()) {
+  if (!giftedCall(conversationId, now)) return false;
+  db.opsDelete(giftKey(conversationId));
+  return true;
+}
+
 /** Is this person past their trial and unpaid — the state in which acting tools are refused? */
 export const blocked = (conversationId, now = clock.now()) => status(conversationId, now).status === "lapsed";
 
@@ -638,6 +673,8 @@ export async function callPlaceGate(conversationId, { fetchImpl = globalThis.fet
   if (!onFreeTier(conversationId, now)) return null;
   const st = status(conversationId, now);
   if (st.calls_left > 0) return null;
+  // The call that is on Reason (the surprise-call offer): placed even with the month's calls used.
+  if (giftedCall(conversationId, now)) return null;
   const r = row(conversationId);
   const told = !!r && r.told_session === r.sessions_used;
   let url = null;
@@ -787,6 +824,9 @@ export async function release(conversationId, { log = () => {}, now = clock.now(
  */
 export async function gate(conversationId, name, { fetchImpl = globalThis.fetch, log = () => {}, now = clock.now() } = {}) {
   if (!blocked(conversationId, now)) return null;
+  if (waivers.get(planId(conversationId))?.has(String(name))) return null;
+  // The call that is on Reason goes ahead for a guest over the ceiling too.
+  if (String(name) === "call_place" && giftedCall(conversationId, now)) return null;
   const r = row(conversationId);
   const told = r && r.told_session === r.sessions_used;
   let url = null;

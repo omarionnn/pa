@@ -11851,7 +11851,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");
-      try { plan.noteCall(c); } catch { /* the call is placed either way */ }
+      // The call that is on Reason (a yes to the event onboarding's surprise-call offer) is spent here
+      // and is not one of the month's free calls.
+      try { if (!plan.useGiftCall(c)) plan.noteCall(c); } catch { /* the call is placed either way */ }
       return {
         ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
