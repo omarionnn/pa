@@ -287,10 +287,12 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     // A food order's cart is held 15 minutes (src/food.js): past that, no yes pays it, whatever was said.
     { const food = await import("./food.js"); const row = shop.paymentRow(input.payment_id);
       if (row && row.conversation_id === c && row.status === "asked" && food.isFoodRun(row.run_id) && clock.now() > shop.askDeadline(row)) return { ok: false, error: "hold_lapsed", say: "The 15-minute hold on that cart passed, so nothing was placed or charged. Offer in one line to rebuild the same cart for a fresh total." }; }
-    // Face ID set up (src/passkey.js): no yes typed here pays. They get a fresh link; the page pays.
+    // Face ID set up (src/passkey.js): no yes typed here pays; the page pays. A link already out and still
+    // in its time is the one to use: minting another would close it under them (11-08, link_replaced).
     if (passkey.requiredFor(c)) {
       const row = shop.paymentRow(input.payment_id);
       if (!row || row.conversation_id !== c || row.status !== "asked") return { ok: false, error: "not_open" };
+      if (passkey.openApprovalFor(row.id)) return { ok: false, approve_with_face_id: true, link_still_open: true, say: "Their purchases are approved with Face ID, and the Face ID link already sent for this still works. Point them to that link in one line; don't send a new one, and don't say it's paid." };
       return { ok: false, approve_with_face_id: true, url: shop.approvalUrl(row), say: "Their purchases are approved with Face ID, so a yes in the chat doesn't pay. Send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 30 minutes. Don't say it's paid." };
     }
     const out = await shop.payApproved({ conversationId: c, paymentId: input.payment_id, confirmationId });
