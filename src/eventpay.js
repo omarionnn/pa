@@ -91,11 +91,121 @@ db.db.exec(`
   CREATE INDEX IF NOT EXISTS event_payments_intent ON event_payments (payment_intent_id);
 `);
 const q = (sql) => db.db.prepare(sql);
-// Tables made before refund policies (2026-11-11) get the two columns.
-// refunded_cents: what went back to the card (a guest's own cancel is the price, not the total);
-// fee_back_*: Reason's 2.5% owed back to the organizer after a guest's own cancel, and the try count (feeBack).
-for (const [col, decl] of [["refund_policy", "TEXT"], ["refund_hours", "INTEGER"], ["refunded_cents", "INTEGER NOT NULL DEFAULT 0"], ["fee_back_owed_cents", "INTEGER NOT NULL DEFAULT 0"], ["fee_back_seq", "INTEGER NOT NULL DEFAULT 0"]]) {
+// Tables made before refund policies (2026-11-11) get the two columns; before buy-for-friends, the
+// quantity (tickets in this one payment; every amount column is PER TICKET) and what of it went back.
+// refunded_cents: what went back to the card, all tickets together (a guest's own cancel is the price,
+// not the total); fee_back_*: Reason's 2.5% owed back to the organizer after a guest's own cancel, and
+// the key's sequence (feeBack).
+for (const [col, decl] of [["refund_policy", "TEXT"], ["refund_hours", "INTEGER"], ["quantity", "INTEGER NOT NULL DEFAULT 1"], ["refunded_cents", "INTEGER NOT NULL DEFAULT 0"], ["fee_back_owed_cents", "INTEGER NOT NULL DEFAULT 0"], ["fee_back_seq", "INTEGER NOT NULL DEFAULT 0"], ["fee_back_pending_cents", "INTEGER NOT NULL DEFAULT 0"], ["refund_pending", "TEXT"]]) {
   if (!db.db.prepare("PRAGMA table_info(event_payments)").all().some(c => c.name === col)) db.db.exec(`ALTER TABLE event_payments ADD COLUMN ${col} ${decl}`);
+}
+
+// ---------- buy for friends: one seat per ticket (owner decision 2026-11-11) ----------
+//
+// A buyer may get up to ticketMax(ev) tickets in one Checkout (quantity N, the same per-ticket price
+// and processing). Every ticket is a SEAT row once the payment lands: seat 0 is the buyer's own (they
+// are on the event with it), seats 1..N-1 are handed to friends. A friend is never a "+1" on the
+// buyer: they claim their seat from its link — their own name, their own number (the same proof by
+// text as any page join), the organizer's required questions — and are then a guest like any other,
+// with their own spot, texts and page. Until claimed a seat holds its place under the cap.
+//
+// The claim link's secret (`claim_token`, 24 random bytes) works once: claiming spends it (NULL),
+// a reassign replaces it and bumps `version` (a claim begun on the old link fails), a refund drops it.
+// Somebody already on the event, the organizer, or somebody taken off it can't claim one.
+//
+// Refunds are per seat: the buyer gives back a seat nobody claimed (under the event's refund policy),
+// a friend gives back the seat they claimed (the money goes to the buyer's card: they paid), the
+// organizer refunds any seat. Each is a partial refund of the buyer's one payment — the transfer and
+// Reason's fee are reversed in proportion, which is exactly one ticket's share. A cancellation
+// refunds every payment in full.
+// Whether this boot makes the seats table: only then are the payments from before seats given theirs.
+const seatsNew = !q("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'event_seats'").get();
+db.db.exec(`
+  CREATE TABLE IF NOT EXISTS event_seats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payment_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    seat_no INTEGER NOT NULL,
+    -- the buyer: who paid, and whose card any refund of this seat goes back to
+    conversation_id TEXT NOT NULL,
+    -- who is on the event with this seat: the buyer for seat 0, the friend once claimed
+    holder_conversation_id TEXT,
+    -- open (paid, nobody has claimed it) | claimed | refunded
+    state TEXT NOT NULL DEFAULT 'open',
+    claim_token TEXT UNIQUE,
+    version INTEGER NOT NULL DEFAULT 1,
+    -- the one text Reason may send a friend the buyer named (only somebody Reason can already text)
+    invite_conversation_id TEXT,
+    invite_state TEXT,
+    invite_due_at INTEGER,
+    invited_at INTEGER,
+    refunding_at INTEGER,
+    refund_id TEXT,
+    refund_error TEXT,
+    refund_attempts INTEGER NOT NULL DEFAULT 0,
+    refund_why TEXT,
+    refunded_at INTEGER,
+    claimed_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (payment_id, seat_no)
+  );
+  CREATE INDEX IF NOT EXISTS event_seats_event ON event_seats (event_id, state);
+  CREATE INDEX IF NOT EXISTS event_seats_holder ON event_seats (holder_conversation_id, event_id);
+`);
+// Payments from before seats: each is one ticket, the buyer's own (claimed while paid, refunded once refunded).
+// Once, when the table is made: after that a payment with no seats is one that never got anybody in (it
+// landed with no room, or for somebody already in), and a seat 0 made for it on a later boot would count a
+// sale that never happened and turn its whole refund into one ticket's (review 2026-11-11).
+if (seatsNew) db.db.exec(`INSERT INTO event_seats (payment_id, event_id, seat_no, conversation_id, holder_conversation_id, state, refund_id, refunded_at, claimed_at, created_at, updated_at)
+  SELECT p.id, p.event_id, 0, p.conversation_id, p.conversation_id, CASE p.status WHEN 'paid' THEN 'claimed' ELSE 'refunded' END,
+    p.refund_id, p.refunded_at, p.paid_at, COALESCE(p.paid_at, p.created_at), p.updated_at
+  FROM event_payments p WHERE p.status IN ('paid', 'refunded') AND NOT EXISTS (SELECT 1 FROM event_seats s WHERE s.payment_id = p.id)`);
+// Unclaimed seats hold their places for every join (db.addAttendeeTx).
+db.setReservedPlaces((eventId) => unclaimedSeats(eventId));
+
+export const DEFAULT_TICKET_MAX = 4;
+export const TICKET_MAX_LIMIT = 10;
+/** How many tickets one buyer may get at once on this event: the organizer's number, else 4. 1 = no extra tickets. */
+export function ticketMax(ev) {
+  const n = Number(ev?.ticket_max);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, TICKET_MAX_LIMIT) : DEFAULT_TICKET_MAX;
+}
+
+export function seatById(id) {
+  return q("SELECT * FROM event_seats WHERE id = ?").get(Number(id)) ?? null;
+}
+/** The open seat a claim link opens, or null (claimed, refunded, reassigned, made up). */
+export function seatByToken(token) {
+  if (typeof token !== "string" || !/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
+  return q("SELECT * FROM event_seats WHERE claim_token = ? AND state = 'open'").get(token) ?? null;
+}
+export function seatsOfPayment(paymentId) {
+  return q("SELECT * FROM event_seats WHERE payment_id = ? ORDER BY seat_no").all(Number(paymentId));
+}
+/** Places held by tickets bought for friends who haven't claimed them. */
+export function unclaimedSeats(eventId) {
+  return Number(q("SELECT COUNT(*) AS n FROM event_seats s JOIN event_payments p ON p.id = s.payment_id WHERE s.event_id = ? AND s.state = 'open' AND p.status = 'paid'").get(Number(eventId)).n);
+}
+/** The tickets a buyer got for friends on this event (seat 1 up), with who holds each. Refunded ones left out. */
+export function friendSeats(eventId, buyerConversationId) {
+  return q(`SELECT s.* FROM event_seats s JOIN event_payments p ON p.id = s.payment_id
+    WHERE s.event_id = ? AND s.conversation_id = ? AND s.seat_no > 0 AND s.state != 'refunded' AND p.status = 'paid' ORDER BY s.payment_id, s.seat_no`).all(Number(eventId), String(buyerConversationId ?? ""));
+}
+/** Every unclaimed seat on the event, for the organizer. */
+export function openSeats(eventId) {
+  return q(`SELECT s.* FROM event_seats s JOIN event_payments p ON p.id = s.payment_id
+    WHERE s.event_id = ? AND s.state = 'open' AND p.status = 'paid' ORDER BY s.payment_id, s.seat_no`).all(Number(eventId));
+}
+/** The claim link a buyer forwards. Only while the seat is open. */
+export function seatUrl(ev, seat) {
+  return seat?.state === "open" && seat.claim_token ? `${events.eventUrl(ev)}/seat/${seat.claim_token}` : null;
+}
+/** What a buyer's name reads as to the friend they got a ticket for. */
+export function buyerName(ev, seat) {
+  const att = db.attendeeRow(ev.id, seat.conversation_id);
+  const acct = db.getAccount(seat.conversation_id);
+  return String(att?.display_name || acct?.name || "A friend").slice(0, 40);
 }
 
 // ---------- the switch ----------
@@ -408,21 +518,27 @@ export function rowBySession(sessionId) {
 export function rowByIntent(intentId) {
   return intentId ? q("SELECT * FROM event_payments WHERE payment_intent_id = ? ORDER BY id DESC").get(String(intentId)) ?? null : null;
 }
-/** This person's live payment on this event: paid, or an open hold that has not run out. */
+/**
+ * This person's ticket on this event: the seat they hold (their own, or one a friend bought them) on
+ * a payment that stands. The payment's row, PER TICKET amounts, with `seat_id`, `seat_no`,
+ * `conversation_id` = the holder and `buyer_conversation_id` = who paid.
+ */
 export function paidRow(eventId, conversationId) {
-  return q("SELECT * FROM event_payments WHERE event_id = ? AND conversation_id = ? AND status = 'paid' ORDER BY id DESC").get(Number(eventId), conversationId) ?? null;
+  return q(`SELECT p.*, s.id AS seat_id, s.seat_no, s.holder_conversation_id AS conversation_id, p.conversation_id AS buyer_conversation_id
+    FROM event_seats s JOIN event_payments p ON p.id = s.payment_id
+    WHERE s.event_id = ? AND s.holder_conversation_id = ? AND s.state = 'claimed' AND p.status = 'paid' ORDER BY s.id DESC`).get(Number(eventId), String(conversationId ?? "")) ?? null;
 }
 export function openRow(eventId, conversationId, now = clock.now()) {
   return q("SELECT * FROM event_payments WHERE event_id = ? AND conversation_id = ? AND status = 'open' AND expires_at > ? ORDER BY id DESC").get(Number(eventId), conversationId, now) ?? null;
 }
-/** Spots held by Checkout pages that are still open. */
+/** Tickets held by Checkout pages that are still open (a hold for 3 tickets holds 3 places). */
 export function openHolds(eventId, now = clock.now()) {
-  return Number(q("SELECT COUNT(*) AS n FROM event_payments WHERE event_id = ? AND status = 'open' AND expires_at > ?").get(Number(eventId), now).n);
+  return Number(q("SELECT COALESCE(SUM(quantity), 0) AS n FROM event_payments WHERE event_id = ? AND status = 'open' AND expires_at > ?").get(Number(eventId), now).n);
 }
-/** Places left under the cap, counting people in AND spots held for a payment in progress. Infinity with no cap. */
+/** Places left under the cap: people in, tickets bought for friends not claimed yet, and tickets being paid for all count. Infinity with no cap. */
 export function spotsLeft(ev, now = clock.now()) {
   if (ev.capacity == null) return Infinity;
-  return ev.capacity - db.joinedCount(ev.id) - openHolds(ev.id, now);
+  return ev.capacity - db.joinedCount(ev.id) - unclaimedSeats(ev.id) - openHolds(ev.id, now);
 }
 export function paidRows(eventId) {
   return q("SELECT * FROM event_payments WHERE event_id = ? AND status = 'paid' ORDER BY paid_at, id").all(Number(eventId));
@@ -430,7 +546,9 @@ export function paidRows(eventId) {
 
 /** Does this conversation hold a paid ticket on an event that is still on? (Shows them event_ticket_refund.) */
 export function holdsTicket(conversationId) {
-  return !!q("SELECT 1 FROM event_payments p JOIN events e ON e.id = p.event_id WHERE p.conversation_id = ? AND p.status = 'paid' AND e.status != 'cancelled' LIMIT 1").get(String(conversationId ?? ""));
+  const c = String(conversationId ?? "");
+  return !!q(`SELECT 1 FROM event_seats s JOIN event_payments p ON p.id = s.payment_id JOIN events e ON e.id = s.event_id
+    WHERE (s.holder_conversation_id = ? OR (s.conversation_id = ? AND s.state = 'open')) AND s.state != 'refunded' AND p.status = 'paid' AND e.status != 'cancelled' LIMIT 1`).get(c, c);
 }
 
 /** Where Stripe sends the guest after paying, or after changing their mind — both on the events domain. */
@@ -438,12 +556,14 @@ const successUrl = (ev) => `${events.eventUrl(ev)}/paid`;
 const cancelUrl = (ev) => `${events.eventUrl(ev)}/pay-back`;
 
 /**
- * Start a payment for one spot: a hold on the row, a Checkout Session on Stripe. One open link per
- * person per event — asked twice, they get the same page. `{ ok: true, url, row, quote, reused }` or
- * `{ ok: false, reason }` with reason one of `not_paid`, `paused`, `cancelled`, `organizer`, `already`,
- * `removed`, `full`, `no_payouts`, `stripe` (with `error`).
+ * Start a payment for `quantity` tickets (theirs, and one for each friend): a hold on the row, a
+ * Checkout Session on Stripe. One open link per person per event — asked twice for the same number,
+ * they get the same page; for another number the old page is expired and a new one made.
+ * `{ ok: true, url, row, quote, reused }` or `{ ok: false, reason }` with reason one of `not_paid`,
+ * `paused`, `cancelled`, `organizer`, `already`, `removed`, `full` (with `left` when some are),
+ * `too_many` (with `max`), `no_payouts`, `stripe` (with `error`).
  */
-export async function startCheckout({ ev, conversationId, displayName, instagram = null, inDirectory = false, via = "text", answers = null, fetchImpl = globalThis.fetch, now = clock.now(), log = () => {} }) {
+export async function startCheckout({ ev, conversationId, displayName, instagram = null, inDirectory = false, via = "text", answers = null, quantity = 1, fetchImpl = globalThis.fetch, now = clock.now(), log = () => {} }) {
   if (!priced(ev)) return { ok: false, reason: "not_paid" };
   if (ev.status !== "active") return { ok: false, reason: ev.status };
   if (ev.organizer_conversation_id === conversationId) return { ok: false, reason: "organizer" };
@@ -452,9 +572,18 @@ export async function startCheckout({ ev, conversationId, displayName, instagram
   if (prior?.state === "removed") return { ok: false, reason: "removed" };
   const paid = paidRow(ev.id, conversationId);
   if (paid) return { ok: false, reason: "already", paid };
+  const n = Number(quantity ?? 1);
+  if (!Number.isInteger(n) || n < 1) return { ok: false, reason: "bad_quantity" };
+  if (n > ticketMax(ev)) return { ok: false, reason: "too_many", max: ticketMax(ev) };
   const open = openRow(ev.id, conversationId, now);
-  if (open?.checkout_url) return { ok: true, url: open.checkout_url, row: open, quote: quote(open.price_cents), reused: true };
-  if (spotsLeft(ev, now) <= 0) return { ok: false, reason: "full" };
+  if (open?.checkout_url && Number(open.quantity ?? 1) === n) return { ok: true, url: open.checkout_url, row: open, quote: quote(open.price_cents), reused: true };
+  // Room for N, counting the page they already have open as theirs to give up; refused, that page stands.
+  const mine = open ? Number(open.quantity ?? 1) : 0;
+  const left = spotsLeft(ev, now) + mine;
+  if (left < n) return { ok: false, reason: "full", left: left > 0 ? left : 0 };
+  // Another number of tickets than the page already open: that page goes, its places with it. (One
+  // that is paid anyway lands on somebody already in and goes straight back: settlePaid.)
+  if (open) await expireRow(open, { fetchImpl, now, log });
   const acct = payoutAccount(ev.organizer_conversation_id);
   if (!acct?.charges_enabled) return { ok: false, reason: "no_payouts" };
   const qt = quote(ev.price_cents);
@@ -462,23 +591,25 @@ export async function startCheckout({ ev, conversationId, displayName, instagram
   const answersJson = Array.isArray(answers) ? (answers.length ? JSON.stringify(answers) : null) : (typeof answers === "string" && answers ? answers : null);
   // The policy this ticket is sold under rides on the row: a later tightening never reaches it.
   const pol = policyOf(ev);
-  const id = Number(q(`INSERT INTO event_payments (event_id, conversation_id, display_name, instagram, in_directory, via, answers, price_cents, processing_cents, total_cents, application_fee_cents, currency, refund_policy, refund_hours, status, created_at, expires_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`)
-    .run(ev.id, conversationId, String(displayName ?? ""), instagram ?? null, inDirectory ? 1 : 0, via, answersJson, qt.price, qt.processing, qt.total, qt.application_fee, ev.currency || "usd", pol.policy, pol.hours, now, now + HOLD_MS, now).lastInsertRowid);
+  const id = Number(q(`INSERT INTO event_payments (event_id, conversation_id, display_name, instagram, in_directory, via, answers, price_cents, processing_cents, total_cents, application_fee_cents, currency, refund_policy, refund_hours, quantity, status, created_at, expires_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`)
+    .run(ev.id, conversationId, String(displayName ?? ""), instagram ?? null, inDirectory ? 1 : 0, via, answersJson, qt.price, qt.processing, qt.total, qt.application_fee, ev.currency || "usd", pol.policy, pol.hours, n, now, now + HOLD_MS, now).lastInsertRowid);
   const currency = ev.currency || "usd";
+  // N tickets: the same per-ticket price and processing, quantity N on both lines; Reason's fee is N
+  // times one ticket's, so a refund of one ticket (proportional on Stripe's side) is exactly its share.
   const r = await stripe.api("POST", "/v1/checkout/sessions", {
     mode: "payment",
     client_reference_id: `evpay:${id}`,
     line_items: [
-      { quantity: 1, price_data: { currency, unit_amount: qt.price, product_data: { name: `${String(ev.name).slice(0, 100)} · 1 person`, description: policyWithMoney(pol, ticketOfQuote(qt)) } } },
-      { quantity: 1, price_data: { currency, unit_amount: qt.processing, product_data: { name: "Processing" } } },
+      { quantity: n, price_data: { currency, unit_amount: qt.price, product_data: { name: `${String(ev.name).slice(0, 100)} · ${n === 1 ? "1 person" : "ticket"}`, description: policyWithMoney(pol, ticketOfQuote(qt)) } } },
+      { quantity: n, price_data: { currency, unit_amount: qt.processing, product_data: { name: "Processing" } } },
     ],
     payment_intent_data: {
-      application_fee_amount: qt.application_fee,
+      application_fee_amount: qt.application_fee * n,
       transfer_data: { destination: acct.stripe_account_id },
-      metadata: { reason_kind: "event_ticket", event_payment_id: String(id), event_id: String(ev.id) },
+      metadata: { reason_kind: "event_ticket", event_payment_id: String(id), event_id: String(ev.id), tickets: String(n) },
     },
-    metadata: { reason_kind: "event_ticket", event_payment_id: String(id), event_id: String(ev.id), conversation_id: conversationId },
+    metadata: { reason_kind: "event_ticket", event_payment_id: String(id), event_id: String(ev.id), conversation_id: conversationId, tickets: String(n) },
     // The refund policy, said on Stripe's page right above the Pay button.
     custom_text: { submit: { message: `${policyWithMoney(pol, ticketOfQuote(qt))}${pol.policy === "none" ? "" : " Ask Reason by text, or use your event page, to cancel."}` } },
     success_url: successUrl(ev),
@@ -492,13 +623,16 @@ export async function startCheckout({ ev, conversationId, displayName, instagram
     return { ok: false, reason: "stripe", error };
   }
   q("UPDATE event_payments SET checkout_session_id = ?, checkout_url = ?, updated_at = ? WHERE id = ?").run(String(r.body.id), String(r.body.url), now, id);
-  log({ event_checkout: ev.id, payment: id });
+  log({ event_checkout: ev.id, payment: id, tickets: n });
   return { ok: true, url: String(r.body.url), row: paymentRow(id), quote: qt, reused: false };
 }
 
 /** The words that go with the link, by text: the price, the hold, what happens next. */
-export function payLinkText(ev, qt = quote(ev.price_cents)) {
-  return `${ev.name} is ${dollars(qt.price)} per person (${dollars(qt.total)} with processing). ${policyWithMoney(policyOf(ev), ticketOfQuote(qt)).toLowerCase()} your spot is held for 15 minutes while you pay here — you're in once the payment goes through, and i'll text you then:`;
+export function payLinkText(ev, qt = quote(ev.price_cents), tickets = 1) {
+  const n = Number(tickets) || 1;
+  const what = n === 1 ? "your spot is held" : `your ${n} tickets (${dollars(qt.total * n)} in all) are held`;
+  const pol = policyWithMoney(policyOf(ev), ticketOfQuote(qt)).toLowerCase().replace("if you cancel:", n > 1 ? "if a ticket is cancelled:" : "if you cancel:");
+  return `${ev.name} is ${dollars(qt.price)} per person (${dollars(qt.total)} with processing). ${pol} ${what} for 15 minutes while you pay here — you're in once the payment goes through, and i'll text you then${n > 1 ? ", with a link for each friend" : ""}:`;
 }
 
 // ---------- the webhook ----------
@@ -562,7 +696,11 @@ async function actOn(event, ctx) {
       const row = rowByIntent(obj.payment_intent);
       if (!row) return { ok: true, matched: false };
       // Refunded from Stripe's dashboard rather than by Reason: the guest leaves the event the same way.
-      if (row.status === "paid" && (obj.refunded || Number(obj.amount_refunded ?? 0) >= Number(obj.amount ?? row.total_cents))) {
+      const charged = Number(obj.amount ?? row.total_cents * Math.max(1, Number(row.quantity ?? 1)));
+      if (row.status === "paid" && (obj.refunded || Number(obj.amount_refunded ?? 0) >= charged)) {
+        // A refund of ours still in flight (its seat is marked) is ours to finish: the last ticket of a payment makes the charge "fully refunded" too.
+        const ours = seatsOfPayment(row.id).some(st => st.state !== "refunded" && st.refunding_at != null && ctx.now - st.refunding_at < 10 * 60_000);
+        if (ours) return { ok: true, matched: true, ours: true };
         await afterRefund(row, { refundId: obj.refunds?.data?.[0]?.id ?? null, why: "dashboard" }, ctx);
         return { ok: true, matched: true, refunded: true };
       }
@@ -606,11 +744,26 @@ export async function settlePaid(row, { intentId = null, total = null }, ctx) {
   try {
     const fresh = paymentRow(row.id);
     if (fresh.status === "paid") { db.db.exec("ROLLBACK"); return { paid: true, already: true }; }
+    const n = Math.max(1, Number(fresh.quantity ?? 1));
+    // Stripe's amount_total is for all N tickets; the row keeps one ticket's.
+    const perTicket = total != null ? Math.round(Number(total) / n) : null;
     q("UPDATE event_payments SET status = 'paid', payment_intent_id = COALESCE(?, payment_intent_id), total_cents = COALESCE(?, total_cents), paid_at = ?, updated_at = ? WHERE id = ?")
-      .run(intentId, total, now, now, row.id);
+      .run(intentId, perTicket, now, now, row.id);
+    // Every ticket needs its place: the buyer's and each friend's, under the cap with every unclaimed seat counted.
+    const room = !ev || ev.capacity == null || db.joinedCount(ev.id) + unclaimedSeats(ev.id) + n <= ev.capacity;
     added = !ev ? { ok: false, reason: "not_found" }
       : ev.status !== "active" ? { ok: false, reason: ev.status }
+      : !room ? { ok: false, reason: "full" }
       : db.addAttendeeTx({ eventId: ev.id, conversationId: row.conversation_id, displayName: row.display_name || "Guest", instagram: row.instagram, inDirectory: !!row.in_directory, via: row.via });
+    // The seats: the buyer's own (they're on it), and one open seat with its own claim link per friend.
+    if (added.ok && !added.already) {
+      q(`INSERT INTO event_seats (payment_id, event_id, seat_no, conversation_id, holder_conversation_id, state, claimed_at, created_at, updated_at)
+        VALUES (?, ?, 0, ?, ?, 'claimed', ?, ?, ?)`).run(row.id, ev.id, row.conversation_id, row.conversation_id, now, now, now);
+      for (let i = 1; i < n; i++) {
+        q(`INSERT INTO event_seats (payment_id, event_id, seat_no, conversation_id, state, claim_token, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`).run(row.id, ev.id, i, row.conversation_id, db.newEventToken(24), now, now);
+      }
+    }
     db.db.exec("COMMIT");
   } catch (e) {
     try { db.db.exec("ROLLBACK"); } catch { /* already rolled back */ }
@@ -623,10 +776,10 @@ export async function settlePaid(row, { intentId = null, total = null }, ctx) {
   if (!added.ok) {
     // Paid for a spot that is no longer there: the whole amount back, and said plainly.
     const r = await refund({ ev, row: paid, why: added.reason, fetchImpl: ctx.fetchImpl, runtime, log, tellGuest: false, leave: false });
-    const words = { full: "filled up before your payment landed", cancelled: "was cancelled", paused: "is paused right now", removed: "isn't open to you", organizer: "is your own", already: "already had you on it" }[added.reason] ?? "couldn't take your join";
+    const words = { full: Number(paid.quantity ?? 1) > 1 ? "didn't have room for all your tickets by the time your payment landed" : "filled up before your payment landed", cancelled: "was cancelled", paused: "is paused right now", removed: "isn't open to you", organizer: "is your own", already: "already had you on it" }[added.reason] ?? "couldn't take your join";
     tell(ctx, row.conversation_id, r.ok
-      ? `sorry — ${ev?.name ?? "the event"} ${words}, so i've refunded your ${dollars(paid.total_cents)} in full. it shows up on your card in a few days.`
-      : `sorry — ${ev?.name ?? "the event"} ${words}. your ${dollars(paid.total_cents)} is being refunded; if it hasn't shown up in a few days, tell me.`);
+      ? `sorry — ${ev?.name ?? "the event"} ${words}, so i've refunded your ${dollars(paid.total_cents * Number(paid.quantity ?? 1))} in full. it shows up on your card in a few days.`
+      : `sorry — ${ev?.name ?? "the event"} ${words}. your ${dollars(paid.total_cents * Number(paid.quantity ?? 1))} is being refunded; if it hasn't shown up in a few days, tell me.`);
     return { paid: true, joined: false, refunded: r.ok, reason: added.reason };
   }
   const att = events.afterJoin({ ev, att: added.attendee, typedInstagram: row.instagram });
@@ -636,19 +789,47 @@ export async function settlePaid(row, { intentId = null, total = null }, ctx) {
   const receipt = db.insertEventMessage(ev.id, "receipt", receiptBody(ev, paid));
   await events.deliver({ runtime, message: receipt, conversationId: row.conversation_id });
   await events.sendWelcome({ runtime, ev, att });
+  // The friends' links: one line saying what they are, then each link as its own message (each makes its own card).
+  const seats = seatsOfPayment(row.id).filter(st => st.seat_no > 0);
+  if (seats.length) await sendSeatLinks({ runtime, ev, seats, log });
   events.scheduleListNote({ runtime, ev, att });
   // A new guest the event onboarding covers (src/eventonboarding.js): its one line, now they are in.
   await eventonb.afterPaid({ runtime, ev, conversationId: row.conversation_id, organizer: events.organizerName(ev), log })
     .catch(e => log({ event_onboarding_paid_failed: row.conversation_id, why: (e?.message ?? String(e)).split("\n")[0] }));
-  return { paid: true, joined: true, already: !!added.already };
+  return { paid: true, joined: true, already: !!added.already, seats: seats.length };
+}
+
+/** The words before a buyer's claim links. */
+export function seatLinksText(ev, count) {
+  return count === 1
+    ? `here's the ticket for your friend — send them this link. it works once: they tap it, put in their name, and they're on ${ev.name} as their own guest (their own spot, the event's texts, the album). if plans change, you can refund it or switch who it's for until it's claimed.`
+    : `here are your ${count} tickets for friends — send each friend one link. each works once: they tap it, put in their name, and they're on ${ev.name} as their own guest (their own spot, the event's texts, the album). if plans change, you can refund one or switch who it's for until it's claimed.`;
+}
+
+/** Text the buyer their open seats' links: the line, then one message per link. */
+export async function sendSeatLinks({ runtime, ev, seats, log = () => {} }) {
+  const open = seats.filter(st => st.state === "open" && st.claim_token);
+  if (!open.length) return 0;
+  const buyer = open[0].conversation_id;
+  const head = db.insertEventMessage(ev.id, "seat_links", seatLinksText(ev, open.length));
+  await events.deliver({ runtime, message: head, conversationId: buyer });
+  for (const st of open) {
+    const m = db.insertEventMessage(ev.id, "seat_link", seatUrl(ev, st));
+    await events.deliver({ runtime, message: m, conversationId: buyer });
+  }
+  log({ event_seat_links: ev.id, seats: open.length });
+  return open.length;
 }
 
 /** The paid-join text: what they paid, and the refund policy their ticket is held to. */
 export function receiptBody(ev, row) {
   const p = ticketPolicy(ev, row);
-  const tail = p.policy === "none" ? "no refunds on this one."
-    : `${refundPolicyLine(p).toLowerCase().replace(/\.$/, "")} — just text me "refund my ticket" if plans change (${selfRefundWords(row).replace(/\.$/, "")}).`;
-  return `paid ${dollars(row.total_cents)} for ${ev.name} — you're in. ${tail}`;
+  const n = Number(row.quantity ?? 1);
+  const tail = p.policy === "none" ? (n > 1 ? "no refunds on these." : "no refunds on this one.")
+    : `${refundPolicyLine(p).toLowerCase().replace(/\.$/, "")} — just text me ${n > 1 ? "" : "\"refund my ticket\" "}if plans change (${n > 1 ? "each ticket cancelled: " : ""}${selfRefundWords(row).replace(/\.$/, "")}).`;
+  return n > 1
+    ? `paid ${dollars(row.total_cents * n)} for ${n} tickets to ${ev.name} — you're in, and the other ${n - 1} ${n === 2 ? "is" : "are"} for your friends (links next). ${tail}`
+    : `paid ${dollars(row.total_cents)} for ${ev.name} — you're in. ${tail}`;
 }
 
 // ---------- refunds ----------
@@ -663,44 +844,100 @@ export function refundedBody(ev, totalCents, { cancelled = false, guest = false,
 }
 
 /**
- * Give one guest their money back — the whole amount, or on their own cancel the price (refundSplit):
- * the transfer to the organizer is reversed by what goes back, and Reason's fee is refunded (whole by
- * Stripe on a full refund; its 2.5% by feeBack after a guest's own). Then they are off the event and
- * told. Idempotent on the row. `{ ok: true, refund_id, amount_cents }` or `{ ok: false, reason, error }`.
+ * Money back. With a seat (`seat`, or `row.seat_id` from paidRow): that one ticket — a partial
+ * refund of the buyer's payment. Without one: every ticket on the payment still standing (a
+ * cancellation, or a payment that landed with no room). What one ticket gives back is refundSplit's:
+ * the whole ticket (Stripe reverses the transfer and Reason's fee in proportion: exactly its share),
+ * or on a guest's own cancel the price (the transfer reversed by the price, Reason's 2.5% back by
+ * feeBack, Stripe keeps its processing). Then whoever held a refunded seat is off the event and told,
+ * and the buyer hears about any ticket of theirs that went back. Idempotent per seat.
+ * `{ ok: true, refund_id, amount_cents }` or `{ ok: false, reason, error }`.
  */
-export async function refund({ ev, row, why = "organizer", fetchImpl = globalThis.fetch, runtime = null, log = () => {}, now = clock.now(), tellGuest = true, cancelled = false, leave = true }) {
-  const cur = paymentRow(row.id);
+export async function refund({ ev, row = null, seat = null, why = "organizer", fetchImpl = globalThis.fetch, runtime = null, log = () => {}, now = clock.now(), tellGuest = true, cancelled = false, leave = true }) {
+  const cur = paymentRow(row?.id ?? seat?.payment_id);
   if (!cur) return { ok: false, reason: "not_found" };
-  if (cur.status === "refunded") return { ok: true, refund_id: cur.refund_id, already: true };
+  const one = seat ? seatById(seat.id) : row?.seat_id ? seatById(row.seat_id) : null;
+  if (one && one.payment_id !== cur.id) return { ok: false, reason: "not_found" };
+  if (one?.state === "refunded") return { ok: true, refund_id: one.refund_id, already: true, amount_cents: 0 };
+  if (!one && cur.status === "refunded") return { ok: true, refund_id: cur.refund_id, already: true, amount_cents: 0 };
   if (cur.status !== "paid" || !cur.payment_intent_id) return { ok: false, reason: "not_paid" };
-  // The key carries the attempt, so a retry after Stripe said no is a new request, not the replayed no.
+  // A refund Stripe may already have done (it timed out, or answered 5xx) is finished before anything
+  // else on this payment, by asking exactly the same again under the same key, so Stripe replays it:
+  // the same ticket's refund replays (whoever asks now, it keeps the first one's why and amount); any
+  // other refund on the payment waits (review 2026-11-11). The sweep finishes it too (refundPending).
+  const pending = readPending(cur);
+  if (pending && (pending.seat ?? null) !== (one?.id ?? null)) return { ok: false, reason: "busy", error: "another refund on this payment is still being confirmed by Stripe" };
+  if (pending) { why = pending.why; cancelled = cancelled || pending.why === "cancelled"; }
+  const qty = Math.max(1, Number(cur.quantity ?? 1));
+  const seats = seatsOfPayment(cur.id);
+  const standing = seats.filter(st => st.state !== "refunded");
+  const targets = one ? [one] : standing;
+  const count = one ? 1 : (seats.length ? standing.length : qty);
+  // One ticket's refund (amount columns are per ticket): whole, or the price on a guest's own cancel.
   const split = refundSplit(cur, why);
+  const amount = count * split.back_cents;
+  if (amount <= 0) return { ok: false, reason: "not_paid" };
+  const full = cur.total_cents * qty;
   const body = {
     payment_intent: cur.payment_intent_id, reverse_transfer: true,
-    // A full refund sends the whole application fee back with it. A guest's own cancel names its
-    // amount (the price): the transfer is reversed in proportion — exactly the price, since a
-    // destination charge transfers the whole charge — and Reason's 2.5% goes back on its own (feeBack).
+    // A whole refund sends Reason's fee back with it, in proportion. A guest's own cancel doesn't
+    // (the proportional share would include the processing Stripe keeps): its 2.5% goes back by feeBack.
     refund_application_fee: !split.kept_cents,
-    metadata: { reason_kind: "event_ticket", event_payment_id: String(cur.id), why: String(why).slice(0, 40) },
+    metadata: { reason_kind: "event_ticket", event_payment_id: String(cur.id), why: String(why).slice(0, 40), ...(one ? { event_seat_id: String(one.id) } : {}) },
   };
-  if (split.kept_cents) body.amount = split.back_cents;
-  const r = await stripe.api("POST", "/v1/refunds", body, { fetchImpl, idempotencyKey: `evrefund:${cur.id}:${cur.refund_attempts}${split.kept_cents ? "p" : ""}` });
+  // Anything less than the whole charge names its amount; Stripe reverses the transfer in proportion —
+  // a destination charge transfers the whole charge, so that is exactly the amount.
+  if (amount !== full) body.amount = amount;
+  // A refund of one of these tickets already in flight (another tap, the organizer at the same moment) goes
+  // first: a second one now, under a different key, would refund the ticket twice (review 2026-11-11).
+  if (targets.some(st => st.refunding_at != null && now - st.refunding_at < 10 * 60_000)) return { ok: false, reason: "busy", error: "a refund of that ticket is already going through" };
+  // Marked first, so Stripe's charge.refunded for this very refund (which can beat our own answer) is left to us.
+  for (const st of targets) q("UPDATE event_seats SET refunding_at = ?, updated_at = ? WHERE id = ?").run(now, now, st.id);
+  // The key carries the attempt, so a retry after Stripe said no is a new request, not the replayed no.
+  // A one-ticket payment keeps the payment's own key (as before seats); a ticket out of several, its seat's.
+  const bySeat = !!one && qty > 1;
+  const key = pending?.key ?? (bySeat ? `evrefund:${cur.id}:s${one.id}:${one.refund_attempts}` : `evrefund:${cur.id}:${cur.refund_attempts}`) + (split.kept_cents ? "p" : "");
+  // Pending from before the ask (a crash mid-call leaves it so): only a yes or a definite no settles it.
+  q("UPDATE event_payments SET refund_pending = ? WHERE id = ?").run(JSON.stringify({ key, why: String(why), seat: one?.id ?? null, at: now }), cur.id);
+  const r = await stripe.api("POST", "/v1/refunds", body, { fetchImpl, idempotencyKey: key });
+  if (r.ok || definiteNo(r)) q("UPDATE event_payments SET refund_pending = NULL WHERE id = ?").run(cur.id);
   if (!r.ok) {
     const error = r.body?.error?.message ?? `Stripe answered ${r.status}`;
+    for (const st of targets) q("UPDATE event_seats SET refunding_at = NULL, updated_at = ? WHERE id = ?").run(now, st.id);
     // Only a definite no (4xx) moves the key on. No answer (a timeout) or a 5xx may have gone through:
-    // the retry keeps the key, so Stripe replays it instead of refunding twice (review 2026-11-11).
-    q(`UPDATE event_payments SET refund_error = ?, refund_attempts = refund_attempts + ${definiteNo(r) ? 1 : 0}, updated_at = ? WHERE id = ?`).run(String(error).slice(0, 300), now, cur.id);
-    log({ event_refund_failed: cur.id, why: String(error).slice(0, 160) });
+    // the retry keeps the key, so Stripe replays it instead of refunding the seat twice (review 2026-11-11).
+    const moved = definiteNo(r) ? 1 : 0;
+    if (one) q(`UPDATE event_seats SET refund_error = ?, refund_attempts = refund_attempts + ${moved} WHERE id = ?`).run(String(error).slice(0, 300), one.id);
+    q(`UPDATE event_payments SET refund_error = ?, refund_attempts = refund_attempts + ${bySeat ? 0 : moved}, updated_at = ? WHERE id = ?`).run(String(error).slice(0, 300), now, cur.id);
+    log({ event_refund_failed: cur.id, seat: one?.id ?? null, why: String(error).slice(0, 160) });
     return { ok: false, reason: "stripe", error };
   }
-  await afterRefund(cur, { refundId: r.body?.id ?? null, why, tellGuest, cancelled, leave, backCents: split.back_cents, feeBackCents: split.fee_back_cents }, { runtime, now, log });
-  if (split.fee_back_cents) await feeBack(cur.id, { fetchImpl, log, now });
-  return { ok: true, refund_id: r.body?.id ?? null, amount_cents: split.back_cents };
+  const done = await afterRefund(cur, { seats: targets, whole: !one, refundId: r.body?.id ?? null, why, tellGuest, cancelled, leave, back: split.back_cents, feeBackEach: split.fee_back_cents }, { runtime, now, log });
+  if (done.fee_owed) await feeBack(cur.id, { fetchImpl, log, now });
+  return { ok: true, refund_id: r.body?.id ?? null, amount_cents: done.amount_cents };
+}
+
+function readPending(pay) {
+  try { const p = pay?.refund_pending ? JSON.parse(pay.refund_pending) : null; return p && typeof p.key === "string" ? p : null; } catch { return null; }
+}
+
+/** Refunds left pending (Stripe may have done them) asked again under their own key: Stripe's replay settles them. */
+export async function refundPending({ now = clock.now(), log = () => {}, fetchImpl = globalThis.fetch, runtime = null } = {}) {
+  let settled = 0;
+  for (const { id } of q("SELECT id FROM event_payments WHERE refund_pending IS NOT NULL AND status = 'paid' LIMIT 20").all()) {
+    const pay = paymentRow(id); const p = readPending(pay);
+    if (!p || now - Number(p.at ?? 0) < 60_000) continue;
+    const ev = db.getEventRow(pay.event_id);
+    const r = await refund({ ev, row: p.seat ? null : pay, seat: p.seat ? seatById(p.seat) : null, why: p.why, fetchImpl, runtime, log, now });
+    if (r.ok) settled++;
+  }
+  return settled;
 }
 
 /** Stripe said no for certain (a 4xx): a retry may be a new request. A timeout or a 5xx may have gone through. */
 function definiteNo(r) {
-  return r.status >= 400 && r.status < 500;
+  // 409 (the same key still being worked on) and 429 (not run) are not answers about the refund.
+  return r.status >= 400 && r.status < 500 && r.status !== 409 && r.status !== 429;
 }
 
 const feeBackBusy = new Set();
@@ -725,51 +962,132 @@ export async function feeBack(paymentId, { fetchImpl = globalThis.fetch, log = (
       log({ event_fee_back_failed: row.id, step: "find_fee", status: pi.status });
       return { ok: false, owed };
     }
+    // A fee refund Stripe may have done is asked again for exactly its amount under its key; more owed since goes after.
+    const amount = Number(row.fee_back_pending_cents) > 0 ? Math.min(Number(row.fee_back_pending_cents), owed) : owed;
     const r = await stripe.api("POST", `/v1/application_fees/${encodeURIComponent(feeId)}/refunds`, {
-      amount: owed, metadata: { reason_kind: "event_ticket", event_payment_id: String(row.id), why: "guest_cancel_fee_back" },
+      amount, metadata: { reason_kind: "event_ticket", event_payment_id: String(row.id), why: "guest_cancel_fee_back" },
     }, { fetchImpl, idempotencyKey: `evfeeback:${row.id}:${row.fee_back_seq}` });
     // A yes or a definite no moves the key on; no answer keeps it, so a retry replays what Stripe did.
-    if (r.ok || definiteNo(r)) q("UPDATE event_payments SET fee_back_seq = fee_back_seq + 1 WHERE id = ?").run(row.id);
+    if (r.ok || definiteNo(r)) q("UPDATE event_payments SET fee_back_seq = fee_back_seq + 1, fee_back_pending_cents = 0 WHERE id = ?").run(row.id);
+    else q("UPDATE event_payments SET fee_back_pending_cents = ? WHERE id = ?").run(amount, row.id);
     if (!r.ok) {
       log({ event_fee_back_failed: row.id, step: "refund", status: r.status, why: String(r.body?.error?.message ?? "").slice(0, 160) });
       return { ok: false, owed };
     }
-    q("UPDATE event_payments SET fee_back_owed_cents = MAX(0, fee_back_owed_cents - ?), updated_at = ? WHERE id = ?").run(owed, now, row.id);
-    log({ event_fee_back: row.id, cents: owed });
-    return { ok: true, owed: 0, cents: owed };
+    q("UPDATE event_payments SET fee_back_owed_cents = MAX(0, fee_back_owed_cents - ?), updated_at = ? WHERE id = ?").run(amount, now, row.id);
+    log({ event_fee_back: row.id, cents: amount });
+    return { ok: true, owed: owed - amount, cents: amount };
   } finally { feeBackBusy.delete(paymentId); }
 }
 
-/** The row goes refunded, the guest leaves the event (unless the payment never got them in: `leave` false), and is told (unless the caller says it). */
-async function afterRefund(row, { refundId = null, why = "organizer", tellGuest = true, cancelled = false, leave = true, backCents = null, feeBackCents = 0 }, { runtime = null, now = clock.now(), log = () => {} }) {
-  const back = backCents ?? row.total_cents;
-  // Reason's 2.5% owed back is written with the refund itself, and only when this call is the one that
-  // refunded it (a double-submitted cancel gets Stripe's replay, and must not owe the fee twice).
-  const changed = q("UPDATE event_payments SET status = 'refunded', refund_id = ?, refund_error = NULL, answers = NULL, refunded_cents = ?, fee_back_owed_cents = fee_back_owed_cents + ?, refunded_at = ?, updated_at = ? WHERE id = ? AND status = 'paid'").run(refundId, back, Number(feeBackCents) || 0, now, now, row.id).changes;
-  if (!changed) return { amount_cents: 0 };
-  const ev = db.getEventRow(row.event_id);
-  const att = ev ? db.attendeeRow(ev.id, row.conversation_id) : null;
-  // They leave only when no payment of theirs still stands (a refunded duplicate never costs a spot that is paid for).
-  if (leave && att?.state === "joined" && att.role === "guest" && !paidRow(ev.id, row.conversation_id)) {
-    db.leaveAttendee(att.id);
-    try { const rides = await import("./eventrides.js"); await rides.leftEvent({ runtime, ev, conversationId: row.conversation_id }); } catch { /* rides are optional */ }
-  }
-  log({ event_refunded: row.id, why });
-  if (tellGuest && ev) {
-    const message = db.insertEventMessage(ev.id, "refund", refundedBody(ev, back, { cancelled: cancelled || why === "cancelled", guest: why === "guest", row: guestCancels(why) ? row : null }));
-    await events.deliver({ runtime, message, conversationId: row.conversation_id });
-  }
-  // A guest's own refund: the organizer hears it in one line (their sale went back, under their policy).
-  if (why === "guest" && ev) {
-    const name = String(att?.display_name || row.display_name || "A guest").slice(0, 60);
-    tell({ runtime, log }, ev.organizer_conversation_id, `${name} cancelled their ticket to ${ev.name} under your refund policy and got the ${cents2(back)} ticket price back, so they're off the guest list. That ticket comes out of your sales.`);
-  }
+/** What a friend whose ticket went back is told: the money is the buyer's, so it goes to their card. */
+export function friendRefundedBody(ev, seat, totalCents, why, row = null) {
+  const buyer = buyerName(ev, seat);
+  if (why === "cancelled") return `${ev.name} is cancelled, so the ticket ${buyer} got you was refunded to their card.`;
+  if (why === "guest") return row
+    ? `done — the ticket ${buyer} got you for ${ev.name} is given back, so you're off its guest list. ${buyer}'s card gets ${selfRefundWords(row).replace(/\.$/, "")}, since they paid for it.`
+    : `done — the ticket ${buyer} got you for ${ev.name} is given back, so you're off its guest list. the ${dollars(totalCents)} goes back to ${buyer}'s card, since they paid for it.`;
+  return `the organizer refunded the ticket ${buyer} got you for ${ev.name}, so you're no longer on its guest list. the ${dollars(totalCents)} goes back to ${buyer}'s card.`;
+}
+
+/** What the buyer hears when one ticket they got for a friend goes back (their own ticket's words are refundedBody). */
+export function buyerSeatRefundedBody(ev, seat, holderName, totalCents, why, row = null) {
+  // A guest's own cancel (a friend giving their ticket back, the buyer an unclaimed one) is the price; the processing stays with Stripe.
+  const back = row && guestCancels(why)
+    ? `${cents2(totalCents)} is on its way back to your card (the ${cents2(refundSplit(row, why).kept_cents)} processing fee isn't refundable) — it shows up in a few days.`
+    : `${dollars(totalCents)} is on its way back to your card — it shows up in a few days.`;
+  if (why === "buyer") return `done — the unclaimed ticket for ${ev.name} is refunded and its link doesn't work any more. ${back}`;
+  if (why === "guest") return `${holderName} gave back the ticket you got them for ${ev.name}, so ${back}`;
+  return holderName
+    ? `the organizer refunded the ticket you got ${holderName} for ${ev.name}, so ${back}`
+    : `the organizer refunded one of the tickets you got for friends to ${ev.name} (nobody had claimed it), so ${back}`;
 }
 
 /**
- * A guest's own ask for their money back. Under the policy their ticket is held to it is refunded —
- * the price; the processing fee isn't refundable (refundSplit) — they leave and both they and the
- * organizer are told. Outside it, nothing happens: `{ ok: false, reason, window }`.
+ * Seats go refunded (each once), the payment's refunded amount grows, and the payment is refunded
+ * once no ticket on it stands. Whoever held a refunded seat leaves (unless another ticket of theirs
+ * stands, or the payment never got them in: `leave` false) and is told; the buyer hears about seats
+ * that weren't their own; the organizer hears about a guest's own refund.
+ */
+async function afterRefund(pay, { seats = null, whole = true, refundId = null, why = "organizer", tellGuest = true, cancelled = false, leave = true, back = null, feeBackEach = 0 }, { runtime = null, now = clock.now(), log = () => {} }) {
+  // What one ticket gave back (refundSplit): the whole ticket, or the price on a guest's own cancel.
+  const each = back ?? pay.total_cents;
+  const selfCancel = guestCancels(why) ? pay : null;
+  const list = seats ?? seatsOfPayment(pay.id).filter(st => st.state !== "refunded");
+  const changed = [];
+  for (const st of list) {
+    const r = q(`UPDATE event_seats SET state = 'refunded', claim_token = NULL, refund_id = ?, refund_why = ?, refund_error = NULL, refunding_at = NULL, refunded_at = ?, updated_at = ?,
+      invite_state = CASE WHEN invite_state = 'owed' THEN 'dropped' ELSE invite_state END WHERE id = ? AND state != 'refunded'`).run(refundId, String(why).slice(0, 20), now, now, st.id);
+    if (r.changes === 1) changed.push(st);
+  }
+  const noSeats = !seatsOfPayment(pay.id).length;
+  const amount = noSeats ? each * Math.max(1, Number(pay.quantity ?? 1)) : changed.length * each;
+  // Reason's 2.5% owed back is written with the refund itself, and only for the tickets this call refunded
+  // (a double-submitted cancel gets Stripe's replay and changes no seat: it owes nothing more).
+  const feeOwed = (noSeats ? Math.max(1, Number(pay.quantity ?? 1)) : changed.length) * (Number(feeBackEach) || 0);
+  if (!noSeats && !changed.length) return { amount_cents: 0, seats: 0, fee_owed: 0 };
+  q("UPDATE event_payments SET refunded_cents = refunded_cents + ?, fee_back_owed_cents = fee_back_owed_cents + ?, refund_id = COALESCE(?, refund_id), refund_error = NULL, updated_at = ? WHERE id = ? AND status = 'paid'").run(amount, feeOwed, refundId, now, pay.id);
+  const left = seatsOfPayment(pay.id).filter(st => st.state !== "refunded").length;
+  if (!left) q("UPDATE event_payments SET status = 'refunded', answers = NULL, refunded_at = ?, updated_at = ? WHERE id = ? AND status = 'paid'").run(now, now, pay.id);
+  const ev = db.getEventRow(pay.event_id);
+  log({ event_refunded: pay.id, seats: changed.map(st => st.id), why });
+  if (!ev) return { amount_cents: amount, fee_owed: feeOwed };
+  const isCancel = cancelled || why === "cancelled";
+  const buyer = pay.conversation_id;
+  let buyerTold = false;
+  for (const st of changed) {
+    const holder = st.state === "claimed" ? st.holder_conversation_id : null;
+    const att = holder ? db.attendeeRow(ev.id, holder) : null;
+    // They leave only when no ticket of theirs still stands (a refunded duplicate never costs a spot that is paid for).
+    if (leave && att?.state === "joined" && att.role === "guest" && !paidRow(ev.id, holder)) {
+      db.leaveAttendee(att.id);
+      try { const rides = await import("./eventrides.js"); await rides.leftEvent({ runtime, ev, conversationId: holder }); } catch { /* rides are optional */ }
+    }
+    const holderName = String(att?.display_name || "").slice(0, 60);
+    if (holder && holder === buyer) {
+      // The buyer's own ticket: on a whole refund their one text says the whole amount (every ticket was theirs).
+      if (tellGuest) {
+        const message = db.insertEventMessage(ev.id, "refund", refundedBody(ev, whole ? amount : each, { cancelled: isCancel, guest: why === "guest", row: selfCancel }));
+        await events.deliver({ runtime, message, conversationId: buyer });
+        buyerTold = true;
+      }
+    } else {
+      if (holder && tellGuest) {
+        const message = db.insertEventMessage(ev.id, "refund", friendRefundedBody(ev, st, each, why, selfCancel));
+        await events.deliver({ runtime, message, conversationId: holder });
+      }
+      // The buyer hears about each ticket of theirs that went back, unless it was their own doing on a page/text that already says so.
+      if (tellGuest && !whole && why !== "buyer") tell({ runtime, log }, buyer, buyerSeatRefundedBody(ev, st, holderName, each, why, selfCancel));
+      if (tellGuest && !whole && why === "buyer") {
+        const message = db.insertEventMessage(ev.id, "refund", buyerSeatRefundedBody(ev, st, "", each, "buyer", selfCancel));
+        await events.deliver({ runtime, message, conversationId: buyer });
+      }
+    }
+    // A guest's own refund (or a buyer's of an unclaimed ticket): the organizer hears it in one line.
+    if (why === "guest" || why === "buyer") {
+      const name = why === "buyer" ? buyerName(ev, st) : String(holderName || pay.display_name || "A guest").slice(0, 60);
+      tell({ runtime, log }, ev.organizer_conversation_id, why === "buyer"
+        ? `${name} gave back a ticket they'd bought for a friend to ${ev.name} (nobody had claimed it), and got the ${cents2(each)} ticket price back under your refund policy. That ticket comes out of your sales.`
+        : holder && holder !== buyer
+          ? `${name} gave back their ticket to ${ev.name} under your refund policy; the ${cents2(each)} ticket price went back to the card of the friend who bought it, so they're off the guest list. That ticket comes out of your sales.`
+          : `${name} cancelled their ticket to ${ev.name} under your refund policy and got the ${cents2(each)} ticket price back, so they're off the guest list. That ticket comes out of your sales.`);
+    }
+  }
+  // A whole refund where the buyer's own ticket was already gone (or never made): the buyer still hears where their money went.
+  if (whole && tellGuest && !buyerTold && amount > 0 && changed.length) {
+    const message = db.insertEventMessage(ev.id, "refund", isCancel
+      ? `${ev.name} is cancelled, so the ${dollars(amount)} you paid for tickets has been refunded in full. it shows up on your card in a few days.`
+      : `the ${dollars(amount)} you paid for tickets to ${ev.name} has been refunded in full. it shows up on your card in a few days.`);
+    await events.deliver({ runtime, message, conversationId: buyer });
+  }
+  return { amount_cents: amount, seats: changed.length, fee_owed: feeOwed };
+}
+
+/**
+ * A guest's own ask for their money back — their own ticket, or the one a friend got them (that
+ * money goes back to the friend's card). Under the policy the ticket is held to it is refunded (the
+ * ticket price; the processing fee isn't refundable — refundSplit), they leave and are told, and so
+ * are the buyer and the organizer. Outside it, nothing happens: `{ ok: false, reason, window }`.
  */
 export async function guestRefund({ ev, conversationId, runtime = null, log = () => {}, fetchImpl = globalThis.fetch, now = clock.now() }) {
   const row = ev ? paidRow(ev.id, conversationId) : null;
@@ -788,20 +1106,207 @@ export function refusalWords(ev, window) {
   return `${lead}, so I can't refund it myself — but the organizer can still choose to refund you, so it's worth asking them.`;
 }
 
-/** The guest's yes covers their one ticket on one event, pinned to the payment row. */
+/** The pin on a seat that isn't the buyer's own, so two tickets on one payment are two different yeses. */
+const seatPin = (row) => Number(row?.seat_no) > 0 ? `/${row.seat_id}` : "";
+
+/** The guest's yes covers their one ticket on one event, pinned to the payment row (and the seat). */
 export function guestRefundTarget(ev, row) {
-  return `cancel my ticket for ${String(ev.name).slice(0, 80)} (event #${ev.id}): ${cents2(refundSplit(row, "guest").back_cents)} back [pay ${row.id}]`;
+  return `cancel my ticket for ${String(ev.name).slice(0, 80)} (event #${ev.id}): ${cents2(refundSplit(row, "guest").back_cents)} back [pay ${row.id}${seatPin(row)}]`;
 }
 
-/** Every paid guest refunded, for a cancellation. `{ refunded, failed, total_cents }`. */
+/** Every payment refunded in full, for a cancellation. `{ refunded, failed, total_cents }` (refunded counts payments). */
 export async function refundAll({ ev, runtime = null, log = () => {}, fetchImpl = globalThis.fetch, now = clock.now() }) {
   const out = { refunded: 0, failed: 0, total_cents: 0 };
   for (const row of paidRows(ev.id)) {
     const r = await refund({ ev, row, why: "cancelled", cancelled: true, fetchImpl, runtime, log, now });
-    if (r.ok) { out.refunded++; out.total_cents += row.total_cents; } else out.failed++;
+    if (r.ok) { out.refunded++; out.total_cents += r.amount_cents ?? 0; } else out.failed++;
   }
   // Nobody can pay for a cancelled event, but a Checkout page still open would let them try.
   for (const row of q("SELECT * FROM event_payments WHERE event_id = ? AND status = 'open'").all(ev.id)) await expireRow(row, { fetchImpl, now, log });
+  return out;
+}
+
+// ---------- the tickets a buyer got for friends ----------
+
+/** One of this buyer's seats for friends, on this event, or null. */
+export function buyerSeat(ev, buyerConversationId, seatId) {
+  const st = seatById(seatId);
+  if (!st || st.event_id !== ev.id || st.conversation_id !== buyerConversationId || st.seat_no < 1) return null;
+  const pay = paymentRow(st.payment_id);
+  return pay?.status === "paid" ? st : null;
+}
+
+/** The buyer's tickets for friends, in the shape the page and the text tool show. */
+export function seatsView(ev, buyerConversationId) {
+  return friendSeats(ev.id, buyerConversationId).map((st, i) => {
+    const holder = st.state === "claimed" ? db.attendeeRow(ev.id, st.holder_conversation_id) : null;
+    return {
+      seat_id: st.id, number: i + 1, state: st.state,
+      claimed_by: holder ? String(holder.display_name || "a friend").slice(0, 60) : null,
+      on_event: holder ? holder.state === "joined" : null,
+      link: seatUrl(ev, st),
+      // Asked at all, whatever came of it: whether Reason could reach that number is never shown.
+      texted_to_someone: st.invite_state != null,
+    };
+  });
+}
+
+/**
+ * A new link for an unclaimed seat (the buyer wants it for somebody else, or forwarded it to the
+ * wrong person): the old link stops working at once — a claim begun on it fails. `{ ok, seat, url }`.
+ */
+export function reassignSeat({ ev, buyerConversationId, seatId, now = clock.now() }) {
+  const st = buyerSeat(ev, buyerConversationId, seatId);
+  if (!st) return { ok: false, reason: "not_found" };
+  if (st.state !== "open") return { ok: false, reason: st.state };
+  const won = q(`UPDATE event_seats SET claim_token = ?, version = version + 1, invite_conversation_id = NULL, invite_state = NULL, invite_due_at = NULL, updated_at = ?
+    WHERE id = ? AND state = 'open' AND version = ?`).run(db.newEventToken(24), now, st.id, st.version);
+  if (won.changes !== 1) return { ok: false, reason: "changed" };
+  const after = seatById(st.id);
+  return { ok: true, seat: after, url: seatUrl(ev, after) };
+}
+
+/**
+ * The buyer gives back a ticket nobody has claimed, under the event's refund policy (the one their
+ * payment was made under, or looser now). `{ ok, amount_cents }` or `{ ok: false, reason, window }`.
+ */
+export async function seatRefund({ ev, buyerConversationId, seatId, runtime = null, log = () => {}, fetchImpl = globalThis.fetch, now = clock.now() }) {
+  const st = buyerSeat(ev, buyerConversationId, seatId);
+  if (!st) return { ok: false, reason: "not_found" };
+  if (st.state !== "open") return { ok: false, reason: st.state };
+  const pay = paymentRow(st.payment_id);
+  const window = refundWindow(ev, pay, now);
+  if (!window.allowed) return { ok: false, reason: window.why, window, seat: st, pay };
+  const r = await refund({ ev, seat: st, why: "buyer", fetchImpl, runtime, log, now });
+  return r.ok ? { ok: true, amount_cents: r.amount_cents, seat: st, pay, window } : { ok: false, reason: "stripe", error: r.error, seat: st, pay, window };
+}
+
+/** Did this conversation buy tickets for friends on an event that is still on (shows them event_seats)? */
+export function hasFriendSeats(conversationId) {
+  return !!q(`SELECT 1 FROM event_seats s JOIN event_payments p ON p.id = s.payment_id JOIN events e ON e.id = s.event_id
+    WHERE s.conversation_id = ? AND s.seat_no > 0 AND s.state != 'refunded' AND p.status = 'paid' AND e.status != 'cancelled' LIMIT 1`).get(String(conversationId ?? ""));
+}
+
+/** The organizer's yes to refunding one ticket a guest bought for a friend that nobody claimed. */
+export function organizerSeatRefundTarget(ev, st, pay = paymentRow(st.payment_id)) {
+  return `refund ${dollars(pay?.total_cents ?? 0)} unclaimed ticket bought by ${buyerName(ev, st)} for ${String(ev.name).slice(0, 80)} (event #${ev.id}) [seat ${st.id} v${st.version}]`;
+}
+
+/** The buyer's yes to giving back one unclaimed ticket: the seat, the amount, the event. */
+export function seatRefundTarget(ev, st, pay = paymentRow(st.payment_id)) {
+  return `give back the unclaimed ticket ${st.id} for ${String(ev.name).slice(0, 80)} (event #${ev.id}): ${cents2(pay ? refundSplit(pay, "buyer").back_cents : 0)} back [seat ${st.id} v${st.version}]`;
+}
+
+/**
+ * A friend takes the seat somebody bought them, all or nothing: the seat is still open at the same
+ * link (`version`, or `token` from the page), the event is on, they aren't the organizer, already
+ * in, or taken off it. They go on as a guest of their own — the place was already counted as theirs,
+ * so no capacity check — the link is spent, and the page's answers are filed. The caller sends the
+ * welcome (afterJoin, sendWelcome) as for any join, and tellBuyerClaimed.
+ * `{ ok: true, attendee, seat }` or `{ ok: false, reason }`: not_found | used | changed | paused |
+ * cancelled | organizer | already | removed.
+ */
+export function claimSeat({ ev, seatId, version = null, token = null, conversationId, displayName, instagram = null, inDirectory = false, via = "seat", answers = null, now = clock.now() }) {
+  db.db.exec("BEGIN IMMEDIATE");
+  const fail = (reason) => { db.db.exec("ROLLBACK"); return { ok: false, reason }; };
+  try {
+    const st = seatById(seatId);
+    const pay = st ? paymentRow(st.payment_id) : null;
+    if (!st || !ev || st.event_id !== ev.id || pay?.status !== "paid") return fail("not_found");
+    if (st.state !== "open" || !st.claim_token) return fail("used");
+    if ((version != null && Number(version) !== st.version) || (token != null && token !== st.claim_token)) return fail("changed");
+    const fresh = db.getEventRow(ev.id);
+    if (fresh.status !== "active") return fail(fresh.status);
+    if (fresh.organizer_conversation_id === conversationId) return fail("organizer");
+    const prior = db.attendeeRow(ev.id, conversationId);
+    if (prior?.state === "joined") return fail("already");
+    if (prior?.state === "removed") return fail("removed");
+    const added = db.addAttendeeTx({ eventId: ev.id, conversationId, displayName: displayName || "Guest", instagram, inDirectory, via, onSeat: true });
+    if (!added.ok) return fail(added.reason);
+    if (added.already) return fail("already");
+    const won = q(`UPDATE event_seats SET state = 'claimed', holder_conversation_id = ?, claim_token = NULL, claimed_at = ?, updated_at = ?,
+      invite_state = CASE WHEN invite_state = 'owed' THEN 'dropped' ELSE invite_state END WHERE id = ? AND state = 'open' AND version = ?`).run(conversationId, now, now, st.id, st.version);
+    if (won.changes !== 1) return fail("used");
+    if (answers) db.fileClaimAnswers(ev.id, added.attendee, answers, "join");
+    db.db.exec("COMMIT");
+    return { ok: true, attendee: db.attendeeRow(ev.id, conversationId), seat: seatById(st.id) };
+  } catch (e) {
+    try { db.db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+
+/** The buyer hears that their friend is in. */
+export function tellBuyerClaimed({ runtime = null, log = () => {} }, ev, seat, att) {
+  const name = String(att?.display_name || "your friend").slice(0, 60);
+  tell({ runtime, log }, seat.conversation_id, `${name} claimed the ticket you got them for ${ev.name} — they're on the guest list now, with their own texts from the event.`);
+}
+
+/** Why a seat couldn't be claimed, in the words to say it to the friend. */
+export const SEAT_CLAIM_WHY = {
+  not_found: "That ticket link doesn't work any more — it may have been refunded. Ask the friend who sent it.",
+  used: "That ticket has already been claimed. Each link works once — ask the friend who sent it for another.",
+  changed: "That ticket link was changed by the friend who bought it, so this one doesn't work any more. Ask them for the new one.",
+  already: "You're already on this event, so this ticket stays for somebody else. Let the friend who sent it know.",
+  organizer: "That's your own event.",
+  removed: "The organizer took you off this event, so this ticket can't be used by you.",
+  paused: "Joining is paused right now. Try the same link again later — the ticket is still yours to claim.",
+  cancelled: "This event was cancelled.",
+};
+
+// ---------- the one text to a friend the buyer named (optional) ----------
+//
+// The buyer can give a friend's number instead of forwarding the link. Reason can only text people
+// who have texted it before (the line is inbound-only), so this reaches only somebody already on
+// Reason; for anybody else nothing goes and the buyer forwards the link. The buyer is told the same
+// either way ("if I can reach them…") so it never says who uses Reason. One text per friend per
+// event, ever; never at night in the event's zone (it waits for the morning); dropped if the seat is
+// claimed, refunded or reassigned first, or the friend is already on the event.
+
+/** The friend's one text: who got it for them, the event, the link as its own message. */
+export function seatInviteText(ev, seat) {
+  return `${buyerName(ev, seat)} got you a ticket to ${ev.name} — it's already paid for. tap the link to claim it; you'll be on the guest list as yourself, with the event's texts. no need to answer if you can't make it.`;
+}
+
+/** Owe the text to the number the buyer gave, when Reason can reach it. Always `{ ok: true }` to the buyer's side (never says who uses Reason). */
+export function oweSeatInvite({ ev, buyerConversationId, seatId, number, now = clock.now() }) {
+  const st = buyerSeat(ev, buyerConversationId, seatId);
+  if (!st) return { ok: false, reason: "not_found" };
+  if (st.state !== "open") return { ok: false, reason: st.state };
+  // One ask per link, whatever came of it — a second answer that differed would say whether the first number uses Reason.
+  if (st.invite_state != null) return { ok: false, reason: "already_sent" };
+  const acct = events.accountForNumber(number);
+  const c = acct?.conversation_id ?? null;
+  const moot = !c || c === buyerConversationId || c === ev.organizer_conversation_id
+    || db.attendeeRow(ev.id, c)?.state === "joined" || db.attendeeRow(ev.id, c)?.state === "removed"
+    || !!q("SELECT 1 FROM event_seats WHERE event_id = ? AND invite_conversation_id = ? AND invite_state IN ('owed', 'sent', 'dropped')").get(ev.id, c);
+  // Written down either way, so a second number for the same seat is a second ask the buyer makes, not a loop.
+  q("UPDATE event_seats SET invite_conversation_id = ?, invite_state = ?, invite_due_at = ?, updated_at = ? WHERE id = ?").run(moot ? null : c, moot ? "unreachable" : "owed", now, now, st.id);
+  return { ok: true, queued: !moot };
+}
+
+/** Send owed friend texts that may go now: compare-and-set, not at night, dropped once moot. */
+async function sweepSeatInvites({ runtime, now, log }) {
+  const out = { sent: 0, dropped: 0, later: 0 };
+  for (const st of q("SELECT * FROM event_seats WHERE invite_state = 'owed' AND invite_due_at <= ?").all(now)) {
+    const ev = db.getEventRow(st.event_id);
+    const pay = paymentRow(st.payment_id);
+    const c = st.invite_conversation_id;
+    const stale = ev?.starts_at != null && now > ev.starts_at;
+    if (!ev || ev.status === "cancelled" || st.state !== "open" || pay?.status !== "paid" || !c || stale || db.attendeeRow(ev.id, c)?.state === "joined") {
+      q("UPDATE event_seats SET invite_state = 'dropped', updated_at = ? WHERE id = ? AND invite_state = 'owed'").run(now, st.id); out.dropped++; continue;
+    }
+    if (ev.status === "paused" || events.listNoteQuiet(ev, now) || !runtime?._tell) { out.later++; continue; }
+    if (q("UPDATE event_seats SET invite_state = 'sent', invited_at = ?, updated_at = ? WHERE id = ? AND invite_state = 'owed'").run(now, now, st.id).changes !== 1) continue;
+    const text = seatInviteText(ev, st);
+    for (const body of [text, seatUrl(ev, st)]) {
+      const m = db.insertEventMessage(ev.id, "seat_invite", body);
+      await events.deliver({ runtime, message: m, conversationId: c });
+    }
+    events.intoThread({ runtime, conversationId: c, about: `a ticket a friend bought them for ${String(ev.name).slice(0, 80)}`, body: text });
+    log({ event_seat_invite_sent: ev.id, seat: st.id });
+    out.sent++;
+  }
   return out;
 }
 
@@ -817,36 +1322,46 @@ async function expireRow(row, { fetchImpl = globalThis.fetch, now = clock.now(),
 }
 
 /** Holds past their 15 minutes: released, and the Checkout page expired on Stripe. `{ expired }`. */
-export async function sweep({ now = clock.now(), log = () => {}, fetchImpl = globalThis.fetch } = {}) {
+export async function sweep({ now = clock.now(), log = () => {}, fetchImpl = globalThis.fetch, runtime = null } = {}) {
   const rows = q("SELECT * FROM event_payments WHERE status = 'open' AND expires_at <= ?").all(now);
   for (const row of rows) await expireRow(row, { fetchImpl, now, log });
+  // And the one text a buyer asked Reason to send a friend, once it may go.
+  const invites = await sweepSeatInvites({ runtime, now, log });
+  // Refunds Stripe may have done (no answer, 5xx): replayed under their own key until Stripe answers.
+  const pendingDone = await refundPending({ now, log, fetchImpl, runtime });
   // Reason's 2.5% still owed back to an organizer after a guest's own cancel (Stripe said no, or didn't answer).
   let feesBack = 0;
   for (const row of q("SELECT id FROM event_payments WHERE fee_back_owed_cents > 0 AND fee_back_seq < 30 LIMIT 20").all()) if ((await feeBack(row.id, { fetchImpl, log, now })).ok) feesBack++;
-  return { expired: rows.length, fees_back: feesBack };
+  return { expired: rows.length, ...(invites.sent || invites.dropped ? { seat_invites: invites } : {}), ...(feesBack ? { fees_back: feesBack } : {}), ...(pendingDone ? { refunds_settled: pendingDone } : {}) };
 }
 
 // ---------- what the organizer sees ----------
 
 /**
- * The money on one event. Sold counts every ticket that was paid for (refunded ones included); gross
- * is the ticket price × sold (the processing guests paid is Stripe's, never in it); refunded is the
- * price of the tickets given back; Reason's 2.5% is on the tickets that stand (a refunded ticket earns
- * Reason nothing); coming to the organizer is the rest. gross − refunded − Reason's fee = coming.
+ * The money on one event, counted in TICKETS (one payment can be several: the buyer's and their
+ * friends'). Sold is every ticket a payment landed for (refunded ones included; a payment refunded
+ * at once for want of room sold none); gross is the price × sold (the processing guests paid is
+ * Stripe's, never in it); refunded is the price of the tickets given back; Reason's 2.5% is on the
+ * tickets that stand; coming to the organizer is the rest. gross − refunded − Reason's fee = coming.
+ * `paid_count` is the tickets standing, `unclaimed_count` those bought for friends not claimed yet.
  */
 export function summary(ev, now = clock.now()) {
-  const paid = paidRows(ev.id);
-  const back = q("SELECT price_cents, total_cents, refunded_cents FROM event_payments WHERE event_id = ? AND status = 'refunded'").all(ev.id);
-  const standing = paid.reduce((s, r) => s + r.price_cents, 0);
-  const refundedCents = back.reduce((s, r) => s + r.price_cents, 0);
-  const net = paid.reduce((s, r) => s + (r.total_cents - r.application_fee_cents), 0);
+  const seats = q(`SELECT s.state, p.price_cents, p.total_cents, p.application_fee_cents, p.refund_error FROM event_seats s JOIN event_payments p ON p.id = s.payment_id
+    WHERE s.event_id = ? AND p.status IN ('paid', 'refunded')`).all(ev.id);
+  const standing = seats.filter(r => r.state !== "refunded");
+  const back = seats.filter(r => r.state === "refunded");
+  const standingCents = standing.reduce((t, r) => t + r.price_cents, 0);
+  const refundedCents = back.reduce((t, r) => t + r.price_cents, 0);
+  const net = standing.reduce((t, r) => t + (r.total_cents - r.application_fee_cents), 0);
   const failedRefunds = Number(q("SELECT COUNT(*) AS n FROM event_payments WHERE event_id = ? AND status = 'paid' AND refund_error IS NOT NULL").get(ev.id).n);
   return {
-    price_cents: ev.price_cents ?? null, paid_count: paid.length, sold_count: paid.length + back.length,
-    gross_cents: standing + refundedCents, refunded_count: back.length, refunded_cents: refundedCents,
-    reason_fee_cents: standing - net, organizer_net_cents: net,
-    // What went back to guests' cards: the price on a guest's own cancel, the whole total otherwise (a row from before this holds 0: the total).
-    returned_cents: back.reduce((s, r) => s + (Number(r.refunded_cents) > 0 ? Number(r.refunded_cents) : r.total_cents), 0),
+    price_cents: ev.price_cents ?? null, paid_count: standing.length, sold_count: seats.length,
+    gross_cents: standingCents + refundedCents, refunded_count: back.length, refunded_cents: refundedCents,
+    reason_fee_cents: standingCents - net, organizer_net_cents: net,
+    // What went back to cards: the price on a guest's own cancel, the whole ticket otherwise (a refunded row from before refunded_cents holds 0: all of it).
+    returned_cents: Number(q("SELECT COALESCE(SUM(CASE WHEN refunded_cents > 0 THEN refunded_cents WHEN status = 'refunded' THEN total_cents * quantity ELSE 0 END), 0) AS c FROM event_payments WHERE event_id = ? AND status IN ('paid', 'refunded')").get(ev.id).c),
+    unclaimed_count: standing.filter(r => r.state === "open").length,
+    buyers_count: Number(q("SELECT COUNT(DISTINCT p.conversation_id) AS n FROM event_payments p WHERE p.event_id = ? AND p.status = 'paid'").get(ev.id).n),
     open_holds: openHolds(ev.id, now), failed_refunds: failedRefunds,
   };
 }
@@ -908,9 +1423,10 @@ export function payoutLine(info, tz = null) {
 
 /** Ticket sales in plain words, for the organizer by text. */
 export function salesWords(ev, s = summary(ev), info = null) {
-  if (!s.sold_count) return `No tickets sold yet for ${ev.name}.${s.open_holds ? ` ${s.open_holds} ${s.open_holds === 1 ? "person is" : "people are"} paying right now.` : ""}`;
+  if (!s.sold_count) return `No tickets sold yet for ${ev.name}.${s.open_holds ? ` ${s.open_holds} ticket${s.open_holds === 1 ? " is" : "s are"} being paid for right now.` : ""}`;
   const parts = [
     `${s.sold_count} ticket${s.sold_count === 1 ? "" : "s"} sold for ${ev.name} — ${dollars(s.gross_cents)} gross.`,
+    ...(s.unclaimed_count ? [`${s.unclaimed_count} of them ${s.unclaimed_count === 1 ? "was" : "were"} bought for friends who haven't claimed ${s.unclaimed_count === 1 ? "it" : "them"} yet (each holds a spot).`] : []),
     s.refunded_count ? `${s.refunded_count} refunded (${dollars(s.refunded_cents)}).` : "No refunds.",
     `Reason's 2.5%: ${dollars(s.reason_fee_cents)}. Coming to you: ${dollars(s.organizer_net_cents)}.`,
     `Next payout: ${payoutLine(info, ev.tz)}`,
@@ -918,16 +1434,28 @@ export function salesWords(ev, s = summary(ev), info = null) {
   return parts.join(" ");
 }
 
-/** Each paid guest, with their payment, for the manage page and event_guests. */
+/**
+ * Each ticket that stands, for the manage page and event_guests: who holds it (a guest — the buyer,
+ * or a friend who claimed it) or nobody yet (`unclaimed`), and who bought it when that was somebody else.
+ */
 export function paidGuests(ev) {
-  return paidRows(ev.id).map(r => {
-    const att = db.attendeeRow(ev.id, r.conversation_id);
-    return { payment_id: r.id, guest_id: att?.id ?? null, display_name: att?.display_name || r.display_name, total_cents: r.total_cents, price_cents: r.price_cents, paid_at: r.paid_at, state: att?.state ?? "unknown", refund_error: r.refund_error ?? null };
+  const rows = q(`SELECT s.*, p.total_cents, p.price_cents, p.paid_at, p.refund_error AS pay_refund_error, p.display_name AS buyer_display_name FROM event_seats s JOIN event_payments p ON p.id = s.payment_id
+    WHERE s.event_id = ? AND s.state != 'refunded' AND p.status = 'paid' ORDER BY p.paid_at, p.id, s.seat_no`).all(ev.id);
+  return rows.map(st => {
+    const att = st.state === "claimed" ? db.attendeeRow(ev.id, st.holder_conversation_id) : null;
+    const friend = st.seat_no > 0 && st.holder_conversation_id !== st.conversation_id;
+    return {
+      payment_id: st.payment_id, seat_id: st.id, seat_no: st.seat_no, guest_id: att?.id ?? null,
+      display_name: att?.display_name || (st.state === "open" ? null : st.buyer_display_name), unclaimed: st.state === "open",
+      bought_by: friend || st.state === "open" ? buyerName(ev, st) : null,
+      total_cents: st.total_cents, price_cents: st.price_cents, paid_at: st.paid_at, state: att?.state ?? (st.state === "open" ? "unclaimed" : "unknown"),
+      refund_error: st.refund_error ?? st.pay_refund_error ?? null,
+    };
   });
 }
 
 /** The yes to a refund covers one guest, one amount, one event: pinned to the payment row. */
 export function refundTarget(ev, row) {
   const name = String(db.attendeeRow(ev.id, row.conversation_id)?.display_name || row.display_name || "a guest").slice(0, 60);
-  return `refund ${dollars(row.total_cents)} to ${name} for ${String(ev.name).slice(0, 80)} (event #${ev.id}) [pay ${row.id}]`;
+  return `refund ${dollars(row.total_cents)} to ${name} for ${String(ev.name).slice(0, 80)} (event #${ev.id}) [pay ${row.id}${seatPin(row)}]`;
 }

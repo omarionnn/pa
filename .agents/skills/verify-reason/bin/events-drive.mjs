@@ -662,6 +662,43 @@ config.events = "owner";
   const cancelled = await tool("event_cancel", { event_id: pev.id, event_named: pev.name }, C.owner);
   await new Promise(r => setTimeout(r, 80));
   step("pay: cancelling refunds everyone who paid, application fee included, and the guest hears it's cancelled and refunded", cancelled.ok && cancelled.refunds?.refunded === 1 && cancelled.refunds?.failed === 0 && stripeCalls.filter(c => c.path === "/v1/refunds").length === nR + 1 && eventpay.paidRows(pev.id).length === 0 && toNum(YAW).some(t => /is cancelled, so your \$26\.06 has been refunded in full/.test(t)), JSON.stringify(cancelled.refunds));
+
+  // ---- buy for friends (src/eventpay.js seats): each friend is their own guest ----
+  const fmade = await tool("event_create", { name: "Friends Supper", description: "bring people", starts_at: "2027-08-21T19:00", timezone: "America/New_York", location: "9 Pine St", password: "friends-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: true, capacity: 4 }, C.owner);
+  const fev = db.getEventRow(fmade.event.event_id);
+  await tool("event_price", { event_id: fev.id, event_named: fev.name, price_dollars: 25 }, C.owner);
+  const buy = await tool("event_join", { name: "Friends Supper", password: "friends-pw", tickets: 3 }, C.kofi);
+  const fcs = [...stripeCalls].reverse().find(c => c.path === "/v1/checkout/sessions");
+  const fhold = eventpay.openRow(fev.id, C.kofi);
+  step("pay: 3 tickets by text → one Checkout, quantity 3 on both lines, Reason's fee 3×, a hold for 3 places", buy.ok && buy.payment_required && buy.tickets === 3 && fcs?.form["line_items[0][quantity]"] === "3" && fcs?.form["line_items[1][quantity]"] === "3"
+    && fcs?.form["payment_intent_data[application_fee_amount]"] === String(qt.application_fee * 3) && eventpay.openHolds(fev.id) === 3 && eventpay.spotsLeft(fev) === 1, JSON.stringify({ t: buy.tickets, q: fcs?.form["line_items[0][quantity]"] }));
+  await webhook("checkout.session.completed", { id: fhold.checkout_session_id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_drive_${fhold.id}`, amount_total: qt.total * 3, client_reference_id: `evpay:${fhold.id}` });
+  await new Promise(r => setTimeout(r, 60));
+  const fseats = eventpay.seatsOfPayment(fhold.id);
+  const links = fseats.slice(1).map(st => eventpay.seatUrl(fev, st));
+  step("pay: paid → the buyer is in, two open seats with their own links, each texted as its own message", db.attendeeRow(fev.id, C.kofi)?.state === "joined" && fseats.length === 3 && fseats.slice(1).every(st => st.state === "open" && /^[A-Za-z0-9_-]{32}$/.test(st.claim_token))
+    && links.every(l => toNum(KOFI).includes(l)) && toNum(KOFI).some(t => /here are your 2 tickets for friends/.test(t)) && eventpay.unclaimedSeats(fev.id) === 2, JSON.stringify(fseats.map(st => st.state)));
+  const yawClaim = eventpay.claimSeat({ ev: fev, seatId: fseats[1].id, conversationId: C.yaw, displayName: "Yaw" });
+  step("pay: a friend claims a seat as their own guest; the link is spent; a second seat for somebody already in is refused and stays open",
+    yawClaim.ok && db.attendeeRow(fev.id, C.yaw)?.state === "joined" && eventpay.seatById(fseats[1].id).claim_token === null && eventpay.seatByToken(fseats[1].claim_token) === null
+    && eventpay.claimSeat({ ev: fev, seatId: fseats[2].id, conversationId: C.yaw, displayName: "Yaw" }).reason === "already" && eventpay.seatById(fseats[2].id).state === "open", JSON.stringify(yawClaim.reason ?? "ok"));
+  const fullNow = await tool("event_join", { name: "Friends Supper", password: "friends-pw", tickets: 2 }, C.ama);
+  step("pay: an unclaimed seat holds its place: 2 in + 1 unclaimed of 4 leaves 1, so 2 tickets won't fit", fullNow.ok === false && /Only 1 spot is left/.test(fullNow.error ?? ""), fullNow.error);
+  const seatAsk = await tool("event_seats", { event_id: fev.id, event_named: fev.name, action: "refund", seat_id: fseats[2].id }, C.kofi);
+  const seatDone = await withYes(runTool, "event_seats", { event_id: fev.id, event_named: fev.name, action: "refund", seat_id: fseats[2].id }, { conversationId: C.kofi, messages: [], events: runtime });
+  const srf = [...stripeCalls].reverse().find(c => c.path === "/v1/refunds");
+  const sfee = [...stripeCalls].reverse().find(c => /^\/v1\/application_fees\/[^/]+\/refunds$/.test(c.path));
+  step("pay: the buyer gives back the unclaimed seat behind the yes: the ticket price back (processing kept), transfer reversed by it, Reason's 2.5% back; the rest stands",
+    seatAsk.blocked === "needs_confirmation" && /: \$25\.00 back \[seat/.test(seatAsk.use_target ?? "") && seatDone.ok && srf?.form.amount === String(qt.price) && srf?.form.reverse_transfer === "true" && srf?.form.refund_application_fee === "false" && sfee?.form.amount === String(qt.reason_fee)
+    && eventpay.paymentRow(fhold.id).status === "paid" && eventpay.summary(fev).sold_count === 3 && eventpay.summary(fev).refunded_count === 1, JSON.stringify({ ask: seatAsk.blocked, amount: srf?.form.amount }));
+  const yawBack = await withYes(runTool, "event_ticket_refund", { event_id: fev.id, event_named: fev.name }, { conversationId: C.yaw, messages: [], events: runtime });
+  await new Promise(r => setTimeout(r, 60));
+  step("pay: the friend gives back their own seat: off the list, told the money goes to the buyer's card, and the buyer hears it", yawBack.ok && yawBack.given_back === "$25.00" && db.attendeeRow(fev.id, C.yaw)?.state === "left"
+    && toNum(YAW).some(t => /Kofi's card gets \$25\.00 back; the \$1\.06 processing fee isn't refundable/.test(t)) && toNum(KOFI).some(t => /Yaw gave back the ticket you got them/.test(t)), JSON.stringify(yawBack));
+  await tool("event_cancel", { event_id: fev.id, event_named: fev.name }, C.owner);
+  await new Promise(r => setTimeout(r, 60));
+  const crf = [...stripeCalls].reverse().find(c => c.path === "/v1/refunds");
+  step("pay: cancelling refunds what still stands on the payment (the buyer's own ticket) and closes it", crf?.form.amount === String(qt.total) && eventpay.paymentRow(fhold.id).status === "refunded" && crf?.form.refund_application_fee === "true" && eventpay.paymentRow(fhold.id).refunded_cents === qt.price * 2 + qt.total, JSON.stringify(crf?.form));
   clock.reset();
 }
 
