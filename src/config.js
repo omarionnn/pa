@@ -398,10 +398,11 @@ export const config = {
   // and the links he mints still open, claim and tell him who joined. Allowances are backfilled
   // either way, invisibly. Switching it on shows the same tools to everybody with no code change.
   invitesOpen: ["1", "true", "on", "yes"].includes(String(process.env.REASON_INVITES_OPEN ?? "").trim().toLowerCase()),
-  // Booking flights (src/flightbook.js): off | owner | on, OFF by default and off on live. There is no
-  // booking route today — AgentCard's was removed 2026-11-11 (Crossmint is the only buy route) and no
-  // Crossmint flight route is proven yet — so this flag shows nothing on its own: bookingEnabled also
-  // needs a route. `owner` is the owner's own conversation only; 1/true/on/yes is everyone.
+  // Booking flights (src/flightbook.js): off | owner | on, OFF by default and off on live. The route is
+  // Crossmint's Agent Checkouts on the airline's own site (src/flightcheckout.js), so it also needs the
+  // shopping path on for that person (REASON_SHOP_CONNECT). Off, nobody's model is told booking exists
+  // and a flight search hands over the Google Flights link alone. `owner` is the owner's own
+  // conversation only (the first real booking is theirs); 1/true/on/yes is everyone.
   flightBooking: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_FLIGHT_BOOKING ?? "").trim().toLowerCase()),
   // Events (src/events.js). `owner`: only the owner may make one; 1/true/on/yes: anybody with a
   // Reason; anything else: off, and nobody's model is told events exist. Joining is open to anybody

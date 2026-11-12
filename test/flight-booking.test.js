@@ -1,8 +1,9 @@
-// What is left of flight booking now that there is no booking route (src/flightbook.js): the switch
-// and the route it needs, travelers (read-back, confirmation, sealing, isolation), the booking states,
-// and the refusals that keep a flight from ever being bought through AgentCard. AgentCard's flight
-// route (flight_book) was removed 2026-11-11; the fake AgentCard (test/fixture-agentcard.js) is here
-// only to prove its general purchase tools refuse a flight. No key, no network beyond 127.0.0.1.
+// The parts of flight booking that do not depend on the route (src/flightbook.js): the switch and the
+// route it needs, travelers (read-back, confirmation, sealing, isolation), the booking states, and the
+// refusals that keep a flight from ever being bought through AgentCard. AgentCard's flight route was
+// removed 2026-11-11; the route is Crossmint (test/flight-crossmint.test.js). The fake AgentCard
+// (test/fixture-agentcard.js) is here only to prove its general purchase tools refuse a flight. A
+// stand-in route ("test") switches booking on. No key, no network beyond 127.0.0.1.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -179,17 +180,15 @@ test("there is no booking route: with the flag on for everyone, nobody sees or r
   } finally { fb._setRoute("test"); }
 });
 
-test("AgentCard's flight tool is gone: flight_book is not a tool for anyone, whatever the flag or the route", async () => {
-  for (const flag of [true, "owner", false]) {
-    config.flightBooking = flag;
-    try {
-      for (const c of [OMARI, KOFI]) assert.ok(!names(c).includes("flight_book"), `${flag} ${c}`);
-    } finally { config.flightBooking = true; }
-  }
+test("flight_book never reaches AgentCard: with no shopping path it starts nothing and sends nothing", async () => {
+  // The stand-in route makes the tool visible; the real route is Crossmint (test/flight-crossmint.test.js).
+  const id = await confirmedTraveler();
   say("book option 1");
-  const r = await call("flight_book", { search_id: 1, option: 1, traveler_ids: [1] });
+  const r = await call("flight_book", { search_id: 1, option: 1, traveler_ids: [id] });
   assert.notEqual(r?.ok, true, JSON.stringify(r));
   assert.equal(fake.state.confirmCalls.length, 0, "nothing was sent to AgentCard");
+  fb._setRoute(null);
+  try { for (const c of [OMARI, KOFI]) assert.ok(!names(c).includes("flight_book"), c); } finally { fb._setRoute("test"); }
 });
 
 test("flag off: no traveler tool is shown or runs", async () => {
@@ -226,14 +225,15 @@ test("REASON_FLIGHT_BOOKING=owner: with a route, the owner has the traveler tool
   } finally { config.flightBooking = true; }
 });
 
-test("a flight search is search only, flag on or off: the Google Flights link is the one way to book", async () => {
-  for (const flag of [true, "owner", false]) {
-    config.flightBooking = flag;
-    try {
-      const d = searchWords(OMARI);
-      assert.match(d, /SEARCH ONLY — Reason never books/, String(flag));
-      assert.doesNotMatch(d, /flight_book|Two ways to finish|AgentCard/, String(flag));
-    } finally { config.flightBooking = true; }
+test("a flight search offers booking only where booking is on; otherwise it is search only — and never names AgentCard", async () => {
+  const on = searchWords(OMARI);
+  assert.match(on, /Two ways to finish/);
+  assert.match(on, /without pushing either/);
+  assert.doesNotMatch(on, /AgentCard|Reason never books/);
+  for (const off of [() => { config.flightBooking = false; }, () => { fb._setRoute(null); }]) {
+    off();
+    try { assert.match(searchWords(OMARI), /SEARCH ONLY — Reason never books/); assert.doesNotMatch(searchWords(OMARI), /flight_book|AgentCard/); }
+    finally { config.flightBooking = true; fb._setRoute("test"); }
   }
 });
 

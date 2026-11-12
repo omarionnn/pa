@@ -2880,7 +2880,7 @@ export class Runtime extends EventEmitter {
   async eventPayments({ now = clock.now() } = {}) {
     try {
       const eventpay = await import("./eventpay.js");
-      return await eventpay.sweep({ now, log: this.log });
+      return await eventpay.sweep({ now, log: this.log, runtime: this });
     } catch (e) {
       this.log({ event_payments_failed: (e?.message ?? String(e)).split("\n")[0] });
       return { failed: true };

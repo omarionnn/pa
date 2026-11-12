@@ -1,14 +1,12 @@
-// What a flight booking is made of, kept apart from whoever ends up doing the booking.
+// What a flight booking is made of, kept apart from whoever does the booking.
 //
-// There is NO booking route today. Search is src/flightsearch.js and stays search-only: a flight is
-// handed over as its Google Flights link. AgentCard's flight route (flight_book, built on its hosted
-// purchase API) was removed on 2026-11-11 — the owner's decision: Reason does not use AgentCard, and
-// Crossmint is the only buy route. Whether Crossmint's Agent Checkouts can book a flight has not been
-// proven with a real run (docs/flight-booking.md says what was read and what is still needed), so no
-// Crossmint flight route is built on a guess.
+// Search is src/flightsearch.js. Booking is ONE route: Crossmint's Agent Checkouts on the airline's
+// own website (src/flightcheckout.js), which is the shopping path whole — Crossmint's exact total, the
+// confirm gate, the per-person daily cap, the Face ID approval (src/shopconnect.js). AgentCard's
+// flight route was removed on 2026-11-11 (the owner's decision: Crossmint is the only buy route).
 //
-// What stays is everything a route will reuse, and nothing here talks to a provider or spends money:
-//   - the switch (REASON_FLIGHT_BOOKING: off | owner | on) and the route it also needs;
+// Nothing in this file talks to a provider or spends money. It is:
+//   - the switch (REASON_FLIGHT_BOOKING: off | owner | on, default off) and the route it also needs;
 //   - travelers: the checks, the read-back, the fingerprint that pins a yes to exactly who flies;
 //   - the booking states, where only an issued ticket is "booked";
 //   - the approval window and the age of a quote.
@@ -16,26 +14,33 @@
 import { createHash } from "node:crypto";
 import { config, clock } from "./config.js";
 import * as accounts from "./accounts.js";
+import { connectAllowedFor } from "./shopconnect.js";
 
 /**
- * The provider that books a flight, or null. Null today, so booking is off for everyone whatever the
- * flag says. A route that is built and proven names itself here.
+ * The route that books a flight in this conversation, or null. "crossmint" exactly where the shopping
+ * path is on for them (REASON_SHOP_CONNECT) and its keys are in place: a flight is paid for the same
+ * way as anything else, or not at all. Null: booking is off whatever the flag says.
  */
-let route = null;
-export function bookingRoute() { return route; }
-/** Tests only: stand a route in, so the parts a route will reuse can be driven. */
-export function _setRoute(name) { route = name ? String(name) : null; }
+let forced;   // tests only (undefined = not forced)
+export function bookingRoute(conversationId) {
+  if (forced !== undefined) return forced;
+  if (!conversationId || !process.env.CROSSMINT_SERVER_KEY || !process.env.CROSSMINT_CLIENT_KEY) return null;
+  return connectAllowedFor(conversationId) ? "crossmint" : null;
+}
+/** Tests only: stand a route in (a name), take every route away (null), or go back to the real rule (undefined). */
+export function _setRoute(name) { forced = name === undefined ? undefined : (name ? String(name) : null); }
 
 /**
  * Is booking switched on in this conversation? Only with a booking route AND the flag:
  * `REASON_FLIGHT_BOOKING=owner` is the owner's own conversation only (the same operator check the
  * dark invites use) and exactly off for everyone else; 1/true/on/yes is everyone. Off: flights are
- * searched and handed over as a link, no traveler tool is shown or runs, and no mail is read.
+ * searched and handed over as a link, no booking or traveler tool is shown or runs, no flight payment
+ * goes out, and no mail is read.
  */
 export function bookingEnabled(conversationId) {
-  if (!route) return false;
-  if (config.flightBooking === "owner") return accounts.featureOwner(conversationId);
-  return !!config.flightBooking;
+  if (!config.flightBooking) return false;
+  if (config.flightBooking === "owner" && !accounts.featureOwner(conversationId)) return false;
+  return !!bookingRoute(conversationId);
 }
 
 /**
@@ -170,7 +175,10 @@ export function ticketingFrom(raw, fields = TICKETING_FIELDS) {
 export function bookingState(row, { ticketing = null } = {}) {
   const t = ticketing ?? { issued: false, reserved: false, status: "", ticket_numbers: [], locator: "" };
   const status = String(row?.status ?? "");
-  const code = row?.retailer_order_id ? ` The confirmation code AgentCard passed on is ${row.retailer_order_id} — that is not a ticket.` : "";
+  // Whose record this row is: AgentCard's (rows an older install left), or the airline's own checkout.
+  const direct = String(row?.buy_conversation_id ?? "").startsWith("crossmint:");
+  const provider = direct ? (row?.merchant || "the airline") : "AgentCard";
+  const code = row?.retailer_order_id ? ` The confirmation code ${direct ? `${provider} gave` : "AgentCard passed on"} is ${row.retailer_order_id} — that is not a ticket.` : "";
   const locatorIs = t.locator ? ` The airline's record locator is ${t.locator}` : "";
   const locator = t.locator ? `${locatorIs} — that is not a ticket on its own.` : "";
   const airline = " Check with the airline directly (its app or website, with the record locator if there is one) before relying on this booking.";
@@ -178,7 +186,7 @@ export function bookingState(row, { ticketing = null } = {}) {
   if ((status === "declined" || status === "failed") && row?.decline_code === "approval_expired") {
     return { state: "expired", booked: false, words: "it was not booked: the approval ran out before it was given. Nothing was charged, and that cart is not retried." };
   }
-  if (status === "declined" || status === "failed") return { state: "declined", booked: false, words: `it was not booked: AgentCard declined it${row?.decline_code ? ` (${row.decline_code})` : ""}. Nothing was charged.` };
+  if (status === "declined" || status === "failed") return { state: "declined", booked: false, words: `it was not booked: ${provider} declined it${row?.decline_code ? ` (${row.decline_code})` : ""}. Nothing was charged.` };
   if (status === "outcome_unknown") return { state: "outcome_unknown", booked: false, words: "nobody knows yet whether it was booked: the confirm went out and no answer came back. It is not being retried." + airline };
   // The e-ticket email (src/ticketcheck.js) is evidence on its own: a ticket number printed for one of
   // the order's passengers, on this route and day, means the airline issued it — even when AgentCard
@@ -192,10 +200,10 @@ export function bookingState(row, { ticketing = null } = {}) {
       return { state: "issued", booked: true, ticket_numbers: t.ticket_numbers, locator: t.locator, words: `booked — the ticket is issued (ticket number${t.ticket_numbers.length > 1 ? "s" : ""} ${t.ticket_numbers.join(", ")}).${locatorIs ? `${locatorIs}.` : ""}` };
     }
     if (t.reserved) return { state: "reserved", booked: false, words: `the seats are held, and no ticket has been issued.${locator}${code}${airline}` };
-    const charged = row?.charge_status === "settled" ? "the payment went through" : "AgentCard placed the order (the charge may still be settling)";
+    const charged = row?.charge_status === "settled" ? "the payment went through" : `${provider} placed the order (the charge may still be settling)`;
     return {
       state: "ticketing_pending", booked: false,
-      words: `${charged}, and ticketing is not confirmed — AgentCard has not reported an issued ticket.${locator}${code}${airline}`,
+      words: `${charged}, and ticketing is not confirmed — ${direct ? "no e-ticket has been seen yet" : "AgentCard has not reported an issued ticket"}.${locator}${code}${airline}`,
     };
   }
   if (status === "awaiting_approval") {
