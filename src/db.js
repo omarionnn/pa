@@ -4851,6 +4851,12 @@ export function reholdInbound(rows, { readyAt, downSince }) {
   return { readyAt, held: rows.length ? countPendingInbound(rows[0].conversation_id) : 0 };
 }
 
+/** When the oldest message this conversation is holding arrived, or null when it holds none. */
+export function firstPendingArrival(conversationId) {
+  const r = db.prepare("SELECT MIN(arrived_at) AS at FROM pending_inbound WHERE conversation_id = ?").get(conversationId);
+  return r?.at ?? null;
+}
+
 /** When this conversation's held messages may run, or null when it is holding none. */
 export function pendingReadyAt(conversationId) {
   const r = db.prepare("SELECT MIN(ready_at) AS at FROM pending_inbound WHERE conversation_id = ?").get(conversationId);

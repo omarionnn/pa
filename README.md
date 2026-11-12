@@ -725,6 +725,12 @@ and the total. Numbers only; never a word of the message or a figure from it. It
 slowdown was taken apart: 2.5 s of hold, ~0.5 s of memory lookup, 11–18 s of model depending on
 whether the history anchor was a cache hit, ~2.6 s of said check, ~0.5 s of send.
 
+**`REASON_TYPING_AWARE`** (`off` default | `owner` | `on`; src/typingaware.js, docs/typing-aware.md) replaces the
+fixed pause with Sendblue's typing webhooks: somebody who is not typing is answered at once; somebody still
+typing is waited for (their next text joins the same turn), until they send, stop, or 15 s pass. No events
+means "not typing", so nothing can hang. Whether somebody is typing is kept in memory for 30 s and nowhere
+else; the log gets counts by the hour. Off, a verified typing webhook is only counted (observe-only).
+
 **`REASON_FAST_REPLY`** (`off` default | `owner` | `on`; src/fastreply.js) is the reply-speed pass of
 2026-11-11. The model is handed the same bytes in the same order; only the clock changes. Behind it:
 the history anchor is *fitted* when the system prompt plus the whole window would pass the argument

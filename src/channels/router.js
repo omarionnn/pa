@@ -32,6 +32,7 @@ import * as reviewed from "../reviewed.js";
 import { hearInto } from "../voice.js";
 import { readContactsInto } from "../contacts.js";
 import { bubbleFor } from "../typing.js";
+import * as typingAware from "../typingaware.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { offerContactCard } from "../contact.js";
@@ -495,12 +496,15 @@ export class Router {
         return { ok: true, conversationId, cancelled: true, replied: false };
       }
     }
+    const typingHeld = inbound.channel !== web.WEB && typingAware.typingAwareOn({ isOperator, conversationId });
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
       externalId: inbound.externalId, text: [under, picking, reacted, inbound.text].filter(Boolean).join("\n"),
       attachments, service: inbound.service ?? null, isOperator,
-      quietMs: Math.max(0, quietWindowFor(inbound.channel)), maxMs: Math.max(0, config.burstMaxMs),
+      // REASON_TYPING_AWARE (src/typingaware.js): no fixed pause; the wait below is for somebody typing.
+      quietMs: typingHeld ? 0 : Math.max(0, quietWindowFor(inbound.channel)), maxMs: Math.max(0, config.burstMaxMs),
     });
+    if (inbound.channel !== web.WEB) typingAware.noteMessage({ address, log: this.log });
 
     // The "…" bubble, for the wait AND the turn. It goes up here rather than at the turn, because
     // the whole point of the wait is that somebody is mid-thought and should see that Reason is
@@ -557,7 +561,12 @@ export class Router {
             break;
           }
           const wait = readyAt - clock.now();
-          if (wait <= 0) break;
+          if (wait <= 0) {
+            // Typing-aware: held only while they are typing their next text; a text that arrived
+            // meanwhile is held like any other, so the window is read again. Off: not asked.
+            if (typingHeld && await this.#typingHold(conversationId, address)) continue;
+            break;
+          }
           if (round > 0) await this.#bubbleForHeld(conversationId);
           await this.#after(wait);
         }
@@ -1083,6 +1092,23 @@ export class Router {
     await this.#bubble(conversationId, {
       channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,
     }).start();
+  }
+
+  /**
+   * REASON_TYPING_AWARE: wait while this person is typing their next text (src/typingaware.js).
+   * True when another text joined while it waited. Never throws; a failure is "do not wait".
+   */
+  async #typingHold(conversationId, address) {
+    try {
+      const first = db.firstPendingArrival(conversationId);
+      const r = await typingAware.hold({ address, firstAt: first, after: (ms) => this.#after(ms) });
+      // A duration and a code, and not whose: a conversation id can carry a phone number.
+      if (r.waited > 0) this.log({ typing_hold: r.why, waited_ms: r.waited });
+      return r.more && db.pendingReadyAt(conversationId) !== null;
+    } catch (e) {
+      this.log({ typing_hold_failed: (e?.message ?? String(e)).split("\n")[0] });
+      return false;
+    }
   }
 
   /** Wait, on the injected timer, so a test does not spend real seconds on a quiet window. */
@@ -1669,6 +1695,10 @@ export class Router {
       this.log({ webhook: channel, threw: (e?.message ?? String(e)).split("\n")[0] });
       return { status: 500, body: { error: "webhook handler failed" } };
     }
+    // A contact started or stopped typing (src/typingaware.js). Memory only, never a turn, never a
+    // row, and never logged with who: a verified one is a hint for timing a reply, a refused one is counted.
+    if (parsed.typing) { try { typingAware.noteEvent({ ...parsed.typing, now: arrivedAt, log: this.log }); } catch { /* a hint */ } }
+    else if (parsed.typingRefused) { try { typingAware.noteRefused({ now: arrivedAt, log: this.log }); } catch { /* a count */ } }
     // Refused deliveries (a rotated secret, a missing header) raise an alert after a few; an
     // accepted one closes it (src/webhookalert.js). Never in the way of the answer.
     try { webhookAlert.note({ channel, status: parsed.status, error: parsed.body?.error ?? "", request: { headers, rawBody: rawBody ?? rawBytes?.toString?.("utf8") ?? "" } }); } catch { /* never blocks */ }
