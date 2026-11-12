@@ -180,6 +180,8 @@ function travelerValue(f, t) {
 export function fill(run, rq, base) {
   const f = flightRun(run?.run_id, run?.conversation_id);
   const travelers = f ? travelersOf(f) : null;
+  // Booking switched off since this checkout started: no passenger detail leaves the record.
+  if (f && !flightbook.bookingEnabled(f.conversation_id)) return base;
   if (!f || !travelers || travelers.length !== 1) return base;
   const t = travelers[0];
   const fields = Array.isArray(rq?.fields) ? rq.fields : [];

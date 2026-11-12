@@ -1122,7 +1122,7 @@ async function payRow(row, { confirmationId = null } = {}) {
   const conversationId = row.conversation_id;
   if (row.status !== "asked") return { ok: false, error: `payment_${row.status}` };
   // A flight's payment goes out only for the travelers it was built for, where booking is on (src/flightcheckout.js).
-  { const no = flightMod?.payRefusal(row) ?? null; if (no) { logFn({ flight_pay_refused: no.error, payment_id: row.id }); return no; } }
+  { const no = await flightPayRefusal(row); if (no) { logFn({ flight_pay_refused: no.error, payment_id: row.id }); return no; } }
   // Only Crossmint's exact total is ever paid: a "maximum" is a ceiling nobody agreed to as a price.
   if (row.amount_kind !== "exact") return { ok: false, error: "not_exact_amount" };
   // An expiry that doesn't read counts as passed.
@@ -1752,6 +1752,17 @@ export const foodReady = import("./food.js").then((m) => { foodMod = m; }).catch
 // A flight is a checkout on the airline's own site, with a flight's rules on it (src/flightcheckout.js).
 let flightMod = null;
 export const flightReady = import("./flightcheckout.js").then((m) => { flightMod = m; }).catch(() => { flightMod = null; });
+/**
+ * A flight's reasons not to pay, never skipped: the module is waited for, and if it did not load, a
+ * run on record as a flight is refused outright — its traveler and switch checks cannot be made.
+ */
+async function flightPayRefusal(row) {
+  await flightReady;
+  if (flightMod) return flightMod.payRefusal(row) ?? null;
+  let isFlight = false;
+  try { isFlight = !!q("SELECT 1 FROM flight_runs WHERE run_id = ? AND conversation_id = ?").get(row.run_id, row.conversation_id); } catch { isFlight = false; }
+  return isFlight ? { ok: false, error: "not_available", say: "Reason can't book flights right now, so nothing was paid. Hand over the Google Flights link from the search instead." } : null;
+}
 
 /** "12:25 PM" in their zone: when the store stops holding the cart, said as a clock time, never as a countdown. */
 function clockTime(ms, conversationId) {

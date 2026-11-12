@@ -310,3 +310,49 @@ test("booked needs a ticket for EVERY passenger: an e-ticket naming one of two c
   const both = tc.evidenceFrom({ ...email, tickets: [...email.tickets, { number: "2791234567891", passenger: "Ama Mensah" }] }, facts);
   assert.deepEqual(both.covers, [0, 1]);
 });
+
+// ---------------------------------------------------------------- owner only, by every path
+test("REASON_FLIGHT_BOOKING=owner with shopping on for EVERYONE: a non-owner still has no booking — no tool, no words, no run, no traveler of the owner's", async () => {
+  process.env.REASON_SHOP_CONNECT = "on";
+  try {
+    assert.equal(fb.bookingRoute(AMA), "crossmint", "the shopping path reaches Ama");
+    assert.equal(fb.bookingEnabled(AMA), false, "and the flag still does not");
+    assert.equal(fb.bookingEnabled(OMARI), true);
+    const hers = toolsFor(AMA);
+    for (const n of ["flight_book", "flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget"]) assert.ok(!hers.some(t => t.name === n), n);
+    assert.ok(!hers.some(t => /flight_book/.test(t.description)), "nothing her model reads names flight_book");
+    // The owner's traveler and search exist; named by id from her conversation they do nothing.
+    const tid = await confirmedTraveler();
+    const sid = search();
+    say("book option 1", AMA);
+    for (const [name, input] of [["flight_book", { search_id: sid, option: 1, traveler_ids: [tid] }], ["flight_travelers", {}], ["flight_traveler_forget", { traveler_id: tid }],
+      ["flight_traveler_confirm", { traveler_ids: [tid], said: "yes" }], ["flight_traveler_save", TESTY]]) {
+      const out = await call(name, input, AMA);
+      assert.equal(out.blocked, "not_available", `${name}: ${JSON.stringify(out)}`);
+      assert.ok(!JSON.stringify(out).includes("Spikeson"), name);
+    }
+    assert.equal(calls.length, 0, "nothing reached Crossmint");
+    assert.ok(db.getFlightTraveler(OMARI, tid), "the owner's traveler is untouched");
+    assert.equal(db.getFlightTraveler(AMA, tid), null, "and is not readable as hers");
+  } finally { process.env.REASON_SHOP_CONNECT = "owner"; }
+});
+
+test("a flight run belongs to one person: read from another conversation it is not a flight run, and has no target tail", async () => {
+  const { runId } = await booked();
+  assert.ok(fc.flightRun(runId, OMARI));
+  assert.equal(fc.flightRun(runId, AMA), null);
+  assert.equal(fc.isFlightRun(runId, AMA), false);
+  assert.equal(fc.payTargetTail({ run_id: runId, conversation_id: AMA }), "");
+  assert.equal(fc.fill({ run_id: runId, conversation_id: AMA }, PASSENGER_FORM("r").request.interaction, { answers: {}, covered: false }).answers.first_name, undefined);
+});
+
+test("booking switched off after the checkout started: the passenger form is not answered from the traveler record", async () => {
+  shipping.learn(OMARI, { first_name: "Omari", last_name: "Nyarko", address1: "350 5th Ave", city: "New York", state: "NY", zip: "10118", phone: "+12025551234", email: "o@example.com" }, { source: "test" });
+  const { runId } = await booked();
+  config.flightBooking = false;
+  runs[runId].requiredAction = PASSENGER_FORM("req_pax_1"); runs[runId].revision = 2;
+  await shop.step(runId);
+  const sent = calls.filter(c => c.path.endsWith("/messages"));
+  assert.ok(!JSON.stringify(sent).includes("Spikeson"), "no traveler detail went to the airline");
+  assert.ok(!JSON.stringify(sent).includes("01/15/1990"));
+});

@@ -123,6 +123,7 @@ startOps({ runtime, router, log });
       });
     }
     await shop.foodReady;
+    await shop.flightReady;   // a resumed flight checkout meets its traveler form and its payment checks (src/flightcheckout.js)
     const resumed = shop.resumeFollowing();
     if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });
   }
