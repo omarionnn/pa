@@ -87,17 +87,16 @@ const wallUp = async () => ({ in: false, status: 403, why: "Uber's sign-in page 
 
 // ---------- 1. the button, on an Uber sign-in page, in a real browser ----------
 
-test("the finder presses Continue with Google on an Uber sign-in page and nothing else", async () => {
+test("the finder never presses Continue with Google on an Uber sign-in page; it presses Apple and nothing else", async () => {
   const page = await browser.newPage();
   try {
     await page.setContent(FIXTURE, { waitUntil: "domcontentloaded" });
     const g = await social.clickProviderButton(page, "google", { settleMs: 0 });
-    assert.match(g.pressed, /^g? ?continue with google/, "the button's own words (its icon letter and data-provider ride along)");
-    assert.equal(await page.evaluate(() => window.__pressed), "google", "the visible button, not the hidden copy");
-    await page.evaluate(() => { window.__pressed = ""; });
+    assert.deepEqual(g, { pressed: "" }, "Google is never pressed, though the page has the button");
+    assert.equal(await page.evaluate(() => window.__pressed ?? ""), "", "nothing was clicked");
     const a = await social.clickProviderButton(page, "apple", { settleMs: 0 });
-    assert.match(a.pressed, /continue with apple/);
-    assert.equal(await page.evaluate(() => window.__pressed), "apple");
+    assert.match(a.pressed, /continue with apple/, "the button's own words");
+    assert.equal(await page.evaluate(() => window.__pressed), "apple", "the visible button, not the hidden copy");
     await page.evaluate(() => { window.__pressed = ""; });
     assert.deepEqual(await social.clickProviderButton(page, "facebook", { settleMs: 0 }), { pressed: "" }, "no Facebook on Uber's page");
     assert.equal(await page.evaluate(() => window.__pressed), "", "nothing pressed for a button the page has not got");
@@ -116,7 +115,8 @@ test("Uber's hosts cover the rider site and the sign-in host; the rules send Ube
   assert.doesNotMatch(social.RULES, /UBER FIRST/);
   assert.doesNotMatch(social.RULES, /Uber signs in through your Google account/);
   assert.doesNotMatch(social.RULES, /site "uber" and provider "google"/);
-  assert.match(social.RULES, /UBER: never ask for their Google \(or any provider\) login for Uber/);
+  assert.match(social.RULES, /UBER: never ask for any provider login for Uber/);
+  assert.match(social.RULES, /NO GOOGLE, EVER/);
   assert.match(social.RULES, /Uber connect card \(uber_connect\), only when they ask to connect it; a ride is uber_link/);
   assert.equal(social.uberSocialPath, undefined);
   assert.equal(social.uberRoute, undefined);
@@ -157,38 +157,43 @@ test("signinWall: a bot check is a wall (kept 30 s); a page that loads names its
 
 // ---------- 4. signin_link for Uber with provider google ----------
 
-test("signin_link uber + google: the wall is asked; up → said plainly with the card named instead, no link; down → the link", async () => {
+test("signin_link uber + apple: the wall is asked; up → said plainly with the card named instead, no link; down → the link", async () => {
   const made = [];
   const seam = { createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example.test/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; } };
-  const up = await call("signin_link", { site: "uber", provider: "google" }, CONV, { ...seam, signinWall: wallUp });
+  const up = await call("signin_link", { site: "uber", provider: "apple" }, CONV, { ...seam, signinWall: wallUp });
   assert.equal(up.ok, false);
   assert.equal(up.blocked, true);
   assert.equal(up.checked_live, true);
-  assert.equal(up.provider, "google");
-  assert.match(up.error, /Google button cannot be pressed for them and no link is made/);
-  assert.match(up.say, /bot check before the Google button even loads/);
+  assert.equal(up.provider, "apple");
+  assert.match(up.error, /Apple button cannot be pressed for them and no link is made/);
+  assert.match(up.say, /bot check before the Apple button even loads/);
   assert.match(up.instead, /Uber is the Uber connect card: uber_connect with they_asked_to_connect true/);
   assert.equal(up.fallback, undefined);
   assert.match(up.handoff, /uber_link/);
   assert.deepEqual(made, [], "no link while the wall is up");
 
-  const down = await call("signin_link", { site: "uber", provider: "google" }, CONV, { ...seam, signinWall: wallIn });
+  const down = await call("signin_link", { site: "uber", provider: "apple" }, CONV, { ...seam, signinWall: wallIn });
   assert.equal(down.ok, true);
-  assert.equal(down.provider, "google");
-  assert.equal(made[0].provider, "google");
+  assert.equal(down.provider, "apple");
+  assert.equal(made[0].provider, "apple");
   assert.equal(made[0].entry.site, "uber");
-  assert.match(down.expect, /Google will ping your phone\. Tap Yes\./);
-  assert.match(down.say, /Google button pressed/);
+  assert.match(down.expect, /Apple will show a code on your iPhone or Mac\. Send it to me\./);
+  assert.match(down.say, /Apple button pressed/);
 
-  // Without a provider, or for someone the flag does not reach, the dated finding answers as before
-  // and the wall is not asked.
+  // Without a provider, with Google (never pressed, so no provider), or for someone the flag does
+  // not reach, the dated finding answers as before and the wall is not asked.
   let asked = 0;
   const counting = async () => { asked++; return wallIn(); };
   const plain = await call("signin_link", { site: "uber" }, CONV, { ...seam, signinWall: counting });
   assert.equal(plain.ok, false);
   assert.equal(plain.checked_live, undefined);
   assert.match(plain.say, /Uber won't let my browser onto its sign-in page/);
-  const theirs = await call("signin_link", { site: "uber", provider: "google" }, THEIRS, { ...seam, signinWall: counting });
+  const google = await call("signin_link", { site: "uber", provider: "google" }, CONV, { ...seam, signinWall: counting });
+  assert.equal(google.ok, false);
+  assert.equal(google.checked_live, undefined);
+  assert.equal(google.provider, undefined);
+  assert.match(google.say, /Uber won't let my browser onto its sign-in page/);
+  const theirs = await call("signin_link", { site: "uber", provider: "apple" }, THEIRS, { ...seam, signinWall: counting });
   assert.equal(theirs.ok, false);
   assert.equal(theirs.checked_live, undefined);
   assert.equal(asked, 0);
@@ -196,7 +201,7 @@ test("signin_link uber + google: the wall is asked; up → said plainly with the
 
   // signin_open goes the same way.
   const opened = [];
-  const w = await call("signin_open", { site: "uber", provider: "google" }, CONV, { signinWall: wallUp, openSigninWindow: async (a) => { opened.push(a); return { ok: true }; } });
+  const w = await call("signin_open", { site: "uber", provider: "apple" }, CONV, { signinWall: wallUp, openSigninWindow: async (a) => { opened.push(a); return { ok: true }; } });
   assert.equal(w.ok, false);
   assert.equal(w.checked_live, true);
   assert.deepEqual(opened, []);

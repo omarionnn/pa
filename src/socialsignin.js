@@ -52,6 +52,20 @@ export const LABELS = { google: "Google", apple: "Apple", facebook: "Facebook", 
 export function isProvider(p) { return PROVIDERS.includes(String(p ?? "").trim().toLowerCase()); }
 export function providerKey(p) { const k = String(p ?? "").trim().toLowerCase(); return isProvider(k) ? k : ""; }
 
+// ---------------------------------------------------------------- no Google, ever
+/**
+ * Google refuses Reason's server browser on its own sign-in page by policy (Google Account Help
+ * 7675428, OAuth 2.0 "secure browsers"; proved live on Notion 2026-11-10: "This browser or app may not
+ * be secure" after any email). So Google is never offered, never shown on Reason's page and never
+ * pressed on a site: a site that offers it is signed in to through its OWN email route instead — the
+ * emailed code or link, which Reason reads from their Gmail itself (src/signinemail.js). Owner,
+ * 2026-11-11: "remove that whole scary Google thing". Apple was checked the same day: its page loads in
+ * the server browser with no refusal, so it stays (its refusal is still caught, as before).
+ */
+export const NEVER_PRESSED = new Set(["google"]);
+/** A provider Reason may offer or press: one of the four, never Google. "" otherwise. */
+export function usableProvider(p) { const k = providerKey(p); return k && !NEVER_PRESSED.has(k) ? k : ""; }
+
 /** "your Google login" — the words the rules use; never "OAuth", never "social provider", to the person. */
 export const loginWords = (p) => `your ${LABELS[providerKey(p)] ?? "Google"} login`;
 
@@ -157,7 +171,7 @@ export function providersOnPage(read) {
  * A page that will not run the script (closed, navigating) is "" too: nothing was pressed.
  */
 export async function clickProviderButton(page, provider, { settleMs = 1500 } = {}) {
-  const key = providerKey(provider);
+  const key = usableProvider(provider);
   if (!key || !page?.evaluate) return { pressed: "" };
   let pressed = "";
   try { pressed = String(await page.evaluate(findProviderButton, key) ?? ""); } catch { pressed = ""; }
@@ -262,7 +276,9 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   // The site's OWN sign-in page offering Continue-with buttons (Notion: buttons above an email box) is
   // the chooser, even with an email box on it: the person picks the provider or their own email.
   // Only off the providers' hosts — on Google's own page the box is Google's email step.
-  const offered0 = onProvider ? [] : [...new Set([...providersOffered(t), ...(Array.isArray(raw?.buttons) ? providersOnPage(raw.buttons) : [])])];
+  // Google is never offered (NEVER_PRESSED): a page whose only provider is Google and that has an
+  // email box is the email step, not a chooser.
+  const offered0 = onProvider ? [] : [...new Set([...providersOffered(t), ...(Array.isArray(raw?.buttons) ? providersOnPage(raw.buttons) : [])])].filter(usableProvider);
   // A password box alone does not stop it when an email box sits beside it (Notion keeps one on its
   // first page for password managers); a password box with no email box is the password step.
   if (offered0.length && !has("otp") && (!has("password") || has("email") || has("username") || has("tel"))) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
@@ -275,8 +291,8 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
     return { step: "account", provider: prov, number: "", say: `${name} is asking which account. Pick yours.` };
   }
   // No field, no prompt, but the page offers providers: the chooser.
-  const offered = providersOffered(t);
-  if (offered.length) return { step: "chooser", provider: prov, number: "", offered, say: `Pick how you sign in.` };
+  const offered = providersOffered(t).filter(usableProvider);
+  if (offered.length || (!onProvider && providersOffered(t).length)) return { step: "chooser", provider: prov, number: "", offered, say: `Pick how you sign in.` };
   if (SIGNED.test(low)) return { step: "signed_in", provider: prov, number: "", say: `Signed in.` };
   return { step: "unknown", provider: prov, number: "", say: prov ? `Working on the ${LABELS[prov]} page…` : "Working on the page…" };
 }
@@ -317,9 +333,9 @@ export function refusalAnswer(entry, provider) {
   const name = LABELS[providerKey(provider)] ?? "The provider";
   const ownForm = !!entry?.signin_url && !entry?.signin_blocked;
   return {
-    say: `${name} refused my browser for ${entry?.label ?? "that site"}, so I couldn't sign you in through ${name} there.${ownForm ? ` I can send you a secure link to sign in with your ${entry.label} email and password instead.` : ""}`,
+    say: ownForm ? `${name} refused my browser for ${entry.label}, so I'm signing you in with your ${entry.label} email instead.` : `${name} refused my browser for ${entry?.label ?? "that site"}, so I couldn't sign you in there.`,
     instead: ownForm
-      ? `Offer ${entry.label}'s own email/password sign-in: signin_link with site "${entry.site}" and NO provider. Do not try ${name} for ${entry.label} again.`
+      ? `Sign them in through ${entry.label}'s own email route: signin_email with site "${entry.site}". Do not try ${name} for ${entry.label} again, and never Google.`
       : `${entry?.label ?? "That site"} has no sign-in of its own Reason can open; do not try ${name} for it again, and finish the task another way if there is one.`,
   };
 }
@@ -336,7 +352,7 @@ export function offeredFor(conversationId, entry, { asked = "", live = [] } = {}
   if (!socialAllowedFor(conversationId) || !entry?.site) return [];
   const out = [];
   for (const p of [providerOf(conversationId, entry.site), asked, ...(live ?? [])]) {
-    const k = providerKey(p);
+    const k = usableProvider(p);
     if (k && !out.includes(k) && !refusedRecently(conversationId, entry.site, k)) out.push(k);
   }
   return out;
@@ -354,10 +370,11 @@ export function namesOf(list) {
  */
 export function choiceLine(entry, offered, recorded = "") {
   const n = entry?.label ?? "the site";
-  const rec = providerKey(recorded);
+  const rec = usableProvider(recorded);
   if (rec) return `${n} signs in through your ${LABELS[rec]} account. Tap Continue with ${LABELS[rec]} on the page and ${expectLine(rec).replace(/^\w+ will/, (m) => m.toLowerCase().replace(/^\w+/, "it"))}`;
-  if (!offered?.length) return "";
-  return `${n} lets you sign in with ${namesOf(offered)}, or with your ${n} email. Pick whichever you use on the page.`;
+  const usable = (offered ?? []).filter(usableProvider);
+  if (!usable.length) return "";
+  return `${n} lets you sign in with ${namesOf(usable)}, or with your ${n} email. Pick whichever you use on the page.`;
 }
 
 /** Sites that only deliver food: walled, the restaurant's own ordering still works (src/food.js, #449). */
@@ -523,17 +540,19 @@ export function clearDecline(conversationId, provider) {
  * One block, only when the flag reaches this person. Every line here is a line of the spec.
  */
 export const RULES = [
-  `- Many sites sign in through a Google, Apple, Facebook or Microsoft account, and one of those logins opens dozens of their accounts — so getting it is high-leverage and you treat it as a priority, but you EARN it through a real task and never make a cold ask.`,
-  `- WHEN TO ASK: the first time a real task needs a site whose account uses one of those. Tie the ask to that task, one line, specific: "DoorDash signs in through your Google account. Want me to use it? It'll also let me get into your other Google sign-in sites later without asking again." Never during onboarding chit-chat, never mid-vent, never late at night unless they are actively asking you to do something right then, and never when the task can be done without signing in. Say "your Google login", never "social provider" or "OAuth".`,
-  `- If they do not know how they sign in somewhere, find out before you ask: signin_provider with action "infer" reads the site's sign-in page for which buttons it offers, and gmail_search for that site's welcome or receipt email ("you signed up with Google") settles it. Then confirm in one line; never guess out loud as if you knew.`,
+  `- NO GOOGLE, EVER: never offer, suggest, ask for or use a Google sign-in for any site: Google refuses Reason's browser. Never say "Continue with Google" or "your Google login". A site whose account uses Google (or whose page offers it) is signed in to through that site's OWN email route instead — the code or link the site emails — which you read from their Gmail yourself. Never say "check your email".`,
+  `- SIGN ME IN: when they ask you to sign them in to a site ("sign me into notion"), or a real task needs a site you are not signed in to, call signin_email with the site (its web address for a site not on signin_link's list, e.g. https://www.notion.so/login) and their email if they named one. Say one short line like "Signing in to Notion with your email, one sec." and nothing about codes. You are told how it ends; never say it worked before that. If it needs their email, ask once which email their account there uses. If it says the code has to come from them (their Gmail is not connected), ask for it in ONE plain line, like "What's the code Notion just sent to you@example.com?" — their reply goes to the site without you; never repeat it, never ask twice. The secure link (signin_link) is the fallback for a site with no emailed code or link.`,
+  `- Some sites sign in through an Apple, Facebook or Microsoft account, and one of those logins opens many of their accounts — high-leverage, but you EARN it through a real task and never make a cold ask.`,
+  `- WHEN TO ASK: the first time a real task needs a site whose account uses Apple, Facebook or Microsoft. Tie the ask to that task, one line, specific: "Airbnb signs in through your Apple account. Want me to use it?" Never during onboarding chit-chat, never mid-vent, never late at night unless they are actively asking you to do something right then, and never when the task can be done without signing in. Say "your Apple login", never "social provider" or "OAuth".`,
+  `- If they do not know how they sign in somewhere, find out before you ask: signin_provider with action "infer" reads the site's sign-in page for which buttons it offers, and gmail_search for that site's welcome or receipt email settles it. If it is Google, that is signin_email, not a Google ask. Then confirm in one line; never guess out loud as if you knew.`,
   `- A no is a no: finish the task another way if you can, and do not ask about that provider again for ${DECLINE_DAYS} days unless they bring it up. Record it with signin_provider action "declined", and check signin_provider action "ask_check" before any ask — it says whether the ${DECLINE_DAYS} days are up. Never pressure, never repeat a declined ask.`,
-  `- ANY SITE: this works on any site whose sign-in page has one of those buttons — Notion, Airbnb, Figma, a gym's booking site — not only the sites signin_link names. For a site not on its list, pass the site's web address as \`site\` (its sign-in page if you know it, e.g. https://www.notion.so/login, else its domain); signin_provider infer and signin_status take the address the same way. When a real task needs their account on a site you are not signed in to, the answer is the one-line ask and then the secure link — never "I can't get into it" or "that site isn't supported", and capabilities listing no saved sign-in for it does not mean it cannot be signed in to.`,
-  `- HOW IT IS COLLECTED: never a password, a code or a card number in this chat. Send the secure sign-in link (signin_link, with the provider as its \`provider\`) and they sign in on the provider's own page inside it. The login is saved only once the site says they are signed in, and which provider each site uses is written down with it; you are told when that happens.`,
-  `- TWO-STEP VERIFICATION: expect it. Least effort first: a Yes tap on their phone, then a code sent to an email you can read yourself (gmail_search, gmail_read — never "check your email"), then a texted code they forward to you. Tell them what to expect in one line: "Google will ping your phone. Tap Yes." A forwarded code is cleaned before it is typed (a "G-", spaces and dashes come off), so take it as they send it. If a code fails twice, switch methods once; if that fails too, stop and say plainly what blocked it. Sites often send a second code of their own after the provider approves: warn them one more may come.`,
-  `- REFUSED: Google (or Apple/Microsoft) sometimes refuses Reason's browser on its own page ("This browser or app may not be secure"). You are told when that happens. Then say it in one plain line — Google refused my browser for that site — never retry it, and offer that site's own email/password sign-in through the secure link (signin_link with no provider) if it has one.`,
-  `- AFTER ACCESS: finish the task first. Then, once, say what it unlocked: "Now I can handle your DoorDash and Airbnb too, since they use the same Google sign-in." When a session lapses, sign back in yourself (signin_status with recheck tries the saved provider button for you); only involve them for an approval tap or a code.`,
-  `- UBER: never ask for their Google (or any provider) login for Uber. Connecting their Uber account is the Uber connect card (uber_connect), only when they ask to connect it; a ride is uber_link, every time, as before.`,
-  `- TRUST: use provider access only for tasks they asked for or approved — no curiosity browsing. Never change passwords, security settings, recovery emails or connected apps. Never grant a new third-party app access without asking. Money, a message sent as them, and anything permanent still need their go-ahead. If they ask what you can get into, answer honestly from signin_status and say how to revoke it (account_revoke, or the provider's own connected-apps page). Signing in with Google is not the same as reading their Gmail: it opens that site, nothing else.`,
+  `- ANY SITE: this works on any site with an email sign-in — Notion, Airbnb, Canva, a gym's booking site — not only the sites signin_link names. For a site not on its list, pass the site's web address as \`site\` (its sign-in page if you know it, e.g. https://www.notion.so/login, else its domain); signin_email, signin_link, signin_provider infer and signin_status take the address the same way. When a real task needs their account on a site you are not signed in to, the answer is signin_email — never "I can't get into it" or "that site isn't supported", and capabilities listing no saved sign-in for it does not mean it cannot be signed in to. Do not promise a particular site works until it has.`,
+  `- HOW IT IS COLLECTED: never a password or a card number in this chat. For an Apple, Facebook or Microsoft account, send the secure sign-in link (signin_link, with the provider as its \`provider\`) and they sign in on the provider's own page inside it. The login is saved only once the site says they are signed in, and which provider each site uses is written down with it; you are told when that happens.`,
+  `- TWO-STEP VERIFICATION: expect it. Least effort first: a Yes tap on their phone, then a code sent to an email you can read yourself (signin_email reads it for you — never "check your email"), then a texted code they forward to you. Tell them what to expect in one line: "Apple will show a code on your iPhone or Mac. Send it to me." A forwarded code is cleaned before it is typed (spaces and dashes come off), so take it as they send it. If a code fails twice, switch methods once; if that fails too, stop and say plainly what blocked it.`,
+  `- REFUSED: Apple or Microsoft sometimes refuses Reason's browser on its own page ("this browser is not supported"). You are told when that happens. Then say it in one plain line, never retry it, and sign them in through the site's own email route instead (signin_email). Google's refusal page is backed out of automatically and never shown to them.`,
+  `- AFTER ACCESS: finish the task first. Then, once, say what it unlocked when it was a provider login: "Now I can handle your Airbnb too, since it uses the same Apple sign-in." When a session lapses, sign back in yourself (signin_status with recheck, or signin_email again); only involve them for an approval tap or, without Gmail, a code.`,
+  `- UBER: never ask for any provider login for Uber. Connecting their Uber account is the Uber connect card (uber_connect), only when they ask to connect it; a ride is uber_link, every time, as before.`,
+  `- TRUST: use sign-in access only for tasks they asked for or approved — no curiosity browsing. Never change passwords, security settings, recovery emails or connected apps. Never grant a new third-party app access without asking. Money, a message sent as them, and anything permanent still need their go-ahead. If they ask what you can get into, answer honestly from signin_status and say how to revoke it (account_revoke, or the provider's own connected-apps page). Reading a sign-in code from their Gmail is for that one sign-in: signin_email reads only that site's code mail, and the code is never shown to you or repeated.`,
 ].join("\n");
 
 /** The block for one person's prompt, or "" where the flag does not reach them. */
@@ -549,7 +568,9 @@ export function rulesFor(conversationId) {
  * the provider's page waiting for the person, and that is what comes back — nothing is typed for them.
  */
 export async function signInAgain(page, conversationId, entry, { provider = "", check = null, settleMs = 2500 } = {}) {
-  const key = providerKey(provider || providerOf(conversationId, entry.site));
+  const key0 = providerKey(provider || providerOf(conversationId, entry.site));
+  if (key0 && NEVER_PRESSED.has(key0)) return { ok: false, tried: false, provider: key0, email_route: true, why: `${LABELS[key0]} is never pressed (it refuses Reason's browser); sign back in with ${entry?.label ?? "the site"}'s emailed code instead: signin_email` };
+  const key = key0;
   if (!key) return { ok: false, tried: false, why: "no provider is on record for this site" };
   if (!entry?.signin_url) return { ok: false, tried: false, why: "the site has no sign-in page on record" };
   try {

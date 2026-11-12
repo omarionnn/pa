@@ -52,6 +52,7 @@ import * as actioncards from "../actioncards.js";
 import * as connectafter from "../connectafter.js";
 import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
+import * as signinEmail from "../signinemail.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -287,6 +288,18 @@ export class Router {
     // (#offerCardIfNamed, below the turn); the master's yes sends it after "you're in"; the startup
     // pass reaches accounts from before the card existed. Somebody in the first-chat onboarding gets
     // the card from it, after their name, with its own line.
+    // A sign-in waiting on the code they were asked for (src/signinemail.js, no Gmail connected): the
+    // code goes straight to the site HERE, at intake, and everything after — the dedupe row, the held
+    // queue, a mid-turn read, the history, the memory pass and the turn — sees a placeholder instead,
+    // so it is never written down anywhere Reason keeps words (cold review, 2026-11-11).
+    if (typeof inbound.text === "string") {
+      const handed = signinEmail.takeCodeReply(conversationId, inbound.text);
+      if (handed) {
+        inbound.text = handed;
+        if (typeof inbound.said === "string") inbound.said = handed;
+        this.log({ inbound: inbound.externalId, signin_email: "code_reply_taken" });
+      }
+    }
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
     // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries

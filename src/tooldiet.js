@@ -96,7 +96,7 @@ export const PACKS = {
   // The secure sign-in link and the provider tool, loaded whole wherever the Google/Apple/Facebook/
   // Microsoft rules are in the prompt (src/socialsignin.js): those rules name them, and on 2026-11-10
   // the owner's Notion task never reached signin_link — Reason said it could not get in instead.
-  signin: ["signin_link", "signin_status", "signin_provider"],
+  signin: ["signin_email", "signin_link", "signin_status", "signin_provider"],
 };
 const PACK_OF = new Map();
 for (const [k, names] of Object.entries(PACKS)) for (const n of names) if (!PACK_OF.has(n)) PACK_OF.set(n, k);
