@@ -28,6 +28,7 @@ delete process.env.REASON_CALL_TURN_GATE;
 
 const gl = await import("../src/calls/gptlive.js");
 const tg = await import("../src/calls/turngate.js");
+const manner = await import("../src/calls/manner.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
 const replay = await import("../scripts/turn-gate-replay.mjs");
@@ -342,6 +343,127 @@ test("fail open: a session.start the server refuses with the trigger in it is se
   assert.ok(r.lines.some(l => l.gptlive_turn_gate_off != null));
 });
 
+/** A call on stand-ins, driven by hand (the replay drives one that starts cleanly). */
+function bare(row, { warm = null } = {}) {
+  const timers = replay.fakeTimers();
+  const lives = [];
+  const openLive = () => { const l = { sent: [], h: { open: [], event: [], close: [] } }; l.socket = { send: (o) => l.sent.push(o), close: () => {}, on: (k, f) => l.h[k].push(f) }; lives.push(l); return l.socket; };
+  const twilioSent = [];
+  const handlers = [];
+  const twilio = { send: (s) => twilioSent.push(JSON.parse(s)), close: () => {}, onMessage: (f) => handlers.push(f), onClose: () => {}, open: () => true };
+  const lines = [];
+  const w = warm ? gl.prewarm(row, { ...warm, openLive, log: (o) => lines.push(o), now: timers.now, timers }) : null;
+  const make = () => new gl.GptLiveCall({ call: row, twilio, openLive, warm: w ? gl.takeWarm(row.id) : null, brain: () => new Promise(() => {}), judge: async () => ({ ended: false }), now: timers.now, timers, log: (o) => lines.push(o), finish: async () => {} });
+  const say = (obj) => handlers.forEach(f => f(JSON.stringify(obj)));
+  return { timers, lives, twilioSent, lines, make, say, w };
+}
+const startsOf = (l) => l.sent.filter(e => e.type === "session.start");
+
+test("fail open: a pre-opened session picked up before it started — the refusal reaches the call, and the start still goes again without the trigger", () => {
+  config.callTurnGate = "on";
+  const b = bare(ownCall(), { warm: { hold: true } });
+  const [l] = b.lives;
+  l.h.open.forEach(f => f());
+  assert.ok(startsOf(l)[0].session.triggers, "its start carried the trigger");
+  const call = b.make();
+  b.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  assert.equal(b.lives.length, 1, "the call took the pre-opened session");
+  assert.ok(call.turnGate);
+  l.h.event.forEach(f => f({ type: "error", error: { code: "invalid_request", message: "unknown field triggers" } }));
+  assert.equal(startsOf(l).length, 2, "sent again (with none the call would have stayed silent)");
+  assert.equal("triggers" in startsOf(l)[1].session, false);
+  assert.doesNotMatch(startsOf(l)[1].session.instructions, /small sign that you're there/);
+  config.callTurnGate = "off";
+  assert.equal(startsOf(l)[1].session.instructions, gl.voiceInstructionsFor(call.call), "the gate-off instructions exactly");
+  config.callTurnGate = "on";
+  assert.equal(call.turnGate, null);
+  // A second error is not a third start.
+  l.h.event.forEach(f => f({ type: "error", error: { code: "x", message: "y" } }));
+  assert.equal(startsOf(l).length, 2);
+  l.h.event.forEach(f => f({ type: "session.started", session: { id: "live_1" } }));
+  assert.equal(call.started, true, "and the call proceeds");
+  call.done = true;
+});
+
+test("fail open: refused while still ringing, before the start had even been sent — the one start goes without the trigger", () => {
+  config.callTurnGate = "on";
+  const b = bare(ownCall(), { warm: { hold: true } });
+  const [l] = b.lives;
+  assert.equal(b.w.startPlain(), true);
+  l.h.open.forEach(f => f());
+  assert.equal(startsOf(l).length, 1);
+  assert.equal("triggers" in startsOf(l)[0].session, false);
+  assert.doesNotMatch(startsOf(l)[0].session.instructions, /small sign that you're there/);
+  assert.equal(b.w.startPlain(), false, "once");
+  b.w.drop("test over");
+});
+
+test("fail open: the session closes before it starts (a refusal can be a close) — opened once more without the trigger, and a second close ends the call as before", async () => {
+  config.callTurnGate = "on";
+  const b = bare(ownCall());
+  const call = b.make();
+  b.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  b.lives[0].h.open.forEach(f => f());
+  assert.ok(startsOf(b.lives[0])[0].session.triggers);
+  b.lives[0].h.close.forEach(f => f(1008));
+  assert.equal(call.done, false, "the call is not ended");
+  assert.equal(b.lives.length, 2);
+  b.lives[1].h.open.forEach(f => f());
+  const again = startsOf(b.lives[1])[0].session;
+  config.callTurnGate = "off";
+  assert.deepEqual(again, gl.sessionConfig({ ...gl.whoFor(call.call), greeting: "Hey Omari, what's up?" }), "exactly the start a call gets with the gate off");
+  assert.equal(call.turnGate, null);
+  assert.ok(b.lines.some(l => l.gptlive_turn_gate_off != null && l.why === "closed before start"));
+  b.lives[1].h.close.forEach(f => f(1008));
+  assert.equal(call.done, true, "no third try");
+  assert.equal(b.lives.length, 2);
+  await b.timers.advance(5000);
+});
+
+test("with the gate off, a session that closes before it starts ends the call exactly as it did", () => {
+  const b = bare(ownCall());
+  const call = b.make();
+  b.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  b.lives[0].h.open.forEach(f => f());
+  b.lives[0].h.close.forEach(f => f(1008));
+  assert.equal(call.done, true);
+  assert.equal(b.lives.length, 1);
+});
+
+test("a session opened again has its own timeline: the audio count and everything heard on the old one start over", () => {
+  config.callTurnGate = "on";
+  const b = bare(ownCall());
+  const call = b.make();
+  b.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  const old = call.turnGate;
+  call.fedMs = 9000; call.fedSkew = 400; call.theirSpeechFedMs = 8800;
+  old.heard("a", b.timers.now(), 8800);
+  call.openFresh();
+  assert.deepEqual([call.fedMs, call.fedSkew, call.theirSpeechFedMs], [0, 0, null]);
+  assert.ok(call.turnGate && call.turnGate !== old && call.turnGate.last === null && call.turnGate.mode === "own");
+  // And the count follows the new session's audio only.
+  call.live.send({ type: "session.input_audio.append", audio: Buffer.alloc(160, 0xff).toString("base64") });
+  assert.equal(call.fedMs, 20);
+  assert.equal(b.lives.at(-1).sent.at(-1).type, "session.input_audio.append");
+  call.done = true;
+});
+
+test("a goodbye is said: a short run held for its place in a mid-thought pause goes out when the call begins ending, and the call's end leaves nothing held", async () => {
+  const r = await run(mid([{ at: 9200, voice: 400, own: true }, { at: 9250, said: "Bye now!", own: true }], { at: 6000, them: 3000 }), { setup: (call) => { call.talkSinceAck = 0; }, react: 0 });
+  assert.equal(heardIn(r, STOP).length, 0, "not due as an acknowledgement: unheard, as before");
+  const bye = await replay.replayOne([...mid([{ at: 9200, voice: 400, own: true }, { at: 9250, said: "Bye now!", own: true }], { at: 6000, them: 3000 }), { at: 9500, do: (call) => { call.ending = true; } }], { row: ownCall(), setup: (call) => { call.talkSinceAck = 0; }, react: 0 });
+  assert.ok(heardIn(bye, STOP).length >= 18, "the goodbye is heard");
+  assert.ok(bye.gate.some(l => l.verdict === "open" && l.why === "ending"));
+  // The end of a call: a held run and its timers go with it.
+  bye.call.done = false;
+  bye.call.tg = { timer: null, frames: ["x"], mode: "wait" };
+  bye.call.answerTimer = bye.call.timers.setTimeout(() => {}, 1000);
+  bye.call.started = false;
+  await bye.call.end("test");
+  assert.equal(bye.call.tg, null);
+  assert.equal(bye.call.answerTimer, null);
+});
+
 // ---------- after a held reply ----------
 
 test("after a held reply: they go quiet for 3 s and a few words are welcome — asked once, and what it says then is played", async () => {
@@ -472,15 +594,22 @@ test("a business call: the trigger also asks 'are they asking if this is a machi
   assert.deepEqual(qs[1].choices.map(c => c.value), ["asks_ai", "asks_who", "neither"]);
   const told = r.live.sent.filter(e => e.type === "session.instructions.append" && /^They just asked/.test(e.content));
   assert.equal(told.length, 1, "once per question, not once per piece of it");
-  assert.match(told[0].content, /"I'm an AI assistant calling for Omari\."/);
-  assert.match(told[0].content, /Never say or imply you are human/);
+  // #511's own words for the question, the same string its instructions carry — nothing else put in its mouth.
+  assert.ok(told[0].content.endsWith(manner.askedLine("Omari")));
+  assert.ok(r.live.sent.find(e => e.type === "session.start").session.instructions.includes(manner.askedLine("Omari")));
+  assert.equal(told[0].content, `They just asked whether they are talking to a person or a machine. Unless you have already said it in this reply, answer that first, right now. ${manner.askedLine("Omari")}`);
   assert.equal(told[0].at - r.zero, 9500, "the moment the decision arrives");
   assert.ok(r.lines.some(l => l.gptlive_turn_gate_asked != null && l.asks === "asks_ai" && l.decision_ms === 200));
 
   const who = await replay.replayOne([...OPEN, THEIRS, { at: 9300, heard: "p1", end: STOP }, ask("asks_who")], { row: lineCall(), setup: talking });
-  assert.match(who.live.sent.find(e => /^They just asked who is calling/.test(e.content ?? "")).content, /"I'm an AI assistant calling for Omari\."/);
-  assert.match(tg.honestAnswerNote("asks_who", "Omari Nyarko"), /never say you are Omari,/);
-  assert.match(tg.honestAnswerNote("asks_ai", ""), /"I'm an AI assistant\."/);
+  assert.ok(who.live.sent.find(e => /^They just asked who is calling/.test(e.content ?? "")).content.endsWith(manner.askedLine("Omari")));
+  assert.ok(tg.honestAnswerNote("asks_who", "Omari Nyarko").endsWith(manner.askedLine("Omari")));
+  assert.ok(tg.honestAnswerNote("asks_ai", "").endsWith(manner.askedLine("the person you work for")), "unnamed: as the call's instructions name them");
+
+  // Their own call never gets the question, and a verdict that carried the answer anyway says nothing.
+  const own = await replay.replayOne([...OPEN, THEIRS, { at: 9300, heard: "p1", end: STOP }, ask("asks_ai")], { row: ownCall() });
+  assert.deepEqual(own.live.sent.find(e => e.type === "session.start").session.triggers[0].decisions.questions.map(q => q.name), ["finished"]);
+  assert.equal(own.live.sent.some(e => /^They just asked/.test(e.content ?? "")), false);
 
   const neither = await replay.replayOne([...OPEN, THEIRS, { at: 9300, heard: "p1", end: STOP }, ask("neither")], { row: lineCall(), setup: talking });
   assert.equal(neither.live.sent.some(e => /^They just asked/.test(e.content ?? "")), false);

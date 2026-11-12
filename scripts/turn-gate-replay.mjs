@@ -43,7 +43,7 @@ export function rng(seed = 1) {
 }
 const between = (r, [lo, hi]) => Math.round((lo + r() * (hi - lo)) / 20) * 20;
 
-function fakeTimers() {
+export function fakeTimers() {
   let t = 1_000_000;
   let q = [];
   let n = 0;
@@ -131,6 +131,7 @@ export async function replayOne(events, { gate = "on", row = null, until = null,
     for (let ms = 0; ms < end; ms += 20) {
       for (const e of at(ms)) {
         if (e.heard) emit({ type: "session.input_transcript.delta", event_id: e.heard, delta: " words", ...(e.end != null ? { start_ms: Math.max(0, e.end - 400), end_ms: e.end } : {}) });
+        if (e.do) e.do(call);
         if (e.said) emit({ type: "session.output_transcript.delta", delta: e.said });
         if (e.decision) {
           emit({ type: "decision.event", delegation_id: null, trigger_id: "trg_1", source_event_type: "session.input_transcript.delta", source_event_id: e.decision,

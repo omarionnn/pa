@@ -25,6 +25,7 @@
 // this server, and nothing is sent to anyone but the provider the call's audio already goes to.
 import { config } from "../config.js";
 import * as accounts from "../accounts.js";
+import { askedLine } from "./manner.js";
 
 /**
  * How long the voice's first audio may wait for a verdict that is not in yet. From the measured
@@ -160,15 +161,15 @@ export function turnTriggers(mode) {
 
 /**
  * What the voice is told when a business asks if it is a machine, or who is calling: the truth, first.
- * The words are the ones its instructions already carry for the question ("I'm an AI assistant
- * calling for <first name>"); this makes sure they are said now, not a turn later.
+ * The words are the ones its instructions already carry for the question, the same string
+ * (`askedLine`, ./manner.js: "I'm an AI assistant calling for <first name>" and its nevers) — nothing
+ * else is put in its mouth; this only makes sure they are said now, not a turn later.
  */
 export function honestAnswerNote(asks, first = "") {
-  const who = String(first ?? "").trim().split(/\s+/)[0];
-  const line = `"I'm an AI assistant${who ? ` calling for ${who}` : ""}."`;
-  const never = `Never say or imply you are human, never make up a person's name${who ? `, never say you are ${who}` : ""}, and never dodge the question.`;
+  // As `lineTalkInstructions` names them (./gptlive.js).
+  const who = String(first ?? "").trim().split(/\s+/)[0] || "the person you work for";
   const asked = asks === "asks_ai" ? "They just asked whether they are talking to a person or a machine." : "They just asked who is calling.";
-  return `${asked} Unless you have already said it in this reply, answer that first, right now, plainly: ${line} ${never} Then carry on with the call.`;
+  return `${asked} Unless you have already said it in this reply, answer that first, right now. ${askedLine(who)}`;
 }
 
 /**

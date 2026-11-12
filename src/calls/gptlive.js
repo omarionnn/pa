@@ -1193,7 +1193,9 @@ export class WarmSession {
       // the longest possible; through #406's `voiceInstructionsFor` where that exists.
       const start = () => {
         if (this.closed) return;
-        const instructions = preopenInstructions(row);
+        this.startSent = true;
+        // Refused before it was even sent (`startPlain`): it goes without the trigger the first time.
+        const instructions = this.noTurnGate ? plainInstructions(row) : preopenInstructions(row);
         this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
       };
       if (this.memory) void this.memory.then(start, start); else start();
@@ -1245,16 +1247,26 @@ export class WarmSession {
     } else if (e.type === "error") {
       this.log({ gptlive_error: this.row.id, warm: true, code: e.error?.code ?? "", message: String(e.error?.message ?? "").slice(0, 200) });
       // The turn gate fails open: a start refused with its trigger in it is sent again without it.
-      if (!this.started && this.who?.turnGate && !this.closed) {
-        this.who = { ...this.who, turnGate: "" };
-        this.noTurnGate = true;
-        const build = self.voiceInstructionsFor;
-        let instructions = "";
-        try { instructions = String(build(this.row, { turnGate: false }) ?? ""); } catch { /* the session's own */ }
-        this.live.send({ type: "session.start", event_id: `start_${this.row.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
-        this.log({ gptlive_turn_gate_off: this.row.id, why: "start refused", warm: true });
-      }
+      if (!this.started) this.startPlain();
     }
+  }
+
+  /**
+   * The session's start was refused and it carried the turn gate's trigger: sent again without it (and
+   * without the prompt lines that go with it). Also called by the call that adopted this session before
+   * it started — the refusal then arrives there, and with no second start the call would stay silent.
+   * Returns true when the trigger was taken out (once).
+   */
+  startPlain() {
+    if (!this.who?.turnGate || this.closed) return false;
+    this.who = { ...this.who, turnGate: "" };
+    this.noTurnGate = true;
+    if (this.startSent) {
+      const instructions = plainInstructions(this.row);
+      this.live.send({ type: "session.start", event_id: `start_${this.row.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
+    }
+    this.log({ gptlive_turn_gate_off: this.row.id, why: "start refused", warm: true });
+    return true;
   }
 
   /** 100 ms of silence in, every 100 ms, until the greeting is said (or it is plainly not coming). */
@@ -1319,6 +1331,11 @@ export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, t
     log({ gptlive_warm_failed: row?.id ?? null, why: (e?.message ?? String(e)).split("\n")[0] });
     return null;
   }
+}
+
+/** The same with the turn gate's lines left out (a start refused with its trigger in it, `startPlain`). */
+function plainInstructions(row) {
+  try { return String(self.voiceInstructionsFor(row, { turnGate: false }) ?? ""); } catch { return ""; }
 }
 
 /** The pre-opened session's instructions: `voiceInstructionsFor(row)` when this build has it, else "" (the default). */
@@ -1874,6 +1891,11 @@ export class GptLiveCall {
   /** A session of the call's own, opened on the stream (no warm one, or a pre-opened one that died). */
   openFresh() {
     this.live = this.openLive();
+    // A new session's timeline starts at zero, and nothing heard or decided on the old one is about it.
+    this.fedMs = 0;
+    this.fedSkew = 0;
+    this.theirSpeechFedMs = null;
+    if (this.turnGate) this.turnGate = new turngate.TurnGate({ mode: this.turnGate.mode });
     this.countFed();
     const openedAt = this.now();
     this.live.on("open", () => {
@@ -1895,6 +1917,7 @@ export class GptLiveCall {
     this.adopted = true;
     // Its start went out without the trigger (refused with it): no decisions will come.
     if (w.noTurnGate) this.turnGate = null;
+    this.warmFrom = w;
     this.fedMs = w.fedMs ?? 0;
     this.countFed();
     // A held session (REASON_GPTLIVE_PRERING) has said nothing: it greets now, as a cold one would.
@@ -1924,6 +1947,15 @@ export class GptLiveCall {
       this.adopted = false;
       this.pregreet = null;
       this.log({ gptlive_prering_fallback: this.call.id, code });
+      return this.openFresh();
+    }
+    // The turn gate fails open: a session of the call's own that closed before it started, its start
+    // carrying the trigger (a refusal can be a close, not an error), is opened once more without it.
+    if (this.turnGate && !this.adopted && !this.started && !this.done && !this.gateReopened) {
+      this.gateReopened = true;
+      this.turnGate = null;
+      this.who = { ...this.who, turnGate: "" };
+      this.log({ gptlive_turn_gate_off: this.call.id, why: "closed before start" });
       return this.openFresh();
     }
     if (!this.done) this.end(this.endWhy || `voice session closed (${code})`).catch(() => {});
@@ -2006,7 +2038,10 @@ export class GptLiveCall {
       case "error":
         this.log({ gptlive_error: this.call.id, code: e.error?.code ?? "", message: String(e.error?.message ?? "").slice(0, 200) });
         // The turn gate fails open: a start refused with its trigger in it is sent again without it.
-        if (this.turnGate && !this.started && !this.adopted && !this.done) {
+        if (!this.started && !this.done && this.adopted) {
+          // A pre-opened session taken over before it started: its start is the warm session's to send again.
+          if (this.warmFrom?.startPlain()) { this.turnGate = null; this.who = { ...this.who, turnGate: "" }; }
+        } else if (this.turnGate && !this.started && !this.done) {
           this.turnGate = null;
           this.who = { ...this.who, turnGate: "" };
           this.live.send({ type: "session.start", event_id: `start_${this.call.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: "" }) });
@@ -3433,6 +3468,8 @@ export class GptLiveCall {
     if (!g || this.done || g.mode !== "ack") return;
     if (g.timer) { this.timers.clearTimeout(g.timer); g.timer = null; }
     const t = this.now();
+    // The call began ending while this was held: it is the goodbye (or part of it), and a goodbye is said.
+    if (this.ending) { this.gateLog({ ...g.r, state: "open", why: "ending" }, { waited: t - g.waitFrom }); return this.gatePlay(); }
     // A reply, not an acknowledgement: too much speech, or — sooner — its own words say so (more than a few, or a question).
     const long = g.speechMs > turngate.ACK_MAX_SPEECH_MS || !turngate.looksLikeAck(this.gateWords(g));
     // They have carried on: none of it is heard.
@@ -4222,6 +4259,11 @@ export class GptLiveCall {
     if (this.byeReader) { const r = this.byeReader; this.byeReader = null; void r.ready.then(w => w?.cancel()); }
     for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer", "openTimer", "noticeTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     if (this.pickup?.pumpTimer) this.timers.clearTimeout(this.pickup.pumpTimer);
+    // The turn gate's own: a run it holds is never played into a call that has ended.
+    if (this.tg?.timer) this.timers.clearTimeout(this.tg.timer);
+    this.tg = null;
+    this.ackPlay = null;
+    for (const k of ["answerTimer", "overTimer", "overNudgeTimer"]) if (this[k]) { this.timers.clearTimeout(this[k]); this[k] = null; }
     // Reason's turn wrote the voicemail down as left when it wrote the words; if the line went before
     // a word of it played (held for the beep, or never started), nothing was left (hold.noteVoicemail).
     if (this.line && (this.heldVoicemail || (this.voicemailGate && !this.voicemailGate.heard))) {
