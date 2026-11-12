@@ -487,5 +487,5 @@ test("the standing prompt no longer says every placed call is recorded", async (
   const src = readFileSync(new URL("../src/agent.js", import.meta.url), "utf8");
   assert.doesNotMatch(src, /Every call you place is recorded/);
   await import("../src/agent.js"); // and the file still loads
-  assert.match(src, /recorded only when call_place's result says so/);
+  assert.match(src, /has audio only when call_place's result says "recorded"/);
 });
