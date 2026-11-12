@@ -1067,7 +1067,7 @@ export function paymentAsk(row, { allIn = false } = {}) {
 }
 /** What a yes is pinned to (src/tools.js confirmTargetFor): the row, its run and request, and the amount. */
 export function payTarget(row) {
-  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]${foodMod?.payTargetTail(row) ?? ""}` : "";
+  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]${foodMod?.payTargetTail(row) ?? ""}${flightMod?.payTargetTail(row) ?? ""}` : "";
 }
 /** A payment request from Crossmint: kept as given, once per request id. */
 export function recordPayment({ conversationId, runId, request, item = "" }) {
@@ -1121,6 +1121,8 @@ const crossmintError = (j) => short(j?.error?.code ?? j?.code ?? j?.error?.messa
 async function payRow(row, { confirmationId = null } = {}) {
   const conversationId = row.conversation_id;
   if (row.status !== "asked") return { ok: false, error: `payment_${row.status}` };
+  // A flight's payment goes out only for the travelers it was built for, where booking is on (src/flightcheckout.js).
+  { const no = flightMod?.payRefusal(row) ?? null; if (no) { logFn({ flight_pay_refused: no.error, payment_id: row.id }); return no; } }
   // Only Crossmint's exact total is ever paid: a "maximum" is a ceiling nobody agreed to as a price.
   if (row.amount_kind !== "exact") return { ok: false, error: "not_exact_amount" };
   // An expiry that doesn't read counts as passed.
@@ -1747,6 +1749,9 @@ function foodFor(run) {
 let foodMod = null;
 /** Resolves once the food module is loaded (a cycle-free late import: food.js reads this module at call time). */
 export const foodReady = import("./food.js").then((m) => { foodMod = m; }).catch(() => { foodMod = null; });
+// A flight is a checkout on the airline's own site, with a flight's rules on it (src/flightcheckout.js).
+let flightMod = null;
+export const flightReady = import("./flightcheckout.js").then((m) => { flightMod = m; }).catch(() => { flightMod = null; });
 
 /** "12:25 PM" in their zone: when the store stops holding the cart, said as a clock time, never as a countdown. */
 function clockTime(ms, conversationId) {
@@ -2186,13 +2191,14 @@ export async function step(runId) {
         const moved = await moveOn(runRow(runId), refused.reason, say, { stopAnswer: stop, rq: pub });
         return { done: true, status: "cancelled", said, ...moved };
       }
-      const filling = autoFill(run, pub);
+      // A flight's passenger form is answered from the sealed traveler record (src/flightcheckout.js).
+      const filling = flightMod?.isFlightRun(runId, run.conversation_id) ? flightMod.fill(run, pub, autoFill(run, pub)) : autoFill(run, pub);
       if (filling.covered) {
         const posted = await postAnswer(run, pub, filling.answers);
         if (posted.ok) {
           tellOnce(runId, `auto:${requestId}`);
-          await say(autoAnsweredText(run, filling.row, pub, filling));
-          if (filling.own !== false) shipping.markUsed(run.conversation_id);
+          await say(filling.say ?? autoAnsweredText(run, filling.row, pub, filling));
+          if (!filling.say && filling.own !== false) shipping.markUsed(run.conversation_id);
           return { done: false, status, said, answered: requestId, ...(await stalled(runRow(runId), say)) };
         }
         // Refused: the model gets the whole question (the record is not merged in again for this request) and decides.
@@ -2234,7 +2240,7 @@ export async function step(runId) {
       }
       setStage(runId, "failed");
       const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: true });
-      if (again.ok) { tellOnce(runId, "end"); q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`sign-in wall; started again signed in as ${again.runId}`, runId); foodMod?.relinkRun(runId, again.runId); follow(again.runId); }
+      if (again.ok) { tellOnce(runId, "end"); q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`sign-in wall; started again signed in as ${again.runId}`, runId); foodMod?.relinkRun(runId, again.runId); flightMod?.relinkRun(runId, again.runId, run.conversation_id); follow(again.runId); }
       else if (tellOnce(runId, "end")) await say(`${storeName(run.store) || "The store"} wants an account to check out, and I couldn't start the signed-in checkout. Nothing was charged.`);
       return { done: true, status, said, retried: again.ok ? again.runId : null };
     }
@@ -2249,12 +2255,19 @@ export async function step(runId) {
       const ref = orderRef(result);
       if (ref) q("UPDATE shop_runs SET order_ref = ? WHERE run_id = ?").run(ref, runId);
       setStage(runId, "placed");
+      const isFlight = !!flightMod?.isFlightRun(runId, run.conversation_id);
       if (!runRow(runId).mail_until) { q("UPDATE shop_runs SET mail_until = ? WHERE run_id = ?").run(now + MAIL_WATCH_MS, runId); watchMail(runId); }
       // An order placed is a finished errand (src/stamps.js: the "orders" seal). Told after the write; never costs the text.
       try { db.completionBus.emit("order", { conversationId: run.conversation_id, runId, store: storeOf(run) }); } catch { /* a listener's failure is its own */ }
       const food = foodFor(run);
       const foodPlaced = food ? await food.placed(run).catch(() => null) : null;
-      if (tellOnce(runId, "end")) await say(foodPlaced ?? placedText(run, result));
+      let flightPlaced = null;
+      if (isFlight) {
+        const paidRow = q("SELECT amount FROM shop_payments WHERE conversation_id = ? AND run_id = ? AND status = 'paid' ORDER BY id DESC LIMIT 1").get(run.conversation_id, runId);
+        const cents = Math.round(Number(result?.purchase?.receipt?.total?.amount ?? paidRow?.amount ?? 0) * 100) || 0;
+        try { flightPlaced = flightMod.placed(run, { orderRef: ref || String(result?.purchase?.receipt?.merchantOrderId ?? "").slice(0, 40), amountCents: cents }); } catch (e) { logFn({ flight_placed_failed: (e?.message ?? String(e)).slice(0, 160), run_id: runId }); }
+      }
+      if (tellOnce(runId, "end")) await say(foodPlaced ?? flightPlaced ?? placedText(run, result));
     } else {
       setStage(runId, status === "cancelled" ? "cancelled" : "failed");
       // Walled off or blocked, nothing paid: the next store they were shown, by code, rather than
@@ -2303,6 +2316,7 @@ async function renewHold(run, ask, result, say) {
   q("UPDATE shop_runs SET ask_since = ?, renewals = ?, told = ? WHERE run_id = ?").run(since, (run.renewals ?? 0) + 1, [...new Set(carried)].join(","), again.runId);
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`renewed: store hold ran out; asked again as ${again.runId}`, run.run_id);
   foodMod?.relinkRun(run.run_id, again.runId);
+  flightMod?.relinkRun(run.run_id, again.runId, run.conversation_id);
   // The link they hold for the old payment can't pay it any more: closed, so its page says a newer one is coming.
   for (const p of q("SELECT id FROM shop_payments WHERE run_id = ?").all(run.run_id)) {
     const a = passkey.openApprovalFor(p.id);
@@ -2426,6 +2440,7 @@ async function correctAndRestart(run, rq, answers) {
   if (!again.ok) return { ok: false, error: "restart_failed", status: again.status, say: "The record is corrected, but the store would not start the checkout again. Nothing was charged." };
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`corrected address; started again as ${again.runId}`, run.run_id);
   foodMod?.relinkRun(run.run_id, again.runId, { address: shipping.shortAddress(row) });
+  flightMod?.relinkRun(run.run_id, again.runId, run.conversation_id);
   follow(again.runId);
   return { ok: true, run_id: again.runId, corrected: Object.keys(given), superseded: run.run_id,
     say: `Fixed on the record (now ${shipping.shortAddress(row) || "as they said"}); I started ${storeOf(run)}'s checkout over with it. Say that in one line; nothing is charged until they approve the total.` };

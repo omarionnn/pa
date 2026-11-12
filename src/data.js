@@ -136,7 +136,8 @@ const TABLES = [
   // passengers they saved, and the e-ticket watch (ticket numbers and record locator read off their
   // own mail). Theirs, so in an export and taken by a delete. The passenger details themselves are
   // sealed and stay out of the file — see SECRET_COLUMNS.
-  "agentcard_purchases", "flight_travelers", "flight_ticket_watch",
+  // flight_runs: which checkout was a flight, for which search option and which traveler ids — no passenger detail.
+  "agentcard_purchases", "flight_travelers", "flight_ticket_watch", "flight_runs",
   // Standing check-ins. The row holds what Reason agreed to keep asking about and, in `last_report`,
   // the last thing they said back to it — their own words, so an export without it would not be a copy
   // of their data, and a delete that left it behind would leave Reason still asking every Monday about

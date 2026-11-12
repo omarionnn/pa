@@ -1,26 +1,31 @@
-# Flight booking — no booking route; the reusable parts are dark
+# Flight booking — through Crossmint on the airline's own site; DARK; never "booked" without a ticket
 
-**Reason does not book flights.** AgentCard's flight route (`flight_book`, the flight branches of
-`purchase_confirm`, the sandbox fixtures, the smoke script) was removed 2026-11-11: the owner's
-decision is that Crossmint is the only buy route. No Crossmint flight route exists yet — it has not
-been proven with a real run (`docs/flight-booking.md` says what was read and the run that settles it).
+Somebody picks a flight from a flight search and asks Reason to book it. `flight_book` re-checks the
+fare, checks the travelers were read back and confirmed, and starts a Crossmint Agent Checkout on the
+airline's own website for exactly those flights. From there it is the shopping path
+([shop-connect.md](shop-connect.md)): the passenger form answered from the sealed traveler record,
+Crossmint's one exact total, a yes pinned to that payment AND those travelers, the daily cap, Face ID.
+An order the airline took is "not a ticket yet"; the e-ticket check makes it booked.
+Design and the recorded real run: `docs/flight-booking.md`. AgentCard's flight route was removed
+2026-11-11.
 
-What is left is what a route will reuse: the traveler tools, the booking states, the e-ticket check.
-All of it is dark for every value of `REASON_FLIGHT_BOOKING`, because `bookingEnabled(c)`
-(`src/flightbook.js`) needs the flag AND a route, and `bookingRoute()` is null. Tests stand a route
-in with `flightbook._setRoute("test")`; nothing else may.
+**It is DARK.** On for a person only with `REASON_FLIGHT_BOOKING` (off | owner | on; off on live)
+AND the shopping path on for them (`REASON_SHOP_CONNECT` + Crossmint keys): `flightbook.bookingEnabled(c)`.
+Tests may force a route with `flightbook._setRoute("test")`; `_setRoute(undefined)` is the real rule.
 
-What to check, any flag value: `toolsFor(c)` has no `flight_book` and none of the four
-`flight_traveler_*` tools; `flight_search`'s description says "SEARCH ONLY — Reason never books";
-`flight_traveler_save` → `blocked: not_available`; `purchase` on an AgentCard flights catalog and
-`purchase_confirm` on a flight row or flight cart → `blocked: flight_not_here`, nothing sent.
-`node --test test/flight-booking.test.js test/ticket-check.test.js` pins all of it.
+Offline proof: `node --test test/flight-crossmint.test.js test/flight-booking.test.js test/ticket-check.test.js`.
+What they pin: tools shown only with flag + shopping path; the checkout's start URL and instruction
+(no passenger detail in it); the recorded JetBlue passenger form auto-answered; the recorded exact
+$118.40 payment with `travelers [fp]` in its target; a corrected traveler or a switched-off flag
+refuses the payment before any order intent; a "maximum" declined; a placed order is
+`ticketing_pending`, not booked (CONSTRUCTED result — no flight has been bought); a ticket for every
+passenger before `issued`.
 
-**Everything below this line was written for the AgentCard route and is history**, kept for the
-traveler, state and e-ticket behaviour it still describes; anything about `flight_book`, a fresh
-quote, AgentCard's cart or its approval link no longer exists.
+Never drive a real `flight_book` on live without the owner: it starts a real checkout on an airline's
+site (free, but it enters the traveler's details there), and approving its payment buys a ticket.
 
-Search is [flight-search.md](flight-search.md).
+**Below this line: notes written for the AgentCard route.** Still true for travelers, states and the
+e-ticket check; anything about AgentCard's cart, hash, approval link or sandbox no longer exists.
 
 Source: `src/flightbook.js` (price view, finality, itinerary match, traveler fingerprint,
 `BOOKING_STATES` / `bookingState`, `TICKETING_FIELDS`), `src/tools.js` (`flight_traveler_save`,

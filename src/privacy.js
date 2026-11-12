@@ -414,7 +414,7 @@ function sealWalk(value) {
   return out;
 }
 
-export const TRAVELER_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget"]);
+export const TRAVELER_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
 const TRAVELER_KEYS = new Set(["given_name", "family_name", "born_on", "gender", "email", "phone", "known_traveler_number", "redress_number", "read_back", "travelers", "error", "note", "say", "said", "ask"]);
 export function sealTravelers(tool, value, depth = 0) {
   if (value === null || typeof value !== "object" || depth > 6) return value;

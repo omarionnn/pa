@@ -54,7 +54,7 @@ test("nothing the owner's model reads names AgentCard or sends buying anywhere b
 });
 
 test("an AgentCard tool named anyway is refused, and nothing reaches AgentCard", async () => {
-  for (const [name, input] of [["purchase", { ask: "cerave cleanser from walmart" }], ["vault_enroll", {}], ["purchase_confirm", { conversation_id: "conv_x", cart_hash: "abc", confirmation_id: 1 }], ["flight_travelers", {}]]) {
+  for (const [name, input] of [["purchase", { ask: "cerave cleanser from walmart" }], ["vault_enroll", {}], ["purchase_confirm", { conversation_id: "conv_x", cart_hash: "abc", confirmation_id: 1 }]]) {
     const out = await runTool(name, input, { conversationId: OMARI });
     assert.equal(out.blocked, "not_available", name);
     assert.match(out.error, /store_checkout/);
