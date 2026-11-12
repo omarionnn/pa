@@ -79,7 +79,9 @@ function harness({ slow = false } = {}) {
   const settle = () => new Promise(r => setTimeout(r, 25));
   /** Let `ms` pass on the clock and fire every wait that was booked. */
   const pass = async (ms) => { clock.skip(ms); for (const fn of waits.splice(0)) fn(); await settle(); };
-  return { router, runtime, logs, turns, waits, asked, sent, finish, pass, settle };
+  /** The slow turn has its answer. Waits for the turn to be asking first, so a loaded machine cannot race it. */
+  const answer = async () => { const end = Date.now() + 5_000; while (!finish.length && Date.now() < end) await new Promise(r => setTimeout(r, 5)); finish.shift()(); };
+  return { router, runtime, logs, turns, waits, asked, sent, finish, answer, pass, settle };
 }
 
 const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (!pred() && Date.now() < end) await new Promise(r => setTimeout(r, 5)); return pred(); };
@@ -406,17 +408,17 @@ test("on, they start typing while the reply is being written: the send waits, an
   const a = text(h, "gate-1", "book the table for 8");
   await h.settle();
   await h.pass(300);                         // no 'typing' yet: the turn starts
-  assert.equal(h.turns.length, 1);
+  assert.ok(await until(() => h.turns.length === 1));
   clock.skip(1_500); typing(true);           // the event for their next bubble arrives mid-turn
   clock.skip(6_000);
-  h.finish.shift()();                        // the reply is written
+  await h.answer();                        // the reply is written
   await h.settle();
   assert.equal(h.sent.length, 0, "not sent: they are typing");
   clock.skip(2_000);
   const b = text(h, "gate-2", "no wait, 7 not 8");
   await h.settle();
   assert.ok(await until(() => h.turns.length === 2), "the stale draft is thrown away and the turn writes one answer to both");
-  h.finish.shift()();
+  await h.answer();
   await Promise.all([a, b]);
   assert.ok(await until(() => h.sent.length === 1));
   assert.equal(h.sent.length, 1, "one reply");
@@ -439,7 +441,7 @@ test("on, typing at the send and then nothing: the reply goes when they stop, an
     await h.pass(300);
     clock.skip(1_500); typing(true);
     clock.skip(5_000);
-    h.finish.shift()();
+    await h.answer();
     await h.settle();
     assert.equal(h.sent.length, 0);
     if (stops) { clock.skip(4_000); typing(false); }
@@ -465,7 +467,7 @@ test("on, not typing when the reply is ready: sent at once, the head start kept"
   await h.settle();
   await h.pass(300);
   clock.skip(8_000);                         // an ordinary turn: longer than the 3 s a 'typing' is given to arrive
-  h.finish.shift()();
+  await h.answer();
   await a;
   assert.equal(h.sent.length, 1);
   assert.ok(!holds(h).some(l => l.at === "send"), "no wait at the send");
