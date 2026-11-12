@@ -28,7 +28,7 @@ const fakeStripe = (await import("node:http")).createServer((req, res) => {
   req.on("data", (c) => { body += c; });
   req.on("end", () => {
     const form = Object.fromEntries(new URLSearchParams(body));
-    stripeCalls.push({ method: req.method, path: req.url, form });
+    stripeCalls.push({ method: req.method, path: req.url, form, account: req.headers["stripe-account"] ?? null });
     res.setHeader("content-type", "application/json");
     if (req.method === "POST" && req.url === "/v1/accounts") return res.end(JSON.stringify({ id: `acct_drive_${++stripeN}`, object: "account", type: "express", charges_enabled: false, details_submitted: false }));
     if (req.method === "POST" && req.url === "/v1/account_links") return res.end(JSON.stringify({ object: "account_link", url: `https://connect.stripe.test/setup/${form.account}` }));
@@ -36,7 +36,13 @@ const fakeStripe = (await import("node:http")).createServer((req, res) => {
     if (/^\/v1\/accounts\/[^/]+\/login_links$/.test(req.url)) return res.end(JSON.stringify({ object: "login_link", url: "https://connect.stripe.test/express/x" }));
     if (req.method === "POST" && req.url === "/v1/checkout/sessions") return res.end(JSON.stringify({ id: `cs_drive_${++stripeN}`, object: "checkout.session", url: `https://checkout.stripe.test/c/pay/cs_drive_${stripeN}` }));
     if (/\/expire$/.test(req.url)) return res.end(JSON.stringify({ object: "checkout.session", status: "expired" }));
+    // The organizer's balance and payouts (sales summary): asked on their connected account.
+    if (req.method === "GET" && req.url === "/v1/balance") return res.end(JSON.stringify({ object: "balance", available: [], pending: [{ amount: 2437, currency: "usd" }] }));
+    if (req.method === "GET" && req.url.startsWith("/v1/payouts")) return res.end(JSON.stringify({ object: "list", data: [] }));
     if (req.method === "POST" && req.url === "/v1/refunds") return res.end(JSON.stringify({ id: `re_drive_${++stripeN}`, object: "refund", status: "succeeded" }));
+    const piGet = /^\/v1\/payment_intents\/([^/?]+)\?expand\[\]=latest_charge$/.exec(decodeURIComponent(req.url));
+    if (piGet && req.method === "GET") return res.end(JSON.stringify({ id: piGet[1], object: "payment_intent", latest_charge: { id: `ch_${piGet[1]}`, application_fee: `fee_${piGet[1]}` } }));
+    if (req.method === "POST" && /^\/v1\/application_fees\/[^/]+\/refunds$/.test(req.url)) return res.end(JSON.stringify({ id: `fr_drive_${++stripeN}`, object: "fee_refund", amount: Number(form.amount) }));
     res.statusCode = 404;
     res.end(JSON.stringify({ error: { message: `no such route in the fake: ${req.method} ${req.url}` } }));
   });
@@ -637,6 +643,18 @@ config.events = "owner";
   const rf = stripeCalls.filter(c => c.path === "/v1/refunds").at(-1);
   step("pay: with the yes the guest gets everything back (transfer reversed, fee refunded), leaves, and is told", refunded.ok && refunded.refunded === "$26.06" && !!rf && rf.form.reverse_transfer === "true" && rf.form.refund_application_fee === "true" && rf.form.payment_intent === `pi_drive_${hold.id}`
     && db.attendeeRow(pev.id, C.ama)?.state === "left" && eventpay.paidRow(pev.id, C.ama) === null && toNum(AMA).some(t => /refunded your \$26\.06 for Paid Supper/.test(t)), JSON.stringify({ refunded, state: db.attendeeRow(pev.id, C.ama)?.state }));
+  // the refund policy (default: until 48 hours before it starts) and the sales summary
+  const lastCs = stripeCalls.filter(c => c.path === "/v1/checkout/sessions").at(-1);
+  step("pay: the refund policy is on Stripe's page and in the paid-join receipt (default: until 48 hours before)", /^Refunds until 48 hours before it starts\./.test(lastCs?.form["custom_text[submit][message]"] ?? "") && toNum(AMA).some(t => /you're in\. refunds until 48 hours before it starts — just text me "refund my ticket"/.test(t)), lastCs?.form["custom_text[submit][message]"]);
+  const sales = await tool("event_payouts", { event_id: pev.id, event_named: pev.name, action: "status" }, C.owner);
+  step("pay: \"how are ticket sales\": sold, gross, refunded, Reason's 2.5%, coming to them, next payout from their Stripe account",
+    sales.ok && sales.tickets?.sold === 2 && sales.tickets?.refunded_amount === "$25" && sales.tickets?.reason_fee === "$0.63" && sales.tickets?.you_get === "$24.37"
+      && /Next payout: None scheduled yet — \$24\.37 is still clearing at Stripe/.test(sales.say ?? "") && stripeCalls.some(c => c.path === "/v1/balance" && /^acct_drive_/.test(c.account ?? "")), sales.say);
+  const tight = await tool("event_price", { event_id: pev.id, event_named: pev.name, refund_policy: "none" }, C.owner);
+  const yawAsk = await tool("event_ticket_refund", { event_id: pev.id, event_named: pev.name }, C.yaw);
+  step("pay: tightening to no refunds spares tickets already sold: Yaw's ask still goes to the yes, pinned to his ticket", tight.ok && /keep the looser policy/.test(tight.note ?? "") && yawAsk.blocked === "needs_confirmation" && /^cancel my ticket for Paid Supper \(event #\d+\): \$25\.00 back/.test(yawAsk.use_target ?? ""), JSON.stringify({ note: tight.note, yaw: yawAsk.use_target ?? yawAsk.error }));
+  const kofiAsk = await tool("event_ticket_refund", { event_id: pev.id, event_named: pev.name }, C.kofi);
+  step("pay: somebody without a ticket is never offered a guest refund", kofiAsk.ok === false && !kofiAsk.use_target, kofiAsk.error);
   const dash = await tool("event_payouts", { event_id: pev.id, event_named: pev.name, action: "dashboard" }, C.owner);
   step("pay: the organizer gets a one-time Stripe Express dashboard link", dash.ok && /^https:\/\/connect\.stripe\.test\/express\//.test(dash.dashboard_link ?? ""), dash.dashboard_link);
   // cancelling refunds everyone who paid, fee included

@@ -436,7 +436,47 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   their id/session/intent-keyed SQL (webhook lookups) is on the unscoped-SQL baseline. **Not provable offline:** Connect
   itself — on 2026-11-11 the Stripe account (test mode) answered `You can only create new accounts if you've signed up
   for Connect`; the test-mode endpoint lacks `account.updated`, `checkout.session.expired`, `charge.refunded`. Pinned:
-  `test/event-paid.test.js` (16); drive: the `pay:` steps (17).
+  `test/event-paid.test.js` (18); drive: the `pay:` steps (17 of the 21).
+- **Refund policy + sales summary (2026-11-11, PR event-refund-sales, same flag `REASON_PAID_EVENTS`, tool
+  `event_ticket_refund`, columns `events.refund_policy` + `refund_hours`, `event_payments.refund_policy` + `refund_hours`)** —
+  **Policy** per priced event: `none` | `until` N hours before the start (default; null = until 48 h) | `anytime` until it
+  starts; picked with the price (`event_price` refund_policy / refund_hours / refund_days, or alone; the manage page's
+  REFUNDS radios + N hours|days inside the price form, behind the same review step; a policy-only change titles it
+  "Change the refund policy?"). Each ticket snapshots the policy at Checkout; `ticketPolicy` = the looser of then/now
+  (loosening reaches tickets sold, tightening only new sales — said in the tool note and the review). Shown: join page
+  "Refunds:" row next to Price (v1) / "Refunds" fact (v2) + the paid-join note; Stripe Checkout `custom_text.submit`
+  + the ticket line's `product_data.description`; the pay-link text; the paid-join receipt (`receiptBody`: `paid $X for
+  <name> — you're in. refunds until … — just text me "refund my ticket"…`); guest view `you.your_refund_policy` +
+  `can_ask_for_refund_now`. **Guest's own refund:** `event_ticket_refund` (visible only while `holdsTicket`: a paid row
+  on a non-cancelled event) is in `ALWAYS_NEEDS_CONFIRMATION` + `GATED_ACTIONS` + `NEVER_STANDING`, target `cancel my ticket
+  for <event> (event #id): $25.00 back [pay N]`; `ticketRefundRefusal` (no ticket; `refundWindow` says no_refunds / closed /
+  started) answers BEFORE any yes, saying the organizer can still choose to refund. Allowed → `guestRefund` → `refund()`
+  with why=guest. **Who asked decides what comes back (owner decision 2026-11-11, `refundSplit`):** a guest's own cancel
+  (why guest/buyer) refunds `amount` = the price with `reverse_transfer` and `refund_application_fee=false` (the transfer
+  of a destination charge is the whole charge, so the proportional reversal is exactly the price), then `feeBack` posts
+  `/v1/application_fees/<fee>/refunds` amount = Reason's 2.5% (fee id from GET `/v1/payment_intents/<pi>?expand[]=latest_charge`);
+  Stripe keeps its processing; the organizer ends with $0 for the ticket. Owed fee-backs sit on
+  `event_payments.fee_back_owed_cents` (key `evfeeback:<id>:<fee_back_seq>`) and the sweep retries. Organizer refunds,
+  cancels, no-room and dashboard refunds stay whole (processing included). Every guest-facing line says it:
+  `policyWithMoney` "Refunds until 48 hours before it starts. If you cancel: $25.00 back; the $1.06 processing fee isn't
+  refundable." (join page, Stripe description + submit text, pay-link text), receipt "(… isn't refundable)", ticket
+  block "Plans changed? Cancel and you get …", confirm step "You paid $26.06. Cancel and you get …" + button "Cancel and
+  get $25.00 back", done page, text "done — your ticket for X is cancelled …: $25.00 back; the $1.06 processing fee isn't
+  refundable"; organizer hears "<name> cancelled their ticket to <event> under your refund policy and got the $25.00
+  ticket price back". `event_payments.refunded_cents` = what went to the card; `summary().returned_cents` sums it.
+  Guest page: YOUR TICKET block (paid, policy, closing time only when the event's time is out to them) with "Refund my
+  ticket" → POST `/e/<id>/refund` step=review (confirm page) → step=do (Refunded page); outside the window no button, "The
+  organizer can still choose to refund you"; a stranger's POST 404, cross-origin 403. Organizer `event_refund` ignores
+  the policy. **Sales:** `summary()` sold (paid + refunded) · gross (price × sold) · refunded · Reason's 2.5% (standing
+  tickets only) · coming to you; gross − refunded − fee = coming. 07 Tickets shows SOLD · GROSS · REFUNDED · REASON'S
+  2.5% · COMING TO YOU · NEXT PAYOUT; `event_payouts status` returns `tickets` + `next_payout` + a plain `say`. Next
+  payout = `payoutInfo` (GET `/v1/balance` + `/v1/payouts?limit=10` with `Stripe-Account: <acct>`, 4 s timeout, cached
+  60 s; the organizer's GET of their page asks first): a pending/in-transit payout's amount + arrival date, else "None
+  scheduled yet — $X still clearing" / "… ready", else "Not available yet"; Stripe down → "Not available right now".
+  Account-wide (all their events). Pinned: `test/event-refund-sales.test.js` (10); drive: 4 more `pay:` steps (policy on
+  Stripe + receipt; sales by text with the payout asked on the connected account; tightening spares Yaw's ticket; no
+  ticket → no guest refund). **Not provable offline:** a real Stripe custom_text render, real balance/payouts on a live
+  connected account, a real refund.
 
 ## How to get to it (user POV)
 

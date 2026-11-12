@@ -101,6 +101,8 @@ export const GATED_ACTIONS = new Set([
   // Money back to one guest of a paid event (src/eventpay.js): the target pins the guest, the amount
   // and the event. Never standing: each refund is its own yes.
   "event_refund",
+  // A guest's own refund (src/eventpay.js guestRefund): money back to them, and off the event.
+  "event_ticket_refund",
 ]);
 
 /**
@@ -153,7 +155,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay", "todo_approve", "event_refund"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay", "todo_approve", "event_refund", "event_ticket_refund"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.

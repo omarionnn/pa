@@ -130,6 +130,8 @@ function publicDetails(ev) {
     ev.location_public && ev.location ? `<p><b>Where:</b> ${esc(ev.location)}</p>` : "",
     // The price is public (src/eventpay.js): anyone deciding whether to come should see it first.
     eventpay.priced(ev) ? `<p><b>Price:</b> ${esc(eventpay.guestPriceLine(ev))}</p>` : "",
+    // The refund policy sits next to the price: what a guest can count on before paying.
+    eventpay.priced(ev) ? `<p><b>Refunds:</b> ${esc(eventpay.policyWithMoney(eventpay.policyOf(ev), eventpay.ticketAt(ev)))}</p>` : "",
   ].filter(Boolean);
   return rows.length ? `<div class="t">${rows.join("")}</div>` : "";
 }
@@ -242,9 +244,61 @@ function joinFormV2(ev, { account, error, values }) {
 /** What paying looks like from here (src/eventpay.js): a Stripe page now, or by text after the finishing text. */
 function paidJoinNote(ev, signedIn) {
   const qt = eventpay.quote(ev.price_cents);
+  const refunds = ` ${eventpay.policyWithMoney(eventpay.policyOf(ev), eventpay.ticketAt(ev))}`;
   return signedIn
-    ? `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password you'll pay on a secure Stripe page — Apple Pay works — and you're in once the payment goes through.`
-    : `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password and one text to Reason, Reason texts you a secure Stripe payment link; you're in once the payment goes through.`;
+    ? `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password you'll pay on a secure Stripe page — Apple Pay works — and you're in once the payment goes through.${refunds}`
+    : `This event is ${eventpay.dollars(qt.price)} per person (${eventpay.dollars(qt.total)} with processing). After the password and one text to Reason, Reason texts you a secure Stripe payment link; you're in once the payment goes through.${refunds}`;
+}
+
+/** The policy in a fact row's few words. */
+function refundShort(pol) {
+  return pol.policy === "none" ? "No refunds" : pol.policy === "anytime" ? "Anytime until it starts" : `Until ${eventpay.hoursWords(pol.hours)} before`;
+}
+
+/** When the refund window closes, in the event's own time zone. */
+function closesWords(ev, ms) {
+  return new Date(ms).toLocaleString("en-US", { timeZone: ev.tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+}
+
+/**
+ * A paying guest's own ticket on their event page: what they paid, the refund policy their ticket is
+ * held to, and — while it allows — a button to get their money back (a confirm step first). Outside
+ * the policy it says so, and that the organizer can still choose to refund them. The closing time is
+ * shown only when the event's time is out to them (a deadline would tell a hidden start time).
+ */
+function ticketBlock(ev, att, { v2 = true } = {}) {
+  if (!eventpay.priced(ev) && !eventpay.paidRow(ev.id, att.conversation_id)) return "";
+  const row = eventpay.paidRow(ev.id, att.conversation_id);
+  if (!row) return "";
+  const w = eventpay.refundWindow(ev, row);
+  const timeOut = !!events.guestView(ev, att).when;
+  const policy = eventpay.refundPolicyLine(w.policy);
+  const closes = w.allowed && w.closes_at != null && timeOut && w.policy.policy === "until" ? ` That's until ${closesWords(ev, w.closes_at)}.` : "";
+  const lines = [`You paid ${eventpay.dollars(row.total_cents)}. ${policy}${closes}`,
+    w.allowed ? `Plans changed? Cancel and you get ${eventpay.selfRefundWords(row)} You come off the guest list.` : "The organizer can still choose to refund you — ask them, or text Reason."];
+  const action = esc(`/e/${ev.public_id}/refund`);
+  const btn = w.allowed
+    ? `<form class="${v2 ? "jf" : "ev-form"}" method="POST" action="${action}"><input type="hidden" name="step" value="review"><button class="${v2 ? "go" : "ev-btn"}" type="submit" data-busy="Opening…">${v2 ? "Refund my ticket →" : "Refund my ticket"}</button></form>`
+    : "";
+  return v2
+    ? `<section class="dash" id="ticket"><h2 class="lbl">YOUR TICKET</h2>${lines.map(l => `<p class="quiet">${esc(l)}</p>`).join("")}${btn}</section>`
+    : `<h2 id="ticket">Your ticket</h2><div class="t">${lines.map(l => p(l)).join("")}</div>${btn}`;
+}
+
+/** The guest's confirm step before their own refund, and what they see after. */
+function renderRefundPage({ ev, row = null, done = null, error = "" }) {
+  let body;
+  if (done) {
+    body = `<h2>Refunded</h2><div class="t">${p(`${eventpay.selfRefundWords(done)} The money is on its way back to your card — it shows up in a few days. You're off the guest list, and the organizer was told.`)}${p("Changed your mind again? The link and the password still work; joining means paying again.")}</div>`;
+  } else {
+    body = `<h2>Refund your ticket?</h2><div class="t">`
+      + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
+      + p(`You paid ${eventpay.cents2(row.total_cents)}. Cancel and you get ${eventpay.selfRefundWords(row)} It's on your card in a few days.`)
+      + p("You come off the guest list and stop getting the event's updates. The organizer is told.")
+      + `</div><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/refund`)}"><input type="hidden" name="step" value="do"><button class="ev-btn" type="submit" data-busy="Refunding…">Cancel and get ${esc(eventpay.cents2(eventpay.refundSplit(row, "guest").back_cents))} back</button></form>`
+      + `<p><a href="${esc(`/e/${ev.public_id}`)}">Keep my ticket</a></p>`;
+  }
+  return shell({ title: ev.name, body: intro(ev) + body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
 /** P4 for anybody the link reaches: only what the organizer made public, then "Are you in?". */
@@ -252,7 +306,7 @@ function renderJoinV2({ ev, account = null, error = "", values = {} }) {
   const facts = [
     ["When", ev.time_public && ev.starts_at != null ? timeOnly(ev) : ""],
     ["Where", ev.location_public ? ev.location : ""],
-    ...(eventpay.priced(ev) ? [["Price", `${eventpay.dollars(ev.price_cents)} per person`]] : []),
+    ...(eventpay.priced(ev) ? [["Price", `${eventpay.dollars(ev.price_cents)} per person`], ["Refunds", refundShort(eventpay.policyOf(ev))]] : []),
   ];
   // No host name before joining: a forwarded link never shows anybody's name (publicView).
   return made.renderEvent({
@@ -276,7 +330,7 @@ function renderJoinedV2({ ev, att, saved = false, error = "" }) {
     date: v.when ? dateCard(ev) : null,
     facts: [["When", v.when ? timeOnly(ev) : ""], ["Where", v.where ?? ""]],
     rsvp: { joined: true },
-    after: answersBlock(ev, att, { saved, error }),
+    after: answersBlock(ev, att, { saved, error }) + ticketBlock(ev, att),
     coming: list,
     calendarHref: v.when ? `/e/${ev.public_id}/calendar.ics` : "",
     head: headFor(ev),
@@ -352,7 +406,7 @@ function renderAfterPay({ ev, paid }) {
 export function renderJoined({ ev, att, saved = false, error = "" }) {
   if (config.pagesV2) return renderJoinedV2({ ev, att, saved, error });
   const dir = ev.guest_list_visible ? `<a class="ev-btn" href="${esc(whoPath(ev, att.token))}">See who's going</a>` : "";
-  const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}${answersBlock(ev, att, { v2: false, saved, error })}`;
+  const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}${answersBlock(ev, att, { v2: false, saved, error })}${ticketBlock(ev, att, { v2: false })}`;
   return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
@@ -661,6 +715,27 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     return redirect(`/e/${ev.public_id}?saved=answers#answers`);
   }
 
+  // ---- a paying guest's own refund, under the event's refund policy (src/eventpay.js guestRefund) ----
+  if (sub === "refund") {
+    if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
+    if (!eventpay.paidEventsOn() || ev.status === "cancelled" || mine?.role !== "guest") return page(404, renderNotFound());
+    if (!ownOrigin(headers)) return page(403, renderNotFound());
+    const body = await readBody();
+    if (body != null && String(body).length > 2000) return page(413, renderNotFound());
+    const step = new URLSearchParams(body ?? "").get("step");
+    const c = account.conversation_id;
+    const row = eventpay.paidRow(ev.id, c);
+    if (!row) return redirect(`/e/${ev.public_id}`);
+    const w = eventpay.refundWindow(ev, row);
+    // Outside the policy the page that offered the button is simply shown again: it says why.
+    if (!w.allowed) return redirect(`/e/${ev.public_id}#ticket`);
+    if (step !== "do") return page(200, renderRefundPage({ ev, row }));
+    const out = await eventpay.guestRefund({ ev, conversationId: c, runtime, log });
+    log({ event_guest_refund: ev.id, ok: !!out.ok, why: out.ok ? null : out.reason });
+    if (!out.ok) return page(200, renderRefundPage({ ev, row, error: out.reason === "stripe" ? "Stripe didn't take the refund just now. Nothing changed — try again in a few minutes." : "That ticket can't be refunded from here any more." }));
+    return page(200, renderRefundPage({ ev, done: out.row }));
+  }
+
   // ---- the join page ----
   if (method !== "GET" && method !== "HEAD" && !(method === "POST" && sub === "join")) {
     return page(405, renderNotFound(), { Allow: "GET, HEAD" });
@@ -678,7 +753,11 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (config.pagesV2 && ev.status === "cancelled") return page(410, made.renderTurnedOff({ siteUrl: config.siteUrl }));
   // The organizer opening their own event's link gets their own page, never a guest's — paused too,
   // so they can still see it and read what is held (the page says what pausing stops).
-  if (mine?.role === "organizer" && ev.status !== "cancelled" && (method === "GET" || method === "HEAD") && !sub) return page(200, renderOrganizerHome({ ev, query }));
+  if (mine?.role === "organizer" && ev.status !== "cancelled" && (method === "GET" || method === "HEAD") && !sub) {
+    // Tickets shows the next payout from Stripe: asked here (a short wait, kept a minute) so the page renders it.
+    if (eventpay.priced(ev) && eventpay.payoutsReady(account.conversation_id)) await eventpay.payoutInfo(account.conversation_id).catch(() => null);
+    return page(200, renderOrganizerHome({ ev, query }));
+  }
   // Cancelled: nothing but the name and that it is off, in the page and in its preview alike.
   if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", url: events.eventUrl(ev), head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
   // The organizer opening their own event's link gets their own page, never a guest's.

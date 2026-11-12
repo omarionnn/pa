@@ -213,7 +213,7 @@ export function publicView(ev) {
 /** The price as anybody may see it (src/eventpay.js), or nothing for a free event. */
 export function priceView(ev) {
   if (!eventpay.priced(ev)) return {};
-  return { price_per_person: eventpay.dollars(ev.price_cents), price: eventpay.guestPriceLine(ev), paid_event: true };
+  return { price_per_person: eventpay.dollars(ev.price_cents), price: eventpay.guestPriceLine(ev), refund_policy: eventpay.policyWithMoney(eventpay.policyOf(ev), eventpay.ticketAt(ev)), paid_event: true };
 }
 
 /** What a joined guest may know: the released details, and nothing that is still the organizer's. */
@@ -241,7 +241,11 @@ export function guestView(ev, att) {
 function paidLine(ev, att) {
   if (!eventpay.priced(ev) || !att?.conversation_id) return {};
   const row = eventpay.paidRow(ev.id, att.conversation_id);
-  return row ? { paid: eventpay.dollars(row.total_cents) } : {};
+  if (!row) return {};
+  // Their own ticket's policy (the one bought under, or looser now), and whether they can ask now.
+  const w = eventpay.refundWindow(ev, row);
+  // Whether they can ask now is left out while the time is hidden: watched over time it would tell the start.
+  return { paid: eventpay.dollars(row.total_cents), your_refund_policy: eventpay.refundPolicyLine(w.policy), if_you_cancel: eventpay.selfRefundWords(row), ...(ev.time_released ? { can_ask_for_refund_now: w.allowed } : {}) };
 }
 
 /** The organizer's view: all of it, except the password, which nobody can read back. */
@@ -279,9 +283,10 @@ export function organizerView(ev) {
 export function ticketView(ev) {
   const s = eventpay.summary(ev);
   return {
-    price_per_person: eventpay.dollars(ev.price_cents), paid: s.paid_count, gross: eventpay.dollars(s.gross_cents), you_get: eventpay.dollars(s.organizer_net_cents),
-    refunded: s.refunded_count, spots_held_for_payment: s.open_holds, ...(s.failed_refunds ? { refunds_that_failed: s.failed_refunds } : {}),
-    per_person: eventpay.organizerPriceLine(ev.price_cents),
+    price_per_person: eventpay.dollars(ev.price_cents), sold: s.sold_count, paid: s.paid_count, gross: eventpay.dollars(s.gross_cents),
+    refunded: s.refunded_count, refunded_amount: eventpay.dollars(s.refunded_cents), reason_fee: eventpay.dollars(s.reason_fee_cents), you_get: eventpay.dollars(s.organizer_net_cents),
+    spots_held_for_payment: s.open_holds, ...(s.failed_refunds ? { refunds_that_failed: s.failed_refunds } : {}),
+    ...(ev.price_cents ? { per_person: eventpay.organizerPriceLine(ev.price_cents) } : {}), refund_policy: eventpay.policyLabel(eventpay.policyOf(ev)),
   };
 }
 
