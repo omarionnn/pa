@@ -46,7 +46,7 @@ export const ROW_FRESH_MS = 48 * HOUR;
 /** A buying tool or offer read this recent means a shopping flow is going on. */
 export const FLOW_FRESH_MS = 6 * HOUR;
 /** The tools that are a shopping flow. Ledgered ones (OUTSIDE_WORLD) leave the row this reads. */
-export const BUYING_TOOLS = ["purchase", "purchase_confirm", "purchase_track", "offer_check", "shop_handoff", "vault_enroll", "flight_book"];
+export const BUYING_TOOLS = ["purchase", "purchase_confirm", "purchase_track", "offer_check", "shop_handoff", "vault_enroll"];
 
 /** Where a row stands, in the words the model should use. Unknown statuses pass through as-is. */
 const STATUS_WORDS = {

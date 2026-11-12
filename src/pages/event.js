@@ -233,12 +233,115 @@ function joinFormV2(ev, { account, error, values }) {
     + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
     + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
     + questionFields(ev, values)
+    + ticketPicker(ev, values)
     + (signedIn
       ? `<p class="quiet">${esc(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</p>`
       : `<p class="quiet">Joining gives you access to Reason, your personal concierge, which can help you with everything about this event (and more). Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.</p>`
         + `<a class="typed" href="${esc(signinPath(ev))}">ALREADY USE REASON? SIGN IN WITH YOUR NUMBER</a>`)
     + (eventpay.priced(ev) ? `<p class="quiet">${esc(paidJoinNote(ev, signedIn))}</p>` : "")
     + `<button class="go" type="submit" data-busy="${eventpay.priced(ev) && signedIn ? "Opening payment…" : "Joining…"}">${eventpay.priced(ev) ? "Join and pay →" : "Join →"}</button></form>`;
+}
+
+/**
+ * "How many tickets?" on a priced event that lets a buyer get some for friends (src/eventpay.js
+ * ticketMax > 1): one is theirs, each other one comes with its own claim link for a friend.
+ */
+function ticketPicker(ev, values, { v2 = true } = {}) {
+  if (!eventpay.priced(ev) || eventpay.ticketMax(ev) < 2) return "";
+  const max = eventpay.ticketMax(ev);
+  const qt = eventpay.quote(ev.price_cents);
+  const chosen = Math.min(max, Math.max(1, Number(values.tickets) || 1));
+  const opts = Array.from({ length: max }, (_, i) => i + 1)
+    .map(n => `<option value="${n}"${n === chosen ? " selected" : ""}>${n === 1 ? "1 — just me" : `${n} — me + ${n - 1} friend${n === 2 ? "" : "s"}`} (${esc(eventpay.dollars(qt.total * n))})</option>`).join("");
+  const note = "One ticket is yours. Each extra one comes with its own link to send a friend — they put in their own name and are on the guest list as themselves.";
+  const sel = `<select id="tickets" name="tickets" style="min-height:44px;font:16px inherit;padding:6px 4px;border:0;border-bottom:2px solid currentColor;background:transparent;color:inherit">${opts}</select>`;
+  return v2
+    ? `<label for="tickets">HOW MANY TICKETS?${sel}</label><p class="quiet">${esc(note)}</p>`
+    : `<label for="tickets">How many tickets?</label>${sel}<div class="t">${p(note)}</div>`;
+}
+
+/** The number of tickets a join form asked for, within the event's limit (1 when it has none). */
+function ticketsAsked(ev, form) {
+  const n = Number(form.get("tickets") ?? 1);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, eventpay.ticketMax(ev)) : 1;
+}
+
+/**
+ * The tickets a guest bought for friends, on their own event page: each link to send (a tap opens a
+ * text with the link in it), who claimed which, and — for one nobody has claimed — a new link
+ * (the old one stops working) or the money back under the refund policy.
+ */
+function friendSeatsBlock(ev, att, { v2 = true } = {}) {
+  const seats = eventpay.seatsView(ev, att.conversation_id);
+  if (!seats.length) return "";
+  const action = esc(`/e/${ev.public_id}/seats`);
+  // Each seat under the policy of the payment it came on (two payments can have been sold under different ones).
+  const windowOf = (st) => { const pay = eventpay.paymentRow(eventpay.seatById(st.seat_id)?.payment_id); return pay ? eventpay.refundWindow(ev, pay) : { allowed: false }; };
+  const items = seats.map(st => {
+    const w = windowOf(st);
+    if (st.state === "claimed") return `<li class="seat"><b>Ticket ${st.number}</b> · ${esc(st.claimed_by)} claimed it${st.on_event ? " and is on the guest list" : ""}.</li>`;
+    const sms = `sms:?&body=${encodeURIComponent(`I got you a ticket to ${ev.name}! Tap to claim it: ${st.link}`)}`;
+    return `<li class="seat"><b>Ticket ${st.number}</b> · not claimed yet${st.texted_to_someone ? " (you asked Reason to text it to a friend — forwarding it yourself always works)" : ""}`
+      + `<input type="text" readonly value="${esc(st.link)}" aria-label="Ticket ${st.number} link" style="display:block;width:100%;margin:.4rem 0;font:14px ui-monospace,monospace;padding:.5rem;box-sizing:border-box">`
+      + `<a class="${v2 ? "go" : "ev-btn"}" href="${esc(sms)}">Text it to a friend →</a>`
+      + `<form method="POST" action="${action}" style="display:inline"><input type="hidden" name="seat" value="${st.seat_id}"><input type="hidden" name="step" value="reassign"><button class="${v2 ? "typed" : "ev-link"}" type="submit" data-busy="Making a new link…">NEW LINK (THE OLD ONE STOPS WORKING)</button></form>`
+      + (w.allowed ? ` <form method="POST" action="${action}" style="display:inline"><input type="hidden" name="seat" value="${st.seat_id}"><input type="hidden" name="step" value="review"><button class="${v2 ? "typed" : "ev-link"}" type="submit" data-busy="Opening…">REFUND THIS TICKET</button></form>` : "")
+      + `</li>`;
+  }).join("");
+  const pay0 = eventpay.paidRow(ev.id, att.conversation_id);
+  const lead = "Each link works once. Your friend taps it, puts in their name, and they're on the guest list as their own guest — the event's texts, the album, everything. A ticket nobody has claimed still holds its spot."
+    + (pay0 && seats.some(st => st.state !== "claimed" && windowOf(st).allowed) ? ` Refunding one gives you ${eventpay.selfRefundWords(pay0)}` : "");
+  return v2
+    ? `<section class="dash" id="seats"><h2 class="lbl">TICKETS FOR FRIENDS</h2><p class="quiet">${esc(lead)}</p><ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:16px">${items}</ul></section>`
+    : `<h2 id="seats">Tickets for friends</h2><div class="t">${p(lead)}</div><ul class="ev-list" style="display:block">${items}</ul>`;
+}
+
+/** The buyer's confirm step before giving back a ticket nobody claimed, and what they see after. */
+function renderSeatRefundPage({ ev, seat, pay, done = false, error = "" }) {
+  // Giving back a ticket is the buyer's own cancel: the price comes back, Stripe keeps the processing.
+  const amount = eventpay.cents2(eventpay.refundSplit(pay, "buyer").back_cents);
+  const body = done
+    ? `<h2>Refunded</h2><div class="t">${p(`${eventpay.selfRefundWords(pay)} The money is on its way back to your card — it shows up in a few days. That ticket's link doesn't work any more.`)}</div><a class="ev-btn" href="${esc(`/e/${ev.public_id}#seats`)}">Back to the event</a>`
+    : `<h2>Refund this ticket?</h2><div class="t">` + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
+      + p(`Nobody has claimed it yet. Give it back and you get ${eventpay.selfRefundWords(pay)} It's on your card in a few days, and its link stops working.`)
+      + p("Your own ticket, and any your friends already claimed, stay as they are.")
+      + `</div><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/seats`)}"><input type="hidden" name="seat" value="${seat.id}"><input type="hidden" name="step" value="do"><button class="ev-btn" type="submit" data-busy="Refunding…">Give it back and get ${esc(amount)} back</button></form>`
+      + `<p><a href="${esc(`/e/${ev.public_id}#seats`)}">Keep it</a></p>`;
+  return shell({ title: ev.name, body: intro(ev) + body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
+}
+
+/** The preview card a friend's ticket link makes in Messages: the event and that a ticket is waiting — never a name. */
+export function seatHeadFor(ev) {
+  return headFor(ev).replaceAll(esc(INVITE_LINE), esc(SEAT_LINE));
+}
+export const SEAT_LINE = "You've got a ticket. Tap to claim it.";
+
+/**
+ * A friend's ticket link (/e/{id}/seat/{token}): who got it for them, the event as anybody may see
+ * it, and a short form — their own name, Instagram if they like, the who's-going choice, the
+ * organizer's questions (required ones must be answered). No password: the link IS the invitation,
+ * and it works once. Signed in to Reason, it claims at once; otherwise the same one text proves the
+ * phone as any page join, and the text claims it (db.redeemEventClaim → eventpay.claimSeat).
+ */
+function renderSeatPage({ ev, seat, account = null, error = "", values = {}, already = "" }) {
+  const buyer = eventpay.buyerName(ev, seat);
+  const head = `<div class="hero"><p class="kicker">A ticket for you</p><h1>${esc(ev.name)}</h1></div>`
+    + `<div class="t">${p(`${buyer} got you a ticket — it's already paid for.`)}${p(ev.description)}</div>`
+    + publicDetails(ev).replace(/<p><b>Price:<\/b>[^]*?<\/p>/, "");
+  if (already) return shell({ title: ev.name, body: head + `<div class="t"><p class="ev-err">${esc(already)}</p></div>`, pill: "Event", url: events.eventUrl(ev), head: seatHeadFor(ev), css: CSS });
+  const field = (name, label, extra = "") => `<label for="${name}">${esc(label)}</label><input id="${name}" name="${name}" type="text" ${extra} value="${esc(values[name] ?? "")}">`;
+  const form = `<form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/seat/${seat.claim_token}`)}">`
+    + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
+    + (account ? "" : field("display_name", "Your name (what other guests see)", `required maxlength="40" autocomplete="name"`))
+    + field("instagram", "Instagram (optional)", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
+    + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
+    + questionFields(ev, values, { v2: false })
+    + `<div class="t">${account
+      ? p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this puts you on the guest list now — the event's updates come to your Reason conversation.`)
+      : p("Claiming gives you access to Reason, your personal concierge, which can help you with everything about this event (and more). It starts a text conversation between you and Reason — that's where you'll get the event's updates.")}</div>`
+    + `<button class="ev-btn" type="submit" data-busy="Claiming…">${account ? "Claim my ticket" : "Claim my ticket"}</button></form>`
+    + `<div class="t">${p("This link works once. If it isn't for you, just leave it — the ticket stays for whoever it was meant for.")}</div>`;
+  return shell({ title: ev.name, body: head + `<h2>Claim your ticket</h2>` + form + foot(), pill: "Event", url: events.eventUrl(ev), head: seatHeadFor(ev), css: CSS });
 }
 
 /** What paying looks like from here (src/eventpay.js): a Stripe page now, or by text after the finishing text. */
@@ -274,11 +377,16 @@ function ticketBlock(ev, att, { v2 = true } = {}) {
   const timeOut = !!events.guestView(ev, att).when;
   const policy = eventpay.refundPolicyLine(w.policy);
   const closes = w.allowed && w.closes_at != null && timeOut && w.policy.policy === "until" ? ` That's until ${closesWords(ev, w.closes_at)}.` : "";
-  const lines = [`You paid ${eventpay.dollars(row.total_cents)}. ${policy}${closes}`,
-    w.allowed ? `Plans changed? Cancel and you get ${eventpay.selfRefundWords(row)} You come off the guest list.` : "The organizer can still choose to refund you — ask them, or text Reason."];
+  const from = row.buyer_conversation_id && row.buyer_conversation_id !== att.conversation_id ? eventpay.buyerName(ev, { conversation_id: row.buyer_conversation_id }) : null;
+  const n = Number(row.quantity ?? 1);
+  const paidLine = n > 1 ? `You paid ${eventpay.dollars(row.total_cents * n)} for ${n} tickets — yours (${eventpay.dollars(row.total_cents)}) and ${n - 1} for friends, below.` : `You paid ${eventpay.dollars(row.total_cents)}.`;
+  const lines = [from ? `${from} got you this ticket (${eventpay.dollars(row.total_cents)}). ${policy}${closes}` : `${paidLine} ${policy}${closes}`,
+    w.allowed
+      ? (from ? `Can't make it? Give it back and ${from}'s card gets ${eventpay.selfRefundWords(row)} You come off the guest list.` : n > 1 ? `Plans changed? Cancel your own ticket and you get ${eventpay.selfRefundWords(row)} You come off the guest list; your friends' tickets stay theirs.` : `Plans changed? Cancel and you get ${eventpay.selfRefundWords(row)} You come off the guest list.`)
+      : "The organizer can still choose to refund you — ask them, or text Reason."];
   const action = esc(`/e/${ev.public_id}/refund`);
   const btn = w.allowed
-    ? `<form class="${v2 ? "jf" : "ev-form"}" method="POST" action="${action}"><input type="hidden" name="step" value="review"><button class="${v2 ? "go" : "ev-btn"}" type="submit" data-busy="Opening…">${v2 ? "Refund my ticket →" : "Refund my ticket"}</button></form>`
+    ? `<form class="${v2 ? "jf" : "ev-form"}" method="POST" action="${action}"><input type="hidden" name="step" value="review"><button class="${v2 ? "go" : "ev-btn"}" type="submit" data-busy="Opening…">${from ? (v2 ? "Give back my ticket →" : "Give back my ticket") : v2 ? "Refund my ticket →" : "Refund my ticket"}</button></form>`
     : "";
   return v2
     ? `<section class="dash" id="ticket"><h2 class="lbl">YOUR TICKET</h2>${lines.map(l => `<p class="quiet">${esc(l)}</p>`).join("")}${btn}</section>`
@@ -288,14 +396,22 @@ function ticketBlock(ev, att, { v2 = true } = {}) {
 /** The guest's confirm step before their own refund, and what they see after. */
 function renderRefundPage({ ev, row = null, done = null, error = "" }) {
   let body;
+  // A ticket a friend bought them: the money is the friend's, so it goes back to the friend's card.
+  const giftFrom = (r) => r?.buyer_conversation_id && r.buyer_conversation_id !== r.conversation_id ? eventpay.buyerName(ev, { conversation_id: r.buyer_conversation_id }) : null;
   if (done) {
-    body = `<h2>Refunded</h2><div class="t">${p(`${eventpay.selfRefundWords(done)} The money is on its way back to your card — it shows up in a few days. You're off the guest list, and the organizer was told.`)}${p("Changed your mind again? The link and the password still work; joining means paying again.")}</div>`;
+    const from = giftFrom(done);
+    body = `<h2>${from ? "Given back" : "Refunded"}</h2><div class="t">${p(from
+      ? `${eventpay.selfRefundWords(done)} The money is on its way back to ${from}'s card, since they paid for it — they and the organizer were told. You're off the guest list.`
+      : `${eventpay.selfRefundWords(done)} The money is on its way back to your card — it shows up in a few days. You're off the guest list, and the organizer was told.`)}${p("Changed your mind again? The link and the password still work; joining means paying again.")}</div>`;
   } else {
-    body = `<h2>Refund your ticket?</h2><div class="t">`
+    const from = giftFrom(row);
+    body = `<h2>${from ? "Give back your ticket?" : "Refund your ticket?"}</h2><div class="t">`
       + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
-      + p(`You paid ${eventpay.cents2(row.total_cents)}. Cancel and you get ${eventpay.selfRefundWords(row)} It's on your card in a few days.`)
+      + p(from
+        ? `${from} bought this ticket (${eventpay.cents2(row.total_cents)}). Give it back and their card gets ${eventpay.selfRefundWords(row)}`
+        : `You paid ${eventpay.cents2(row.total_cents)}. Cancel and you get ${eventpay.selfRefundWords(row)} It's on your card in a few days.`)
       + p("You come off the guest list and stop getting the event's updates. The organizer is told.")
-      + `</div><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/refund`)}"><input type="hidden" name="step" value="do"><button class="ev-btn" type="submit" data-busy="Refunding…">Cancel and get ${esc(eventpay.cents2(eventpay.refundSplit(row, "guest").back_cents))} back</button></form>`
+      + `</div><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/refund`)}"><input type="hidden" name="step" value="do"><button class="ev-btn" type="submit" data-busy="Refunding…">${esc(from ? `Give back (${eventpay.cents2(eventpay.refundSplit(row, "guest").back_cents)} to ${from})` : `Cancel and get ${eventpay.cents2(eventpay.refundSplit(row, "guest").back_cents)} back`)}</button></form>`
       + `<p><a href="${esc(`/e/${ev.public_id}`)}">Keep my ticket</a></p>`;
   }
   return shell({ title: ev.name, body: intro(ev) + body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
@@ -330,7 +446,7 @@ function renderJoinedV2({ ev, att, saved = false, error = "" }) {
     date: v.when ? dateCard(ev) : null,
     facts: [["When", v.when ? timeOnly(ev) : ""], ["Where", v.where ?? ""]],
     rsvp: { joined: true },
-    after: answersBlock(ev, att, { saved, error }) + ticketBlock(ev, att),
+    after: answersBlock(ev, att, { saved, error }) + ticketBlock(ev, att) + friendSeatsBlock(ev, att),
     coming: list,
     calendarHref: v.when ? `/e/${ev.public_id}/calendar.ics` : "",
     head: headFor(ev),
@@ -365,6 +481,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
     + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
     + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
     + questionFields(ev, values, { v2: false })
+    + ticketPicker(ev, values, { v2: false })
     + (signedIn
       ? `<div class="t">${p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</div>`
       : `<div class="t">${p("Joining gives you access to Reason, your personal concierge, which can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
@@ -379,17 +496,20 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
 /** The last step for anybody without a page session: one text that proves the phone and joins. */
 export function finishStep({ ev, claim, lineNumber }) {
   const code = claim.code;
+  const seat = !!claim.seat_id;
+  const tickets = Number(claim.tickets ?? 1) || 1;
   const shown = `${code.slice(0, 4)}-${code.slice(4)}`;
   if (!lineNumber) {
     return `${intro(ev)}<div class="t">${p("Reason's texting line isn't connected right now, so this can't be finished at the moment. Nothing was used up — try again later.")}</div>`;
   }
-  const href = `sms:${normalizeNumber(lineNumber)}?&body=${encodeURIComponent(events.claimText(ev, code))}`;
-  const paid = eventpay.priced(ev);
+  const href = `sms:${normalizeNumber(lineNumber)}?&body=${encodeURIComponent(events.claimText(ev, code, { ticket: seat }))}`;
+  // A friend's ticket is already paid for: their text claims it, nothing to pay.
+  const paid = eventpay.priced(ev) && !seat;
   return `${intro(ev)}<h2>${paid ? "Next step" : "Last step"}</h2><div class="t">`
     + p(paid
-      ? `Tap the button. It opens a text to Reason with your code already written in — just press send. That text is how Reason knows the number is really yours. Reason texts you back a secure Stripe payment link (${eventpay.dollars(eventpay.quote(ev.price_cents).total)} with processing); you're in once you've paid.`
+      ? `Tap the button. It opens a text to Reason with your code already written in — just press send. That text is how Reason knows the number is really yours. Reason texts you back a secure Stripe payment link (${eventpay.dollars(eventpay.quote(ev.price_cents).total * tickets)} with processing${tickets > 1 ? `, for ${tickets} tickets` : ""}); you're in once you've paid${tickets > 1 ? ", and Reason texts you a link for each friend" : ""}.`
       : "Tap the button. It opens a text to Reason with your code already written in — just press send. That text is how Reason knows the number is really yours, and it finishes your join.")
-    + `</div><a class="ev-btn" href="${esc(href)}">${paid ? "Text Reason to get the payment link" : "Text Reason to finish"}</a><div class="t">`
+    + `</div><a class="ev-btn" href="${esc(href)}">${paid ? "Text Reason to get the payment link" : seat ? "Text Reason to claim it" : "Text Reason to finish"}</a><div class="t">`
     + p(`Not on your phone? From your phone, text ${shown} to ${prettyNumber(lineNumber)}.`)
     + p(paid ? "The code works once, for 24 hours. Nothing is charged until you pay on the Stripe page." : "The code works once, for 24 hours. If you already use Reason, it just adds the event to your account.")
     + `</div>`;
@@ -406,7 +526,7 @@ function renderAfterPay({ ev, paid }) {
 export function renderJoined({ ev, att, saved = false, error = "" }) {
   if (config.pagesV2) return renderJoinedV2({ ev, att, saved, error });
   const dir = ev.guest_list_visible ? `<a class="ev-btn" href="${esc(whoPath(ev, att.token))}">See who's going</a>` : "";
-  const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}${answersBlock(ev, att, { v2: false, saved, error })}${ticketBlock(ev, att, { v2: false })}`;
+  const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}${answersBlock(ev, att, { v2: false, saved, error })}${ticketBlock(ev, att, { v2: false })}${friendSeatsBlock(ev, att, { v2: false })}`;
   return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
@@ -736,6 +856,74 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     return page(200, renderRefundPage({ ev, done: out.row }));
   }
 
+  // ---- a buyer's tickets for friends: a new link, or the money back for one nobody claimed (src/eventpay.js) ----
+  if (sub === "seats") {
+    if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
+    if (!eventpay.paidEventsOn() || ev.status === "cancelled" || mine?.role !== "guest") return page(404, renderNotFound());
+    if (!ownOrigin(headers)) return page(403, renderNotFound());
+    const body = await readBody();
+    if (body != null && String(body).length > 2000) return page(413, renderNotFound());
+    const form = new URLSearchParams(body ?? "");
+    const step = form.get("step");
+    const c = account.conversation_id;
+    const st = eventpay.buyerSeat(ev, c, Number(form.get("seat")));
+    if (!st || st.state !== "open") return redirect(`/e/${ev.public_id}#seats`);
+    if (step === "reassign") {
+      const r = eventpay.reassignSeat({ ev, buyerConversationId: c, seatId: st.id });
+      log({ event_seat_reassigned: ev.id, ok: !!r.ok });
+      return redirect(`/e/${ev.public_id}?saved=seat#seats`);
+    }
+    const pay = eventpay.paymentRow(st.payment_id);
+    if (!eventpay.refundWindow(ev, pay).allowed) return redirect(`/e/${ev.public_id}#seats`);
+    if (step !== "do") return page(200, renderSeatRefundPage({ ev, seat: st, pay }));
+    const out = await eventpay.seatRefund({ ev, buyerConversationId: c, seatId: st.id, runtime, log });
+    log({ event_seat_refund: ev.id, ok: !!out.ok, why: out.ok ? null : out.reason });
+    if (!out.ok) return page(200, renderSeatRefundPage({ ev, seat: st, pay, error: out.reason === "stripe" ? "Stripe didn't take the refund just now. Nothing changed — try again in a few minutes." : "That ticket can't be refunded from here any more." }));
+    return page(200, renderSeatRefundPage({ ev, seat: st, pay, done: true }));
+  }
+
+  // ---- a friend's ticket link: claim the seat somebody bought them (src/eventpay.js claimSeat) ----
+  if (sub && sub.startsWith("seat/")) {
+    if (method !== "GET" && method !== "HEAD" && method !== "POST") return page(405, renderNotFound(), { Allow: "GET, HEAD, POST" });
+    const seat = eventpay.seatByToken(sub.slice(5));
+    // A link that was claimed, refunded, replaced or never existed: the same plain 404, whichever.
+    if (!seat || seat.event_id !== ev.id || ev.status === "cancelled" || eventpay.paymentRow(seat.payment_id)?.status !== "paid") return page(404, renderNotFound());
+    // Somebody already on the event (the buyer opening their own link, a friend who got two) never spends it.
+    if (mine?.role === "organizer") return page(200, renderSeatPage({ ev, seat, already: "This is a ticket a guest bought for a friend to your event — it's for them to claim." }));
+    if (mine?.role === "guest") return page(200, renderSeatPage({ ev, seat, already: seat.conversation_id === account.conversation_id ? "This is a ticket you got for a friend — send them this link and they'll claim it themselves." : "You're already on this event, so this ticket stays for somebody else. Let the friend who sent it know." }));
+    if (ev.status !== "active") return page(200, renderSeatPage({ ev, seat, already: "Joining is paused right now. Try the same link again later — the ticket is still yours to claim." }));
+    if (method !== "POST") return page(200, renderSeatPage({ ev, seat, account }));
+    if (!ownOrigin(headers)) return page(403, renderNotFound());
+    const raw = await readBody();
+    if (raw != null && String(raw).length > 8000) return page(413, renderNotFound());
+    const form = new URLSearchParams(raw ?? "");
+    const values = { display_name: form.get("display_name") ?? "", instagram: form.get("instagram") ?? "", in_directory: form.get("in_directory") === "1" };
+    for (const q of db.eventQuestions(ev.id)) if (form.get(`q_${q.id}`) != null) values[`q_${q.id}`] = String(form.get(`q_${q.id}`)).slice(0, 600);
+    const again = (error) => page(200, renderSeatPage({ ev, seat, account, error, values }));
+    const instagram = values.instagram.trim() ? events.instagramHandle(values.instagram) : null;
+    if (values.instagram.trim() && !instagram) return again("That doesn't look like an Instagram handle — just the username, like @yourname.");
+    // The host's questions, asked of every friend as of any guest: a required one left blank is sent back.
+    const asked = questions.readForm(ev, (k) => form.get(k));
+    if (asked.problems.length) return again(`${asked.problems[0].prompt}: ${questions.ANSWER_WHY[asked.problems[0].problem] ?? "that answer didn't read."}`);
+    if (asked.missing.length) return again(`${asked.missing[0]}: the host asks everyone this one before they're in.`);
+    if (account) {
+      const shown = events.cleanDisplayName(values.display_name) || events.cleanDisplayName(account.name) || "Guest";
+      const got = eventpay.claimSeat({ ev, seatId: seat.id, token: seat.claim_token, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "seat", answers: asked.answers });
+      log({ event_seat_claim: ev.id, ok: got.ok, why: got.ok ? null : got.reason, signed_in: true });
+      if (!got.ok) return page(200, renderSeatPage({ ev, seat, already: eventpay.SEAT_CLAIM_WHY[got.reason] ?? eventpay.SEAT_CLAIM_WHY.used }));
+      const att = events.afterJoin({ ev, att: got.attendee, typedInstagram: instagram });
+      await events.sendWelcome({ runtime, ev, att });
+      events.scheduleListNote({ runtime, ev, att });
+      eventpay.tellBuyerClaimed({ runtime, log }, ev, got.seat, att);
+      return redirect(`/e/${ev.public_id}`);
+    }
+    const name = events.cleanDisplayName(values.display_name);
+    if (!name) return again("Add the name other guests should see.");
+    const claim = events.makeClaim({ ev, displayName: name, instagram, inDirectory: values.in_directory, answers: asked.answers, seat });
+    log({ event_web_claim: ev.id, seat: true });
+    return page(200, shell({ title: ev.name, body: finishStep({ ev, claim, lineNumber }), pill: "Event", url: events.eventUrl(ev), head: seatHeadFor(ev), css: CSS }));
+  }
+
   // ---- the join page ----
   if (method !== "GET" && method !== "HEAD" && !(method === "POST" && sub === "join")) {
     return page(405, renderNotFound(), { Allow: "GET, HEAD" });
@@ -768,6 +956,9 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   const form = new URLSearchParams((await readBody()) ?? "");
   const values = { display_name: form.get("display_name") ?? "", instagram: form.get("instagram") ?? "", in_directory: form.get("in_directory") === "1" };
   for (const q of db.eventQuestions(ev.id)) if (form.get(`q_${q.id}`) != null) values[`q_${q.id}`] = String(form.get(`q_${q.id}`)).slice(0, 600);
+  // How many tickets (the buyer's own, and one per friend) — only on a priced event that allows more than one.
+  const tickets = eventpay.priced(ev) ? ticketsAsked(ev, form) : 1;
+  values.tickets = tickets;
   const again = (status, error) => page(status, renderJoin({ ev, account, error, values }));
   const actor = eventActor(headers, remoteAddress);
   const found = await events.findForJoin({ actor, link: events.eventUrl(ev), password: form.get("password") ?? "", route: "web" });
@@ -791,10 +982,11 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     // A priced event (src/eventpay.js): the password was right; the spot is held and they go to
     // Stripe's page. Nobody is on the event until the webhook says the payment landed.
     if (!out.ok && out.reason === "payment_required") {
-      const pay = await eventpay.startCheckout({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", answers: asked.answers, log });
+      const pay = await eventpay.startCheckout({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", answers: asked.answers, quantity: tickets, log });
       if (!pay.ok) {
         log({ event_web_pay_refused: ev.id, why: pay.reason });
-        const why = { full: "This event is full right now (spots being paid for count). If a spot opens up, the same link and password will work.", removed: "The organizer took you off this event.", already: "You're already in.", no_payouts: "The organizer hasn't finished setting up payouts, so nobody can pay to join just yet.", paused: "Joining is paused right now." }[pay.reason]
+        if (pay.reason === "full" && pay.left) return again(200, `Only ${pay.left} spot${pay.left === 1 ? " is" : "s are"} left, so ${tickets} tickets won't fit. Pick ${pay.left === 1 ? "1" : `up to ${pay.left}`} and try again.`);
+        const why = { full: "This event is full right now (spots being paid for count). If a spot opens up, the same link and password will work.", too_many: `This event takes up to ${pay.max} tickets per person.`, removed: "The organizer took you off this event.", already: "You're already in.", no_payouts: "The organizer hasn't finished setting up payouts, so nobody can pay to join just yet.", paused: "Joining is paused right now." }[pay.reason]
           ?? "The payment page couldn't be opened just now. Nothing was charged — try again in a minute.";
         return again(200, why);
       }
@@ -818,7 +1010,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // Anybody else: everything is on the page; the last step is one text.
   const name = events.cleanDisplayName(values.display_name);
   if (!name) return again(200, "Add the name other guests should see.");
-  const claim = events.makeClaim({ ev, displayName: name, instagram, inDirectory: values.in_directory, answers: asked.answers });
+  const claim = events.makeClaim({ ev, displayName: name, instagram, inDirectory: values.in_directory, answers: asked.answers, tickets });
   log({ event_web_claim: ev.id });
   return page(200, shell({ title: ev.name, body: finishStep({ ev, claim, lineNumber }), pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS }));
 }
