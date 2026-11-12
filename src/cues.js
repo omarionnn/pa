@@ -798,6 +798,15 @@ export function turnNote(conversationId, { now = clock.now() } = {}) {
     + ` Do not bring up what is held_for_later unless another note on this turn hands it to you.`;
 }
 
+/**
+ * The one sentence the turn after their own call carries (src/calls/postcall.js ownerEvent), so a cue
+ * said out loud is written down like one typed. It asks for nothing to be said: that turn is not
+ * theirs, so `note` holds one offer for their next reply and `offer` refuses.
+ */
+export const AFTER_CALL_LINE = "If on the call THEY said something of theirs is coming up — a trip, a move, a birthday, a job interview,"
+  + " a guest coming — cue_note it now with heard_on \"call\" and their words from the call as `said`. That alone is never a reason"
+  + " to text them: note it and still reply NO_REPLY unless something else is owed.";
+
 // ---------- the tools ----------
 
 export const CUE_TOOLS = new Set(["cue_note", "cue_offer", "cue_answer", "cue_end", "cues_setting"]);

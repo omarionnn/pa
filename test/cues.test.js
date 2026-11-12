@@ -217,6 +217,20 @@ test("on a turn they did not start (after a call) nothing is offered now; one of
   assert.equal(cues.listCues(C)[0].heard_on, "call");
 });
 
+test("the turn after their own call is told to note a cue said on it, only where cues reach them", async () => {
+  const { ownerEvent } = await import("../src/calls/postcall.js");
+  const row = { id: 1, conversation_id: C, duration_s: 120, provider: "gptlive", recording_state: "none" };
+  const told = ownerEvent({ row });
+  assert.ok(told.includes(cues.AFTER_CALL_LINE));
+  assert.match(cues.AFTER_CALL_LINE, /cue_note[\s\S]*heard_on "call"[\s\S]*NO_REPLY/);
+  // Turned off by them, or switched off: the after-call turn is exactly as it was.
+  cues.setOn({ conversationId: C, on: false, via: "settings" });
+  assert.ok(!ownerEvent({ row }).includes("cue_note"));
+  sql.exec("DELETE FROM cue_prefs");
+  process.env.REASON_CUES = "off";
+  assert.ok(!ownerEvent({ row }).includes("cue_note"));
+});
+
 // ---------- 5. the rest are rows with a moment ----------
 
 test("held offers get the right moment on the existing unprompted path", () => {

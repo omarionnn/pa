@@ -131,3 +131,30 @@ for (const [id, text, want] of mine) {
     assert.ok(offered.length <= 1, "never two offers");
   });
 }
+
+// A cue said out loud. The call's words are in the thread by the time the after-call turn runs
+// (src/calls/postcall.js writeCallIntoThread); here they ride in the same event, which is the same read.
+if (shard === 0) {
+  test(`a trip mentioned on a call is noted by the turn after it, and nothing is texted (${label})`, { skip, timeout: 300_000 }, async () => {
+    const { ownerEvent } = await import("../src/calls/postcall.js");
+    clock.reset();
+    clock.skip(Date.parse("2026-11-11T15:00:00-05:00") - Date.now());
+    db.db.exec("DELETE FROM cues; DELETE FROM cue_offers; DELETE FROM cue_prefs; DELETE FROM cue_mutes; DELETE FROM notice_seen;"
+      + " DELETE FROM timers; DELETE FROM outbox; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM usage; DELETE FROM action_ledger;");
+    db.upsertAccount({ conversationId: C, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
+    db.upsertThread({ conversationId: C, channel: "fake", address: OWNER, isOwner: true, service: "iMessage" });
+    const { rt } = harness();
+    const call = { id: 1, conversation_id: C, duration_s: 95, provider: "gptlive", recording_state: "none" };
+    const words = `[your call with Omari, just now]\nOmari: hey, what's the score of the knicks game\nyou: knicks are up 6 at the half\n`
+      + `Omari: nice. oh and i'm flying out to denver on the 3rd of december for my cousin's wedding, should be fun\nyou: that sounds great\nOmari: alright talk later\n\n`;
+    let reply;
+    try { reply = await rt.event(C, words + ownerEvent({ row: call })); } finally { await rt.shutdown(); }
+    const rows = cues.listCues(C);
+    if (process.env.CUES_LIVE_REPORT) appendFileSync(process.env.CUES_LIVE_REPORT, JSON.stringify({ id: "call-trip", want: "trip", hit: rows.length === 1 && rows[0].kind === "trip", noted: rows.map(r => ({ kind: r.kind, what: r.what, said: r.said, heard_on: r.heard_on, starts: r.starts_at ? new Date(r.starts_at).toISOString() : null, facts: r.facts })), offered: [], reply: reply ?? "" }) + "\n");
+    assert.equal(rows.length, 1, `the trip said on the call was not noted (it replied ${JSON.stringify(reply)})`);
+    assert.equal(rows[0].kind, "trip");
+    assert.equal(rows[0].heard_on, "call");
+    assert.ok(!reply, `nothing was owed, so nothing is texted: ${JSON.stringify(reply)}`);
+    assert.equal(cues.listOffers(C).filter(o => o.state === "offered").length, 0, "no offer is made on a turn they did not start");
+  });
+}
