@@ -15,6 +15,7 @@ import { githubStatus } from "./github.js";
 import { uberStatus, stateOf as uberStateOf } from "./uber.js";
 import { status as agentcardStatus } from "./agentcard.js";
 import * as spendcap from "./spendcap.js";
+import * as shop from "./shopconnect.js";
 
 // ---------- what an explicit yes looks like ----------
 // Not a word list. Which words appear in a reply says nothing about what it authorizes:
@@ -480,12 +481,12 @@ export const PROVIDERS = {
     built: true,
     via: "api",
     oauth: "google",
-    // `organise_files` is only ever on a row where drive.metadata was really granted, so a Drive
-    // connected before 2026-10-07 reads as read + write and not as organise. See CONNECTS in
+    // `organise_files` is only ever on a row where drive.file was really granted (drive.metadata
+    // before 2026-11-11, which old grants still carry). See CONNECTS in
     // src/google.js: it is an extra on the same connection, not a connection of its own.
     scopes: ["read_files", "write_files", "organise_files"],
-    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — hand one of their own files back in the thread as a PDF or a Word document, make a new Google Doc or folder, put a file Reason wrote in there, and organise what is already in it: rename, move into folders, put in the bin. A PDF that is a scan has no text to read and says so. Never deletes anything of theirs for good, never makes anything public, and can only share a file with another person where Reason itself made that file",
-    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and the Drive scopes on its Data Access page — including drive.metadata if organising is wanted — and then this person tapping the Drive connect link once",
+    what: "find a file Reason made (or they opened with Reason) in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — hand one of their own files back in the thread as a PDF or a Word document, make a new Google Doc or folder, put a file Reason wrote in there, and organise what is already in it: rename, move into folders, put in the bin. A PDF that is a scan has no text to read and says so. Never deletes anything of theirs for good, never makes anything public, and can only share a file with another person where Reason itself made that file",
+    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and drive.file on its Data Access page, and then this person tapping the Google connect link once",
   },
   // Built now, from Spotify's current docs. The credentials are a developer app's client id and
   // secret; the *person's* half is an authorization they give on Spotify's own page, which is why
@@ -650,6 +651,11 @@ function uberRideAccess(conversationId) {
   return {};
 }
 
+/** The Crossmint-connected store row for this site (src/shopconnect.js), or null. Removed stores are not listed. */
+export function storeConnected(conversationId, name) {
+  try { return shop.connectedStores(conversationId).find((s) => s.store === name) ?? null; } catch { return null; }
+}
+
 export function accountStatus(conversationId, name) {
   const p = PROVIDERS[name];
   if (!p) return { name, status: "unknown_provider" };
@@ -677,6 +683,17 @@ export function accountStatus(conversationId, name) {
     };
     if (row && row.state === "signed_in") {
       return { ...common, status: "connected", scopes: JSON.parse(row.scopes), connected_at: stamp(row.connected_at), revoked_at: null };
+    }
+    // A store connected through Crossmint (shop_stores) is connected even though Reason's own browser
+    // never signed in to it. Same source src/connectafter.js connectedAt() reads, so this and the
+    // connect-the-rest page can never disagree. A removed store has status 'removed' and is not here.
+    const viaStore = storeConnected(conversationId, name);
+    if (viaStore) {
+      return {
+        ...common, status: "connected", via: "crossmint", scopes: common.scopes_available,
+        connected_at: stamp(viaStore.connectedAt), revoked_at: null,
+        note: `Connected through Crossmint, not Reason's own browser, so there is no own-browser sign-in to check: orders are placed with the saved ${viaStore.name} sign-in.`,
+      };
     }
     return {
       ...common,

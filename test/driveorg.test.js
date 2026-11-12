@@ -59,9 +59,10 @@ const DOC = "application/vnd.google-apps.document";
 const FOLDER = "application/vnd.google-apps.folder";
 const MAIL_AND_CALENDAR = [google.GMAIL_SCOPE, ...google.CALENDAR_SCOPES];
 /** What everybody who connected Drive before 2026-10-07 has: read and create, no organising. */
-const READ_DRIVE = [...MAIL_AND_CALENDAR, ...google.DRIVE_SCOPES];
+// Legacy grants (before 2026-11-11), which existing users still hold.
+const READ_DRIVE = [...MAIL_AND_CALENDAR, google.DRIVE_READ_SCOPE, google.DRIVE_FILE_SCOPE];
 /** And what one more tap gets them. */
-const ORGANISE = [...MAIL_AND_CALENDAR, ...google.DRIVE_ORGANISE_SCOPES];
+const ORGANISE = [...MAIL_AND_CALENDAR, google.DRIVE_READ_SCOPE, google.DRIVE_FILE_SCOPE, google.DRIVE_METADATA_SCOPE];
 
 let fake;
 const call = (name, input, conversationId = OMARI, messages = []) => runTool(name, input, { conversationId, messages });
@@ -134,82 +135,65 @@ const ledger = () => db.listActions(OMARI);
 
 // ---------- the scope, which is the whole shape of this ----------
 
-test("the three organising tools name drive.metadata and the three others do not", () => {
-  for (const t of ["drive_rename", "drive_move", "drive_trash"]) {
-    assert.deepEqual(google.TOOL_SCOPES[t], [google.DRIVE_METADATA_SCOPE], `${t} must cost exactly the one new scope`);
+test("every organising tool runs on drive.file now; drive.metadata is never asked for (2026-11-11)", () => {
+  for (const t of ["drive_rename", "drive_move", "drive_trash", "drive_folder_create", "drive_upload", "drive_share"]) {
+    assert.deepEqual(google.askable(google.TOOL_SCOPES[t]), [google.DRIVE_FILE_SCOPE], `${t} must cost drive.file and nothing broader`);
   }
-  // These work on a Drive connected before 2026-10-07, which is the point of checking it: sending
-  // somebody back through a consent screen for a folder they could already have had is a bug.
-  assert.deepEqual(google.TOOL_SCOPES.drive_folders, [google.DRIVE_READ_SCOPE]);
-  for (const t of ["drive_folder_create", "drive_upload", "drive_share"]) {
-    assert.deepEqual(google.TOOL_SCOPES[t], [google.DRIVE_FILE_SCOPE], `${t} is inside the Drive permission they already gave`);
+  // Reading takes drive.file, or an old drive.readonly grant, which keeps working.
+  assert.deepEqual(google.TOOL_SCOPES.drive_folders, [[google.DRIVE_FILE_SCOPE, google.DRIVE_READ_SCOPE]]);
+  assert.equal(google.missingScopeFor("drive_folders", [google.DRIVE_READ_SCOPE]), null, "an old read-only grant still lists folders");
+  // The broad scope, drive.readonly and drive.metadata are never askable.
+  for (const s of ["https://www.googleapis.com/auth/drive", google.DRIVE_READ_SCOPE, google.DRIVE_METADATA_SCOPE]) {
+    assert.ok(!google.SCOPE_LIST.includes(s), `${s} must never be askable`);
   }
-  // And the broad scope is never asked for, which is what keeps sharing per-file.
-  assert.ok(!google.SCOPE_LIST.includes("https://www.googleapis.com/auth/drive"), "the broad drive scope must never be askable");
 });
 
-test("a Drive connected before this was built is NOT reported as able to organise", async () => {
+test("a Drive connected before drive.metadata existed can organise Reason's own files", async () => {
   await connect({ grants: READ_DRIVE, scopes: google.DRIVE_SCOPES });
   const st = trust.accountStatus(OMARI, "google_drive");
   assert.equal(st.status, "connected");
-  assert.deepEqual(st.scopes, ["read_files", "write_files"], "organise_files must not appear on a grant that never had it");
-
+  assert.deepEqual(st.scopes, ["read_files", "write_files", "organise_files"], "drive.file is what organising costs now");
   const caps = await call("capabilities", {});
   const row = caps.capabilities.find(c => c.name === "drive");
-  assert.match(row.what, /NOT granted on this connection/);
-  assert.match(row.what, /one tap/);
+  assert.match(row.what, /only the files it made or they opened with Reason/);
 });
 
-test("one more tap adds organising and does not cost them mail, calendar or Drive", async () => {
-  await connect({ grants: READ_DRIVE, scopes: google.DRIVE_SCOPES });
-  // The top-up link: asking for organising pulls the two Drive scopes with it, and
-  // include_granted_scopes is what stops the new token being Drive-only.
+test("an old link asking for drive.metadata asks for drive.file instead, and keeps mail and calendar", async () => {
+  await connect({ grants: MAIL_AND_CALENDAR, scopes: google.DRIVE_SCOPES });
   const link = await call("google_connect", { scopes: [google.DRIVE_METADATA_SCOPE] });
   const asked = new URL(providerUrl(link.url)).searchParams.get("scope").split(" ");
-  for (const s of google.DRIVE_ORGANISE_SCOPES) assert.ok(asked.includes(s), `${s} is not on the link`);
+  assert.ok(asked.includes(google.DRIVE_FILE_SCOPE));
+  assert.ok(!asked.includes(google.DRIVE_METADATA_SCOPE) && !asked.includes(google.DRIVE_READ_SCOPE), "no restricted Drive scope on the link");
   assert.equal(new URL(providerUrl(link.url)).searchParams.get("include_granted_scopes"), "true");
-
-  await connect({ grants: ORGANISE, scopes: [google.DRIVE_METADATA_SCOPE] });
-  const st = trust.accountStatus(OMARI, "google_drive");
-  assert.ok(st.scopes.includes("organise_files"), `organising did not turn on: ${st.scopes}`);
-  assert.equal(trust.accountStatus(OMARI, "gmail").status, "connected", "their mail was lost on the way");
-  assert.equal(trust.accountStatus(OMARI, "google_calendar").status, "connected", "their calendar was lost on the way");
-
-  const caps = await call("capabilities", {});
-  assert.match(caps.capabilities.find(c => c.name === "drive").what, /Renaming \(drive_rename\) and moving \(drive_move\) are live/);
 });
 
-test("without it, renaming says reconnect — with the link and the exact scopes, never a vague error", async () => {
+test("renaming a file of their own on a drive.file grant says Reason only organises its own files", async () => {
   await connect({ grants: READ_DRIVE, scopes: google.DRIVE_SCOPES });
   const out = await call("drive_rename", { file_id: "f-lease", name: "Lease — 240 Ocean Ave" });
-
   assert.equal(out.ok, false);
-  assert.equal(out.status, "scope_missing");
-  assert.equal(out.needs_reconnect_for_drive, true);
-  assert.deepEqual(out.missing_scope, [google.DRIVE_METADATA_SCOPE]);
-  assert.match(out.error, /one more permission/);
-  assert.match(out.error, /one tap/);
-  assert.match(out.error, /google_connect/);
-  assert.match(out.error, /not something they did wrong/);
-  assert.match(out.error, /drive\.metadata/);
-  // And nothing was touched on the way to saying so.
-  assert.equal(fake.state.driveUpdates.length, 0, "it tried the change anyway");
+  assert.equal(out.status, "not_reasons_file", JSON.stringify(out));
+  assert.match(out.error, /files it made or they opened with Reason/);
+  assert.match(out.error, /Do not offer a reconnect link/);
+  assert.equal(fake.state.driveUpdates.length, 0, "nothing changed");
 });
 
-test("moving and binning say the same thing, and a folder still works on the old grant", async () => {
+test("binning one of their own files says the same, and folders still work on the old grant", async () => {
   await connect({ grants: READ_DRIVE, scopes: google.DRIVE_SCOPES });
-  for (const [name, input] of [["drive_move", { file_ids: ["f-r1"], into: "fol-taxes" }], ["drive_trash", { file_id: "f-r1" }]]) {
-    const out = await call(name, input);
-    assert.equal(out.needs_reconnect_for_drive, true, `${name} did not offer the reconnect`);
-  }
+  const out = await call("drive_trash", { file_id: "f-r1" });
+  assert.equal(out.ok, false);
+  assert.notEqual(out.status, "scope_missing", "it is not a missing tap");
   assert.equal(fake.state.driveUpdates.length, 0);
-
-  // But what they already paid for still works, so nobody is sent through a consent screen for it.
   const made = await call("drive_folder_create", { name: "Taxes 2026" });
   assert.equal(made.ok, true, JSON.stringify(made));
   const folders = await call("drive_folders", {});
   assert.equal(folders.ok, true);
   assert.ok(folders.folders.some(f => f.name === "Taxes 2026"));
+});
+
+test("a grant that still carries drive.metadata organises the whole Drive as before", async () => {
+  await connect({ grants: ORGANISE, scopes: google.DRIVE_SCOPES });
+  const out = await call("drive_rename", { file_id: "f-lease", name: "Lease — 240 Ocean Ave" });
+  assert.equal(out.ok, true, JSON.stringify(out));
 });
 
 // ---------- folders ----------
@@ -738,4 +722,11 @@ test("a path handed to a tool call is never adopted as theirs, even when that fi
   // The same file, made by the call and not named in what it was given, is theirs.
   ownfiles.noteMade("dm:fake:+15550000009", { ok: true, path: theirs }, before, { title: "Offer" });
   assert.equal(ownfiles.ownFile("dm:fake:+15550000009", theirs).ok, true);
+});
+
+test("an old grant with drive.metadata but drive.file unticked still passes the organising check", () => {
+  for (const t of ["drive_rename", "drive_move", "drive_trash"]) {
+    assert.equal(google.missingScopeFor(t, [google.DRIVE_READ_SCOPE, google.DRIVE_METADATA_SCOPE]), null, t);
+    assert.deepEqual(google.missingScopeFor(t, [google.GMAIL_SCOPE]), [google.DRIVE_FILE_SCOPE], `${t} asks only for drive.file`);
+  }
 });

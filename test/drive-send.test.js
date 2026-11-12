@@ -63,7 +63,8 @@ const { config, clock } = await import("../src/config.js");
 const C = "dm:owner";
 const OWNER = "+12025551234";
 const MAIL_AND_CALENDAR = [google.GMAIL_SCOPE, ...google.CALENDAR_SCOPES];
-const EVERYTHING = [...MAIL_AND_CALENDAR, ...google.DRIVE_SCOPES];
+// A grant made before 2026-11-11 (drive.readonly + drive.file): existing users keep whole-Drive reads.
+const EVERYTHING = [...MAIL_AND_CALENDAR, google.DRIVE_READ_SCOPE, google.DRIVE_FILE_SCOPE];
 const PDF = "application/pdf";
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
@@ -424,7 +425,7 @@ test("a grant with no Drive at all is a named refusal, not a 403", async () => {
   const out = await call("drive_send", { file_id: "f-resume", as: "pdf" });
   assert.equal(out.ok, false);
   assert.equal(out.status, "scope_missing");
-  assert.deepEqual(out.missing_scope, [google.DRIVE_READ_SCOPE]);
+  assert.deepEqual(out.missing_scope, [google.DRIVE_FILE_SCOPE], "drive.file, never the restricted read scope");
   assert.match(out.error, /google_connect with scopes/);
   assert.equal(fake.state.driveReads.length, 0, "nothing was asked of Drive");
 });

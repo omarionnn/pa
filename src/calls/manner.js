@@ -79,6 +79,12 @@ export const OWN_TURN_MANNER = [
 ];
 
 // ---------- a call Reason places to a business ----------
+//
+// NOT behind the flag (Omari 11-11, after the manner was cancelled): `disclosureLine`, the objection
+// read below (`judgeObjection`) and `RECORDING_OBJECTION_LINE` are on for every call Reason places to a
+// business or another person, for every account, whatever REASON_CALL_MANNER says. It is a public
+// promise ("says it's an AI calling for you, and that the call is recorded"). The tone lines
+// (`lineMannerLines`) stay behind the flag.
 
 /** What a business hears first, from Reason (the pickup opener and the row's opening line). */
 export function disclosureLine(first) {
@@ -87,6 +93,9 @@ export function disclosureLine(first) {
     : "Hi there, this is Reason, an AI assistant. Just so you know, this call may be recorded.";
 }
 
+/** Said to the voice and to Reason's call turn wherever code really stops the recording (./gptlive.js `readObjection`). */
+export const RECORDING_OBJECTION_LINE = "If they say they'd rather not be recorded, or object to it in any way, say at once that's fine and you'll turn the recording off, then carry on with the call.";
+
 /** The business-call lines, for the voice that talks (lineTalkInstructions) and Reason's call turn (thirdPartyFrame). */
 export function lineMannerLines(first, { recordingOff = true } = {}) {
   return [
@@ -94,7 +103,7 @@ export function lineMannerLines(first, { recordingOff = true } = {}) {
     "Say times, prices and numbers the way a person says them (\"eight thirty tonight\", \"forty-two fifty\"), and read back a number they give you — a confirmation number, a phone number — in small groups.",
     `Never invent a detail, and never agree to a charge, deposit or commitment ${first} hasn't approved: say you'll check with ${first} and come back.`,
     // Only where code really stops the recording (a GPT-Live business call that talks: ./gptlive.js `readObjection`).
-    ...(recordingOff ? ["If they say they'd rather not be recorded, or object to it in any way, say at once that's fine and you'll turn the recording off, then carry on with the call."] : []),
+    ...(recordingOff ? [RECORDING_OBJECTION_LINE] : []),
     `You're Reason, an AI; never pretend to be a person, and never say you are ${first}.`,
     MANNER_NEVER,
   ];

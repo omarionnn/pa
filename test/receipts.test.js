@@ -74,6 +74,29 @@ test("a message Reason takes is marked read", async () => {
   assert.deepEqual(fake.markReadCalls, [{ to: OWNER }]);
 });
 
+test("one timing line per inbound: sent → arrival → mark-read, its result, and no number", async () => {
+  const { router, logs } = harness();
+  const sent = clock.now();
+  await router.deliver(inbound({ at: sent - 0, arrivedAt: sent + 250 }));
+  const lines = logs.filter(l => l.read_receipt_timing);
+  assert.equal(lines.length, 1);
+  const t = lines[0];
+  assert.equal(t.read_receipt_timing, "fake");
+  assert.equal(t.sent_to_in_ms, 250);
+  assert.equal(typeof t.in_to_mark_ms, "number");
+  assert.equal(typeof t.mark_ms, "number");
+  assert.equal(t.result, "ok");
+  assert.ok(!JSON.stringify(t).includes(OWNER.slice(2)), "never the number");
+});
+
+test("a known refusal says so on the timing line instead of nothing", async () => {
+  const { router, logs } = harness({ markReadAs: "line" });
+  await router.deliver(inbound({ externalId: "r-1" }));
+  await router.deliver(inbound({ externalId: "r-2" }));
+  const lines = logs.filter(l => l.read_receipt_timing);
+  assert.deepEqual(lines.map(l => l.result), ["refused_for_good", "known_refusal"]);
+});
+
 test("a delivery the provider sent twice is marked read once", async () => {
   // Sendblue's delivery is at-least-once. The receipt is sent after the event id is claimed, so the
   // retry stops before it and the same message is not marked read again.
@@ -218,7 +241,7 @@ test("Sendblue's mark-read is the endpoint and body its docs document", async ()
       },
     });
     const out = await ch.markRead({ to: "+1 (415) 555-9876" });
-    assert.deepEqual(out, { ok: true, supported: true });
+    assert.deepEqual(out, { ok: true, supported: true, http_status: 200 });
     assert.equal(calls[0].url, "https://api.sendblue.com/api/mark-read");
     assert.deepEqual(JSON.parse(calls[0].init.body), { number: STRANGER, from_number: LINE });
     assert.equal(calls[0].init.headers["sb-api-key-id"], "k");

@@ -212,6 +212,8 @@ const TABLES = [
   "call_errands", "call_quotes", "call_commitments", "call_requests",
   // What they asked, what Reason claimed back, and the bookkeeping around it.
   "requests", "request_messages", "open_questions", "sent_claims", "choice_sets", "held_actions",
+  // Checks left after an outward action, for the "quick correction:" line (src/verifications.js).
+  "verifications",
   "capability_misses", "parallel_runs", "pattern_asks", "line_change_cards",
   // Their own lists: what they spent, what they ate, what they need from the shop.
   "expenses", "meal_entries", "grocery_items",
@@ -236,6 +238,10 @@ const TABLES = [
   // Action Cards (src/actioncards.js): the daily notes left for them, each card on them, the titles
   // they struck out, and the per-card log of views, taps, replies and dismisses.
   "action_digests", "action_cards", "action_card_dismissed", "action_card_events",
+  // Connect the rest (src/connectafter.js): the once-ever record, the uses that proved a connection, its page links.
+  "connect_after", "connect_after_uses", "connect_after_links",
+  // Event guests' onboarding (src/eventonboarding.js): the once-ever row of where they are in it.
+  "event_onboarding",
   // The engine behind them (src/actionengine.js): each day's run and what it cost, where each card
   // came from (sealed), and their standing "stop showing me X" rules.
   "action_card_days", "action_card_sources", "card_skip_rules",
@@ -282,6 +288,7 @@ export const INSTALL_WIDE = {
   ops_digest: "the operator's digest lines",
   ops_state: "operator state; the one per-person key in it is removed by deleteData",
   place_photos: "photo cache by place",
+  place_zones: "time zone of a looked-up business, by its phone number (no person's data)",
   provider_calls: "per-provider call counts",
   provider_calls_hourly: "per-provider call counts",
   provider_state: "per-provider health",
@@ -311,7 +318,7 @@ export const INSTALL_WIDE = {
 // and shopping profile's handles at Crossmint.
 const SECRET_COLUMNS = {
   oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
-  shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
+  shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], connect_after_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
   pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
 };
 // What a redacted column says instead, when it is not a credential.

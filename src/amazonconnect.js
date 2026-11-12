@@ -88,10 +88,10 @@ export function setupConnectLink(setupConversationId, { via = "web_setup", log =
   return { ok: true, url: out.url, goodForMinutes: out.good_for_minutes };
 }
 
-export function connectLink(conversationId, { via = "", log = () => {}, create = remote.createRemoteSignin } = {}) {
+export function connectLink(conversationId, { via = "", log = () => {}, create = remote.createRemoteSignin, afterSignedIn = null } = {}) {
   if (!available(conversationId)) return { ok: false, why: "unavailable" };
   const e = entry();
-  const out = create({ conversationId, entry: e, closeBrowser, afterSignedIn: followUpNote(e), log });
+  const out = create({ conversationId, entry: e, closeBrowser, afterSignedIn: afterSignedIn ?? followUpNote(e), log });
   ledgerWrite({ conversationId, action: "signin_link", input: { site: SITE, via }, out: { ok: out.ok, site: e.site, reachable_from_a_phone: out.reachable_from_a_phone }, target: `site:${e.site}` });
   if (!out.ok || !out.reachable_from_a_phone) return { ok: false, why: out.why || "not_reachable" };
   return { ok: true, url: out.url, goodForMinutes: out.good_for_minutes };

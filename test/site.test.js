@@ -122,34 +122,40 @@ test("the policy admits the two things somebody would assume were not true", asy
   assert.match(body, /There is no model on the machine/i);
 });
 
-test("the policy carries the Limited Use statement Google's policy asks for", async () => {
+test("the policy carries Google's Limited Use statement word for word", async () => {
   const { body } = await get("/privacy");
-  assert.match(body, /adheres to the Google API Services User Data Policy, including the Limited Use requirements/);
+  assert.match(body, /Reason(?:'|&#39;)s use and transfer of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements\./);
   // And the four things that commitment actually means, in words somebody can check.
-  assert.match(body, /not sold/i);
-  assert.match(body, /advertising/i);
-  assert.match(body, /never used to train/i);
+  assert.match(body, /never sold/i);
+  assert.match(body, /never used for advertising/i);
+  assert.match(body, /never used to train or improve any AI model/i);
   assert.match(body, /no human reads it/i);
 });
 
-test("the policy says what Reason asks Google for, and what it cannot do", async () => {
+test("the Google user data section says what is accessed, why, storage, retention and how to leave (2026-11-11)", async () => {
   const { body } = await get("/privacy");
-  // Google's policy wants the in-product notice to match what the consent screens really ask for, so
-  // the count here and SCOPE_LIST in src/google.js are the same five things.
-  assert.match(body, /five Google permissions/i);
-  // Each one in words, and that the broad calendar grant was given up for the narrow pair.
-  assert.match(body, /Calendar events/);
-  assert.match(body, /reading a calendar(?:'|&#39;)s settings/i);
-  assert.match(body, /cannot create, share or delete a calendar/i);
-  assert.match(body, /cannot delete your mail permanently/i);
-  // Drive, and the two things about it somebody would otherwise find out by being surprised: it is not
-  // part of connecting their email, and nothing already in there can be changed or deleted.
-  assert.match(body, /Your Drive is the other two, and it is a separate tap/i);
-  assert.match(body, /connecting your email does not connect your files/i);
-  assert.match(body, /cannot delete, share, rename, move or edit anything in your Drive/i);
+  assert.match(body, /Google user data/);
+  // What: calendar, Drive files Reason made or they opened with it, identity — and Gmail only when asked.
+  assert.match(body, /Reason asks for your calendar, for the Google Drive files it makes for you or that you open with it, and for your Google email address and name/);
+  assert.match(body, /It does not ask for your whole Drive/);
+  assert.match(body, /Gmail is asked for separately, on its own Google screen, and only the first time you ask Reason to do something with your mail/);
+  assert.match(body, /cannot create, share or delete a whole calendar/i);
+  assert.match(body, /cannot delete mail permanently/i);
+  assert.match(body, /It cannot see or open the rest of your Drive/);
+  // Sign-in codes, only when asked.
+  assert.match(body, /reads a sign-in code from your Gmail only when you ask it to sign you in somewhere/);
+  // Why, storage, retention, disconnect and delete.
+  assert.match(body, /Only to do what you asked for/);
+  assert.match(body, /not read for any other purpose/);
+  assert.match(body, /encrypted at rest/);
+  assert.match(body, /No access token or refresh token ever leaves that machine/i);
+  assert.match(body, /Retention\./);
+  assert.match(body, /myaccount\.google\.com\/permissions/);
   assert.match(body, /does not copy your mailbox or your Drive/i);
-  assert.match(body, /No access token or refresh token ever leaves the machine/i);
   assert.match(body, /never as an instruction/i);
+  // And nothing claims the scopes it no longer asks for.
+  assert.doesNotMatch(body, /five Google permissions/i);
+  assert.doesNotMatch(body, /find and read your files/i);
 });
 
 // The paragraph that replaced "Attachments are never downloaded or opened", which stopped being true

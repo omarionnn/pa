@@ -42,7 +42,7 @@ export function form(obj, prefix = "", out = new URLSearchParams()) {
  * it means. A missing key is refused here, before any request, so a half-configured install cannot
  * send a request with an empty bearer.
  */
-export async function api(method, path, body = null, { fetchImpl = globalThis.fetch, idempotencyKey = null, timeoutMs = 15_000 } = {}) {
+export async function api(method, path, body = null, { fetchImpl = globalThis.fetch, idempotencyKey = null, timeoutMs = 15_000, stripeAccount = null } = {}) {
   const e = env();
   if (!e.secretKey) return { ok: false, status: 0, body: { error: { message: "no STRIPE_SECRET_KEY on this machine" } } };
   const ctl = new AbortController();
@@ -54,6 +54,8 @@ export async function api(method, path, body = null, { fetchImpl = globalThis.fe
         authorization: `Bearer ${e.secretKey}`,
         "content-type": "application/x-www-form-urlencoded",
         ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+        // A call made on a connected account (an organizer's Express account, src/eventpay.js).
+        ...(stripeAccount ? { "stripe-account": stripeAccount } : {}),
       },
       body: body ? form(body).toString() : undefined,
       signal: ctl.signal,

@@ -59,7 +59,7 @@ import { config, clock } from "./config.js";
 import { backToReasonHref, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
-import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN, PAPER_GLOW, NIGHT_GLOW, GLOW_OFF, SHEET_BG } from "./pages/brand.js";
 import { setupStartPage, setupLivePage, setupNativePage, nativeStepPanel, STEP_NEEDS_PAGE, setupResultPage, setupCodePage, setupGonePage, setupNoticePage, setupBackPage } from "./pages/setupsignin.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
@@ -974,13 +974,14 @@ ${securedCardTags(card)}
 <title>${esc(title)}</title>
 <script>${THEME.head}</script>
 <style>
-:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--card:${PAPER.card};--line:${PAPER.line};--soft:${PAPER.soft};--go:${PAPER.ink};--gofg:${PAPER.bg};--mark:${BRAND_PEN}}
-${dark([["", `--grain:none;--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:${BRAND_PEN_DARK}`]])}
+:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--glow:${PAPER_GLOW};--card:${PAPER.card};--line:${PAPER.line};--soft:${PAPER.soft};--go:${PAPER.ink};--gofg:${PAPER.bg};--mark:${BRAND_PEN}}
+${dark([["", `--grain:none;--glow:${NIGHT_GLOW};--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:${BRAND_PEN_DARK}`]])}
+${GLOW_OFF}
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--grain) var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;color:var(--fg);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 ${WORDMARK_CSS}
 ${THEME.css}
-.sheet{background:var(--grain) var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+.sheet{background:${SHEET_BG};border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 main{max-width:460px;margin:0 auto;padding:20px 16px}h1{font-size:20px;margin:8px 0 6px}.lead{color:var(--mute);margin:0 0 14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
 ul{margin:0;padding-left:18px}li{margin:6px 0}

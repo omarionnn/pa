@@ -22,7 +22,7 @@
 //   - **Nobody is ever told.** A read receipt that could not be sent is a detail about Reason's
 //     plumbing, not news for the person texting. It goes in the log once and nowhere else.
 import * as db from "./db.js";
-import { config } from "./config.js";
+import { clock, config } from "./config.js";
 
 const FEATURE = "read_receipt";
 
@@ -43,26 +43,36 @@ export async function markRead({ channel, to, log = () => {} }) {
   const known = db.blockedFeature({ channel: channel.name, feature: FEATURE, line, contact: to });
   if (known) return { skipped: "known_refusal", why: known.why };
 
+  // The round trip is timed and handed back for the router's one timing line per inbound.
+  const t0 = clock.now();
   let r;
   try {
     r = await channel.markRead({ to });
   } catch (e) {
     // Best-effort means best-effort. A broken endpoint cannot be allowed to stop a turn.
-    log({ read_receipt: to, threw: (e?.message ?? String(e)).split("\n")[0] });
-    return { ok: false, threw: true };
+    log({ read_receipt: tail(to), threw: (e?.message ?? String(e)).split("\n")[0] });
+    return { ok: false, threw: true, ms: clock.now() - t0 };
   }
-  if (r?.ok) return { ok: true };
+  const ms = clock.now() - t0;
+  const status = r?.http_status ?? null;
+  if (r?.ok) return { ok: true, ms, status };
 
   // A permanent refusal is written down and said once. The scope the channel reports is trusted
   // rather than guessed at here, because only the adapter has read which code means which.
   if (r?.remember) {
     const scope = r.remember.scope === "line" ? `line:${line}` : `contact:${to}`;
     db.recordChannelLimit({ channel: channel.name, feature: FEATURE, scope, why: r.remember.why, code: r.http_status ?? null });
-    log({ read_receipt: "off_for_good", scope, why: r.remember.why });
-    return { ok: false, remembered: scope };
+    log({ read_receipt: "off_for_good", scope: scope.startsWith("contact:") ? `contact:${tail(to)}` : scope, why: r.remember.why });
+    return { ok: false, remembered: scope, ms, status };
   }
   // Transient: nothing remembered, so the next message tries again. Logged, because a line that is
   // permanently flapping should be visible somewhere.
-  log({ read_receipt: to, not_now: r?.error ?? "no reason given", status: r?.http_status ?? null });
-  return { ok: false, transient: true };
+  log({ read_receipt: tail(to), not_now: r?.error ?? "no reason given", status });
+  return { ok: false, transient: true, ms, status };
+}
+
+/** The last four characters of an address: enough to tell two people apart in a log, never the number. */
+export function tail(to) {
+  const s = String(to ?? "");
+  return s.length > 4 ? `…${s.slice(-4)}` : s;
 }

@@ -79,6 +79,9 @@ const CSS = `<style>
 .mg-note.err{border-left-color:var(--pen);color:var(--pen);font-weight:600}
 .mg-kv{display:flex;justify-content:space-between;gap:12px;align-items:baseline;font-size:14px}
 .mg-kv .lbl{flex:none}
+.mg-pol .n{display:flex;gap:8px;align-items:center;margin:0 0 4px 30px;font-size:14px;color:var(--mut)}
+.mg-pol .n input,.mg-pol .n select{min-height:40px;border:1.5px solid var(--hair);border-radius:8px;padding:0 8px;background:var(--lift);color:var(--ink);font:15px 'Reason Sans',Inter,system-ui,sans-serif}
+.mg-pol .n input{width:4.5em}
 .mg-copy{display:flex;gap:8px;align-items:stretch}
 .mg-copy input{flex:1;min-width:0;min-height:44px;border:1.5px solid var(--hair);border-radius:10px;padding:0 10px;background:var(--lift);color:var(--ink);font:14px 'Courier New',Courier,monospace}
 .mg-secret{font:700 24px 'Courier New',Courier,monospace;letter-spacing:.06em;color:var(--pen);margin:0;overflow-wrap:anywhere}
@@ -304,7 +307,7 @@ function doneNote(q, ev) {
     case "reminder_on": return "Reminder on.";
     case "reminder_off": return "Reminder off. Guests won't get that one.";
     // Tickets (src/eventpay.js): read off the event as it is now, never off the address.
-    case "price_saved": return ev && eventpay.priced(ev) ? `Set. ${eventpay.organizerPriceLine(ev.price_cents)} Guests who join from now on pay on a Stripe page; nobody already in is charged.` : "Saved.";
+    case "price_saved": return ev && eventpay.priced(ev) ? `Set. ${eventpay.organizerPriceLine(ev.price_cents)} ${eventpay.policyLabel(eventpay.policyOf(ev))}. Guests who join from now on pay on a Stripe page; nobody already in is charged.` : "Saved.";
     case "price_free": return "Free to join from now on. Guests who already paid keep their spot and aren't refunded by this.";
     case "refunded": return "Refunded in full, including processing. They're off the event and were told; the money shows on their card in a few days.";
     case "payouts_ready": return "Payouts are set up with Stripe. You can put a price on this event now.";
@@ -314,6 +317,25 @@ function doneNote(q, ev) {
 }
 
 // ---------------------------------------------------------------- tickets and payouts (src/eventpay.js)
+
+/** Hours as the page's "N hours|days" pair: whole days shown as days past 48 hours. */
+function splitHours(h) {
+  return h % 24 === 0 && h > 48 ? { n: String(h / 24), unit: "days" } : { n: String(h), unit: "hours" };
+}
+
+/** The page's refund fields → a policy (src/eventpay.js readPolicy), and the draft to show again. */
+function readPolicyForm(f, current) {
+  // A post without the refund fields keeps the policy as it is.
+  if (f.get("refund_policy") == null) return { read: { ok: true, ...current }, draft: { policy: current.policy, ...splitHours(current.hours ?? eventpay.DEFAULT_REFUND_HOURS) } };
+  const policy = String(f.get("refund_policy"));
+  const n = String(f.get("refund_n") ?? "").trim();
+  const unit = f.get("refund_unit") === "days" ? "days" : "hours";
+  const num = /^\d{1,4}$/.test(n) ? Number(n) : NaN;
+  const read = policy === "until"
+    ? eventpay.readPolicy({ policy, ...(n === "" ? {} : unit === "days" ? { days: num } : { hours: num }) })
+    : eventpay.readPolicy({ policy });
+  return { read, draft: { policy, n, unit } };
+}
 
 /**
  * The organizer's money on this event: payouts setup (Stripe's own onboarding, one link), the price
@@ -336,18 +358,33 @@ function ticketsSection(ev, { conversationId, drafts, sec, paused }) {
       + p("Stripe asks for your name, your bank and a few details. Reason never sees your bank; Stripe holds it.", "quiet");
   } else {
     const priceDraft = drafts.price ?? (priced ? String(ev.price_cents / 100).replace(/\.00$/, "") : "");
+    const pol = eventpay.policyOf(ev);
+    const polDraft = drafts.policy ?? { policy: pol.policy, ...splitHours(pol.hours ?? eventpay.DEFAULT_REFUND_HOURS) };
+    const radio = (v, label) => `<label class="check"><input type="radio" name="refund_policy" value="${v}"${polDraft.policy === v ? " checked" : ""}> <span>${label}</span></label>`;
+    const policyFields = `<fieldset class="mg-kind mg-pol"><legend class="lbl">REFUNDS · GUESTS SEE THIS BEFORE THEY PAY</legend>`
+      + radio("until", "Refunds until a set time before it starts")
+      + `<div class="n"><label for="refund_n" class="sr">How long before</label><input id="refund_n" name="refund_n" type="number" inputmode="numeric" min="1" max="1440" value="${esc(polDraft.n)}">`
+      + `<select name="refund_unit" aria-label="Hours or days">${["hours", "days"].map(u => `<option value="${u}"${polDraft.unit === u ? " selected" : ""}>${u}</option>`).join("")}</select><span>before</span></div>`
+      + radio("anytime", "Refunds anytime until it starts")
+      + radio("none", "No refunds")
+      + `</fieldset>`
+      + p("Guests who cancel while the policy allows get the ticket price back automatically; the processing fee they paid isn't refundable. You can always refund anybody yourself, whatever the policy — that gives them everything back, processing included.", "quiet");
     const guests = eventpay.paidGuests(ev);
     const failed = guests.filter(g => g.refund_error);
     body = `<div class="mg-kv"><span class="quiet">${esc(priced ? eventpay.organizerPriceLine(ev.price_cents) : "Free to join. Set a price per person and guests pay on Stripe's page when they join.")}</span><span class="mg-tag${priced ? " on" : ""}">${esc(priced ? `${eventpay.dollars(ev.price_cents).toUpperCase()} PER PERSON` : "FREE")}</span></div>`
       + (paused ? p("Paused by Reason's operator, so the price can't change right now.", "quiet")
         : form("price", "review", `<label for="price_in">PRICE PER PERSON · $5 TO $500<input id="price_in" name="price" type="text" inputmode="decimal" autocomplete="off" maxlength="9" placeholder="25" value="${esc(priceDraft)}"></label>`
           + `<p class="quiet" id="price_quote" aria-live="polite"></p>`
-          + `<div class="mg-row">${button(priced ? "Change the price" : "Set the price", { busy: "Checking…" })}${priced ? `</div></form><form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "free")}${hidden("step", "review")}<div class="mg-row">${button("Make it free again", { cls: "mg-btn quiet", busy: "Opening…" })}` : ""}</div>`))
+          + policyFields
+          + `<div class="mg-row">${button(priced ? "Save changes" : "Set the price", { busy: "Checking…" })}${priced ? `</div></form><form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "free")}${hidden("step", "review")}<div class="mg-row">${button("Make it free again", { cls: "mg-btn quiet", busy: "Opening…" })}` : ""}</div>`))
       + (priced || s.paid_count
-        ? `<p class="lbl" style="margin-top:8px">SO FAR</p>`
-          + `<div class="mg-kv"><span class="lbl">PAID</span><span>${esc(plural(s.paid_count, "guest"))}${s.open_holds ? ` · ${esc(plural(s.open_holds, "spot"))} held while someone pays` : ""}</span></div>`
+        ? `<p class="lbl" id="sales" style="margin-top:8px">SO FAR</p>`
+          + `<div class="mg-kv"><span class="lbl">SOLD</span><span>${esc(plural(s.sold_count, "ticket"))}${s.open_holds ? ` · ${esc(plural(s.open_holds, "spot"))} held while someone pays` : ""}</span></div>`
           + `<div class="mg-kv"><span class="lbl">GROSS</span><span>${esc(eventpay.dollars(s.gross_cents))}</span></div>`
-          + `<div class="mg-kv"><span class="lbl">YOU GET</span><span>${esc(eventpay.dollars(s.organizer_net_cents))}${s.refunded_count ? ` · ${esc(plural(s.refunded_count, "refund"))}` : ""}</span></div>`
+          + `<div class="mg-kv"><span class="lbl">REFUNDED</span><span>${esc(s.refunded_count ? `${eventpay.dollars(s.refunded_cents)} · ${plural(s.refunded_count, "ticket")}` : "None")}</span></div>`
+          + `<div class="mg-kv"><span class="lbl">REASON'S 2.5%</span><span>${esc(eventpay.dollars(s.reason_fee_cents))}</span></div>`
+          + `<div class="mg-kv"><span class="lbl">COMING TO YOU</span><span><b>${esc(eventpay.dollars(s.organizer_net_cents))}</b></span></div>`
+          + `<div class="mg-kv"><span class="lbl">NEXT PAYOUT</span><span style="text-align:right">${esc(eventpay.payoutLine(eventpay.cachedPayoutInfo(conversationId), ev.tz))}</span></div>`
           + (guests.length
             ? `<p class="lbl" style="margin-top:8px">WHO PAID</p><ul class="mg-list">${guests.map(g => `<li><div class="mg-who"><b>${esc(g.display_name || "A guest")}</b><span>${esc(`paid ${eventpay.dollars(g.total_cents)} · ${when(ev, g.paid_at)}${g.refund_error ? " · the last refund didn't go through" : ""}`)}</span></div>`
               + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "refund")}${hidden("step", "review")}${hidden("payment", g.payment_id)}${button(g.refund_error ? "Retry refund" : "Refund", { cls: "mg-btn quiet", busy: "…" })}</form></li>`).join("")}</ul>`
@@ -1235,27 +1272,39 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
     case "price": {
       if (!money) return redirect(homePath(own));
       const raw = String(f.get("price") ?? "").trim();
-      if (step === "edit") return again(null, { price: raw });
+      const { read: pol, draft: policyDraft } = readPolicyForm(f, eventpay.policyOf(own));
+      const drafted = { price: raw, policy: policyDraft };
+      if (step === "edit") return again(null, drafted);
       const cents = eventpay.parseDollars(raw);
       const problem = cents == null ? "bad_price" : eventpay.priceProblem(cents);
-      if (problem) return oops({ too_low: `The lowest price is ${eventpay.dollars(eventpay.MIN_PRICE_CENTS)} per person.`, too_high: `The highest price is ${eventpay.dollars(eventpay.MAX_PRICE_CENTS)} per person for now.`, bad_price: "Put in a price in dollars, like 25 or 12.50." }[problem], { price: raw });
-      if (!eventpay.payoutsReady(c)) return oops("Set up payouts with Stripe first; then the price.", { price: raw });
-      if ((own.price_cents ?? null) === cents) return back(own, "money", { done: "price_saved" });
+      if (problem) return oops({ too_low: `The lowest price is ${eventpay.dollars(eventpay.MIN_PRICE_CENTS)} per person.`, too_high: `The highest price is ${eventpay.dollars(eventpay.MAX_PRICE_CENTS)} per person for now.`, bad_price: "Put in a price in dollars, like 25 or 12.50." }[problem], drafted);
+      if (!pol.ok) return oops("Refunds can close from 1 hour to 60 days before the start.", drafted);
+      if (!eventpay.payoutsReady(c)) return oops("Set up payouts with Stripe first; then the price.", drafted);
+      const was = eventpay.policyOf(own);
+      const policySame = own.refund_policy != null && was.policy === pol.policy && (was.hours ?? null) === (pol.hours ?? null);
+      // Never chosen and left at the default: nothing to save for the policy.
+      const policyUntouched = policySame || (own.refund_policy == null && pol.policy === "until" && pol.hours === eventpay.DEFAULT_REFUND_HOURS);
+      if ((own.price_cents ?? null) === cents && policyUntouched) return back(own, "money", { done: "price_saved" });
       const qt = eventpay.quote(cents);
+      const sold = eventpay.summary(own).paid_count;
+      const tighter = (x) => x.policy === "none" ? Infinity : x.policy === "anytime" ? 0 : x.hours;
+      const policySentence = `${eventpay.policyLabel(pol)}. Guests see it next to the price, on the Stripe page and in their receipt.`
+        + (sold && !policyUntouched ? (tighter(pol) > tighter(was) ? ` The ${plural(sold, "guest")} who already paid keep the looser policy they bought under; this one is for new sales.` : tighter(pol) < tighter(was) ? ` It reaches the ${plural(sold, "guest")} who already paid too.` : "") : "");
       if (step === "review") {
         return page(200, renderConfirm({
-          ev: own, title: eventpay.priced(own) ? `Change the price to ${eventpay.dollars(cents)}?` : `Charge ${eventpay.dollars(cents)} a person?`,
+          ev: own, title: (own.price_cents ?? null) === cents ? `Change the refund policy?` : eventpay.priced(own) ? `Change the price to ${eventpay.dollars(cents)}?` : `Charge ${eventpay.dollars(cents)} a person?`,
           sentences: [
             `Guests pay ${eventpay.dollars(qt.total)}: your ${eventpay.dollars(qt.price)} plus ${eventpay.dollars(qt.processing)} of Stripe's processing, shown to them as one line. You get ${eventpay.dollars(qt.organizer_gets)} per person; Reason keeps 2.5% (${eventpay.dollars(qt.reason_fee)}).`,
             "Guests pay on Stripe's secure page when they join (Apple Pay works) and are on the event once the payment goes through. Their spot is held for 15 minutes while they pay.",
+            policySentence,
             eventpay.priced(own) ? "People already in paid the old price and aren't charged or refunded. Nobody is texted." : "Nobody already in is charged. Nobody is texted.",
           ],
-          fields: { action: "price", step: "do", price: raw }, confirm: eventpay.priced(own) ? "Change the price" : `Charge ${eventpay.dollars(cents)}`, back: "Change it",
+          fields: { action: "price", step: "do", price: raw, refund_policy: policyDraft.policy, refund_n: policyDraft.n, refund_unit: policyDraft.unit }, confirm: eventpay.priced(own) ? "Save changes" : `Charge ${eventpay.dollars(cents)}`, back: "Change it",
         }));
       }
       if (step !== "do") return redirect(homePath(own));
-      const out = await run("event_price", { price_dollars: cents / 100 });
-      if (!out?.ok) return oops("That didn't save. The price is what it was.", { price: raw });
+      const out = await run("event_price", { price_dollars: cents / 100, ...(policyUntouched ? {} : { refund_policy: pol.policy, ...(pol.hours ? { refund_hours: pol.hours } : {}) }) });
+      if (!out?.ok) return oops("That didn't save. The price is what it was.", drafted);
       log({ event_manage_price: own.id, cents });
       return back(own, "money", { done: "price_saved" });
     }

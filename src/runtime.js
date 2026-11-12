@@ -28,6 +28,8 @@ import { checkTickets } from "./ticketcheck.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
+import * as tapbackack from "./tapbackack.js";
+import * as verifications from "./verifications.js";
 import * as choices from "./choicecards.js";
 import * as tables from "./tableimage.js";
 import * as todo from "./todo.js";
@@ -50,6 +52,9 @@ import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
 import * as onethought from "./onethought.js";
 import * as said from "./said.js";
 import * as offers from "./offers.js";
+import * as timing from "./replytiming.js";
+import { fastReplyOn } from "./fastreply.js";
+import { holdLane } from "./background.js";
 import { PROVIDER as GOOGLE } from "./google.js";
 import * as eventRides from "./eventrides.js";
 import { sweepListNotes, sweepQuestionAsks } from "./events.js";
@@ -60,6 +65,7 @@ import * as dream from "./dream.js";
 import * as actionengine from "./actionengine.js";
 import * as webdraft from "./webdraft.js";
 import * as onboarding from "./onboarding.js";
+import * as eventonb from "./eventonboarding.js";
 import * as opsDigest from "./opsdigest.js";
 import { withPlainPath, sealLike } from "./restfiles.js";
 
@@ -489,8 +495,18 @@ export class Runtime extends EventEmitter {
    * and before anything leaves, so code rather than the model's own judgement decides whether a
    * reply earns an interruption. Returns what Reason said, even when it was held back.
    */
-  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, gate = null, attachments = [], ctx = {}, onSend = null, keep = null }) {
-    return this.enqueue(conversationId, async () => {
+  _turn(args) {
+    return this.enqueue(args.conversationId, async () => {
+      // REASON_FAST_REPLY (src/fastreply.js §5): the background lane stays paused for the WHOLE of a
+      // person's turn — the said check and the send included, not only the model (whileTurn in
+      // src/backends/claude-cli.js covers that part). Extraction's CLI was booting beside the check's.
+      const release = args.kind !== "event" && fastReplyOn({ conversationId: args.conversationId, isOperator: !!args.meta?.isOperator }) ? holdLane() : null;
+      try { return await this._turnBody(args); } finally { release?.(); }
+    });
+  }
+
+  async _turnBody({ conversationId, text, kind = "user", meta = {}, shouldSend = null, gate = null, attachments = [], ctx = {}, onSend = null, keep = null }) {
+    {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
       // Same for a "what's new" claim: a turn that said it would mention something and then sent
@@ -532,6 +548,8 @@ export class Runtime extends EventEmitter {
       // reply is thrown away unsent, the thread is put back as it was, and the line back is code's.
       const screened = this._screen({ conversationId, text, kind, meta });
       let refusedHarm = false;
+      // REASON_TAPBACK_ACK (src/tapbackack.js): 👀 goes on their text the moment this turn runs its
+      // first tool (runTool → noteTool), not here — a turn that answers from what it knows gets none.
       // One thought, one answer (src/onethought.js). A text of theirs that lands while this turn is
       // working, and is read as adding to what it is working on, is handed to this turn — on its
       // next tool result, or by a recompose before anything is sent — instead of getting a turn and
@@ -584,6 +602,10 @@ export class Runtime extends EventEmitter {
       // The said check's CLI, started now so its cold start is paid while the turn runs (src/said.js).
       // Not for a Web draft, which checks its pieces as they are written (src/webdraft.js).
       const warmCheck = kind === "user" && !draft ? said.warmCheck(conversationId) : null;
+      // src/replytiming.js: the wait behind this conversation's other turns, the screen's start and the
+      // check's warm start are "queue"; what the turn itself does is measured inside the backend.
+      timing.mark(conversationId, "queue");
+      let rewriteMs = 0;
       try {
         const first = await this.runTurn(turnArgs(draft ? { draft } : {}));
         // The reply waits for the verdict. Almost always it is in long before the turn is done.
@@ -616,10 +638,13 @@ export class Runtime extends EventEmitter {
         const figures = offers.takeRecompose(conversationId);
         if (reply && reply.trim() !== "NO_REPLY") {
           // A reply the tab already watched pass this check, word for word, is not asked twice (src/webdraft.js).
+          timing.touch(conversationId);
           const check = kind !== "user" ? { ok: true }
-            : draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text });
+            : draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text, fast: fastReplyOn({ conversationId, isOperator: !!meta.isOperator }) });
+          timing.mark(conversationId, "check");
           const notes = [check.ok ? "" : check.note, figures ?? ""].filter(Boolean);
           if (notes.length) {
+            const rewriteStarted = Date.now();
             const note = notes.join(" ");
             // What the tab was shown goes; the rewrite arrives whole.
             draft?.taken();
@@ -634,8 +659,10 @@ export class Runtime extends EventEmitter {
               keep: onethought.CODE_LINE, attachments: [], continueSession: true, recompose: true,
             })), { conversationId, text, meta });
             db.dropUserLineEndingWith(conversationId, onethought.CODE_LINE);
+            rewriteMs = Date.now() - rewriteStarted;
           }
         }
+        timing.note(conversationId, "rewrite", rewriteMs);
       } catch (e) {
         // A turn that broke before the screen had answered is decided by the screen, not the error.
         // The usual way is the reply model's own safeguards refusing the message outright, which
@@ -745,11 +772,24 @@ export class Runtime extends EventEmitter {
         // question is worse. Taken rather than left, so it cannot fire on a later turn.
         await this._fireHeldReaction(conversationId, false);
       };
+      // A tapback and a text never say the same thing (REASON_TAPBACK_ACK): a reply that is only
+      // "on it" / "got it" after 👀 went on their text is the tapback said twice, so it is dropped.
+      if (kind === "user" && reply && reply.trim() !== "NO_REPLY" && tapbackack.isBareAck(reply)) {
+        await tapbackack.settled(conversationId);
+        if (tapbackack.current(conversationId)) {
+          this.log({ bare_ack_dropped: conversationId, tapback: tapbackack.current(conversationId), chars: reply.length });
+          gatedQuiet = true;
+        }
+      }
       if (reply && !gatedQuiet && (!shouldSend || shouldSend(reply))) {
+        timing.touch(conversationId);
         const out = await this._emit({
           conversationId, text: reply,
           meta: { ...meta, ...(replyTo ? { replyTo } : {}), ...(sendStyle ? { sendStyle } : {}) },
         });
+        // The one timing line for this reply (src/replytiming.js), now that it has left.
+        timing.mark(conversationId, "send");
+        timing.finish(conversationId, this.log, { sent: out?.ok === false ? 0 : 1, rewritten: rewriteMs ? 1 : 0 });
         // For a caller that has to know what became of the send and not only what was written —
         // a timer is finished with once its message is handed over, not once the model has spoken.
         onSend?.(out);
@@ -777,6 +817,10 @@ export class Runtime extends EventEmitter {
           // The tapback the react tool held back because they had asked something. Words won, so now
           // it rides alongside them — and only now, and only if the words really went out.
           await this._fireHeldReaction(conversationId, out?.ok !== false);
+          // REASON_TAPBACK_ACK: an action of this turn that worked, with no job left running, is ✅.
+          if (kind === "user" && out?.ok !== false) {
+            void tapbackack.afterReply(conversationId, { acts: turnActs, tasks: turnTasks, channels: this.turnExtras?.channels ?? null, log: this.log });
+          }
           // Choice cards the turn drew (show_choices): after the line above them, one bubble each, in order.
           await this._sendChoiceCards(conversationId, out?.ok !== false, meta);
           // A table picture the turn drew (render_table): after its line, one bubble per picture, in order.
@@ -808,6 +852,7 @@ export class Runtime extends EventEmitter {
         }
       } else {
         await heldBack(gatedQuiet ? { why: "quiet_nothing_new" } : {});
+        timing.finish(conversationId, this.log, { sent: 0, rewritten: rewriteMs ? 1 : 0 });
       }
       // The reply has gone (or there is none): the tab's growing copy is taken back, after the real one.
       draft?.end();
@@ -824,7 +869,7 @@ export class Runtime extends EventEmitter {
       } catch (e) { this.log({ settle_link_failed: (e?.message ?? String(e)).split("\n")[0] }); }
       db.dropStaleRequests(conversationId);
       return reply;
-    });
+    }
   }
 
   /**
@@ -1122,9 +1167,10 @@ export class Runtime extends EventEmitter {
    * conversations on the operator's bill is Reason's. Checked before the model call, so a capped
    * person costs nothing.
    */
-  mayInterrupt(conversationId) {
+  mayInterrupt(conversationId, { paywall = true } = {}) {
     // Past the free trial and unpaid (src/plan.js): nothing Reason starts goes out until they pay.
-    if (plan.blocked(conversationId)) { this.log({ proactive_held: conversationId, why: "trial over, unpaid" }); return false; }
+    // `paywall: false`: an event guest's morning after, which is the event's, not their allowance's.
+    if (paywall && plan.blocked(conversationId)) { this.log({ proactive_held: conversationId, why: "trial over, unpaid" }); return false; }
     const cap = accounts.withinCap(conversationId, "proactive");
     if (!cap.ok) this.log({ proactive_capped: conversationId, used: cap.used, limit: cap.limit });
     return cap.ok;
@@ -1219,19 +1265,22 @@ export class Runtime extends EventEmitter {
     if (!t || t.fired_at || t.cancelled_at) return false;
     // Lapsed on the free trial (src/plan.js): their reminders and calls wait, unfired, and run on the
     // first sweep after they pay — not dropped, so nothing they set up is lost to the hold.
-    if (plan.blocked(t.conversation_id)) return false;
+    // Not the event morning-after (src/eventonboarding.js): it is the event's line, not their allowance's
+    // (owner, 2026-11-11), so it goes to a guest over the ceiling too.
+    if (t.label !== eventonb.LABEL && plan.blocked(t.conversation_id)) return false;
 
     // The proactive ceiling is for things Reason starts. A call they asked for at a time is not
     // one of those, and a wake-up call quietly dropped because the day's proactive texts were
     // used up is the worst version of a missed alarm — so a call timer goes past it.
-    if (!t.call_goal && !this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
+    if (!t.call_goal && t.label !== eventonb.LABEL && !this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
     // Nobody to say it to. A person who has opted out, or whose last few messages all failed for
     // good, cannot get this one either — so the turn is not run (it was real research, every few
     // hours, for Agu, who had opted out a week before), their standing check-ins are paused, and
     // the master is told once.
     // Never the master's own thread: an opt-out there has been a carrier hiccup they fixed the same
     // day (10-17), and quietly pausing their own check-ins would be worse than a failed send.
-    const gone = t.conversation_id === config.ownerConversation ? null : db.unreachable(t.conversation_id);
+    // The event morning-after judges this itself (src/eventonboarding.js), and lets its row go.
+    const gone = t.conversation_id === config.ownerConversation || t.label === eventonb.LABEL ? null : db.unreachable(t.conversation_id);
     if (gone) {
       db.markTimerFired(t.id);
       await this._stopForUnreachable(t.conversation_id, gone);
@@ -1256,7 +1305,8 @@ export class Runtime extends EventEmitter {
     }
     // Too late to be worth anything. Held by a pause or a lapse, or the process was down, and its
     // moment has gone: it is skipped, never sent 17-26 hours after its time (seen live, 2026-11).
-    if (timerTooLate(t)) return await this._skipLateTimer(t);
+    // Not the event morning-after: it judges its own lateness (src/eventonboarding.js LATE_MS).
+    if (timerTooLate(t) && t.label !== eventonb.LABEL) return await this._skipLateTimer(t);
     // Out of tries before this one starts, which is what a turn that killed the process leaves.
     if (t.attempts >= config.timerMaxAttempts) {
       return await this._giveUpOnTimer(t, t.last_error ?? "the process stopped in the middle of the turn");
@@ -1342,6 +1392,10 @@ export class Runtime extends EventEmitter {
     const key = timerKey(t.id);
     // The first-chat onboarding's one nudge (src/onboarding.js): code's line, no model turn, and
     // nothing at all if they have moved on since it was set.
+    // An event guest's morning after (src/eventonboarding.js): code's line, no model turn.
+    if (t.label === eventonb.LABEL) {
+      return await eventonb.fire({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log, mayInterrupt: (c) => this.mayInterrupt(c, { paywall: false }) });
+    }
     if (t.label === db.ONBOARDING_NUDGE_LABEL) {
       return await onboarding.fireNudge({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log });
     }
@@ -1492,7 +1546,7 @@ export class Runtime extends EventEmitter {
   async _skipLateTimer(t) {
     const late = Math.round((clock.now() - t.fire_at) / 60_000);
     const owned = db.noticeByTimer(t.id);
-    const theirs = !t.series_id && t.chained_from == null && !owned && t.label !== db.ONBOARDING_NUDGE_LABEL;
+    const theirs = !t.series_id && t.chained_from == null && !owned && t.label !== db.ONBOARDING_NUDGE_LABEL && t.label !== eventonb.LABEL;
     this.log({ timer: t.id, skipped_late_min: late, ...(t.series_id ? { series: t.series_id } : {}), ...(t.chained_from != null ? { chain: true } : {}) });
     if (owned && !owned.said_at && !owned.resolved_at) db.unparkNotice(owned.id);
     if (theirs) {
@@ -1517,6 +1571,8 @@ export class Runtime extends EventEmitter {
   async _giveUpOnTimer(t, why) {
     const owned = db.noticeByTimer(t.id);
     this.log({ timer: t.id, gave_up: why, attempts: t.attempts, ...(owned ? { notice: owned.key } : {}) });
+    // The event morning-after is code's own, not their reminder: let go quietly, never a "missed" line.
+    if (t.label === eventonb.LABEL) { eventonb.gaveUp(t.conversation_id); db.markTimerGaveUp(t.id, { error: why }); return true; }
     if (owned && !owned.said_at && !owned.resolved_at) {
       db.unparkNotice(owned.id);
       db.markTimerGaveUp(t.id, { error: why });
@@ -1937,7 +1993,24 @@ export class Runtime extends EventEmitter {
       if (r?.ok || r?.queued) out.owner_told++;
       else this.log({ outbox: row.id, could_not_tell_owner: r?.error ?? "no reason given" });
     }
+    // REASON_DELIVERY_GATED: their OWN text that the carrier later reported undelivered. Said once,
+    // in one line, and sent again under the correction's own key (the carrier's refusal was about
+    // that delivery, not the words). A correction that itself fails is a row like any other and is
+    // never corrected again (the key prefix is skipped here).
+    for (const row of db.ownUndeliveredUntold()) {
+      if (String(row.idem_key ?? "").startsWith("delivery-failed:")) { db.markUndeliveredTold(row.id); continue; }
+      if (!db.markUndeliveredTold(row.id)) continue;
+      const r = await this._tell(row.conversation_id, outboxLib.undeliveredLine(row), { idempotencyKey: `delivery-failed:${row.id}` });
+      if (r?.ok || r?.queued) { out.owner_told++; this.log({ outbox: row.id, undelivered_told: row.conversation_id }); }
+      else this.log({ outbox: row.id, could_not_tell_undelivered: r?.error ?? "no reason given" });
+    }
     return out;
+  }
+
+  /** Checks left after an outward action, and the "quick correction:" line when one did not hold (src/verifications.js). */
+  async verifications({ now = clock.now() } = {}) {
+    try { return await verifications.pass({ runtime: this, now, log: this.log }); }
+    catch (e) { this.log({ verifications_error: (e?.message ?? String(e)).split("\n")[0] }); return { error: true }; }
   }
 
   /**
@@ -2898,6 +2971,9 @@ export class Runtime extends EventEmitter {
     const undone = await this.undo();
     // Before anything that might say something: finish saying the things already owed.
     const outbox = await this.outbox();
+    // Did what went out hold up? An email that bounced, an event that is gone, a text the carrier
+    // refused: one "quick correction:" line each (REASON_QUICK_CORRECTION, src/verifications.js).
+    const verified = await this.verifications();
     // Then anybody who is actually waiting on an answer right now.
     const held = await this.held();
     // Before the timers fire, so an occurrence that is already due goes out on this pass rather than
@@ -2982,7 +3058,7 @@ export class Runtime extends EventEmitter {
     const action_cards = this.cards();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_scheduled, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, action_cards, retention };
+    return { undone, outbox, verified, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_scheduled, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, action_cards, retention };
   }
 
   start(everyMs = 15_000) {

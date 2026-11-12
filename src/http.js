@@ -37,6 +37,7 @@
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
+//   GET  /web/connect-all/{token}, POST …/go/{service}   connect the rest, after the first task that needed a connection worked (src/pages/connectall.js; REASON_CONNECT_AFTER)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
 //   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY or REASON_STAMPS_ALL)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
@@ -88,7 +89,7 @@ import * as x from "./x.js";
 import { connectStartRequest, refuseForeignBrowser, START_PATH as CONNECT_START_PATH } from "./connectgate.js";
 import { renderNotice, renderConnected, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
-import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN, PAPER_GLOW, NIGHT_GLOW, GLOW_OFF, SHEET_BG } from "./pages/brand.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard, shootWithChromium } from "./pages/card.js";
 import { madeKind, renderMadePage, callAudio, notYoursFor, archivedFor, privateHead, privateOgPng, PRIVATE_OG_VERSION } from "./pages/madedata.js";
@@ -284,7 +285,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- an event's pages ----------
       // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
       // link arriving through the files domain, which Caddy rewrites under /p.
-      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|paid|pay-back|payouts|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|paid|pay-back|payouts|refund|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
       if (eventRoute) {
         const out = await eventRequestFor({
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
@@ -399,6 +400,22 @@ export function createServer({ router, runtime, log = () => {} }) {
           }
         } catch (e) {
           log({ http: "/web/approve", threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
+      // Connect the rest (src/connectafter.js, REASON_CONNECT_AFTER): the one follow-up link's page.
+      const connectAllRoute = /^\/web\/connect-all\/([A-Za-z0-9_-]{20,64}(?:\/go\/[a-z]+)?)$/.exec(url.pathname);
+      if (connectAllRoute && (await import("./connectafter.js")).mode() !== "off") {
+        let out = null;
+        try {
+          const { connectAllRequest } = await import("./pages/connectall.js");
+          out = await connectAllRequest({ sub: connectAllRoute[1], method: req.method, headers: req.headers, log });
+        } catch (e) {
+          log({ http: "/web/connect-all", threw: (e?.message ?? String(e)).split("\n")[0] });
           return send(500, { ok: false, error: "server error" });
         }
         if (out) {
@@ -893,13 +910,14 @@ ${iconLinks()}
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <script>${THEME.head}</script>
 <style>
-:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--line:${PAPER.line};--mark:${BRAND_PEN}}
-${dark([["", `--grain:none;--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:${BRAND_PEN_DARK}`]])}
+:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--glow:${PAPER_GLOW};--line:${PAPER.line};--mark:${BRAND_PEN}}
+${dark([["", `--grain:none;--glow:${NIGHT_GLOW};--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:${BRAND_PEN_DARK}`]])}
+${GLOW_OFF}
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--grain) var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 ${WORDMARK_CSS}
 ${THEME.css}
-.sheet{background:var(--grain) var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+.sheet{background:${SHEET_BG};border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 main{max-width:32rem;margin:0 auto;padding:2rem 1.5rem}
 h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);font-size:.9rem}
 </style></head><body>

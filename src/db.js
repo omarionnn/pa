@@ -2235,7 +2235,7 @@ export function setItemBlurb(kind, conversationId, id, blurb) {
 }
 export function listTimers(conversationId) {
   // Not the onboarding's nudge (src/onboarding.js): that one is code's, not a reminder of theirs.
-  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') != 'onboarding:nudge' ORDER BY fire_at").all(conversationId);
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after') ORDER BY fire_at").all(conversationId);
 }
 export function cancelTimer(conversationId, id) {
   const t = getTimer(conversationId, id);
@@ -3774,7 +3774,7 @@ export function defaultMode(conversationId) {
 export function pendingOnboardingTail(conversationId) {
   // The end of the chain (the row nothing waits on), not the newest id: a carousel turned into its
   // pictures has rows newer than the question that follows them.
-  return db.prepare(`SELECT o.id FROM outbox AS o WHERE o.conversation_id = ? AND o.idem_key LIKE 'onboard:%' AND o.state IN ('queued','sending','unknown')
+  return db.prepare(`SELECT o.id FROM outbox AS o WHERE o.conversation_id = ? AND (o.idem_key LIKE 'onboard:%' OR o.idem_key LIKE 'eventonb:%') AND o.state IN ('queued','sending','unknown')
     AND NOT EXISTS (SELECT 1 FROM outbox AS n WHERE n.after_id = o.id AND n.conversation_id = o.conversation_id AND n.state IN ('queued','sending','unknown'))
     ORDER BY o.id DESC LIMIT 1`).get(conversationId)?.id ?? null;
 }
@@ -4991,6 +4991,26 @@ export function claimOutbound(id) {
   return r.changes === 1 ? getOutbound(id) : null;
 }
 
+// REASON_DELIVERY_GATED (src/outbox.js noteDelivery): what the carrier said AFTER taking a message.
+// `sent` is "the provider accepted it"; delivery_status is its later word (SENT, DELIVERED, ERROR).
+addColumnIfMissing("outbox", "delivery_status", "TEXT");
+addColumnIfMissing("outbox", "delivered_at", "INTEGER");
+
+/** The row the provider is talking about, by the handle it gave back when the message was accepted. */
+export function outboundByMessageId(channel, messageId) {
+  const id = String(messageId ?? "").trim();
+  if (!id) return null;
+  return rowToOut(db.prepare("SELECT * FROM outbox WHERE channel = ? AND message_id = ? ORDER BY id DESC LIMIT 1").get(channel, id));
+}
+
+/** The carrier's later word on a sent row (named with its person, so a wrong handle changes nobody else's row). A delivered one gets its stamp; any word is kept. */
+export function markOutboundDelivery(id, { conversationId, status, delivered = false }) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET delivery_status = ?, delivered_at = CASE WHEN ? THEN ? ELSE delivered_at END, updated_at = ? WHERE id = ? AND conversation_id = ?`)
+    .run(String(status ?? ""), delivered ? 1 : 0, now, now, id, conversationId);
+  return getOutbound(id);
+}
+
 /** It went. */
 export function markOutboundSent(id, { messageId = null } = {}) {
   const now = clock.now();
@@ -5131,6 +5151,16 @@ export function strandedOutbound() {
 export function undeliveredFor(conversationId) {
   return db.prepare(`SELECT * FROM outbox WHERE conversation_id = ? AND state = 'failed' AND told_at IS NULL
     ORDER BY id ASC`).all(conversationId).map(rowToOut);
+}
+
+/**
+ * A person's OWN text that the carrier accepted and later reported undelivered (REASON_DELIVERY_GATED,
+ * src/outbox.js noteDelivery), not yet told. The sweep says it in one line rather than waiting for
+ * their next turn.
+ */
+export function ownUndeliveredUntold() {
+  return db.prepare(`SELECT * FROM outbox WHERE state = 'failed' AND to_owner = 1 AND told_at IS NULL
+    AND last_error_key = 'DELIVERY_ERROR' ORDER BY id ASC`).all().map(rowToOut);
 }
 
 /** Said once. Returns false when somebody else got there first. */
@@ -5550,6 +5580,16 @@ export function callsToNumber(conversationId, { errandId = null, toNumber = "" }
     : "SELECT * FROM calls WHERE conversation_id = ? AND pt(to_number) = ? ORDER BY id ASC";
   const args = errandId ? [conversationId, toNumber, errandId] : [conversationId, toNumber];
   return db.prepare(sql).all(...args).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
+/**
+ * Every call to or from this number since `since`, on anybody's conversation, oldest first. For a place
+ * ringing back (src/calls/inbound.js): the errand it is returning may be any person's, not only the
+ * operator's. Only ever read by number, for a call that number is making now.
+ */
+export function callsWithNumber({ toNumber = "", since = 0 } = {}) {
+  return db.prepare("SELECT * FROM calls WHERE created_at >= ? AND pt(to_number) = ? ORDER BY id ASC")
+    .all(since, toNumber).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
 }
 
 // ---------- quotes ----------
@@ -6672,6 +6712,15 @@ export function rememberSeenUrls(conversationId, urls, { kind = "", from = "" } 
 db.exec("CREATE TABLE IF NOT EXISTS place_photos (key TEXT PRIMARY KEY, url TEXT NOT NULL, shows TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL)");
 export function placePhotoFor(key, since) {
   return db.prepare("SELECT url, shows, at FROM place_photos WHERE key = ? AND at >= ?").get(key, since) ?? null;
+}
+// A place a lookup returned, by its phone number: the zone it is in, so a call to it is timed by its own
+// clock after a restart too (src/zone.js `calleeZone`). Public facts about a business; nobody's rows.
+db.exec("CREATE TABLE IF NOT EXISTS place_zones (phone TEXT PRIMARY KEY, zone TEXT NOT NULL, at INTEGER NOT NULL)");
+export function placeZone(phone) {
+  return db.prepare("SELECT zone FROM place_zones WHERE phone = ?").get(String(phone ?? ""))?.zone ?? "";
+}
+export function rememberPlaceZone(phone, zone, at = clock.now()) {
+  db.prepare("INSERT INTO place_zones (phone, zone, at) VALUES (?, ?, ?) ON CONFLICT(phone) DO UPDATE SET zone = excluded.zone, at = excluded.at").run(String(phone), String(zone), at);
 }
 export function rememberPlacePhoto(key, { url, shows = "", at = clock.now() }) {
   db.prepare("INSERT INTO place_photos (key, url, shows, at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET url = excluded.url, shows = excluded.shows, at = excluded.at").run(key, url, shows ?? "", at);
@@ -12833,6 +12882,10 @@ addColumnIfMissing("events", "rides_enabled", "INTEGER NOT NULL DEFAULT 0");
 // a priced event goes through a Checkout Session and lands from the webhook (eventpay.settlePaid).
 addColumnIfMissing("events", "price_cents", "INTEGER");
 addColumnIfMissing("events", "currency", "TEXT NOT NULL DEFAULT 'usd'");
+// The refund policy on a priced event (src/eventpay.js refundWindow): 'none' | 'until' | 'anytime',
+// null = the default ('until', 48 hours before it starts); `refund_hours` is the N of 'until'.
+addColumnIfMissing("events", "refund_policy", "TEXT");
+addColumnIfMissing("events", "refund_hours", "INTEGER");
 // The link preview card (spec §14, src/eventcover.js). The live cover is an uploaded picture the
 // organizer approved after seeing the card it makes (`cover_file`, under data/event-covers, with who
 // approved it and when); with none, the card is Reason's own drawing of the name. `cover_pending` is
@@ -13215,7 +13268,7 @@ export function allEvents({ limit = 50 } = {}) {
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
   "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled",
   "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask",
-  "remind_day_before", "remind_soon", "price_cents", "currency"]);
+  "remind_day_before", "remind_soon", "price_cents", "currency", "refund_policy", "refund_hours"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);
