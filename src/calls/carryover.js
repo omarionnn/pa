@@ -264,8 +264,46 @@ export const CARRY_VOICE_LINES = [
   "Never ask for something an earlier call or the brief already told you.",
   // Call 85: "Go on." "Sorry —" "I'm with you, keep going." "On it." "I heard you." — eight times over one long thought.
   "When they are thinking out loud — a long stretch, a pause mid-sentence, trailing off on \"um\", \"so\", \"and\" or \"like\" — say NOTHING: no \"go on\", \"I'm with you\", \"I hear you\", \"keep going\", \"sorry\", \"on it\" or \"mm-hm\"."
-    + " A pause in the middle of a thought is not your turn. Wait until they finish — a question to you, \"you know?\", \"does that make sense?\" or a clear stop — then answer the whole of it once.",
+    + " A pause in the middle of a thought is not your turn. Wait until they finish — a question to you, \"you know?\", \"does that make sense?\" or a clear stop — then answer the whole of it once.",  // Call 95: his "What's that?" to a question he hadn't caught was heard as "Well, so" and got "Go on.";
+  // then "No, what did you say?" got "Just... go on, I was listening." — the question was never said again.
+  "If they say \"what's that?\", \"what did you say?\", \"sorry?\", \"huh?\" or \"say that again\" — or something short and unclear right after you asked them a question — they did not catch YOU."
+    + " Say your last real sentence or question again, plainly and a little slower (\"I asked what's pulling you to Soho?\"). Never answer that with \"go on\" or \"I was listening\".",
+  // Call 95, replayed 2026-11-11 on synthesized phone clips through the live voice: a quietly said "Soho"
+  // came back as "the Savoy", "so" or "a piano" and was answered as heard. The voice has no noise,
+  // transcription or turn-taking settings (API reference, read 11-11); what helps is what it is told —
+  // where they are based (`areaNote`), and to check an odd short phrase instead of answering it.
+  "When what you heard is short and doesn't fit what you were just talking about, or a name or place could be a similar-sounding one that fits better, check it in a few words before you answer — \"did you say Soho?\" — rather than answer the odd version.",
 ];
+
+/**
+ * Replaces OWN_CALL_LINES' "never a therapist" line (./gptlive.js). That line named the phrases it bans
+ * in quotes, and the voice said one of them ("What's on your mind?", call 95; 1 in 6 on replay): a
+ * phrase quoted to a voice model is a phrase it has ready. This says the same with none of them in it.
+ */
+export const CARRY_NO_PROBING = "Never sound like a therapist or a coach: don't probe what they're thinking or feeling, and don't dig into their feelings unless they ask you to. After the hellos, the only question you need is a plain \"what's up?\"."
+  + " If they mention a plan, like heading home, answer it the way a friend would — a quick practical question or a light comment.";
+/** Replaces "…answer warmly and ask them back": he had already said how he was, so it reached for another question. */
+export const CARRY_SMALL_TALK = "Small talk is yours: if they ask how you are, answer warmly in a few words and leave it there — ask them back only if they haven't already told you how they are, and after that at most a plain \"what's up?\".";
+
+/**
+ * Where they are based, from their own saved places ("New York, NY"), for the opening brief, or "".
+ * The addresses are already in the brief; said outright, an unclear place name is heard as a local one.
+ */
+export function areaNote(call) {
+  if (!call?.conversation_id || Number(call.is_owner) !== 1 || !carryoverFor(call.conversation_id)) return "";
+  let places = [];
+  try { places = db.listPlaces(call.conversation_id); } catch { return ""; }
+  const seen = new Map();
+  for (const p of places) {
+    const m = /,\s*([A-Za-z][A-Za-z .'-]{1,40}),\s*([A-Z]{2})\b(?:\s+\d{5}(?:-\d{4})?)?(?:,\s*(?:USA|United States|US))?\s*$/.exec(String(p.address ?? "").trim());
+    if (!m) continue;
+    const area = `${m[1].trim()}, ${m[2]}`;
+    seen.set(area, (seen.get(area) ?? 0) + 1);
+  }
+  const top = [...seen].sort((a, b) => b[1] - a[1])[0];
+  if (!top) return "";
+  return `They are based around ${top[0]} (from their saved places). When a place name is unclear, the reading that is a neighbourhood, street or spot around there is the likely one.`;
+}
 
 /** Added to Reason's own call turn. */
 export const CARRY_TURN_LINE = "If EARLIER CALLS shows something you said you'd do that is still not done, say so plainly when it comes up and do it now if you can — don't wait to be reminded.";

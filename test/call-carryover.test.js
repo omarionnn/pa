@@ -569,3 +569,93 @@ test("a second ring: never when they picked up, never for anyone else on 'owner'
   assert.equal(rerings().length + rerings(OTHER).length, 0);
   assert.equal(carry.afterScheduledCall(machine), null);
 });
+
+test("call 95: the first call after a restart still reads the calendar — the read loads the tools itself", async () => {
+  const had = voice.contextDeps.runTool;
+  try {
+    // Nothing has run a turn yet: no tool to read with.
+    voice.contextDeps.runTool = null;
+    let loads = 0, asked = null;
+    const ready = async () => {
+      loads++;
+      voice.contextDeps.runTool = async (name, input, ctx) => { asked = { name, input, ctx }; return { ok: true, content: { events: [{ summary: "Dentist", start: "2026-11-11T16:00:00-05:00" }] } }; };
+    };
+    carry.setCalendarReader((call, input) => voice.readCallCalendar(call, input, { ready }));
+    const now = callAt(WED_NIGHT, { state: "in_progress" });
+    assert.equal((await carry.prepareCarry(now)).ok, true);
+    assert.equal(loads, 1);
+    assert.equal(asked.name, "calendar_events");
+    assert.deepEqual(asked.ctx, { conversationId: C, kind: "user" });
+    assert.match(gl.preCallBrief(now), /- today 4:00 PM: Dentist/);
+    // Loaded already: not loaded again.
+    await voice.readCallCalendar(now, {}, { ready });
+    assert.equal(loads, 1);
+    // The tools cannot be loaded: nothing is said about the calendar, and nothing throws.
+    voice.contextDeps.runTool = null;
+    assert.deepEqual(await voice.readCallCalendar(now, {}, { ready: async () => { throw new Error("no"); } }), { ok: false, error: "no tools" });
+  } finally { voice.contextDeps.runTool = had; }
+});
+
+test("call 95: \"what did you say?\" gets the last real line again, never \"go on\" — on their own call, switch on", () => {
+  const line = carry.CARRY_VOICE_LINES.find(l => /they did not catch YOU/.test(l));
+  assert.ok(line, "the line is there");
+  assert.match(line, /"what's that\?", "what did you say\?"/);
+  assert.match(line, /Say your last real sentence or question again/);
+  assert.match(line, /Never answer that with "go on" or "I was listening"/);
+  const now = callAt(WED_NIGHT, { state: "in_progress" });
+  assert.ok(gl.voiceInstructionsFor(now).includes(line));
+  config.callCarryover = "off";
+  carry.resetCarryover();
+  assert.ok(!gl.voiceInstructionsFor(callAt(WED_NIGHT, { state: "in_progress" })).includes(line));
+});
+
+test("call 95: where they are based is said outright in the brief, from their own saved places — and only theirs, switch on", () => {
+  db.db.exec("DELETE FROM saved_places");
+  db.savePlace(C, { name: "home", address: "120 Orchard St, New York, NY 10002", lat: 40.719, lng: -73.989 });
+  db.savePlace(C, { name: "work", address: "51 Astor Pl, New York, NY 10003, USA", lat: 40.73, lng: -73.991 });
+  db.savePlace(C, { name: "mum", address: "14 Elm Rd, Columbus, OH 43004", lat: 40, lng: -82.9 });
+  db.savePlace(OTHER, { name: "home", address: "9 Sunset Blvd, Los Angeles, CA 90028", lat: 34, lng: -118 });
+  const now = callAt(WED_NIGHT, { state: "in_progress" });
+  const note = carry.areaNote(now);
+  assert.equal(note, "They are based around New York, NY (from their saved places). When a place name is unclear, the reading that is a neighbourhood, street or spot around there is the likely one.");
+  assert.ok(gl.preCallBrief(now).includes(note));
+  assert.ok(gl.voiceInstructionsFor(now).includes(note));
+  // Somebody else's call, a business call, and the switch off: nothing.
+  assert.equal(carry.areaNote(callAt(WED_NIGHT, { conversationId: OTHER, state: "in_progress" })), "");
+  assert.equal(carry.areaNote(callAt(WED_NIGHT, { isOwner: false, state: "in_progress" })), "");
+  config.callCarryover = "off";
+  carry.resetCarryover();
+  const off = callAt(WED_NIGHT, { state: "in_progress" });
+  assert.equal(carry.areaNote(off), "");
+  assert.doesNotMatch(gl.preCallBrief(off), /They are based around/);
+});
+
+test("call 95: no saved place with a city on it says nothing about where they are based", () => {
+  db.db.exec("DELETE FROM saved_places");
+  const now = callAt(WED_NIGHT, { state: "in_progress" });
+  assert.equal(carry.areaNote(now), "");
+  db.savePlace(C, { name: "gym", address: "somewhere near the park", lat: 40.7, lng: -73.9 });
+  assert.equal(carry.areaNote(now), "");
+  assert.doesNotMatch(gl.preCallBrief(now), /They are based around/);
+});
+
+test("call 95: an odd short phrase is checked (\"did you say Soho?\"), and the voice's instructions no longer quote the phrases they ban", () => {
+  const SMALL = "Small talk is yours: if they ask how you are, answer warmly and ask them back.";
+  const now = callAt(WED_NIGHT, { state: "in_progress" });
+  const on = gl.voiceInstructionsFor(now);
+  assert.match(on, /check it in a few words before you answer — "did you say Soho\?" — rather than answer the odd version\./);
+  assert.ok(on.includes(carry.CARRY_NO_PROBING));
+  assert.ok(on.includes(carry.CARRY_SMALL_TALK));
+  assert.doesNotMatch(on, /on your mind|bringing up for you|make you feel/i, "a phrase quoted to the voice is a phrase it has ready");
+  assert.ok(!on.includes(SMALL) && !on.includes(gl.OWN_CALL_LINES[1]));
+  assert.match(carry.CARRY_SMALL_TALK, /at most a plain "what's up\?"/);
+  // Still a friend, not a therapist, and the plan line is kept.
+  assert.match(carry.CARRY_NO_PROBING, /^Never sound like a therapist or a coach/);
+  assert.match(carry.CARRY_NO_PROBING, /answer it the way a friend would/);
+  // Switch off: the lines as they were.
+  config.callCarryover = "off";
+  carry.resetCarryover();
+  const off = gl.voiceInstructionsFor(callAt(WED_NIGHT, { state: "in_progress" }));
+  assert.ok(off.includes(SMALL) && off.includes(gl.OWN_CALL_LINES[1]));
+  assert.doesNotMatch(off, /did you say Soho/);
+});
