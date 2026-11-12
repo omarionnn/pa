@@ -675,6 +675,10 @@ export const config = {
   // mistakes, preferences), kept as guesses with the messages they rest on (src/dream.js
   // noticePatterns): off (default) | owner | on. "on" still needs their own yes to patterns.
   reviewPatterns: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_REVIEW_PATTERNS ?? "").trim().toLowerCase()),
+  // The turn gate (src/calls/turngate.js, Omari 11-12): on their own call a short acknowledgement in a
+  // mid-thought pause and a prompt real answer to a finished thought, told apart by GPT-Live's native
+  // Decisions trigger on their transcript: owner | on | off (unset = off).
+  callTurnGate: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_TURN_GATE ?? "").trim().toLowerCase()),
   // Calls Reason makes to businesses and other people, and places ringing back about them, on GPT-Live
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
   // Unset, those calls are the provider's.
