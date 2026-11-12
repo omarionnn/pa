@@ -235,6 +235,8 @@ db.db.exec(`
   );
 `);
 const q = (sql) => db.db.prepare(sql);
+/** A notice row by id, only if it is THIS person's: an id left on an offer row never reaches anybody else's notice. */
+const noticeOf = (conversationId, id) => { const n = id ? db.noticeById(id) : null; return n && n.conversation_id === conversationId ? n : null; };
 
 const cueById = (conversationId, id) => q("SELECT * FROM cues WHERE conversation_id = ? AND id = ?").get(conversationId, Number(id)) ?? null;
 /** A cue's offers. Takes the cue row, so every read names whose it is. */
@@ -286,6 +288,8 @@ export function setOn({ conversationId, on, said = "", via = "text", now = clock
     for (const o of listOffers(conversationId)) letGo(o, "they turned this off", now);
     deleted = Number(q("DELETE FROM cues WHERE conversation_id = ?").run(conversationId).changes);
     q("DELETE FROM cue_offers WHERE conversation_id = ?").run(conversationId);
+    // The rows on the unprompted path carry their sentence too ("they said: ..."). What was never said goes.
+    q("DELETE FROM notice_seen WHERE conversation_id = ? AND kind = ? AND said_at IS NULL").run(conversationId, NOTICE_KIND);
   }
   return {
     ok: true, cues: on ? "on" : "off", ...(deleted ? { deleted } : {}),
@@ -389,7 +393,7 @@ function endOf(cue, timeZone) {
 function letGo(o, why, now = clock.now()) {
   if (o.timer_id) { try { db.cancelTimer(o.conversation_id, o.timer_id); } catch { /* already fired or gone */ } }
   if (o.notice_id) {
-    const n = db.noticeById(o.notice_id);
+    const n = noticeOf(o.conversation_id, o.notice_id);
     if (n && !n.said_at && !n.resolved_at) db.resolveNotice(o.notice_id, why, now);
   }
 }
@@ -430,7 +434,7 @@ export function sync(conversationId, { now = clock.now() } = {}) {
     if (endOf(cue, timeZone) <= now) { end({ conversationId, cueId: cue.id, why: "its date passed", now, synced: true }); continue; }
     for (const o of offersOf(cue)) {
       if (o.state !== "held" || !o.notice_id) continue;
-      const n = db.noticeById(o.notice_id);
+      const n = noticeOf(conversationId, o.notice_id);
       if (!n) { setOffer(o, { state: "dropped", why: "its row is gone" }, now); continue; }
       if (n.said_at) setOffer(o, { state: "offered", offered_at: n.said_at, line: n.what, unprompted: 1 }, now);
       else if (n.resolved_at || n.dropped_at) setOffer(o, { state: "dropped", why: n.resolved_why || "passed over" }, now);
@@ -780,13 +784,26 @@ export function momentFrame({ conversationId, row }) {
 // ---------- the note on a turn ----------
 
 /**
+ * Cues do not reach this person (the switch went off, or was narrowed to the owner) but an offer of
+ * theirs is still waiting to ride on a reply (notice.heldNote reads held rows without asking this file).
+ * Settle it, so "off" is off on the very next turn. A read first: where nothing was ever held, which is
+ * everybody the switch never reached, nothing is written.
+ */
+export function settleUnreached(conversationId, now = clock.now()) {
+  if (!conversationId || active(conversationId)) return 0;
+  const open = q("SELECT id FROM notice_seen WHERE conversation_id = ? AND kind = ? AND said_at IS NULL AND resolved_at IS NULL").all(conversationId, NOTICE_KIND);
+  for (const n of open) db.resolveNotice(n.id, covers(conversationId) ? "they turned this off" : "cues are switched off", now);
+  return open.length;
+}
+
+/**
  * What a turn THEY started is told: the cues still open and where each offer stands — including what
  * they turned down, so an offer somebody refused is not made again on a turn where the thread no
  * longer carries the no. Empty unless something is open: hearing a new cue is cue_note's own
  * description, and costs nobody a line.
  */
 export function turnNote(conversationId, { now = clock.now() } = {}) {
-  if (!active(conversationId)) return "";
+  if (!active(conversationId)) { settleUnreached(conversationId, now); return ""; }
   sync(conversationId, { now });
   const open = openCues(conversationId);
   if (!open.length) return "";

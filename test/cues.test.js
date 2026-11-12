@@ -500,3 +500,91 @@ test("an export carries their cues and a delete takes all four tables", async ()
   }
   assert.equal(cues.listCues(OTHER).length, 1);
 });
+
+// ---------- 11. review fixes (PR #506) ----------
+
+test("a non-owner under REASON_CUES=owner: no note, no row in any table, no timer, and the tools are refused by name", async () => {
+  process.env.REASON_CUES = "owner";
+  db.upsertAccount?.({ conversationId: OTHER, channel: "sendblue", address: "+15550001111", name: "Dana" });
+  const count = () => ["cues", "cue_offers", "cue_prefs", "cue_mutes", "notice_seen", "timers"].map(t => sql.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n).join(",");
+  const before = count();
+  assert.equal(cues.active(OTHER), false);
+  assert.equal(cues.turnNote(OTHER), "");
+  assert.equal(cues.settleUnreached(OTHER), 0);
+  for (const [name, input] of [
+    ["cue_note", { kind: "trip", what: "the miami trip", said: "i'm flying to miami on the 20th", starts: "2026-11-20" }],
+    ["cue_offer", { cue_id: 1, offer: "stay", line: "want me to find u a place?" }],
+    ["cue_answer", { cue_id: 1, offer: "stay", answer: "yes", said: "yes" }],
+    ["cue_end", { cue_id: 1 }],
+    ["cues_setting", { on: false, said: "stop" }],
+  ]) {
+    const out = await runTool(name, input, { conversationId: OTHER, kind: "user", cueEnv: ALL });
+    assert.equal(out.ok, false, name);
+    assert.equal(out.blocked, "not_available", name);
+  }
+  assert.ok(!toolsFor(OTHER).some(t => t.name.startsWith("cue")));
+  assert.equal(count(), before);
+});
+
+test("one person's cue is never another's: not by id, not in their note, not in their rows", async () => {
+  db.upsertAccount?.({ conversationId: OTHER, channel: "sendblue", address: "+15550001111", name: "Dana" });
+  const mine = trip();
+  assert.equal(cues.turnNote(OTHER), "");
+  assert.equal(cues.listCues(OTHER).length, 0);
+  // Naming the owner's cue id from somebody else's thread finds nothing and changes nothing.
+  for (const [name, input] of [
+    ["cue_offer", { cue_id: mine.cue.cue_id, offer: "stay", line: "want me to find u a place?" }],
+    ["cue_answer", { cue_id: mine.cue.cue_id, offer: "stay", answer: "never", said: "no" }],
+    ["cue_end", { cue_id: mine.cue.cue_id, why: "cancelled" }],
+    ["cue_note", { kind: "trip", what: "x", said: "y", cue_id: mine.cue.cue_id }],
+  ]) {
+    const out = await runTool(name, input, { conversationId: OTHER, kind: "user", cueEnv: ALL });
+    assert.equal(out.ok, false, name);
+    assert.match(out.error, /no cue #/, name);
+  }
+  assert.equal(cues.openCues(C).length, 1);
+  assert.equal(offers(mine.cue.cue_id).ride.state, "held");
+  // The other person turning cues off deletes theirs only.
+  cues.setOn({ conversationId: OTHER, on: false, via: "settings" });
+  assert.equal(cues.openCues(C).length, 1);
+  assert.ok(sql.prepare("SELECT COUNT(*) n FROM notice_seen WHERE conversation_id = ? AND kind = 'cue_offer' AND resolved_at IS NULL").get(C).n > 0);
+});
+
+test("an offer row never settles somebody else's notice, whatever id it carries", () => {
+  db.upsertAccount?.({ conversationId: OTHER, channel: "sendblue", address: "+15550001111", name: "Dana" });
+  const theirs = db.recordNotice(OTHER, { kind: "mail_due", key: "bill:1", what: "a bill is due friday" });
+  const out = trip();
+  // A stale id (the row it named is gone and the id now belongs to somebody else's notice).
+  sql.prepare("UPDATE cue_offers SET notice_id = ? WHERE cue_id = ? AND offer = 'ride'").run(theirs.id, out.cue.cue_id);
+  cues.end({ conversationId: C, cueId: out.cue.cue_id, why: "trip cancelled" });
+  assert.equal(db.noticeById(theirs.id).resolved_at, null);
+});
+
+test("opt-out deletes the unsaid rows on the unprompted path too: their sentence is not kept there", () => {
+  trip();
+  assert.ok(sql.prepare("SELECT COUNT(*) n FROM notice_seen WHERE conversation_id = ? AND kind = 'cue_offer'").get(C).n > 0);
+  cues.setOn({ conversationId: C, on: false, via: "settings" });
+  assert.equal(sql.prepare("SELECT COUNT(*) n FROM notice_seen WHERE conversation_id = ? AND kind = 'cue_offer'").get(C).n, 0);
+  assert.equal(sql.prepare("SELECT COUNT(*) n FROM notice_seen WHERE detail LIKE '%miami%'").get().n, 0);
+});
+
+test("the switch goes off with an offer waiting to ride on a reply: their next turn settles it and nothing rides", () => {
+  const riding = (c) => db.heldNotices(c, { limit: 5 }).filter(n => n.kind === "cue_offer").length;
+  // Heard on a turn that was not theirs (after a call): one offer waits for their next reply.
+  assert.equal(trip({ turnKind: "event", starts: "2026-11-12T20:00", heardOn: "call" }).ok, true);
+  assert.equal(riding(C), 1);
+  process.env.REASON_CUES = "off";
+  assert.equal(cues.turnNote(C), "");
+  assert.equal(riding(C), 0);
+  // Narrowed to the owner: somebody else's waiting offer is settled the same way, the owner's is not.
+  process.env.REASON_CUES = "on";
+  db.upsertAccount?.({ conversationId: OTHER, channel: "sendblue", address: "+15550001111", name: "Dana" });
+  assert.equal(trip({ conversationId: OTHER, turnKind: "event", starts: "2026-11-12T20:00", heardOn: "call" }).ok, true);
+  assert.equal(trip({ turnKind: "event", starts: "2026-11-12T20:00", heardOn: "call", what: "the miami trip again" }).ok, true);
+  assert.equal(riding(OTHER), 1);
+  assert.equal(riding(C), 1);
+  process.env.REASON_CUES = "owner";
+  cues.turnNote(OTHER); cues.turnNote(C);
+  assert.equal(riding(OTHER), 0);
+  assert.equal(riding(C), 1);
+});
