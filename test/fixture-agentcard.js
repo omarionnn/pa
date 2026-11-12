@@ -354,7 +354,7 @@ export async function startAgentCard({
         }
 
         state.asks.push({ ...parsed, conversation_id: conv, token: bearer, user: state.tokenUser.get(bearer) ?? "" });
-        // `turns`: whole recorded answers, one per ask, in order (test/fixtures/agentcard-flights/).
+        // `turns`: whole recorded answers, one per ask, in order.
         // The conversation id is this fake's own so the turns chain; a cart on one is the cart a
         // confirm is checked against.
         if (cfg.turns?.length) {

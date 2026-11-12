@@ -395,8 +395,8 @@ test("the CVC step finishes only on the link Face ID was on, and the day's cap i
   const row = asked("14.83");
   const token = await linkFor(row);
   await faceId(a, token);
-  // A fresh link for the same payment (a resend) can't ride the first link's Face ID.
-  const fresh = await linkFor(shop.paymentRow(row.id));
+  // A fresh link for the same payment (a re-ask; shop_pay keeps an open link) can't ride the first link's Face ID.
+  const fresh = shop.approvalUrl(shop.paymentRow(row.id)).split("/web/approve/")[1];
   cvcDone = true;
   assert.equal(JSON.parse((await page(fresh, "cvc")).body).error, "cvc_window_closed");
   assert.equal(answers().length, 0);

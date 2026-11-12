@@ -662,7 +662,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   if (!conversation) {
     for (const t of GLOBAL_TABLES) rows[t] = Number(db.prepare(`DELETE FROM ${t}`).run().changes);
   } else {
-    // A hash of the last passengers sent to AgentCard for them (src/tools.js flight_book).
+    // A hash of the last passengers sent to AgentCard for them (AgentCard's flight route, removed 2026-11-11; older installs may still hold one).
     db.prepare("DELETE FROM ops_state WHERE k = ?").run(`flight:passengers_sent:${conversation}`);
   }
 

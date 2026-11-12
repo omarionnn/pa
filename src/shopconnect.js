@@ -302,6 +302,9 @@ if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().
 // intent's card rail read when the checkout got it ('ready' / 'unlisted'; '' = paid before 2026-11-08).
 if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "cvc_link")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN cvc_link TEXT NOT NULL DEFAULT ''");
 if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "rail_at_pay")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN rail_at_pay TEXT NOT NULL DEFAULT ''");
+// Who stopped a declined payment (audit 11-11): 'them' (their no) or 'reason' (Reason called it off: a
+// run switch, a ceiling, a corrected address). On 10-30 a self-cancel was told as "declined"; '' = before.
+if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "stopped_by")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN stopped_by TEXT NOT NULL DEFAULT ''");
 function siteRow(key) { return q("SELECT * FROM shop_sites WHERE store = ?").get(key) ?? null; }
 /** What Reason learned about a store it was asked to shop at: its site and the name it was called by. */
 export function noteStore({ store, name = "", url = "" }) {
@@ -769,7 +772,7 @@ export async function cancelAtCrossmint(run) {
 async function endQuietly(run, result) {
   tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
   const open = q("SELECT id FROM shop_payments WHERE run_id = ? AND status = 'asked'").get(run.run_id);
-  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id }); } catch { /* it expires on its own */ } }
+  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id, by: "reason" }); } catch { /* it expires on its own */ } }
   if (runRow(run.run_id)?.status === "running") await cancelAtCrossmint(run);
   const now = clock.now();
   q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, progress_at = ?, result = ? WHERE run_id = ? AND status = 'running'").run(now, now, now, String(result).slice(0, 300), run.run_id);
@@ -1559,13 +1562,13 @@ export async function declineByLink(token) {
   return out;
 }
 
-/** A no (or a change of mind): Crossmint is told to decline, nothing is charged. */
-export async function declinePayment({ conversationId, paymentId }) {
+/** A no (or a change of mind): Crossmint is told to decline, nothing is charged. `by`: whose call it was ('them' or 'reason'). */
+export async function declinePayment({ conversationId, paymentId, by = "them" }) {
   const row = paymentRow(paymentId);
   if (!row || row.conversation_id !== conversationId || row.status !== "asked") return { ok: false, error: "not_open" };
   const part = { type: "input_response", requestId: row.request_id, action: "decline" };
   await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
-  q("UPDATE shop_payments SET status = 'declined', answered_at = ? WHERE id = ?").run(clock.now(), row.id);
+  q("UPDATE shop_payments SET status = 'declined', answered_at = ?, stopped_by = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), by === "reason" ? "reason" : "them", row.id, conversationId);
   return { ok: true };
 }
 
@@ -1793,14 +1796,58 @@ async function postAnswer(run, rq, answers) {
   q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(now, now, now, run.run_id);
   return { ok: true };
 }
-/** A choice answered in words ("NY") becomes the option's value; anything else is left as given. */
-function shapeAnswers(rq, answers) {
+/**
+ * A choice answered in words ("NY", "leave at door", "$2 tip") becomes the option's value; anything else is
+ * left as given. Exported for the tests.
+ */
+export function shapeAnswers(rq, answers) {
   const out = {};
   const fields = new Map((rq.fields ?? []).map((f) => [f.key, f]));
   for (const [k, v] of Object.entries(answers ?? {})) {
     const f = fields.get(k);
-    if (f && f.input?.kind === "choice" && typeof v === "string") { const m = shipping.matchOption(f.input.options, v); out[k] = m === null ? v : m; }
-    else out[k] = v;
+    if (f && f.input?.kind === "choice" && (typeof v === "string" || typeof v === "number")) {
+      const m = shipping.matchOption(f.input.options, String(v)) ?? looseOption(f.input.options, String(v));
+      out[k] = m === null ? v : m;
+    } else out[k] = v;
+  }
+  return out;
+}
+const optLabel = (o) => String(typeof o === "string" ? o : o?.label ?? o?.value ?? "");
+const optValue = (o) => (typeof o === "string" ? o : o?.value);
+const usableOptions = (options) => (Array.isArray(options) ? options : []).filter((o) => o && !o.disabled && !o.placeholder && optValue(o) !== undefined && optValue(o) !== null);
+// Words that carry no choice ("leave IT at MY door", "$2 TIP").
+const FILLER = new Set(["a", "an", "the", "it", "my", "me", "at", "to", "on", "by", "in", "of", "for", "please", "just", "tip", "dollar", "dollars", "bucks"]);
+const wordsOf = (s) => String(s).toLowerCase().replace(/[^a-z0-9%.$]+/g, " ").split(" ").filter((w) => w && !FILLER.has(w));
+const moneyOf = (s) => {
+  if (/%/.test(s)) return null;
+  const m = /(?:^|[^\d.])\$?\s*(\d+(?:\.\d{1,2})?)(?![\d%])/.exec(` ${s}`);
+  return m ? Math.round(Number(m[1]) * 100) : null;
+};
+/**
+ * The one option the words mean when they are not its exact label (Chipotle 11-10: "leave at door" for
+ * "Leave it at my door", "$2 tip" for "$2.00"): the same amount of money, else every word given is in
+ * its label. A tie or no hit is null, and the caller re-asks rather than send what the store refuses.
+ */
+function looseOption(options, v) {
+  const opts = usableOptions(options);
+  const cents = moneyOf(v);
+  if (cents !== null) {
+    const same = opts.filter((o) => moneyOf(optLabel(o)) === cents);
+    if (same.length === 1) return optValue(same[0]);
+  }
+  const want = wordsOf(v).filter((w) => !/^\$?[\d.]+$/.test(w));
+  if (!want.length) return null;
+  const hits = opts.filter((o) => { const have = new Set(wordsOf(optLabel(o))); return want.every((w) => have.has(w)); });
+  return hits.length === 1 ? optValue(hits[0]) : null;
+}
+/** The choice fields whose answer is none of the store's options: { key: [labels] }, empty when all match. */
+function unmatchedChoices(rq, answers) {
+  const out = {};
+  for (const f of rq.fields ?? []) {
+    if (f?.input?.kind !== "choice" || !(f.key in (answers ?? {}))) continue;
+    const opts = usableOptions(f.input.options);
+    if (!opts.length || typeof answers[f.key] === "object") continue;
+    if (!opts.some((o) => String(optValue(o)) === String(answers[f.key]))) out[f.key] = opts.map(optLabel);
   }
   return out;
 }
@@ -2128,12 +2175,12 @@ export async function step(runId) {
       const row = recordPayment({ conversationId: run.conversation_id, runId, request: rq, item: run.item });
       if (row && told.has("superseded")) {
         // Started over with a corrected address: this one's payment is declined, quietly. Nothing charged.
-        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
+        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id, by: "reason" });
         q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, result = 'superseded' WHERE run_id = ?").run(now, now, runId);
         return { done: true, status: "cancelled", said };
       } else if (row && row.amount_kind !== "exact") {
         // A ceiling, not a total: nothing to say yes to. Declined, so nothing is charged.
-        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
+        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id, by: "reason" });
         setStage(runId, "in_progress");
         await say(`${row.merchant_name || storeName(run.store) || "The store"} only gave me a ceiling (${amountText(row)}), not the real total, so I stopped before paying. Nothing was charged.`);
       } else if (row && it.method === "card") {
@@ -2378,6 +2425,14 @@ export async function answerRun(runId, { conversationId, answers }) {
   // What the model gives wins; what it leaves out comes from the record (2026-10-31); a choice in words
   // becomes the option's value (Ulta's state dropdown refused "NY" twice on 12:17).
   const given = shapeAnswers(rq, answers ?? {});
+  // A choice that is none of the store's options is refused by Crossmint ("Answer does not match the
+  // requested form"); Chipotle refused ~7 of them on 11-10 and the order restarted. Re-ask instead.
+  const unmatched = unmatchedChoices(rq, given);
+  if (Object.keys(unmatched).length) {
+    const lines = Object.entries(unmatched).map(([k, labels]) => `${fieldWords((rq.fields ?? []).find((f) => f.key === k)) || k}: ${labels.join(" / ")}`);
+    return { ok: false, error: "no_matching_option", options: unmatched,
+      say: `Nothing was sent: that answer is not one of the store's options. Ask them to pick one (${lines.join("; ")}), then shop_answer with that option's exact wording.` };
+  }
   // The record's answer to this very request was refused: not merged in again; the model gives it all.
   const fromRecord = toldOf(run).has(`refused:${rq.requestId}`) ? {} : autoFill(run, rq).answers;
   const merged = { ...fromRecord, ...given };
@@ -2416,7 +2471,7 @@ async function correctAndRestart(run, rq, answers) {
   tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
   // A payment this run is asking for goes with the old address: declined, nothing charged.
   const open = q("SELECT id FROM shop_payments WHERE run_id = ? AND status = 'asked'").get(run.run_id);
-  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id }); } catch { /* it expires on its own */ } }
+  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id, by: "reason" }); } catch { /* it expires on its own */ } }
   // The instruction carries the address as it was (startCheckout wrote the old record into it): the old one
   // — the one with the record's previous ZIP — is replaced whole, so a corrected ZIP is not read as a gift.
   let what = String(ask.what ?? "").replace(/\s+/g, " ").trim();
@@ -2465,7 +2520,7 @@ export function stageLine(run) {
     case "approved": return `paying ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} now`;
     case "paid": return `paid ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} ${ago(run.paid_at)}; ${store} still has to place it`;
     case "placed": return `placed ${ago(run.stage_at)}${run.order_ref ? `, order ${run.order_ref}` : ""}${pay ? `, ${amountText(pay)} paid` : ""}`;
-    case "cancelled": return `cancelled ${ago(run.stage_at)}; nothing charged`;
+    case "cancelled": return stoppedByReason(run) ? `cancelled ${ago(run.stage_at)}: I called it off myself, the store and the card had no part in it; nothing charged` : `cancelled ${ago(run.stage_at)}; nothing charged`;
     case "failed": {
       const expired = /input_expired|expired while waiting/i.test(run.result);
       const why = expired ? ` (${store} was waiting for ${askedFor(run)} and it expired after 10 minutes)` : result;
@@ -2489,6 +2544,17 @@ function approvalHint(run) {
   if (open) return { approval: `their Face ID link from the payment text still works for ${minutes(open.expires_at - clock.now())} more minutes; nothing is paid until they approve there. If they say they have no link, call shop_pay with payment_id ${pay.id} for a fresh one.` };
   return { approve_url: approvalUrl(pay), approval: "their earlier Face ID link was used up without paying or ran out. Send this fresh url ON ITS OWN LINE as the last thing, untouched; it works once, until the half hour from the first ask is up. Don't say it's paid." };
 }
+/** Reason called off this run's payment itself (never a decline, in anything said about it). */
+export const stoppedByReason = (run) => payOf(run)?.stopped_by === "reason";
+/** Whether money went out for a run, from its payment row: the line a status answer must agree with. */
+export function chargedOf(run) {
+  const pay = payOf(run);
+  if (!pay) return "no";
+  if (pay.status === "paid") return `yes: ${amountText(pay)} at ${pay.merchant_name || storeOf(run)}`;
+  if (pay.status === "unknown") return `unknown: a payment of ${amountText(pay)} went out and the outcome isn't confirmed`;
+  if (pay.status === "paying") return `being paid now: ${amountText(pay)}`;
+  return "no";
+}
 /** shop_status: the record the model answers from. */
 export function statusView(conversationId) {
   const runs = runsOf(conversationId).map((run) => ({
@@ -2498,6 +2564,10 @@ export function statusView(conversationId) {
     // called the figure unverified).
     ...(run.question ? { last_question: run.question } : {}),
     ...(run.order_ref ? { order_ref: run.order_ref } : {}),
+    charged: chargedOf(run),
+    ...(stoppedByReason(run) ? { stopped_by: "reason" } : {}),
+    // The store's own words on a placed order: the delivery estimate is in them (11-09: "no date yet" when there was one).
+    ...(run.stage === "placed" && run.result ? { result: run.result } : {}),
     ...(run.stage === "needs_approval" ? approvalHint(run) : {}),
   }));
   // Today's money, the real figures (src/spendcap.js): spent, their daily limit, what is left.
