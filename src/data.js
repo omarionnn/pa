@@ -272,6 +272,7 @@ export const KEPT_ON_DELETE = {
   // what was charged and refunded; the organizer's Stripe account id is what refunds their guests.
   event_payments: "a ticket payment is shared with the event's organizer and is what a refund reads; deleting it would strand money",
   event_payout_accounts: "the organizer's Stripe account id; deleting it would leave their paid guests unrefundable",
+  event_seats: "one row per ticket on a payment (the buyer's and each friend's): what a per-ticket refund reads and who paid for whose spot; deleting it would strand money",
 };
 
 /**
@@ -320,7 +321,7 @@ export const INSTALL_WIDE = {
 const SECRET_COLUMNS = {
   oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
   shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], connect_after_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
-  pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
+  pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], event_seats: ["claim_token"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
 };
 // What a redacted column says instead, when it is not a credential.
 const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger details stay sealed on this machine; ask Reason for flight_travelers to read them]" };
@@ -627,6 +628,12 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   // read as "not sent yet" and text guests a second time (src/eventschedule.js).
   if (conversation && present("events")) {
     try { db.prepare("UPDATE events SET remind_day_before = 0, remind_soon = 0 WHERE organizer_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
+  }
+
+  // A ticket somebody else bought stays (KEPT_ON_DELETE: money), but the one text Reason owed this
+  // person about it is dropped and the row no longer points at them (src/eventpay.js oweSeatInvite).
+  if (conversation && present("event_seats")) {
+    try { db.prepare("UPDATE event_seats SET invite_conversation_id = NULL, invite_state = CASE WHEN invite_state = 'owed' THEN 'dropped' ELSE invite_state END WHERE invite_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
   }
 
   const rows = {};

@@ -70,7 +70,7 @@ import * as verifications from "./verifications.js";
 import { deliveryGatedOn } from "./trustflags.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal, ticketRefundTarget, ticketRefundRefusal } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal, ticketRefundTarget, ticketRefundRefusal, seatsNeedYes, seatsTarget, seatsRefusal } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -376,6 +376,9 @@ export const CONDITIONALLY_GATED = new Set([
   // Adding or rewording a question every guest is asked when they join (src/eventquestions.js):
   // the organizer's yes to exactly those words. Listing the answers, or removing one, asks nothing.
   "event_questions",
+  // A buyer's tickets for friends (src/eventpay.js): giving one back is money, texting one to a
+  // friend's number is words in front of somebody else. Listing them, or a new link, asks nothing.
+  "event_seats",
 ]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
@@ -623,6 +626,7 @@ function needsConfirmation(name, input, conversationId) {
   if (name === "drive_share") return !!String(input.with_email ?? "").trim();
   if (name === "event_settings") return settingsNeedYes(conversationId, input);
   if (name === "event_questions") return questionsNeedYes(conversationId, input);
+  if (name === "event_seats") return seatsNeedYes(input);
   return false;
 }
 
@@ -9280,6 +9284,7 @@ function confirmTargetFor(name, input, c = null) {
     case "event_questions": return questionsTarget(c, input);
     case "event_refund": return refundTarget(c, input);
     case "event_ticket_refund": return ticketRefundTarget(c, input);
+    case "event_seats": return seatsTarget(c, input);
     case "github_issue_create": return github.issueTarget(input);
     case "github_issue_comment": return github.commentTarget(input);
     default: return null;
@@ -9611,6 +9616,12 @@ async function runToolInner(name, rawInput, ctx) {
   if (name === "event_ticket_refund") {
     if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
     const refusal = ticketRefundRefusal(c, input);
+    if (refusal) return refusal;
+  }
+  // And a buyer's ticket for a friend: not theirs, already claimed, or the policy says no now — before any yes.
+  if (name === "event_seats") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = seatsRefusal(c, input);
     if (refusal) return refusal;
   }
   // And for a refund: somebody else's event, or a guest who never paid, is refused before any yes.
@@ -12140,7 +12151,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel": case "browsers_sign_out":
     case "event_ride": case "event_rides_setting": case "event_cover": case "event_detail_public":
     case "event_schedule": case "event_scheduled":
-    case "event_price": case "event_payouts": case "event_refund": case "event_ticket_refund":
+    case "event_price": case "event_payouts": case "event_refund": case "event_ticket_refund": case "event_seats":
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- an event's photo album (src/albumtools.js) ----------

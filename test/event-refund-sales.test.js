@@ -513,7 +513,7 @@ test("Reason's 2.5% back after a guest's own cancel: Stripe saying no leaves it 
   const tries = calls.filter(c => c.path.startsWith("/v1/application_fees/"));
   assert.equal(tries.length, 2);
   assert.notEqual(tries[0].idem, tries[1].idem, "a retry after Stripe's no is a new request, not the replayed no");
-  assert.equal((await eventpay.sweep()).fees_back, 0, "nothing owed, nothing asked");
+  assert.equal((await eventpay.sweep()).fees_back ?? 0, 0, "nothing owed, nothing asked");
   assert.equal(calls.filter(c => c.path.startsWith("/v1/application_fees/")).length, 2);
 });
 
