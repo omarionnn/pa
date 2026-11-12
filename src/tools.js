@@ -89,6 +89,7 @@ import * as rhythms from "./rhythms.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
 import * as goals from "./goals.js";
+import { CUE_TOOL_DEFS, CUE_SCHEMAS, CUE_TOOLS, cueToolVisible, runCueTool } from "./cues.js";
 import * as memory from "./memory.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
@@ -418,6 +419,7 @@ export function toolsFor(conversationId) {
     && foodToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
+    && cueToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
     .map(t => (t.name === "signin_link" && !social.socialAllowedFor(conversationId) ? plainSigninLink(t) : t))
@@ -4483,6 +4485,8 @@ export const tools = [
   ...SHOP_TOOL_DEFS,
   ...FOOD_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
+  // Thinking a step ahead when a trip, a move, a birthday comes up (src/cues.js), behind REASON_CUES.
+  ...CUE_TOOL_DEFS,
   {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
@@ -7081,6 +7085,7 @@ const S = {
   ...SHOP_SCHEMAS,
   ...FOOD_SCHEMAS,
   ...TODO_SCHEMAS,
+  ...CUE_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
   invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
@@ -9377,7 +9382,7 @@ async function socialWallFor(c, entry, provider, ctx) {
  * not sources, or a figure the model typed could vouch for itself.
  */
 const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track"]);
-const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc|todo)/;
+const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc|todo|cue)/;
 /** Tools that put words in front of somebody: held while a text of theirs is waiting to be read. */
 const SPEAKS = new Set(["message_send", "voice_note_send", "voice_note_say"]);
 
@@ -9579,6 +9584,10 @@ async function runToolInner(name, rawInput, ctx) {
   // The to-do list while REASON_TODO does not reach this conversation: refused before the gate, so
   // nobody is ever asked to approve a plan that cannot exist here.
   if (TODO_TOOLS.has(name) && !todoToolVisible(name, c)) {
+    return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
+  }
+  // Cues while REASON_CUES does not reach this conversation, or they turned them off (src/cues.js).
+  if (CUE_TOOLS.has(name) && !cueToolVisible(name, c)) {
     return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
   }
   // Reason's own plan tools where the paywall does not reach this person: nothing to show or cancel.
@@ -12187,6 +12196,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- walking directions (src/directionstools.js) ----------
     case "directions":
       return await runDirectionsTool(name, input, { ...ctx, conversationId: c });
+
+    // ---------- cues: one offer when something comes up (src/cues.js) ----------
+    case "cue_note": case "cue_offer": case "cue_answer": case "cue_end": case "cues_setting":
+      return await runCueTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- to-do lists (src/todo.js) ----------
     case "todo_plan": case "todo_approve": case "todo_item_update": case "todo_list_get":

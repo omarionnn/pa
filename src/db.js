@@ -2235,7 +2235,7 @@ export function setItemBlurb(kind, conversationId, id, blurb) {
 }
 export function listTimers(conversationId) {
   // Not the onboarding's nudge (src/onboarding.js): that one is code's, not a reminder of theirs.
-  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after') ORDER BY fire_at").all(conversationId);
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after', 'cue:offer') ORDER BY fire_at").all(conversationId);
 }
 export function cancelTimer(conversationId, id) {
   const t = getTimer(conversationId, id);

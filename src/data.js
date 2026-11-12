@@ -157,6 +157,11 @@ const TABLES = [
   // morning to somebody who wiped it, off criteria they thought they had deleted. The firings are
   // `series` and `timers` rows, above.
   "goals", "goal_matches",
+  // Something they said is coming up (a trip, a move, a birthday), in their own sentence, the offers
+  // held for it, their own on/off answer and the offers they never want (src/cues.js). Where somebody
+  // will be and when is theirs; a delete that left these behind would leave Reason still offering a
+  // ride to a flight belonging to somebody who wiped it.
+  "cues", "cue_offers", "cue_prefs", "cue_mutes",
   // The flights they are on, with the confirmation code, the passenger name, the seat and the
   // boarding pass. Among the most personal rows in here — where somebody will be, and when — so an
   // export without it would not be a copy of their data, and a delete that left it behind would
