@@ -80,7 +80,7 @@ export function privacyPage() {
   return renderNotice({
     title: "Privacy",
     kicker: "What Reason keeps, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-11-11`,
+    meta: `Reason at ${where()} · last changed 2026-11-12`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
@@ -177,7 +177,7 @@ export function termsPage() {
   return renderNotice({
     title: "Terms",
     kicker: "What Reason is, what it promises, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-11-11`,
+    meta: `Reason at ${where()} · last changed 2026-11-12`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("terms")].filter(Boolean).join("\n")}`,
     links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Stripe Connected Account Agreement", href: "https://stripe.com/legal/connect-account" }, { label: "Home", href: "/" }],
@@ -215,7 +215,7 @@ export function termsPage() {
           "Saafi Interactions Lab, through Reason, collects ticket payments on the organizer's behalf and pays them out to the organizer through Stripe.",
           "Reason's service fee is 2.5% of the ticket price, taken from what the organizer receives. Guests pay a processing fee on top of the ticket price, shown at checkout before they pay.",
           "Refunds follow the organizer's refund policy, shown at checkout: no refunds, refunds until a set time before the event, or refunds at any time.",
-          "A guest who cancels their own ticket under that policy, or gives back a ticket a friend bought them, gets the ticket price back. The processing fee paid at checkout is not refundable; Reason's fee on that ticket is refunded.",
+          "A guest who cancels their own ticket under that policy gets the ticket price back. A guest can buy tickets for friends in the same payment: when a friend gives back a ticket that was bought for them, or the buyer gives back one nobody has claimed, the ticket price goes back to the card that paid for it. In each case the processing fee paid at checkout is not refundable; Reason's fee on that ticket is refunded.",
           "An organizer can always refund a guest, and that refund is in full, processing fee included. If an event is cancelled, every guest is refunded in full, processing fee and Reason's fee included.",
           "If a guest disputes a payment or their bank reverses it, Reason may recover that amount from the organizer's payouts.",
           "Organizers are responsible for their event, for any taxes on what they sell, and for following the law. Where the law requires it, Stripe may send an organizer a tax form such as a 1099-K.",
