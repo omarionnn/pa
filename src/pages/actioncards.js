@@ -22,7 +22,7 @@ import { config } from "../config.js";
 import * as cards from "../actioncards.js";
 import { settleHandled } from "../actionengine.js";
 import { zoneFor } from "../zone.js";
-import { PAPER, PAPER_GRAIN, BRAND_PEN } from "./brand.js";
+import { PAPER, PAPER_GRAIN, PAPER_GLOW, BRAND_PEN } from "./brand.js";
 import { art } from "./actionart.js";
 import { webPage, BUBBLE_PATH } from "./webkit.js";
 import { PAPER_CSS, header, frame, headline, lede, label, para } from "./paperkit.js";
@@ -104,8 +104,9 @@ const CSS = `${FONTS}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;min-height:100vh;color:${INK};font-family:"Reason Sans",Inter,-apple-system,system-ui,sans-serif;
-  background:${PAPER_GRAIN},radial-gradient(520px 360px at 0% 0%, rgba(246,206,160,.42), transparent 65%),${BG};
+  background:${PAPER_GRAIN},${PAPER_GLOW},${BG};
   -webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+@media (prefers-contrast:more){body{background:${PAPER_GRAIN},${BG}}}
 .note{padding:max(26px,env(safe-area-inset-top)) 26px 60px;max-width:600px;margin:0 auto}
 @media (min-width:700px){.note{padding-top:64px}}
 .eb{font-family:"Courier New",Courier,monospace;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:${DIM};margin:0}

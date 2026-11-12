@@ -10803,13 +10803,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "meal_query": {
       const period = input.period ?? "today";
       const now = clock.now();
-      const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+      // Their day, not the machine's: live runs in UTC, where midnight is 7pm in New York, so an evening
+      // "today" had lost lunch and a morning one still held last night's dinner (2026-11-11).
+      const tz = zone.zoneFor(c);
+      const midnight = (ms) => zone.wallToInstant(`${zone.isoIn(ms, tz).slice(0, 10)}T00:00:00`, tz);
+      const today = midnight(now);
+      // Noon that many days back, then that day's own midnight: right across a clock change too.
+      const daysBack = (n) => midnight(today + 12 * 3_600_000 - n * 86_400_000);
       let sinceMs;
-      if (period === "today") sinceMs = dayStart.getTime();
-      else if (period === "yesterday") sinceMs = dayStart.getTime() - 86_400_000;
-      else if (period === "week") sinceMs = dayStart.getTime() - 7 * 86_400_000;
+      if (period === "today") sinceMs = today;
+      else if (period === "yesterday") sinceMs = daysBack(1);
+      else if (period === "week") sinceMs = daysBack(7);
       else sinceMs = 0;
-      const cutoff = period === "yesterday" ? dayStart.getTime() : undefined;
+      const cutoff = period === "yesterday" ? today : undefined;
       let entries = db.mealEntriesSince(c, sinceMs);
       if (cutoff) entries = entries.filter(e => e.created_at < cutoff);
       const totals = nutrition.sumMeals(entries);
@@ -11663,7 +11669,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
       // skipped: "I didn't ring them because of the hour" is a useful sentence; a call that silently
       // did not happen is the false-progress failure.
-      const hours = withinCallingHours({ toOwner });
+      // The hour is the callee's (the place's zone from a lookup, else the number's area code), else the
+      // account holder's — never the server's.
+      const callee = toOwner ? null : zone.calleeZone(to, c);
+      const hours = withinCallingHours({ toOwner, ...(callee ? { tz: callee.zones ?? callee.zone, whose: callee.source } : {}) });
       if (!hours.ok) return { ok: false, status: "quiet_hours", error: hours.error };
 
       // Did this already happen? The owner's rule — never book twice, never leave two voicemails — and
@@ -11860,7 +11869,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");
-      try { plan.noteCall(c); } catch { /* the call is placed either way */ }
+      // The call that is on Reason (a yes to the event onboarding's surprise-call offer) is spent here
+      // and is not one of the month's free calls.
+      try { if (!plan.useGiftCall(c)) plan.noteCall(c); } catch { /* the call is placed either way */ }
       return {
         ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
@@ -18577,6 +18588,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         cuisine: input.cuisine, name: input.name, radius: input.radius,
       });
       if (!out.ok) return out;
+      // A place's number is timed by the place's own clock if it is rung later (zone.calleeZone).
+      for (const r of out.results ?? []) if (r?.phone) try { zone.notePlace(r); } catch { /* the area code still answers */ }
       return markOutside(out, {
         source: "OpenStreetMap nearby-places results",
         text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),

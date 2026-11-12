@@ -178,3 +178,21 @@ each Reason onboarding line ("how was X?", the call offer) is uncounted and skip
 Prove: `node --test test/event-paywall.test.js` (8). Live read-only: `grep REASON_EVENT_PAYWALL_TS .env`;
 `SELECT conversation_id, created_at FROM accounts WHERE joined_via_event IS NOT NULL AND invited_by IS NULL
 AND created_at >= <ts>` = the people now on the free tier through an event.
+
+### Two follow-ups (owner 2026-11-11, same day)
+
+1. **Event business is free.** A guest over the month's 20 who texts about the event itself ("can't make it",
+   an RSVP change, leaving, muting, an answer to the host's question, a reply to the host's message) gets a
+   normal turn: not counted, never the pay line. Only a real ask of Reason counts. `src/eventbusiness.js`
+   `free()` is asked by the router before the count, and only when it can matter (`plan.overNext` + a guest at
+   an event that started under 3 days ago; a host is not a guest). It is a side read by meaning (haiku,
+   12 s, `REASON_EVENT_BUSINESS_TIMEOUT_MS`); with no read, only a text inside a day of the event's own last
+   message to them passes. In that turn `plan.waive` lets a guest's event tools (`eventbusiness.GUEST_TOOLS`)
+   past the lapsed gate; everything else that acts is still refused. Log: `{event_business, free, how}`.
+2. **The surprise call is on Reason.** Anything but a plain no to the call offer sets one call aside
+   (`plan.giftCall`, 2 days like the offer). `call_place` goes ahead with the 2 calls used and with the
+   conversations over, and spends it (`plan.useGiftCall`) instead of `plan.noteCall`, so the month's 2 are
+   untouched. A guest over the ceiling gets up to 3 uncounted texts to say who and what for
+   (`eventonb.claimCallSetup`). The 5-minute cap on a free-tier call still applies.
+
+Prove: `node --test test/event-paywall-tweaks.test.js` (14).
