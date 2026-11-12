@@ -653,7 +653,7 @@ test("the Tickets section: set up payouts (303 to Stripe), the price behind a co
   await completed(h, row);
   await settle();
   const paidPage = await req(h, ev, { cookie: COOKIE.owner });
-  assert.match(paidPage.body, /WHO PAID/);
+  assert.match(paidPage.body, /WHO HAS A TICKET/);
   assert.match(paidPage.body, /paid \$26\.06/);
   assert.match(paidPage.body, /GROSS<\/span><span>\$25</);
   assert.match(paidPage.body, /COMING TO YOU<\/span><span><b>\$24\.37</);

@@ -25,6 +25,7 @@ import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
 import { promisedNote, brokeNote, carryoverFor, missedScheduled } from "./carryover.js";
+import * as cues from "../cues.js";
 
 /**
  * At boot: the calls a restart cut off between the thread and the owner's turn, finished once.
@@ -363,6 +364,9 @@ export function ownerEvent({ row, live = null }) {
       ? `\nIf on the call they said yes to something you offered to do later (a check before they leave, a reminder) and it is`
         + ` not set up yet, set it up now with your tools and say so in one line; if you can't, say that instead.`
       : "")
+    // Something coming up that they mentioned on the call (src/cues.js). Noted here because nothing on the
+    // call itself can; it is written down and never texted about: one offer waits for their next reply.
+    + (cues.active(row.conversation_id) ? `\n${cues.AFTER_CALL_LINE}` : "")
     // What the call's own read says Reason said it would do (./carryover.js; call 85's checklist was never made).
     + promisedNote(row)
     + brokeNote(row)

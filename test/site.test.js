@@ -392,3 +392,22 @@ test("no user-facing pa copy says the website lists no price or that Reason is f
   assert.doesNotMatch(all, /does(?:n't| not) list (?:a price|one)|no price|free for now/i);
   assert.match(all, /heyreason\.com\/pricing/);
 });
+
+test("/terms has the Paid events section and /privacy the Stripe line: who processes, the fee, what each kind of refund gives back and to which card", async () => {
+  const terms = await get("/terms");
+  assert.equal(terms.status, 200);
+  const t = terms.body.replace(/&#39;/g, "'");
+  assert.match(t, /Paid events/);
+  assert.match(t, /Payments are processed by Stripe/);
+  assert.match(t, /stripe\.com\/legal\/connect-account/);
+  assert.match(t, /service fee is 2\.5% of the ticket price/);
+  assert.match(t, /processing fee paid at checkout is not refundable/);
+  // A ticket bought for a friend goes back to the card that paid, whoever gives it back.
+  assert.match(t, /friend gives back a ticket that was bought for them, or the buyer gives back one nobody has claimed, the ticket price goes back to the card that paid for it/);
+  assert.match(t, /If an event is cancelled, every guest is refunded in full/);
+  assert.ok(t.indexOf("Paid events") > t.indexOf("What it does not promise") && t.indexOf("Paid events") < t.indexOf("Your data, and leaving"), "between the two sections it sits between");
+  const privacy = await get("/privacy");
+  const p = privacy.body.replace(/&#39;/g, "'");
+  assert.match(p, /Stripe processes ticket payments/);
+  assert.match(p, /go to Stripe and never to Reason/);
+});

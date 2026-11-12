@@ -52,6 +52,7 @@ import * as actioncards from "../actioncards.js";
 import * as connectafter from "../connectafter.js";
 import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
+import * as signinEmail from "../signinemail.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -68,6 +69,18 @@ const EVENT_CLAIM_LINES = {
   removed: "the organizer took you off that event, so you can't rejoin it.",
   organizer: "you're organizing that one — nothing to join.",
   not_found: "that event code didn't work. open the event link again to get a fresh one.",
+  already: "you're already on that event, so the ticket stays for somebody else — let the friend who sent it know.",
+};
+/** A friend's ticket that couldn't be claimed after the code text (src/eventpay.js claimSeat): what they're told. */
+const SEAT_CLAIM_LINES = {
+  not_found: "that ticket link doesn't work any more — it may have been refunded. ask the friend who sent it.",
+  used: "that ticket has already been claimed. each link works once — ask the friend who sent it for another.",
+  changed: "the friend who bought that ticket changed its link, so that one doesn't work any more. ask them for the new one.",
+  already: "you're already on that event, so the ticket stays for somebody else — let the friend who sent it know.",
+  removed: "the organizer took you off that event, so that ticket can't be used by you.",
+  paused: "joining that event is paused right now. the same ticket link works again later.",
+  cancelled: "that event was cancelled by its organizer.",
+  organizer: "you're organizing that one — nothing to claim.",
 };
 /** The card line a new guest gets, after the welcome. */
 export const EVENT_CARD_LINE = "save me as Reason so you can find me for event updates — and anything else you need.";
@@ -275,6 +288,18 @@ export class Router {
     // (#offerCardIfNamed, below the turn); the master's yes sends it after "you're in"; the startup
     // pass reaches accounts from before the card existed. Somebody in the first-chat onboarding gets
     // the card from it, after their name, with its own line.
+    // A sign-in waiting on the code they were asked for (src/signinemail.js, no Gmail connected): the
+    // code goes straight to the site HERE, at intake, and everything after — the dedupe row, the held
+    // queue, a mid-turn read, the history, the memory pass and the turn — sees a placeholder instead,
+    // so it is never written down anywhere Reason keeps words (cold review, 2026-11-11).
+    if (typeof inbound.text === "string") {
+      const handed = signinEmail.takeCodeReply(conversationId, inbound.text);
+      if (handed) {
+        inbound.text = handed;
+        if (typeof inbound.said === "string") inbound.said = handed;
+        this.log({ inbound: inbound.externalId, signin_email: "code_reply_taken" });
+      }
+    }
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
     // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
@@ -1153,14 +1178,29 @@ export class Router {
     // the payment link — their words first, the link as its own message. They are in once Stripe says
     // so (eventpay.settlePaid sends the welcome then); nothing else is said now.
     if (out.pending_payment) {
-      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", answers: out.answers ?? null, log: this.log });
+      const tickets = Number(out.tickets ?? 1) || 1;
+      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", answers: out.answers ?? null, quantity: tickets, log: this.log });
       if (pay.ok) eventonb.onPendingPay({ conversationId: conv, address, ev: out.event, newAccount: out.newAccount });
-      const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote), pay.url]
-        : [{ full: "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one." }[pay.reason]
+      const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote, tickets), pay.url]
+        : [{ full: pay.left ? `that event only has ${pay.left} spot${pay.left === 1 ? "" : "s"} left, not ${tickets}. nothing was charged — open the event link again and pick ${pay.left === 1 ? "1 ticket" : `up to ${pay.left}`}.` : "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one.", too_many: `that event takes up to ${pay.max} tickets per person. nothing was charged — open the event link again and pick fewer.` }[pay.reason]
           ?? "i couldn't start the payment for that event just now. nothing was charged — open the event link again in a minute to try again."];
       for (const text of lines) await this.send({ channel: inbound.channel, to: address, text, chatId, conversationId: conv, toOwner: true }).catch(() => {});
       this.#eventHistory(conv, inbound, [pay.ok ? `[sent them the payment link for the event "${out.event.name.slice(0, 80)}"; they're not in until the payment goes through]` : lines[0]]);
       return { ok: true, conversationId: conv, event: "payment_required", newAccount: out.newAccount, replied: true, paid_link: pay.ok };
+    }
+    // A friend's ticket (src/eventpay.js): the code text proved the phone; now the seat itself, under its own checks.
+    if (out.seat_claim) {
+      const got = eventpay.claimSeat({ ev: out.event, seatId: out.seat_id, version: out.seat_version, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "seat", answers: out.answers ?? null });
+      this.log({ inbound: inbound.externalId, event_seat_claim: out.event.id, ok: got.ok, why: got.ok ? null : got.reason });
+      if (!got.ok) {
+        const line = SEAT_CLAIM_LINES[got.reason] ?? SEAT_CLAIM_LINES.used;
+        await this.send({ channel: inbound.channel, to: address, text: line, chatId, conversationId: conv, toOwner: true }).catch(() => {});
+        this.#eventHistory(conv, inbound, [line]);
+        return { ok: true, conversationId: conv, event: `seat_${got.reason}`, newAccount: out.newAccount, replied: true };
+      }
+      out.attendee = got.attendee;
+      out.already = false;
+      eventpay.tellBuyerClaimed({ runtime: this.runtime, log: this.log }, out.event, got.seat, got.attendee);
     }
     if (!out.already) {
       // A handle typed on the page is kept for their next events; somebody who already had Reason

@@ -477,6 +477,56 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   Stripe + receipt; sales by text with the payout asked on the connected account; tightening spares Yaw's ticket; no
   ticket → no guest refund). **Not provable offline:** a real Stripe custom_text render, real balance/payouts on a live
   connected account, a real refund.
+- **Buy for friends (2026-11-11, PR event-buy-friends, same flag `REASON_PAID_EVENTS` / early access `paidEvents`, tool
+  `event_seats`, table `event_seats` (KEPT_ON_DELETE, `claim_token` a secret column), columns `events.ticket_max`,
+  `event_payments.quantity` + `refunded_cents`, `event_claims.tickets` + `seat_id` + `seat_version`)** — a buyer gets up to
+  `ticketMax(ev)` tickets (default 4, organizer 1–10; 1 = off; `event_price max_tickets`, the manage page's TICKETS PER
+  PERSON select) in ONE Checkout: quantity N on both lines, `application_fee_amount` N × one ticket's; every amount column
+  on `event_payments` stays PER TICKET (Stripe's amount_total ÷ N at settle). Join page "HOW MANY TICKETS?" select (v1 + v2,
+  only priced + max > 1, options "N — me + K friends ($total)"); text `event_join tickets`; the page claim carries
+  `tickets` to the finishing text. Hold = N places (`openHolds` sums quantity); asked again for another N the old page is
+  expired. **Seats:** `settlePaid` checks joined + unclaimed + N ≤ cap (else the whole charge back, "didn't have room for
+  all your tickets"), then seat 0 claimed by the buyer + seats 1..N-1 open with `claim_token` (24 random bytes,
+  base64url, 32 chars); receipt "paid $X for N tickets … the other K are for your friends (links next)", then one line +
+  each link as its own message (`sendSeatLinks`). Older payments are backfilled as seat 0. `paidRow(ev, c)` = the seat
+  that person holds (theirs or a friend's), per-ticket amounts, `seat_id`, `buyer_conversation_id`. **Capacity:**
+  `db.setReservedPlaces` → unclaimed seats count in every `addAttendeeTx` (free joins too) and `spotsLeft`; a claim
+  (`onSeat`) skips the cap (its place was already counted). **Claim:** `/e/<id>/seat/<token>` (http.js route; token
+  hidden in error logs) — no password, "<buyer> got you a ticket — it's already paid for", public details without the
+  price, name/Instagram/who's-going + the organizer's questions (required enforced); preview card line "You've got a
+  ticket. Tap to claim it." (never a name). Signed in → `claimSeat` now (BEGIN IMMEDIATE: seat open at the same
+  token/version, event active, not organizer / already in / removed) → welcome + list note + buyer "X claimed the ticket
+  you got them". Not signed in → claim with `seat_id` + `seat_version` → finishStep "Text Reason to claim it" →
+  `redeemEventClaim` spends the claim (password version not checked for seats; already-in/removed refused first) →
+  router `claimSeat`; a changed/used/refunded seat → SEAT_CLAIM_LINES. Buyer / organizer / already-in opening a link: a
+  message, never spent. **Buyer:** page TICKETS FOR FRIENDS (each link, "Text it to a friend →" sms: link, NEW LINK,
+  REFUND THIS TICKET while the policy allows) → POST `/e/<id>/seats` (same-origin); text `event_seats`
+  list | new_link | refund | send — refund and send in CONDITIONALLY_GATED + GATED_ACTIONS + NEVER_STANDING, refusals
+  before any yes (`seatsRefusal`), targets pinned `[seat N vV]`. new_link = new token + version+1 (old link 404, a claim
+  begun on it fails "changed"). **send:** only to a number with an account Reason can reach (`accountForNumber`),
+  not the buyer/organizer/already in, once per friend per event; owed → `sweep` (runtime passed) sends the line + link
+  as its own message, never at night (`listNoteQuiet`), dropped once moot; the buyer always gets the same words.
+  **Refunds per seat:** `refund({ seat })` = a partial refund (`amount` = one ticket's total, or on a guest's own
+  cancel — a friend's give-back, the buyer's unclaimed seat, the buyer's own — its price, `refundSplit`; omitted only for
+  the whole charge), reverse_transfer + refund_application_fee (proportional = exactly one ticket's share; false on a guest
+  cancel, whose 2.5% goes back by `feeBack`); key `evrefund:<pay>:s<seat>:<attempts>` (+`p` on a price-only refund) on multi-ticket payments (one-ticket payments keep `evrefund:<pay>:<attempts>`);
+  `refunding_at` marks it so a racing full `charge.refunded` is left to us; `refunded_cents` grows; the payment goes
+  `refunded` only when no seat stands. Buyer gives back an unclaimed seat (`seatRefund`, policy of their payment); a
+  friend's `event_ticket_refund` / page "Give back my ticket" → money to the buyer's card (friend, buyer and organizer
+  each told); organizer `event_refund` guest_id (any holder) or seat_id (unclaimed), page WHO HAS A TICKET per seat
+  ("Not claimed yet · bought by X for a friend", "ticket from X"); cancel → `refundAll` refunds what stands on each
+  payment (one Stripe refund each; friends told it went to the buyer's card). **Summary counts tickets** (seats):
+  sold / standing / refunded / unclaimed; FOR FRIENDS row; `event_guests` `ticket_bought_by` + `unclaimed_tickets`.
+  Pinned: `test/event-buy-friends.test.js` (11); drive: 7 more `pay:` steps (quantity Checkout; seats + links; a friend
+  claims, a second seat for someone in is refused; an unclaimed seat holds its place; buyer's partial seat refund; the
+  friend gives back theirs to the buyer's card; cancel refunds the rest). **Not provable offline:** Stripe's real
+  partial refund with reverse_transfer on a live connected account, Messages' rendering of the seat link card, a real
+  friend text through Sendblue.
+  Ship review 2026-11-12: a seat whose refund is at Stripe (`refunding_at` inside 10 min) can't be claimed (`not_found`), and
+  `afterRefund` reads each seat as it is now; `settlePaid` marks a payment that got nobody in `refund_error = 'owed back: …'`
+  as it lands, and the sweep's `refundOwed` re-asks for those and for payments still standing on a cancelled event (after 2
+  min, `REFUND_RETRIES` = 5 definite noes at most; result key `refunds_owed_paid`); an account delete drops a seat invite owed
+  to that person (`invite_conversation_id` cleared). Pinned by the last four tests of `test/event-buy-friends.test.js`.
 
 ## How to get to it (user POV)
 

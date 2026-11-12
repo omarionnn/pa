@@ -97,16 +97,22 @@ test("anyEntryFor: a registry name or a URL on a registry site keeps the registr
   assert.ok(nf && !nf.generic, "netflix.com resolves to the cancel-route entry");
 });
 
-test("owner: signin_link to Notion by its address makes the secure link with the Google button", async () => {
+test("owner: signin_link to Notion by its address makes the secure link with the Apple button, never a Google one", async () => {
   const made = [];
-  const out = await call("signin_link", { site: "https://www.notion.so/login", provider: "google" }, CONV, linkSeam(made));
+  const out = await call("signin_link", { site: "https://www.notion.so/login", provider: "apple" }, CONV, linkSeam(made));
   assert.equal(out.ok, true);
   assert.equal(out.site, "notion.so");
-  assert.equal(out.provider, "google");
+  assert.equal(out.provider, "apple");
   assert.match(out.say, /Notion's own sign-in page/);
-  assert.match(out.say, /Google button pressed/);
+  assert.match(out.say, /Apple button pressed/);
   assert.equal(made[0].entry.signin_url, "https://www.notion.so/login");
-  assert.equal(made[0].provider, "google");
+  assert.equal(made[0].provider, "apple");
+  // Asked for Google: the link opens on Notion's own form, no button pressed.
+  const g = await call("signin_link", { site: "https://www.notion.so/login", provider: "google" }, CONV, linkSeam(made));
+  assert.equal(g.ok, true);
+  assert.equal(g.provider, undefined);
+  assert.doesNotMatch(g.say, /Google button pressed/);
+  assert.equal(made[1].provider, "");
   const ledger = db.db.prepare("SELECT target FROM action_ledger WHERE action = 'signin_link' ORDER BY id DESC LIMIT 1").get();
   assert.match(ledger.target, /notion/);
 });
@@ -224,7 +230,7 @@ test("the model is told: any site by its address, never 'can't get in' — only 
 test("tool diet: the sign-in tools are loaded whole wherever the rules are in the prompt, first", async () => {
   const diet = await import("../src/tooldiet.js");
   assert.equal(diet.statePacks(CONV)[0], "signin");
-  assert.deepEqual(diet.PACKS.signin, ["signin_link", "signin_status", "signin_provider"]);
+  assert.deepEqual(diet.PACKS.signin, ["signin_email", "signin_link", "signin_status", "signin_provider"]);
   assert.ok(!diet.statePacks(THEIRS).includes("signin"));
   process.env.REASON_SOCIAL_SIGNIN = "";
   assert.ok(!diet.statePacks(CONV).includes("signin"));
@@ -258,7 +264,7 @@ test("buttons drawn by JavaScript: an empty plain read is followed by the render
     readSigninPage: async (e) => { assert.equal(e.site, "airbnb.com"); return ["Skip to content", "Continue with Google", "Apple", "Continue with email", "Continue with Facebook", "Get it on Google Play"]; },
   });
   assert.equal(out.ok, true);
-  assert.deepEqual(made[0].offered, ["google", "apple", "facebook"]);
+  assert.deepEqual(made[0].offered, ["apple", "facebook"], "what it shows, Google left off (never offered)");
   // A wall that said no is not rendered past.
   const made2 = [];
   let rendered = 0;
@@ -278,7 +284,7 @@ test("a bare domain whose front page hides the buttons: its /login is tried, and
   assert.deepEqual(asked, ["https://airbnb.com/", "https://airbnb.com/login"]);
   assert.equal(made[0].entry.signin_url, "https://airbnb.com/login");
   assert.equal(made[0].entry.site, "airbnb.com");
-  assert.deepEqual(made[0].offered, ["google", "apple"]);
+  assert.deepEqual(made[0].offered, ["apple"], "Google is never offered");
   // No buttons there either: the front page stays the link's page.
   const made2 = [];
   await call("signin_link", { site: "example-shop.com" }, CONV, { ...linkSeam(made2), signinWall: async () => ({ in: true, status: 200, providers_offered: [] }), readSigninPage: async () => "Email\nPassword" });

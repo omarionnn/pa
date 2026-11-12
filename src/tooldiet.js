@@ -58,6 +58,9 @@ export const CORE = [
   "store_checkout", "shop_status", "weather", "nearby_places", "get_location", "capabilities",
   // Each cost a search round on every use (drive 11-09); together ~3.4k chars of schema (~900 tokens).
   "event_create", "spend_limit_set",
+  // Hearing a cue and making its one offer happen in the same reply (src/cues.js), so neither may cost a
+  // search. Shown only where REASON_CUES reaches; nobody else is charged for them.
+  "cue_note", "cue_offer",
 ];
 export const CORE_SET = new Set(CORE);
 
@@ -80,6 +83,7 @@ export const PACKS = {
   goals: ["goal_list", "goal_state", "goal_note", "goal_found", "goal_offer", "goal_criteria", "goal_delivery"],
   series: ["series_list", "series_pause", "series_resume", "series_end"],
   todo: ["todo_list_get", "todo_item_update", "todo_plan", "todo_approve"],
+  cues: ["cue_answer", "cue_end", "cues_setting"],
   watches: ["watch_list", "watch_cancel", "watch_set"],
   errands: ["call_errand_start", "call_errand_status"],
   commitments: ["commitment_list", "commitment_log", "commitment_set", "commitment_end"],
@@ -92,7 +96,7 @@ export const PACKS = {
   // The secure sign-in link and the provider tool, loaded whole wherever the Google/Apple/Facebook/
   // Microsoft rules are in the prompt (src/socialsignin.js): those rules name them, and on 2026-11-10
   // the owner's Notion task never reached signin_link — Reason said it could not get in instead.
-  signin: ["signin_link", "signin_status", "signin_provider"],
+  signin: ["signin_email", "signin_link", "signin_status", "signin_provider"],
 };
 const PACK_OF = new Map();
 for (const [k, names] of Object.entries(PACKS)) for (const n of names) if (!PACK_OF.has(n)) PACK_OF.set(n, k);
@@ -163,6 +167,8 @@ export function statePacks(conversationId, { now = clock.now() } = {}) {
   if (safe(() => dbm.listGoals(c).some(g => !CLOSED_GOALS.has(g.state)))) out.push("goals");
   if (safe(() => dbm.listSeries(c).length)) out.push("series");
   if (safe(() => dbm.listTodoLists(c).length)) out.push("todo");
+  if (safe(() => one("SELECT 1 FROM cues WHERE conversation_id = ? AND state = 'open' LIMIT 1", c))
+    || safe(() => one("SELECT 1 FROM cue_prefs WHERE conversation_id = ? LIMIT 1", c))) out.push("cues");
   if (safe(() => dbm.listWatches(c).length)) out.push("watches");
   if (safe(() => one("SELECT 1 FROM call_errands WHERE conversation_id = ? AND state = 'open' LIMIT 1", c))) out.push("errands");
   if (safe(() => dbm.listCommitments(c).length)) out.push("commitments");

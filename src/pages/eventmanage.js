@@ -309,7 +309,8 @@ function doneNote(q, ev) {
     // Tickets (src/eventpay.js): read off the event as it is now, never off the address.
     case "price_saved": return ev && eventpay.priced(ev) ? `Set. ${eventpay.organizerPriceLine(ev.price_cents)} ${eventpay.policyLabel(eventpay.policyOf(ev))}. Guests who join from now on pay on a Stripe page; nobody already in is charged.` : "Saved.";
     case "price_free": return "Free to join from now on. Guests who already paid keep their spot and aren't refunded by this.";
-    case "refunded": return "Refunded in full, including processing. They're off the event and were told; the money shows on their card in a few days.";
+    case "refunded": return "Refunded in full, including processing. They were told; the money shows on the card that paid in a few days.";
+    case "ticket_max": return ev ? (eventpay.ticketMax(ev) === 1 ? "Saved. Each guest buys just their own ticket." : `Saved. A guest can buy up to ${eventpay.ticketMax(ev)} tickets — theirs and some for friends.`) : "Saved.";
     case "payouts_ready": return "Payouts are set up with Stripe. You can put a price on this event now.";
     case "payouts_pending": return "Stripe hasn't finished setting up your payouts yet. Finish the steps with the button below, or come back in a few minutes if you did.";
     default: return "";
@@ -335,6 +336,17 @@ function readPolicyForm(f, current) {
     ? eventpay.readPolicy({ policy, ...(n === "" ? {} : unit === "days" ? { days: num } : { hours: num }) })
     : eventpay.readPolicy({ policy });
   return { read, draft: { policy, n, unit } };
+}
+
+/** Tickets one person may buy at once (their own and some for friends): 1 turns buying for friends off. */
+function ticketMaxForm(ev) {
+  const max = eventpay.ticketMax(ev);
+  const opts = Array.from({ length: eventpay.TICKET_MAX_LIMIT }, (_, i) => i + 1)
+    .map(n => `<option value="${n}"${n === max ? " selected" : ""}>${n === 1 ? "1 — no tickets for friends" : `Up to ${n}`}</option>`).join("");
+  return `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "ticket_max")}${hidden("step", "do")}`
+    + `<label for="ticket_max">TICKETS PER PERSON<select id="ticket_max" name="ticket_max" style="min-height:44px;font:16px inherit;padding:6px 4px;border:0;border-bottom:2px solid currentColor;background:transparent;color:inherit">${opts}</select></label>`
+    + p("A guest can buy tickets for friends in the same payment. Each friend gets their own link and is on your guest list as their own guest — not a plus-one. Tickets nobody has claimed still hold a spot.", "quiet")
+    + `<div class="mg-row">${button("Save", { cls: "mg-btn quiet", busy: "Saving…" })}</div></form>`;
 }
 
 /**
@@ -380,18 +392,22 @@ function ticketsSection(ev, { conversationId, drafts, sec, paused }) {
       + (priced || s.paid_count
         ? `<p class="lbl" id="sales" style="margin-top:8px">SO FAR</p>`
           + `<div class="mg-kv"><span class="lbl">SOLD</span><span>${esc(plural(s.sold_count, "ticket"))}${s.open_holds ? ` · ${esc(plural(s.open_holds, "spot"))} held while someone pays` : ""}</span></div>`
+          + (s.unclaimed_count ? `<div class="mg-kv"><span class="lbl">FOR FRIENDS</span><span>${esc(`${plural(s.unclaimed_count, "ticket")} not claimed yet · each holds a spot`)}</span></div>` : "")
           + `<div class="mg-kv"><span class="lbl">GROSS</span><span>${esc(eventpay.dollars(s.gross_cents))}</span></div>`
           + `<div class="mg-kv"><span class="lbl">REFUNDED</span><span>${esc(s.refunded_count ? `${eventpay.dollars(s.refunded_cents)} · ${plural(s.refunded_count, "ticket")}` : "None")}</span></div>`
           + `<div class="mg-kv"><span class="lbl">REASON'S 2.5%</span><span>${esc(eventpay.dollars(s.reason_fee_cents))}</span></div>`
           + `<div class="mg-kv"><span class="lbl">COMING TO YOU</span><span><b>${esc(eventpay.dollars(s.organizer_net_cents))}</b></span></div>`
           + `<div class="mg-kv"><span class="lbl">NEXT PAYOUT</span><span style="text-align:right">${esc(eventpay.payoutLine(eventpay.cachedPayoutInfo(conversationId), ev.tz))}</span></div>`
           + (guests.length
-            ? `<p class="lbl" style="margin-top:8px">WHO PAID</p><ul class="mg-list">${guests.map(g => `<li><div class="mg-who"><b>${esc(g.display_name || "A guest")}</b><span>${esc(`paid ${eventpay.dollars(g.total_cents)} · ${when(ev, g.paid_at)}${g.refund_error ? " · the last refund didn't go through" : ""}`)}</span></div>`
-              + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "refund")}${hidden("step", "review")}${hidden("payment", g.payment_id)}${button(g.refund_error ? "Retry refund" : "Refund", { cls: "mg-btn quiet", busy: "…" })}</form></li>`).join("")}</ul>`
-              + p("A refund gives them everything back, processing included, and takes them off the event. Cancelling the event refunds everyone.", "quiet")
+            ? `<p class="lbl" style="margin-top:8px">WHO HAS A TICKET</p><ul class="mg-list">${guests.map(g => `<li><div class="mg-who"><b>${esc(g.unclaimed ? "Not claimed yet" : g.display_name || "A guest")}</b><span>${esc([
+                g.unclaimed ? `bought by ${g.bought_by} for a friend` : g.bought_by ? `ticket from ${g.bought_by}` : "",
+                `${g.bought_by || g.unclaimed ? "" : "paid "}${eventpay.dollars(g.total_cents)} · ${when(ev, g.paid_at)}`, g.refund_error ? "the last refund didn't go through" : ""].filter(Boolean).join(" · "))}</span></div>`
+              + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "refund")}${hidden("step", "review")}${hidden("payment", g.payment_id)}${hidden("seat", g.seat_id)}${button(g.refund_error ? "Retry refund" : "Refund", { cls: "mg-btn quiet", busy: "…" })}</form></li>`).join("")}</ul>`
+              + p("A refund gives everything back, processing included, and takes the guest off the event. A ticket a guest bought for a friend goes back to the card that paid for it. Cancelling the event refunds everyone.", "quiet")
             : p("Nobody has paid yet.", "quiet"))
           + (failed.length ? `<p class="mg-note err">${esc(`${plural(failed.length, "refund")} didn't go through on Stripe's side. Retry above, or check your Stripe dashboard.`)}</p>` : "")
         : "")
+      + (priced && !paused ? ticketMaxForm(ev) : "")
       + `<p class="lbl" style="margin-top:8px">YOUR STRIPE ACCOUNT</p>`
       + p("Your balance, payouts to your bank and every payment are in your Stripe dashboard. Stripe pays out on its own schedule.")
       + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "dashboard")}${hidden("step", "do")}<div class="mg-row">${button("Open your Stripe dashboard", { cls: "mg-btn alt", busy: "Opening…" })}</div></form>`;
@@ -633,16 +649,19 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   // 04 — guests
   const list = events.guestList(ev);
   const joined = list.filter(g => g.state === "joined");
-  const paidBy = eventpay.priced(ev) ? new Map(eventpay.paidGuests(ev).map(g => [g.guest_id, g])) : new Map();
+  const paidList = eventpay.priced(ev) ? eventpay.paidGuests(ev) : [];
+  const paidBy = new Map(paidList.filter(g => g.guest_id != null).map(g => [g.guest_id, g]));
+  const unclaimedSeats = paidList.filter(g => g.unclaimed);
   const guests = sec("guests", "05", "Guests",
     `<h2 class="mg-h">${esc(joined.length ? `${plural(joined.length, "guest")} in` : "Nobody yet")}</h2>`
     + p("Names are what each guest chose to show. Phone numbers are never shown, here or anywhere.")
+    + (unclaimedSeats.length ? p(`${plural(unclaimedSeats.length, "ticket")} bought for friends ${unclaimedSeats.length === 1 ? "hasn't" : "haven't"} been claimed yet (${[...new Set(unclaimedSeats.map(g => g.bought_by))].join(", ")}). Each holds a spot; a friend who claims one shows up here as their own guest.`, "quiet") : "")
     + (list.length
       ? `<ul class="mg-list">${list.map(g => `<li><div class="mg-who"><b>${esc(g.display_name || "A guest")}</b><span>${esc([
         g.state === "removed" ? "taken off the event" : !g.in_directory ? "not on the who's-going list"
           : ev.guest_list_visible || g.list_chosen ? "on the who's-going list" : "joined while the list was private",
         VIA[g.via] ?? "",
-        paidBy.get(g.guest_id) ? `paid ${eventpay.dollars(paidBy.get(g.guest_id).total_cents)}` : "",
+        paidBy.get(g.guest_id) ? (paidBy.get(g.guest_id).bought_by ? `ticket from ${paidBy.get(g.guest_id).bought_by}` : `paid ${eventpay.dollars(paidBy.get(g.guest_id).total_cents)}`) : "",
       ].filter(Boolean).join(" · "))}${g.instagram ? ` · <a href="${esc(events.instagramUrl(g.instagram))}" rel="noopener noreferrer" target="_blank">@${esc(g.instagram)}</a>` : ""}</span></div>`
         + (g.state === "joined" ? `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "remove")}${hidden("step", "review")}${hidden("guest", g.guest_id)}${button("Remove", { cls: "mg-btn quiet", busy: "…" })}</form>` : "")
         + `</li>`).join("")}</ul>`
@@ -1329,27 +1348,46 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
 
     case "refund": {
       if (!money) return redirect(homePath(own));
+      // One ticket (seat): the buyer's own, a friend's, or one nobody claimed. An older page names the payment alone.
+      const seatId = Number.parseInt(f.get("seat") ?? "", 10);
       const id = Number.parseInt(f.get("payment") ?? "", 10);
-      const g = Number.isInteger(id) && id > 0 ? eventpay.paidGuests(own).find(x => x.payment_id === id) : null;
-      if (!g) return oops("That payment isn't one that can be refunded any more.");
+      const all = eventpay.paidGuests(own);
+      const g = Number.isInteger(seatId) && seatId > 0 ? all.find(x => x.seat_id === seatId) : Number.isInteger(id) && id > 0 ? all.find(x => x.payment_id === id && x.seat_no === 0) : null;
+      if (!g) return oops("That ticket isn't one that can be refunded any more.");
       if (step === "edit") return back(own, "money");
+      const seatRow = eventpay.seatById(g.seat_id);
       if (step === "review") {
+        const who = g.unclaimed ? `the unclaimed ticket ${g.bought_by} bought` : g.display_name || "this guest";
         return page(200, renderConfirm({
-          ev: own, title: `Refund ${g.display_name || "this guest"} ${eventpay.dollars(g.total_cents)}?`,
-          sentences: [
-            `They get the whole ${eventpay.dollars(g.total_cents)} back — your ${eventpay.dollars(g.price_cents)} and the processing — on their card in a few days. Reason's fee goes back too; Stripe keeps its processing, which comes out of Reason, not you.`,
-            "They come off the event and lose its updates; they could join again by paying again. Reason texts them this:",
-          ],
-          preview: eventpay.refundedBody(own, g.total_cents), previewLabel: "THEY GET THIS TEXT",
-          fields: { action: "refund", step: "do", payment: String(g.payment_id) }, confirm: `Refund ${eventpay.dollars(g.total_cents)}`, back: "Keep it", danger: true,
+          ev: own, title: `Refund ${who} ${eventpay.dollars(g.total_cents)}?`,
+          sentences: g.unclaimed
+            ? [`${g.bought_by} gets ${eventpay.dollars(g.total_cents)} back — your ${eventpay.dollars(g.price_cents)} and the processing — on their card in a few days, and that ticket's link stops working. Their own ticket stands.`, "Reason texts them that it was refunded."]
+            : [
+              g.bought_by
+                ? `${g.bought_by} bought this ticket, so the ${eventpay.dollars(g.total_cents)} goes back to their card — your ${eventpay.dollars(g.price_cents)} and the processing. Reason's fee goes back too; Stripe keeps its processing, which comes out of Reason, not you.`
+                : `They get the whole ${eventpay.dollars(g.total_cents)} back — your ${eventpay.dollars(g.price_cents)} and the processing — on their card in a few days. Reason's fee goes back too; Stripe keeps its processing, which comes out of Reason, not you.`,
+              "They come off the event and lose its updates; they could join again by paying again. Reason texts them this:",
+            ],
+          ...(g.unclaimed ? {} : { preview: g.bought_by ? eventpay.friendRefundedBody(own, seatRow, g.total_cents, "organizer") : eventpay.refundedBody(own, g.total_cents), previewLabel: "THEY GET THIS TEXT" }),
+          fields: { action: "refund", step: "do", payment: String(g.payment_id), seat: String(g.seat_id) }, confirm: `Refund ${eventpay.dollars(g.total_cents)}`, back: "Keep it", danger: true,
         }));
       }
       if (step !== "do") return redirect(homePath(own));
-      if (!g.guest_id) return oops("That guest's row is gone; refund them from your Stripe dashboard.");
-      const out = await run("event_refund", { guest_id: g.guest_id });
+      if (!g.unclaimed && !g.guest_id) return oops("That guest's row is gone; refund them from your Stripe dashboard.");
+      const out = await run("event_refund", g.unclaimed ? { seat_id: g.seat_id } : { guest_id: g.guest_id });
       if (!out?.ok) return oops(out?.error ? "Stripe didn't take the refund just now. Nothing changed; try again in a few minutes." : "That didn't go through.");
       log({ event_manage_refund: own.id, payment: g.payment_id });
       return back(own, "money", { done: "refunded" });
+    }
+
+    case "ticket_max": {
+      if (!money || !eventpay.priced(own)) return redirect(homePath(own));
+      const n = Number.parseInt(f.get("ticket_max") ?? "", 10);
+      if (!Number.isInteger(n) || n < 1 || n > eventpay.TICKET_MAX_LIMIT) return oops("Pick how many tickets one person can buy.");
+      const out = await run("event_price", { max_tickets: n });
+      if (!out?.ok) return oops("That didn't save.");
+      log({ event_manage_ticket_max: own.id, n });
+      return back(own, "money", { done: "ticket_max" });
     }
 
     case "dashboard": {
