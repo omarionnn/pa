@@ -667,8 +667,8 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
       announcement: call.announcement ?? "",
       openingOwed,
       manner: mannerFor(call.conversation_id),
-      // Code stops the recording on an objection only on a GPT-Live business call that talks (./gptlive.js).
-      recordingOff: call.provider === "gptlive" && !!config.lineTalk && call.direction !== "in",
+      // Code stops the recording on an objection on a GPT-Live business call that talks, and on a place ringing back (./gptlive.js).
+      recordingOff: call.provider === "gptlive" && (call.direction === "in" || !!config.lineTalk),
     }),
     `--- you are ON A PHONE CALL right now ---`,
     // The own-call swaps (task_start, "my bad", texting them) are not for a business (cold review 11-11).
