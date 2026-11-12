@@ -26,6 +26,7 @@ import { reconnectNote } from "./strangercalls.js";
 import { ridesNote } from "./eventrides.js";
 import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
+import { turnNote as cuesNote } from "./cues.js";
 import { pauseNote } from "./pause.js";
 import { note as planNote, blocked as planBlocked } from "./plan.js";
 import { memoryNotes } from "./memorynote.js";
@@ -599,6 +600,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // asked twice, and an offer somebody refused is not pitched again on a turn where the thread no
   // longer carries the no. Turn-only and on their turns only, like the three notes above.
   const goalsNote = kind === "event" ? "" : goalNote(conversationId);
+  // What they said is coming up (a trip, a birthday) and where each offer stands (src/cues.js). Empty
+  // unless REASON_CUES reaches them and something is open.
+  const cueNote = kind === "event" ? "" : cuesNote(conversationId);
 
   // Something Reason went and found that it never got to say — the day's one unprompted text was
   // already spent, or it was the middle of their night. On a turn THEY started it is not an
@@ -650,7 +654,7 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   if (noticeAside) log({ notice_offered: held[0].key, conversation: conversationId });
   if (missAside) log({ resolved_miss_offered: conversationId });
   if (newAside) log({ whats_new_offered: conversationId });
-  const turnNote = [reconnect, planInfo, pauseInfo, noticeAside, newAside, missAside, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
+  const turnNote = [reconnect, planInfo, pauseInfo, noticeAside, newAside, missAside, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, cueNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   // Where the request opens (historyStart, above), fixed for the whole turn so its rounds share a prefix.

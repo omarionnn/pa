@@ -21,7 +21,7 @@ import { LinqChannel } from "./channels/linq.js";
 import { WebChannel } from "./channels/web.js";
 import { webOn } from "./web.js";
 import { chooseCallProvider } from "./calls/choose.js";
-import { createServer } from "./http.js";
+import { createServer, logUnhandledRejections } from "./http.js";
 import { withGptLive } from "./calls/gptlive.js";
 import { makeDeliver, ORDER_CARD_FAILED } from "./deliver.js";
 import { backfillContactCards } from "./contact.js";
@@ -39,6 +39,8 @@ watchFetch();
 
 const verbose = process.argv.includes("--log");
 const log = (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); };
+// Always printed, verbose or not: one stray rejection is a bug to find, not a reason to exit.
+logUnhandledRejections((e) => console.error("   ·", JSON.stringify(e)));
 
 // Before anything binds a port or opens the database: the subscription backend may not be the
 // thing answering other people's texts. One person's Claude plan is not a service.
@@ -123,6 +125,7 @@ startOps({ runtime, router, log });
       });
     }
     await shop.foodReady;
+    await shop.flightReady;   // a resumed flight checkout meets its traveler form and its payment checks (src/flightcheckout.js)
     const resumed = shop.resumeFollowing();
     if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });
   }

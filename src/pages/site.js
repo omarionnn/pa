@@ -80,7 +80,7 @@ export function privacyPage() {
   return renderNotice({
     title: "Privacy",
     kicker: "What Reason keeps, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-11-11`,
+    meta: `Reason at ${where()} · last changed 2026-11-12`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
@@ -130,6 +130,7 @@ export function privacyPage() {
         lines: [
           "To answer you at all, Reason sends your conversation to Anthropic's API, because that is the model that reads it and writes the reply. There is no model on the machine. That means the part of your conversation still in the transcript — including text from an email or an event Reason read for you — is sent to Anthropic as part of producing your answer. Anthropic's own terms govern what they do with it.",
           "When you ask Reason to do something with a service, it talks to that service: Google for your mail, calendar and Drive, and whichever of a search provider, a telephony provider or a payments provider is set up on this install. It sends what the request needs and nothing more.",
+          "Paid events. Stripe processes ticket payments: the card and payment details a guest enters at checkout, and the identity and bank details an organizer gives it to be paid out, go to Stripe and never to Reason. Reason keeps only a record of each payment — the amounts, whether it went through or was refunded, and Stripe's reference for it. Stripe's own privacy policy governs what it does with those details.",
           "Encrypted backups. Once a day an encrypted copy of the database and your files goes to an off-site storage server, so nothing is lost if the machine fails. It is locked with a key the storage provider does not have, so they cannot read it, and the backups can only be added to from the machine, never changed or deleted from it.",
           "That is the whole list. Nothing is sent anywhere for analytics, advertising, or model training.",
         ],
@@ -176,10 +177,10 @@ export function termsPage() {
   return renderNotice({
     title: "Terms",
     kicker: "What Reason is, what it promises, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-11-10`,
+    meta: `Reason at ${where()} · last changed 2026-11-12`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("terms")].filter(Boolean).join("\n")}`,
-    links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Home", href: "/" }],
+    links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Stripe Connected Account Agreement", href: "https://stripe.com/legal/connect-account" }, { label: "Home", href: "/" }],
     lines: [
       "Reason is your personal concierge, over text. It is made by Saafi Interactions Lab, and these terms are between you and Saafi Interactions Lab.",
     ],
@@ -204,6 +205,21 @@ export function termsPage() {
         lines: [
           "It can be wrong, late or unavailable. It is provided as is, without warranty of any kind, and Saafi Interactions Lab is not liable for what you do with it or for a missed reminder, a wrong answer, or a booking that did not happen.",
           "Other services it reaches — Google, a phone carrier, a restaurant's website — have their own terms, and those apply to what happens there.",
+        ],
+      },
+      {
+        title: "Paid events",
+        lines: [
+          "An organizer can charge for an event. Payments are processed by Stripe.",
+          "To get paid, an organizer sets up payouts with Stripe, which checks who they are and where to send the money. Stripe's Connected Account Agreement applies to that account, alongside these terms: stripe.com/legal/connect-account",
+          "Saafi Interactions Lab, through Reason, collects ticket payments on the organizer's behalf and pays them out to the organizer through Stripe.",
+          "Reason's service fee is 2.5% of the ticket price, taken from what the organizer receives. Guests pay a processing fee on top of the ticket price, shown at checkout before they pay.",
+          "Refunds follow the organizer's refund policy, shown at checkout: no refunds, refunds until a set time before the event, or refunds at any time.",
+          "A guest who cancels their own ticket under that policy gets the ticket price back. A guest can buy tickets for friends in the same payment: when a friend gives back a ticket that was bought for them, or the buyer gives back one nobody has claimed, the ticket price goes back to the card that paid for it. In each case the processing fee paid at checkout is not refundable; Reason's fee on that ticket is refunded.",
+          "An organizer can always refund a guest, and that refund is in full, processing fee included. If an event is cancelled, every guest is refunded in full, processing fee and Reason's fee included.",
+          "If a guest disputes a payment or their bank reverses it, Reason may recover that amount from the organizer's payouts.",
+          "Organizers are responsible for their event, for any taxes on what they sell, and for following the law. Where the law requires it, Stripe may send an organizer a tax form such as a 1099-K.",
+          "Reason may pause an event's ticket sales, or an organizer's payouts, if it sees fraud or abuse.",
         ],
       },
       {

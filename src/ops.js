@@ -169,7 +169,12 @@ export function watchFetch({ record = db.recordProviderCall, day = accounts.toda
     const t0 = Date.now();
     try {
       const res = await real(input, init);
-      try { record({ provider, day: day(), ok: res.ok, status: res.status, ms: Date.now() - t0, error: res.ok ? "" : `HTTP ${res.status}` }); } catch { /* the ledger is not worth the call */ }
+      // A 3xx is an answer, not a failure: fetch only hands one back when the caller asked for the
+      // redirect itself (`redirect: "manual"`). Uber's connect check reads where the authorize page
+      // sends it (src/uber.js `connectReady`); counted as failed, that 302 kept Uber's row amber
+      // ("last call failed: HTTP 302") from 2026-11-10 with nothing wrong.
+      const ok = res.ok || isRedirect(res.status);
+      try { record({ provider, day: day(), ok, status: res.status, ms: Date.now() - t0, error: ok ? "" : `HTTP ${res.status}` }); } catch { /* the ledger is not worth the call */ }
       return res;
     } catch (e) {
       try { record({ provider, day: day(), ok: false, status: 0, ms: Date.now() - t0, error: short(e) }); } catch { /* same */ }
@@ -179,6 +184,9 @@ export function watchFetch({ record = db.recordProviderCall, day = accounts.toda
   // Only counts, never answers: src/netguard.js reads this as the platform's own fetch.
   globalThis.fetch.passesThrough = true;
 }
+
+/** A redirect the caller asked to see for itself. Never a failed call. */
+const isRedirect = (status) => Number(status) >= 300 && Number(status) < 400;
 
 /** For a test that replaced `globalThis.fetch` after the watcher took it. */
 export function unwatchFetch() {
@@ -601,7 +609,10 @@ async function serviceChecks({ now, day, probe, emit = (r) => r }) {
     } else {
       const last = db.providerState(p.id);
       if (!last || (!last.last_ok_at && !last.last_fail_at)) { state = "ok"; detail = "ready · no calls yet"; }
-      else if (last.last_fail_at && (!last.last_ok_at || last.last_fail_at > last.last_ok_at)) {
+      // A redirect written down as a failure before the ledger knew better is read as the answer it was.
+      else if (isRedirect(last.last_status) && last.last_fail_at && (!last.last_ok_at || last.last_fail_at > last.last_ok_at)) {
+        state = "ok"; detail = `working · last call ${ago(now - last.last_fail_at)} ago · ${n(calls.calls, "call")} today`;
+      } else if (last.last_fail_at && (!last.last_ok_at || last.last_fail_at > last.last_ok_at)) {
         state = hardFail(last.last_status) ? "bad" : "warn";
         detail = `last call failed ${ago(now - last.last_fail_at)} ago: ${failWords({ status: last.last_status, error: last.last_error })} · ${tail}`;
       } else { state = "ok"; detail = `working · last call ${ago(now - last.last_ok_at)} ago · ${tail}`; }

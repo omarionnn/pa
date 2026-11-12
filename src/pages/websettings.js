@@ -28,6 +28,7 @@
 //                            The only theme switch on Web.
 import { createHash, timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
+import * as cues from "../cues.js";
 import * as invites from "../invites.js";
 import * as agentcard from "../agentcard.js";
 import * as shop from "../shopconnect.js";
@@ -334,7 +335,7 @@ new Promise(function(ok){var r=Notification.requestPermission(ok);if(r&&r.then)r
 var blocked=document.querySelector('.nt-blocked');if(blocked&&(!window.Notification||Notification.permission!=='granted'))blocked.hidden=false;
 })();`;
 
-const SECTIONS = [["reach", "HOW I REACH YOU"], ["browsers", "BROWSERS"], ["notify", "NOTIFICATIONS"], ["connected", "CONNECTED"], ["shopping", "SHOPPING"], ["invites", "INVITES"], ["theme", "THEME"]];
+const SECTIONS = [["reach", "HOW I REACH YOU"], ["browsers", "BROWSERS"], ["notify", "NOTIFICATIONS"], ["connected", "CONNECTED"], ["ahead", "THINKING AHEAD"], ["shopping", "SHOPPING"], ["invites", "INVITES"], ["theme", "THEME"]];
 const hidden = (name, value) => `<input type="hidden" name="${name}" value="${esc(value)}">`;
 const post = (csrf, what, inner, cls = "") => `<form method="POST" action="/web/settings"${cls ? ` class="${cls}"` : ""}>${hidden("c", csrf)}${hidden("do", what)}${inner}</form>`;
 const saved = (on, words = "got it.") => (on ? hand(words, { role: "status" }) : "");
@@ -458,7 +459,23 @@ export function capSection({ csrf, cap, done = "", confirmCap = null, hasPasskey
     + `</div>`;
 }
 
-export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, shopping = null, theme = null, notify = false, done = "", confirmCard = false, confirmCap = null, now = clock.now() }) {
+/**
+ * Thinking ahead (src/cues.js): their own switch for "one offer when a trip, a move, a birthday, an
+ * interview or a guest comes up". `ahead` is null where REASON_CUES does not reach them (the section
+ * is not drawn). Off deletes what was held, which the sentence says before they press it.
+ */
+export function aheadSection({ csrf, ahead, done = "" }) {
+  if (!ahead) return "";
+  const body = ahead.on
+    ? `<p class="nt-p">On.</p><p class="nt-q">When you mention a trip, a move, a birthday, an interview or a guest, Reason offers one thing that helps, and holds the rest for when it's useful. Never more than your daily limit, and a no is kept.</p>`
+      + post(csrf, "ahead", `${hidden("on", "0")}<button class="act2" type="submit" data-busy="TURNING OFF…">TURN OFF</button>`)
+      + `<p class="st-quiet">Turning it off deletes what Reason was holding to offer.</p>`
+    : `<p class="nt-p">Off.</p><p class="nt-q">Reason won't offer things when something comes up. It still does whatever you ask.</p>`
+      + post(csrf, "ahead", `${hidden("on", "1")}<button class="act2" type="submit" data-busy="TURNING ON…">TURN ON</button>`);
+  return `<section class="st-sec" id="ahead" aria-labelledby="ah-h"><h2 id="ah-h">THINKING AHEAD</h2>${body}${saved(done === "ahead")}</section>`;
+}
+
+export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, shopping = null, theme = null, notify = false, ahead = null, done = "", confirmCard = false, confirmCap = null, now = clock.now() }) {
   if (!REACH[reach]) reach = "text";
   const ph = (t) => `<a class="ph" href="/web/settings?edit=reach" aria-describedby="reach-how">${t}</a>`;
   const reachSec = `<section class="st-sec" id="reach" aria-labelledby="reach-h"><h2 id="reach-h">HOW REASON REACHES YOU</h2>`
@@ -528,11 +545,11 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form></section>`;
 
   const shoppingSec = shopping ? shoppingSection({ csrf, shopping, done, confirmCard, confirmCap }) : "";
-  const shown = SECTIONS.filter(([id]) => (id !== "invites" || invitesView) && (id !== "shopping" || shopping));
+  const shown = SECTIONS.filter(([id]) => (id !== "invites" || invitesView) && (id !== "shopping" || shopping) && (id !== "ahead" || ahead));
   const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web?home" })}</header>`
     + `<main class="st"><div class="st-side"><h1 class="st-h1">Settings</h1><nav class="st-nav" aria-label="Settings sections">`
     + shown.map(([id, t], i) => `<a href="#${id}"${i === 0 ? ` aria-current="true"` : ""}>${t}</a>`).join("")
-    + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${shoppingSec}${invitesSec}${themeSec}</div></main>`;
+    + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${aheadSection({ csrf, ahead, done })}${shoppingSec}${invitesSec}${themeSec}</div></main>`;
   return webPage({ title: "Reason — Settings", body, css: CSS + PAPER_CSS, script: JS });
 }
 
@@ -615,6 +632,7 @@ export function settingsView(account, token) {
     shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv), lastUsed: shop.lastPaid(conv), passkeys: passkey.passkeyAllowedFor(conv) ? passkey.passkeysOf(conv) : null, cap: spendcap.view(conv) } : null,
     theme: db.webTheme(conv),
     notify: db.pageSessionNotify(token),
+    ahead: cues.covers(conv) ? { on: !cues.optedOut(conv) } : null,
   };
 }
 
@@ -689,6 +707,15 @@ export async function settingsRequest({ account, method, query = {}, headers = {
     log({ web_settings: "notify", on });
     if (wantsJson) return json(200, { ok: true, notify: on });
     return form.get("back") === "sub" ? to(`/web/settings?edit=notify&done=${on ? "notify" : "notify-off"}`) : back(on ? "notify" : "notify-off", "notify");
+  }
+
+  if (what === "ahead") {
+    // Their own switch for cues (src/cues.js). Nothing to set where REASON_CUES does not reach them.
+    if (!cues.covers(conv)) return back("", "reach");
+    const on = form.get("on") === "1";
+    cues.setOn({ conversationId: conv, on, via: "settings" });
+    log({ web_settings: "ahead", on });
+    return wantsJson ? json(200, { ok: true, ahead: on }) : back("ahead", "ahead");
   }
 
   if (what === "browser") {

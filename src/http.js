@@ -122,6 +122,16 @@ import { readPlain } from "./restfiles.js";
 
 const MAX_BODY = 1_000_000;
 
+/**
+ * A promise that rejects with nobody catching it is written to the log and the process carries
+ * on. Node's default ends the process, which loses every reply in flight. Returns the remover.
+ */
+export function logUnhandledRejections(log) {
+  const onRejection = (e) => log({ unhandled_rejection: (e?.stack ?? String(e)).split("\n").slice(0, 4).join(" | ") });
+  process.on("unhandledRejection", onRejection);
+  return () => process.off("unhandledRejection", onRejection);
+}
+
 export function createServer({ router, runtime, log = () => {} }) {
   // A new stamp is mentioned in the thread through the runtime's own send, and only while REASON_WEB_DAILY is on (never at REASON_STAMPS_ALL alone).
   stamps.installStamps({ tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null, log });
@@ -154,7 +164,15 @@ export function createServer({ router, runtime, log = () => {} }) {
   }
   return server;
   async function handleRequest(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+    // A URL or Host header that will not parse (scanners send `//%2e%2e%2f%2eenv`) is a 400, never a throw.
+    let url;
+    try {
+      url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+    } catch {
+      guardResponse(res);
+      res.writeHead(400, { "Content-Type": "text/plain", "Connection": "close" });
+      return void res.end("Bad request");
+    }
     // The status page's key goes out on the status page only: never on Web, a page, or anything else (src/opsredact.js).
     if (url.pathname !== "/ops" && url.pathname !== "/ops.json") guardResponse(res);
     const send = (status, body) => {
@@ -285,7 +303,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- an event's pages ----------
       // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
       // link arriving through the files domain, which Caddy rewrites under /p.
-      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|paid|pay-back|payouts|refund|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|paid|pay-back|payouts|refund|seats|seat\/[A-Za-z0-9_-]{32}|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
       if (eventRoute) {
         const out = await eventRequestFor({
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
@@ -377,7 +395,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           out = await webMediaRoute({ path: url.pathname, method: req.method, headers: req.headers, readBody: (max) => readRaw(req, max), log });
         } catch (e) {
           // An approval link's token is a bearer secret: never in the journal.
-      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…").replace(/(\/e\/[^/]+\/seat\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
           return send(500, { ok: false, error: "server error" });
         }
         res.writeHead(out.status, out.headers);
@@ -462,7 +480,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           // A page asks for the calm one (9B: "Something went wrong. Nothing was lost."); the page's own
           // script asking for JSON gets JSON, which it already knows how to treat as a missed beat.
           // An approval link's token is a bearer secret: never in the journal.
-      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…").replace(/(\/e\/[^/]+\/seat\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
           if (String(req.headers.accept ?? "").includes("application/json")) return send(500, { error: "server error" });
           const body = (await import("./pages/webconvo.js")).renderError();
           res.writeHead(500, { "Content-Type": "text/html; charset=utf-8", ...WEB_SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) });
@@ -895,7 +913,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       return send(404, { error: "not found" });
     } catch (e) {
       // An approval link's token is a bearer secret: never in the journal.
-      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…").replace(/(\/e\/[^/]+\/seat\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
       return send(500, { error: "server error" });
     }
   }

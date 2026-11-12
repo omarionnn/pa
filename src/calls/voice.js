@@ -320,6 +320,15 @@ const blindWhereCall = (t) => NEEDS_WHERE.has(String(t.name))
   && !t.input?.place && !t.input?.near && !t.input?.address;
 const BROKE_MID = "Something broke on my end there.";
 const BROKE_FIRST = "Something broke on my end. Say that again?";
+/** Said when the model's API refuses the account (credit, billing, key): the call ends and Reason texts. */
+export const API_REFUSED_LINE = "I'm having trouble on my end, so I'll text you instead. Talk soon.";
+/** The same on somebody else's call, where texting them is not Reason's to offer. */
+export const API_REFUSED_LINE_THEIRS = "I'm sorry, I have to go. Thanks for your time.";
+/** An error no retry will fix: the API refusing the account itself, not one request. Exported for the tests. */
+export function isApiRefusal(e) {
+  const s = String(e?.message ?? e ?? "");
+  return /credit balance is too low|purchase credits|plans & billing|insufficient_quota|exceeded your current quota|invalid x-api-key|authentication_error|permission_error/i.test(s);
+}
 /**
  * What the turn meter counts as not-yet-real content. Exported for the tests. The fillers are matched
  * exactly, trailing space and all: the code's "... " is filler, while a model piece of just "..." has
@@ -2536,6 +2545,22 @@ export async function* voiceTurn({
     }
     threw = true;
     log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0], ...timing() });
+    // The model's API said no to the account itself (credit ran out, 11-11 00:22). Every later turn
+    // will be refused the same way, so "say that again" only loops. One line, a hang-up, and a text
+    // that carries the conversation on where it stopped.
+    if (isApiRefusal(e)) {
+      const theirWords = latestSpoken(context.messages);
+      const text = context.kind === "owner"
+        ? `Sorry, I had to drop the call on my end. Let's carry on by text${theirWords ? `: you'd said "${theirWords.slice(0, 200)}"` : ""}.`
+        : `The call${call.to_number ? ` to ${call.to_number}` : ""} had to end early on my side before it was done. I'll pick it up by text.`;
+      queueMidCall({ call, text, kind: "api_refused", log });
+      log({ voice_api_refused: call.id, kind: context.kind });
+      yield* openingIfOwed();
+      const line = context.kind === "owner" ? API_REFUSED_LINE : API_REFUSED_LINE_THEIRS;
+      yield chunk({ content: said ? ` ${line}` : line });
+      yield* endCallChunks(chunk, "the model refused the request; carrying on by text");
+      return;
+    }
     const before = said;
     yield* openingIfOwed();
     const lead = said !== before ? " " : "";

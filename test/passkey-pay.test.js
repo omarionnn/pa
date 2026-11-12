@@ -116,6 +116,8 @@ async function linkFor(row) {
   assert.equal(out.approve_with_face_id, true, JSON.stringify(out));
   return tokenOf(out.url);
 }
+/** A second link for the same payment, as a re-ask makes one (shop_pay reuses an open link instead). */
+const freshLink = (row) => tokenOf(shop.approvalUrl(row));
 
 before(() => { shop._setFetch(fakeFetch); shop.attach({ say: (c, t) => said.push({ c, t }) }); });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -223,7 +225,7 @@ test("refused: wrong amount (row changed), expired link, wrong origin, no UV, an
   assert.match((await page(token, "verify", a.get(o.challenge))).body, /details_changed/);
   q("UPDATE shop_payments SET amount = '9.79' WHERE id = ?").run(row.id);
   // Wrong origin, and a passkey that only showed presence.
-  token = await linkFor(row);
+  token = freshLink(row);
   o = optionsOf((await page(token)).body);
   assert.match((await page(token, "verify", a.get(o.challenge, { origin: "https://heyreason.co" }))).body, /not_verified/);
   assert.match((await page(token, "verify", a.get(o.challenge, { uv: false }))).body, /no_user_verification|not_verified/);
@@ -249,7 +251,7 @@ test("refused: an older link once a fresh one is out, a counter going backwards,
   const row = asked();
   const first = await linkFor(row);
   const o1 = optionsOf((await page(first)).body);
-  const second = await linkFor(row);
+  const second = freshLink(row);
   assert.match((await page(first, "verify", a.get(o1.challenge))).body, /link_replaced/);
   // A counter that went up, then came back down.
   const o2 = optionsOf((await page(second)).body);
@@ -259,6 +261,39 @@ test("refused: an older link once a fresh one is out, a counter going backwards,
   const b = await setUp(new Authenticator());
   assert.match((await page(second, "verify", b.get(o2.challenge))).body, /cooling_off/);
   assert.equal(orderIntents().length, 0);
+});
+
+// 2026-11-08 Amazon: every shop_pay on a payment still waiting for Face ID minted a new link and closed
+// the one already texted, so the tap on the first link found it 'replaced' and the order was lost.
+test("shop_pay while a Face ID link is still open reuses it: no new link, the first link still pays; a new one only once it ran out", async () => {
+  const a = await setUp();
+  const row = asked("14.83");
+  // The ask texted with the payment carries link A.
+  const first = tokenOf(/https:\/\/\S+/.exec(shop.passkeyAsk(row))[0]);
+  // Two later turns ("Test", "when will it arrive") run shop_pay again.
+  for (let i = 0; i < 2; i++) {
+    const out = await runTool("shop_pay", { payment_id: row.id }, { conversationId: OMARI });
+    assert.equal(out.approve_with_face_id, true, JSON.stringify(out));
+    assert.equal(out.link_still_open, true, JSON.stringify(out));
+    assert.equal(out.url, undefined, "no new link while the first is open");
+    assert.doesNotMatch(out.say, /new (link|url)|this url/i);
+  }
+  assert.equal(passkey.approvalFor(first).state, "open");
+  assert.equal(q("SELECT COUNT(*) AS n FROM pay_approvals WHERE payment_id = ?").get(row.id).n, 1, "one link only");
+  // Approving on the FIRST link pays.
+  const o = optionsOf((await page(first)).body);
+  const res = await page(first, "verify", a.get(o.challenge));
+  assert.equal(res.status, 200, res.body);
+  assert.equal(shop.paymentRow(row.id).status, "paid");
+  assert.equal(orderIntents().length, 1);
+  // Once a link has run out, shop_pay hands out a fresh one.
+  const row2 = asked("2.00");
+  const old = tokenOf(/https:\/\/\S+/.exec(shop.passkeyAsk(row2))[0]);
+  q("UPDATE pay_approvals SET expires_at = ? WHERE payment_id = ?").run(clock.now() - 1, row2.id);
+  const fresh = await runTool("shop_pay", { payment_id: row2.id }, { conversationId: OMARI });
+  assert.match(fresh.url, /^https:\/\/heyreason\.com\/web\/approve\//);
+  assert.notEqual(tokenOf(fresh.url), old);
+  assert.equal(passkey.approvalFor(tokenOf(fresh.url)).state, "open");
 });
 
 // ---------------------------------------------------------------- 5. decline, and the log
