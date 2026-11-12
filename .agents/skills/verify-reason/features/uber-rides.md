@@ -69,6 +69,15 @@ again, never pointed at. (There is no `uber_status` tool: status is `uber.uberSt
   `status: "not_connected"`, the same `missing` list, `use_instead: "uber_link"`. (There is no
   `not_configured` status.) Configured but no token row for the thread: also `not_connected`.
 
+- **Uber's row on the status page (`/ops`, `provider:uber`).** Judged from the ledger of Reason's own
+  calls to auth.uber.com / api.uber.com; there is no key probe. The connect check
+  (`uber.connectReady`) reads Uber's 302 itself, and that redirect counts as a call that worked:
+  until 2026-11-12 it was written down as a failure and the row sat amber ("last call failed: HTTP
+  302") from 2026-11-10 with nothing wrong. A row already stored that way reads green. A 401/403
+  from Uber is still red. Pinned by `test/ops-redirect-not-failure.test.js` (3). The row says
+  nothing about Limited vs Full Access: that only shows when somebody connects (`uber_callback`:
+  `ride_access` or `identity_only` in the log).
+
 ## How to get to it (user POV)
 
 "Get me an Uber home": one link back, with the pickup and the destination already in it; they tap
