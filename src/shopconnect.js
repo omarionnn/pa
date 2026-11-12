@@ -1793,14 +1793,58 @@ async function postAnswer(run, rq, answers) {
   q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(now, now, now, run.run_id);
   return { ok: true };
 }
-/** A choice answered in words ("NY") becomes the option's value; anything else is left as given. */
-function shapeAnswers(rq, answers) {
+/**
+ * A choice answered in words ("NY", "leave at door", "$2 tip") becomes the option's value; anything else is
+ * left as given. Exported for the tests.
+ */
+export function shapeAnswers(rq, answers) {
   const out = {};
   const fields = new Map((rq.fields ?? []).map((f) => [f.key, f]));
   for (const [k, v] of Object.entries(answers ?? {})) {
     const f = fields.get(k);
-    if (f && f.input?.kind === "choice" && typeof v === "string") { const m = shipping.matchOption(f.input.options, v); out[k] = m === null ? v : m; }
-    else out[k] = v;
+    if (f && f.input?.kind === "choice" && (typeof v === "string" || typeof v === "number")) {
+      const m = shipping.matchOption(f.input.options, String(v)) ?? looseOption(f.input.options, String(v));
+      out[k] = m === null ? v : m;
+    } else out[k] = v;
+  }
+  return out;
+}
+const optLabel = (o) => String(typeof o === "string" ? o : o?.label ?? o?.value ?? "");
+const optValue = (o) => (typeof o === "string" ? o : o?.value);
+const usableOptions = (options) => (Array.isArray(options) ? options : []).filter((o) => o && !o.disabled && !o.placeholder && optValue(o) !== undefined && optValue(o) !== null);
+// Words that carry no choice ("leave IT at MY door", "$2 TIP").
+const FILLER = new Set(["a", "an", "the", "it", "my", "me", "at", "to", "on", "by", "in", "of", "for", "please", "just", "tip", "dollar", "dollars", "bucks"]);
+const wordsOf = (s) => String(s).toLowerCase().replace(/[^a-z0-9%.$]+/g, " ").split(" ").filter((w) => w && !FILLER.has(w));
+const moneyOf = (s) => {
+  if (/%/.test(s)) return null;
+  const m = /(?:^|[^\d.])\$?\s*(\d+(?:\.\d{1,2})?)(?![\d%])/.exec(` ${s}`);
+  return m ? Math.round(Number(m[1]) * 100) : null;
+};
+/**
+ * The one option the words mean when they are not its exact label (Chipotle 11-10: "leave at door" for
+ * "Leave it at my door", "$2 tip" for "$2.00"): the same amount of money, else every word given is in
+ * its label. A tie or no hit is null, and the caller re-asks rather than send what the store refuses.
+ */
+function looseOption(options, v) {
+  const opts = usableOptions(options);
+  const cents = moneyOf(v);
+  if (cents !== null) {
+    const same = opts.filter((o) => moneyOf(optLabel(o)) === cents);
+    if (same.length === 1) return optValue(same[0]);
+  }
+  const want = wordsOf(v).filter((w) => !/^\$?[\d.]+$/.test(w));
+  if (!want.length) return null;
+  const hits = opts.filter((o) => { const have = new Set(wordsOf(optLabel(o))); return want.every((w) => have.has(w)); });
+  return hits.length === 1 ? optValue(hits[0]) : null;
+}
+/** The choice fields whose answer is none of the store's options: { key: [labels] }, empty when all match. */
+function unmatchedChoices(rq, answers) {
+  const out = {};
+  for (const f of rq.fields ?? []) {
+    if (f?.input?.kind !== "choice" || !(f.key in (answers ?? {}))) continue;
+    const opts = usableOptions(f.input.options);
+    if (!opts.length || typeof answers[f.key] === "object") continue;
+    if (!opts.some((o) => String(optValue(o)) === String(answers[f.key]))) out[f.key] = opts.map(optLabel);
   }
   return out;
 }
@@ -2378,6 +2422,14 @@ export async function answerRun(runId, { conversationId, answers }) {
   // What the model gives wins; what it leaves out comes from the record (2026-10-31); a choice in words
   // becomes the option's value (Ulta's state dropdown refused "NY" twice on 12:17).
   const given = shapeAnswers(rq, answers ?? {});
+  // A choice that is none of the store's options is refused by Crossmint ("Answer does not match the
+  // requested form"); Chipotle refused ~7 of them on 11-10 and the order restarted. Re-ask instead.
+  const unmatched = unmatchedChoices(rq, given);
+  if (Object.keys(unmatched).length) {
+    const lines = Object.entries(unmatched).map(([k, labels]) => `${fieldWords((rq.fields ?? []).find((f) => f.key === k)) || k}: ${labels.join(" / ")}`);
+    return { ok: false, error: "no_matching_option", options: unmatched,
+      say: `Nothing was sent: that answer is not one of the store's options. Ask them to pick one (${lines.join("; ")}), then shop_answer with that option's exact wording.` };
+  }
   // The record's answer to this very request was refused: not merged in again; the model gives it all.
   const fromRecord = toldOf(run).has(`refused:${rq.requestId}`) ? {} : autoFill(run, rq).answers;
   const merged = { ...fromRecord, ...given };
