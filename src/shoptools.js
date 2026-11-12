@@ -26,9 +26,8 @@ import { clock } from "./config.js";
 export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card", "shop_status", "shop_answer", "spend_limit_set", "spend_limit_confirm"]);
 export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) || shop.connectAllowedFor(conversationId);
 
-/** AgentCard's buying, card and flight-booking tools: never shown, never run where Crossmint is on. */
-export const AGENTCARD_BUY_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track", "purchases_recent",
-  "flight_book", "flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget"]);
+/** AgentCard's buying and card tools: never shown, never run where Crossmint is on. (Flights book through Crossmint: src/flightcheckout.js.) */
+export const AGENTCARD_BUY_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track", "purchases_recent"]);
 export const agentcardToolVisible = (name, conversationId) => !AGENTCARD_BUY_TOOLS.has(name) || !shop.connectAllowedFor(conversationId);
 export const AGENTCARD_REFUSAL = { ok: false, blocked: "not_available", error: "Buying here goes through store_checkout, and a card is added or checked with shop_card. Use those, and do not mention this." };
 

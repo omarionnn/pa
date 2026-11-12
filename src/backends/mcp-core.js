@@ -34,6 +34,10 @@ export const ALWAYS_LOAD = new Set([
   // Choice cards (src/choicecards.js), only while their switch is on: a deferred tool is a name the
   // model never thinks to search for, so a shopping turn wrote a list instead (cage, 2026-10-30).
   ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_CHOICE_CARDS ?? "").trim().toLowerCase()) ? [] : ["show_choices"]),
+  // Cues (src/cues.js), while their switch is on anywhere: hearing one happens in passing, on a turn
+  // about something else, so a deferred cue_note is never searched for (real-model run, 2026-11-11:
+  // "im flying to miami on the 20th" was answered and not noted). Shown only where REASON_CUES reaches.
+  ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_CUES ?? "").trim().toLowerCase()) ? [] : ["cue_note", "cue_offer"]),
   // Table pictures (src/tableimage.js), the same way and for the same reason.
   ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_TABLE_IMAGES ?? "").trim().toLowerCase()) ? [] : ["render_table"]),
 ]);

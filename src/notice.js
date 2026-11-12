@@ -42,6 +42,7 @@ import * as google from "./google.js";
 import * as flights from "./flights.js";
 import * as alerts from "./alerts.js";
 import * as deals from "./deals.js";
+import * as cues from "./cues.js";
 import { clock, config, stamp } from "./config.js";
 import * as x from "./x.js";
 import { travelTimeTo } from "./routing.js";
@@ -127,6 +128,8 @@ export const KINDS = {
   mail_due: { what: "mail with a date on it: a bill, an invoice, an appointment", speakable: true },
   work_due: { what: "something Reason is already working on is due to be checked", speakable: false },
   follow_on: { what: "something finished, and this is what it sets in motion", speakable: true },
+  // One offer held for something they SAID was coming up — a trip, a birthday (src/cues.js).
+  cue_offer: { what: "an offer held for something they told you is coming up", speakable: true },
   // A meeting with somebody they have never written to. The catch is the OFFER of a brief in one
   // line, never the brief itself: a brief is a paragraph, and a paragraph belongs on a turn they
   // started. `meeting_brief` is the tool that writes it once they say yes.
@@ -994,6 +997,8 @@ export async function recheck({ conversationId, row, read = null, now = clock.no
   if (!row || ["follow_on", "work_due", "opt_in"].includes(kind)) return { ok: true };
   // A price watch's news is checked against its own row: called off since is handled.
   if (deals.MINE.has(kind)) return deals.recheck(conversationId, row);
+  // A held offer for something they said was coming up (src/cues.js): checked against its own rows.
+  if (cues.MINE.has(kind)) return cues.recheck(conversationId, row, now);
 
   // A flight is checked against Reason's own row rather than against Google, so this one is settled
   // here and needs no mailbox — which also means it is never reported as `unclear` for somebody who
@@ -1272,6 +1277,8 @@ export function followOnFrame({ conversationId, thing, key, budget }) {
  * `notice_send` — because a scheduled catch is still an unprompted text.
  */
 export function momentFrame({ conversationId, row }) {
+  // An offer held for a cue is an offer, not a catch: its own wording, the same gate (src/cues.js).
+  if (cues.MINE.has(row.kind ?? "")) return cues.momentFrame({ conversationId, row });
   const who = accounts.ownerOf(conversationId).name;
   return `[the moment for something you noticed] Earlier you went looking and found this, and parked it for now`
     + ` because now is when it is useful: ${row.what}.`

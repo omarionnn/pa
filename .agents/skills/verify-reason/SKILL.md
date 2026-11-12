@@ -527,6 +527,17 @@ added to `test/fixtures/unscoped-sql-baseline.json`. **Not provable here:** Conn
 "You can only create new accounts if you've signed up for Connect" (test mode, 2026-11-11); real Checkout, Apple Pay,
 real webhooks, the Express onboarding page.
 
+### Baseline — buy for friends (2026-11-11, PR event-buy-friends, stacked on event-refund-sales, not merged)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Buy for friends". Offline: `test/event-buy-friends.test.js`
+12/12 (fake Stripe; quantity Checkout, seats + links, claim on page and by text, capacity, per-seat partial refunds,
+cancel, the friend text, organizer pages); `event-paid` 18/18 ("WHO PAID" → "WHO HAS A TICKET"), `event-refund-sales`
+13/13. `bin/events-drive.mjs` under a temp DB: all ok, 132 steps, 28 `pay:` (7 new). Offline suite 6,497 / 6,357 pass /
+0 fail / 140 skipped. New tool `event_seats` (refund + send in CONDITIONALLY_GATED + GATED_ACTIONS + NEVER_STANDING);
+table `event_seats` KEPT_ON_DELETE with `claim_token` a secret column; unscoped-sql baseline +22 (seat/payment id lookups,
+event-wide counts). Same flag `REASON_PAID_EVENTS`. **Not provable here:** a real partial refund with reverse_transfer on
+a live connected account, Messages' card for a seat link, a real friend text.
+
 ### Baseline — paid events round two: refund policy + sales summary (2026-11-11, PR event-refund-sales, not merged)
 
 Scoped maintain pass for [features/events.md](features/events.md) "Refund policy + sales summary". Offline:

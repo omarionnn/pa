@@ -1176,11 +1176,12 @@ test("a sign-in in progress is on the busy file from the link to its end, with n
 
 // ---------- Reason's own page (native panel), owner 2026-11-10 ----------
 const GOOGLE_EMAIL = { url: "https://accounts.google.com/v3/signin/identifier?client_id=x", text: "Sign in\nto continue to Notion\nEmail or phone\nForgot email?\nNext", fields: [{ x: 0.1, y: 0.4, w: 0.8, h: 0.07, tag: "input", type: "email", ac: "username", name: "identifier", id: "identifierId", label: "Email or phone", im: "", ml: 0, len: 0, focused: true }] };
+const APPLE_EMAIL = { url: "https://appleid.apple.com/auth/authorize?client_id=so.notion", text: "Sign in with Apple\nUse your Apple Account to sign in to Notion.\nEmail or Phone Number\nContinue", fields: [{ x: 0.1, y: 0.4, w: 0.8, h: 0.07, tag: "input", type: "email", ac: "username", name: "accountName", id: "account_name_text_field", label: "Email or Phone Number", im: "", ml: 0, len: 0, focused: true }] };
 const NOTION_CHOOSER = { url: "https://www.notion.so/login", text: "Log in to Notion\nContinue with Google\nContinue with Apple\nContinue with Microsoft\nContinue with email", fields: [] };
 test("native page: where the flag reaches them the panel follows the real page step by step, the chooser presses the real button, and nothing typed comes back", async () => {
   process.env.REASON_SOCIAL_SIGNIN = "owner";
   try {
-    const b = fakeBrowser({ frames: [NOTION_CHOOSER, NOTION_CHOOSER, NOTION_CHOOSER, GOOGLE_EMAIL, GOOGLE_EMAIL] });
+    const b = fakeBrowser({ frames: [NOTION_CHOOSER, NOTION_CHOOSER, NOTION_CHOOSER, APPLE_EMAIL, APPLE_EMAIL] });
     const pressed = [];
     const out = remote.createRemoteSignin({
       conversationId: CONV, entry: sites.site("amazon"), launch: b.launch, log: () => {},
@@ -1194,13 +1195,18 @@ test("native page: where the flag reaches them the panel follows the real page s
     assert.match(live.body, /Show me the page/, "the streamed page stays as the fallback");
     let v = await view(token, cookie);
     assert.equal(v.meta.np.step, "chooser");
-    assert.match(v.meta.np.html, /Continue with Google/);
+    assert.match(v.meta.np.html, /Continue with Apple/);
+    assert.match(v.meta.np.html, /Continue with Microsoft/);
+    assert.doesNotMatch(v.meta.np.html, /Continue with Google/, "Google is never offered, though the site has it");
     assert.doesNotMatch(v.meta.np.html, /Continue with Facebook/, "only the providers the site offers");
+    assert.match(v.meta.np.html, /Use my Amazon email/);
     v = await view(token, cookie, v.meta.h);
     assert.equal(v.meta.np.html, undefined, "an unchanged step does not resend the panel");
-    const r = await req(token, "provider", { method: "POST", cookie, body: { p: "google" } });
+    assert.equal((await req(token, "provider", { method: "POST", cookie, body: { p: "google" } })).status, 400, "Google is never pressed");
+    assert.deepEqual(pressed, []);
+    const r = await req(token, "provider", { method: "POST", cookie, body: { p: "apple" } });
     assert.equal(JSON.parse(r.body).pressed, true);
-    assert.deepEqual(pressed, ["google"], "the real page's own button was pressed, nothing else");
+    assert.deepEqual(pressed, ["apple"], "the real page's own button was pressed, nothing else");
     assert.equal((await req(token, "provider", { method: "POST", cookie, body: { p: "evil.com" } })).status, 400, "only the four providers");
     v = await view(token, cookie);
     assert.equal(v.meta.np.step, "email");
