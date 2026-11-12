@@ -476,3 +476,50 @@ test("manner OFF, call carry-over off / owner / on: a business call still opens 
   }
   config.callCarryover = "off";
 });
+
+// ---------- a place ringing back ----------
+
+const ringBackRow = (conv = OTHER) => {
+  const row = db.createCall(conv, {
+    provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "They are ringing back about: a table for two at 7 tonight",
+    facts: [], announcement: gl.lineAnnouncement(announcementFor({ ownerName: conv === C ? "Omari" : "Ama" })), state: "in_progress", direction: "in",
+  });
+  return db.getCall(row.conversation_id, row.id);
+};
+
+test("a place ringing back hears the disclosure, and its objection to the recording is honoured: it stops, nothing after their words is kept (manner off, any account)", async () => {
+  config.callManner = "off";
+  for (const conv of [C, OTHER]) {
+    const row = ringBackRow(conv);
+    assert.equal(row.direction, "in");
+    const reads = [];
+    const s = start({ row, objectionJudge: async (t) => { reads.push(t); return /don't record/.test(t); } });
+    assert.equal(s.call.talk, false, "a ring-back keeps the puppet line");
+    assert.match(s.call.greeting, /this is Reason, an AI assistant calling for (Omari|Ama)\..*recorded/);
+    for (let i = 0; i < 200; i++) { s.twilio.say({ event: "media", media: { payload: QUIET } }); await s.timers.advance(20); }
+    s.live.emit({ type: "session.input_transcript.delta", delta: " Hi, yes, we do have that table." });
+    for (let i = 0; i < 100; i++) { s.twilio.say({ event: "media", media: { payload: QUIET } }); await s.timers.advance(20); }
+    assert.ok(reads.length >= 1);
+    assert.equal(s.call.tape.stopped, false, "an ordinary answer stops nothing");
+    const before = s.call.tape.seconds();
+    s.live.emit({ type: "session.input_transcript.delta", delta: " Oh, and please don't record this call." });
+    for (let i = 0; i < 100; i++) { s.twilio.say({ event: "media", media: { payload: SPEECH } }); await s.timers.advance(20); }
+    assert.equal(s.call.tape.stopped, true);
+    assert.equal(s.call.recordingStopWhy, "objected");
+    assert.ok(s.call.tape.seconds() <= before);
+    assert.ok(s.lines.some(l => l.gptlive_recording_declined));
+    const kept = s.call.tape.seconds();
+    for (let i = 0; i < 250; i++) { s.twilio.say({ event: "media", media: { payload: SPEECH } }); await s.timers.advance(20); }
+    assert.equal(s.call.tape.seconds(), kept, "nothing after the objection is kept");
+    assert.match(s.call.howItWent(10), /asked not to be recorded/);
+    // The voice on a ring-back only says Reason's words: it is not handed a line of its own, and no "said yet?" nudge.
+    assert.ok(!s.live.of("session.instructions.append").some(e => e.content === manner.RECORDING_OFF_NOTE));
+    await s.timers.advance(gl.LINE_NOTICE_CHECK_MS + 10);
+    assert.ok(!s.live.of("session.instructions.append").some(e => /You have not yet told them/.test(e.content)));
+  }
+});
+
+test("a place ringing back: Reason's turn is told to say the recording's off when they object", () => {
+  const frame = prompt.thirdPartyFrame({ ownerName: "Ama", goal: "a table", rules: ["r"], recordingOff: true });
+  assert.match(frame, /rather not be recorded/);
+});

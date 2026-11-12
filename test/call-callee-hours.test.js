@@ -122,3 +122,18 @@ test("an area code that covers two clocks: held while it is night on either", ()
   assert.equal(ok(at("2026-11-12T08:30:00-07:00"), "+12085551234").ok, false);
   assert.equal(ok(at("2026-11-12T09:00:00-07:00"), "+12085551234").ok, true);
 });
+
+test("a looked-up place's zone survives a restart: written to the database, read back when this process has forgotten", () => {
+  assert.equal(zone.notePlace({ phone: "+1 212-555-0190", latitude: 21.3069, longitude: -157.8583 }), "Pacific/Honolulu");
+  assert.equal(db.placeZone("12125550190"), "Pacific/Honolulu");
+  zone.forgetPlaceZonesInMemory();
+  assert.deepEqual(zone.calleeZone("+12125550190", EAST), { zone: "Pacific/Honolulu", source: "place" });
+  assert.equal(ok(at("2026-11-12T12:59:00-05:00"), "+12125550190").ok, false, "7:59am in Honolulu");
+  // A later lookup that puts it somewhere else replaces it.
+  zone.notePlace({ phone: "+12125550190", latitude: 40.7128, longitude: -74.006 });
+  zone.forgetPlaceZonesInMemory();
+  assert.equal(zone.calleeZone("+12125550190", EAST).zone, "America/New_York");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM place_zones WHERE phone = ?").get("12125550190").n, 1);
+  // Nothing personal in the row: a number and a zone.
+  assert.deepEqual(Object.keys(db.db.prepare("SELECT * FROM place_zones LIMIT 1").get()).sort(), ["at", "phone", "zone"]);
+});

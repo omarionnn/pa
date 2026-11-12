@@ -1511,6 +1511,10 @@ export class GptLiveCall {
       try { db.updateCall(call.conversation_id, call.id, { announcement: opening }); } catch { /* the row's own line stands */ }
       this.call = { ...call, announcement: opening };
     }
+    // A place ringing back hears the disclosure first, by code (`ringBackLine`), so its objection to the
+    // recording is honoured the same way: read by meaning, the tape cut back to before their words
+    // (`readObjection`). No "said yet?" check here (`notice: false`): code says the line itself.
+    else if (this.line && call.direction === "in") this.notice = { notice: false, disclose: true, state: "", why: "ring-back: said first by code" };
     this.name = this.who.name;
     // The pickup opener (./opener.js): a clip made while it rang, played as soon as their hello ends
     // (or into a silent line) while the live voice connects. `state`: waiting → playing → played, or
@@ -2382,7 +2386,8 @@ export class GptLiveCall {
     this.recordingDeclinedAt = this.now();
     this.recordingStopWhy = v === true ? "objected" : over ? "read cap" : "read failed";
     this.log({ gptlive_recording_declined: this.call.id, why: this.recordingStopWhy, kept_s: Math.round(this.tape.seconds()) });
-    if (v === true && this.live && !this.done) this.live.send({ type: "session.instructions.append", event_id: `rec_off_${this.call.id}`, delegation_id: null, content: manner.RECORDING_OFF_NOTE });
+    // The voice that talks is told; on a ring-back the voice only says Reason's words, and Reason's turn has the line (thirdPartyFrame `recordingOff`).
+    if (v === true && this.talk && this.live && !this.done) this.live.send({ type: "session.instructions.append", event_id: `rec_off_${this.call.id}`, delegation_id: null, content: manner.RECORDING_OFF_NOTE });
     return true;
   }
 
