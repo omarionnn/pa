@@ -6,13 +6,18 @@
 // `typing_indicator` webhook: `{ number, is_typing, from_number, timestamp }`,
 // api-v2/typing-indicators), so the wait can be for the people who are actually still writing:
 //
-//   - not typing            → the turn starts now. No fixed pause.
+//   - heard typing this text, and not typing now → the turn starts after a short window (GRACE_MS).
 //   - typing                → the reply is held for their next text, which joins the same turn,
-//                             and the question is asked again.
+//                             and the question is asked again. Asked twice: before the turn starts
+//                             (`hold`) and again before its reply is sent (`holdSend`), because a
+//                             "typing" for the next bubble usually arrives after the turn has begun.
 //   - typing stops, no text → they deleted the draft. Reply to what there is.
 //   - 15 s, whatever the events say → reply. An event can be dropped or stuck on.
-//   - no events at all for this person (webhook not registered, down, unsigned) → "not typing".
-//     Events are a hint and never a requirement, so nothing in here can hang a reply.
+//   - no events for this person in the last 30 s (webhook not registered, down, unsigned, or a
+//     pasted text) → today's fixed pause, exactly. The replay of real traffic
+//     (scripts/typing-replay.mjs, docs/typing-aware.md) is why: starting at once with no signal
+//     answers the first half of a burst more often than the pause does. Events are a hint and never
+//     a requirement, so nothing in here can hang a reply.
 //
 // One thing the docs do not say is whether a "stopped" event is sent when a text is SENT. So a
 // "typing" that was heard BEFORE a text arrived is taken to be that text being written and is never
@@ -41,6 +46,8 @@ export const TOTAL_CAP_MS = 30_000;
 /** The window after a text for a "typing" to arrive. Never more than a second, whatever is set. */
 export const GRACE_MAX_MS = 1_000;
 const GRACE_DEFAULT_MS = 300;
+/** How long after a text a "typing" for the next one is given to arrive before an early reply is sent. */
+export const SIGNAL_ALLOW_MS = 3_000;
 const SAMPLES_MAX = 500;
 
 /** off | owner | on. Read on every call, so a restart is all a flip needs. */
@@ -96,6 +103,17 @@ export function isTyping(address, { now = clock.now() } = {}) {
   return now - s.typingAt < STATE_TTL_MS;
 }
 
+/**
+ * Has a verified typing event been heard from this person within the last 30 s? That is the only
+ * evidence there is that events reach us for them at all, and it is asked when their text lands:
+ * somebody who typed it has just been heard typing. With none, the text keeps today's fixed pause,
+ * so a missing webhook (or a pasted text) is today's behaviour and never a faster, blinder one.
+ */
+export function signalsFlowing(address, { now = clock.now() } = {}) {
+  const s = people.get(keyOf(address));
+  return !!s && s.eventAt != null && now - s.eventAt < STATE_TTL_MS;
+}
+
 /** How many people anything is remembered about. For tests and nothing else. */
 export const remembered = ({ now = clock.now() } = {}) => { prune(now); return people.size; };
 
@@ -105,7 +123,7 @@ const fresh = (now) => ({
   since: now, events: 0, starts: 0, stops: 0, refused: 0,
   messages: 0, messagesAfterTyping: 0, typingStillOnAtMessage: 0,
   typingToMessage: [], messageToTyping: [], eventLag: [],
-  holds: 0, held: [], folded: 0, stopped: 0, capped: 0,
+  holds: 0, sendHolds: 0, held: [], folded: 0, stopped: 0, capped: 0,
 });
 let counts = fresh(clock.now());
 
@@ -122,7 +140,7 @@ const median = (list) => {
  */
 export function summary({ now = clock.now() } = {}) {
   const c = counts;
-  if (!c.events && !c.refused && !c.holds) return null;
+  if (!c.events && !c.refused && !c.holds && !c.sendHolds) return null;
   return {
     typing_aware: typingAwareMode(),
     window_ms: Math.max(0, now - c.since),
@@ -131,7 +149,7 @@ export function summary({ now = clock.now() } = {}) {
     median_typing_to_message_ms: median(c.typingToMessage),
     median_message_to_typing_ms: median(c.messageToTyping),
     median_event_lag_ms: median(c.eventLag),
-    holds: c.holds, median_hold_ms: median(c.held), folded: c.folded, stopped: c.stopped, capped: c.capped,
+    holds: c.holds, send_holds: c.sendHolds, median_hold_ms: median(c.held), folded: c.folded, stopped: c.stopped, capped: c.capped,
   };
 }
 
@@ -161,8 +179,11 @@ export function noteEvent({ address, isTyping: typing, sentAt = null, now = cloc
   if (Number.isFinite(sentAt) && Math.abs(now - sentAt) < 60_000) sample(counts.eventLag, Math.max(0, now - sentAt));
   // The first "typing" after a text: how soon the next bubble is begun. This is what GRACE_MS is set from.
   if (typing && s.msgAt != null && !(s.typing && s.typingAt >= s.msgAt) && now - s.msgAt <= 10_000) sample(counts.messageToTyping, now - s.msgAt);
-  s.typing = typing;
   s.eventAt = now;
+  // A "typing" that Sendblue stamped before the newest text was sent is that text being written,
+  // arriving late. It proves events reach us and is no reason to wait for anything.
+  if (typing && Number.isFinite(sentAt) && s.msgSentAt != null && sentAt <= s.msgSentAt) return;
+  s.typing = typing;
   if (typing) s.typingAt = now;
   wakeAll(s);
 }
@@ -174,7 +195,7 @@ export function noteRefused({ now = clock.now(), log = null } = {}) {
 }
 
 /** A text arrived from this person. Wakes a reply that was waiting for exactly this. */
-export function noteMessage({ address, now = clock.now(), log = null } = {}) {
+export function noteMessage({ address, sentAt = null, now = clock.now(), log = null } = {}) {
   if (log) hourly(log, { now });
   if (!address) return;
   prune(now);
@@ -187,6 +208,7 @@ export function noteMessage({ address, now = clock.now(), log = null } = {}) {
     if (s.typingAt != null) sample(counts.typingToMessage, now - s.typingAt);
   }
   s.msgAt = now;
+  s.msgSentAt = Number.isFinite(sentAt) ? sentAt : null;
   wakeAll(s);
 }
 
@@ -252,6 +274,57 @@ export async function hold({ address, firstAt = null, lastAt = null, after, now 
     const woken = new Promise(resolve => { wake = resolve; });
     s.wake.add(wake);
     slept = true;
+    try { await Promise.race([woken, after(Math.max(1, wait))]); }
+    finally { s.wake.delete(wake); }
+  }
+}
+
+/**
+ * Hold a reply that is ready to SEND while this person is typing their next text.
+ *
+ * The turn starts before a "typing" can be relied on to have arrived (they begin the next bubble a
+ * second or so after the last, and the event takes its own time), so the start alone would answer
+ * the first half of a thought more often than the fixed pause did. This is the other half: by the
+ * time the reply is written the event has had the whole turn to arrive. If they are typing, the
+ * send waits for their text, which the mid-turn read (src/onethought.js) then folds into this same
+ * turn; if they stop, or 15 s pass, it sends. `spent` is what earlier waits of this turn used:
+ * 30 s in all. Not typing, or nothing heard: returns at once (or at `notBefore`). Never throws.
+ */
+export async function holdSend({ address, spent = 0, notBefore = null, after, now = () => clock.now() } = {}) {
+  const began = now();
+  let slept = false;
+  const done = (why, more = false) => {
+    const waited = slept ? Math.max(0, now() - began) : 0;
+    if (slept) {
+      counts.sendHolds++;
+      sample(counts.held, waited);
+      if (more) counts.folded++;
+      else if (why === "stopped") counts.stopped++;
+      else if (why === "cap") counts.capped++;
+    }
+    return { waited, why, more };
+  };
+  if (!address || typeof after !== "function") return done("no_events");
+  const s = people.get(keyOf(address));
+  if (!s) return done("no_events");
+  const seenMsgAt = s.msgAt;
+  let sawTyping = false;
+  const until = began + Math.max(0, Math.min(CAP_MS, TOTAL_CAP_MS - spent));
+  for (;;) {
+    const t = now();
+    if (s.msgAt !== seenMsgAt) return done("more", true);
+    const typingNext = s.typing && s.typingAt != null && s.typingAt >= (s.msgAt ?? 0) && t - s.typingAt < STATE_TTL_MS;
+    if (!typingNext) {
+      // `notBefore`: the turn started early and finished before a "typing" has had time to get
+      // here, so the send waits out what the fixed pause would have taken (the caller's sum).
+      if (!(notBefore != null && t < notBefore && !sawTyping)) return done(sawTyping ? "stopped" : "not_typing");
+    } else sawTyping = true;
+    if (typingNext && t >= until) return done("cap");
+    let wake;
+    const woken = new Promise(resolve => { wake = resolve; });
+    s.wake.add(wake);
+    slept = true;
+    const wait = typingNext ? Math.min(until - t, s.typingAt + STATE_TTL_MS - t) : notBefore - t;
     try { await Promise.race([woken, after(Math.max(1, wait))]); }
     finally { s.wake.delete(wake); }
   }

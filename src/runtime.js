@@ -886,6 +886,9 @@ export class Runtime extends EventEmitter {
     const me = accounts.ownerOf(conversationId);
     const who = me.name === "the person I work for" ? "them" : me.name;
     for (let round = 0; ; round++) {
+      // REASON_TYPING_AWARE (src/typingaware.js): they are typing their next text, so the send
+      // waits for it (15 s at most); the read below then folds it in. Absent with the switch off.
+      if (typeof fold.beforeSend === "function") await fold.beforeSend();
       // A text still being read decides whether this draft is stale, so the send waits for it.
       await onethought.settled(fold);
       const shown = fold.added.filter(a => a.seen && !a.written);

@@ -131,6 +131,8 @@ export class Router {
      *  joins that wait rather than starting its own, so one burst is one turn. The request stays
      *  in here until the conversation holds nothing, so a text that lands mid-turn is its too. */
     this.waiting = new Set();
+    /** REASON_TYPING_AWARE: how long the turn about to run already waited on somebody typing. */
+    this.typingWaited = new Map();
     /** The "…" bubble for each conversation, which has to outlive the wait AND the turn. */
     this.bubbles = new Map();
     // §4h take it back: Web messages claimed and not yet held, `<external id>` → when claimed.
@@ -496,15 +498,17 @@ export class Router {
         return { ok: true, conversationId, cancelled: true, replied: false };
       }
     }
-    const typingHeld = inbound.channel !== web.WEB && typingAware.typingAwareOn({ isOperator, conversationId });
+    // REASON_TYPING_AWARE: on for them, and they were heard typing in the last 30 s. Without that
+    // there is nothing to go on, and the text keeps today's fixed pause (src/typingaware.js).
+    const typingOn = inbound.channel !== web.WEB && typingAware.typingAwareOn({ isOperator, conversationId });
+    const typingHeld = typingOn && typingAware.signalsFlowing(address);
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
       externalId: inbound.externalId, text: [under, picking, reacted, inbound.text].filter(Boolean).join("\n"),
       attachments, service: inbound.service ?? null, isOperator,
-      // REASON_TYPING_AWARE (src/typingaware.js): no fixed pause; the wait below is for somebody typing.
+      // Typing-aware with events arriving: no fixed pause; the wait below is for somebody typing.
       quietMs: typingHeld ? 0 : Math.max(0, quietWindowFor(inbound.channel)), maxMs: Math.max(0, config.burstMaxMs),
     });
-    if (inbound.channel !== web.WEB) typingAware.noteMessage({ address, log: this.log });
 
     // The "…" bubble, for the wait AND the turn. It goes up here rather than at the turn, because
     // the whole point of the wait is that somebody is mid-thought and should see that Reason is
@@ -530,6 +534,10 @@ export class Router {
     // Never read into a turn for another chat (a Web-only chat and the shared thread are two talks).
     const working = onethought.activeFor(conversationId);
     if (working && (working.webChat ?? null) === (inbound.channel === web.WEB ? db.webChatOf(inbound.chatId) : null)) onethought.track(working, this.#readMidTurn(conversationId, working, { externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text }));
+
+    // Told only now, after the mid-turn read above is under way: a reply held at its send for
+    // exactly this text (typingAware.holdSend) must find the read already tracked when it wakes.
+    if (inbound.channel !== web.WEB) typingAware.noteMessage({ address, sentAt: inbound.at ?? null, log: this.log });
 
     // Somebody is already waiting out this conversation's window; this message just joined their
     // turn. Answering the webhook now is the right thing anyway: the provider wants a 2xx, not a
@@ -564,7 +572,7 @@ export class Router {
           if (wait <= 0) {
             // Typing-aware: held only while they are typing their next text; a text that arrived
             // meanwhile is held like any other, so the window is read again. Off: not asked.
-            if (typingHeld && await this.#typingHold(conversationId, address)) continue;
+            if (typingOn && await this.#typingHold(conversationId, address)) continue;
             break;
           }
           if (round > 0) await this.#bubbleForHeld(conversationId);
@@ -764,6 +772,27 @@ export class Router {
     // never ran goes back on the pile in the `finally` below.
     const fold = onethought.begin(conversationId, { text: held.map(h => h.text).join("\n") });
     fold.webChat = last.channel === web.WEB ? db.webChatOf(last.chat_id) : null;
+    // REASON_TYPING_AWARE: the reply, once written, waits while they are typing their next text
+    // (Runtime._takeInFolded asks this before it settles what was folded). 30 s in all per turn.
+    // A turn that already waited out the cap for them does not wait again at its send: 15 s is
+    // the most anybody's "typing" holds a reply, and an indicator stuck on stays stuck.
+    const waited = this.typingWaited.get(conversationId) ?? { ms: 0, capped: false };
+    this.typingWaited.delete(conversationId);
+    if (!waited.capped && last.channel !== web.WEB && typingAware.typingAwareOn({ isOperator: !!last.is_operator, conversationId })) {
+      let spent = waited.ms, asked = 0;
+      // Started sooner than the fixed pause would have (events were arriving)? Then a reply ready
+      // within 3 s of their text gives that head start back, so it is never sent sooner than it
+      // is today before a "typing" could have got here. A longer turn keeps the head start.
+      const early = Math.max(0, quietWindowFor(last.channel) - Math.max(0, clock.now() - (last.arrived_at ?? clock.now())));
+      fold.beforeSend = async () => {
+        try {
+          const notBefore = asked++ === 0 && early > 0 ? Math.min(clock.now() + early, (last.arrived_at ?? 0) + typingAware.SIGNAL_ALLOW_MS) : null;
+          const r = await typingAware.holdSend({ address: last.address, spent, notBefore, after: (ms) => this.#after(ms) });
+          spent += r.waited;
+          if (r.waited > 0) this.log({ typing_hold: r.why, waited_ms: r.waited, at: "send" });
+        } catch (e) { this.log({ typing_hold_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+      };
+    }
     const bubble = this.#bubble(conversationId, {
       channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,
     });
@@ -1102,6 +1131,9 @@ export class Router {
     try {
       const first = db.firstPendingArrival(conversationId);
       const r = await typingAware.hold({ address, firstAt: first, after: (ms) => this.#after(ms) });
+      // What this turn has already waited for them, so the wait at its send (#drainHeld) counts it.
+      const so = this.typingWaited.get(conversationId) ?? { ms: 0, capped: false };
+      this.typingWaited.set(conversationId, { ms: so.ms + r.waited, capped: so.capped || r.why === "cap" });
       // A duration and a code, and not whose: a conversation id can carry a phone number.
       if (r.waited > 0) this.log({ typing_hold: r.why, waited_ms: r.waited });
       return r.more && db.pendingReadyAt(conversationId) !== null;

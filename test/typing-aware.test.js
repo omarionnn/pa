@@ -33,6 +33,7 @@ const { makeDeliver } = await import("../src/deliver.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
 const ta = await import("../src/typingaware.js");
+const onethought = await import("../src/onethought.js");
 
 const KOFI = "+14155559876";
 const KOFI_C = `dm:fake:${KOFI}`;
@@ -46,6 +47,7 @@ beforeEach(() => {
   delete process.env.REASON_TYPING_GRACE_MS;
   config.burstQuietMs = 1_000;
   ta.resetTypingAware();
+  onethought.setMidTurnReader(() => "continuation");
   db.db.exec(`DELETE FROM outbox; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM usage;
     DELETE FROM inbound_messages; DELETE FROM pending_inbound; DELETE FROM messages; DELETE FROM event_log; DELETE FROM requests;`);
   db.upsertAccount({ conversationId: KOFI_C, channel: "fake", address: KOFI, name: "Kofi", isOperator: false });
@@ -54,23 +56,30 @@ beforeEach(() => {
 });
 
 /** serve.js's wiring with every wait on a hand-held timer: nothing waits real seconds, and each wait's length is kept. */
-function harness() {
-  const logs = [], turns = [], waits = [], asked = [];
+function harness({ slow = false } = {}) {
+  const logs = [], turns = [], waits = [], asked = [], sent = [], finish = [];
   const timers = { set: (fn, ms) => { waits.push(fn); asked.push(ms); return { unref() {} }; }, clear: () => {} };
   const router = new Router({ log: (e) => logs.push(e), timers });
   const consoleChannel = new ConsoleChannel({ write: () => {} });
-  const deliver = makeDeliver({ router, consoleChannel, log: (e) => logs.push(e), warn: () => {} });
-  const runtime = new Runtime({ log: (e) => logs.push(e), channels: router, deliver, runTurn: async (args) => { turns.push(args); return `re: ${args.text}`; } });
+  const deliver0 = makeDeliver({ router, consoleChannel, log: (e) => logs.push(e), warn: () => {} });
+  const deliver = async (m) => { sent.push(m.text); return deliver0(m); };
+  const runtime = new Runtime({ log: (e) => logs.push(e), channels: router, deliver, runTurn: async (args) => {
+    turns.push(args);
+    // `slow`: the turn is working until the test says it has its answer (`finish.shift()()`).
+    if (slow) await new Promise(r => finish.push(r));
+    return `re: ${args.text}`;
+  } });
   router.runtime = runtime;
   router.register(consoleChannel);
   router.register(new FakeChannel({ number: "+16562167455" }));
   runtime.on("outbound", async ({ conversationId, text, channel: name, to, chatId, fromOwner, replyTo }) => {
-    await deliver({ conversationId, text, media: null, channel: name, to, chatId, fromOwner, replyTo });
+    sent.push(text);
+    await deliver0({ conversationId, text, media: null, channel: name, to, chatId, fromOwner, replyTo });
   });
   const settle = () => new Promise(r => setTimeout(r, 25));
   /** Let `ms` pass on the clock and fire every wait that was booked. */
   const pass = async (ms) => { clock.skip(ms); for (const fn of waits.splice(0)) fn(); await settle(); };
-  return { router, runtime, logs, turns, waits, asked, pass, settle };
+  return { router, runtime, logs, turns, waits, asked, sent, finish, pass, settle };
 }
 
 const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (!pred() && Date.now() < end) await new Promise(r => setTimeout(r, 5)); return pred(); };
@@ -139,25 +148,38 @@ test("off is today's behaviour: the fixed pause is waited, typing events change 
   assert.match(plain.text, /book the 7pm[\s\S]*for four/);
 });
 
-test("on, a single text from somebody who is not typing: the turn starts at once, with no wait at all", async () => {
-  process.env.REASON_TYPING_AWARE = "on";
-  const h = harness();
-  await text(h, "single-1", "what time is it in Accra");
-  assert.equal(h.turns.length, 1);
-  assert.deepEqual(h.asked, [], "no timer was booked: no fixed pause, no short window");
-  assert.equal(holds(h).length, 0);
-});
-
-test("on, the webhook is missing entirely: every text is answered at once and nothing hangs", async () => {
+test("on, nothing heard from them (webhook missing, down, or a pasted text): today's fixed pause, exactly", async () => {
+  // The replay of real traffic (scripts/typing-replay.mjs) is why: starting at once with no signal
+  // sent 3 more replies on the first half of a burst than the pause does.
   process.env.REASON_TYPING_AWARE = "on";
   const h = harness();
   for (let i = 0; i < 3; i++) {
-    await text(h, `nohook-${i}`, `text ${i}`);
+    const p = text(h, `nohook-${i}`, `text ${i}`);
+    await h.settle();
+    assert.equal(h.turns.length, i, "held for the fixed pause, as with the switch off");
+    await h.pass(1_000);
+    await p;
+    assert.equal(h.turns.length, i + 1);
     clock.skip(60_000);
   }
-  assert.equal(h.turns.length, 3);
-  assert.deepEqual(h.asked, []);
-  assert.equal(ta.summary(), null, "and with no typing events there is no hourly line either");
+  waitsWere(h.asked, [1_000, 1_000, 1_000]);
+  assert.equal(holds(h).length, 0, "and nothing was held for typing");
+  assert.equal(ta.summary(), null, "with no typing events there is no hourly line either");
+});
+
+test("on, nothing heard: a second text inside the pause still joins the first, as today", async () => {
+  process.env.REASON_TYPING_AWARE = "on";
+  const h = harness();
+  const a = text(h, "plain-1", "book the 7pm");
+  await h.settle();
+  await h.pass(400);
+  const b = text(h, "plain-2", "for four");
+  await h.settle();
+  assert.equal(h.turns.length, 0);
+  await h.pass(1_000);
+  await Promise.all([a, b]);
+  assert.ok(await until(() => h.turns.length === 1));
+  assert.match(h.turns[0].text, /book the 7pm[\s\S]*for four/);
 });
 
 test("on, they typed this text and then stopped: only the short window is waited, then the reply", async () => {
@@ -170,9 +192,15 @@ test("on, they typed this text and then stopped: only the short window is waited
   assert.equal(h.turns.length, 0, "the typing before a text is that text: not a reason for a long wait");
   waitsWere(h.asked, [300]);
   await h.pass(300);
+  assert.equal(h.turns.length, 1, "the turn started 0.7 s sooner than the fixed pause");
+  // This turn answered instantly, long before a 'typing' for a next text could have arrived. So
+  // the send gives the head start back: it goes no sooner than it would have today.
+  assert.equal(h.sent.length, 0, "written, not sent yet");
+  waitsWere(h.asked, [300, 700]);
+  await h.pass(700);
   await p;
-  assert.equal(h.turns.length, 1);
-  assert.deepEqual(holds(h).map(l => l.typing_hold), ["not_typing"]);
+  assert.equal(h.sent.length, 1);
+  assert.deepEqual(holds(h).map(l => [l.typing_hold, l.at ?? "start"]), [["not_typing", "start"], ["not_typing", "send"]]);
   near(holds(h)[0].waited_ms, 300);
 });
 
@@ -196,6 +224,7 @@ test("on, a burst: each text sent while they are still typing joins one turn", a
   await h.settle();
   typing(false);                           // done
   await h.pass(300);
+  await h.pass(700);                       // an instant turn: the send gives the head start back
   await Promise.all([a, b, c]);
   assert.ok(await until(() => h.turns.length === 1));
   assert.equal(h.turns.length, 1, "one turn for the whole burst");
@@ -217,6 +246,7 @@ test("on, a correction: 'no wait, 7 not 8' typed right after is folded into the 
   const b = text(h, "fix-2", "no wait, 7 not 8");
   await h.settle();
   await h.pass(300);
+  await h.pass(700);
   await Promise.all([a, b]);
   assert.ok(await until(() => h.turns.length === 1));
   assert.equal(h.turns.length, 1, "one answer, to the corrected request");
@@ -312,14 +342,18 @@ test("state expires: 'typing' is believed for 30 s and then forgotten, and nothi
   assert.equal(ta.remembered(), 0);
 });
 
-test("on, a 'typing' older than 30 s is nothing: the next text is answered at once", async () => {
+test("on, a 'typing' older than 30 s is nothing: the next text gets the fixed pause", async () => {
   process.env.REASON_TYPING_AWARE = "on";
   const h = harness();
   typing(true);
   clock.skip(45_000);
-  await text(h, "stale-1", "hello");
+  const p = text(h, "stale-1", "hello");
+  await h.settle();
+  waitsWere(h.asked, [1_000]);
+  await h.pass(1_000);
+  await p;
   assert.equal(h.turns.length, 1);
-  assert.deepEqual(h.asked, []);
+  assert.equal(holds(h).length, 0);
 });
 
 test("owner mode: everybody else keeps the fixed pause", async () => {
@@ -354,13 +388,105 @@ test("nothing about typing reaches the database or the log with who", async () =
   // The log: the hold's line is a code and a duration. No address and no conversation.
   assert.equal(holds(h).length, 1);
   for (const l of holds(h)) {
-    assert.deepEqual(Object.keys(l).sort(), ["typing_hold", "waited_ms"]);
+    assert.deepEqual(Object.keys(l).filter(k => k !== "at").sort(), ["typing_hold", "waited_ms"]);
     assert.ok(!JSON.stringify(l).includes(KOFI.slice(1)) && !JSON.stringify(l).includes("dm:"));
   }
   const line = ta.summary();
   assert.ok(line.events >= 3);
   assert.ok(!JSON.stringify(line).includes(KOFI.slice(1)) && !JSON.stringify(line).includes("dm:"), "the hourly line names nobody");
   for (const v of Object.values(line)) assert.ok(v === null || typeof v === "number" || v === "on", "counts, medians and the mode only");
+});
+
+// ---------- the send: a "typing" that arrives while the turn is working ----------
+
+test("on, they start typing while the reply is being written: the send waits, and their text is answered in the same reply", async () => {
+  process.env.REASON_TYPING_AWARE = "on";
+  const h = harness({ slow: true });
+  typing(true);
+  const a = text(h, "gate-1", "book the table for 8");
+  await h.settle();
+  await h.pass(300);                         // no 'typing' yet: the turn starts
+  assert.equal(h.turns.length, 1);
+  clock.skip(1_500); typing(true);           // the event for their next bubble arrives mid-turn
+  clock.skip(6_000);
+  h.finish.shift()();                        // the reply is written
+  await h.settle();
+  assert.equal(h.sent.length, 0, "not sent: they are typing");
+  clock.skip(2_000);
+  const b = text(h, "gate-2", "no wait, 7 not 8");
+  await h.settle();
+  assert.ok(await until(() => h.turns.length === 2), "the stale draft is thrown away and the turn writes one answer to both");
+  h.finish.shift()();
+  await Promise.all([a, b]);
+  assert.ok(await until(() => h.sent.length === 1));
+  assert.equal(h.sent.length, 1, "one reply");
+  assert.match(h.turns[1].text, /no wait, 7 not 8/);
+  assert.ok(!h.sent.some(t => t === "re: book the table for 8"), "the answer to the uncorrected request never went out");
+  const gate = holds(h).find(l => l.at === "send");
+  assert.equal(gate.typing_hold, "more");
+  near(gate.waited_ms, 2_000);
+});
+
+test("on, typing at the send and then nothing: the reply goes when they stop, and at 15 s whatever the events say", async () => {
+  process.env.REASON_TYPING_AWARE = "on";
+  for (const stops of [true, false]) {
+    clock.reset(); ta.resetTypingAware();
+    db.db.exec("DELETE FROM inbound_messages; DELETE FROM pending_inbound; DELETE FROM messages; DELETE FROM outbox;");
+    const h = harness({ slow: true });
+    typing(true);
+    const a = text(h, `gatecap-${stops}`, "how far is the airport");
+    await h.settle();
+    await h.pass(300);
+    clock.skip(1_500); typing(true);
+    clock.skip(5_000);
+    h.finish.shift()();
+    await h.settle();
+    assert.equal(h.sent.length, 0);
+    if (stops) { clock.skip(4_000); typing(false); }
+    else {
+      for (let t = 0; t < 4; t++) { clock.skip(3_000); typing(true); await h.settle(); }
+      assert.equal(h.sent.length, 0, "12 s at the send: still held");
+      assert.ok(h.asked.every(ms => ms <= 15_000));
+      await h.pass(3_000);
+    }
+    await a;
+    assert.equal(h.sent.length, 1);
+    const gate = holds(h).find(l => l.at === "send");
+    assert.equal(gate.typing_hold, stops ? "stopped" : "cap");
+    near(gate.waited_ms, stops ? 4_000 : 15_000);
+  }
+});
+
+test("on, not typing when the reply is ready: sent at once, the head start kept", async () => {
+  process.env.REASON_TYPING_AWARE = "on";
+  const h = harness({ slow: true });
+  typing(true);
+  const a = text(h, "keep-1", "what's the weather");
+  await h.settle();
+  await h.pass(300);
+  clock.skip(8_000);                         // an ordinary turn: longer than the 3 s a 'typing' is given to arrive
+  h.finish.shift()();
+  await a;
+  assert.equal(h.sent.length, 1);
+  assert.ok(!holds(h).some(l => l.at === "send"), "no wait at the send");
+});
+
+test("a 'typing' that Sendblue stamped before their newest text is that text, arriving late: it holds nothing", async () => {
+  process.env.REASON_TYPING_AWARE = "on";
+  const h = harness();
+  const t0 = clock.now();
+  ta.noteEvent({ address: KOFI, isTyping: true, sentAt: t0 - 5_000 });
+  const p = h.router.deliver({ channel: "fake", externalId: "late-1", from: KOFI, text: "hello", at: t0 });
+  await h.settle();
+  clock.skip(100);
+  ta.noteEvent({ address: KOFI, isTyping: true, sentAt: t0 - 400 });   // written before the text, delivered after it
+  assert.equal(ta.isTyping(KOFI), true, "still the earlier state; the late one changed nothing");
+  await h.pass(300);
+  assert.equal(h.turns.length, 1, "the turn was not held for it");
+  await h.pass(700);
+  await p;
+  assert.equal(h.sent.length, 1);
+  assert.ok(!holds(h).some(l => l.typing_hold === "cap" || l.typing_hold === "more"));
 });
 
 // ---------- the webhook: verified, counted, observe-only ----------
@@ -424,9 +550,13 @@ test("on, a forged 'typing' does not delay a real reply", async () => {
   const h = harness();
   const body = typingBody(true);
   await router.webhook({ channel: "sendblue", rawBody: body, rawBytes: Buffer.from(body), headers: { "sb-signing-secret": "a-guess" } });
-  await text(h, "forged-1", "hello");
+  const p = text(h, "forged-1", "hello");
+  await h.settle();
+  waitsWere(h.asked, [1_000]);
+  await h.pass(1_000);
+  await p;
   assert.equal(h.turns.length, 1);
-  assert.deepEqual(h.asked, []);
+  assert.equal(holds(h).length, 0, "the fixed pause and nothing more");
 });
 
 test("observe-only: with the switch off, verified events are counted and one line an hour says so, naming nobody", async () => {
