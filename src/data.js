@@ -289,6 +289,7 @@ export const INSTALL_WIDE = {
   ops_digest: "the operator's digest lines",
   ops_state: "operator state; the one per-person key in it is removed by deleteData",
   place_photos: "photo cache by place",
+  place_zones: "time zone of a looked-up business, by its phone number (no person's data)",
   provider_calls: "per-provider call counts",
   provider_calls_hourly: "per-provider call counts",
   provider_state: "per-provider health",

@@ -137,6 +137,28 @@ test("the hold budget is per call and really reaches the row", async () => {
 
 // ---------- not at half eleven at night ----------
 
+test("the hour is the callee's: a California number at 8:30am Eastern is not rung (5:30am there); a New York number is", async () => {
+  const calls = new FakeCallProvider();
+  clock.skip(Date.parse("2026-10-08T08:30:00-04:00") - clock.now());
+  const ca = "+14155550142";
+  const out = await place({ to: ca, goal: "ask what time they open", confirmation_id: await yesFor(`ring ${ca}`, ca) }, calls);
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "quiet_hours");
+  assert.match(out.error, /05:30/);
+  assert.match(out.error, /America\/Los_Angeles/);
+  assert.equal(calls.placed.length, 0, "nothing was dialled");
+  const ny = newNumber();
+  const there = await place({ to: ny, goal: "ask what time they open", confirmation_id: await yesFor(`ring ${ny}`, ny) }, calls);
+  assert.equal(there.ok, true, JSON.stringify(there).slice(0, 200));
+  assert.equal(calls.placed.length, 1);
+  // 9:30pm Eastern: New York is held, California (6:30pm) rings.
+  clock.skip(Date.parse("2026-10-08T21:30:00-04:00") - clock.now());
+  const late = newNumber();
+  assert.equal((await place({ to: late, goal: "ask about a clean", confirmation_id: await yesFor(`ring ${late}`, late) }, calls)).status, "quiet_hours");
+  const ca2 = "+14155550143";
+  assert.equal((await place({ to: ca2, goal: "ask about a clean", confirmation_id: await yesFor(`ring ${ca2}`, ca2) }, calls)).ok, true);
+});
+
 test("a third party is not rung inside the quiet window, and it is said out loud", async () => {
   const calls = new FakeCallProvider();
   clock.skip(Date.parse("2026-10-07T23:30:00-04:00") - clock.now());

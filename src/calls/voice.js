@@ -44,6 +44,7 @@ import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
 import * as errand from "./errand.js";
 import { QUOTE_TOOL } from "./errand.js";
 import { briefLines, buildBrief, todaySoFarNote } from "./brief.js";
+import { earlierCallsNote, CARRY_TURN_LINE, CARRY_TURN_GOODBYE, carryoverFor, calendarNote, recentMemoryNote, prepareCarry, setCalendarReader, brokeLine, turnWorked } from "./carryover.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
 import { rulesNote } from "../rules.js";
@@ -551,6 +552,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const { systemFor } = contextDeps;
 
   const lang = callLanguage(call);
+  const earlier = earlierCallsNote(call);
   const parts = [
     // `onCall`: the text-thread rules (src/threading.js) are about bubbles and pins, not a call.
     systemFor({ ...me, onCall: true }),
@@ -592,6 +594,14 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
     todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }),
+    // Their own earlier calls: a call is written to the thread one line per fragment and this turn
+    // reads only its newest few, so the morning's call is gone by the afternoon (call 85 -> 86).
+    ...(earlier ? [earlier, CARRY_TURN_LINE] : []),
+    // What memory saved lately and what is on their calendar today and tomorrow (./carryover.js), so the
+    // first answer does not wait on a lookup; anything further out is still calendar_events.
+    recentMemoryNote(call),
+    calendarNote(call),
+    carryoverFor(conversationId) ? CARRY_TURN_GOODBYE : "",
   ];
   return {
     kind: "owner",
@@ -657,8 +667,8 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
       announcement: call.announcement ?? "",
       openingOwed,
       manner: mannerFor(call.conversation_id),
-      // Code stops the recording on an objection only on a GPT-Live business call that talks (./gptlive.js).
-      recordingOff: call.provider === "gptlive" && !!config.lineTalk && call.direction !== "in",
+      // Code stops the recording on an objection on a GPT-Live business call that talks, and on a place ringing back (./gptlive.js).
+      recordingOff: call.provider === "gptlive" && (call.direction === "in" || !!config.lineTalk),
     }),
     `--- you are ON A PHONE CALL right now ---`,
     // The own-call swaps (task_start, "my bad", texting them) are not for a business (cold review 11-11).
@@ -1857,6 +1867,7 @@ export async function* voiceTurn({
       .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }))
     : null;
 
+  let threw = false;
   try {
     for (let round = 0; round <= MAX_VOICE_TOOL_ROUNDS; round++) {
       const splitter = sentenceSplitter();
@@ -2523,12 +2534,18 @@ export async function* voiceTurn({
       yield* endSuperseded("model");
       return;
     }
+    threw = true;
     log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0], ...timing() });
     const before = said;
     yield* openingIfOwed();
     const lead = said !== before ? " " : "";
-    yield chunk({ content: before ? ` ${BROKE_MID}` : `${lead}${BROKE_FIRST}` });
+    // A second failure in a row never repeats the first one's words (call 89; ./carryover.js).
+    const again = context?.kind === "owner" ? brokeLine(call) : "";
+    yield chunk({ content: again ? `${before || lead ? " " : ""}${again}` : before ? ` ${BROKE_MID}` : `${lead}${BROKE_FIRST}` });
     yield chunk({}, "stop");
+  } finally {
+    // A turn that said something and did not fall over: the next failure is a first one again.
+    if (!threw && said.trim() && !superseded()) turnWorked(call);
   }
   yield SSE_DONE;
 }
@@ -2630,7 +2647,7 @@ export async function llmRequest({
   try {
     await prime();
     // Where they usually are (./callmemory.js): read while it rang, so this is normally already done.
-    if (kind === "owner") await Promise.race([prepareCallMemory(call, { log }), new Promise(r => setTimeout(r, CALL_MEMORY_WAIT_MS).unref?.())]);
+    if (kind === "owner") await Promise.race([Promise.all([prepareCallMemory(call, { log }), prepareCarry(call, { log })]), new Promise(r => setTimeout(r, CALL_MEMORY_WAIT_MS).unref?.())]);
     context = contextFor({ call, kind, callMessages: body.messages, now });
   } catch (e) {
     const why = (e?.message ?? String(e)).split("\n")[0];
@@ -3274,3 +3291,15 @@ export function cliLineStream() {
     end() { const out = []; if (mode !== "text") lineEnd(out); return out.filter(e => e.type !== "text" || e.text.trim()); },
   };
 }
+
+// Their calendar for a call's opening brief (./carryover.js): read through the same tool a turn uses,
+// so which accounts are read, each in its own zone, is decided in one place. Reading needs no yes.
+// Call 95 (2026-11-11): the first call after a restart rang before any turn had run `prime()`, so there
+// was no tool to read with and that call's opening had no calendar ("no tools"). The read loads them itself.
+export async function readCallCalendar(call, input, { ready = prime } = {}) {
+  if (typeof contextDeps.runTool !== "function") await Promise.resolve().then(ready).catch(() => {});
+  return typeof contextDeps.runTool === "function"
+    ? contextDeps.runTool("calendar_events", input, { conversationId: call.conversation_id, kind: "user" })
+    : { ok: false, error: "no tools" };
+}
+setCalendarReader(readCallCalendar);

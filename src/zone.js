@@ -112,6 +112,68 @@ export function zoneFromPhone(address) {
   return null;
 }
 
+// ---------- the clock of a number Reason is about to ring ----------
+
+/** Numbers a place lookup returned, with the zone the place is in: kept in the database (`place_zones`) so a restart does not forget, with this in front of it. */
+const PLACE_ZONES = new Map();
+const PLACE_ZONES_MAX = 2000;
+const numberKey = (n) => { const d = String(n ?? "").replace(/[^\d]/g, ""); return d.length === 10 ? `1${d}` : d; };
+
+/** A lookup returned this place: its phone number and where it is. Kept so a call to it is timed by ITS clock. */
+export function notePlace({ phone, latitude, longitude } = {}) {
+  const key = numberKey(phone);
+  if (key.length < 8) return "";
+  const z = zoneAt(latitude, longitude);
+  if (!z) return "";
+  const known = PLACE_ZONES.get(key);
+  PLACE_ZONES.delete(key);
+  PLACE_ZONES.set(key, z);
+  if (PLACE_ZONES.size > PLACE_ZONES_MAX) PLACE_ZONES.delete(PLACE_ZONES.keys().next().value);
+  if (known !== z) try { db.rememberPlaceZone(key, z); } catch { /* this process still has it */ }
+  return z;
+}
+
+/** The zone of a place a lookup returned, by its number: this process's, else what was written down. */
+function placeZoneOf(number) {
+  const key = numberKey(number);
+  if (key.length < 8) return "";
+  const mine = PLACE_ZONES.get(key);
+  if (mine) return mine;
+  let kept = "";
+  try { kept = db.placeZone(key); } catch { kept = ""; }
+  if (!isIana(kept)) return "";
+  PLACE_ZONES.set(key, kept);
+  return kept;
+}
+
+/** Tests: forget what this process holds, as a restart would. */
+export function forgetPlaceZonesInMemory() { PLACE_ZONES.clear(); }
+
+/**
+ * Whose clock a call to this number is timed by (the 9pm-8am rule, src/calls/brief.js `withinCallingHours`):
+ * the place's own zone when a lookup gave its location, else the number's area code when that names one
+ * clock, else the account holder's zone (`guessZone`: confirmed > browser > location > calendar > their
+ * number). The server's zone is only what is left when nothing at all is known about either of them.
+ * `source`: "place" | "number" | "account". `zones` is set only when the area code covers more than one clock.
+ */
+export function calleeZone(number, conversationId = "") {
+  const place = placeZoneOf(number);
+  if (place) return { zone: place, source: "place" };
+  const digits = String(number ?? "").replace(/[^\d]/g, "");
+  const fromNumber = zoneFromPhone(String(number ?? "").trim().startsWith("+") ? number : digits.length === 10 ? `+1${digits}` : `+${digits}`);
+  if (fromNumber) return { zone: fromNumber.zone, source: "number" };
+  // An area code that spans two clocks (Idaho's 208, Alaska's 907): both, and the call is held while it is night on either.
+  const nanp = digits.length === 10 ? `1${digits}` : digits;
+  if (nanp.length === 11 && nanp.startsWith("1")) {
+    const area = nanp.slice(0, 4);
+    const spans = [...new Set([...phoneMap()].filter(([k]) => k.startsWith(area)).flatMap(([, zs]) => zs).filter(isIana))];
+    if (spans.length > 1) return { zone: spans[0], zones: spans, source: "number" };
+  }
+  let mine = "";
+  try { mine = guessZone(conversationId).zone; } catch { mine = ""; }
+  return { zone: isIana(mine) ? mine : config.installTz, source: "account" };
+}
+
 /** The zone a coordinate is in (offline), or "". */
 export function zoneAt(lat, lng) {
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) return "";
