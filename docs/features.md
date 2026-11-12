@@ -192,6 +192,61 @@ reach gets an honest answer now rather than a guess. Nothing about any of their 
 assumed: where the credentials are not known yet, the registry says that instead of naming one.
 
 
+### Their bank, read-only (`REASON_PLAID`, `src/plaid.js`) (added 2026-11-12)
+
+A person connects a bank through Plaid and asks Reason about their own money by text. Reason reads
+balances and transactions. It cannot move money: the only Plaid products used are Transactions and
+Balance, and no endpoint that pays, transfers or returns an account or routing number is called.
+**Off by default** (`REASON_PLAID=off | owner | on`), Sandbox by default (`PLAID_ENV`). As of this
+date it has only been run against Plaid's documented response shapes (`test/fixture-plaid.js`, through
+the real `plaid` SDK v51); there are no Plaid keys on any machine yet, so nothing has touched Plaid.
+
+- **Connecting.** "connect my bank" (or a money question with no bank connected) → the `bank` tool
+  makes a Plaid Hosted Link at that moment (it lasts 30 minutes) and Reason sends one short heads-up
+  (they connect through Plaid; read-only, can't move money) with the link on its own line. Plaid's
+  `SESSION_FINISHED` webhook brings the public token; it is exchanged server-side, the bank and its
+  accounts (name, type, last four) are saved, the first `/transactions/sync` runs, and Reason texts
+  "<bank> is connected...". Plaid opens `/bank/done` whether they finished or backed out, so that
+  page asks Plaid which it was (it also covers a lost webhook) and shows only connected / not yet /
+  closed. No bank name, balance or transaction is on it.
+- **Answers.** `bank` actions: `spending` (a period or two days, optional category or word; the
+  total first, by category; card payments, transfers between accounts and income are not counted),
+  `transactions`, `subscriptions` (Plaid's `/transactions/recurring/get` when the plan has that
+  add-on, otherwise worked out from their synced rows and said to be so; each with last charge, next
+  expected and `gone_out_this_month`, which is what "has rent gone out yet" reads), `balance`
+  (always `/accounts/balance/get`, never a kept number: there is no column for one), `status`,
+  `disconnect`. Categories come from Plaid's `personal_finance_category`. No bank connected → the
+  link is offered, never a guess. No investment, tax or insurance advice (prompt rule and tool text).
+- **Kept fresh.** `POST /plaid/webhook`, verified the documented way (ES256 JWT in
+  `Plaid-Verification`, key by `kid`, five-minute `iat`, SHA-256 of the raw body, constant-time).
+  `SYNC_UPDATES_AVAILABLE` syncs from the saved cursor. `ITEM_LOGIN_REQUIRED` (webhook or met on a
+  call), `PENDING_EXPIRATION`, `PENDING_DISCONNECT` → one text a day at most with a fresh update-mode
+  link; `LOGIN_REPAIRED` clears it. `USER_PERMISSION_REVOKED` → the same as a disconnect.
+- **Before paying.** The one real pay step today is `shop_pay` (a Crossmint checkout, paid by their
+  saved card). With a bank connected it first fetches a fresh balance; if no linked checking or
+  savings account covers the amount, nothing is paid on the yes already given, Reason says what the
+  account has and asks, and only a text sent after that warning lets the payment through. Plaid not
+  answering never blocks a payment. **There is no bill pay in Reason**, and Reason cannot tell which
+  account a card draws on, so this is a heads-up, not a guarantee. Proactive nudges ("rent hasn't
+  gone out", "spotify renews tomorrow") are not sent on their own yet: the data is there when asked.
+- **Privacy.** The access token is sealed with `REASON_TOKEN_KEY` before it is stored and, with
+  `REASON_ENCRYPT_REST2=on`, again under the person's own key, along with the bank's name, account
+  names and last fours, and every transaction; it is never logged, never returned to the model and
+  never exported (`SECRET_COLUMNS`). Every read is by conversation id. Reason's replies that answered
+  from the bank are kept out of the memory extractor and the nightly review (`plaid_reads`); what
+  the person says themselves is still read. "disconnect my bank" → `/item/remove`, then the token
+  and everything synced from that bank are deleted (if Plaid cannot be reached the data still goes
+  at once and the removal is retried). A full delete of somebody's data removes their Items at Plaid
+  first. Plaid is given a hash as the user id, never their number.
+- **To turn on:** `PLAID_CLIENT_ID`, `PLAID_SECRET`, `REASON_PLAID=owner`, and `REASON_PUBLIC_URL`
+  reachable by Plaid (the webhook is `<public url>/plaid/webhook`, passed on each link token; nothing
+  to register in the dashboard for Hosted Link's completion page). **Needs Plaid's approval:**
+  production access for Transactions and Balance (application, company profile, security
+  questionnaire), the Recurring Transactions add-on (a product access request), and OAuth
+  institution registration (Chase, Capital One and others need it and can take weeks). Balance is
+  billed per call in production; Transactions per connected Item per month.
+- Tests: `test/plaid.test.js` (20).
+
 ### Food ordering (`REASON_FOOD`, `src/food.js`)
 
 What was seen to work and what was not, as of 2026-11-12. No food order has yet been paid for

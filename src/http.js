@@ -115,6 +115,7 @@ import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 import * as stamps from "./stamps.js";
 // The free trial and the subscription (REASON_PAYWALL): Stripe's webhook and the two pages it sends people back to.
 import * as plan from "./plan.js";
+import * as plaid from "./plaid.js";
 import * as stripeapi from "./stripe.js";
 import * as eventpay from "./eventpay.js";
 import { config, stamp, clock } from "./config.js";
@@ -861,6 +862,23 @@ export function createServer({ router, runtime, log = () => {} }) {
             : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>`));
       }
 
+      // ---------- Plaid pushing back: a bank was connected, transactions changed, a login expired (src/plaid.js) ----------
+      if (req.method === "POST" && url.pathname === "/plaid/webhook") {
+        if (plaid.plaidMode() === "off") return send(404, { error: "not found" });
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await plaidWebhookRequest({ rawBody, headers: req.headers, log });
+        return send(out.status, out.body);
+      }
+      // Where Plaid's Hosted Link sends them when they are done, or backed out (it opens this either
+      // way). Signed-out by nature: it says connected or not and never a bank, a balance or a transaction.
+      if (req.method === "GET" && url.pathname === "/bank/done") {
+        if (plaid.plaidMode() === "off") { res.writeHead(302, { Location: `${(config.siteUrl || "https://heyreason.com").replace(/\/+$/, "")}/` }); return res.end(); }
+        const page = await bankDonePage(url.searchParams.get("s") ?? "", { log });
+        res.writeHead(200, HTML({ "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" }));
+        return res.end(brandedPage(page.title, page.body));
+      }
+
       // ---------- AgentCard pushing back: a card landed, a payment was approved ----------
       if (req.method === "POST" && url.pathname === "/agentcard/webhook") {
         const rawBody = await readBody(req);
@@ -1382,6 +1400,49 @@ export async function stripeWebhookRequest({ rawBody, headers = {}, runtime = nu
   // A 500 is the one answer that makes Stripe try again, which is what an event nothing acted on needs.
   if (out.ok === false) return { status: 500, body: { error: "not handled; try again" } };
   return { status: 200, body: { ok: true, ...(out.duplicate ? { duplicate: true } : {}), ...(out.matched === false ? { matched: false } : {}) } };
+}
+
+/**
+ * POST /plaid/webhook. The signature first (Plaid-Verification, an ES256 JWT over the raw body's
+ * hash, src/plaid.js verifyWebhook), then the event. 401 for a bad signature, 400 for a body that
+ * will not read, 200 for everything else: the log line says what was done, never whose or how much.
+ */
+export async function plaidWebhookRequest({ rawBody, headers = {}, log = () => {} } = {}) {
+  const v = await plaid.verifyWebhook({ rawBody, headers, nowMs: clock.now() });
+  if (!v.ok) {
+    log({ plaid_webhook_rejected: v.why });
+    return { status: 401, body: { error: `rejected: ${v.why}` } };
+  }
+  let event;
+  try { event = JSON.parse(rawBody); } catch { return { status: 400, body: { error: "bad json" } }; }
+  if (!event?.webhook_type || !event?.webhook_code) return { status: 400, body: { error: "no webhook type or code" } };
+  let out;
+  try { out = await plaid.handleWebhook(event); }
+  catch (e) { log({ plaid_webhook_failed: `${event.webhook_type}/${event.webhook_code}`, why: plaid.errorCode(e) }); return { status: 500, body: { error: "not handled; try again" } }; }
+  log({ plaid_webhook: `${event.webhook_type}/${event.webhook_code}`, handled: !!out.handled });
+  return { status: 200, body: { ok: true, handled: !!out.handled } };
+}
+
+/**
+ * The page behind a finished Hosted Link. Plaid opens it whether they connected or backed out, so
+ * it asks (the webhook may not have landed yet: finishLink reads the session from Plaid itself, with
+ * a few seconds' patience) and says which. Nothing on it but that: no bank, no balance, no name.
+ */
+export async function bankDonePage(state, { log = () => {}, waitMs = 8000 } = {}) {
+  let outcome = plaid.linkOutcome(state);
+  if (outcome === "open") {
+    try {
+      await Promise.race([plaid.finishLink({ state }), new Promise(r => setTimeout(r, waitMs).unref?.())]);
+    } catch (e) { log({ plaid_done_page_failed: plaid.errorCode(e) }); }
+    outcome = plaid.linkOutcome(state);
+  }
+  if (outcome === "connected" || outcome === "reconnected") {
+    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Head back to Messages: Reason will text you there in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. Text "disconnect my bank" any time to remove it.</p>` };
+  }
+  if (outcome === "open") {
+    return { title: "Almost there", body: `<h1>Not connected yet.</h1><p>If you finished signing in, give it a moment: Reason will text you when it's through. If you backed out, the link in your messages still works for a little while.</p>` };
+  }
+  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Text Reason "connect my bank" for a fresh one.</p>` };
 }
 
 export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {

@@ -79,6 +79,7 @@ import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } fr
 import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "./tableimage.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
+import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool } from "./plaid.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
@@ -420,6 +421,7 @@ export function toolsFor(conversationId) {
     && shopToolVisible(t.name, conversationId)
     && socialToolVisible(t.name, conversationId)
     && foodToolVisible(t.name, conversationId)
+    && plaidToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
     && cueToolVisible(t.name, conversationId)
@@ -4502,6 +4504,7 @@ export const tools = [
   ...TABLE_TOOL_DEFS,
   ...SHOP_TOOL_DEFS,
   ...FOOD_TOOL_DEFS,
+  ...PLAID_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
   // Thinking a step ahead when a trip, a move, a birthday comes up (src/cues.js), behind REASON_CUES.
   ...CUE_TOOL_DEFS,
@@ -7119,6 +7122,7 @@ const S = {
   ...TABLE_SCHEMAS,
   ...SHOP_SCHEMAS,
   ...FOOD_SCHEMAS,
+  ...PLAID_SCHEMAS,
   ...TODO_SCHEMAS,
   ...CUE_SCHEMAS,
   invites_list: z.object({}),
@@ -12317,6 +12321,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           return out?.ok ? { ok: true, messages: out.content?.messages ?? out.messages ?? [] } : out;
         }),
       });
+
+    // ---------- their bank, read-only (src/plaid.js, REASON_PLAID) ----------
+    case "bank":
+      return await runPlaidTool(name, input, { conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };

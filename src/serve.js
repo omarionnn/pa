@@ -131,6 +131,16 @@ startOps({ runtime, router, log });
   }
 }
 
+// Their bank through Plaid (src/plaid.js, REASON_PLAID): how the webhook and the done page text somebody.
+{
+  const plaid = await import("./plaid.js");
+  if (plaid.plaidMode() !== "off") {
+    plaid.attach({ say: (c, text) => runtime.say(c, text), log });
+    // A disconnect Plaid could not confirm at the time (their data is already gone here): tried again hourly.
+    setInterval(() => { plaid.retryRemovals().then(n => { if (n) log({ plaid_removals_retried: n }); }).catch(() => {}); }, 3600_000).unref();
+  }
+}
+
 const server = createServer({ router, runtime, log });
 // The restart gate reads data/busy.json for this pid; written at once so an idle process says so.
 resetBusy();
