@@ -21,7 +21,7 @@
 // the general persona.
 import * as accounts from "../accounts.js";
 import { config } from "../config.js";
-import { MANNER_RULE_SWAPS, OWN_TURN_MANNER, RECORDING_OBJECTION_LINE, lineMannerLines } from "./manner.js";
+import { MANNER_RULE_SWAPS, OWN_TURN_MANNER, RECORDING_OBJECTION_LINE, NOT_RECORDED_LINE, plainOpenLine, askedLine, lineMannerLines } from "./manner.js";
 
 /**
  * Their own call (paid set 3, 11-09): "text me what" — "text me that" through the phone line — right
@@ -126,7 +126,9 @@ export function ownerLanguageRule(code = "en") {
  * would be the only translation in the codebase and the wrong one in the other forty languages.
  * What is NOT left to the model is whether to do it, which is why this is code deciding.
  */
-export function announcementAgainIn(language, { ownerName = config.ownerName } = {}) {
+export function announcementAgainIn(language, { ownerName = config.ownerName, recorded = true } = {}) {
+  // A call that started normally and is not recorded (Omari 2026-11-12) has no disclosure to repeat.
+  if (!recorded) return "";
   return `This call has just changed language, to ${language}. Before anything else in your next reply,`
     + ` say in ${language} that you are an AI assistant calling on behalf of ${ownerName} and that the call is recorded,`
     + ` and that they can tell you if they would rather not be. Then carry on with what they asked.`
@@ -288,11 +290,16 @@ export function speakToThem({ ownerName }) {
  * is the thing a model cannot be told structurally — that an answer it does not have is a "let me
  * check with them", not an invention.
  */
-export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [], rules = [], announcement = "", openingOwed = false, manner = false, recordingOff = false }) {
+export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [], rules = [], announcement = "", openingOwed = false, manner = false, recordingOff = false, recorded = true }) {
   const list = facts.map(f => String(f).trim()).filter(Boolean);
+  const first = String(ownerName ?? "").trim().split(/\s+/)[0] || ownerName;
   return [
     `You are an AI assistant on a phone call for ${ownerName}. You are not ${ownerName} and you never say you are.`,
     ...(identity ? [thirdPartyIdentity({ ownerName })] : []),
+    // Omari 2026-11-12: asked who or what is calling, the honest answer at once — on every call.
+    askedLine(first),
+    // A call that is not audio-recorded (a GPT-Live call with somebody else) starts normally and says nothing about recording.
+    ...(recorded ? [] : [plainOpenLine(), NOT_RECORDED_LINE]),
     // The line opened silent (2026-10-27, call 45) and nobody has been told who is calling yet. Code
     // puts the line in front of the first words Reason says to a person; the model's part is to tell a
     // person from a machine and to not say it twice.

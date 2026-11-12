@@ -110,11 +110,31 @@ later wave gets started while an earlier one is unfinished.
 ### Wave 1 — the assistant you text
 
 - **Texting.** Reason lives in a text thread. That is the whole interface.
-- **Calls, with the recording.** Reason rings a real phone with a goal and comes back with what was
-  said. **Every call is recorded**, every call announces at the start that it is an AI assistant
-  calling on someone's behalf and that the call is recorded, and **the recording is sent to the
-  owner after the call**, with the summary. No switch, no exceptions: a provider that cannot record
-  cannot be used, and a recording that goes missing is reported as a fault.
+- **Calls.** Reason rings a real phone with a goal and comes back with what was said.
+  - **A call to a business or another person starts normally** (owner, 2026-11-12, every account): a
+    hello and then what the call is about — "Hi, I'd like to book a table for two tonight at eight".
+    Nothing up front about who or what is calling. **If they ask** who is calling, or whether it is a
+    person, a robot or an AI, it says at once that it is an AI assistant calling for the user (first
+    name) and carries on. It never says or implies it is human, never makes up a name, never dodges. A
+    place ringing back is answered the same way. (This replaces the 2026-11-11 opening line "this is
+    Reason, an AI assistant calling for <name> … this call may be recorded".)
+  - **Those calls are not audio-recorded.** No notice is given at the start, so no audio is kept: not
+    by Reason (the call's audio is never held or written) and not at the phone carrier (Twilio call
+    recording was never switched on; the audio only streams through). What is kept is the text: what
+    each side said as the voice model heard it (the transcript on the call row), the summary and the
+    outcome the user is told. `REASON_THIRDPARTY_RECORDING=on` turns the recording back on and, with
+    it, a notice at the start ("just so you know, this call may be recorded") and stopping the
+    recording when they object. The two only ever come together.
+  - **The user's own calls with Reason are recorded**, they are told once by text, and the recording
+    is sent to them after the call with the summary. A recording that goes missing is reported as a
+    fault.
+  - **No-call hours.** Calls to other people are held 9pm-8am on the clock of the person being
+    called. When that holds a call Reason says why in plain words ("it's 6:10am in Los Angeles, they're
+    likely not open yet; I'll call at 8 their time, or say call now") and offers to place it at the
+    first allowed time. "Call now anyway", in the user's own words, places that one call (code checks
+    the words are in what they just said; it is never inferred, and never on a turn Reason started).
+    They can also set their own hours, or turn them off, by saying so (`call_hours_set`, kept on their
+    account with their sentence). Their own phone is never held.
 - **Research that ends in a real pick.** Not a list of options and a shrug — go and look, then come
   back with one answer and the reason for it.
 - **Places and weather.** Where things are, whether they are open, what it will be like out.

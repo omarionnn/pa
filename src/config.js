@@ -784,6 +784,11 @@ export const config = {
   // rather than silently dropped, so "I didn't call because it's half eleven at night" is a thing
   // they hear.
   callQuietHours: process.env.REASON_CALL_QUIET_HOURS ?? "21:00-08:00",
+  // Audio of calls with businesses and other people (placed, and ring-backs). OFF by default (Omari
+  // 2026-11-12): those calls open like a normal caller, with no "this call may be recorded" line, so no
+  // audio of them is kept. =on brings back the notice at the start, the recording, and stopping it when
+  // they object (src/calls/manner.js). A person's own calls with Reason are not touched by this.
+  thirdPartyRecording: ["1", "true", "on", "yes"].includes(String(process.env.REASON_THIRDPARTY_RECORDING ?? "").trim().toLowerCase()),
 
   // The languages a call may switch into. What the owner's spec named, and no more. 
   callLanguages: (process.env.REASON_CALL_LANGUAGES || "en,es").split(",").map(s => s.trim().toLowerCase()).filter(Boolean),

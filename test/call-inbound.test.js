@@ -337,9 +337,9 @@ test("a place Reason called is not a stranger when it rings back — it rejoins 
   assert.equal(row.errand_id, e.id);
   assert.match(row.goal, /ringing back about: ask if they can do a table for eight/);
   assert.deepEqual(JSON.parse(row.facts), ["the name is Omari", "eight people"]);
-  // And they are told what they are talking to, because they are a person who has not been told.
-  assert.match(row.announcement, /AI assistant/);
-  assert.match(row.announcement, /recorded/);
+  // Omari 2026-11-12: a ring-back is answered normally — nothing said first by code about who or what
+  // it is, and nothing about recording (it is not recorded). Asked, it says it is an AI calling for him.
+  assert.equal(row.announcement, "");
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 0, "not kept as a stranger");
   assert.equal(outbox().length, 0, "the master is not asked about a place Reason rang");
 });
@@ -369,7 +369,7 @@ test("a place ringing back about ANOTHER user's errand rejoins that user's erran
   assert.equal(row.conversation_id, KOFI);
   assert.equal(row.is_owner, 0);
   assert.match(row.goal, /ringing back about: ask the plumber when they can come/);
-  assert.match(row.announcement, /Kofi/, "the disclosure names the person the errand is for");
+  assert.equal(row.announcement, "", "answered normally; whose errand it is rides on the row's conversation, not on a line said at them");
   assert.doesNotMatch(row.announcement, /Omari/);
   assert.equal(db.listCalls(C).length, 0, "nothing lands on the operator's conversation");
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 0, "not kept as a stranger");

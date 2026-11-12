@@ -37,7 +37,7 @@ import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voi
 import * as hold from "./hold.js";
 import * as callOutcome from "./outcome.js";
 import { makerLine } from "../maker.js";
-import { CallProvider, announcementFor, callRulesFor } from "./provider.js";
+import { CallProvider, callRulesFor } from "./provider.js";
 import { briefLines, todaySoFar } from "./brief.js";
 import { rulesNote, RULES_HEADING } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory, onScheduleRead } from "./callmemory.js";
@@ -159,7 +159,7 @@ export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1
   // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
   if (config.lineTalk && call?.direction !== "in") {
     const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: true, disclose: true });
+    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, disclose: manner.callRecorded(call) });
   }
   return lineInstructions(who);
 }
@@ -473,8 +473,7 @@ export function strangerInstructions() {
  * menu (phase 3, 2026-10-31). Here the voice never decides anything, not even when to speak: Reason's
  * call turn hears every word on the line (the third-party context: brief, rules, hold, menus, machines,
  * the commit gate) and hands over the exact words to say, and code drops any audio it did not ask for
- * (`GptLiveCall#gateOpen`). So the line opens silent, a menu or hold music hears nothing, and the
- * recorded-call disclosure is said word for word.
+ * (`GptLiveCall#gateOpen`). So the line opens silent and a menu or hold music hears nothing.
  */
 export function lineInstructions({ name = "them", named = name !== "them", identity = false } = {}) {
   const them = named ? name : "the person you work for";
@@ -503,16 +502,17 @@ export function lineInstructions({ name = "them", named = name !== "them", ident
  * would have to decide. Code still keeps it silent until somebody is there (`ownOpener`), presses keys,
  * waits on hold and keeps the honesty guard.
  *
- * `disclose` (every call Reason places, every account, whatever REASON_CALL_MANNER says — Omari 11-11):
- * the first reply says it is Reason, an AI assistant calling for <first name>, and that the call may be
- * recorded, and an objection to the recording is met with "that's fine, I'll turn it off" (code stops it:
- * `readObjection`). Without it (a caller that passes neither flag) the older opener stands: no "I'm an
- * AI calling for…" unless they ask, and the recording line only where the law wants it (./consent.js).
- * `manner` adds the cancelled call manner's tone lines on top and is separate.
+ * Omari 2026-11-12, every account: the call starts normally — hello, then what it is calling about, no
+ * word about who or what is calling. Asked who it is, or whether it is a person / a robot / an AI, it
+ * says at once it is an AI assistant calling for <first name> (`manner.askedLine`). The call is not
+ * audio-recorded, so nothing is said about recording.
+ *
+ * `disclose` (only a call that IS recorded: REASON_THIRDPARTY_RECORDING=on): the first reply says the
+ * call may be recorded, and an objection is met with "that's fine, I'll turn it off" (code stops it:
+ * `readObjection`). `manner` adds the cancelled call manner's tone lines on top and is separate.
  */
-export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], notice = false, manner: mannered = false, disclose = false } = {}) {
+export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], manner: mannered = false, disclose = false } = {}) {
   const first = named ? String(name).trim().split(/\s+/)[0] : "the person you work for";
-  const says = mannered || disclose;
   const b = brief ?? {};
   const told = (facts ?? []).map(f => String(f).trim()).filter(Boolean);
   const rules = callRulesFor({ ownerName: first });
@@ -528,21 +528,15 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     "Until a live person speaks to you, say nothing at all: not to a ringing line, a recording, a phone menu, hold music or a voicemail greeting. Reason handles those.",
     "When a person answers — a live greeting like \"…, can I help you?\", \"hello?\" or \"speaking\" — answer straight away, like a normal person calling: a quick warm hello, then what you're calling about, in one natural breath."
       + " For example: \"Oh hey, hi! I'm calling to find out what kind of service you'd recommend for someone with low back pain… and how much would an hour be?\"",
-    ...(says
-      // Omari 11-11: a business always hears who is calling, that it's an AI, and that it may be recorded.
-      ? [`In that first reply, right after hello, say who you are and that the call may be recorded: "${manner.disclosureLine(named ? first : "")}" — then carry straight on with what you're calling about. If code already said it for you at pickup, don't say it again. If they ask whether you're a robot or an AI, say plainly yes, you're an AI assistant calling for ${first}. If they ask your name, it's Reason; never make up a person's name.`]
-      : [
-        notice
-          ? "This call is recorded, and where they are the law says they must be told: in that first reply, right after hello, say \"just so you know, this call's recorded\" — lightly, then carry straight on."
-          : "Don't bring up that the call is recorded; if they ask, say yes, it is.",
-      ]),
+    manner.plainOpenLine(),
+    manner.askedLine(first),
+    `Say who you're calling for only when it matters — a booking or a name they need — or when they ask.`,
+    ...(disclose
+      // Only a call that is recorded (REASON_THIRDPARTY_RECORDING=on): the notice, and their objection honoured.
+      ? ["This call is recorded, so they are told: in that first reply, right after hello, say \"just so you know, this call may be recorded\" — lightly, then carry straight on with what you're calling about. If code already said it for you at pickup, don't say it again.",
+        manner.RECORDING_OBJECTION_LINE]
+      : [manner.NOT_RECORDED_LINE]),
     "If they say \"hello?\" again while you're starting, don't start over: carry on with what you were saying.",
-    // The disclosure without the manner: the objection line and the never-pose-as-them line the manner's own lines carry.
-    ...(disclose && !mannered ? [manner.RECORDING_OBJECTION_LINE, `Say who you're calling for again only when it matters — a booking or a name they need. Never say you are ${first}.`] : []),
-    ...(says ? [] : [
-      `Don't open by saying you're an AI or who you're calling for. If they ask whether you're a robot, an AI, a recording or automated, say plainly: "yes, I'm an AI assistant calling for ${first}." Never deny it and never dodge it.`,
-      `Say who you're calling for only when it matters — a booking or a name they need, or they ask who's calling: "I'm calling for ${first}." If they ask your name, it's Reason; never make up a person's name, and never say you are ${first}.`,
-    ]),
     "Then talk with them yourself, the way a person would: short replies, one thing at a time, and let them finish. If they start talking while you're speaking, stop at once and listen."
       + " A small sound — \"mm\", \"uh\", a breath, line noise — is not their turn: don't answer it and don't restart.",
     "No listening sounds: never \"mm\", \"mhm\" or \"uh-huh\" while they talk or after you've finished speaking. Say nothing until it's your turn.",
@@ -552,7 +546,7 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     `Hand it to Reason (delegate) whenever they ask something you weren't given above (a name, number, email, address, a preference), they offer to book, hold, reserve, charge or sign ${first} up for anything, they want payment details, a phone menu wants a key pressed, or you aren't sure what to say.`
       + " While Reason works, a few words like \"let me check\" are fine. When Reason's result comes, say it naturally and briefly, keeping every fact, number and name exactly.",
     "Never invent a fact, time, name, number or price, and never agree to anything you weren't told you may.",
-    ...(mannered ? manner.lineMannerLines(first) : []),
+    ...(mannered ? manner.lineMannerLines(first, { recordingOff: false }) : []),
     mannered
       ? "Once you have what the call is for, thank them, say in a few words what happens next if anything does, and say bye. Don't stay on."
       : "Once you have what the call is for, thank them and say bye. Don't stay on.",
@@ -568,13 +562,12 @@ function briefOf(call) {
 }
 
 /**
- * The disclosure a GPT-Live third-party call opens with: the provider's own line
- * (`announcementFor` in ./provider.js), naming Reason and the person by first name — "this is Reason,
- * an AI assistant calling for Omari. Just so you know, this call is recorded."
+ * The line code says first on a GPT-Live call with somebody else (the call row's `announcement`): nothing
+ * — the call starts normally (Omari 2026-11-12) — unless the call is recorded, and then the notice.
+ * The older provider's "this is an AI assistant calling for …, this call is recorded" is never used here.
  */
-export function lineAnnouncement(ann) {
-  return String(ann ?? "").replace(/this is an AI assistant calling for ([^.]+)\./,
-    (_, who) => `this is Reason, an AI assistant calling for ${who.trim().split(/\s+/)[0]}.`);
+export function lineAnnouncement() {
+  return config.thirdPartyRecording ? manner.RECORDING_NOTICE_LINE : "";
 }
 
 /** How long GPT-Live holds its automatic acknowledgement of a hand-off, so code can cancel it first. */
@@ -1451,11 +1444,11 @@ export function pressTwiml(digits, row, base = config.publicUrl) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Play digits="${xml(`w${digits}`)}"/><Connect><Stream url="${xml(`${wss}${STREAM_PATH}${row.webhook_token}`)}"/></Connect></Response>`;
 }
 
-/** What a place ringing back hears first: the disclosure, word for word, then what it is about. */
+/** What a place ringing back hears first: a plain hello and what it is about (and the recording notice first, only when it is recorded). */
 export function ringBackLine(row) {
   const about = String(row.goal ?? "").replace(/^They are ringing back about:\s*/, "").trim();
-  const ann = String(row.announcement ?? "").trim();
-  return about ? `${ann} You're calling back about ${about} — thanks for ringing back.` : ann;
+  const ann = String(row.announcement ?? "").trim() || "Hi there!";
+  return about ? `${ann} You're calling back about ${about} — thanks for ringing back.` : `${ann} Thanks for ringing back.`;
 }
 
 export class GptLiveCall {
@@ -1530,22 +1523,26 @@ export class GptLiveCall {
     this.bargeIns = 0;
     // The call manner (./manner.js) for this call's account; never on a stranger's call.
     this.manner = !persona && !!this.who?.manner && (!!this.who?.owner || this.line);
+    // Omari 2026-11-12: a call with a business or another person (placed, or a place ringing back) starts
+    // normally and its audio is NOT kept, for every account. Only REASON_THIRDPARTY_RECORDING=on records
+    // it, and then they are told at the start and an objection stops it (`readObjection`).
+    this.recorded = !this.line || manner.callRecorded({ ...call, provider: PROVIDER });
     if (this.talk) {
-      // Omari 11-11: every business hears it's Reason, an AI, and that it may be recorded — every account,
-      // every state, whatever REASON_CALL_MANNER says (the manner was cancelled; the disclosure was not).
-      this.notice = { ...recordingNoticeFor(call.to_number), notice: true, disclose: true, why: "always said" };
+      this.notice = this.recorded
+        ? { ...recordingNoticeFor(call.to_number), notice: true, disclose: true, why: "recorded: always said" }
+        : { notice: false, disclose: false, state: "", why: "not recorded: nothing to say" };
       const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, notice: this.notice.notice, disclose: true }) };
-      // Reason's own turns put the row's opening line in front of their first words to a person: the
-      // disclosure, word for word.
-      const opening = manner.disclosureLine(this.who?.named ? this.who.name : "");
+      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, disclose: this.recorded }) };
+      // Reason's own turns put the row's opening line in front of their first words to a person: none
+      // on a call that is not recorded, the recording notice on one that is.
+      const opening = lineAnnouncement();
       try { db.updateCall(call.conversation_id, call.id, { announcement: opening }); } catch { /* the row's own line stands */ }
       this.call = { ...call, announcement: opening };
     }
-    // A place ringing back hears the disclosure first, by code (`ringBackLine`), so its objection to the
+    // A recorded ring-back hears the notice first, by code (`ringBackLine`), so its objection to the
     // recording is honoured the same way: read by meaning, the tape cut back to before their words
     // (`readObjection`). No "said yet?" check here (`notice: false`): code says the line itself.
-    else if (this.line && call.direction === "in") this.notice = { notice: false, disclose: true, state: "", why: "ring-back: said first by code" };
+    else if (this.line && call.direction === "in") this.notice = { notice: false, disclose: this.recorded, state: "", why: this.recorded ? "ring-back: said first by code" : "not recorded: nothing to say" };
     this.name = this.who.name;
     // The pickup opener (./opener.js): a clip made while it rang, played as soon as their hello ends
     // (or into a silent line) while the live voice connects. `state`: waiting → playing → played, or
@@ -1571,6 +1568,8 @@ export class GptLiveCall {
     // On a line call the greeting is not seeded: what was said comes from what was really played.
     this.turns = this.greeting && !this.line ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
     this.tape = new CallTape();
+    // Not recorded: the tape keeps the call's clock and not one byte of audio, from the first frame.
+    if (!this.recorded) this.tape.stopAt(0);
     // Their side as the model hears it: quiet speech lifted (call 76). REASON_CALL_HEARING=off sends it raw.
     this.hearing = config.callHearing ? new Hearing() : null;
     this.pending = new Map();
@@ -3294,11 +3293,10 @@ export class GptLiveCall {
     this.noticeTimer = null;
     if (this.done) return;
     const mine = this.turns.filter(x => x.who === "reason").map(x => x.text).join(" ");
-    const said = /\brecord/i.test(mine) && (!this.notice?.disclose || /\bAI\b/i.test(mine));
+    const said = /\brecord/i.test(mine);
     this.log({ gptlive_notice: this.call.id, said, state: this.notice?.state ?? "" });
-    if (!said) this.live.send({ type: "session.instructions.append", event_id: `notice_${this.call.id}`, delegation_id: null, content: this.notice?.disclose
-      ? `You have not yet told them who is calling and that the call may be recorded, and you must: in your next reply, say lightly "${manner.disclosureLine(this.who?.named ? this.who.name : "")}", then carry on.`
-      : "You have not yet told them this call is recorded, and you must: in your next reply, say lightly \"just so you know, this call's recorded\"." });
+    if (!said) this.live.send({ type: "session.instructions.append", event_id: `notice_${this.call.id}`, delegation_id: null,
+      content: "You have not yet told them this call may be recorded, and you must: in your next reply, say lightly \"just so you know, this call may be recorded\", then carry on." });
   }
 
   /**
@@ -3775,6 +3773,7 @@ export class GptLiveCall {
       // A caller with no account is told the call is recorded, so it is (2026-10-31): onto their
       // stranger row, under the same retention as their words (src/strangercalls.js).
       if (this.persona && !this.persona.recordingPath) recordingWhy = "a caller with no account and no row to keep it on";
+      else if (!this.recorded) recordingWhy = manner.NOT_RECORDED_WHY;
       else if (this.tape.seconds() >= 1) {
         const path = this.persona ? this.persona.recordingPath : recordingFileFor(this.call.id, "wav");
         // Sealed for its owner (REASON_ENCRYPT_REST2): the account, or the stranger's own key.
@@ -3794,6 +3793,8 @@ export class GptLiveCall {
       cutOff,
       costRaw: JSON.stringify({ voice_seconds: seconds, cents_per_minute: CENTS_PER_MINUTE, session: this.sessionId ?? "", guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted }),
       recording, recordingWhy,
+      // Not a lost recording: none was made (`fileRecording` in src/tools.js files it as not applicable).
+      ...(this.recorded ? {} : { notRecorded: true }),
       ...(this.line ? { howItWent: this.howItWent(seconds) } : {}),
     };
     // Pickup → first word they heard, on the row for /ops (src/ops.js `pickupCheck`).
@@ -3966,17 +3967,15 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   if (!row?.webhook_token) return { ok: false, error: "there is no call row to place" };
   const thirdParty = args?.kind !== "owner";
   if (thirdParty) {
-    // The disclosure it will open with, naming Reason (the turn says it verbatim off the row).
-    const ann = lineAnnouncement(row.announcement || args.announcement);
-    if (ann && ann !== row.announcement) db.updateCall(row.conversation_id, row.id, { announcement: ann });
+    // What code says first (the turn says it verbatim off the row): nothing, or the recording notice on a recorded call.
+    const ann = lineAnnouncement();
+    if (ann !== String(row.announcement ?? "")) { db.updateCall(row.conversation_id, row.id, { announcement: ann }); row.announcement = ann; }
   }
   // The pickup opener, made while it rings (./opener.js): never waited on here.
   if (thirdParty && opener.openerFor(row)) {
     try {
-      // The clip says who is calling, that it's an AI and that it may be recorded (every account; not the manner flag).
-      const who = whoFor(row);
-      const disclose = manner.disclosureLine(who.named ? who.name : "");
-      void opener.prepare(row, { notice: true, disclose, log: args?.log ?? (() => {}) });
+      // The clip is "Hi there! I'm calling …" — and the recording notice in front only on a recorded call.
+      void opener.prepare(row, { disclose: lineAnnouncement(), log: args?.log ?? (() => {}) });
     } catch { /* the call opens the old way */ }
   }
   // No warm-up of the VOICE while it rings (2026-10-31): calls 54–55 with it were "confused and
@@ -4017,7 +4016,7 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
     ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}`,
     profile: thirdParty ? "third_party" : "owner",
     // The line opens silent and the disclosure is owed to the first person heard (#232).
-    ...(thirdParty ? { openingWaits: true } : {}),
+    ...(thirdParty ? { openingWaits: true, recorded: config.thirdPartyRecording === true, announced: lineAnnouncement() } : {}),
   };
 }
 
@@ -4055,7 +4054,7 @@ export class GptLiveCallProvider extends CallProvider {
       name: this.name,
       status: missing.length ? "not_connected" : "live",
       missing,
-      what: "be Reason itself on a real phone call, both directions, with GPT-Live as the voice on a Twilio number — recorded, with the audio afterwards",
+      what: "be Reason itself on a real phone call, both directions, with GPT-Live as the voice on a Twilio number — their own calls recorded, with the audio afterwards; calls to businesses and other people are not audio-recorded",
       records: true,
       directions: { out: !missing.length, in: !missing.length, missingIn: missing },
     };
@@ -4276,13 +4275,12 @@ export async function inboundTwimlReady(opts) {
  */
 function ringBackRow({ who, address, callSid, log }) {
   const about = who.aboutCall;
-  const person = accounts.ownerOf(who.conversationId);
   const row = db.createCall(who.conversationId, {
     provider: PROVIDER, toNumber: address, isOwner: false,
     goal: `They are ringing back about: ${about.goal}`,
     facts: Array.isArray(about.facts) ? about.facts : [],
     direction: "in", externalId: `${EXT}${callSid || randomUUID()}`, state: "in_progress",
-    announcement: lineAnnouncement(announcementFor({ ownerName: person.name })),
+    announcement: lineAnnouncement(),
   });
   db.updateCall(who.conversationId, row.id, { brief: about.brief || "{}", errand_id: about.errand_id ?? null, hold_budget_s: about.hold_budget_s ?? null });
   accounts.countUse(who.conversationId, "call");

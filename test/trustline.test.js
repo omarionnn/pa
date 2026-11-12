@@ -694,6 +694,7 @@ test("everything that reads from outside names its source and is scanned — wal
     call_place: "places a call; what was said comes back through call_status",
     call_recording: "sends the audio file; the words come back through call_status",
     call_errand_start: "writes down the owner's own request and the questions to ask; nothing outside has been heard yet",
+    call_hours_set: "a setting of the person's own, saved from their own sentence; no outside words come back",
   };
   const territory = [...names].filter(n => /^(web_|browser_|gmail_|calendar_|drive_|video_|research$|call_)/.test(n));
   const unaccounted = territory.filter(n => !READERS.includes(n) && !NOT_READERS[n]);
