@@ -413,11 +413,15 @@ export function askWhetherItWentThrough(brief, { what = "", then = null } = {}) 
  * Third-party calls only; a call to the owner's own phone is never blocked by this, because it is
  * their assistant and a call they asked for at midnight is a call they asked for.
  *
+ * `tz` is the CALLEE's clock (src/zone.js `calleeZone`: the place's own zone from a lookup, else the
+ * number's area code, else the account holder's zone) — until 2026-11-11 it was the server's Eastern
+ * clock for everyone, so a California office could be rung at 5:30am its time.
+ *
  * Returns `{ok: true}` or `{ok: false, error}` — never a silent skip. His standing rule is that a
  * thing not done is said out loud, and "I didn't ring them because it's half eleven at night" is a
  * useful sentence that a dropped call is not.
  */
-export function withinCallingHours({ now = clock.now(), toOwner = false, window: w = config.callQuietHours, tz = config.tz } = {}) {
+export function withinCallingHours({ now = clock.now(), toOwner = false, window: w = config.callQuietHours, tz = config.tz, whose = "" } = {}) {
   if (toOwner) return { ok: true };
   const spec = String(w ?? "").trim();
   if (!spec) return { ok: true };
@@ -426,19 +430,26 @@ export function withinCallingHours({ now = clock.now(), toOwner = false, window:
   const mins = (h, mi) => Number(h) * 60 + Number(mi);
   const from = mins(m[1], m[2]);
   const to = mins(m[3], m[4]);
-  const p = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false })
-    .formatToParts(new Date(now));
-  const hour = Number(p.find(x => x.type === "hour")?.value ?? 0) % 24;
-  const minute = Number(p.find(x => x.type === "minute")?.value ?? 0);
-  const at = hour * 60 + minute;
+  const minuteIn = (z) => {
+    const p = new Intl.DateTimeFormat("en-US", { timeZone: z, hour: "2-digit", minute: "2-digit", hour12: false })
+      .formatToParts(new Date(now));
+    return (Number(p.find(x => x.type === "hour")?.value ?? 0) % 24) * 60 + Number(p.find(x => x.type === "minute")?.value ?? 0);
+  };
   // A window that crosses midnight (21:00-08:00) is the normal case, so the wrap is the main path.
-  const inside = from <= to ? at >= from && at < to : at >= from || at < to;
-  if (!inside) return { ok: true };
+  const inside = (at) => (from <= to ? at >= from && at < to : at >= from || at < to);
+  // An area code that covers two clocks gives both: night on either holds the call.
+  const zones = (Array.isArray(tz) ? tz : [tz]).filter(Boolean);
+  let hit = "";
+  for (const z of zones) { try { if (inside(minuteIn(z))) { hit = z; break; } } catch { /* an unreadable zone decides nothing */ } }
+  if (!hit) return { ok: true };
+  tz = hit;
+  const at = minuteIn(hit);
   const pretty = (x) => `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
   return {
     ok: false,
-    error: `It is ${pretty(at)} where ${config.ownerName} is, and calls to other people are held between`
-      + ` ${pretty(from)} and ${pretty(to)} (REASON_CALL_QUIET_HOURS). Nobody's phone rang. Say that plainly —`
+    zone: tz,
+    error: `It is ${pretty(at)} ${whose === "place" || whose === "number" ? `where the number you are calling is (${tz})` : "where they are"}, and calls to other people are held between`
+      + ` ${pretty(from)} and ${pretty(to)} on the clock of the person being called (REASON_CALL_QUIET_HOURS). Nobody's phone rang. Say that plainly —`
       + ` it is the hour, not a failure — and offer to ring them when the window opens, or to do something that is not a call.`,
   };
 }

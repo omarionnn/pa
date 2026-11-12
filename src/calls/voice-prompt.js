@@ -21,7 +21,7 @@
 // the general persona.
 import * as accounts from "../accounts.js";
 import { config } from "../config.js";
-import { MANNER_RULE_SWAPS, OWN_TURN_MANNER, lineMannerLines } from "./manner.js";
+import { MANNER_RULE_SWAPS, OWN_TURN_MANNER, RECORDING_OBJECTION_LINE, lineMannerLines } from "./manner.js";
 
 /**
  * Their own call (paid set 3, 11-09): "text me what" — "text me that" through the phone line — right
@@ -324,7 +324,9 @@ export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [],
     `Do not say goodbye until you are actually ending the call. When you ARE ending it, thank them and`
       + ` call the end_call tool in the same turn — never one without the other.`,
     `Once you have the answer, or they tell you they cannot help, that is the moment to end it.`,
-    ...(manner ? lineMannerLines(String(ownerName ?? "").trim().split(/\s+/)[0] || ownerName, { recordingOff }) : []),
+    // An objection to the recording is honoured on every call where code stops it, manner or not (Omari 11-11).
+    ...(manner ? lineMannerLines(String(ownerName ?? "").trim().split(/\s+/)[0] || ownerName, { recordingOff })
+      : recordingOff ? [RECORDING_OBJECTION_LINE] : []),
   ].filter(Boolean).join("\n\n");
 }
 
