@@ -14,7 +14,7 @@ import { stamp, config, normalizeNumber } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 import { wordmark, WORDMARK_CSS, homeLink, yourPagesHref } from "./wordmark.js";
-import { BRAND_PEN, BRAND_PEN_DARK, BRAND_ART, PAPER, PAPER_GRAIN } from "./brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, BRAND_ART, PAPER, PAPER_GRAIN, PAPER_GLOW, NIGHT_GLOW, GLOW_OFF, SHEET_BG } from "./brand.js";
 import { PRINT_CSS, printUrl } from "./print.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -271,15 +271,16 @@ export function dark(rules) {
 }
 
 const CSS = `
-:root{--ink:${PAPER.ink};--dim:${PAPER.dim};--line:${PAPER.line};--bg:${PAPER.bg};--ground:${GROUND.light};--card:${PAPER.card};--soft:${PAPER.soft};--grain:${PAPER_GRAIN};--accent:${BRAND_PEN};--accent-ink:#fff;--mark:${BRAND_PEN};--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
-${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:${BRAND_PEN_DARK};--accent-ink:#12110f;--mark:${BRAND_PEN_DARK};--warn:#ff7b72;--edge:rgba(255,255,255,.17);--grain:none`]])}
+:root{--ink:${PAPER.ink};--dim:${PAPER.dim};--line:${PAPER.line};--bg:${PAPER.bg};--ground:${GROUND.light};--card:${PAPER.card};--soft:${PAPER.soft};--grain:${PAPER_GRAIN};--glow:${PAPER_GLOW};--accent:${BRAND_PEN};--accent-ink:#fff;--mark:${BRAND_PEN};--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
+${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:${BRAND_PEN_DARK};--accent-ink:#12110f;--mark:${BRAND_PEN_DARK};--warn:#ff7b72;--edge:rgba(255,255,255,.17);--grain:none;--glow:${NIGHT_GLOW}`]])}
+${GLOW_OFF}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 /* Two tones: the top line sits on a slightly darker ground, and the page itself is a pale sheet with
    rounded top corners resting on it. Once the page is open the sheet fills the screen and the ground
    is just the strip behind the top line, but it is what the sheet rises out of (see INTRO_CSS). */
 body{margin:0;background:var(--grain) var(--ground);color:var(--ink);font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
-.sheet{background:var(--grain) var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+.sheet{background:${SHEET_BG};border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 /* The top line scrolls away with the page. It says whose page this is and when, and nothing else:
    a sticky bar with a blur was the one thing that made a page read as an app screen. */
 a{color:var(--mark)}
