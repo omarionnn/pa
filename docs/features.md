@@ -186,11 +186,13 @@ through Reason; every run below was stopped at the payment request and cancelled
   around a check (the no-stealth rule).
 - **The checkout is Crossmint's** (`store_checkout`), which runs on Crossmint's browser. It reached an
   exact total, stopped at payment, at: Feel it Healthy Spot on Square Online ($10.83, pickup,
-  2026-11-10) and Nizza on Toast ($22.87, one Margherita, delivery, 2026-11-12, about 3 minutes).
-  On DoorDash it got in, set the address and built the cart (Joe's Pizza), then DoorDash asked for an
-  account: it has no guest checkout, so a DoorDash order needs the person's own sign-in, given on
-  the link Reason sends (the password goes to Crossmint, never to Reason). That signed-in step has
-  not been seen through to a total.
+  2026-11-10), Nizza on Toast ($22.87, one Margherita, delivery, 2026-11-12, about 3 minutes) and
+  Roma Pizza on Slice ($17.45, one 12" cheese pizza, delivery, 2026-11-12, as a guest).
+  On DoorDash and on Grubhub it got in, set the address and built the cart, then the app asked for
+  an account: neither has a guest checkout, so an order there needs the person's own sign-in, given
+  on the link Reason sends (the password goes to Crossmint, never to Reason). That signed-in step
+  has not been seen through to a total. On Uber Eats the guest cart was built and priced, and Uber
+  Eats' own card form then failed to load, so no payment request was made.
 - **Past orders come from their mail** (`food_order` `past_orders`): the receipts every app and
   ordering system sends, newest first, for "what did I last order" and "get that again". It needs
   their mail connected and the receipts to be in a connected mailbox.

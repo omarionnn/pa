@@ -81,6 +81,25 @@
         "restaurant": "Feel it Healthy Spot, Bronx",
         "result": "reached payment (2026-11-10 dry run)",
         "amount": "10.83 USD exact"
+      },
+      {
+        "site": "Slice",
+        "restaurant": "Roma Pizza",
+        "result": "reached payment as a guest",
+        "amount": "17.45 USD exact",
+        "seconds": 151
+      },
+      {
+        "site": "Grubhub",
+        "restaurant": "Amore Pizza Cafe",
+        "result": "got in and built the bag (1 cheese slice, $3.99), then Grubhub required creating an account: no guest checkout",
+        "seconds": 485
+      },
+      {
+        "site": "Uber Eats",
+        "restaurant": "$1.50 Fresh Pizza, 1723 Broadway",
+        "result": "guest cart built and the page showed a $10.49 total, but Uber Eats' own add-card form failed to load (400), so no payment request was made: blocked, merchant.checkout_error",
+        "seconds": 185
       }
     ],
     "note": "Three runs started in the same second all ended failed/reconciliation_required within 3 minutes, mid-browse, before any payment step; each run alone afterwards went through. Nothing was ordered: none had a card."
