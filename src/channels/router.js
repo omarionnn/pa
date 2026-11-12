@@ -47,6 +47,7 @@ import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
 import * as eventonb from "../eventonboarding.js";
+import * as eventbiz from "../eventbusiness.js";
 import * as actioncards from "../actioncards.js";
 import * as connectafter from "../connectafter.js";
 import * as actionengine from "../actionengine.js";
@@ -711,7 +712,16 @@ export class Router {
     // A reply to Reason's own event onboarding line ("how was it?", the call offer; src/eventonboarding.js)
     // is Reason's conversation, not theirs (owner, 2026-11-11): not counted, and never met by the ceiling.
     let onbReply = false;
-    try { onbReply = last.channel !== web.WEB && eventonb.claimFreeReply(conversationId); } catch { onbReply = false; }
+    try { onbReply = last.channel !== web.WEB && (eventonb.claimFreeReply(conversationId) || eventonb.claimCallSetup(conversationId)); } catch { onbReply = false; }
+    // Event business from a guest who would otherwise meet the ceiling ("can't make it", an RSVP change,
+    // an answer for the host; src/eventbusiness.js, owner 2026-11-11): free, uncounted, never the pay
+    // line. Only a real ask of Reason counts.
+    let eventBiz = false;
+    plan.unwaive(conversationId);
+    if (!onbReply && last.channel !== web.WEB) {
+      try { eventBiz = await eventbiz.free({ conversationId, texts: held.map(h => h.text), ask: this.onboard?.ask, log: this.log }); } catch { eventBiz = false; }
+    }
+    if (eventBiz) { onbReply = true; plan.waive(conversationId, eventbiz.GUEST_TOOLS); }
     accounts.countUse(conversationId, "turn", 1, { visit: !onbReply });
     // The reply's timing line (src/replytiming.js) starts at the last text's arrival: everything
     // from here to the send is one stage or another of it. Numbers only.
@@ -824,6 +834,7 @@ export class Router {
           screen: thread ? ({ text }) => this.runtime.screen?.({ text, messages: thread, who: who === "the person I work for" ? "them" : who }) ?? { verdict: "clear" } : null,
         }).catch(e => { this.log({ event_onboarding_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); return null; });
         if (eo?.frame) onboardFrame = eo.frame;
+        if (eventBiz) onboardFrame = [onboardFrame, eventbiz.FRAME].filter(Boolean).join("\n");
         if (eo?.noCard) eventNoCard = true;
         if (eo?.after) eventAfter = { channel: last.channel, to: last.address, chatId: last.chat_id ?? null };
       }
@@ -930,6 +941,8 @@ export class Router {
         try { db.reholdInbound(fold.added.map(a => a.row).filter(Boolean).map(r => ({ ...r, held_times: Math.max(0, (r.held_times ?? 0) - 1) })), { readyAt: clock.now(), downSince: null }); }
         catch (e) { this.log({ fold_hand_back_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
       }
+      // The free event-business turn is over: the lapsed gate is whole again (src/eventbusiness.js).
+      if (eventBiz) plan.unwaive(conversationId);
       onethought.end(fold);
       await bubble.stop();
       this.bubbles.delete(conversationId);

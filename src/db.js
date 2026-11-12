@@ -5582,6 +5582,16 @@ export function callsToNumber(conversationId, { errandId = null, toNumber = "" }
   return db.prepare(sql).all(...args).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
 }
 
+/**
+ * Every call to or from this number since `since`, on anybody's conversation, oldest first. For a place
+ * ringing back (src/calls/inbound.js): the errand it is returning may be any person's, not only the
+ * operator's. Only ever read by number, for a call that number is making now.
+ */
+export function callsWithNumber({ toNumber = "", since = 0 } = {}) {
+  return db.prepare("SELECT * FROM calls WHERE created_at >= ? AND pt(to_number) = ? ORDER BY id ASC")
+    .all(since, toNumber).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
 // ---------- quotes ----------
 
 const quoteRow = (r) => (r ? { ...r, included: safeJson(r.included, []), excluded: safeJson(r.excluded, []) } : null);
@@ -6702,6 +6712,15 @@ export function rememberSeenUrls(conversationId, urls, { kind = "", from = "" } 
 db.exec("CREATE TABLE IF NOT EXISTS place_photos (key TEXT PRIMARY KEY, url TEXT NOT NULL, shows TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL)");
 export function placePhotoFor(key, since) {
   return db.prepare("SELECT url, shows, at FROM place_photos WHERE key = ? AND at >= ?").get(key, since) ?? null;
+}
+// A place a lookup returned, by its phone number: the zone it is in, so a call to it is timed by its own
+// clock after a restart too (src/zone.js `calleeZone`). Public facts about a business; nobody's rows.
+db.exec("CREATE TABLE IF NOT EXISTS place_zones (phone TEXT PRIMARY KEY, zone TEXT NOT NULL, at INTEGER NOT NULL)");
+export function placeZone(phone) {
+  return db.prepare("SELECT zone FROM place_zones WHERE phone = ?").get(String(phone ?? ""))?.zone ?? "";
+}
+export function rememberPlaceZone(phone, zone, at = clock.now()) {
+  db.prepare("INSERT INTO place_zones (phone, zone, at) VALUES (?, ?, ?) ON CONFLICT(phone) DO UPDATE SET zone = excluded.zone, at = excluded.at").run(String(phone), String(zone), at);
 }
 export function rememberPlacePhoto(key, { url, shows = "", at = clock.now() }) {
   db.prepare("INSERT INTO place_photos (key, url, shows, at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET url = excluded.url, shows = excluded.shows, at = excluded.at").run(key, url, shows ?? "", at);

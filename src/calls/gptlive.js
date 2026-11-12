@@ -30,6 +30,7 @@ import { config, clock, normalizeNumber } from "../config.js";
 import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
+import * as carryover from "./carryover.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
 import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voice-prompt.js";
@@ -137,6 +138,7 @@ export function whoFor(call) {
   return {
     name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
     manner: manner.mannerFor(call.conversation_id),
+    carry: own && carryover.carryoverFor(call.conversation_id),
     ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
   };
 }
@@ -157,7 +159,7 @@ export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1
   // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
   if (config.lineTalk && call?.direction !== "in") {
     const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: recordingNoticeFor(call.to_number).notice });
+    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: true, disclose: true });
   }
   return lineInstructions(who);
 }
@@ -216,6 +218,9 @@ export function recentChatLines(conversationId, { max = 6, chars = 700 } = {}) {
 export function preCallBrief(call, { place = "" } = {}) {
   if (Number(call?.is_owner) !== 1) return "";
   const lines = [];
+  // What day and time it is (call 94: "you're off at 8, yeah?" from a Thursday-to-Sunday fact, on a Wednesday).
+  const nowIs = carryover.nowLine(call);
+  if (nowIs) lines.push(nowIs);
   if (call.direction !== "in") {
     const goal = clip(call.goal, 300);
     if (goal) lines.push(`Why you rang them: ${goal}`);
@@ -227,9 +232,18 @@ export function preCallBrief(call, { place = "" } = {}) {
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
   const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  // What memory saved lately, from texts and calls alike (the profile below is rebuilt rarely).
+  const lately = carryover.recentMemoryNote(call);
+  if (lately) lines.push(lately);
   // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
   if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
+  // Their own earlier calls (call 85 -> 86: a call is never in "today so far", which reads texts), and
+  // what is due or still open (./carryover.js, REASON_CALL_CARRYOVER).
+  const earlier = carryover.earlierCallsNote(call);
+  if (earlier) lines.push(earlier);
+  const comingUp = carryover.comingUpNote(call);
+  if (comingUp) lines.push(comingUp);
   if (place) lines.push(placeLine(place));
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
@@ -240,6 +254,9 @@ export function preCallBrief(call, { place = "" } = {}) {
   if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
   const rules = rulesNote(call.conversation_id);
   if (rules) lines.push(rules);
+  // Where they are based, said outright (./carryover.js): an unclear place name is heard as a local one.
+  const area = carryover.areaNote(call);
+  if (area) lines.push(area);
   const where = whereaboutsNote(call);
   if (where) lines.push(where);
   if (!lines.length) return "";
@@ -347,7 +364,7 @@ export const OWN_CALL56_LINES = CALL56_LINES.map(l => l === NO_HOLDING_LINE ? OW
  * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", manner: mannered = false } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", manner: mannered = false, carry = false } = {}) {
   const own = owner;
   // The call manner (./manner.js) on their own call: its persona, filler and wrap-up lines stand in for
   // the older ones they cover, and its spoken-out-loud, wit, bad-news and never lines are added.
@@ -355,6 +372,12 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
   const swap = (l) => !mm ? l
     : l === OWN_NO_FILLER || l === NO_FILLER ? manner.MANNER_FILLER
       : l === "When you both say goodbye, sign off warmly and briefly." ? manner.MANNER_WRAP_UP : l;
+  // A warmer goodbye (./carryover.js), with the manner off: the same line swapped.
+  const bye = (l) => own && carry && !mm && l === "When you both say goodbye, sign off warmly and briefly." ? carryover.CARRY_GOODBYE : l;
+  // Two lines reworded (./carryover.js, call 95): small talk, and "never a therapist" without the phrases it bans.
+  const reword = (l) => !(own && carry) ? l
+    : l === "Small talk is yours: if they ask how you are, answer warmly and ask them back." ? carryover.CARRY_SMALL_TALK
+      : l === OWN_CALL_LINES[1] ? carryover.CARRY_NO_PROBING : l;
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -382,11 +405,12 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
     ...split,
     "While the backend works, do not fill the silence with guesses.",
-    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap),
+    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap).map(bye).map(reword),
     PIECES_LINE,
     ...HEARING_LINES,
-    ...(own ? OWN_CALL_LINES : []),
+    ...(own ? OWN_CALL_LINES.map(reword) : []),
     ...(mm ? manner.OWN_MANNER_LINES : []),
+    ...(own && carry ? carryover.CARRY_VOICE_LINES : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     mm ? "Never read out links, internal IDs or anything in square brackets, and never say the words NO_REPLY. A code they asked for is said in small groups, as Reason gives it."
@@ -477,11 +501,18 @@ export function lineInstructions({ name = "them", named = name !== "them", ident
  * cut the last one off, and they hung up at 39 s. Here the voice talks with a person itself, the way
  * it does on an own call (call 57), from the brief Reason's turn has, and hands Reason anything it
  * would have to decide. Code still keeps it silent until somebody is there (`ownOpener`), presses keys,
- * waits on hold and keeps the honesty guard. Openers sound like a person calling: no "I'm an AI calling
- * for…" unless they ask, and the recording line only where the law wants it (./consent.js).
+ * waits on hold and keeps the honesty guard.
+ *
+ * `disclose` (every call Reason places, every account, whatever REASON_CALL_MANNER says — Omari 11-11):
+ * the first reply says it is Reason, an AI assistant calling for <first name>, and that the call may be
+ * recorded, and an objection to the recording is met with "that's fine, I'll turn it off" (code stops it:
+ * `readObjection`). Without it (a caller that passes neither flag) the older opener stands: no "I'm an
+ * AI calling for…" unless they ask, and the recording line only where the law wants it (./consent.js).
+ * `manner` adds the cancelled call manner's tone lines on top and is separate.
  */
-export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], notice = false, manner: mannered = false } = {}) {
+export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], notice = false, manner: mannered = false, disclose = false } = {}) {
   const first = named ? String(name).trim().split(/\s+/)[0] : "the person you work for";
+  const says = mannered || disclose;
   const b = brief ?? {};
   const told = (facts ?? []).map(f => String(f).trim()).filter(Boolean);
   const rules = callRulesFor({ ownerName: first });
@@ -497,7 +528,7 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     "Until a live person speaks to you, say nothing at all: not to a ringing line, a recording, a phone menu, hold music or a voicemail greeting. Reason handles those.",
     "When a person answers — a live greeting like \"…, can I help you?\", \"hello?\" or \"speaking\" — answer straight away, like a normal person calling: a quick warm hello, then what you're calling about, in one natural breath."
       + " For example: \"Oh hey, hi! I'm calling to find out what kind of service you'd recommend for someone with low back pain… and how much would an hour be?\"",
-    ...(mannered
+    ...(says
       // Omari 11-11: a business always hears who is calling, that it's an AI, and that it may be recorded.
       ? [`In that first reply, right after hello, say who you are and that the call may be recorded: "${manner.disclosureLine(named ? first : "")}" — then carry straight on with what you're calling about. If code already said it for you at pickup, don't say it again. If they ask whether you're a robot or an AI, say plainly yes, you're an AI assistant calling for ${first}. If they ask your name, it's Reason; never make up a person's name.`]
       : [
@@ -506,7 +537,9 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
           : "Don't bring up that the call is recorded; if they ask, say yes, it is.",
       ]),
     "If they say \"hello?\" again while you're starting, don't start over: carry on with what you were saying.",
-    ...(mannered ? [] : [
+    // The disclosure without the manner: the objection line and the never-pose-as-them line the manner's own lines carry.
+    ...(disclose && !mannered ? [manner.RECORDING_OBJECTION_LINE, `Say who you're calling for again only when it matters — a booking or a name they need. Never say you are ${first}.`] : []),
+    ...(says ? [] : [
       `Don't open by saying you're an AI or who you're calling for. If they ask whether you're a robot, an AI, a recording or automated, say plainly: "yes, I'm an AI assistant calling for ${first}." Never deny it and never dodge it.`,
       `Say who you're calling for only when it matters — a booking or a name they need, or they ask who's calling: "I'm calling for ${first}." If they ask your name, it's Reason; never make up a person's name, and never say you are ${first}.`,
     ]),
@@ -548,10 +581,10 @@ export function lineAnnouncement(ann) {
 export const ACK_DELAY_MS = 800;
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false, carry = false } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered }),
+    instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered, carry }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     // Room to cancel the voice's automatic "one moment" before it is generated: a line call never has
     // one, and on every other call code decides whether a wait gets a line at all (call 79, `holdLine`).
@@ -1268,7 +1301,7 @@ export function awaitCallMemory(row, capMs, { log = () => {} } = {}) {
   let timer = null;
   const t0 = Date.now();
   return Promise.race([
-    Promise.resolve().then(() => prep(row, { log })).then(() => true, () => false),
+    Promise.resolve().then(() => Promise.all([prep(row, { log }), carryover.prepareCarry(row, { log })])).then(() => true, () => false),
     new Promise((r) => { timer = setTimeout(() => r(false), capMs); }),
   ]).then((done) => { clearTimeout(timer); log({ gptlive_prering_memory: row.id, ms: Date.now() - t0, done }); return done; });
 }
@@ -1355,6 +1388,11 @@ export const TALKOVER_QUIET_MS = 300;
 export const FIRST_EXCHANGE_QUIET_MS = 700;
 /** Still talking this long after the voice began: what it began was an answer to half a sentence. */
 export const TALKOVER_MAX_MS = 2000;
+// A long turn of theirs (./carryover.js, call 85): this much unbroken talking — pauses under the gap
+// stay inside it — and the voice waits this much quiet, not TALKOVER_QUIET_MS, before it comes in.
+export const LONG_TURN_MS = 8000;
+export const LONG_TURN_GAP_MS = 2500;
+export const LONG_TURN_QUIET_MS = 1500;
 /** With no words of theirs through by the limit, it waits this much longer for quiet, then plays anyway (a noisy line). */
 export const TALKOVER_NOISE_MS = 1500;
 /**
@@ -1437,6 +1475,8 @@ export class GptLiveCall {
     this.callerSpeechFrom = 0;
     // Their last frame of speech over the line's own floor (./hearing.js), for talk-over and holding lines.
     this.theirSpeechAt = -Infinity;
+    // When the stretch of talking their last speech belongs to began (`longTurn`).
+    this.theirStretchFrom = -Infinity;
     // Holding lines said by code (call 79).
     this.holdLines = 0;
     this.quickHolds = 0;
@@ -1467,19 +1507,21 @@ export class GptLiveCall {
     // The call manner (./manner.js) for this call's account; never on a stranger's call.
     this.manner = !persona && !!this.who?.manner && (!!this.who?.owner || this.line);
     if (this.talk) {
-      this.notice = recordingNoticeFor(call.to_number);
-      // Omari 11-11: with the call manner on, every business hears it's Reason, an AI, and that it may be recorded.
-      if (this.manner) this.notice = { ...this.notice, notice: true, disclose: true, why: "call manner: always said" };
+      // Omari 11-11: every business hears it's Reason, an AI, and that it may be recorded — every account,
+      // every state, whatever REASON_CALL_MANNER says (the manner was cancelled; the disclosure was not).
+      this.notice = { ...recordingNoticeFor(call.to_number), notice: true, disclose: true, why: "always said" };
       const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, notice: this.notice.notice }) };
-      // Reason's own turns put the row's opening line in front of their first words to a person: on
-      // this call that is no "this is Reason, an AI assistant…", only the recording line where the law
-      // wants it (and nothing at all elsewhere).
-      const opening = this.notice.disclose ? manner.disclosureLine(this.who?.named ? this.who.name : "")
-        : this.notice.notice ? "Hi there — just so you know, this call's recorded." : "";
+      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, notice: this.notice.notice, disclose: true }) };
+      // Reason's own turns put the row's opening line in front of their first words to a person: the
+      // disclosure, word for word.
+      const opening = manner.disclosureLine(this.who?.named ? this.who.name : "");
       try { db.updateCall(call.conversation_id, call.id, { announcement: opening }); } catch { /* the row's own line stands */ }
       this.call = { ...call, announcement: opening };
     }
+    // A place ringing back hears the disclosure first, by code (`ringBackLine`), so its objection to the
+    // recording is honoured the same way: read by meaning, the tape cut back to before their words
+    // (`readObjection`). No "said yet?" check here (`notice: false`): code says the line itself.
+    else if (this.line && call.direction === "in") this.notice = { notice: false, disclose: true, state: "", why: "ring-back: said first by code" };
     this.name = this.who.name;
     // The pickup opener (./opener.js): a clip made while it rang, played as soon as their hello ends
     // (or into a silent line) while the live voice connects. `state`: waiting → playing → played, or
@@ -1599,7 +1641,12 @@ export class GptLiveCall {
       // What the model hears: their side evened out (./hearing.js), quiet words lifted, silence left
       // alone. The recording and every loudness check above keep the line as it came.
       const heard = this.hearing ? this.hearing.frame(m.media.payload, this.now(), { reasonTalking: this.now() < this.playheadAt + ECHO_TAIL_MS }) : m.media.payload;
-      if (this.hearing ? this.hearing.speech : hasSpeech(m.media.payload)) this.theirSpeechAt = this.now();
+      if (this.hearing ? this.hearing.speech : hasSpeech(m.media.payload)) {
+        const st = this.now();
+        // A new stretch of theirs begins after a real gap; pauses for breath or thought stay inside one.
+        if (st - this.theirSpeechAt > LONG_TURN_GAP_MS) this.theirStretchFrom = st;
+        this.theirSpeechAt = st;
+      }
       // A made greeting waiting for its moment: their hello is not sent (the greeting answers it); kept
       // in case they talk on and the greeting is dropped instead (`skipPregreet`).
       if (this.pregreet?.state === "played") this.pregreetOverlap(this.now(), hasSpeech(m.media.payload));
@@ -2122,7 +2169,7 @@ export class GptLiveCall {
       const onContent = this.line ? null : (piece) => this.speakPiece(id, turn, piece);
       reply = await this.brain(messages, { onTool, onContent });
     } catch (e) {
-      reply = { text: "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
+      reply = { text: carryover.brokeLine(this.call) || "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
     this.timers.clearTimeout(late);
     if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer);
@@ -2346,7 +2393,8 @@ export class GptLiveCall {
     this.recordingDeclinedAt = this.now();
     this.recordingStopWhy = v === true ? "objected" : over ? "read cap" : "read failed";
     this.log({ gptlive_recording_declined: this.call.id, why: this.recordingStopWhy, kept_s: Math.round(this.tape.seconds()) });
-    if (v === true && this.live && !this.done) this.live.send({ type: "session.instructions.append", event_id: `rec_off_${this.call.id}`, delegation_id: null, content: manner.RECORDING_OFF_NOTE });
+    // The voice that talks is told; on a ring-back the voice only says Reason's words, and Reason's turn has the line (thirdPartyFrame `recordingOff`).
+    if (v === true && this.talk && this.live && !this.done) this.live.send({ type: "session.instructions.append", event_id: `rec_off_${this.call.id}`, delegation_id: null, content: manner.RECORDING_OFF_NOTE });
     return true;
   }
 
@@ -2990,15 +3038,24 @@ export class GptLiveCall {
     // They have spoken since the voice's last run began (not the echo of that run): this run answers them.
     const afterThem = this.theirSpeechAt > this.lastRunAt && this.theirSpeechAt >= this.voiceEndsAt + ECHO_TAIL_MS;
     const first = afterThem && this.lastRunAt > 0 && this.runsAfterThem === 0;
-    const wait = first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
+    // They have been talking a long while (thinking out loud): a breath is not the end of it, so the
+    // quiet that lets the voice in is longer — and a "Go on." that starts into a pause is dropped when
+    // they carry on, like any answer to half a sentence (call 85).
+    const long = this.longTurn();
+    const wait = long ? LONG_TURN_QUIET_MS : first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
     // Never while the call is ending: a goodbye is said, and the hang-up waits on it.
     if (!afterThem || this.ending || t - this.theirSpeechAt >= wait) { this.noteRun(t, afterThem); return false; }
     // Where the voice's words stood when this run began, so a drop takes back only this run's words.
     const last = this.turns.findLast(x => x.who === "reason" && !x.seeded) ?? null;
     const mark = last ? { turn: last, len: last.text.length } : null;
-    this.over = { since: t, frames: [b64], lastAt: t, wait, first, mark };
+    this.over = { since: t, frames: [b64], lastAt: t, wait, first, mark, long };
     this.overTimer = this.timers.setTimeout(() => this.overCheck(), OVER_TICK_MS);
     return true;
+  }
+
+  /** Their own call, carry-over on: have they been talking for a long stretch (thinking out loud)? */
+  longTurn() {
+    return this.ownTalk() && !!this.who?.carry && this.theirSpeechAt - this.theirStretchFrom >= LONG_TURN_MS;
   }
 
   /** A run of the voice's has started down the line. */
@@ -3013,7 +3070,7 @@ export class GptLiveCall {
     if (!o || o.dropped || this.done) return;
     const t = this.now();
     if (t - this.theirSpeechAt >= o.wait) return this.overRelease();
-    if (t - o.since >= TALKOVER_WORDLESS_MS && this.lastCallerAt < o.since) return this.overRelease();
+    if (t - o.since >= (o.long ? LONG_TURN_QUIET_MS : TALKOVER_WORDLESS_MS) && this.lastCallerAt < o.since) return this.overRelease();
     // Still "talking" at the limit: if words of theirs have come through since, it was half their
     // sentence and is dropped; if none have, it is the line (a noisy room) and the run goes out — never
     // dead air for noise.
@@ -3708,7 +3765,7 @@ export async function reasonTurn({ call, messages, log = () => {}, extras = {}, 
 export const GOAL_WAIT_MS = 30_000;
 
 /** The settle path every finished call takes (the steps in ./postcall.js). */
-export async function settleGptLive({ row, live, settle, runtime = null, log = () => {} }) {
+export async function settleGptLive({ row, live, settle, runtime = null, log = () => {}, carryAsk = null }) {
   const fresh = db.getCall(row.conversation_id, row.id) ?? row;
   if (!["placing", "ringing", "in_progress"].includes(fresh.state) && fresh.recording_state !== "pending") return fresh;
   const settled = settle ? await settle(fresh.conversation_id, fresh, live, { log }) : fresh;
@@ -3720,13 +3777,18 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   fromcall.onCallEnded(settled, { log });
   // How the call went is the model's read (./goalmet.js, started by the settle): waited for, briefly,
   // so the owner is told what really happened — a mailbox that isn't set up is one text of its own.
-  const judging = goalPending(settled.id);
-  if (judging) {
+  // Their own call is read for what it carries over (./carryover.js) in the same wait: the turn after
+  // the call is handed what Reason said it would do, and the next call starts with it.
+  const reads = [goalPending(settled.id), carryover.settleCarry(settled, { log, ...(carryAsk ? { ask: carryAsk } : {}) })].filter(Boolean);
+  if (reads.length) {
     let wait;
-    try { await Promise.race([judging, new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
+    try { await Promise.race([Promise.allSettled(reads), new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
     finally { clearTimeout(wait); }
   }
   const read = db.getCall(settled.conversation_id, settled.id) ?? settled;
+  // A call they asked for at a time that turned out to be an answering machine (that is only known
+  // now): the phone rings once more, or — it was the second ring — the one text goes (./carryover.js).
+  carryover.afterScheduledCall(read, { log });
   const told = await tellTheOwner({ row: read, live, runtime, log });
   db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
   log({ post_call: settled.id, provider: PROVIDER, state: settled.state, recording: settled.recording_state, turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null });
@@ -3797,6 +3859,8 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
   // Where they usually are (./callmemory.js) is read while it rings too, for the voice's brief and
   // Claude's turn alike — whatever backend the turns run on.
   if (row?.id && Number(row.is_owner) === 1) void prepareCallMemory(row, { log: log ?? (() => {}) }).catch(() => {});
+  // Their calendar for today and the next day (./carryover.js), read while it rings too.
+  if (row?.id && Number(row.is_owner) === 1) void carryover.prepareCarry(row, { log: log ?? (() => {}) });
   if (!config.callCacheWarm || !row?.id) return null;
   try {
     return Promise.resolve(warm({ call: row, log: log ?? (() => {}) })).catch(() => null);
@@ -3809,6 +3873,16 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
  * the voice, which answers "where am I / my week" itself, has what Claude's turn has (cold review, call 80).
  */
 onScheduleRead((row) => lateWhereabouts(row));
+// Their calendar arrived after the voice's session was set up: handed over the same way.
+carryover.onCalendarRead((row) => lateCalendar(row));
+export function lateCalendar(row) {
+  const live = running.get(row?.id);
+  if (!live || live.done || !live.who?.owner) return false;
+  const note = carryover.calendarNote(row);
+  if (!note || String(live.who.brief ?? "").includes(note) || live.calendarTold === note) return false;
+  live.calendarTold = note;
+  return tellLive(row.id, note);
+}
 export function lateWhereabouts(row) {
   const live = running.get(row?.id);
   if (!live || live.done || !live.who?.owner) return false;
@@ -3836,10 +3910,10 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   // The pickup opener, made while it rings (./opener.js): never waited on here.
   if (thirdParty && opener.openerFor(row)) {
     try {
-      // The call manner: the clip says who is calling, that it's an AI and that it may be recorded.
-      const who = manner.mannerFor(row.conversation_id) ? whoFor(row) : null;
-      const disclose = who ? manner.disclosureLine(who.named ? who.name : "") : "";
-      void opener.prepare(row, { notice: recordingNoticeFor(row.to_number).notice, disclose, log: args?.log ?? (() => {}) });
+      // The clip says who is calling, that it's an AI and that it may be recorded (every account; not the manner flag).
+      const who = whoFor(row);
+      const disclose = manner.disclosureLine(who.named ? who.name : "");
+      void opener.prepare(row, { notice: true, disclose, log: args?.log ?? (() => {}) });
     } catch { /* the call opens the old way */ }
   }
   // No warm-up of the VOICE while it rings (2026-10-31): calls 54–55 with it were "confused and

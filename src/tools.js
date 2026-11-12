@@ -60,6 +60,7 @@ import { checkCallForPaymentDetails, checkBriefForPaymentDetails } from "./calls
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
+import * as carryover from "./calls/carryover.js";
 import * as callOutcome from "./calls/outcome.js";
 import { settleGoal, goalPending } from "./calls/goalmet.js";
 import { endFieldsFor } from "./calls/metrics.js";
@@ -8371,21 +8372,27 @@ export function callEndFields(row, live) {
  */
 export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
   if (LIVE_STATES.includes(row.state)) return { queued: false, why: "still going" };
-  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail";
+  // Carry-over on for them: an answering machine is nobody too, and the phone rings once more before any text.
+  const carry = carryover.carryoverFor(conversationId);
+  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail" && !(carry && carryover.missedScheduled(row));
   if (reached) return { queued: false, why: "they picked up" };
+  const again = carryover.reringIfMissed(row, { log });
+  if (again) return { queued: false, why: "ringing once more", rering: again.timerId };
+  const twice = carry && carryover.isRering(row);
   const who = db.getAccount(conversationId);
   const address = who?.address && who.address !== "console" ? who.address : "";
   const channel = who?.channel && who.channel !== "console" ? who.channel : "";
   if (!address || !channel) return { queued: false, why: "no texting channel on this conversation" };
   if (!db.markMissedCallTold(row.id)) return { queued: false, why: "already told" };
-  const how = row.state === "voicemail" ? "it went to voicemail"
+  const how = carry && row.outcome_kind === "line_silent" ? "nobody came on the line"
+    : row.state === "voicemail" || (carry && SPOKE_TO_SOMETHING.includes(row.state)) ? "it went to voicemail"
     : row.state === "busy" ? "the line was busy"
       : ["no_answer", "declined"].includes(row.state) ? "you didn't pick up"
         : "the call didn't connect";
   const { row: queued } = db.enqueueOutbound({
     idemKey: `timer:${row.timer_id}:call_missed`,
     conversationId, channel, address,
-    body: `tried calling u just now — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}. so this is the text instead.`,
+    body: `tried calling u ${twice ? "twice" : "just now"} — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}${twice ? " both times" : ""}. so this is the text instead.`,
     toOwner: true, maxAttempts: config.outboxMaxAttempts,
   });
   log({ scheduled_call_missed: row.id, timer: row.timer_id, state: row.state, outbox: queued.id });
@@ -10807,13 +10814,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "meal_query": {
       const period = input.period ?? "today";
       const now = clock.now();
-      const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+      // Their day, not the machine's: live runs in UTC, where midnight is 7pm in New York, so an evening
+      // "today" had lost lunch and a morning one still held last night's dinner (2026-11-11).
+      const tz = zone.zoneFor(c);
+      const midnight = (ms) => zone.wallToInstant(`${zone.isoIn(ms, tz).slice(0, 10)}T00:00:00`, tz);
+      const today = midnight(now);
+      // Noon that many days back, then that day's own midnight: right across a clock change too.
+      const daysBack = (n) => midnight(today + 12 * 3_600_000 - n * 86_400_000);
       let sinceMs;
-      if (period === "today") sinceMs = dayStart.getTime();
-      else if (period === "yesterday") sinceMs = dayStart.getTime() - 86_400_000;
-      else if (period === "week") sinceMs = dayStart.getTime() - 7 * 86_400_000;
+      if (period === "today") sinceMs = today;
+      else if (period === "yesterday") sinceMs = daysBack(1);
+      else if (period === "week") sinceMs = daysBack(7);
       else sinceMs = 0;
-      const cutoff = period === "yesterday" ? dayStart.getTime() : undefined;
+      const cutoff = period === "yesterday" ? today : undefined;
       let entries = db.mealEntriesSince(c, sinceMs);
       if (cutoff) entries = entries.filter(e => e.created_at < cutoff);
       const totals = nutrition.sumMeals(entries);
@@ -11654,6 +11667,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // "hey Omari, what's up?" on a call Reason placed about his photos).
       const because = toOwner ? String(input.opening ?? "").trim() || (scheduled ? input.goal : "") : "";
       let announcement = announcementFor({ ownerName: me.name, toOwner, because });
+      // No reason of its own to say: the plain greeting, fitted to the time of day (src/calls/carryover.js).
+      if (toOwner && !because) announcement = carryover.greetingFor({ conversationId: c, name: me.name, direction: "out" }) || announcement;
       // The goal is the model's words, and the provider refuses an owner greeting that reads like
       // the stranger line ("...a call for the airport" trips "call for"). The plain greeting then,
       // and the voice turn still knows why it rang (placedCallNote in src/calls/voice.js).
@@ -11665,7 +11680,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
       // skipped: "I didn't ring them because of the hour" is a useful sentence; a call that silently
       // did not happen is the false-progress failure.
-      const hours = withinCallingHours({ toOwner });
+      // The hour is the callee's (the place's zone from a lookup, else the number's area code), else the
+      // account holder's — never the server's.
+      const callee = toOwner ? null : zone.calleeZone(to, c);
+      const hours = withinCallingHours({ toOwner, ...(callee ? { tz: callee.zones ?? callee.zone, whose: callee.source } : {}) });
       if (!hours.ok) return { ok: false, status: "quiet_hours", error: hours.error };
 
       // Did this already happen? The owner's rule — never book twice, never leave two voicemails — and
@@ -11862,7 +11880,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");
-      try { plan.noteCall(c); } catch { /* the call is placed either way */ }
+      // The call that is on Reason (a yes to the event onboarding's surprise-call offer) is spent here
+      // and is not one of the month's free calls.
+      try { if (!plan.useGiftCall(c)) plan.noteCall(c); } catch { /* the call is placed either way */ }
       return {
         ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
@@ -18579,6 +18599,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         cuisine: input.cuisine, name: input.name, radius: input.radius,
       });
       if (!out.ok) return out;
+      // A place's number is timed by the place's own clock if it is rung later (zone.calleeZone).
+      for (const r of out.results ?? []) if (r?.phone) try { zone.notePlace(r); } catch { /* the area code still answers */ }
       return markOutside(out, {
         source: "OpenStreetMap nearby-places results",
         text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),
@@ -19335,3 +19357,6 @@ export async function roughPlaceFor(conversationId, ctx = {}, { now = clock.now(
   const geo = await (ctx.reverseGeocode ?? reverseGeocode)(last.latitude, last.longitude, { timeoutMs: 2500 }).catch(() => null);
   return [geo?.neighbourhood, geo?.city].filter(Boolean).join(", ");
 }
+
+// The settle's second look at a scheduled call, once how it went has been read (src/calls/carryover.js).
+carryover.setMissedTeller((conversationId, row, log) => queueMissedScheduledCall(conversationId, row, log));

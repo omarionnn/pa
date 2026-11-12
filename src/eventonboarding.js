@@ -36,6 +36,7 @@ import { askStructured, sideAskAllowed } from "./backends/side.js";
 import { confirmedZone } from "./zone.js";
 import { atLocal } from "./series.js";
 import { commitStep } from "./onboarding.js";
+import * as plan from "./plan.js";
 
 export const LABEL = "event:after";
 
@@ -168,6 +169,25 @@ export function claimFreeReply(conversationId, now = clock.now()) {
   const key = `eventonb:free:${conversationId}:${row.state}:${row.state === "asked" ? row.asked_at ?? 0 : row.cards_at ?? 0}`;
   if (db.opsGet(key)) return false;
   db.opsSet(key, now);
+  return true;
+}
+
+/** A plain no to the call offer: no free call is set aside. Anything else may be a yes. */
+const SAID_NO = /^(no+|nah+|nope|not? (now|today|really|right now|thanks|thank you)|no,? ?(thanks|thank you|thx|ty)|i'?m good|im ok|i'?m ok|pass|maybe later|later)\b[\s.!]*$/i;
+/** How many texts, after the yes, may set the free call up for a guest who is over the ceiling. */
+export const CALL_SETUP_TURNS = 3;
+const setupKey = (conversationId) => `eventonb:call_setup:${conversationId}`;
+/**
+ * The router's second claim (after claimFreeReply): a guest who said yes to the call offer and is over
+ * this month's conversations still has to say who to call and what for. While the free call is unspent,
+ * up to CALL_SETUP_TURNS of their texts that would meet the ceiling are let through uncounted.
+ */
+export function claimCallSetup(conversationId, now = clock.now()) {
+  if (!conversationId || !plan.giftedCall(conversationId, now)) return false;
+  if (!plan.overNext(conversationId, now)) return false;
+  const left = Number(db.opsGet(setupKey(conversationId)) ?? 0);
+  if (left <= 0) return false;
+  db.opsSet(setupKey(conversationId), left - 1);
   return true;
 }
 
@@ -411,6 +431,14 @@ export async function beforeTurn({ conversationId, text = "", screen = null, log
   if (row.state === "offered") {
     setState(conversationId, "done");
     if (clock.now() - (row.cards_at ?? 0) > OFFER_FRESH_MS) return null;
+    // A yes (anything but a plain no): the call is on Reason — free, and not one of the month's free
+    // calls (owner, 2026-11-11). Good for as long as the offer was; the few texts it takes to say who
+    // and what for are not met by the ceiling either (claimCallSetup).
+    if (!SAID_NO.test(String(text).trim())) {
+      plan.giftCall(conversationId, { until: clock.now() + OFFER_FRESH_MS });
+      db.opsSet(setupKey(conversationId), CALL_SETUP_TURNS);
+      log({ event_onboarding_free_call: conversationId });
+    }
     return { frame: `[Reason just asked them "${CALL_LINE}". If they say yes: ask who to call and what it is for, then follow every usual call rule exactly. If they say no, or say anything else, let it go and never bring it up again.]` };
   }
   return null;

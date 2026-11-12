@@ -344,6 +344,58 @@ test("a place Reason called is not a stranger when it rings back — it rejoins 
   assert.equal(outbox().length, 0, "the master is not asked about a place Reason rang");
 });
 
+// Promise audit 2026-11-11: "Recognize a callback within a day" was true only for the operator's own
+// errands, because the lookup read the operator's conversation alone. Anybody else's plumber ringing
+// back got the stranger pitch, and the operator was asked about them as if they wanted an invitation.
+test("a place ringing back about ANOTHER user's errand rejoins that user's errand, not the operator's and not a stranger", () => {
+  const KOFI = "dm:sendblue:+12125551111";
+  db.upsertAccount({ conversationId: KOFI, channel: "sendblue", address: FRIEND, name: "Kofi" });
+  db.saveConversation(KOFI, []);
+  const placed = db.createCall(KOFI, {
+    provider: "gptlive", toNumber: RESTAURANT, isOwner: false,
+    goal: "ask the plumber when they can come", facts: ["the name is Kofi"], announcement: "x", externalId: "gptlive:CA_out_kofi",
+  });
+  db.updateCall(KOFI, placed.id, { state: "completed", outcome_kind: "hold_gave_up", brief: JSON.stringify({ goal: "ask the plumber", approved: { book: false } }) });
+
+  const who = whoseCallIsThis(RESTAURANT);
+  assert.equal(who.allow, true, "not a stranger");
+  assert.equal(who.callingBack, true);
+  assert.equal(who.conversationId, KOFI, "it is Kofi's errand, so it is Kofi's conversation");
+  assert.equal(who.aboutCall.id, placed.id);
+
+  const r = ring(RESTAURANT);
+  const row = lastInbound();
+  assert.equal(streamToken(r), row.webhook_token);
+  assert.equal(row.conversation_id, KOFI);
+  assert.equal(row.is_owner, 0);
+  assert.match(row.goal, /ringing back about: ask the plumber when they can come/);
+  assert.match(row.announcement, /Kofi/, "the disclosure names the person the errand is for");
+  assert.doesNotMatch(row.announcement, /Omari/);
+  assert.equal(db.listCalls(C).length, 0, "nothing lands on the operator's conversation");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 0, "not kept as a stranger");
+  assert.equal(outbox().length, 0, "the operator is not asked about a place somebody else's Reason rang");
+});
+
+test("a ring-back about the errand of somebody who has left is a stranger", () => {
+  const GONE = "dm:sendblue:+12125552222";
+  const c = db.createCall(GONE, { provider: "gptlive", toNumber: RESTAURANT, isOwner: false, goal: "ask", facts: [], announcement: "x", externalId: "gptlive:CA_out_gone" });
+  db.updateCall(GONE, c.id, { state: "completed", outcome_kind: "hold_gave_up" });
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "no account, no errand to rejoin");
+});
+
+test("two people's Reasons rang the same place: the ring-back goes to the newest open call, and each call keeps its own budget", () => {
+  const KOFI = "dm:sendblue:+12125551111";
+  db.upsertAccount({ conversationId: KOFI, channel: "sendblue", address: FRIEND, name: "Kofi" });
+  calledThem({ outcome_kind: "hold_gave_up" });
+  clock.skip(60_000);
+  const his = db.createCall(KOFI, { provider: "gptlive", toNumber: RESTAURANT, isOwner: false, goal: "ask about Sunday", facts: [], announcement: "x", externalId: "gptlive:CA_out_kofi2" });
+  db.updateCall(KOFI, his.id, { state: "completed", outcome_kind: "hold_gave_up" });
+  assert.equal(whoseCallIsThis(RESTAURANT).conversationId, KOFI, "the newest call Reason placed there");
+  for (let i = 0; i < MAX_RING_BACKS; i++) ring(RESTAURANT);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls WHERE direction = 'in' AND conversation_id = ?").get(KOFI).n, MAX_RING_BACKS);
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "his call's ring-backs are spent, and an older call is not reopened by them");
+});
+
 test("the returning call inherits the brief, so a call that was only asking still only asks", () => {
   calledThem({ brief: JSON.stringify({ goal: "ask about a table", approved: { book: false }, readBack: [] }) });
   ring(RESTAURANT);
