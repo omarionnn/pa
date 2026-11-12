@@ -519,6 +519,8 @@ export const config = {
   // two-bubble burst — whose bubbles were 30 s apart, outside any window. Ten texts joined a wait;
   // ~200 paid the 4 s. A bubble that lands after the window still folds into the turn.
   burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 2_500),
+  // The window where REASON_FAST_REPLY reaches (src/fastreply.js §7), never longer than the one above.
+  burstQuietFastMs: Number(process.env.REASON_BURST_QUIET_FAST_MS ?? 300),
   // Reason Web sends one whole message at a time — the composer posts the words and any files
   // together, and "take it back" (Router.takeBack) works before the hold and mid-turn, not only
   // inside the window — so a Web message waits only half a second for a second one. Never longer

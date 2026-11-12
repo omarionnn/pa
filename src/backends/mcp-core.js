@@ -100,7 +100,7 @@ export function mcpToolsFor(conversationId, { log = () => {} } = {}) {
  * the tools on one backend and silently did not on the other, which is how the cancel rails ended
  * up unprovable live. Production sets nothing here beyond `channels` and `calls`.
  */
-export async function mcpDispatch(msg, { conversationId, channels = null, calls = null, onTool = () => {}, onToolStart = () => {}, toolCtx = {} } = {}) {
+export async function mcpDispatch(msg, { conversationId, channels = null, calls = null, onTool = () => {}, onToolStart = () => {}, toolCtx = {}, log = () => {} } = {}) {
   const reply = (result) => ({ jsonrpc: "2.0", id: msg.id, result });
 
   switch (msg.method) {
@@ -119,7 +119,9 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
       return reply({});
 
     case "tools/list":
-      return reply({ tools: mcpToolsFor(conversationId) });
+      // `log`: a tool set that changed is the one thing that turns a warm reply cold from here, and
+      // on this backend it used to change unseen (the journal has no `toolset` line before 11-12).
+      return reply({ tools: mcpToolsFor(conversationId, { log }) });
 
     case "tools/call": {
       const name = msg.params?.name;

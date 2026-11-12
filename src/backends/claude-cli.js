@@ -41,16 +41,17 @@ import { rulesNote } from "../rules.js";
 import { startPurchasesNote, purchaseRecordSource } from "../purchasesnote.js";
 import { withoutSelfNote, readSilence } from "../plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource, notePhotos as noteOfferPhotos, photoWords as offerPhotoWords } from "../offers.js";
-import { saveThread } from "../thread.js";
+import { saveThread, THREAD_KEEP } from "../thread.js";
 import { runClaudeCli } from "./cli.js";
 import { adoptWebChatAsks, expiredAsksNote } from "../trust.js";
 import { whileTurn } from "../background.js";
 import { startMcpHttp } from "./mcp-http.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as timing from "../replytiming.js";
-import { fastReplyOn } from "../fastreply.js";
+import { fastReplyOn, keepSessionOn } from "../fastreply.js";
+import { CODE_LINE } from "../onethought.js";
 
 const MAX_HISTORY = 40;
 
@@ -222,6 +223,156 @@ export const systemWithAnchor = (system, anchor) => anchor ? `${system}\n\n${ANC
 
 /** For tests: forget every anchor, as a restart does. */
 export const resetAnchors = () => anchors.clear();
+
+/**
+ * The kept session (REASON_KEEP_SESSION, src/fastreply.js).
+ *
+ * Every reply used to be a new CLI process handed the thread rendered afresh. What the model had
+ * already read came back as new text each time: the notes and the lines since the anchor in every
+ * message (~10k tokens written per reply on live, never read back, because a message is only a cache
+ * hit when the next request starts with the whole of it), the instructions and the history together
+ * whenever the anchor moved (they are one system block: ~34k tokens), and every tool it had looked
+ * up or page it had read in the reply before, which it looked up or read again.
+ *
+ * With the switch on, a reply continues the session the last reply of the thread ran in
+ * (`--resume`, the same route the said check's rewrite has used since 10-28). The request then
+ * starts with exactly what the last one held, so all of it is read from the cache, and the message
+ * carries only what is new: lines added to the thread from elsewhere, the new message, and each note
+ * that changed. A note that still reads the same is not sent again; one that is gone is said to be
+ * gone, so nothing stale stands. The model knows what it knew before plus what its tools returned
+ * last time, never less.
+ *
+ * A session is continued only while that is certainly right, and anything else is a fresh turn,
+ * which is exactly what every turn was before:
+ *   - the thread still reads as the session left it (every line, in order; lines cut from the front
+ *     by src/thread.js are fine, and so is its own last draft taken back) — so a line rewritten by
+ *     "forget that" or put in among the old ones starts afresh, as it does for the anchor;
+ *   - the instructions are the same bytes (a deploy that changed them starts afresh);
+ *   - the cache is still there (CHAIN_IDLE_MS), and the session has not grown past CHAIN_MAX_GROWN
+ *     tokens or CHAIN_MAX_TURNS replies (a fresh render is smaller than a long tail of tool results);
+ *   - the last turn in it finished, and the harm screen did not refuse it.
+ * Written to the data dir beside the anchors, so a restart continues too.
+ */
+const chains = new Map();
+export const CHAIN_IDLE_MS = 55 * 60_000;
+export const CHAIN_MAX_TURNS = 30;
+export const CHAIN_MAX_GROWN = 60_000;
+/** How many of its oldest lines the thread may have cut since (two a reply, plus what a turn sent along the way). */
+const CHAIN_MAX_CUT = 12;
+const sha = (text) => createHash("sha256").update(String(text)).digest("hex").slice(0, 16);
+/** The thread as the lines a session is compared on. A code re-ask's line is taken out again right after its turn. */
+const threadLines = (messages) => messages.map(renderLine).filter(Boolean).filter(l => !l.split("\n")[0].endsWith(CODE_LINE));
+
+const chainsFile = () => join(config.dataDir, "cli-sessions.json");
+let chainsRead = false;
+function readChains() {
+  if (chainsRead) return;
+  chainsRead = true;
+  try {
+    const file = chainsFile();
+    if (!existsSync(file)) return;
+    for (const [id, c] of Object.entries(JSON.parse(readFileSync(file, "utf8")) ?? {})) {
+      if (!chains.has(id) && c && typeof c.id === "string" && Array.isArray(c.lines) && Number.isFinite(c.at)) chains.set(id, c);
+    }
+  } catch { /* a restart that forgets starts afresh, as it always did */ }
+}
+function writeChains() {
+  try {
+    const file = chainsFile();
+    mkdirSync(config.dataDir, { recursive: true });
+    const aside = `${file}.${process.pid}.tmp`;
+    writeFileSync(aside, JSON.stringify(Object.fromEntries(chains)), { mode: 0o600 });
+    renameSync(aside, file);
+  } catch { /* the in-memory one still stands for this process */ }
+}
+function dropChain(historyId) { if (chains.delete(historyId)) writeChains(); }
+/** For tests: forget every kept session, in memory and (with `disk`) what was read from disk. */
+export const resetChains = ({ disk = false } = {}) => { chains.clear(); if (disk) chainsRead = false; };
+/** The kept session of a thread, as stored. For tests. */
+export const chainOf = (historyId) => chains.get(historyId) ?? null;
+/** Everything kept about a person's threads here goes with them (src/data.js deleteData). */
+export function forgetCliThreads(conversationId) {
+  readChains(); readAnchors();
+  // Their thread, and each Web-only chat's own (src/db.js historyKeyFor). No conversation: everybody's.
+  const mine = (id) => !conversationId || id === conversationId || String(id).startsWith(`${conversationId}#`);
+  let a = false, c = false;
+  for (const id of [...anchors.keys()]) if (mine(id)) { anchors.delete(id); a = true; }
+  for (const id of [...chains.keys()]) if (mine(id)) { chains.delete(id); c = true; }
+  for (const id of [...sessions.keys()]) if (mine(id)) sessions.delete(id);
+  if (a) writeAnchors();
+  if (c) writeChains();
+}
+
+/**
+ * The session this turn may continue, or null with the reason logged. `all` is the thread as it
+ * stands before this turn's line (threadLines), `base` the instructions without the anchor.
+ */
+export function chainFor(historyId, { base, all, count = all.length, now = Date.now(), log = () => {} }) {
+  readChains();
+  const c = chains.get(historyId);
+  const fresh = (why) => { if (c) dropChain(historyId); log({ session_fresh: historyId, why }); return null; };
+  if (!c) { log({ session_fresh: historyId, why: "none" }); return null; }
+  if (now - c.at >= CHAIN_IDLE_MS) return fresh("idle");
+  if (c.turns >= CHAIN_MAX_TURNS) return fresh("turns");
+  if (c.grown >= CHAIN_MAX_GROWN) return fresh("grown");
+  if (c.base !== sha(base)) return fresh("instructions_changed");
+  const have = all.map(sha);
+  // Its lines, less the oldest `cut` the thread has dropped since, must open the thread as it is now.
+  // Tried whole first, then without its own last line: a draft taken back before it was sent
+  // (db.retractDraft: the said check's rewrite, a late text folded in) leaves the thread without it.
+  const last = c.lines.length - 1;
+  const variants = [{ lines: c.lines, retracted: false }, ...(c.lastIsReply && last >= 1 ? [{ lines: c.lines.slice(0, last), retracted: true }] : [])];
+  for (const v of variants) {
+    // The thread only loses its oldest lines when it is cut to size (src/thread.js saveThread), so a
+    // thread shorter than that with its first lines gone had them taken out: afresh.
+    const maxCut = count >= THREAD_KEEP - 4 ? CHAIN_MAX_CUT : 0;
+    for (let cut = 0; cut <= maxCut && cut < v.lines.length; cut++) {
+      const n = v.lines.length - cut;
+      if (n > have.length) continue;
+      let same = true;
+      for (let i = 0; i < n && same; i++) same = v.lines[cut + i] === have[i];
+      if (same) return { ...c, since: all.slice(n), retracted: v.retracted, lastLine: n ? all[n - 1] : null };
+    }
+  }
+  return fresh("thread_changed");
+}
+
+/** A turn's notes with the names they are compared under from one reply to the next. */
+const memoryKey = (text, rules) => text.startsWith("WHAT YOU KNOW ABOUT THEM") ? "profile" : text.startsWith("RELEVANT MEMORIES") ? "hits" : text === rules ? "rules" : `memory:${sha(text.split("\n")[0])}`;
+/**
+ * The notes that state how things stand, by the kind of turn that carries them: one of these missing
+ * from a turn of that kind means nothing stands under it any more. The rest are picked for one
+ * message (the memories closest to it; the purchases block on a turn they did not start), and one
+ * not picked again has not stopped being true.
+ */
+const STANDING = {
+  user: new Set(["purchases", "reconnect", "openwork", "kept", "cues", "said", "photos", "profile", "rules"]),
+  event: new Set(["declined", "rules"]),
+};
+const headOf = (text) => { const t = String(text).split("\n")[0].replace(/\s+/g, " ").trim(); return t.length > 90 ? `${t.slice(0, 89)}…` : t; };
+
+/**
+ * What a continued session is told of the notes: each one that is new or reads differently, whole;
+ * each one that stood last time and is gone, named as gone. One that reads the same is already in
+ * front of the model and is not sent again.
+ */
+export function notesForChain(entries, sent = {}, kind = "user") {
+  const changed = entries.filter(e => sent[e.k]?.h !== sha(e.t));
+  const now = new Set(entries.map(e => e.k));
+  // Only a note this kind of turn carries can be missed: a timer's turn has no "what you kept for
+  // them" note, and that says nothing about whether it still stands.
+  const gone = Object.entries(sent).filter(([k]) => STANDING[kind === "event" ? "event" : "user"].has(k) && !now.has(k)).map(([, v]) => v.head);
+  const text = (changed.length ? "Notes for this message. Each replaces the earlier note of the same kind above; an earlier note not repeated here still stands exactly as it was.\n\n" + changed.map(e => `[${e.t}]\n\n`).join("") : "")
+    + gone.map(h => `[This earlier note no longer applies, nothing stands under it now: "${h}"]\n\n`).join("");
+  return { text, changed: changed.length, same: entries.length - changed.length, gone: gone.length };
+}
+/** The session's record of its notes after a turn: what stood before, less what this turn said is gone, with this turn's over it. */
+const notesAfter = (entries, sent = {}, kind = "user") => {
+  const now = new Set(entries.map(e => e.k));
+  const mine = STANDING[kind === "event" ? "event" : "user"];
+  return { ...Object.fromEntries(Object.entries(sent).filter(([k]) => !mine.has(k) || now.has(k))),
+    ...Object.fromEntries(entries.map(e => [e.k, { h: sha(e.t), head: headOf(e.t) }])) };
+};
 
 /**
  * Take back the line a turn wrote before it ran, now that the turn has died.
@@ -411,6 +562,8 @@ async function runTurnOnCli({
     const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
     // REASON_FAST_REPLY (src/fastreply.js): read once for the turn.
     const fast = fastReplyOn({ conversationId });
+    // REASON_KEEP_SESSION: read once for the turn too.
+    const keepSession = keepSessionOn({ conversationId });
     // What they have really bought (src/purchasesnote.js) — the same block as the API path. The
     // thread can still say "ordered" about an order since cancelled.
     // The notes the prompt carries, awaited where the turn needs them: before the CLI starts, or (fast)
@@ -422,31 +575,66 @@ async function runTurnOnCli({
       const standing = [purchases,
         // What it has already told them that still stands, and its open and settled questions
         // (src/said.js) — the same block as the API path.
-        ...(kind === "event" ? [saidLedger.declinedNote(conversationId), rulesNote(conversationId)] : [reconnectNote(conversationId), openWorkNote(conversationId), keptNote(conversationId), cuesNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
+        ...(kind === "event" ? [saidLedger.declinedNote(conversationId), rulesNote(conversationId)] : [reconnectNote(conversationId), openWorkNote(conversationId), keptNote(conversationId), cuesNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])];
+      // Each note under the name a kept session compares it by from one reply to the next
+      // (notesForChain), in the order of the list above; the order and the words are what they
+      // always were. What memory hands over is named by what it is.
+      const rules = rulesNote(conversationId);
+      const names = ["purchases", ...(kind === "event" ? ["declined", "rules"] : ["reconnect", "openwork", "kept", "cues", "said", "photos"])];
+      const entries = standing.map((t, i) => ({ k: names[i] ?? memoryKey(String(t ?? ""), rules), t })).filter(e => e.t);
       timing.mark(conversationId, "notes");
-      return standing;
+      return entries;
     };
     const standingFirst = fast ? null : await buildStanding();
 
     // The history: its older part at the end of the system prompt, where the cache keeps it, and
     // what came after that here (see historyParts).
     const systemBase = systemFor(me);
-    const parts = historyParts(historyId, before, { system: systemBase, log, fast });
-    const system = systemWithAnchor(systemBase, parts.anchor);
-    const history = parts.recent.join("\n");
+    // The kept session, when this reply may continue one (see "The kept session" above). The said
+    // check's rewrite (continueSession) has its own, older route to the same session, below.
+    let chain = keepSession && !continueSession ? chainFor(historyId, { base: systemBase, all: threadLines(before), count: before.length, log }) : null;
+    // A continued session runs under the instructions it started with, anchor and all (the same
+    // bytes, so the whole prefix is read from the cache); the anchor is left as it stands for the
+    // next fresh turn. Read lazily: a fresh turn after a session that would not continue needs it.
+    let parts = null;
+    const freshParts = () => (parts ??= historyParts(historyId, before, { system: systemBase, log, fast }));
+    if (!chain) freshParts();
+    const freshSystem = () => systemWithAnchor(systemBase, freshParts().anchor);
+    const system = chain ? systemWithAnchor(systemBase, chain.anchor) : freshSystem();
     timing.mark(conversationId, "anchor");
-    const promptFor = (standing) => (history
-      ? `${parts.anchor ? "The conversation so far, continued (the earlier part is at the end of your instructions)" : "The conversation so far"}:\n${history}\n\n`
-      : parts.anchor ? "The conversation so far is at the end of your instructions.\n\n" : "")
-      + (pending.length ? `Questions you already asked and are still waiting on:\n${pending.join("\n")}\nIf the new message answers one of these, confirm_record THAT id. Do not ask again.\n\n` : "")
+    const pendingText = pending.length ? `Questions you already asked and are still waiting on:\n${pending.join("\n")}\nIf the new message answers one of these, confirm_record THAT id. Do not ask again.\n\n` : "";
+    const CLOSING = `Reply as Reason, in one short text. Use your tools for anything real.`
+      + ` If nothing is worth sending, reply with exactly NO_REPLY.`;
+    // What a continued session is handed: only what it has not read. Its own earlier turns hold the
+    // history, the notes as they stood and what its tools returned.
+    let chainNotes = null;
+    const chainPromptFor = (entries) => {
+      chainNotes = notesForChain(entries, chain.notes, kind);
+      return (chain.retracted ? "[Your last reply above was NOT sent.]\n\n"
+        : chain.changed && chain.lastLine ? `[Your last reply was changed by code before it was sent. What they received:\n${chain.lastLine}]\n\n` : "")
+        + (chain.since.length ? `Added to the conversation since your last reply, oldest first (these did not come through you):\n${chain.since.join("\n")}\n\n` : "")
+        + (pendingText || (chain.pending ? "None of your earlier questions is waiting on an answer any more.\n\n" : ""))
+        + (expired ? `${expired}\n\n` : "")
+        + (notice ? `${notice}\n\n` : "")
+        + `The new message:\n${line}\n\n`
+        + (turnNote ? `[${turnNote}]\n\n` : "")
+        + chainNotes.text
+        + CLOSING
+        + ` A page or a search you already read above need not be fetched again; anything saved or live (reminders, tasks, orders, mail, calendar, where they are) is still read from its tool.`;
+    };
+    const promptFor = (entries, { anchor, recent } = freshParts(), standing = entries.map(e => e.t), history = recent.join("\n")) => (history
+      ? `${anchor ? "The conversation so far, continued (the earlier part is at the end of your instructions)" : "The conversation so far"}:\n${history}\n\n`
+      : anchor ? "The conversation so far is at the end of your instructions.\n\n" : "")
+      + pendingText
       + (expired ? `${expired}\n\n` : "")
       + (notice ? `${notice}\n\n` : "")
       + `The new message:\n${line}\n\n`
       + (turnNote ? `[${turnNote}]\n\n` : "")
       + standing.map(n => `[${n}]\n\n`).join("")
-      + `Reply as Reason, in one short text. Use your tools for anything real.`
-      + ` If nothing is worth sending, reply with exactly NO_REPLY.`;
-    let prompt = standingFirst ? promptFor(standingFirst) : null;
+      + CLOSING;
+    // The notes as they were sent or stand, for the kept session's record of this turn.
+    let entriesSent = standingFirst;
+    let prompt = standingFirst && !chain ? promptFor(standingFirst) : null;
 
     // One MCP server per turn, in this process, on a loopback port. Keeping the tools here is
     // what lets a browser stay open across turns and the database have one writer, and it means
@@ -465,7 +653,7 @@ async function runTurnOnCli({
     let tookPart = false;
     const onToolStart = () => { tookPart = true; };
     const onTool = (e) => { tookPart = true; log(e); };
-    const mcp = await startMcp({ conversationId, channels, calls, onTool, onToolStart, toolCtx: { kind, ...toolCtx } });
+    const mcp = await startMcp({ conversationId, channels, calls, onTool, onToolStart, toolCtx: { kind, ...toolCtx }, log });
     timing.mark(conversationId, "mcp");
     // Every fresh turn runs under a session id of Reason's choosing, so the rewrite can name it.
     const sessionId = randomUUID();
@@ -473,9 +661,10 @@ async function runTurnOnCli({
     const resuming = continueSession ? sessionFor(historyId) : null;
     // A continued session already holds the history, the notes and the draft: it is handed the new
     // line alone, with the same closing instruction, under the same system prompt (a cache hit).
-    const resumePrompt = `The new message:\n${line}\n\nReply as Reason, in one short text. Use your tools for anything real.`
-      + ` If nothing is worth sending, reply with exactly NO_REPLY.`;
+    const resumePrompt = `The new message:\n${line}\n\n${CLOSING}`;
     const feature = kind === "event" ? "proactive" : "reply";
+    // The session the rewrite really continued; null once it had to run the long way instead.
+    let viaResume = resuming;
     let r;
     try {
       // The draft feed, when it is on, also tells `tookPart`: an assistant message, a tool result
@@ -483,7 +672,42 @@ async function runTurnOnCli({
       // is not, and a resume the CLI refuses prints nothing of the model's at all.
       const heard = draft ? (e) => { if (e?.type === "assistant" || e?.type === "user" || e?.type === "stream_event") tookPart = true; draft.feed(e); } : null;
       const common = { system, mcpUrl: mcp.url, mcpHeaders: mcp.headers ?? null, images: blocks, log, feature, ...(heard ? { onEvent: heard } : {}) };
-      if (fast && !resuming) {
+      // The message as the CLI reads it off stdin (the route a turn with pictures has always used).
+      const asInput = (text) => JSON.stringify({ type: "user", message: { role: "user", content: [...blocks, { type: "text", text }] } }) + "\n";
+      // A run that never reached the model: no envelope, not a timeout, not a restart, and nothing
+      // heard from it (no tool call, no word). Only such a run may be run again.
+      const neverRan = (x) => !x.ok && !x.interrupted && !x.envelope && !/did not finish inside/.test(x.error ?? "") && !tookPart;
+      if (chain) {
+        // REASON_KEEP_SESSION: the session the last reply ran in, continued. Started now (fast) so its
+        // boot overlaps the notes, exactly as a fresh turn's does.
+        if (fast) {
+          let sendPrompt;
+          const input = new Promise((res) => { sendPrompt = res; });
+          const running = run({ ...common, input, resume: chain.id });
+          try {
+            entriesSent = await buildStanding();
+            prompt = chainPromptFor(entriesSent);
+            sendPrompt(asInput(prompt));
+          } catch (e) {
+            sendPrompt(null);
+            throw e;
+          }
+          r = await running;
+        } else {
+          entriesSent = standingFirst;
+          prompt = chainPromptFor(entriesSent);
+          r = await run({ ...common, prompt, resume: chain.id });
+        }
+        if (neverRan(r)) {
+          // Gone from disk, or a CLI that would not resume: the fresh turn every reply was before.
+          // A run the model took part in and that then failed is a failed turn, never run twice.
+          log({ session_resume_failed: historyId, why: String(r.error ?? "").split("\n")[0].slice(0, 160) });
+          dropChain(historyId);
+          chain = null; chainNotes = null;
+          prompt = promptFor(entriesSent);
+          r = await run({ ...common, system: freshSystem(), prompt, sessionId });
+        } else if (r.ok) log({ session_kept: historyId, turns: chain.turns + 1, since: chain.since.length, notes_sent: chainNotes.changed, notes_same: chainNotes.same, notes_gone: chainNotes.gone });
+      } else if (fast && !resuming) {
         // REASON_FAST_REPLY §3: the CLI is started NOW, under the system prompt (the anchor is in it
         // already), and reads its message off stdin once the notes are in — the memory lookup, the
         // purchases block and what stands all finish while it boots and lists the tools, instead of
@@ -493,15 +717,16 @@ async function runTurnOnCli({
         const input = new Promise((res) => { sendPrompt = res; });
         const running = run({ ...common, input, sessionId });
         try {
-          prompt = promptFor(await buildStanding());
-          sendPrompt(JSON.stringify({ type: "user", message: { role: "user", content: [...blocks, { type: "text", text: prompt }] } }) + "\n");
+          entriesSent = await buildStanding();
+          prompt = promptFor(entriesSent);
+          sendPrompt(asInput(prompt));
         } catch (e) {
           sendPrompt(null);
           throw e;
         }
         r = await running;
       } else if (resuming) {
-        if (prompt == null) prompt = promptFor(await buildStanding());
+        if (prompt == null) { entriesSent = await buildStanding(); prompt = promptFor(entriesSent); }
         sessions.delete(historyId);
         // Under the system prompt the session was started with, anchor and all: the same bytes, so
         // the whole prefix is a cache hit, even if the anchor has moved on since.
@@ -518,6 +743,7 @@ async function runTurnOnCli({
         const neverStarted = noEnvelope && !tookPart;
         if (neverStarted) {
           log({ cli_resume_failed: conversationId, why: String(r.error ?? "").split("\n")[0].slice(0, 160) });
+          viaResume = null;
           r = await run({ ...common, prompt, sessionId });
         } else if (noEnvelope) {
           log({ cli_resume_died_after_acting: conversationId, why: String(r.error ?? "").split("\n")[0].slice(0, 160) });
@@ -531,9 +757,14 @@ async function runTurnOnCli({
     }
     // A turn that finished is the one a rewrite would continue. A resumed turn is not kept: a
     // session is continued once, and a second check does not run on a rewrite.
-    if (r.ok && !resuming) sessions.set(historyId, { id: sessionId, at: Date.now(), system });
+    // The session this turn really ran in: the one it continued, or the new one.
+    const ranIn = chain ? (r.envelope?.session_id ?? chain.id) : viaResume ? (r.envelope?.session_id ?? viaResume) : sessionId;
+    const ranUnder = chain ? system : viaResume ? (stored?.system ?? system) : (parts ? freshSystem() : system);
+    if (r.ok && (!resuming || keepSession)) sessions.set(historyId, { id: ranIn, at: Date.now(), system: ranUnder });
 
     if (!r.ok) {
+      // A turn that died may have left half of itself in the session: never continued.
+      if (keepSession) dropChain(historyId);
       log({ cli_failed: r.error ?? r.envelope?.result });
       const err = new Error(r.error ?? `the CLI reported an error: ${r.envelope?.result ?? "no detail"}`);
       // An unfinished turn, not a failed one: the process is going down and took the model's CLI
@@ -597,8 +828,39 @@ async function runTurnOnCli({
     ]);
     timing.mark(conversationId, "post");
 
+    // REASON_KEEP_SESSION: what the next reply needs to know to continue this session, or not to.
+    if (keepSession) {
+      const was = chain ?? (viaResume ? chains.get(historyId) : null);
+      const continued = was && (chain || was.id === viaResume);
+      if (viaResume && !continued) dropChain(historyId);
+      else {
+        const lines = threadLines(loadConversation(historyId));
+        const wrote = Number(r.envelope?.usage?.cache_creation_input_tokens ?? 0);
+        const raw = String(r.envelope?.result ?? "").trim();
+        chains.set(historyId, {
+          id: ranIn, at: Date.now(), base: sha(systemBase),
+          anchor: continued ? was.anchor : freshParts().anchor,
+          lines: lines.map(sha), lastIsReply: !!lines.at(-1)?.startsWith("Reason: "),
+          turns: continued ? was.turns + 1 : 1,
+          // What a continued turn wrote to the cache is what it added to the session.
+          grown: continued ? was.grown + wrote : 0,
+          // Every note the session holds, as it last read: this turn's over the earlier ones. The
+          // said check's rewrite sends none of its own.
+          notes: viaResume ? (was?.notes ?? {}) : notesAfter(entriesSent ?? [], continued ? was.notes : {}, kind),
+          pending: viaResume ? !!was?.pending : pending.length > 0,
+          // The words they received are not the words the session holds (the figures check, a recited
+          // first line dropped, a marker tidied): the next reply is told what went.
+          changed: !quiet.silent && raw !== reply.trim(),
+        });
+        writeChains();
+        // A turn the harm screen refuses is thrown away unheard: nothing continues it.
+        if (toolCtx.harm?.ready) Promise.resolve(toolCtx.harm.ready).then((v) => { if (v?.verdict === "harm" && chains.get(historyId)?.id === ranIn) dropChain(historyId); }).catch(() => {});
+      }
+    }
+
     return quiet.silent ? null : reply;
   } catch (e) {
+    if (keepSessionOn({ conversationId })) dropChain(historyId);
     if (takeBackLine(historyId, forHistory)) log({ cli_turn_line_taken_back: conversationId });
     throw e;
   }

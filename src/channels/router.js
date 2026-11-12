@@ -38,6 +38,7 @@ import { offerContactCard } from "../contact.js";
 import { tellNewLine, isReturning, LINE_CHANGE_CHANNEL } from "../linechange.js";
 import { clock, config, normalizeNumber, normalizeHandle, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
+import { fastReplyOn } from "../fastreply.js";
 import * as onethought from "../onethought.js";
 import { withoutNoReply } from "../plain.js";
 import { effectPartIndex } from "../links.js";
@@ -91,8 +92,13 @@ export const EVENT_CARD_LINE = "save me as Reason so you can find me for event u
  * longer than the text one, so the switch that turns holding off (`REASON_BURST_QUIET_MS=0`) still
  * turns it off everywhere, and a test that widens the window to hold everything holds Web too.
  */
-export function quietWindowFor(channel) {
-  return channel === web.WEB ? Math.min(config.burstQuietWebMs, config.burstQuietMs) : config.burstQuietMs;
+export function quietWindowFor(channel, who = null) {
+  // REASON_FAST_REPLY §7: the text window is 0.3 s where the switch reaches. In ~180 live turns
+  // (11-08 → 11-12) the 1 s window joined one burst, and 14 late texts were folded in mid-turn
+  // (src/onethought.js), which is what catches a second bubble however late it lands. Never longer
+  // than the configured window, so REASON_BURST_QUIET_MS=0 still turns holding off.
+  const text = who && fastReplyOn(who) ? Math.min(config.burstQuietFastMs, config.burstQuietMs) : config.burstQuietMs;
+  return channel === web.WEB ? Math.min(config.burstQuietWebMs, text) : text;
 }
 
 /** A folded photo, in words: what they wrote with it, and which photo it is. */
@@ -499,7 +505,7 @@ export class Router {
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
       externalId: inbound.externalId, text: [under, picking, reacted, inbound.text].filter(Boolean).join("\n"),
       attachments, service: inbound.service ?? null, isOperator,
-      quietMs: Math.max(0, quietWindowFor(inbound.channel)), maxMs: Math.max(0, config.burstMaxMs),
+      quietMs: Math.max(0, quietWindowFor(inbound.channel, { conversationId, isOperator })), maxMs: Math.max(0, config.burstMaxMs),
     });
 
     // The "…" bubble, for the wait AND the turn. It goes up here rather than at the turn, because

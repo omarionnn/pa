@@ -21,7 +21,7 @@ import { mcpDispatch } from "./mcp-core.js";
  * this turn's person. So every request must carry this turn's secret (`headers`, handed to the CLI
  * in its 0600 MCP config file), name this very host:port, come with no browser Origin, and be JSON.
  */
-export function startMcpHttp({ conversationId, channels = null, calls = null, onTool = () => {}, onToolStart = () => {}, toolCtx = {} } = {}) {
+export function startMcpHttp({ conversationId, channels = null, calls = null, onTool = () => {}, onToolStart = () => {}, toolCtx = {}, log = () => {} } = {}) {
   const secret = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${secret}`);
   let hostport = "";
@@ -52,7 +52,7 @@ export function startMcpHttp({ conversationId, channels = null, calls = null, on
     const out = [];
     for (const one of batch) {
       try {
-        const r = await mcpDispatch(one, { conversationId, channels, calls, onTool, onToolStart, toolCtx });
+        const r = await mcpDispatch(one, { conversationId, channels, calls, onTool, onToolStart, toolCtx, log });
         if (r) out.push(r);
       } catch (e) {
         if (one.id !== undefined) {
