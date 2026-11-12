@@ -10796,13 +10796,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "meal_query": {
       const period = input.period ?? "today";
       const now = clock.now();
-      const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+      // Their day, not the machine's: live runs in UTC, where midnight is 7pm in New York, so an evening
+      // "today" had lost lunch and a morning one still held last night's dinner (2026-11-11).
+      const tz = zone.zoneFor(c);
+      const midnight = (ms) => zone.wallToInstant(`${zone.isoIn(ms, tz).slice(0, 10)}T00:00:00`, tz);
+      const today = midnight(now);
+      // Noon that many days back, then that day's own midnight: right across a clock change too.
+      const daysBack = (n) => midnight(today + 12 * 3_600_000 - n * 86_400_000);
       let sinceMs;
-      if (period === "today") sinceMs = dayStart.getTime();
-      else if (period === "yesterday") sinceMs = dayStart.getTime() - 86_400_000;
-      else if (period === "week") sinceMs = dayStart.getTime() - 7 * 86_400_000;
+      if (period === "today") sinceMs = today;
+      else if (period === "yesterday") sinceMs = daysBack(1);
+      else if (period === "week") sinceMs = daysBack(7);
       else sinceMs = 0;
-      const cutoff = period === "yesterday" ? dayStart.getTime() : undefined;
+      const cutoff = period === "yesterday" ? today : undefined;
       let entries = db.mealEntriesSince(c, sinceMs);
       if (cutoff) entries = entries.filter(e => e.created_at < cutoff);
       const totals = nutrition.sumMeals(entries);
