@@ -9902,9 +9902,9 @@ export function supportNoticed(conversationId, id, at = clock.now(), { evidence 
   const row = getGuess(conversationId, id);
   if (!row || row.how !== NOTICED_SOURCE || row.confirmed_at || row.dismissed_at) return null;
   if (Array.isArray(evidence) && evidence.length) {
-    db.prepare("UPDATE guesses SET last_supported_at = ?, evidence = ? WHERE id = ?").run(at, seal2(conversationId, JSON.stringify(evidence)), id);
+    db.prepare("UPDATE guesses SET last_supported_at = ?, evidence = ? WHERE id = ? AND conversation_id = ?").run(at, seal2(conversationId, JSON.stringify(evidence)), id, conversationId);
   } else {
-    db.prepare("UPDATE guesses SET last_supported_at = ? WHERE id = ?").run(at, id);
+    db.prepare("UPDATE guesses SET last_supported_at = ? WHERE id = ? AND conversation_id = ?").run(at, id, conversationId);
   }
   return getGuess(conversationId, id);
 }
