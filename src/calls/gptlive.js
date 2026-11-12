@@ -232,6 +232,9 @@ export function preCallBrief(call, { place = "" } = {}) {
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
   const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  // What memory saved lately, from texts and calls alike (the profile below is rebuilt rarely).
+  const lately = carryover.recentMemoryNote(call);
+  if (lately) lines.push(lately);
   // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
   if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
@@ -1280,7 +1283,7 @@ export function awaitCallMemory(row, capMs, { log = () => {} } = {}) {
   let timer = null;
   const t0 = Date.now();
   return Promise.race([
-    Promise.resolve().then(() => prep(row, { log })).then(() => true, () => false),
+    Promise.resolve().then(() => Promise.all([prep(row, { log }), carryover.prepareCarry(row, { log })])).then(() => true, () => false),
     new Promise((r) => { timer = setTimeout(() => r(false), capMs); }),
   ]).then((done) => { clearTimeout(timer); log({ gptlive_prering_memory: row.id, ms: Date.now() - t0, done }); return done; });
 }
@@ -1367,6 +1370,11 @@ export const TALKOVER_QUIET_MS = 300;
 export const FIRST_EXCHANGE_QUIET_MS = 700;
 /** Still talking this long after the voice began: what it began was an answer to half a sentence. */
 export const TALKOVER_MAX_MS = 2000;
+// A long turn of theirs (./carryover.js, call 85): this much unbroken talking — pauses under the gap
+// stay inside it — and the voice waits this much quiet, not TALKOVER_QUIET_MS, before it comes in.
+export const LONG_TURN_MS = 8000;
+export const LONG_TURN_GAP_MS = 2500;
+export const LONG_TURN_QUIET_MS = 1500;
 /** With no words of theirs through by the limit, it waits this much longer for quiet, then plays anyway (a noisy line). */
 export const TALKOVER_NOISE_MS = 1500;
 /**
@@ -1449,6 +1457,8 @@ export class GptLiveCall {
     this.callerSpeechFrom = 0;
     // Their last frame of speech over the line's own floor (./hearing.js), for talk-over and holding lines.
     this.theirSpeechAt = -Infinity;
+    // When the stretch of talking their last speech belongs to began (`longTurn`).
+    this.theirStretchFrom = -Infinity;
     // Holding lines said by code (call 79).
     this.holdLines = 0;
     this.quickHolds = 0;
@@ -1611,7 +1621,12 @@ export class GptLiveCall {
       // What the model hears: their side evened out (./hearing.js), quiet words lifted, silence left
       // alone. The recording and every loudness check above keep the line as it came.
       const heard = this.hearing ? this.hearing.frame(m.media.payload, this.now(), { reasonTalking: this.now() < this.playheadAt + ECHO_TAIL_MS }) : m.media.payload;
-      if (this.hearing ? this.hearing.speech : hasSpeech(m.media.payload)) this.theirSpeechAt = this.now();
+      if (this.hearing ? this.hearing.speech : hasSpeech(m.media.payload)) {
+        const st = this.now();
+        // A new stretch of theirs begins after a real gap; pauses for breath or thought stay inside one.
+        if (st - this.theirSpeechAt > LONG_TURN_GAP_MS) this.theirStretchFrom = st;
+        this.theirSpeechAt = st;
+      }
       // A made greeting waiting for its moment: their hello is not sent (the greeting answers it); kept
       // in case they talk on and the greeting is dropped instead (`skipPregreet`).
       if (this.pregreet?.state === "played") this.pregreetOverlap(this.now(), hasSpeech(m.media.payload));
@@ -2134,7 +2149,7 @@ export class GptLiveCall {
       const onContent = this.line ? null : (piece) => this.speakPiece(id, turn, piece);
       reply = await this.brain(messages, { onTool, onContent });
     } catch (e) {
-      reply = { text: "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
+      reply = { text: carryover.brokeLine(this.call) || "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
     this.timers.clearTimeout(late);
     if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer);
@@ -3002,15 +3017,24 @@ export class GptLiveCall {
     // They have spoken since the voice's last run began (not the echo of that run): this run answers them.
     const afterThem = this.theirSpeechAt > this.lastRunAt && this.theirSpeechAt >= this.voiceEndsAt + ECHO_TAIL_MS;
     const first = afterThem && this.lastRunAt > 0 && this.runsAfterThem === 0;
-    const wait = first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
+    // They have been talking a long while (thinking out loud): a breath is not the end of it, so the
+    // quiet that lets the voice in is longer — and a "Go on." that starts into a pause is dropped when
+    // they carry on, like any answer to half a sentence (call 85).
+    const long = this.longTurn();
+    const wait = long ? LONG_TURN_QUIET_MS : first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
     // Never while the call is ending: a goodbye is said, and the hang-up waits on it.
     if (!afterThem || this.ending || t - this.theirSpeechAt >= wait) { this.noteRun(t, afterThem); return false; }
     // Where the voice's words stood when this run began, so a drop takes back only this run's words.
     const last = this.turns.findLast(x => x.who === "reason" && !x.seeded) ?? null;
     const mark = last ? { turn: last, len: last.text.length } : null;
-    this.over = { since: t, frames: [b64], lastAt: t, wait, first, mark };
+    this.over = { since: t, frames: [b64], lastAt: t, wait, first, mark, long };
     this.overTimer = this.timers.setTimeout(() => this.overCheck(), OVER_TICK_MS);
     return true;
+  }
+
+  /** Their own call, carry-over on: have they been talking for a long stretch (thinking out loud)? */
+  longTurn() {
+    return this.ownTalk() && !!this.who?.carry && this.theirSpeechAt - this.theirStretchFrom >= LONG_TURN_MS;
   }
 
   /** A run of the voice's has started down the line. */
@@ -3025,7 +3049,7 @@ export class GptLiveCall {
     if (!o || o.dropped || this.done) return;
     const t = this.now();
     if (t - this.theirSpeechAt >= o.wait) return this.overRelease();
-    if (t - o.since >= TALKOVER_WORDLESS_MS && this.lastCallerAt < o.since) return this.overRelease();
+    if (t - o.since >= (o.long ? LONG_TURN_QUIET_MS : TALKOVER_WORDLESS_MS) && this.lastCallerAt < o.since) return this.overRelease();
     // Still "talking" at the limit: if words of theirs have come through since, it was half their
     // sentence and is dropped; if none have, it is the line (a noisy room) and the run goes out — never
     // dead air for noise.
@@ -3720,7 +3744,7 @@ export async function reasonTurn({ call, messages, log = () => {}, extras = {}, 
 export const GOAL_WAIT_MS = 30_000;
 
 /** The settle path every finished call takes (the steps in ./postcall.js). */
-export async function settleGptLive({ row, live, settle, runtime = null, log = () => {} }) {
+export async function settleGptLive({ row, live, settle, runtime = null, log = () => {}, carryAsk = null }) {
   const fresh = db.getCall(row.conversation_id, row.id) ?? row;
   if (!["placing", "ringing", "in_progress"].includes(fresh.state) && fresh.recording_state !== "pending") return fresh;
   const settled = settle ? await settle(fresh.conversation_id, fresh, live, { log }) : fresh;
@@ -3734,7 +3758,7 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   // so the owner is told what really happened — a mailbox that isn't set up is one text of its own.
   // Their own call is read for what it carries over (./carryover.js) in the same wait: the turn after
   // the call is handed what Reason said it would do, and the next call starts with it.
-  const reads = [goalPending(settled.id), carryover.settleCarry(settled, { log })].filter(Boolean);
+  const reads = [goalPending(settled.id), carryover.settleCarry(settled, { log, ...(carryAsk ? { ask: carryAsk } : {}) })].filter(Boolean);
   if (reads.length) {
     let wait;
     try { await Promise.race([Promise.allSettled(reads), new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
@@ -3811,6 +3835,8 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
   // Where they usually are (./callmemory.js) is read while it rings too, for the voice's brief and
   // Claude's turn alike — whatever backend the turns run on.
   if (row?.id && Number(row.is_owner) === 1) void prepareCallMemory(row, { log: log ?? (() => {}) }).catch(() => {});
+  // Their calendar for today and the next day (./carryover.js), read while it rings too.
+  if (row?.id && Number(row.is_owner) === 1) void carryover.prepareCarry(row, { log: log ?? (() => {}) });
   if (!config.callCacheWarm || !row?.id) return null;
   try {
     return Promise.resolve(warm({ call: row, log: log ?? (() => {}) })).catch(() => null);
@@ -3823,6 +3849,16 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
  * the voice, which answers "where am I / my week" itself, has what Claude's turn has (cold review, call 80).
  */
 onScheduleRead((row) => lateWhereabouts(row));
+// Their calendar arrived after the voice's session was set up: handed over the same way.
+carryover.onCalendarRead((row) => lateCalendar(row));
+export function lateCalendar(row) {
+  const live = running.get(row?.id);
+  if (!live || live.done || !live.who?.owner) return false;
+  const note = carryover.calendarNote(row);
+  if (!note || String(live.who.brief ?? "").includes(note) || live.calendarTold === note) return false;
+  live.calendarTold = note;
+  return tellLive(row.id, note);
+}
 export function lateWhereabouts(row) {
   const live = running.get(row?.id);
   if (!live || live.done || !live.who?.owner) return false;
