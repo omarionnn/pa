@@ -42,11 +42,37 @@ export const MAX_HEARD_BYTES = 20 * 1024 * 1024;
 const NATIVE_AUDIO = { ".wav": "audio/wav", ".mp3": "audio/mp3", ".m4a": "audio/m4a", ".aac": "audio/aac", ".aiff": "audio/aiff", ".ogg": "audio/ogg", ".flac": "audio/flac" };
 
 /** Can Reason send its own words as a voice note right now? Names what is missing when not. */
-export function speakingStatus({ apiKey = config.geminiKey, converter = findConverter() } = {}) {
-  const missing = [...(apiKey ? [] : ["GEMINI_API_KEY"]), ...(converter ? [] : ["ffmpeg"])];
+export function speakingStatus({ apiKey = config.geminiKey, converter = findConverter(), as = null, openaiKey = config.openaiKey } = {}) {
+  // Spoken in the call's own voice (`as`, src/identity.js): OpenAI's speech model can make it alone.
+  const canSpeak = !!apiKey || (as?.provider === "openai" && !!openaiKey);
+  const missing = [...(canSpeak ? [] : ["GEMINI_API_KEY"]), ...(converter ? [] : ["ffmpeg"])];
   return missing.length
     ? { ok: false, missing, why: `speaking needs ${missing.includes("GEMINI_API_KEY") ? "a speech model (GEMINI_API_KEY)" : ""}${missing.length === 2 ? " and " : ""}${missing.includes("ffmpeg") ? "an audio converter (ffmpeg, or afconvert on a Mac)" : ""}, and this machine does not have ${missing.length === 2 ? "them" : "it"}` }
-    : { ok: true, missing: [], model: config.ttsModel, voice: config.ttsVoice, converter: converter.kind };
+    : { ok: true, missing: [], model: as?.provider === "openai" && openaiKey ? as.model : config.ttsModel, voice: as?.voice ?? config.ttsVoice, converter: converter.kind };
+}
+
+/**
+ * Words → speech in the voice a live call uses (OpenAI's speech model; the pickup opener in
+ * src/calls/opener.js asks the same endpoint for the same voice). Raw 24 kHz PCM back, wrapped as a
+ * WAV. `{ ok, wav }` or `{ ok: false, error }`; never throws. The direction rides in `instructions`,
+ * which this model follows and does not read out.
+ */
+export async function openaiSpeech({ text, model, voice, instructions = "", key = config.openaiKey, fetchImpl = globalThis.fetch, base = config.openaiBase ?? "https://api.openai.com", timeoutMs = config.ttsTimeoutMs } = {}) {
+  if (!key) return { ok: false, error: "no OPENAI_API_KEY" };
+  try {
+    const r = await fetchImpl(`${base}/v1/audio/speech`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model, voice, input: text, response_format: "pcm", ...(instructions ? { instructions } : {}) }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!r.ok) return { ok: false, status: r.status, error: `speech ${r.status}` };
+    const pcm = Buffer.from(await r.arrayBuffer());
+    if (pcm.length < 4800) return { ok: false, error: "the speech model answered with next to no audio" };
+    return { ok: true, wav: asWav(pcm) };
+  } catch (e) {
+    return { ok: false, error: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) };
+  }
 }
 
 /** Can Reason listen to a voice note right now? A converter is only needed for Apple's own format. */
@@ -142,14 +168,32 @@ export async function speak({
   apiKey = config.geminiKey, model = config.ttsModel, voice = config.ttsVoice,
   fetchImpl = globalThis.fetch, base = config.geminiBase, timeoutMs = config.ttsTimeoutMs,
   converter = findConverter(), convert = runConverter, exists = existsSync, retryAfterMs = 1_500,
+  // One voice (src/identity.js noteVoiceFor): `{ provider: "openai", model, voice, instructions,
+  // fallbackVoice }` speaks the note in the voice their calls use; `{ provider: "gemini", voice }`
+  // is the closest Gemini voice. null: the install's default, exactly as before.
+  as = null, openaiKey = config.openaiKey, openaiBase = config.openaiBase ?? "https://api.openai.com",
 } = {}) {
   const words = String(text ?? "").trim();
   if (!words) return { ok: false, error: "there is nothing to say." };
   if (words.length > MAX_SPOKEN_CHARS) {
     return { ok: false, error: `that is ${words.length} characters, and a voice note is a few sentences (under ${MAX_SPOKEN_CHARS}). Say less, or send it as text.` };
   }
-  const st = speakingStatus({ apiKey, converter });
+  const st = speakingStatus({ apiKey, converter, as, openaiKey });
   if (!st.ok) return { ok: false, missing: st.missing, error: `${st.why}. Send it as text instead — do not say you sent a voice note.` };
+
+  // The call's own voice first. If it cannot be made, the closest Gemini voice — not the old default.
+  let matched = null;
+  let fellBack = "";
+  if (as?.provider === "openai") {
+    const o = await openaiSpeech({ text: words, model: as.model, voice: as.voice, instructions: as.instructions ?? "", key: openaiKey, fetchImpl, base: openaiBase, timeoutMs });
+    if (o.ok) matched = o.wav;
+    else {
+      fellBack = o.error;
+      if (!apiKey) return { ok: false, error: `the voice could not be made: ${o.error}. Send it as text instead.` };
+    }
+  }
+  if (as && !matched) voice = (as.provider === "gemini" ? as.voice : as.fallbackVoice) || voice;
+  if (matched) return finish(matched, { voice: as.voice, model: as.model, provider: "openai", matched: true });
 
   const r = await gemini({
     model, apiKey, fetchImpl, base, timeoutMs, retryAfterMs,
@@ -165,7 +209,10 @@ export async function speak({
   const data = r.json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data)?.inlineData?.data;
   if (!data) return { ok: false, error: "the speech model answered with no audio in it. Send it as text instead." };
 
-  const wav = asWav(Buffer.from(data, "base64"));
+  return finish(asWav(Buffer.from(data, "base64")), { voice, model, provider: "gemini", matched: false, ...(fellBack ? { fell_back: fellBack } : {}) });
+
+  /** The WAV → the voice memo file. */
+  async function finish(wav, said) {
   mkdirSync(tmpDir, { recursive: true });
   const stem = join(tmpDir, `voice-${clock.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const wavFile = `${stem}.wav`;
@@ -178,7 +225,8 @@ export async function speak({
     if (!exists(out)) return { ok: false, error: `${converter.kind} reported success but wrote no file, so there is no voice note to send. Send it as text instead.` };
   } finally { rmSync(wavFile, { force: true }); }
   // 44-byte header, 16-bit mono at 24 kHz.
-  return { ok: true, file: out, seconds: Math.round(((wav.length - 44) / 48_000) * 10) / 10, voice, model };
+  return { ok: true, file: out, seconds: Math.round(((wav.length - 44) / 48_000) * 10) / 10, ...said };
+  }
 }
 
 /**

@@ -558,6 +558,12 @@ export const config = {
   ttsModel: process.env.REASON_TTS_MODEL || "gemini-3.8-flash-tts",
   ttsVoice: process.env.REASON_TTS_VOICE || "Puck",
   ttsTimeoutMs: Number(process.env.REASON_TTS_TIMEOUT_MS || 60_000),
+  // One identity (src/identity.js): the name they gave their Reason is used on every surface, and a
+  // texted voice note is spoken in the voice their calls use. off (default) | owner | on.
+  oneIdentity: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_ONE_IDENTITY ?? "").trim().toLowerCase()),
+  // The Gemini voice closest to the call voice, for a voice note when OpenAI's speech cannot make it
+  // (one identity only). Chosen by ear against "marin": a light, easy-going woman's voice.
+  ttsCloseVoice: process.env.REASON_TTS_CLOSE_VOICE || "Aoede",
   // How long a voice note has to be before the transcript keeps timestamps. Under it, a note is a
   // sentence or two and [0:00] markers are noise in the middle of what should read as their own
   // message; over it, "where did they say that" is a real question somebody might want checked.
