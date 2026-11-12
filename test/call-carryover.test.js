@@ -569,3 +569,42 @@ test("a second ring: never when they picked up, never for anyone else on 'owner'
   assert.equal(rerings().length + rerings(OTHER).length, 0);
   assert.equal(carry.afterScheduledCall(machine), null);
 });
+
+test("call 95: the first call after a restart still reads the calendar — the read loads the tools itself", async () => {
+  const had = voice.contextDeps.runTool;
+  try {
+    // Nothing has run a turn yet: no tool to read with.
+    voice.contextDeps.runTool = null;
+    let loads = 0, asked = null;
+    const ready = async () => {
+      loads++;
+      voice.contextDeps.runTool = async (name, input, ctx) => { asked = { name, input, ctx }; return { ok: true, content: { events: [{ summary: "Dentist", start: "2026-11-11T16:00:00-05:00" }] } }; };
+    };
+    carry.setCalendarReader((call, input) => voice.readCallCalendar(call, input, { ready }));
+    const now = callAt(WED_NIGHT, { state: "in_progress" });
+    assert.equal((await carry.prepareCarry(now)).ok, true);
+    assert.equal(loads, 1);
+    assert.equal(asked.name, "calendar_events");
+    assert.deepEqual(asked.ctx, { conversationId: C, kind: "user" });
+    assert.match(gl.preCallBrief(now), /- today 4:00 PM: Dentist/);
+    // Loaded already: not loaded again.
+    await voice.readCallCalendar(now, {}, { ready });
+    assert.equal(loads, 1);
+    // The tools cannot be loaded: nothing is said about the calendar, and nothing throws.
+    voice.contextDeps.runTool = null;
+    assert.deepEqual(await voice.readCallCalendar(now, {}, { ready: async () => { throw new Error("no"); } }), { ok: false, error: "no tools" });
+  } finally { voice.contextDeps.runTool = had; }
+});
+
+test("call 95: \"what did you say?\" gets the last real line again, never \"go on\" — on their own call, switch on", () => {
+  const line = carry.CARRY_VOICE_LINES.find(l => /they did not catch YOU/.test(l));
+  assert.ok(line, "the line is there");
+  assert.match(line, /"what's that\?", "what did you say\?"/);
+  assert.match(line, /Say your last real sentence or question again/);
+  assert.match(line, /Never answer that with "go on" or "I was listening"/);
+  const now = callAt(WED_NIGHT, { state: "in_progress" });
+  assert.ok(gl.voiceInstructionsFor(now).includes(line));
+  config.callCarryover = "off";
+  carry.resetCarryover();
+  assert.ok(!gl.voiceInstructionsFor(callAt(WED_NIGHT, { state: "in_progress" })).includes(line));
+});

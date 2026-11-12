@@ -264,7 +264,10 @@ export const CARRY_VOICE_LINES = [
   "Never ask for something an earlier call or the brief already told you.",
   // Call 85: "Go on." "Sorry —" "I'm with you, keep going." "On it." "I heard you." — eight times over one long thought.
   "When they are thinking out loud — a long stretch, a pause mid-sentence, trailing off on \"um\", \"so\", \"and\" or \"like\" — say NOTHING: no \"go on\", \"I'm with you\", \"I hear you\", \"keep going\", \"sorry\", \"on it\" or \"mm-hm\"."
-    + " A pause in the middle of a thought is not your turn. Wait until they finish — a question to you, \"you know?\", \"does that make sense?\" or a clear stop — then answer the whole of it once.",
+    + " A pause in the middle of a thought is not your turn. Wait until they finish — a question to you, \"you know?\", \"does that make sense?\" or a clear stop — then answer the whole of it once.",  // Call 95: his "What's that?" to a question he hadn't caught was heard as "Well, so" and got "Go on.";
+  // then "No, what did you say?" got "Just... go on, I was listening." — the question was never said again.
+  "If they say \"what's that?\", \"what did you say?\", \"sorry?\", \"huh?\" or \"say that again\" — or something short and unclear right after you asked them a question — they did not catch YOU."
+    + " Say your last real sentence or question again, plainly and a little slower (\"I asked what's pulling you to Soho?\"). Never answer that with \"go on\" or \"I was listening\".",
 ];
 
 /** Added to Reason's own call turn. */

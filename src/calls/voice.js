@@ -3294,6 +3294,12 @@ export function cliLineStream() {
 
 // Their calendar for a call's opening brief (./carryover.js): read through the same tool a turn uses,
 // so which accounts are read, each in its own zone, is decided in one place. Reading needs no yes.
-setCalendarReader((call, input) => typeof contextDeps.runTool === "function"
-  ? contextDeps.runTool("calendar_events", input, { conversationId: call.conversation_id, kind: "user" })
-  : { ok: false, error: "no tools" });
+// Call 95 (2026-11-11): the first call after a restart rang before any turn had run `prime()`, so there
+// was no tool to read with and that call's opening had no calendar ("no tools"). The read loads them itself.
+export async function readCallCalendar(call, input, { ready = prime } = {}) {
+  if (typeof contextDeps.runTool !== "function") await Promise.resolve().then(ready).catch(() => {});
+  return typeof contextDeps.runTool === "function"
+    ? contextDeps.runTool("calendar_events", input, { conversationId: call.conversation_id, kind: "user" })
+    : { ok: false, error: "no tools" };
+}
+setCalendarReader(readCallCalendar);
