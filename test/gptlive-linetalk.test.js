@@ -173,21 +173,25 @@ test("consent table: all-party states say it, one-party states don't, unknown sa
   assert.equal(Object.keys(ALL_PARTY_STATES).length, 14);
 });
 
-test("talk mode: instructions sound like a person calling; AI only if asked, never denied; row's opener is no AI line", () => {
+test("talk mode: instructions sound like a person calling; the first reply says it's Reason, an AI, and may be recorded — every state; never denied", () => {
   const s = startLine({ brain: async () => ({ text: "", tools: [], calls: [], endCall: null }), row: bizRow() });
   const ins = s.live.of("session.start")[0].session.instructions;
   assert.doesNotMatch(ins, /never speak on your own/);
   assert.match(ins, /Oh hey, hi! I'm calling to find out/);
-  assert.match(ins, /yes, I'm an AI assistant calling for Omari\./);
-  assert.match(ins, /Never deny it/);
-  assert.match(ins, /Don't open by saying you're an AI/);
+  // Omari 11-11: the disclosure is on every call Reason places, whatever REASON_CALL_MANNER says (off here).
+  const DISCLOSURE = "Hi there, this is Reason, an AI assistant calling for Omari. Just so you know, this call may be recorded.";
+  assert.ok(ins.includes(DISCLOSURE));
+  assert.match(ins, /say plainly yes, you're an AI assistant calling for Omari\./);
+  assert.doesNotMatch(ins, /Don't open by saying you're an AI/);
   assert.match(ins, /Never say "no rush" or "take your time" unless they ask you to hold on/);
-  assert.match(ins, /Don't bring up that the call is recorded/);
+  assert.doesNotMatch(ins, /Don't bring up that the call is recorded/);
+  assert.match(ins, /rather not be recorded/);
+  assert.doesNotMatch(ins, /one notch more polite/);
   assert.match(ins, /low back pain/);
-  assert.equal(db.getCall(C, s.row.id).announcement, "", "New York: no opener line at all");
+  assert.equal(db.getCall(C, s.row.id).announcement, DISCLOSURE, "New York (one-party): said too");
   const ca = startLine({ brain: async () => ({ text: "", tools: [], calls: [], endCall: null }), row: bizRow({ to: "+13105559999" }) });
-  assert.match(ca.live.of("session.start")[0].session.instructions, /just so you know, this call's recorded/);
-  assert.equal(db.getCall(C, ca.row.id).announcement, "Hi there — just so you know, this call's recorded.");
+  assert.ok(ca.live.of("session.start")[0].session.instructions.includes(DISCLOSURE));
+  assert.equal(db.getCall(C, ca.row.id).announcement, DISCLOSURE);
 });
 
 test("call 59: their greeting → the voice answers at once itself; the line turn that was running is not said over it; no more line turns", async () => {
@@ -309,23 +313,23 @@ test("talking: the voice's hand-off runs Reason's turn and its words come back o
   assert.equal(s.posted.length, 1);
 });
 
-test("recording notice: a CA call that didn't say it gets told to; one that did is left alone", async () => {
+test("disclosure check: a call that didn't say it's an AI and may be recorded gets told to, in any state; one that did is left alone", async () => {
   const quiet = async () => ({ text: "", tools: [], calls: [], endCall: null, skip: true });
   const a = startLine({ row: bizRow({ to: "+13105559999" }), brain: quiet });
   await theySay(a, "Hello, Spa LA?");
   await voiceOwn(a, "Oh hey, hi! I'm calling about massages.");
   await a.timers.advance(gl.LINE_NOTICE_CHECK_MS + 10);
-  assert.match(a.live.of("session.instructions.append").at(-1).content, /this call's recorded/);
+  assert.match(a.live.of("session.instructions.append").at(-1).content, /this is Reason, an AI assistant calling for Omari\. Just so you know, this call may be recorded/);
   const b = startLine({ row: bizRow({ to: "+13105559998" }), brain: quiet });
   await theySay(b, "Hello, Spa LA?");
-  await voiceOwn(b, "Oh hi! Just so you know, this call's recorded. I'm calling about massages.");
+  await voiceOwn(b, "Hi there, this is Reason, an AI assistant calling for Omari. Just so you know, this call may be recorded. I'm calling about massages.");
   await b.timers.advance(gl.LINE_NOTICE_CHECK_MS + 10);
   assert.ok(!b.live.of("session.instructions.append").some(e => /recorded/.test(e.content)));
   const ny = startLine({ row: bizRow(), brain: quiet });
   await theySay(ny, "Hello?");
   await voiceOwn(ny, "Hi!");
   await ny.timers.advance(gl.LINE_NOTICE_CHECK_MS + 10);
-  assert.ok(!ny.live.of("session.instructions.append").some(e => /recorded/.test(e.content)), "New York: never");
+  assert.ok(ny.live.of("session.instructions.append").some(e => /may be recorded/.test(e.content)), "New York: told too");
 });
 
 test("after the call: the owner's recap is given what really happened on Reason's side, and told not to guess a bad line", async () => {

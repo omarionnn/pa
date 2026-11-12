@@ -157,7 +157,7 @@ export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1
   // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
   if (config.lineTalk && call?.direction !== "in") {
     const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: recordingNoticeFor(call.to_number).notice });
+    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: true, disclose: true });
   }
   return lineInstructions(who);
 }
@@ -477,11 +477,18 @@ export function lineInstructions({ name = "them", named = name !== "them", ident
  * cut the last one off, and they hung up at 39 s. Here the voice talks with a person itself, the way
  * it does on an own call (call 57), from the brief Reason's turn has, and hands Reason anything it
  * would have to decide. Code still keeps it silent until somebody is there (`ownOpener`), presses keys,
- * waits on hold and keeps the honesty guard. Openers sound like a person calling: no "I'm an AI calling
- * for…" unless they ask, and the recording line only where the law wants it (./consent.js).
+ * waits on hold and keeps the honesty guard.
+ *
+ * `disclose` (every call Reason places, every account, whatever REASON_CALL_MANNER says — Omari 11-11):
+ * the first reply says it is Reason, an AI assistant calling for <first name>, and that the call may be
+ * recorded, and an objection to the recording is met with "that's fine, I'll turn it off" (code stops it:
+ * `readObjection`). Without it (a caller that passes neither flag) the older opener stands: no "I'm an
+ * AI calling for…" unless they ask, and the recording line only where the law wants it (./consent.js).
+ * `manner` adds the cancelled call manner's tone lines on top and is separate.
  */
-export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], notice = false, manner: mannered = false } = {}) {
+export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], notice = false, manner: mannered = false, disclose = false } = {}) {
   const first = named ? String(name).trim().split(/\s+/)[0] : "the person you work for";
+  const says = mannered || disclose;
   const b = brief ?? {};
   const told = (facts ?? []).map(f => String(f).trim()).filter(Boolean);
   const rules = callRulesFor({ ownerName: first });
@@ -497,7 +504,7 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     "Until a live person speaks to you, say nothing at all: not to a ringing line, a recording, a phone menu, hold music or a voicemail greeting. Reason handles those.",
     "When a person answers — a live greeting like \"…, can I help you?\", \"hello?\" or \"speaking\" — answer straight away, like a normal person calling: a quick warm hello, then what you're calling about, in one natural breath."
       + " For example: \"Oh hey, hi! I'm calling to find out what kind of service you'd recommend for someone with low back pain… and how much would an hour be?\"",
-    ...(mannered
+    ...(says
       // Omari 11-11: a business always hears who is calling, that it's an AI, and that it may be recorded.
       ? [`In that first reply, right after hello, say who you are and that the call may be recorded: "${manner.disclosureLine(named ? first : "")}" — then carry straight on with what you're calling about. If code already said it for you at pickup, don't say it again. If they ask whether you're a robot or an AI, say plainly yes, you're an AI assistant calling for ${first}. If they ask your name, it's Reason; never make up a person's name.`]
       : [
@@ -506,7 +513,9 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
           : "Don't bring up that the call is recorded; if they ask, say yes, it is.",
       ]),
     "If they say \"hello?\" again while you're starting, don't start over: carry on with what you were saying.",
-    ...(mannered ? [] : [
+    // The disclosure without the manner: the objection line and the never-pose-as-them line the manner's own lines carry.
+    ...(disclose && !mannered ? [manner.RECORDING_OBJECTION_LINE, `Say who you're calling for again only when it matters — a booking or a name they need. Never say you are ${first}.`] : []),
+    ...(says ? [] : [
       `Don't open by saying you're an AI or who you're calling for. If they ask whether you're a robot, an AI, a recording or automated, say plainly: "yes, I'm an AI assistant calling for ${first}." Never deny it and never dodge it.`,
       `Say who you're calling for only when it matters — a booking or a name they need, or they ask who's calling: "I'm calling for ${first}." If they ask your name, it's Reason; never make up a person's name, and never say you are ${first}.`,
     ]),
@@ -1467,16 +1476,14 @@ export class GptLiveCall {
     // The call manner (./manner.js) for this call's account; never on a stranger's call.
     this.manner = !persona && !!this.who?.manner && (!!this.who?.owner || this.line);
     if (this.talk) {
-      this.notice = recordingNoticeFor(call.to_number);
-      // Omari 11-11: with the call manner on, every business hears it's Reason, an AI, and that it may be recorded.
-      if (this.manner) this.notice = { ...this.notice, notice: true, disclose: true, why: "call manner: always said" };
+      // Omari 11-11: every business hears it's Reason, an AI, and that it may be recorded — every account,
+      // every state, whatever REASON_CALL_MANNER says (the manner was cancelled; the disclosure was not).
+      this.notice = { ...recordingNoticeFor(call.to_number), notice: true, disclose: true, why: "always said" };
       const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, notice: this.notice.notice }) };
-      // Reason's own turns put the row's opening line in front of their first words to a person: on
-      // this call that is no "this is Reason, an AI assistant…", only the recording line where the law
-      // wants it (and nothing at all elsewhere).
-      const opening = this.notice.disclose ? manner.disclosureLine(this.who?.named ? this.who.name : "")
-        : this.notice.notice ? "Hi there — just so you know, this call's recorded." : "";
+      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, notice: this.notice.notice, disclose: true }) };
+      // Reason's own turns put the row's opening line in front of their first words to a person: the
+      // disclosure, word for word.
+      const opening = manner.disclosureLine(this.who?.named ? this.who.name : "");
       try { db.updateCall(call.conversation_id, call.id, { announcement: opening }); } catch { /* the row's own line stands */ }
       this.call = { ...call, announcement: opening };
     }
@@ -3836,10 +3843,10 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   // The pickup opener, made while it rings (./opener.js): never waited on here.
   if (thirdParty && opener.openerFor(row)) {
     try {
-      // The call manner: the clip says who is calling, that it's an AI and that it may be recorded.
-      const who = manner.mannerFor(row.conversation_id) ? whoFor(row) : null;
-      const disclose = who ? manner.disclosureLine(who.named ? who.name : "") : "";
-      void opener.prepare(row, { notice: recordingNoticeFor(row.to_number).notice, disclose, log: args?.log ?? (() => {}) });
+      // The clip says who is calling, that it's an AI and that it may be recorded (every account; not the manner flag).
+      const who = whoFor(row);
+      const disclose = manner.disclosureLine(who.named ? who.name : "");
+      void opener.prepare(row, { notice: true, disclose, log: args?.log ?? (() => {}) });
     } catch { /* the call opens the old way */ }
   }
   // No warm-up of the VOICE while it rings (2026-10-31): calls 54–55 with it were "confused and

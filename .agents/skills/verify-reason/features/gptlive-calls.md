@@ -264,11 +264,13 @@ transcript lags ~2.7 s); the voice's own answer to a person is let through (`own
 more line turns; a line turn overtaken by the voice is not said (its key/transfer/hang-up only if
 nothing was said since). Nobody speaks 3 s (`LINE_OPEN_AFTER_MS`) → "Hi there, hello?" then waits (not
 counted as a person; since #379 only when no pickup opener clip played — see "Pickup opener" below). AMD non-beep ignored once they have spoken since the talk began; beep →
-`stopTalking`. Mailbox rows never talk. Opener style: "Oh hey, hi! I'm calling to find out…" — no AI /
-"calling for" unless asked; asked "is this a robot?" → "yes, I'm an AI assistant calling for <first>",
-never denied. Recording line only where `src/calls/consent.js` says (14 all-party states by area code
-+ toll-free/abroad/unreadable; row announcement rewritten to "Hi there — just so you know, this call's
-recorded." or ""), checked 9 s in (`checkNotice`). Hold in talk mode: voice silent; its own silence past
+`stopTalking`. Mailbox rows never talk. Opener style: "Oh hey, hi! I'm calling to find out…". Since 2026-11-11 EVERY placed
+business call, every account and state, opens with "Hi there, this is Reason, an AI assistant calling for
+<first>. Just so you know, this call may be recorded." (`manner.disclosureLine`; the row's announcement,
+the pickup clip and the voice's first reply) — NOT behind `REASON_CALL_MANNER`, whose tone lines stay off.
+An objection to the recording, read by meaning (`readObjection`), stops the tape from before their words
+(`gptlive_recording_declined` in the journal). `test/call-manner.test.js` "manner OFF…". Said yet is
+checked 9 s in (`checkNotice`). Hold in talk mode: voice silent; its own silence past
 the budget → give-up line + hang-up. Recap gets `howItWent` (first sound, first word, overlaps, end) +
 "never guess a bad line".
 
