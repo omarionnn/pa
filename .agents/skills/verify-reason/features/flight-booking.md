@@ -1,23 +1,26 @@
-# Flight booking — through AgentCard, behind the owner's approval, never "booked" without a ticket
+# Flight booking — no booking route; the reusable parts are dark
 
-Somebody picks a flight from a flight search and asks Reason to book it. Reason re-checks the fare
-through Fli, reads the travelers back and gets a "those are right", builds the booking with
-AgentCard, shows the cart's own numbers (and names what the cart does not itemize), asks for a yes
-pinned to that exact cart and those exact travelers, sends AgentCard's approval link on its own, and
-afterwards says exactly which state the booking is in. **It is DARK**: `REASON_FLIGHT_BOOKING` is off
-on live, and off means no booking tool is shown or runs and a search offers the Google Flights link
-alone. `REASON_FLIGHT_BOOKING=owner` is on in the owner's conversation only (`accounts.ownerOf(c).isOperator`,
-the invites check) and exactly off for everyone else; `1/true/on/yes` is everyone. `bookingEnabled(c)`
-takes the conversation; with none it is false under `owner`.
+**Reason does not book flights.** AgentCard's flight route (`flight_book`, the flight branches of
+`purchase_confirm`, the sandbox fixtures, the smoke script) was removed 2026-11-11: the owner's
+decision is that Crossmint is the only buy route. No Crossmint flight route exists yet — it has not
+been proven with a real run (`docs/flight-booking.md` says what was read and the run that settles it).
 
-Search is [flight-search.md](flight-search.md) (src/flightsearch.js over src/flightproviders.js —
-SerpApi, then Duffel, since 2026-11-06; Fli is out of the path). Payment is the AgentCard purchase path
-([agentcard.md](agentcard.md)) — `purchase_confirm`, the confirm gate, the caps, the passkey pause —
-with no parallel payment path. **Where Shop Connect is on (live: everyone since 2026-10-31)
-`flight_book` and the four `flight_traveler_*` tools are `AGENTCARD_BUY_TOOLS`** (`src/shoptools.js:28`):
-hidden by `toolsFor` and refused in `runTool` with "Buying here goes through store_checkout…", whatever
-`REASON_FLIGHT_BOOKING` says (cage 2026-11-07, `REASON_SHOP_CONNECT=owner`: owner 0 booking tools,
-`flight_book`/`flight_travelers` → that refusal). So on live this feature is doubly dark.
+What is left is what a route will reuse: the traveler tools, the booking states, the e-ticket check.
+All of it is dark for every value of `REASON_FLIGHT_BOOKING`, because `bookingEnabled(c)`
+(`src/flightbook.js`) needs the flag AND a route, and `bookingRoute()` is null. Tests stand a route
+in with `flightbook._setRoute("test")`; nothing else may.
+
+What to check, any flag value: `toolsFor(c)` has no `flight_book` and none of the four
+`flight_traveler_*` tools; `flight_search`'s description says "SEARCH ONLY — Reason never books";
+`flight_traveler_save` → `blocked: not_available`; `purchase` on an AgentCard flights catalog and
+`purchase_confirm` on a flight row or flight cart → `blocked: flight_not_here`, nothing sent.
+`node --test test/flight-booking.test.js test/ticket-check.test.js` pins all of it.
+
+**Everything below this line was written for the AgentCard route and is history**, kept for the
+traveler, state and e-ticket behaviour it still describes; anything about `flight_book`, a fresh
+quote, AgentCard's cart or its approval link no longer exists.
+
+Search is [flight-search.md](flight-search.md).
 
 Source: `src/flightbook.js` (price view, finality, itinerary match, traveler fingerprint,
 `BOOKING_STATES` / `bookingState`, `TICKETING_FIELDS`), `src/tools.js` (`flight_traveler_save`,

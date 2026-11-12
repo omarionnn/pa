@@ -3,7 +3,7 @@
 **Live: `on` for everyone since 2026-10-31 (owner's go at 15:59 ET)**, with `REASON_CHOICE_CARDS=on` and
 `REASON_PASSKEY_PAY=on` beside it — appended to live `.env` (a later line wins under `--env-file`; the
 `=owner` lines above them are history). Where Connect is on it is the ONLY way to buy, so every account
-is off AgentCard's `purchase`/`vault_enroll`/`flight_book` (src/shoptools.js AGENTCARD_BUY_TOOLS); the
+is off AgentCard's `purchase`/`vault_enroll` (src/shoptools.js AGENTCARD_BUY_TOOLS); the
 AgentCard rows and code stay, dormant. See "Everyone" below for what was checked and added before the flip.
 
 Crossmint agent checkouts: `store_checkout` starts one (guest first; Target/Walmart or `sign_in:true` →
@@ -63,7 +63,7 @@ texted link), never shows an email, never offers guest checkout.
 
 ## Crossmint only (2026-10-30, owner: "we are moving off AgentCard")
 Where `connectAllowedFor` is true, Crossmint is the ONLY way to buy. `AGENTCARD_BUY_TOOLS` (src/shoptools.js:
-vault_enroll, purchase, purchase_confirm, purchase_track, purchases_recent, flight_book + the four
+vault_enroll, purchase, purchase_confirm, purchase_track, purchases_recent + the four
 flight_traveler_* tools) are hidden by `toolsFor` and refused in `runTool` (`blocked: not_available`, points
 at store_checkout). `shop_card` is the card tool ("add a card", "what card do I have"): the saved card,
 and a 30-minute `/web/connect/<token>` link only when asked or when none is saved. `crossmintWords` rewords
@@ -75,7 +75,7 @@ checkout", never to be confirmed or tracked again. Everybody else: tools and des
   the CeraVe foaming cleanser 16 oz from walmart" → web_search, offer_check, **store_checkout** (fails on
   "CROSSMINT_SERVER_KEY is not set", as the cage intends), shop_handoff. No AgentCard tool in any turn.
 - Live: `toolsFor("dm:owner")` on the server (as reason, `--env-file=.env`): store_checkout + shop_card true,
-  purchase/purchase_confirm/vault_enroll/flight_book false.
+  purchase/purchase_confirm/vault_enroll false (`flight_book` no longer exists).
 - Retiring an AgentCard row (no AgentCard void API): `db.markAgentcardPurchase(buyConv, { status: "declined",
   declineCode: "retired_moved_to_crossmint" })`; an `approved` webhook then does nothing (it acts only on
   awaiting_approval) and purchase_confirm is refused for the owner anyway. Row 8 (CeraVe, $17.79) done 10-30.

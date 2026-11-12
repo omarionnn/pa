@@ -36,7 +36,7 @@ clock.now = () => now;
 const TESTY = { given_name: "Testy", family_name: "Spikeson", born_on: "1990-01-15", gender: "m", email: "spike-test@example.com", phone: "+12025550143" };
 let seq = 0;
 
-/** A placed flight order exactly as flight_book + purchase_confirm leave one, JFK → LHR on 12 Dec. */
+/** A placed flight order as a booking route leaves one, JFK → LHR on 12 Dec. */
 function order({ c = OMARI, status = "placed", authorizationState = "", traveler = TESTY } = {}) {
   const tid = db.saveFlightTraveler(c, traveler, { said: "yes those are right" }).id;
   const searchId = db.recordFlightSearch(c, {
@@ -80,6 +80,7 @@ function harness(messages) {
 
 beforeEach(() => {
   config.flightBooking = true;
+  fb._setRoute("test");   // there is no real booking route; the check is driven through a stand-in
   now = T0;
   db.db.exec("DELETE FROM flight_ticket_watch; DELETE FROM agentcard_purchases; DELETE FROM notice_budget;");
 });
@@ -374,4 +375,14 @@ test("the 'check with the airline' text names the order's own carrier — never 
   assert.doesNotMatch(line.text, /1-800|call /, "no email text in the line");
   assert.match(db.ticketWatchFor(OMARI, buy).carrier, /1-800/, "the email's carrier was read and kept as a field");
   assert.match(line.text, /check with BA directly \(confirmation [A-Z0-9]{6}\)/);
+});
+
+test("no booking route: the flag alone watches nothing and reads nothing", async () => {
+  fb._setRoute(null);
+  order();
+  const h = harness([ISSUED]);
+  await h.run(); now += 10 * 60_000; await h.run();
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.told.length, 0);
+  assert.equal(db.dueTicketWatches(Infinity).length, 0);
 });

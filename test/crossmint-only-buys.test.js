@@ -54,7 +54,7 @@ test("nothing the owner's model reads names AgentCard or sends buying anywhere b
 });
 
 test("an AgentCard tool named anyway is refused, and nothing reaches AgentCard", async () => {
-  for (const [name, input] of [["purchase", { ask: "cerave cleanser from walmart" }], ["vault_enroll", {}], ["purchase_confirm", { conversation_id: "conv_x", cart_hash: "abc", confirmation_id: 1 }], ["flight_book", { search_id: 1, option: 1, traveler_ids: [1] }]]) {
+  for (const [name, input] of [["purchase", { ask: "cerave cleanser from walmart" }], ["vault_enroll", {}], ["purchase_confirm", { conversation_id: "conv_x", cart_hash: "abc", confirmation_id: 1 }], ["flight_travelers", {}]]) {
     const out = await runTool(name, input, { conversationId: OMARI });
     assert.equal(out.blocked, "not_available", name);
     assert.match(out.error, /store_checkout/);
@@ -69,18 +69,19 @@ test("a held AgentCard confirm released later is refused too", async () => {
 
 test("everybody else keeps today's tools and today's words exactly", () => {
   const theirs = names(AMA);
-  for (const n of ["purchase", "purchase_confirm", "vault_enroll", "purchase_track", "purchases_recent", "flight_book"]) assert.ok(theirs.includes(n), n);
+  for (const n of ["purchase", "purchase_confirm", "vault_enroll", "purchase_track", "purchases_recent"]) assert.ok(theirs.includes(n), n);
+  assert.ok(!theirs.includes("flight_book"), "AgentCard's flight tool was removed 2026-11-11");
   for (const n of ["store_checkout", "shop_pay", "shop_decline", "shop_card"]) assert.ok(!theirs.includes(n), n);
   const base = new Map(tools.map((t) => [t.name, t.description]));
-  for (const t of toolsFor(AMA)) if (t.name !== "flight_search") assert.equal(t.description, base.get(t.name), t.name);
-  assert.match(toolsFor(AMA).find((t) => t.name === "flight_search").description, /flight_book/);
+  for (const t of toolsFor(AMA)) assert.equal(t.description, base.get(t.name), t.name);
+  assert.match(toolsFor(AMA).find((t) => t.name === "flight_search").description, /SEARCH ONLY — Reason never books/);
 });
 
 test("with the switch off the owner is back on AgentCard, unchanged", () => {
   process.env.REASON_SHOP_CONNECT = "off";
   try {
     const mine = names(OMARI);
-    assert.ok(mine.includes("purchase") && mine.includes("vault_enroll") && mine.includes("flight_book"));
+    assert.ok(mine.includes("purchase") && mine.includes("vault_enroll") && !mine.includes("flight_book"));
     assert.ok(!mine.includes("store_checkout") && !mine.includes("shop_card"));
   } finally { process.env.REASON_SHOP_CONNECT = "owner"; }
 });
