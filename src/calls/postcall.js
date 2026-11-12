@@ -24,7 +24,7 @@ import { SPOKE_TO_SOMETHING } from "./provider.js";
 import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
-import { promisedNote, brokeNote } from "./carryover.js";
+import { promisedNote, brokeNote, carryoverFor, missedScheduled } from "./carryover.js";
 
 /**
  * At boot: the calls a restart cut off between the thread and the owner's turn, finished once.
@@ -240,6 +240,8 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   // Their own call. Nothing at all when nobody was on it: Reason ringing them and them not picking
   // up is not news that needs a text.
   if (!SPOKE_TO_SOMETHING.includes(row.state) || row.state === "voicemail") return { sent: false, why: "nobody was on it" };
+  // A scheduled call an answering machine took: code rings once more, then texts (./carryover.js) — one voice, not two.
+  if (carryoverFor(row.conversation_id) && missedScheduled(row)) return { sent: false, why: "nobody was on it" };
   // Not counted against their day. They were on the phone with it thirty seconds ago; a line that
   // finishes that conversation is not Reason starting one.
   // An unverified caller's ask waits for a yes typed on their own phone: nothing standing covers it.

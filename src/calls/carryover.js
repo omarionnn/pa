@@ -430,3 +430,111 @@ export function brokeNote(row) {
   return "\nSomething IS owed: on the call your side failed several times in a row and you told them you'd text the answer instead."
     + " Find what they were asking for in the call above, get it now with your tools, and text it in one short message. If it still can't be done, say that plainly.";
 }
+
+// ---------- how a call opens and closes ----------
+
+// 14 of 16 calls opened "hey Omari — what's up?" (call audit 11-11). The opening is still code's words —
+// it is said before any turn has run — but it fits the time of day, says "again" when they spoke a
+// little while ago, and is never the line the last call opened with.
+const GREETINGS = {
+  morning: ["morning, {n} — what's up?", "hey {n}, good morning — how's it going?", "hey {n} — how's your morning?"],
+  afternoon: ["hey {n} — how's your afternoon going?", "afternoon, {n} — what's going on?", "hey {n}, good to hear from you — what's up?"],
+  evening: ["hey {n} — how's your evening?", "evening, {n} — what's up?", "hey {n}, good to hear from you — how was today?"],
+  night: ["hey {n} — you're up late. what's up?", "hey {n} — late one tonight? what's going on?", "hey {n}, what's up?"],
+  again: ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, what did we miss?"],
+};
+// A call Reason places keeps "…, what's up?" at the end: the voice swaps that for why it rang (`openingPurpose`).
+const SALUTES = {
+  morning: ["morning {n}", "hey {n}, good morning"], afternoon: ["hey {n}", "afternoon {n}"],
+  evening: ["hey {n}", "evening {n}"], night: ["hey {n}"], again: ["hey again {n}", "hey {n}"],
+};
+/** They spoke this recently: the opening says "again". */
+export const AGAIN_MS = 3 * 3600_000;
+
+export function dayPart(ms, tz = config.tz) {
+  const h = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", hour12: false }).format(new Date(ms))) % 24;
+  return h >= 5 && h < 12 ? "morning" : h >= 12 && h < 17 ? "afternoon" : h >= 17 && h < 22 ? "evening" : "night";
+}
+
+/**
+ * The opening line for a person's own call, or "" (off for them: the caller keeps its old line).
+ * `direction` "in": they rang. "out": Reason rang with no reason of its own to say.
+ */
+export function greetingFor({ conversationId, name = "", direction = "in", now = clock.now(), tz = config.tz } = {}) {
+  if (!conversationId || !carryoverFor(conversationId)) return "";
+  let rows = [];
+  try { rows = db.listCalls(conversationId, { limit: 8 }).filter(r => Number(r.is_owner) === 1 && Number(r.created_at) < now); } catch { rows = []; }
+  const talked = rows.filter(wasTheirCall);
+  const again = talked.some(r => now - Number(r.ended_at ?? r.created_at) < AGAIN_MS);
+  const part = again ? "again" : dayPart(now, tz);
+  const who = name && name !== "the person I work for" ? name : "";
+  const fill = (l) => (who ? l.replace("{n}", who) : l.replace(/,? ?\{n\}/, "")).replace(/^[\s,—-]+/, "");
+  const options = (direction === "in" ? GREETINGS[part] : SALUTES[part].map(s => `${s}, what's up?`)).map(fill);
+  // What the last call opened with, off its own transcript (an inbound row's greeting is not on the row).
+  const last = String(rows[0]?.transcript ?? "").split("\n").find(l => /^Reason\s*:/.test(l)) ?? String(rows[0]?.announcement ?? "");
+  const said = last.toLowerCase();
+  const start = rows.length % options.length;
+  for (let i = 0; i < options.length; i++) {
+    const o = options[(start + i) % options.length];
+    if (!said.includes(o.toLowerCase())) return o;
+  }
+  return options[start];
+}
+
+/** Replaces "When you both say goodbye, sign off warmly and briefly." on their own call. */
+export const CARRY_GOODBYE = "When they say they have to go, sign off like a friend who was glad to talk: one short, warm line that picks up something from THIS call — where they're headed, what they're about to do, what you'll send them — and then bye (\"Have fun at Bo Peep — shout if the trains play up. Bye!\")."
+  + " Never a flat \"Oh, sure. Bye.\" or a bare \"Sure thing.\"; no new question or offer on the way out; and if they're in a rush, a few words is right — still warm.";
+/** The same, for Reason's own call turn (it writes the last words when it ends the call itself). */
+export const CARRY_TURN_GOODBYE = "When they're going, your last line is short and warm and picks up one thing from this call (\"Go get it — tomorrow by six. Talk soon.\"), never a flat \"Sure. Bye.\", and never a new question or offer on the way out.";
+
+// ---------- a call they asked for at a time, and nobody picked up ----------
+
+/** How long after the miss the phone rings once more. */
+export const RERING_MS = 150_000;
+export const RERING_LABEL = "call:rering:";
+
+/** Was this call itself the second ring? */
+export function isRering(row) {
+  if (!row?.timer_id) return false;
+  try { return String(db.getTimer(row.conversation_id, row.timer_id)?.label ?? "").startsWith(RERING_LABEL); } catch { return false; }
+}
+
+/** A scheduled call of theirs that reached nobody: not picked up, busy, or an answering machine. */
+export function missedScheduled(row) {
+  if (!row?.timer_id || Number(row.is_owner) !== 1) return false;
+  if (!SPOKE_TO_SOMETHING.includes(row.state) || row.state === "voicemail") return true;
+  return answeredByMachine(row) || row.outcome_kind === "line_silent";
+}
+
+/**
+ * Call 78 (Sun 11-08, 6:30 AM): the wake-up call went to voicemail and the next thing was a text asking
+ * whether to try again. Now the phone rings once more, RERING_MS later — one retry, by an ordinary
+ * call timer, so every check a scheduled call goes through applies to it. `{ timerId }` when a second
+ * ring is set (now or already), null when there is none: off for them, they were reached, or this
+ * call was the second ring.
+ */
+export function reringIfMissed(row, { log = () => {}, now = clock.now() } = {}) {
+  if (!row || !carryoverFor(row.conversation_id) || !missedScheduled(row) || isRering(row)) return null;
+  const label = `${RERING_LABEL}${row.timer_id}`;
+  try {
+    const had = db.db.prepare("SELECT id FROM timers WHERE conversation_id = ? AND label = ?").get(row.conversation_id, label);
+    if (had) return { timerId: had.id, already: true };
+    const goal = String(row.goal ?? "").trim();
+    if (!goal) return null;
+    const t = db.createTimer(row.conversation_id, { fireAt: now + RERING_MS, note: `second ring: ${goal}`.slice(0, 300), callGoal: goal, label, taskId: row.task_id ?? null });
+    log({ scheduled_call_rering: row.id, timer: t.id, in_ms: RERING_MS });
+    return { timerId: t.id };
+  } catch (e) {
+    log({ scheduled_call_rering_failed: row.id, why: (e?.message ?? String(e)).split("\n")[0] });
+    return null;
+  }
+}
+
+/** How the "tried calling" text is queued (src/tools.js `queueMissedScheduledCall`), for the settle. */
+let missedTeller = null;
+export function setMissedTeller(fn) { missedTeller = typeof fn === "function" ? fn : null; }
+/** After the read of how a scheduled call went: ring again, or — second ring missed too — the one text. */
+export function afterScheduledCall(row, { log = () => {} } = {}) {
+  if (!row || !carryoverFor(row.conversation_id) || !missedScheduled(row)) return null;
+  try { return missedTeller ? missedTeller(row.conversation_id, row, log) : null; } catch { return null; }
+}

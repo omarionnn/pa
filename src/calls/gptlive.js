@@ -369,6 +369,8 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
   const swap = (l) => !mm ? l
     : l === OWN_NO_FILLER || l === NO_FILLER ? manner.MANNER_FILLER
       : l === "When you both say goodbye, sign off warmly and briefly." ? manner.MANNER_WRAP_UP : l;
+  // A warmer goodbye (./carryover.js), with the manner off: the same line swapped.
+  const bye = (l) => own && carry && !mm && l === "When you both say goodbye, sign off warmly and briefly." ? carryover.CARRY_GOODBYE : l;
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -396,7 +398,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
     ...split,
     "While the backend works, do not fill the silence with guesses.",
-    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap),
+    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap).map(bye),
     PIECES_LINE,
     ...HEARING_LINES,
     ...(own ? OWN_CALL_LINES : []),
@@ -3765,6 +3767,9 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
     finally { clearTimeout(wait); }
   }
   const read = db.getCall(settled.conversation_id, settled.id) ?? settled;
+  // A call they asked for at a time that turned out to be an answering machine (that is only known
+  // now): the phone rings once more, or — it was the second ring — the one text goes (./carryover.js).
+  carryover.afterScheduledCall(read, { log });
   const told = await tellTheOwner({ row: read, live, runtime, log });
   db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
   log({ post_call: settled.id, provider: PROVIDER, state: settled.state, recording: settled.recording_state, turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null });

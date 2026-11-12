@@ -44,7 +44,7 @@ import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
 import * as errand from "./errand.js";
 import { QUOTE_TOOL } from "./errand.js";
 import { briefLines, buildBrief, todaySoFarNote } from "./brief.js";
-import { earlierCallsNote, CARRY_TURN_LINE, calendarNote, recentMemoryNote, prepareCarry, setCalendarReader, brokeLine, turnWorked } from "./carryover.js";
+import { earlierCallsNote, CARRY_TURN_LINE, CARRY_TURN_GOODBYE, carryoverFor, calendarNote, recentMemoryNote, prepareCarry, setCalendarReader, brokeLine, turnWorked } from "./carryover.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
 import { rulesNote } from "../rules.js";
@@ -601,6 +601,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // first answer does not wait on a lookup; anything further out is still calendar_events.
     recentMemoryNote(call),
     calendarNote(call),
+    carryoverFor(conversationId) ? CARRY_TURN_GOODBYE : "",
   ];
   return {
     kind: "owner",

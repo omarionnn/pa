@@ -22,6 +22,9 @@ const gl = await import("../src/calls/gptlive.js");
 const voice = await import("../src/calls/voice.js");
 const carry = await import("../src/calls/carryover.js");
 const postcall = await import("../src/calls/postcall.js");
+const inbound = await import("../src/calls/inbound.js");
+const tools = await import("../src/tools.js");
+const { requireAnnouncement } = await import("../src/calls/provider.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -441,4 +444,128 @@ test("what memory saved in the last three days — from a call or a text — is 
   config.callCarryover = "off";
   carry.resetCarryover();
   assert.doesNotMatch(gl.preCallBrief(callAt(WED_NIGHT, { state: "in_progress" })), /Saved about them/);
+});
+
+// ---------- greeting, goodbye, a second ring ----------
+
+const firstLine = (t) => `Reason: ${t}\nThem: hey, I wanted to ask you about something for tonight`;
+
+test("the opening fits the time of day, says 'again' after a recent call, and is never the last call's line", () => {
+  const at = (h, m = 0) => Date.UTC(2026, 10, 11, h + 5, m); // New York, Wed Nov 11
+  const greet = (now, direction = "in") => carry.greetingFor({ conversationId: C, name: "Omari", direction, now });
+  assert.match(greet(at(7)), /morning/i);
+  assert.match(greet(at(14)), /afternoon|good to hear from you/);
+  assert.match(greet(at(19)), /evening|how was today/);
+  assert.match(greet(at(25)), /late|what's up/);
+  // Ten calls through one evening and the next days: no two in a row open the same way.
+  let last = "";
+  for (let i = 0; i < 10; i++) {
+    const now = at(18) + i * 26 * HOUR;
+    const line = greet(now);
+    assert.notEqual(line, last, `call ${i} repeated "${line}"`);
+    assert.doesNotMatch(line, /\{n\}/);
+    callAt(now, { transcript: firstLine(`oh, ${line}`), seconds: 60 });
+    last = line;
+  }
+  // Half an hour after a call: "again".
+  db.db.exec("DELETE FROM calls");
+  callAt(at(18), { transcript: firstLine("hey Omari — how's your evening?"), seconds: 60 });
+  assert.match(greet(at(18, 30)), /again|back so soon|what did we miss/);
+  // A voicemail or a dead line half an hour ago is not "again".
+  db.db.exec("DELETE FROM calls");
+  callAt(at(18), { outcomeKind: "voicemail_no_message", transcript: "Them: The person you're trying to reach is not available" });
+  assert.doesNotMatch(greet(at(18, 30)), /again|back so soon|what did we miss/);
+});
+
+test("the opening: a call they ring gets it with its lead-in; a call Reason places keeps '…, what's up?' and passes the greeting guard; no name is no gap", () => {
+  clock.skip(WED_NIGHT - Date.now());
+  const line = inbound.openingLineFor({ person: { name: "Omari" }, conversationId: C });
+  assert.match(line, /^(oh,|ah,|hey —|yo,) .*Omari/);
+  assert.doesNotMatch(line, /hey Omari — what's up\?$/, "not the one line every call used to open with");
+  for (const h of [7, 14, 19, 25]) {
+    const out = carry.greetingFor({ conversationId: C, name: "Omari", direction: "out", now: Date.UTC(2026, 10, 11, h + 5) });
+    assert.match(out, /Omari.*, what's up\?$/);
+    assert.equal(requireAnnouncement({ announcement: out, ownerName: "Omari", toOwner: true }).ok, true);
+  }
+  assert.equal(carry.greetingFor({ conversationId: C, name: "", direction: "in", now: Date.UTC(2026, 10, 11, 12) }), "morning — what's up?");
+  // Anyone else on 'owner', and everyone with it off: the line it always was.
+  assert.equal(carry.greetingFor({ conversationId: OTHER, name: "Ama" }), "");
+  assert.match(inbound.openingLineFor({ person: { name: "Ama" }, conversationId: OTHER }), /hey Ama — what's up\?$/);
+  config.callCarryover = "off";
+  assert.match(inbound.openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
+});
+
+test("a warmer goodbye: the voice's sign-off line and Reason's own turn, with the manner off; untouched when the switch is off", () => {
+  const now = callAt(WED_NIGHT, { state: "in_progress" });
+  const said = gl.voiceInstructionsFor(now);
+  assert.ok(said.includes(carry.CARRY_GOODBYE));
+  assert.ok(!said.includes("When you both say goodbye, sign off warmly and briefly."), "swapped, not said twice");
+  assert.ok(voice.ownerContext({ call: now, callMessages: [] }).system.includes(carry.CARRY_TURN_GOODBYE));
+  config.callCarryover = "off";
+  const off = gl.voiceInstructionsFor(callAt(WED_NIGHT, { state: "in_progress" }));
+  assert.ok(off.includes("When you both say goodbye, sign off warmly and briefly.") && !off.includes(carry.CARRY_GOODBYE));
+});
+
+/** A call placed by a "call me at…" timer, ended the given way. */
+function scheduledCall({ state = "completed", outcomeKind = "voicemail_no_message", label = null, conversationId = C } = {}) {
+  const timer = db.createTimer(conversationId, { fireAt: clock.now() - 1000, note: "wake up", callGoal: "you asked me to call you at 6:30", label });
+  const row = callAt(clock.now() - 60_000, { conversationId, direction: "out", state, outcomeKind, transcript: outcomeKind === "talked" ? "Them: I'm up, I'm up, thank you so much" : "Them: The person you're trying to reach is not available. At the tone, please record your message" });
+  db.db.prepare("UPDATE calls SET timer_id = ?, goal = ? WHERE id = ?").run(timer.id, db.getTimer(conversationId, timer.id).call_goal, row.id);
+  return db.getCall(conversationId, row.id);
+}
+const outboxBodies = () => db.db.prepare("SELECT * FROM outbox ORDER BY id").all().map(r => String(r.body ?? r.text ?? JSON.stringify(r)));
+const rerings = (conv = C) => db.db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND label LIKE 'call:rering:%'").all(conv);
+
+test("a wake-up call nobody answered rings once more, 2.5 minutes later — and no text yet (call 78)", async () => {
+  for (const how of [{ state: "completed", outcomeKind: "voicemail_no_message" }, { state: "no_answer", outcomeKind: "" }, { state: "voicemail", outcomeKind: "" }]) {
+    db.db.exec("DELETE FROM timers; DELETE FROM calls; DELETE FROM outbox");
+    const row = scheduledCall(how);
+    const out = tools.queueMissedScheduledCall(C, row, () => {});
+    assert.equal(out.queued, false);
+    assert.equal(out.why, "ringing once more");
+    const again = rerings();
+    assert.equal(again.length, 1, JSON.stringify(how));
+    assert.equal(db.getTimer(C, again[0].id).call_goal, "you asked me to call you at 6:30");
+    assert.ok(Math.abs(again[0].fire_at - (clock.now() + carry.RERING_MS)) < 2000);
+    assert.equal(carry.RERING_MS, 150_000);
+    assert.equal(outboxBodies().length, 0, "no text before the second ring");
+    // Settled again by another path: still one second ring.
+    tools.queueMissedScheduledCall(C, db.getCall(C, row.id), () => {});
+    carry.afterScheduledCall(db.getCall(C, row.id));
+    assert.equal(rerings().length, 1);
+    // And the after-call turn does not also text "want me to call again?".
+    const events = [];
+    const told = await postcall.tellTheOwner({ row, live: {}, runtime: { event: async (...a) => { events.push(a); return "x"; } } });
+    assert.equal(told.sent, false);
+    assert.equal(events.length, 0);
+  }
+});
+
+test("the second ring missed too: one text saying it tried twice, and no third ring", () => {
+  const first = scheduledCall();
+  tools.queueMissedScheduledCall(C, first, () => {});
+  const second = scheduledCall({ label: `${carry.RERING_LABEL}${first.timer_id}` });
+  assert.equal(carry.isRering(second), true);
+  const out = tools.queueMissedScheduledCall(C, second, () => {});
+  assert.equal(out.queued, true);
+  assert.equal(rerings().length, 2, "the first call's second ring and this row's own timer — no third");
+  const texts = outboxBodies();
+  assert.equal(texts.length, 1);
+  assert.match(texts[0], /tried calling u twice — you asked me to call you at 6:30 — but it went to voicemail both times\. so this is the text instead\./);
+  assert.equal(tools.queueMissedScheduledCall(C, db.getCall(C, second.id), () => {}).queued, false, "told once");
+});
+
+test("a second ring: never when they picked up, never for anyone else on 'owner', never with the switch off", () => {
+  const up = scheduledCall({ outcomeKind: "talked" });
+  assert.equal(tools.queueMissedScheduledCall(C, up, () => {}).why, "they picked up");
+  db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
+  const ama = scheduledCall({ conversationId: OTHER, state: "no_answer", outcomeKind: "" });
+  assert.equal(tools.queueMissedScheduledCall(OTHER, ama, () => {}).queued, true, "Ama gets the text at once, as before");
+  config.callCarryover = "off";
+  const mine = scheduledCall({ state: "no_answer", outcomeKind: "" });
+  assert.equal(tools.queueMissedScheduledCall(C, mine, () => {}).queued, true);
+  const machine = scheduledCall();
+  assert.equal(tools.queueMissedScheduledCall(C, machine, () => {}).why, "they picked up", "off: a completed call is read as before");
+  assert.equal(rerings().length + rerings(OTHER).length, 0);
+  assert.equal(carry.afterScheduledCall(machine), null);
 });
