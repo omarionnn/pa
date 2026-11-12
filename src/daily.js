@@ -325,6 +325,8 @@ export function questionFor(conversationId, day, now = clock.now()) {
   if (askedToday(conversationId, day)) return null;
   const ownKey = db.personKey(db.getAccount(conversationId)?.name ?? "");
   for (const g of db.listGuesses(conversationId, { limit: 40 })) {
+    // Not one noticed across days (src/dream.js): those wait on the memory page; nothing is texted about them.
+    if (g.how === db.NOTICED_SOURCE) continue;
     const key = `guess:${g.id}`;
     if (skippedLately(conversationId, key, now)) continue;
     const own = !!ownKey && db.personKey(g.about) === ownKey;
