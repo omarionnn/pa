@@ -53,6 +53,8 @@ export function lineFor(about, text, { own = false } = {}) {
   return `${about}: ${lower}`;
 }
 
+const noticedDays = (g) => { try { const v = JSON.parse(g.evidence || "[]"); return Array.isArray(v) ? new Set(v.map(e => e?.day).filter(Boolean)).size : 0; } catch { return 0; } };
+
 /** Everything the page draws, as data: `{ groups: [{ key, title, rows }], guesses, empty }`. */
 export function memoryView(account) {
   const conv = account.conversation_id;
@@ -75,7 +77,13 @@ export function memoryView(account) {
   }
   const groups = GROUPS.map(([key, title]) => ({ key, title, rows: by.get(key).sort((a, b) => b.at - a.at) })).filter(g => g.rows.length);
   const guesses = [...db.listGuesses(conv, { includePatterns: true, limit: 40 })]
-    .map(g => { const k = db.personKey(g.about); return { id: g.id, text: lineFor(g.about, g.guess, { own: !!ownKey && k === ownKey }), ...subjectOf(g.about, k) }; });
+    .map(g => {
+      const k = db.personKey(g.about);
+      // Noticed across days (src/dream.js): said as a pattern, with how many days it rests on.
+      const days = g.how === db.NOTICED_SOURCE ? noticedDays(g) : 0;
+      const text = lineFor(g.about, g.guess, { own: !!ownKey && k === ownKey });
+      return { id: g.id, text: days ? `${text.replace(/[.\s]+$/, "")} (a pattern noticed on ${days} different days)` : text, ...subjectOf(g.about, k) };
+    });
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
   return { groups, guesses, total, empty: !groups.length };
 }

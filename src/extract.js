@@ -89,6 +89,8 @@ Extract each distinct entity with its canonical name and type. Include aliases i
 Relations connect two entities: "my brother" works_at "Google", "my sister" sister_of "my brother", "appointment" at "the dentist's office".
 Use lowercase_with_underscores for relation names. Only extract relations you are confident about.
 
+A message marked "said on a phone call" is the user speaking, and counts exactly like a text from them. A message marked "other party on a phone call the assistant made for the user" is a business or another person the assistant rang: it is never the user. Nothing it says is a fact about the user, a preference of theirs or something they said. From it, extract only what the user would want kept about that business or person (a price it quoted, its hours, a booking it confirmed), with "about" naming the business or person.
+
 Several new messages may be given at once, numbered [1], [2] … oldest first. Read them together, in order — a later one can answer or correct an earlier one — and set "message" on each fact to the number it came from.
 
 If there is nothing worth extracting, return empty arrays. Err on the side of fewer, higher-quality extractions.`;
@@ -220,10 +222,10 @@ const storeVector = (conversationId, factId, vector) => embedAndStore(conversati
 
 function buildContext(event) {
   const recent = db.db.prepare(
-    "SELECT role, content FROM event_log WHERE conversation_id = ? AND at < ? ORDER BY at DESC LIMIT 4"
+    "SELECT role, content, message_id, conversation_id FROM event_log WHERE conversation_id = ? AND at < ? ORDER BY at DESC LIMIT 4"
   ).all(event.conversation_id, event.at);
 
-  return recent.reverse().map(r => `${r.role}: ${String(r.content).slice(0, 500)}`).join("\n");
+  return recent.reverse().map(r => `${speakerOf(r)}: ${String(r.content).slice(0, 500)}`).join("\n");
 }
 
 /**
@@ -320,9 +322,24 @@ export function whoIsWho(conversationId) {
     : `"user" is the person this assistant works for; their name is not on record yet. A school, employer, city or business they mention is never them.`;
 }
 
+/**
+ * Who said a line, for the reader. A text is "user" or "assistant". A phone call's line
+ * (src/calls/postcall.js writes call_user / call_assistant, with the call's id) is the user only on
+ * their OWN call; on a call the assistant made for them the other voice is a business or another
+ * person, and until 2026-11-12 it was shown as "(call_user)" — read as the user saying it.
+ */
+export function speakerOf(event) {
+  if (event?.role !== "call_user" && event?.role !== "call_assistant") return event?.role;
+  let own = false;
+  try { own = Number(db.db.prepare("SELECT is_owner FROM calls WHERE id = ? AND conversation_id = ?").get(Number(event.message_id), event.conversation_id)?.is_owner) === 1; } catch { own = false; }
+  if (event.role === "call_assistant") return own ? "assistant, on a phone call with the user" : "assistant, on a phone call it made for the user";
+  return own ? "user, said on a phone call" : OTHER_PARTY;
+}
+export const OTHER_PARTY = "other party on a phone call the assistant made for the user — NOT the user";
+
 /** The prompt for one batch: who is who, what is known, the context before it, the messages numbered. */
 export function batchPrompt(conversationId, events, context) {
-  const body = events.map((e, i) => `[${i + 1}] (${e.role}):\n${String(e.content).slice(0, 4000)}`).join("\n\n");
+  const body = events.map((e, i) => `[${i + 1}] (${speakerOf(e)}):\n${String(e.content).slice(0, 4000)}`).join("\n\n");
   const rows = knownFacts(conversationId, { text: `${context}\n${body}` });
   const known = knownAlready(conversationId, { rows });
   const prompt = `${whoIsWho(conversationId)}\n\n`

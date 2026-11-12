@@ -9747,8 +9747,15 @@ addColumnIfMissing("guesses", "last_supported_at", "INTEGER");
 addColumnIfMissing("guesses", "dismissed_at", "INTEGER");
 
 /** Where a guess came from. Both are things `remember` refuses to save as facts. */
-export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo", "i_noticed_a_pattern"];
+export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo", "i_noticed_a_pattern", "i_noticed_it_across_days"];
 export const PATTERN_SOURCE = "i_noticed_a_pattern";
+/**
+ * Something that recurred in what they SAID, on at least two different days (src/dream.js
+ * noticePatterns): a repeated ask, a routine, a mistake Reason keeps making, a preference shown more
+ * than once. A guess like the others — never a fact — with the messages it rests on as its evidence.
+ * Not PATTERN_SOURCE: that one is a rhythm in message TIMES and moves when a nudge lands (src/notice.js).
+ */
+export const NOTICED_SOURCE = "i_noticed_it_across_days";
 
 /** Note one, or hand back the one already there. The same guess twice is one guess. */
 export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out", evidence = null, use = "" } = {}) {
@@ -9765,7 +9772,7 @@ export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, seal2(conversationId, who), seal2(conversationId, what), source, clock.now(),
       seal2(conversationId, receipts), seal2(conversationId, changes),
-      source === PATTERN_SOURCE ? clock.now() : null);
+      source === PATTERN_SOURCE || source === NOTICED_SOURCE ? clock.now() : null);
   return { ...getGuess(conversationId, Number(r.lastInsertRowid)), already_guessed: false };
 }
 
@@ -9878,8 +9885,28 @@ export function patternsUnsupportedSince(conversationId, before) {
 
 export function dropPatterns(conversationId) {
   const rows = listPatterns(conversationId, { limit: 500 });
-  db.prepare("DELETE FROM guesses WHERE conversation_id = ? AND how = ?").run(conversationId, PATTERN_SOURCE);
+  // "Stop reading into my texts" means the things noticed across days too (src/dream.js), not only rhythms.
+  db.prepare("DELETE FROM guesses WHERE conversation_id = ? AND how IN (?, ?)").run(conversationId, PATTERN_SOURCE, NOTICED_SOURCE);
   return rows;
+}
+
+/** What the review noticed across days and they have not confirmed or dismissed, newest first. */
+export function listNoticed(conversationId, { limit = 20 } = {}) {
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL AND dismissed_at IS NULL
+    ORDER BY noted_at DESC, id DESC LIMIT ?`).all(conversationId, NOTICED_SOURCE, limit)
+    .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
+}
+
+/** A noticed thing was borne out again: fresh receipts, and the clock that expires it starts over. */
+export function supportNoticed(conversationId, id, at = clock.now(), { evidence = null } = {}) {
+  const row = getGuess(conversationId, id);
+  if (!row || row.how !== NOTICED_SOURCE || row.confirmed_at || row.dismissed_at) return null;
+  if (Array.isArray(evidence) && evidence.length) {
+    db.prepare("UPDATE guesses SET last_supported_at = ?, evidence = ? WHERE id = ? AND conversation_id = ?").run(at, seal2(conversationId, JSON.stringify(evidence)), id, conversationId);
+  } else {
+    db.prepare("UPDATE guesses SET last_supported_at = ? WHERE id = ? AND conversation_id = ?").run(at, id, conversationId);
+  }
+  return getGuess(conversationId, id);
 }
 
 // ---------- pattern_asks: the example parked between the consent question and the answer ----------
@@ -14148,7 +14175,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS memory_review_passes_day ON memory_review_passes (day, conversation_id);
 `);
 // The last pass's model and $ on the watermark row too, for a glance (the history is the table above).
-for (const col of ["last_model TEXT NOT NULL DEFAULT ''", "last_cost_usd REAL"]) {
+// attempted_at: when a pass was last queued (kept on disk so a restart storm cannot re-ask the model);
+// patterns_at: when the patterns-across-days pass last ran for them.
+for (const col of ["last_model TEXT NOT NULL DEFAULT ''", "last_cost_usd REAL", "attempted_at INTEGER", "patterns_at INTEGER"]) {
   try { db.exec(`ALTER TABLE memory_reviews ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 
@@ -14254,9 +14283,39 @@ export function markMemoryReview(conversationId, { day, lastEventId = null, outc
       reviewed_at = excluded.reviewed_at, last_outcome = excluded.last_outcome`).run(conversationId, last, String(day ?? ""), at, String(outcome).slice(0, 40));
 }
 
-/** Has anything been said since `afterId`? One indexed query. */
-export function hasEventsSince(conversationId, afterId = 0) {
-  return !!db.prepare("SELECT 1 FROM event_log WHERE conversation_id = ? AND id > ? AND role = 'user' LIMIT 1").get(conversationId, Number(afterId) || 0);
+/**
+ * A pass is about to be asked for (queued): written before the model is, so a restart in the middle
+ * of it does not ask again the moment the process is back (src/dream.js, the catch-up's rate limit).
+ */
+export function noteMemoryReviewAttempt(conversationId, at = clock.now()) {
+  db.prepare(`INSERT INTO memory_reviews (conversation_id, attempted_at) VALUES (?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET attempted_at = excluded.attempted_at`).run(conversationId, at);
+}
+
+/** How many passes asked the model for them on this (their own) day. */
+export function memoryReviewPassesOn(conversationId, day) {
+  return db.prepare("SELECT COUNT(*) AS n FROM memory_review_passes WHERE conversation_id = ? AND day = ?").get(conversationId, String(day ?? ""))?.n ?? 0;
+}
+
+/** The patterns-across-days pass ran (or was tried) for them at `at`. */
+export function markPatternPass(conversationId, at = clock.now()) {
+  db.prepare(`INSERT INTO memory_reviews (conversation_id, patterns_at) VALUES (?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET patterns_at = excluded.patterns_at`).run(conversationId, at);
+}
+
+/**
+ * What they said on their OWN phone calls, as SQL on an event_log alias: a call line (role
+ * call_user) whose call row is theirs. The other side of a call Reason made for them (a business,
+ * another person) is never the person speaking, so it never counts as "they said something".
+ */
+export const saidOnOwnCall = (alias) => `(${alias}.role = 'call_user' AND ${alias}.channel = 'call' AND EXISTS (SELECT 1 FROM calls k
+  WHERE k.id = CAST(${alias}.message_id AS INTEGER) AND k.conversation_id = ${alias}.conversation_id AND k.is_owner = 1))`;
+
+/** Has anything been said since `afterId`? One indexed query. `calls`: what they said on their own calls counts too. `before`: only what was said before that time. */
+export function hasEventsSince(conversationId, afterId = 0, { calls = false, before = null } = {}) {
+  const until = Number.isFinite(before) ? " AND e.at < ?" : "";
+  return !!db.prepare(`SELECT 1 FROM event_log e WHERE e.conversation_id = ? AND e.id > ?${until} AND (e.role = 'user'${calls ? ` OR ${saidOnOwnCall("e")}` : ""}) LIMIT 1`)
+    .get(...[conversationId, Number(afterId) || 0, ...(until ? [before] : [])]);
 }
 
 /**
