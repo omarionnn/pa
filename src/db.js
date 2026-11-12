@@ -5582,6 +5582,16 @@ export function callsToNumber(conversationId, { errandId = null, toNumber = "" }
   return db.prepare(sql).all(...args).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
 }
 
+/**
+ * Every call to or from this number since `since`, on anybody's conversation, oldest first. For a place
+ * ringing back (src/calls/inbound.js): the errand it is returning may be any person's, not only the
+ * operator's. Only ever read by number, for a call that number is making now.
+ */
+export function callsWithNumber({ toNumber = "", since = 0 } = {}) {
+  return db.prepare("SELECT * FROM calls WHERE created_at >= ? AND pt(to_number) = ? ORDER BY id ASC")
+    .all(since, toNumber).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
 // ---------- quotes ----------
 
 const quoteRow = (r) => (r ? { ...r, included: safeJson(r.included, []), excluded: safeJson(r.excluded, []) } : null);
