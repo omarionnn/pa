@@ -14194,6 +14194,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!mine.ok) return { ok: false, error: `Not changed: ${mine.why}. Their call hours are only ever set from their own words — pass their sentence word for word in 'said', or ask them.` };
       db.setCallHours(c, { hours: hours === "default" ? null : hours, said: hours === "default" ? "" : mine.said, at: clock.now() });
       const now = callHoursFor(c);
+      // Nothing was saved (no account row to keep it on): never say it was.
+      if (hours !== "default" && !now.own) return { ok: false, error: "Not changed: there is no account to save their call hours on. Say plainly that it could not be saved." };
       return {
         ok: true, hours: now.off ? "off" : now.window, theirs: now.own,
         note: now.off

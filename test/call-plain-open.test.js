@@ -465,3 +465,27 @@ test("the window is read the way people write it; a call to their own phone is n
   assert.equal(idaho.ok, false);
   assert.equal(idaho.opens_at, new Date(Date.parse("2026-11-12T08:00:00-08:00")).toISOString());
 });
+
+// ---------- review fixes (ship check, 2026-11-12) ----------
+
+test("call-now override: the quoted words must be whole words of theirs, not letters inside another word", () => {
+  // "now" is inside "know": that is not them saying "now".
+  assert.equal(brief.callNowSaid({ said: "now", words: ["i don't know, maybe tomorrow"], kind: "user" }).ok, false);
+  assert.equal(brief.callNowSaid({ said: "all now", words: ["call now anyway"], kind: "user" }).ok, false);
+  assert.equal(brief.callNowSaid({ said: "call now", words: ["ok, call now anyway"], kind: "user" }).ok, true);
+  assert.equal(brief.callNowSaid({ said: "now", words: ["do it now"], kind: "user" }).ok, true);
+});
+
+test("their call hours cannot be changed by an unverified voice on a call that came in on their number", async () => {
+  const verify = await import("../src/calls/verify.js");
+  assert.equal(verify.isConsequential("call_hours_set", { hours: "off", said: "turn off the no-call hours" }), true);
+  assert.equal(verify.isConsequential("call_place", { to: "+13105550142", call_now_said: "call now anyway" }), true);
+});
+
+test("the standing prompt no longer says every placed call is recorded", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/agent.js", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /Every call you place is recorded/);
+  await import("../src/agent.js"); // and the file still loads
+  assert.match(src, /recorded only when call_place's result says so/);
+});

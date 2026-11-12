@@ -522,6 +522,7 @@ export function callNowSaid({ said = "", words = [], kind = "event" } = {}) {
   const q = norm(said);
   if (kind !== "user") return { ok: false, why: "this is not a turn they started, so nothing they said can be overriding the hours" };
   if (q.length < 3) return { ok: false, why: "call_now_said was empty" };
-  const found = (words ?? []).some(w => norm(w).includes(q));
+  // Whole words only: "now" is not found inside "I don't know".
+  const found = (words ?? []).some(w => ` ${norm(w)} `.includes(` ${q} `));
   return found ? { ok: true, said: String(said).trim() } : { ok: false, why: "those words are not in what they just said or wrote" };
 }
