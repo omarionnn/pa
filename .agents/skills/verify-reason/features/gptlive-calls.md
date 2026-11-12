@@ -183,9 +183,9 @@ untouched (`line` is false on `is_owner` rows; covered by a test with the flag o
 "A line call" (`GptLiveCall.line`, non-owner rows): the LINE drives every turn, the voice only speaks.
 - Placing (`withGptLive.place`, kind third_party): Twilio `Calls.json` with the stream TwiML and async
   AMD (`MachineDetection=DetectMessageEnd`, `AsyncAmd=true`, callback `/calls/gptlive/amd/<token>`);
-  returns `openingWaits` so the row gets `opening_waits=1`; the row's disclosure becomes
-  `lineAnnouncement` ("Hey, hi — this is Reason, an AI assistant calling for <first name>. Just so you
-  know, this call is recorded. If you'd rather not, just let me know.").
+  returns `openingWaits` so the row gets `opening_waits=1`; the row's opening line becomes
+  `lineAnnouncement()`: "" (the default since 2026-11-12: nothing is said first by code, and the call is
+  not audio-recorded) or the recording notice with `REASON_THIRDPARTY_RECORDING=on`.
 - Silent opening: no greeting. Their words (input transcript) → after 1 s of pause (8 s max on a line
   that never pauses) one `lineTurn` = `reasonTurn` with `reason_kind=third_party`, i.e. the SAME
   voice.js turn ElevenLabs runs (third-party context, brief, commit gate, readback, hold, machines,
@@ -212,7 +212,7 @@ untouched (`line` is false on `is_owner` rows; covered by a test with the flag o
 - `transfer_to_number`: its `client_message` said, then Twilio `<Dial>` (Reason leaves the call).
 - Settle: `settleGptLive` + `noteThirdPartyTurns` (call events into memory, as ElevenLabs' delivery).
 - Ring-back: `routeInbound` → `ringBackRow` (not owner; errand goal/facts/brief/errand/hold budget),
-  greeting `ringBackLine` = disclosure + "You're calling back about …" spoken at once.
+  greeting `ringBackLine` = "Hi there!" (or the recording notice, recorded mode only) + "You're calling back about …" spoken at once.
   Who counts as ringing back (`callingBack`, src/calls/inbound.js): only a call Reason PLACED to that
   number (direction out) in the last 24 h, not settled `confirmed`/`refused_by_them`; ring-back rows
   never reopen the window. At most `MAX_RING_BACKS` (3) ring-backs per placed call, then the number
@@ -264,13 +264,20 @@ transcript lags ~2.7 s); the voice's own answer to a person is let through (`own
 more line turns; a line turn overtaken by the voice is not said (its key/transfer/hang-up only if
 nothing was said since). Nobody speaks 3 s (`LINE_OPEN_AFTER_MS`) → "Hi there, hello?" then waits (not
 counted as a person; since #379 only when no pickup opener clip played — see "Pickup opener" below). AMD non-beep ignored once they have spoken since the talk began; beep →
-`stopTalking`. Mailbox rows never talk. Opener style: "Oh hey, hi! I'm calling to find out…". Since 2026-11-11 EVERY placed
-business call, every account and state, opens with "Hi there, this is Reason, an AI assistant calling for
-<first>. Just so you know, this call may be recorded." (`manner.disclosureLine`; the row's announcement,
-the pickup clip and the voice's first reply) — NOT behind `REASON_CALL_MANNER`, whose tone lines stay off.
-An objection to the recording, read by meaning (`readObjection`), stops the tape from before their words
-(`gptlive_recording_declined` in the journal). `test/call-manner.test.js` "manner OFF…". Said yet is
-checked 9 s in (`checkNotice`). Hold in talk mode: voice silent; its own silence past
+`stopTalking`. Mailbox rows never talk. Opener style: "Oh hey, hi! I'm calling to find out…". Since 2026-11-12 (replaces the
+11-11 "this is Reason, an AI assistant calling for <first> … may be recorded" opener) EVERY call with a
+business or another person, every account and state, starts NORMALLY: hello, then what it is about — the
+row's announcement is "" (`lineAnnouncement`), the pickup clip is "Hi there! I'm calling …", the voice and
+Reason's turn carry `manner.plainOpenLine` + `manner.askedLine` (asked who/what is calling → "I'm an AI
+assistant calling for <first>", at once; never human, never a made-up name). A ring-back hears "Hi there!
+You're calling back about … — thanks for ringing back." These calls are NOT audio-recorded
+(`manner.callRecorded`; `GptLiveCall.recorded` false → the tape keeps the clock and no bytes; the result
+carries `notRecorded`, the row is `recording_state=not_applicable`, `recording_why` = `NOT_RECORDED_WHY`).
+Transcript text, summary and outcome are still kept. `REASON_THIRDPARTY_RECORDING=on` brings back, together:
+the notice "Hi there — just so you know, this call may be recorded." (row, clip, first reply; said yet is
+checked 9 s in, `checkNotice`), the recording, and the objection read (`readObjection`, by meaning; stops
+the tape from before their words; `gptlive_recording_declined` in the journal).
+`test/call-plain-open.test.js` (default), `test/call-manner.test.js` (recorded mode). Hold in talk mode: voice silent; its own silence past
 the budget → give-up line + hang-up. Recap gets `howItWent` (first sound, first word, overlaps, end) +
 "never guess a bad line".
 

@@ -1104,9 +1104,11 @@ never quoted is reported as having no price, never sorted to the top as though i
 
 It ends on a question when there is a decision, because committing is yours.
 
-**Not at half eleven at night.** `REASON_CALL_QUIET_HOURS` (**21:00–08:00** by default) holds calls to
-other people; your own phone is never held by it, because a call you asked for at midnight is a call you
-asked for. A call the window stops is **reported** to you, not silently dropped.
+**Not at half eleven at night.** `REASON_CALL_QUIET_HOURS` (**21:00–08:00** by default, on the clock of
+the person being called) holds calls to other people; your own phone is never held by it, because a call
+you asked for at midnight is a call you asked for. A call the window stops is **reported** to you, not
+silently dropped: Reason says what time it is there and offers to place it at the first allowed time.
+"Call now anyway" places that one call, and you can set your own hours (or none) by saying so.
 
 Every number in this section is a **default I chose, not a finding** — max hold, how many calls at once,
 retries, quiet hours, languages. They are all one line in `.env`, and

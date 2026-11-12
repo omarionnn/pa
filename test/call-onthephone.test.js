@@ -32,6 +32,10 @@ const redial = await import("../src/calls/redial.js");
 const readback = await import("../src/calls/readback.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
+// This file drives the disclosure machinery (said first by code, re-said to a new person or in a new
+// language), which since 2026-11-12 exists only on a call that IS recorded: REASON_THIRDPARTY_RECORDING=on.
+// The default — a normal opening, no notice, no audio — is test/call-plain-open.test.js.
+config.thirdPartyRecording = true;
 
 const C = config.ownerConversation;
 const ANN = announcementFor({ ownerName: "Omari" });

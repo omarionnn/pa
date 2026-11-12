@@ -421,18 +421,18 @@ export function askWhetherItWentThrough(brief, { what = "", then = null } = {}) 
  * thing not done is said out loud, and "I didn't ring them because it's half eleven at night" is a
  * useful sentence that a dropped call is not.
  */
-export function withinCallingHours({ now = clock.now(), toOwner = false, window: w = config.callQuietHours, tz = config.tz, whose = "" } = {}) {
+export function withinCallingHours({ now = clock.now(), toOwner = false, window: w = config.callQuietHours, tz = config.tz, whose = "", userTz = "", own = false } = {}) {
   if (toOwner) return { ok: true };
-  const spec = String(w ?? "").trim();
-  if (!spec) return { ok: true };
-  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(spec);
-  if (!m) return { ok: true }; // an unparseable window blocks nothing rather than blocking everything
+  const win = parseCallHours(w);
+  if (!win || win === "off") return { ok: true }; // an unparseable window blocks nothing rather than blocking everything
+  const m = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/.exec(win);
   const mins = (h, mi) => Number(h) * 60 + Number(mi);
   const from = mins(m[1], m[2]);
   const to = mins(m[3], m[4]);
-  const minuteIn = (z) => {
+  if (from === to) return { ok: true };
+  const minuteIn = (z, t = now) => {
     const p = new Intl.DateTimeFormat("en-US", { timeZone: z, hour: "2-digit", minute: "2-digit", hour12: false })
-      .formatToParts(new Date(now));
+      .formatToParts(new Date(t));
     return (Number(p.find(x => x.type === "hour")?.value ?? 0) % 24) * 60 + Number(p.find(x => x.type === "minute")?.value ?? 0);
   };
   // A window that crosses midnight (21:00-08:00) is the normal case, so the wrap is the main path.
@@ -440,16 +440,88 @@ export function withinCallingHours({ now = clock.now(), toOwner = false, window:
   // An area code that covers two clocks gives both: night on either holds the call.
   const zones = (Array.isArray(tz) ? tz : [tz]).filter(Boolean);
   let hit = "";
-  for (const z of zones) { try { if (inside(minuteIn(z))) { hit = z; break; } } catch { /* an unreadable zone decides nothing */ } }
+  let opensAt = 0;
+  const minute = Math.floor(now / 60_000) * 60_000;
+  for (const z of zones) {
+    try {
+      const at = minuteIn(z);
+      if (!inside(at)) continue;
+      if (!hit) hit = z;
+      // The first allowed minute: when the window ends on this clock (the later one, when two clocks are both in it).
+      opensAt = Math.max(opensAt, minute + (((to - at) % 1440) + 1440) % 1440 * 60_000);
+    } catch { /* an unreadable zone decides nothing */ }
+  }
   if (!hit) return { ok: true };
   tz = hit;
   const at = minuteIn(hit);
   const pretty = (x) => `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
+  const said = (x) => { const h = Math.floor(x / 60) % 24, mi = x % 60; return `${h % 12 || 12}${mi ? `:${String(mi).padStart(2, "0")}` : ""}${h < 12 ? "am" : "pm"}`; };
+  const city = String(hit).split("/").pop().replace(/_/g, " ");
+  const theirs = whose === "place" || whose === "number";
+  const where = theirs ? `in ${city}, where the number you are calling is (${tz})` : "where they are";
+  const opensLocal = said(minuteIn(hit, opensAt));
+  let opensYours = "";
+  try { if (userTz && userTz !== hit) opensYours = said(minuteIn(userTz, opensAt)); } catch { opensYours = ""; }
   return {
     ok: false,
-    zone: tz,
-    error: `It is ${pretty(at)} ${whose === "place" || whose === "number" ? `where the number you are calling is (${tz})` : "where they are"}, and calls to other people are held between`
-      + ` ${pretty(from)} and ${pretty(to)} on the clock of the person being called (REASON_CALL_QUIET_HOURS). Nobody's phone rang. Say that plainly —`
-      + ` it is the hour, not a failure — and offer to ring them when the window opens, or to do something that is not a call.`,
+    zone: tz, local_time: said(at), place: theirs ? city : "",
+    held_between: `${said(from)}-${said(to)}`,
+    opens_at: new Date(opensAt).toISOString(), opens_local: opensLocal, ...(opensYours ? { opens_your_time: opensYours } : {}),
+    error: `Nobody's phone rang, and nothing was placed: it is ${said(at)} (${pretty(at)}) ${where}, and calls to other people are held between`
+      + ` ${said(from)} and ${said(to)} (${pretty(from)}-${pretty(to)}) on the clock of the person being called`
+      + ` (${own ? "the hours this person set for their own calls" : "the default, REASON_CALL_QUIET_HOURS"}).`
+      + ` Tell them exactly that, plainly — the time there and that it is the hour, not a failure — and offer to place the call at the first allowed time,`
+      + ` ${opensLocal} their time${opensYours ? ` (${opensYours} for the person you work for)` : ""}: for example "it's ${said(at)}${theirs ? ` in ${city}` : " there"}, they're likely not open yet;`
+      + ` I'll call at ${opensLocal} their time, or say call now."`
+      + ` If they say yes to the later time, actually set it up for ${new Date(opensAt).toISOString()} (a timer or the task's next wake) before you say you will.`
+      + ` If they tell you in their own words to call now anyway, call call_place again with call_now_said set to those exact words: that places this one call.`
+      + ` They can also change their own no-call hours, or turn them off, by saying so (call_hours_set).`,
   };
+}
+
+/** "21:00-08:00" from "9pm-8am", "21:00 - 8:00", "2100-0800"; "off"; or null when it is not a window. */
+export function parseCallHours(spec) {
+  const s = String(spec ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (["off", "none", "never", "anytime", "any time"].includes(s)) return "off";
+  const one = (t) => {
+    const m = /^(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?$/.exec(t.trim());
+    if (!m) return null;
+    let h = Number(m[1]);
+    const mi = Number(m[2] ?? 0);
+    if (m[3]) { if (h < 1 || h > 12) return null; h = (h % 12) + (m[3] === "pm" ? 12 : 0); }
+    if (h > 24 || mi > 59 || (h === 24 && mi)) return null;
+    return `${String(h % 24).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+  };
+  const parts = s.split(/\s*(?:-|–|—|\bto\b|\buntil\b)\s*/);
+  if (parts.length !== 2) return null;
+  const a = one(parts[0]), b = one(parts[1]);
+  return a && b ? `${a}-${b}` : null;
+}
+
+/**
+ * The no-call window for THIS person's calls to other people: what they set themselves (their own words
+ * are kept with it, src/db.js `callHours`), else the install's default. `window` "" means none.
+ * Only ever changed by `call_hours_set`, from something they said (Omari 2026-11-12).
+ */
+export function callHoursFor(conversationId) {
+  let mine = null;
+  try { mine = conversationId ? db.callHours(conversationId) : null; } catch { mine = null; }
+  const own = parseCallHours(mine?.hours);
+  if (own) return { window: own === "off" ? "" : own, own: true, said: mine.said || "", off: own === "off" };
+  return { window: config.callQuietHours, own: false, said: "", off: false };
+}
+
+/**
+ * "Call now anyway": is this override really their own words? Only on a turn they started, and only
+ * when the words handed over are found in what they just said or wrote (their last few messages) —
+ * never the model's reading of what they would want.
+ */
+export function callNowSaid({ said = "", words = [], kind = "event" } = {}) {
+  const norm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}'\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const q = norm(said);
+  if (kind !== "user") return { ok: false, why: "this is not a turn they started, so nothing they said can be overriding the hours" };
+  if (q.length < 3) return { ok: false, why: "call_now_said was empty" };
+  const found = (words ?? []).some(w => norm(w).includes(q));
+  return found ? { ok: true, said: String(said).trim() } : { ok: false, why: "those words are not in what they just said or wrote" };
 }

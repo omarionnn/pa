@@ -1876,6 +1876,11 @@ addColumnIfMissing("accounts", "patterns", "TEXT");
 addColumnIfMissing("accounts", "patterns_said", "TEXT");
 addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "patterns_set_at", "INTEGER");
+// Their own no-call hours for calls Reason places to other people (src/calls/brief.js `callHoursFor`):
+// NULL = the install's default (REASON_CALL_QUIET_HOURS), "off", or "HH:MM-HH:MM"; with the sentence they said.
+addColumnIfMissing("accounts", "call_hours", "TEXT");
+addColumnIfMissing("accounts", "call_hours_said", "TEXT");
+addColumnIfMissing("accounts", "call_hours_set_at", "INTEGER");
 // A candidate's identity WITHOUT its state, so "one nudge per thing" can be asked of the table.
 // 'key' is the thing and its state (a thread with how long it has waited), which is what makes the
 // same meeting moving twice two things to say. 'thing' is just the thread or the event, which is
@@ -9111,6 +9116,18 @@ export function setNoticePrefs(conversationId, { perDay, everyMin, mode, snoozeU
   if (snoozeUntil !== undefined) set("notice_snooze_until", snoozeUntil);
   if (digestHour !== undefined) set("notice_digest_hour", digestHour);
   return noticePrefs(conversationId);
+}
+
+/** Their own no-call hours for calls to other people: `{ hours: null | "off" | "HH:MM-HH:MM", said, setAt }`. */
+export function callHours(conversationId) {
+  const row = db.prepare("SELECT call_hours, call_hours_said, call_hours_set_at FROM accounts WHERE conversation_id = ?").get(conversationId);
+  return { hours: row?.call_hours ?? null, said: row?.call_hours_said || "", setAt: row?.call_hours_set_at ?? null };
+}
+
+export function setCallHours(conversationId, { hours = null, said = "", at = Date.now() } = {}) {
+  db.prepare("UPDATE accounts SET call_hours = ?, call_hours_said = ?, call_hours_set_at = ? WHERE conversation_id = ?")
+    .run(hours, String(said ?? "").trim().slice(0, 300), at, conversationId);
+  return callHours(conversationId);
 }
 
 export function setPatterns(conversationId, { patterns, said, askedAt, setAt } = {}) {

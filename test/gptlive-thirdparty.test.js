@@ -42,7 +42,9 @@ beforeEach(() => {
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { lineTalk: false, callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", ...TWILIO });
+  // REASON_THIRDPARTY_RECORDING=on here: this file drives the line that says a notice first, by code, and
+  // records. The default since 2026-11-12 (no notice, no audio) is test/call-plain-open.test.js.
+  Object.assign(config, { lineTalk: false, callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", thirdPartyRecording: true, ...TWILIO });
 });
 
 const lineRow = (over = {}) => {
@@ -159,7 +161,7 @@ test("the flag: owner = the operator's errands only, gptlive = everyone's, unset
   assert.equal(gl.gptliveOn(), true, "phase 3 alone still opens the stream and webhooks");
 });
 
-test("place: an errand on GPT-Live dials with async AMD, opens silent and names Reason in the disclosure; everything else as before", async () => {
+test("place: an errand on GPT-Live dials with async AMD, opens silent; the row's line is the recording notice (recorded) or nothing (the default), never the older provider's AI line; everything else as before", async () => {
   const innerCalls = [];
   const inner = { place: async (a) => { innerCalls.push(a); return { ok: true, externalId: "conv_x" }; }, check: async () => ({}), status: () => ({}) };
   const posted = [];
@@ -175,7 +177,15 @@ test("place: an errand on GPT-Live dials with async AMD, opens silent and names 
   assert.equal(form.get("AsyncAmdStatusCallback"), `https://reason.example.test/calls/gptlive/amd/${row.webhook_token}`);
   assert.doesNotMatch(form.get("Twiml"), /<Say|<Play/, "nothing is said at pick-up");
   const ann = db.getCall(C, row.id).announcement;
-  assert.equal(ann, "Hey, hi — this is Reason, an AI assistant calling for Omari. Just so you know, this call is recorded. If you'd rather not, just let me know.");
+  assert.equal(ann, "Hi there — just so you know, this call may be recorded.");
+  assert.deepEqual([out.recorded, out.announced], [true, ann]);
+  // The default: not recorded, and nothing is said first by code.
+  config.thirdPartyRecording = false;
+  const plain = db.createCall(C, { provider: "gptlive", toNumber: "+13105559997", isOwner: false, goal: "a table", facts: [], announcement: ANN, state: "placing" });
+  const plainOut = await p.place({ to: "+13105559997", kind: "third_party", conversationId: C, callId: plain.id, announcement: ANN });
+  assert.equal(db.getCall(C, plain.id).announcement, "");
+  assert.deepEqual([plainOut.recorded, plainOut.announced], [false, ""]);
+  config.thirdPartyRecording = true;
 
   // Another user's errand on =owner, and every errand with the flag unset: the wrapped provider.
   const theirs = db.createCall(OTHER, { provider: "gptlive", toNumber: "+13105559998", isOwner: false, goal: "x", facts: [], announcement: ANN, state: "placing" });
@@ -224,7 +234,8 @@ test("silent opening: nothing reaches the line until their side speaks; then the
   const say = s.live.of("session.commentary.append").at(-1);
   assert.equal(say.delegation_id, null);
   assert.equal(s.call.gate.acked, true, "quiet now, so the words play from their first frame");
-  assert.match(say.content, /this is Reason, an AI assistant calling for Omari\. Just so you know, this call is recorded\./);
+  assert.match(say.content, /Hi there — just so you know, this call may be recorded\./);
+  assert.doesNotMatch(say.content, /this is Reason, an AI assistant calling for/);
   await voiceSays(s, "Hey, hi — this is Reason, an AI assistant calling for Omari.");
   assert.doesNotMatch(s.call.turns.map(t => t.text).join(" "), /reservation/, "and is not in the call's record");
   assert.equal(s.twilio.media().length, 1, "the words Reason handed over are played");
@@ -529,7 +540,8 @@ test("a place ringing back about an errand: GPT-Live on =owner, the disclosure s
   // The call itself: the disclosure, word for word, before anything else.
   const s = startLine({ row: back, brain: async () => ({ text: "", tools: [], calls: [] }) });
   const first = s.live.of("session.commentary.append")[0];
-  assert.match(first.content, /this is Reason, an AI assistant calling for Omari\. Just so you know, this call is recorded\..*You're calling back about a table for two at 7 tonight/);
+  assert.match(first.content, /Hi there — just so you know, this call may be recorded\. You're calling back about a table for two at 7 tonight/);
+  assert.doesNotMatch(first.content, /this is Reason, an AI assistant calling for/);
   // Flag unset: still the errand line on GPT-Live (there is no other voice to hand it to), never a Redirect.
   config.thirdPartyVoice = "";
   const again = ring("+13105559999", "CA_back2").body;
