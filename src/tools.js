@@ -417,6 +417,7 @@ export function toolsFor(conversationId) {
     && todoToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
+    .map(t => (t.name === "signin_link" && !social.socialAllowedFor(conversationId) ? plainSigninLink(t) : t))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
@@ -500,6 +501,15 @@ export function lapsedBlocked(name) {
 // How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
 // way to book. On: two ways, and which one is the person's choice and the provider's proven capability
 // — Reason offers both and pushes neither (the owner's spec, Step 5).
+// signin_link's `provider` argument, as its schema words it. Where REASON_SOCIAL_SIGNIN reaches the
+// person: never Google, signin_email instead. Everybody else keeps the words they had before
+// signin_email existed (the argument is ignored for them, and they have no such tool to be sent to).
+const SIGNIN_LINK_PROVIDER_SOCIAL = "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Apple's (or Facebook's, Microsoft's) own page. Never google: Google refuses this browser, so a Google account is signin_email instead (google here is ignored and the site's own email route opens). Only when they said so or signin_provider found it; omit for the site's own form.";
+const SIGNIN_LINK_PROVIDER_PLAIN = "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form.";
+/** signin_link with its `provider` argument worded for somebody the social sign-in flag does not reach. */
+function plainSigninLink(t) {
+  return { ...t, input_schema: { ...t.input_schema, properties: { ...t.input_schema.properties, provider: { ...t.input_schema.properties.provider, description: SIGNIN_LINK_PROVIDER_PLAIN } } } };
+}
 const FLIGHT_SEARCH_ONLY = "SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves.";
 const FLIGHT_SEARCH_BOTH = "Two ways to finish, and which one is THEIR choice: the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves; or, only when they ask you to book it, flight_book — Reason books it through AgentCard with their approval before any money moves. Keep the link on every option and offer both without pushing either. Never say a flight is booked unless a tool says the ticket was issued.";
 
@@ -5357,7 +5367,7 @@ export const tools = [
       type: "object",
       properties: {
         site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango, or a subscription service cancel_route knows. Where your instructions carry the Google/Apple/Facebook/Microsoft sign-in rules: ANY other site too, by its web address — its sign-in page if you know it (https://www.notion.so/login), else its domain (airbnb.com)." },
-        provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Apple's (or Facebook's, Microsoft's) own page. Never google: Google refuses this browser, so a Google account is signin_email instead (google here is ignored and the site's own email route opens). Only when they said so or signin_provider found it; omit for the site's own form." },
+        provider: { type: "string", enum: social.PROVIDERS, description: SIGNIN_LINK_PROVIDER_SOCIAL },
       },
       required: ["site"],
     },

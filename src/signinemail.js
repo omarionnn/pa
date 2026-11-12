@@ -61,6 +61,22 @@ export function senderDomainsFor(entry) {
   if (!base || !base.includes(".") || MAILBOX_DOMAINS.has(base)) return [];
   return SENDER_ALIASES[base] ?? [base];
 }
+/** The domains that ARE the site (its own and its siblings), a mail provider included. */
+export function siteDomainsFor(entry) {
+  const base = registrableOf(hostOf(entry?.signin_url) || hostOf(entry?.entry) || String(entry?.site ?? ""));
+  if (!base || !base.includes(".")) return [];
+  return SENDER_ALIASES[base] ?? [base];
+}
+/**
+ * Is the browser still on the site it was sent to? A code is only ever typed into the site's own
+ * page: a sign-in address that redirects elsewhere (an open redirect, a lookalike) would otherwise be
+ * handed that site's real code (review, 2026-11-12). Unreadable address: no.
+ */
+export function onSite(page, entry) {
+  let host = "";
+  try { host = hostOf(page.url()); } catch { host = ""; }
+  return !!host && within(host, siteDomainsFor(entry));
+}
 const within = (domain, allowed) => {
   const d = String(domain ?? "").toLowerCase().replace(/^@/, "");
   return !!d && allowed.some(a => d === a || d.endsWith(`.${a}`));
@@ -166,7 +182,9 @@ export async function codeFromGmail(conversationId, entry, { since, waitMs = MAI
   try { got = await getTokens(conversationId); } catch { got = null; }
   const accounts = got?.ok ? (got.accounts ?? []).filter(a => a?.token) : [];
   if (!accounts.length) return { connected: false };
-  const q = `from:(${allowed.join(" OR ")}) newer_than:1d`;
+  // Only that site's mail, and only mail from the moment of the ask on (Gmail takes `after:` in
+  // epoch seconds): earlier mail from the site is never fetched at all.
+  const q = `from:(${allowed.join(" OR ")}) newer_than:1d after:${Math.max(0, Math.floor((Number(since) - SKEW_MS) / 1000) - 1)}`;
   const seen = new Set();
   const deadline = now() + waitMs;
   for (;;) {
@@ -404,6 +422,12 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
         got = { kind: "code", code };
       }
       job.state = "entering";
+      // Only into the site's own page (a mailed link is checked by openLink itself).
+      if (got.kind !== "link" && !onSite(page, entry)) {
+        got = null;
+        log({ signin_email: "left_site", site: entry.site });
+        return finish(`the ${entry.label} email sign-in stopped: the sign-in page was no longer on ${entry.label}'s own site, so the code was not entered anywhere. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link, no provider).`, "left_site");
+      }
       const entered = got.kind === "link" ? await openLink(page, got.url, entry) : await enterCode(page, got.code);
       got = null; // the code is not kept a moment longer than it is needed
       if (!entered.ok) return finish(`the ${entry.label} sign-in got its code but could not use it: ${entered.why}. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link, no provider).`, "failed");

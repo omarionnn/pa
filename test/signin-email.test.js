@@ -25,6 +25,7 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.SENDBLUE_FROM_NUMBER = "+1 (415) 555-0199";
 process.env.REASON_SOCIAL_SIGNIN = "owner";
+process.env.REASON_TOKEN_KEY = "ab".repeat(32);
 
 const em = await import("../src/signinemail.js");
 const social = await import("../src/socialsignin.js");
@@ -121,7 +122,9 @@ test("codeFromGmail: newest mail from the site AFTER the request; earlier mail a
   const g = fakeGmail(() => box);
   const got = await em.codeFromGmail(CONV, NOTION, { since, tokens: g.tokens, api: g.api, sleep: async () => {} });
   assert.deepEqual(got, { connected: true, found: true, kind: "code", code: CODE });
-  assert.match(g.asked[0].query.q, /^from:\(notion\.so OR notion\.com OR makenotion\.com\) newer_than:1d$/);
+  assert.match(g.asked[0].query.q, /^from:\(notion\.so OR notion\.com OR makenotion\.com\) newer_than:1d after:(\d+)$/);
+  const after = Number(g.asked[0].query.q.match(/after:(\d+)$/)[1]);
+  assert.ok(after * 1000 <= since && after * 1000 > since - 10_000, "only mail from the moment of the ask on is searched");
   assert.equal(g.asked[0].query.includeSpamTrash, undefined, "spam is never searched: a forged code lands there");
 
   // Only the old one there: polled until the wait runs out, then nothing — never the earlier code.
@@ -376,4 +379,100 @@ test("signin_email: owner only, asks once for an email it does not know, starts 
   const friend = await call({ site: "https://www.notion.so/login", email: "k@example.com" }, THEIRS);
   assert.equal(friend.ok, false);
   assert.equal(started.length, 1);
+});
+
+// ---------------------------------------------------------------- review, 2026-11-12: whose mail, whose tool, which page
+test("account A's sign-in never reads account B's mailbox: tokens come only from the asking conversation's own rows", async () => {
+  const google = await import("../src/google.js");
+  const had = { id: config.googleClientId, secret: config.googleClientSecret, fetch: globalThis.fetch };
+  config.googleClientId = "client"; config.googleClientSecret = "secret";
+  const net = [];
+  globalThis.fetch = async (u) => { net.push(String(u)); throw new Error("offline"); };
+  try {
+    db.db.exec("DELETE FROM oauth_tokens;");
+    // Only Kofi (B) has Gmail connected.
+    db.saveOauthTokens(THEIRS, "google", { accessToken: "kofi-token", refreshToken: "kofi-refresh", scope: google.TOOL_SCOPES.gmail_search.join(" "), expiresAt: clock.now() + 3_600_000, accountLabel: "kofi@gmail.com" });
+    const since = clock.now();
+    const used = [];
+    const box = [mail({ id: "k1", at: since + 1_000, from: "Notion <notify@updates.notion.so>", dkim: "updates.notion.so", text: `Your login code: ${CODE}` })];
+    const api = async (token, _m, path) => {
+      used.push(token);
+      if (path.endsWith("/messages")) return { ok: true, body: { messages: box.map(m => ({ id: m.id })) } };
+      return { ok: true, body: box[0] };
+    };
+    // A (the owner) asks: the real token lookup finds no Gmail of A's, so nothing is read at all —
+    // not B's token, not B's mail, though B's code mail is sitting right there.
+    const a = await em.codeFromGmail(CONV, NOTION, { since, api, waitMs: 1, sleep: async () => {} });
+    assert.deepEqual(a, { connected: false });
+    assert.deepEqual(used, [], "no Gmail call was made for A with anybody's token");
+    // B asks: B's own token, and only B's.
+    const b = await em.codeFromGmail(THEIRS, NOTION, { since, api, waitMs: 1, sleep: async () => {} });
+    assert.equal(b.found, true);
+    assert.ok(used.length > 0 && used.every(t => t === "kofi-token"));
+    // A's reply is never taken for B's waiting sign-in, and the job is not visible across accounts.
+    const { page } = fakeSite();
+    const out = em.startEmailSignin({ conversationId: THEIRS, entry: NOTION, email: "k@example.com", settleMs: 1, launch: async () => ({ page, close: async () => {} }), gmail: async () => ({ connected: false }), check: async () => ({ ok: true, state: "signed_out" }), note: () => {}, replyWaitMs: 60_000 });
+    for (let i = 0; i < 200 && em.emailSigninFor(THEIRS)?.state !== "waiting_reply"; i++) await new Promise(r => setTimeout(r, 5));
+    assert.equal(em.emailSigninFor(THEIRS)?.state, "waiting_reply");
+    assert.equal(em.emailSigninFor(CONV), null);
+    assert.equal(em.takeCodeReply(CONV, CODE), null, "another account's text is not this sign-in's code");
+    assert.ok(em.takeCodeReply(THEIRS, CODE));
+    await out.run;
+    assert.deepEqual(net, [], "nothing went to the network");
+  } finally {
+    config.googleClientId = had.id; config.googleClientSecret = had.secret; globalThis.fetch = had.fetch;
+    db.db.exec("DELETE FROM oauth_tokens;");
+  }
+});
+
+test("the gate: REASON_SOCIAL_SIGNIN unset or off reaches nobody; owner reaches the operator only — no tool, no rules, no route, same words as before", async () => {
+  const mainText = "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form.";
+  const provText = (c) => toolsFor(c).find(t => t.name === "signin_link")?.input_schema.properties.provider.description;
+  let started = 0;
+  const ctx = { publicUrl: async (url) => ({ ok: true, url }), startEmailSignin: () => { started++; return { ok: true, started: true }; } };
+  const call = (c) => runTool("signin_email", { site: "https://www.notion.so/login", email: "x@example.com" }, { conversationId: c, messages: [], ...ctx });
+  for (const v of [undefined, "", "off", "0", "false", "nonsense"]) {
+    if (v === undefined) delete process.env.REASON_SOCIAL_SIGNIN; else process.env.REASON_SOCIAL_SIGNIN = v;
+    for (const c of [CONV, THEIRS]) {
+      assert.equal(social.socialAllowedFor(c), false, `${v} → nobody`);
+      assert.ok(!toolsFor(c).some(t => t.name === "signin_email" || t.name === "signin_provider"));
+      assert.equal(social.rulesFor(c), "");
+      assert.equal(provText(c), mainText);
+      assert.equal((await call(c)).ok, false);
+    }
+  }
+  process.env.REASON_SOCIAL_SIGNIN = "owner";
+  assert.ok(toolsFor(CONV).some(t => t.name === "signin_email"));
+  assert.match(social.rulesFor(CONV), /signin_email/);
+  assert.match(provText(CONV), /signin_email/);
+  assert.ok(!toolsFor(THEIRS).some(t => t.name === "signin_email"));
+  assert.equal(social.rulesFor(THEIRS), "");
+  assert.equal(provText(THEIRS), mainText, "a non-owner's signin_link reads exactly as it did before signin_email");
+  assert.doesNotMatch(JSON.stringify(toolsFor(THEIRS)), /signin_email/);
+  assert.equal((await call(THEIRS)).ok, false);
+  assert.equal(em.takeCodeReply(THEIRS, CODE), null, "no sign-in of theirs can be waiting, so their texts pass untouched");
+  assert.equal(started, 0);
+  assert.equal((await call(CONV)).ok, true);
+  assert.equal(started, 1);
+});
+
+test("a code is only typed into the site's own page: a sign-in page that left the site gets nothing", async () => {
+  assert.equal(em.onSite({ url: () => "https://www.notion.so/login" }, NOTION), true);
+  assert.equal(em.onSite({ url: () => "https://notion.so.evil.example/login" }, NOTION), false);
+  assert.equal(em.onSite({ url: () => { throw new Error("closed"); } }, NOTION), false);
+  const { st, page } = fakeSite();
+  page.url = () => "https://evil.example/login?looks=notion";
+  const logs = [], notes = [];
+  const out = em.startEmailSignin({
+    conversationId: CONV, entry: NOTION, email: "me@example.com", settleMs: 1,
+    launch: async () => ({ page, close: async () => {} }),
+    gmail: async () => ({ connected: true, found: true, kind: "code", code: CODE }),
+    check: async () => { throw new Error("must not be reached"); },
+    log: (l) => logs.push(l), note: (_c, t) => notes.push(t),
+  });
+  await out.run;
+  assert.equal(st.code, "", "the code was typed nowhere");
+  assert.ok(logs.some(l => l.signin_email === "left_site"));
+  assert.match(notes[0], /no longer on Notion's own site/);
+  assert.ok(!JSON.stringify({ logs, notes }).includes(CODE));
 });
