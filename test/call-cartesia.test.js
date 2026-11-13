@@ -411,3 +411,112 @@ test("passableSocket: a new holder hears the stream's start again, never stale a
   assert.deepEqual(heardB, ["connected", "start", "media"]);
   assert.equal(heardA.length, 3, "the first holder hears nothing more");
 });
+
+// ---------- his choice, by text ----------
+
+test("call_voice_trial: only the operator with the switch at owner is shown it; on, off and status say which voice", async () => {
+  const tools = await import("../src/tools.js");
+  const names = (c) => tools.toolsFor(c).map(t => t.name);
+  assert.equal(names(C).includes("call_voice_trial"), false, "switch off: nobody is shown it");
+  Object.assign(config, CARTESIA);
+  assert.equal(names(C).includes("call_voice_trial"), true, "the operator, switch at owner");
+  assert.equal(names(OTHER).includes("call_voice_trial"), false, "nobody else is shown it");
+  const run = (c, choice) => tools.runTool("call_voice_trial", { choice }, { conversationId: c });
+  const refused = await run(OTHER, "on");
+  assert.ok(refused.ok !== true && refused.error, "and the dispatch refuses it for anyone else");
+  assert.equal(db.callTrial(OTHER), "");
+  assert.equal(db.callTrial(C), "", "empty by default");
+  const on = await run(C, "on");
+  assert.equal(on.voice, "cartesia");
+  assert.match(on.say, /Cartesia voice/);
+  assert.equal(db.callTrial(C), "cartesia");
+  assert.equal(trial.cartesiaTrialFor(ownCall()), true);
+  assert.equal((await run(C, "status")).voice, "cartesia");
+  const off = await run(C, "off");
+  assert.equal(off.voice, "usual");
+  assert.equal(trial.cartesiaTrialFor(ownCall()), false);
+  // Set on while the agent is not connected here: it says so, and calls stay on GPT-Live.
+  config.cartesiaAgentId = "";
+  assert.match((await run(C, "on")).say, /not connected/);
+  assert.equal(trial.cartesiaTrialFor(ownCall()), false);
+  config.callCartesia = "off";
+  const gone = await run(C, "status");
+  assert.ok(gone.ok !== true && gone.error, "switch back off: the tool is gone");
+});
+
+// ---------- the agent, made once ----------
+
+test("setup script: calls nobody without --yes; with it, makes ask_reason then the agent in Gemma and prints its id", async () => {
+  const setup = await import("../scripts/cartesia-agent-setup.mjs");
+  const said = [];
+  const calls = [];
+  const call = async (key, p, opts = {}) => {
+    calls.push({ p, method: opts.method ?? "GET", body: opts.body });
+    if (p.startsWith("/v1/agents/models")) return { ok: true, json: { data: [{ id: "slow", average_latency_ms: 900 }, { id: "fast", average_latency_ms: 500 }] } };
+    if (p === "/v1/agents/tools") return { ok: true, json: { id: "tool_1" } };
+    if (p === "/v1/agents") return { ok: true, json: { id: "agent_new" } };
+    return { ok: false, error: "unexpected" };
+  };
+  assert.equal(await setup.main([], { log: (l) => said.push(l), call, key: "ck-test" }), 0);
+  assert.equal(calls.length, 0, "no --yes: nothing asked of Cartesia");
+  assert.match(said.join("\n"), /Nothing was made/);
+  said.length = 0;
+  assert.equal(await setup.main(["--yes", "--keyterms", "Kibaga, Shoreditch"], { log: (l) => said.push(l), call, key: "ck-test" }), 0);
+  assert.deepEqual(calls.map(c => `${c.method} ${c.p.split("?")[0]}`), ["GET /v1/agents/models", "POST /v1/agents/tools", "POST /v1/agents"]);
+  const tool = calls[1].body;
+  assert.equal(tool.type, "client");
+  assert.equal(tool.name, cartesia.ASK_REASON);
+  assert.equal(tool.expects_response, true);
+  const agent = calls[2].body.config;
+  assert.equal(agent.audio.output.voice_id, "62ae83ad-4f6a-430b-af41-a9bede9286ca", "Gemma");
+  assert.equal(agent.language.primary, "en-GB");
+  assert.equal(agent.model.id, "fast");
+  assert.deepEqual(agent.tools, [{ id: "tool_1" }]);
+  assert.ok(agent.system_tools.end_call);
+  assert.match(agent.instructions, /\{\{reason_call\}\}/);
+  assert.equal(agent.initial_message, "{{greeting}}");
+  assert.ok(agent.audio.input.keyterms.includes("Kibaga"));
+  assert.equal(setup.KEYTERM_SLOTS, cartesia.KEYTERM_SLOTS);
+  for (let i = 1; i <= setup.KEYTERM_SLOTS; i++) assert.ok(agent.audio.input.keyterms.includes(`{{keyterm_${i}}}`));
+  assert.match(said.join("\n"), /REASON_CARTESIA_AGENT_ID=agent_new/);
+  assert.ok(!said.join("\n").includes("ck-test"), "the key is never printed");
+});
+
+test("every variable the agent's text uses is supplied at session_create", async () => {
+  const setup = await import("../scripts/cartesia-agent-setup.mjs");
+  const body = JSON.stringify(setup.agentBody({ model: "m", toolId: "t" }));
+  const used = new Set([...body.matchAll(/\{\{([a-z0-9_]+)\}\}/gi)].map(m => m[1]));
+  const vars = cartesia.sessionVariables(ownCall());
+  for (const v of used) assert.ok(v in vars, `${v} is supplied`);
+  for (const v of Object.values(vars)) assert.ok(typeof v === "string" && v.length > 0, "no empty value");
+});
+
+// ---------- the number to compare against, on a normal call ----------
+
+test("a normal GPT-Live call logs the first audio WITH SPEECH after a hand-back, once (log only)", async () => {
+  const timers = fakeTimers();
+  const twilio = fakeTwilio();
+  const live = fakeSocket();
+  const lines = [];
+  const call = new gl.GptLiveCall({
+    call: ownCall(), twilio, openLive: () => live.socket, now: timers.now, timers, log: (o) => lines.push(o),
+    brain: async () => ({ text: "It's 3 pm in Accra.", tools: [] }), finish: async () => {},
+  });
+  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  live.open();
+  live.emit({ type: "session.started", session: { id: "live_1" } });
+  live.emit({ type: "session.input_transcript.delta", delta: " What time is it in Accra?" });
+  live.emit({ type: "session.delegation.created", delegation: { id: "item_t" } });
+  await timers.advance(300);
+  live.emit({ type: "session.output_audio.delta", delta: QUIET });
+  assert.equal(lines.filter(l => l.gptlive_handback_speech).length, 0, "silence is not speech");
+  await timers.advance(200);
+  live.emit({ type: "session.output_audio.delta", delta: Buffer.alloc(160, gl.pcmToUlaw(9000)).toString("base64") });
+  await timers.advance(100);
+  live.emit({ type: "session.output_audio.delta", delta: Buffer.alloc(160, gl.pcmToUlaw(9000)).toString("base64") });
+  const got = lines.filter(l => l.gptlive_handback_speech);
+  assert.equal(got.length, 1, "once per hand-back");
+  assert.ok(got[0].from_ask_ms >= 500, `from_ask_ms ${got[0].from_ask_ms}`);
+  assert.ok(Object.values(got[0]).every(v => typeof v === "number"), "numbers only");
+  stop(call);
+});

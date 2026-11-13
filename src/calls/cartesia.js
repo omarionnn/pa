@@ -12,12 +12,13 @@
 import { writeSealed } from "../restfiles.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
-import { config } from "../config.js";
+import { config, clock } from "../config.js";
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
 import * as ambience from "./ambience.js";
 import { CallTape, hasSpeech, voiceInstructionsFor } from "./gptlive.js";
 import { openingLineFor } from "./inbound.js";
+import { todaySoFar } from "./brief.js";
 
 export const API_BASE = "https://api.cartesia.ai";
 export const VERSION = "2026-08-14";
@@ -31,12 +32,14 @@ export const CENTS_PER_MINUTE = 3;
 export const ASK_REASON = "ask_reason";
 /** A tool result may be 16 KiB (docs.cartesia.ai/agents/client-tools); Reason's words are cut well inside it. */
 export const RESULT_MAX = 12_000;
+/** Per-call keyterm slots on the agent (scripts/cartesia-agent-setup.mjs `KEYTERM_SLOTS`). */
+export const KEYTERM_SLOTS = 8;
 /** A dynamic variable's text, kept inside a size their docs do not state (docs/unverified.md). */
 export const VARIABLE_MAX = 12_000;
 
 /** Cartesia's agent WebSocket, as `{ send(obj), close(), on(name, fn) }` (the shape `openLiveSocket` has). */
 export function openAgentSocket({ agentId = config.cartesiaAgentId, key = config.cartesiaKey, base = API_BASE } = {}) {
-  const url = `${base.replace(/^http/, "ws")}/agents/websocket/${encodeURIComponent(agentId)}?cartesia_version=${VERSION}`;
+  const url = `${base.replace(/^http/, "ws")}/v1/agents/websocket/${encodeURIComponent(agentId)}?cartesia_version=${VERSION}`;
   const ws = new WebSocket(url, { headers: { "X-API-Key": key, "Cartesia-Version": VERSION } });
   const handlers = { open: [], event: [], close: [] };
   const run = (list, ...args) => { for (const f of list) { try { f(...args); } catch { /* one call never takes the process */ } } };
@@ -87,7 +90,13 @@ export function sessionVariables(call) {
   const greeting = call.direction === "in"
     ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
     : String(call.announcement ?? "");
+  // Names from his chats today, the ones the brief tells GPT-Live a bad line often garbles: the recognizer
+  // favours them. A slot with nothing for it says "Reason" (an empty keyterm is not known to be allowed).
+  let names = [];
+  try { names = (todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id })?.names ?? []).map(n => clip(n, 60)).filter(Boolean); } catch { /* none */ }
+  const keyterms = Object.fromEntries(Array.from({ length: KEYTERM_SLOTS }, (_, i) => [`keyterm_${i + 1}`, names[i] ?? "Reason"]));
   return {
+    ...keyterms,
     // No turn gate here: the agent's own turn-taking replaces it (section 3), so its lines are left out.
     reason_call: clip(voiceInstructionsFor(call, { line: false, turnGate: false }), VARIABLE_MAX),
     greeting: clip(greeting || "Hey, it's Reason.", 400),
