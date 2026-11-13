@@ -123,7 +123,7 @@ const proposed = (category, reason, matches, extra = {}) => matches.map((match) 
 const RAW = [
   // ---- never, by rule
   ...byRule("government", "Government: identity and legal exposure.", [".gov", ".mil", "id.me"]),
-  ...proposed("government", "Government outside the US: same rule as .gov.", [".gov.uk", ".gc.ca", ".gov.au"]),
+  ...proposed("government", "Government outside the US: same rule as .gov.", [".gov.uk", ".gc.ca", "canada.ca", ".gov.au"]),
   ...byRule("bank", "Bank, credit union, brokerage, retirement, lender, payment app or crypto exchange (Regulation E: the person is fully liable for what someone they gave the login to does).", [
     "bankofamerica.com", "wellsfargo.com", "citi.com", "citibank.com", "usbank.com", "pnc.com", "truist.com",
     "capitalone.com", "td.com", "tdbank.com", "ally.com", "discover.com", "americanexpress.com", "synchrony.com",
