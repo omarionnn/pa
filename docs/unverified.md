@@ -5297,3 +5297,22 @@ the setup script with `--yes`, a real agent session, or a real call. Not known u
 - Whether the agent passes `[laughter]` through to Sonic as a laugh.
 - Measured: nothing yet. The first call's `cartesia_*` log lines are the numbers section 5 asks for. `gptlive_handback_speech` is the same-day comparison from a normal call.
 
+### 2026-11-13: conversation manner, slow lookups, the talked-over number (Cartesia calls only): not run
+
+`src/calls/cartesia.js` adds this line's own manner after the GPT-Live own-call words in `reason_call`
+(`cartesiaCallLines`), holds a slow `ask_reason` (`HOLD_MS`, `COLLECT`, `TEXT_MS`) and times a talk-over
+from when both were talking. Proved only with stand-in sockets. Not known until a real call:
+
+- Whether the agent follows a tool result that tells it to call `ask_reason` again with `"collect the answer"`.
+  If it doesn't, the answer still goes by text at 15 s; it is just not said.
+- How often the follow-up rule fires on gpt-5.4-mini, and whether "one reply in three" holds over a long call.
+- Whether a Managed Agent passes Sonic's inline tags through from the model's text to the voice. `[laughter]`
+  reaches `turn_ended.text` (call 107 logged one); whether it was voiced is not known. `<emotion value="..."/>`
+  is behind REASON_CARTESIA_EMOTION_TAGS (off): Cartesia calls emotion tags beta and "may not work reliably"
+  with voices not tagged Emotive (docs.cartesia.ai/build-with-cartesia/capability-guides/ssml-tags), and Gemma
+  is listed as a stable voice for agents (docs.cartesia.ai/build-with-cartesia/capability-guides/choosing-a-voice).
+- What Cartesia counts as "the user started speaking" for `audio_output_clear`. Read off calls 106-108: the old
+  `sound_to_clear_ms` of 3-11 s were timed from a stale sound (the first one heard during agent speech, kept
+  until some later clear), not slow barge-ins; and a clear also comes with nothing playing (their WebSocket
+  page says so), which is now `playing: false`.
+
