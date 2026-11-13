@@ -3324,6 +3324,26 @@ export function listActions(conversationId, { since = null, limit = 50 } = {}) {
   }));
 }
 
+// ---------- saved-login log (src/savedlogins.js) ----------
+// One row per save, open or removal of a saved login, written by savedlogins.js recordLoginEvent
+// beside its action_ledger row. The logins themselves live in data/logins.db; this is the person's
+// own record of their use. Never a username, a code or an address with a query string. `event` and
+// `outcome` come from fixed lists in savedlogins.js (not a CHECK, so a later event needs no rebuild).
+// `purpose` is sealed under the person's key (restcrypt SENSITIVE).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS login_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL DEFAULT '',
+    event TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT '',
+    kms_calls INTEGER NOT NULL DEFAULT 0,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS login_log_by_conversation ON login_log (conversation_id, at);
+`);
+
 // ---------- confirmations ----------
 export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null, amount = null, threadKey = null }) {
   const cents = Number.isFinite(Number(amount)) && amount !== null && amount !== "" ? Math.round(Number(amount) * 100) : null;

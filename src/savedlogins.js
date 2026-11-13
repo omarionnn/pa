@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { config, clock } from "./config.js";
 import * as accounts from "./accounts.js";
+import { db as reasonDb, recordAction } from "./db.js";
 import * as restcrypt from "./restcrypt.js";
 import * as vaultkms from "./vaultkms.js";
 import { Secret, wipeAll } from "./secret.js";
@@ -195,10 +196,51 @@ function siteVerdict(hostOrUrl) {
   return sitePolicy.classifySite(hostOrUrl) ?? {};
 }
 
-// ---------------------------------------------------------------- slice 2 fills this in
-// Every save, open and removal will write one login_log row (reason.db) and one recordAction row
-// (rule 5). Never a username, a code or an address with a query string.
-function logEvent(_conversationId, _entry) {}
+// ---------------------------------------------------------------- the person's record (hard rule 5)
+// Every save, open and removal writes one login_log row (reason.db, `purpose` sealed under the
+// person's key) and one action_ledger row, which ledger_list reads back. From fixed lists only:
+// never a username, a hint, a code or an address with a query string.
+export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all"];
+export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed"];
+const RECEIPT = {
+  saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
+  opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
+  removed: (site) => `Deleted the saved login for ${site}.`,
+  removed_all: (_site, _outcome, n) => `Deleted all ${n} saved login${n === 1 ? "" : "s"}.`,
+};
+/** Words for `purpose`: one line, no control characters, links without their query or fragment. */
+function cleanPurpose(s) {
+  return String(s ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/(https?:\/\/[^\s?#]*)[?#]\S*/gi, "$1").trim().slice(0, 160);
+}
+/**
+ * Write the person's record of one vault event: a login_log row and an action_ledger row. Throws on
+ * an event or outcome outside the fixed lists, or a site that is not a bare host.
+ * entry = { site, event, outcome, purpose?, kmsCalls?, count? }.
+ */
+export function recordLoginEvent(conversationId, { site = "", event, outcome, purpose = "", kmsCalls = 0, count = 0 } = {}) {
+  const c = String(conversationId ?? "");
+  if (!c) throw new VaultError("bad_input");
+  if (!LOGIN_EVENTS.includes(event) || !LOGIN_OUTCOMES.includes(outcome)) throw new VaultError("bad_event");
+  const s = String(site ?? "");
+  if (s !== "" && !SITE_RE.test(s)) throw new VaultError("bad_site");
+  const why = cleanPurpose(purpose);
+  const n = Number.isSafeInteger(kmsCalls) && kmsCalls >= 0 ? kmsCalls : 0;
+  reasonDb.prepare("INSERT INTO login_log (conversation_id, site, event, outcome, purpose, kms_calls, at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(c, s, event, outcome, restcrypt.sealFor(c, why), n, clock.now());
+  recordAction({
+    conversationId: c, action: `saved_login_${event}`, target: s,
+    attempted: { site: s, event },
+    outcome: outcome === "ok" ? "ok" : "refused",
+    result: { outcome, kms_calls: n, ...(event === "removed_all" ? { removed: count } : {}) },
+    receipt: RECEIPT[event](s, outcome, count),
+  });
+}
+// The vault's own calls: a record that cannot be written is said once in the log, never thrown over
+// the result (a removal that happened must not read as one that failed).
+function logEvent(conversationId, entry) {
+  try { recordLoginEvent(conversationId, entry); }
+  catch (e) { console.error(`saved logins: could not write the record (${e?.code ?? e?.name ?? "error"})`); }
+}
 
 // ---------------------------------------------------------------- the box
 /**
@@ -275,24 +317,77 @@ export function listLogins(conversationId) {
 }
 
 /** Delete one login: the row, its ciphertext and its wrapped key (secure_delete zeroes them). Works with the switch off. */
-export function removeLogin(conversationId, id) {
+export function removeLogin(conversationId, id, { purpose = "" } = {}) {
   const d = open({ create: false });
   if (!d || !conversationId) return false;
   const c = String(conversationId);
   const row = d.prepare("SELECT site FROM saved_logins WHERE id = ? AND conversation_id = ?").get(Number(id), c);
   if (!row) return false;
   d.prepare("DELETE FROM saved_logins WHERE id = ? AND conversation_id = ?").run(Number(id), c);
-  logEvent(c, { site: row.site, event: "removed", outcome: "ok", kmsCalls: 0 });
+  logEvent(c, { site: row.site, event: "removed", outcome: "ok", purpose, kmsCalls: 0 });
   return true;
+}
+
+/**
+ * Delete every login a person saved, and their vault handle, in one transaction (secure_delete zeroes
+ * the pages). One login_log row and one action_ledger row when there was anything to delete. Works
+ * with the switch off. src/data.js deleteData calls this before the person's key is destroyed.
+ * Returns how many logins went.
+ */
+export function deleteAllFor(conversationId, { purpose = "" } = {}) {
+  const c = String(conversationId ?? "");
+  if (!c) throw new VaultError("bad_input"); // never "everyone" by accident: that is deleteEveryLogin
+  const d = open({ create: false });
+  if (!d) return 0;
+  let n = 0, had = false;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    n = Number(d.prepare("DELETE FROM saved_logins WHERE conversation_id = ?").run(c).changes);
+    had = Number(d.prepare("DELETE FROM vault_people WHERE conversation_id = ?").run(c).changes) > 0 || n > 0;
+    d.exec("COMMIT");
+  } catch (e) { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
+  if (had) logEvent(c, { site: "", event: "removed_all", outcome: "ok", purpose, kmsCalls: 0, count: n });
+  return n;
+}
+
+/** A delete of the whole install (src/data.js deleteData with no scope): every login and handle. No record: nobody is left to read it. */
+export function deleteEveryLogin() {
+  const d = open({ create: false });
+  if (!d) return 0;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const n = Number(d.prepare("DELETE FROM saved_logins").run().changes);
+    d.prepare("DELETE FROM vault_people").run();
+    d.exec("COMMIT");
+    return n;
+  } catch { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
+}
+
+/**
+ * For an export (src/data.js exportData): what was saved, never the login. The site, label, sign-in
+ * address, username hint, dates, permission and state; no ciphertext, no wrapped key, no handle.
+ * `null` = everyone, as exportData's own scope. Works with the switch off.
+ */
+export function exportFor(conversationId) {
+  const d = open({ create: false });
+  if (!d) return [];
+  const all = conversationId === null;
+  if (!all && !conversationId) return [];
+  return d.prepare(`SELECT id, conversation_id, site, label, signin_origin, signin_path, username_hint, permission, second_step, state,
+      consent_version, consent_at, fail_count, next_try_at, last_used_at, unused_warned_at, created_at
+    FROM saved_logins${all ? "" : " WHERE conversation_id = ?"} ORDER BY conversation_id, site, id`).all(...(all ? [] : [String(conversationId)]))
+    .map(r => ({ ...r, username_hint: restcrypt.openAny(r.username_hint) }));
 }
 
 /**
  * The only way in (src/filler.js, vault PR 6). `liveOrigin` is the origin the browser is on now; the KMS
  * context is built from it and from the arguments, never from the row. One Decrypt; fn({ username,
  * password, totp }) gets Secrets, zero-filled when it settles. Whatever fn throws comes back as the fixed
- * code fill_failed: an error message may hold a value, so none is passed on.
+ * code fill_failed: an error message may hold a value, so none is passed on. Every call that finds the
+ * row writes the person's record (recordLoginEvent): the outcome, `purpose` (why, in Reason's words,
+ * sealed) and kms_calls.
  */
-export async function withLogin(conversationId, id, liveOrigin, fn) {
+export async function withLogin(conversationId, id, liveOrigin, fn, { purpose = "" } = {}) {
   const c = String(conversationId ?? "");
   if (!savedLoginsAllowedFor(c)) throw new VaultError("not_available");
   if (typeof fn !== "function") throw new VaultError("bad_input");
@@ -301,12 +396,12 @@ export async function withLogin(conversationId, id, liveOrigin, fn) {
     FROM saved_logins WHERE id = ? AND conversation_id = ?`).get(Number(id), c);
   if (!row) throw new VaultError("not_found");
   // Hard rule 4: one refusal stops. PR 6 sets these; the door honours them.
-  if (STOPPED.has(row.state)) throw new VaultError("stopped", { detail: row.state });
-  if (row.next_try_at && clock.now() < row.next_try_at) throw new VaultError("wait");
+  if (STOPPED.has(row.state)) { logEvent(c, { site: row.site, event: "opened", outcome: "stopped", purpose, kmsCalls: 0 }); throw new VaultError("stopped", { detail: row.state }); }
+  if (row.next_try_at && clock.now() < row.next_try_at) { logEvent(c, { site: row.site, event: "opened", outcome: "wait", purpose, kmsCalls: 0 }); throw new VaultError("wait"); }
   // Hard rule 1: exact origin only. Checked here, and again by KMS through the context.
   // Any exact origin is compared; the pin was https when saved, and a row edited since is KMS's to refuse.
   const origin = exactOrigin(liveOrigin, { https: false });
-  if (!origin || origin !== row.signin_origin) { logEvent(c, { site: row.site, event: "opened", outcome: "origin_mismatch", kmsCalls: 0 }); throw new VaultError("origin_mismatch"); }
+  if (!origin || origin !== row.signin_origin) { logEvent(c, { site: row.site, event: "opened", outcome: "origin_mismatch", purpose, kmsCalls: 0 }); throw new VaultError("origin_mismatch"); }
   const person = handleFor(d, c, false);
   if (!person) throw new VaultError("not_found");
 
@@ -333,7 +428,7 @@ export async function withLogin(conversationId, id, liveOrigin, fn) {
     return out;
   } finally {
     wipeAll(key, username, password, totp);
-    logEvent(c, { site: row.site, event: "opened", outcome, kmsCalls });
+    logEvent(c, { site: row.site, event: "opened", outcome, purpose, kmsCalls });
   }
 }
 

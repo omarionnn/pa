@@ -15,7 +15,10 @@ import { DatabaseSync } from "node:sqlite";
 
 const dir = mkdtempSync(join(tmpdir(), "savedlogins-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_DATA_DIR = dir;                       // deleteData (rule 6) touches nothing outside this dir
+process.env.REASON_RECORDING_ROOT = join(dir, "recordings");
 process.env.REASON_ENCRYPT_REST = "on";
+process.env.REASON_ENCRYPT_STRICT = "1";                 // SQLite itself refuses a plaintext login_log.purpose
 process.env.REASON_REST_KEK_SOURCE = "local";
 process.env.REASON_REST_KEK = "44".repeat(32);
 process.env.REASON_TOKEN_KEY ||= "22".repeat(32);
@@ -436,4 +439,97 @@ test("removeLogin deletes the row and its wrapped key from the file's bytes; onl
   assert.ok(!bytes.includes(wrapped), "the wrapped key is gone from the file");
   for (const col of ["username_ct", "password_ct", "totp_ct"]) assert.ok(!bytes.includes(Buffer.from(row[col])), `${col} is gone from the file`);
   await assert.rejects(withLogin(ME, LOGIN, ORIGIN, () => assert.fail("opened")), { code: "not_found" });
+});
+
+// ---------------------------------------------------------------- rule 5: the person's record
+const rdb = await import("../src/db.js");
+const countFor = (table, c) => Number(rdb.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE conversation_id = ?`).get(c).n);
+const SECOND = "https://www.example.test"; // a second sign-in origin on the same site
+const hidden = () => [...allValues(), "vault-tester", "v…@example.test", "?order=", "4471"];
+
+test("rule 5: withLogin, removeLogin and deleteAllFor each write one login_log row and one ledger row; ledger_list shows them, no username", async () => {
+  const P = "dm:vault-ledger";
+  const both = () => [countFor("login_log", P), countFor("action_ledger", P)];
+  const step = async (what, fn) => {
+    const [l0, a0] = both();
+    await fn();
+    assert.deepEqual(both(), [l0 + 1, a0 + 1], `${what}: one login_log row and one ledger row`);
+  };
+  let id;
+  await step("save", async () => { ({ id } = await saveLogin(P, meta(), fields())); });
+  await step("open", () => withLogin(P, id, ORIGIN, () => "ok", { purpose: "sign in to check an order https://login.example.test/orders?order=4471" }));
+  await step("open on the wrong origin", () => assert.rejects(withLogin(P, id, MISMATCHES.host, () => assert.fail("opened")), { code: "origin_mismatch" }));
+  await step("open a paused row", async () => {
+    editRow("UPDATE saved_logins SET state = 'paused' WHERE id = ?", id);
+    try { await assert.rejects(withLogin(P, id, ORIGIN, () => assert.fail("opened")), { code: "stopped" }); }
+    finally { editRow("UPDATE saved_logins SET state = 'working' WHERE id = ?", id); }
+  });
+  await step("remove", () => assert.equal(removeLogin(P, id), true));
+  await saveLogin(P, meta(), fields());
+  await saveLogin(P, meta({ signinOrigin: SECOND }), fields());
+  await step("delete all", () => assert.equal(sl.deleteAllFor(P), 2));
+  assert.equal(sl.deleteAllFor(P), 0, "nothing left: no second record");
+  assert.throws(() => sl.deleteAllFor(""), { code: "bad_input" }, "never everyone by accident");
+
+  const { runTool } = await import("../src/tools.js");
+  const out = await runTool("ledger_list", { limit: 50 }, { conversationId: P });
+  const actions = out.actions.map(a => `${a.action}:${a.outcome}`).reverse();
+  assert.deepEqual(actions, ["saved_login_saved:ok", "saved_login_opened:ok", "saved_login_opened:refused", "saved_login_opened:refused",
+    "saved_login_removed:ok", "saved_login_saved:ok", "saved_login_saved:ok", "saved_login_removed_all:ok"]);
+  assert.ok(out.actions.every(a => typeof a.receipt === "string" && a.receipt.length > 10));
+  assert.match(out.actions[0].receipt, /^Deleted all 2 saved logins\.$/);
+  const shown = JSON.stringify(out);
+  assert.deepEqual(hidden().filter(v => shown.includes(v)), [], "no username, hint, value or query in ledger_list");
+
+  const log = rdb.db.prepare("SELECT site, event, outcome, purpose, kms_calls FROM login_log WHERE conversation_id = ? ORDER BY id").all(P);
+  assert.deepEqual(log.map(r => [r.event, r.outcome, r.kms_calls]), [["saved", "ok", 1], ["opened", "ok", 1], ["opened", "origin_mismatch", 0],
+    ["opened", "stopped", 0], ["removed", "ok", 0], ["saved", "ok", 1], ["saved", "ok", 1], ["removed_all", "ok", 0]]);
+  assert.equal(log[1].purpose, "sign in to check an order https://login.example.test/orders", "the purpose opens for its person, without the query");
+  const raw = rdb.rawPrepare("SELECT purpose FROM login_log WHERE conversation_id = ? AND purpose <> ''").all(P);
+  assert.ok(raw.length >= 1 && raw.every(r => r.purpose.startsWith("enc:u1:")), "purpose is sealed under the person's key in the file");
+  const rows = JSON.stringify(rdb.rawPrepare("SELECT * FROM login_log WHERE conversation_id = ?").all(P));
+  assert.deepEqual(hidden().filter(v => rows.includes(v)), [], "no username, hint, value or query in login_log");
+  assert.throws(() => sl.recordLoginEvent(P, { site: "example.test", event: "peeked", outcome: "ok" }), { code: "bad_event" });
+  assert.throws(() => sl.recordLoginEvent(P, { site: "https://example.test/?u=x", event: "opened", outcome: "ok" }), { code: "bad_site" });
+});
+
+// ---------------------------------------------------------------- rule 6 (rest) and the export
+test("rule 6: deleteData leaves no row for the person, in logins.db or reason.db; the export lists sites with the login REDACTED", async () => {
+  const Q = "dm:vault-delete";
+  const keep = await saveLogin(OTHER, meta(), fields());
+  const a = await saveLogin(Q, meta(), fields());
+  const b = await saveLogin(Q, meta({ signinOrigin: SECOND, permission: "each_time" }), fields());
+  await withLogin(Q, a.id, ORIGIN, () => "ok", { purpose: "sign in for them" });
+  const gone = [rowOf(a.id), rowOf(b.id)];
+  const data = await import("../src/data.js");
+
+  const ex = data.exportData({ conversation: Q, audio: false, files: false });
+  assert.equal(ex.saved_logins.length, 2);
+  for (const r of ex.saved_logins) {
+    assert.equal(r.login, "[not exported: this is a live credential]");
+    assert.equal(r.username_hint, "v…@example.test", "the hint is in the export, opened");
+    for (const k of ["username_ct", "password_ct", "totp_ct", "wrapped_key", "kms_key", "handle"]) assert.ok(!(k in r), `no ${k} in the export`);
+  }
+  assert.deepEqual(ex.saved_logins.map(r => [r.signin_origin, r.permission, r.state]).sort(), [[ORIGIN, "standing", "unverified"], [SECOND, "each_time", "unverified"]].sort());
+  assert.ok(ex.tables.login_log.some(r => r.event === "opened" && r.purpose === "sign in for them"), "login_log is in the export, opened");
+  const exported = JSON.stringify(ex);
+  assert.deepEqual([...allValues(), ...gone.map(r => r.wrapped_key)].filter(v => exported.includes(v)), [], "no value and no wrapped key in the export");
+
+  const res = await data.deleteData({ conversation: Q });
+  assert.deepEqual(res.saved_logins, { deleted: 2 });
+  assert.equal(res.rows.login_log >= 4, true, "the record went with the rest of theirs");
+  const d = new DatabaseSync(loginsDbPath());
+  try {
+    assert.equal(Number(d.prepare("SELECT COUNT(*) AS n FROM saved_logins WHERE conversation_id = ?").get(Q).n), 0);
+    assert.equal(Number(d.prepare("SELECT COUNT(*) AS n FROM vault_people WHERE conversation_id = ?").get(Q).n), 0, "their vault handle is gone too");
+  } finally { d.close(); }
+  assert.equal(countFor("login_log", Q), 0);
+  assert.equal(countFor("action_ledger", Q), 0, "deleteAllFor ran before the rows went: its own record is gone too");
+  const bytes = fileBytes();
+  for (const r of gone) for (const col of ["wrapped_key", "username_ct", "password_ct", "totp_ct"]) assert.ok(!bytes.includes(Buffer.from(r[col])), `${col} is gone from the file`);
+  assert.deepEqual(listLogins(Q), []);
+
+  // Somebody else's login is untouched, and still opens.
+  assert.equal(listLogins(OTHER).length, 1);
+  assert.equal(await withLogin(OTHER, keep.id, ORIGIN, ({ password }) => password.use(p => p.length)), PLAIN.password.length);
 });

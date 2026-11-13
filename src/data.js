@@ -38,6 +38,9 @@ import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
 import * as google from "./google.js";
+// Saved logins live in data/logins.db (their own file): exported as a list with the login REDACTED,
+// deleted before the person's key goes. Loading it creates no file.
+import { deleteAllFor, deleteEveryLogin, exportFor } from "./savedlogins.js";
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
@@ -56,6 +59,9 @@ const TABLES = [
   "documents",
   // Which files on disk were made for them (src/ownfiles.js): paths only, no bytes.
   "conversation_files",
+  // Their record of each saved-login save, open and removal (src/savedlogins.js); `purpose` sealed.
+  // The logins themselves are in data/logins.db: see exportFor / deleteAllFor below.
+  "login_log",
   // Which new features this person has been told about. Theirs like anything else keyed by
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.
@@ -520,6 +526,8 @@ export function exportData({ conversation = null, audio = true, files = true } =
     tables: {},
     recordings: [],
     documents: [],
+    // data/logins.db: which sites, the username hint, dates, permission and state. Never the login.
+    saved_logins: [],
   };
 
   for (const t of TABLES) {
@@ -538,6 +546,7 @@ export function exportData({ conversation = null, audio = true, files = true } =
     out.redacted = `${Object.entries(SECRET_COLUMNS).map(([t, c]) => `${t}.${c.join("/")}`).join(", ")} — the rows are here, the credential values are not. ${DROP_FROM_EXPORT.join(", ")} is left out entirely.`;
   }
   for (const t of GLOBAL_TABLES) out.tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
+  out.saved_logins = exportFor(conversation).map(r => ({ ...r, login: REDACTED }));
 
   // A page is only half of itself without the browsers signed in to it and the answers on it.
   // Plus the person's own event sign-in key (src/events.js signinKey), which no page row carries,
@@ -659,6 +668,11 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     try { db.prepare("UPDATE event_seats SET invite_conversation_id = NULL, invite_state = CASE WHEN invite_state = 'owed' THEN 'dropped' ELSE invite_state END WHERE invite_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
   }
 
+  // Saved logins (data/logins.db) before anything else goes: before the person's key is destroyed
+  // below (the username hint is sealed under it), and before the rows below, so the record
+  // deleteAllFor writes goes with the rest of theirs.
+  const savedLogins = { deleted: conversation ? deleteAllFor(conversation, { purpose: "their data was deleted" }) : deleteEveryLogin() };
+
   const rows = {};
   const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {
@@ -741,6 +755,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
 
   return {
     deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds, event_photos: eventPhotos,
+    saved_logins: savedLogins,
     key_destroyed: !!sealedKey.shredded,
     google: {
       ...googleGrants,

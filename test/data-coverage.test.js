@@ -64,12 +64,37 @@ test("every CREATE TABLE in src/ exists here, so the checks below see every tabl
   // The keystore's own tables live in data/keys.db (src/restcrypt.js), deliberately not in reason.db.
   for (const t of ["install_key", "user_keys", "shredded"]) made.delete(t);
   // The vault's tables live in data/logins.db (src/savedlogins.js), deliberately not in reason.db: a copy of
-  // reason.db must never carry a saved login. deleteData must remove them through src/savedlogins.js
-  // (vault PR 3, slice 2, which also adds that check here).
+  // reason.db must never carry a saved login. deleteData reaches them through savedlogins.js deleteAllFor
+  // (the next test holds it to that).
   for (const t of ["vault_people", "saved_logins"]) made.delete(t);
   const have = new Set(tables());
   const missing = [...made].filter(t => !have.has(t));
   assert.deepEqual(missing, [], `tables made in src/ that this test never loaded — import their module above: ${missing.join(", ")}`);
+});
+
+test("the vault cannot be forgotten: every logins.db table is deleted by deleteAllFor, which deleteData calls before the key goes", () => {
+  const vault = readFileSync(new URL("../src/savedlogins.js", import.meta.url), "utf8");
+  const own = [...vault.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*) *\(/g)].map(m => m[1]);
+  assert.deepEqual(own.sort(), ["saved_logins", "vault_people"]);
+  const body = (src, name) => {
+    const at = src.indexOf(`export function ${name}(`) >= 0 ? src.indexOf(`export function ${name}(`) : src.indexOf(`export async function ${name}(`);
+    assert.ok(at >= 0, `${name} exists`);
+    const next = src.indexOf("\nexport ", at + 1);
+    return src.slice(at, next < 0 ? undefined : next);
+  };
+  for (const fn of ["deleteAllFor", "deleteEveryLogin"]) {
+    const b = body(vault, fn);
+    for (const t of own) assert.match(b, new RegExp(`DELETE FROM ${t}\\b`), `${fn} deletes from ${t}`);
+  }
+  const src = readFileSync(new URL("../src/data.js", import.meta.url), "utf8");
+  const del = body(src, "deleteData");
+  const call = del.indexOf("deleteAllFor(conversation");
+  assert.ok(call >= 0, "deleteData calls deleteAllFor for a scoped delete");
+  assert.ok(del.indexOf("deleteEveryLogin()") >= 0, "and deleteEveryLogin for the whole install");
+  for (const later of ["rotatePersonKey(", "destroyAllKeys(", "for (const t of CHILDREN_FIRST)"]) {
+    assert.ok(del.indexOf(later) > call, `deleteAllFor runs before ${later}`);
+  }
+  assert.match(body(src, "exportData"), /exportFor\(conversation\)\.map\(r => \(\{ \.\.\.r, login: REDACTED \}\)\)/);
 });
 
 test("every table in the database is classified in src/data.js", () => {
