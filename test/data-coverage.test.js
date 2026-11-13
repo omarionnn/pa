@@ -63,6 +63,10 @@ test("every CREATE TABLE in src/ exists here, so the checks below see every tabl
   made.delete("oauth_tokens_per_account");
   // The keystore's own tables live in data/keys.db (src/restcrypt.js), deliberately not in reason.db.
   for (const t of ["install_key", "user_keys", "shredded"]) made.delete(t);
+  // The vault's tables live in data/logins.db (src/savedlogins.js), deliberately not in reason.db: a copy of
+  // reason.db must never carry a saved login. deleteData must remove them through src/savedlogins.js
+  // (vault PR 3, slice 2, which also adds that check here).
+  for (const t of ["vault_people", "saved_logins"]) made.delete(t);
   const have = new Set(tables());
   const missing = [...made].filter(t => !have.has(t));
   assert.deepEqual(missing, [], `tables made in src/ that this test never loaded — import their module above: ${missing.join(", ")}`);

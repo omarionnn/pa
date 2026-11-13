@@ -161,12 +161,12 @@ function openField(key, id, field, origin, blob) {
 }
 
 // ---------------------------------------------------------------- checks
-/** The origin exactly as a browser reports it (https://host[:port], nothing more), or null. */
-function exactOrigin(s) {
+/** The origin exactly as a browser reports it (scheme://host[:port], nothing more), or null. A pinned one is https. */
+function exactOrigin(s, { https = true } = {}) {
   if (typeof s !== "string") return null;
   let u;
   try { u = new URL(s); } catch { return null; }
-  return u.protocol === "https:" && u.origin === s ? s : null;
+  return u.origin === s && (!https || u.protocol === "https:") ? s : null;
 }
 const SITE_RE = /^(?=.{3,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 const PATH_RE = /^\/[^?#\s]{0,300}$/;
@@ -304,7 +304,8 @@ export async function withLogin(conversationId, id, liveOrigin, fn) {
   if (STOPPED.has(row.state)) throw new VaultError("stopped", { detail: row.state });
   if (row.next_try_at && clock.now() < row.next_try_at) throw new VaultError("wait");
   // Hard rule 1: exact origin only. Checked here, and again by KMS through the context.
-  const origin = exactOrigin(liveOrigin);
+  // Any exact origin is compared; the pin was https when saved, and a row edited since is KMS's to refuse.
+  const origin = exactOrigin(liveOrigin, { https: false });
   if (!origin || origin !== row.signin_origin) { logEvent(c, { site: row.site, event: "opened", outcome: "origin_mismatch", kmsCalls: 0 }); throw new VaultError("origin_mismatch"); }
   const person = handleFor(d, c, false);
   if (!person) throw new VaultError("not_found");
