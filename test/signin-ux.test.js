@@ -366,6 +366,23 @@ test("A2: a wrong password keeps today's rules: no retry, no note, locked until 
   assert.equal(refusing.refusingSite("acme.test"), null, "a wrong password never marks the site");
 });
 
+// ---------------------------------------------------------------- A4: one wall is a strike, and reaching the site forgets it
+test("A4: the form reached forgets an earlier single wall; a sign-in forgets an earlier challenge: the next one is a first strike again", skip, async () => {
+  await save("/login-ok");
+  refusing.markRefusing("acme.test", "wall", Date.now() - 30 * 60_000);
+  refusing.markRefusing("acme-other.test", "wall", Date.now() - 30 * 60_000);
+  const out = await signIn();
+  assert.equal(out.result, "signed_in", out.say_exactly);
+  assert.equal(refusing.markRefusing("acme.test", "wall"), null, "a first strike again, not a mark");
+  assert.equal(refusing.refusingSite("acme.test"), null);
+  assert.ok(refusing.markRefusing("acme-other.test", "wall"), "another site's strike is untouched");
+  await save("/login-ok");
+  refusing.markRefusing("acme.test", "challenge", Date.now() - 30 * 60_000);
+  assert.equal((await signIn()).result, "signed_in");
+  assert.equal(refusing.markRefusing("acme.test", "challenge"), null, "the sign-in cleared the challenge strike");
+  refusing._resetRefusals();
+});
+
 // ---------------------------------------------------------------- A3: a code sent INSTEAD of the password (2026-11-13)
 test("A3: email, then 'we sent a sign-in code' and no password: an honest needs_code_email, relayed once by their text, typed box-only; the mailbox is not read", skip, async () => {
   const { id } = await save("/login/efcode");

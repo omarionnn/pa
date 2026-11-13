@@ -78,8 +78,68 @@ test("a site marked by the service is believed 30 days, per site (no person), wi
   const cols = rdb.db.prepare("PRAGMA table_info(site_refusals)").all().map((c) => c.name).sort();
   assert.deepEqual(cols, ["evidence", "seen_at", "site"], "nothing personal can be stored");
   // A newer live mark wins over the seed (and restarts its 30 days).
-  refusing.markRefusing("netflix.com", "challenge", ON + 20 * DAY);
-  assert.equal(refusing.refusingSite("netflix.com", ON + 40 * DAY)?.evidence, "challenge");
+  refusing.markRefusing("netflix.com", "generic_error_twice", ON + 20 * DAY);
+  assert.equal(refusing.refusingSite("netflix.com", ON + 40 * DAY)?.evidence, "generic_error_twice");
+  refusing._resetRefusals();
+});
+
+// ---------------------------------------------------------------- walls are often intermittent (DoorDash, 2026-11-13)
+const MIN = 60_000;
+test("walls: ONE wall marks nothing; a second within 10 minutes (one job, one bad moment) marks nothing; the second 10+ minutes later marks it, for 7 days", () => {
+  refusing._resetRefusals();
+  assert.equal(refusing.markRefusing("doordash.com", "wall", ON), null, "the first wall is a strike only");
+  assert.equal(refusing.refusingSite("doordash.com", ON), null);
+  assert.equal(refusing.markRefusing("doordash.com", "wall", ON + 3 * MIN), null, "two tries in one job are not two");
+  assert.equal(refusing.refusingSite("doordash.com", ON + 3 * MIN), null);
+  const m = refusing.markRefusing("www.doordash.com", "wall", ON + 11 * MIN);
+  assert.equal(m?.site, "doordash.com", "10 minutes after the FIRST strike: marked");
+  assert.equal(m.evidence, "wall");
+  assert.ok(refusing.refusingSite("doordash.com", ON + 11 * MIN + 6 * DAY));
+  assert.equal(refusing.refusingSite("doordash.com", ON + 11 * MIN + 7 * DAY), null, "a wall mark is believed 7 days, not 30");
+  refusing._resetRefusals();
+});
+
+test("walls: the form reached in between forgets a single wall; a challenge strike needs an account-level answer to go", () => {
+  refusing._resetRefusals();
+  refusing.markRefusing("doordash.com", "wall", ON);
+  refusing.reachedForm("doordash.com");
+  assert.equal(refusing.markRefusing("doordash.com", "wall", ON + 20 * MIN), null, "the form showed in between: a new first strike");
+  assert.equal(refusing.refusingSite("doordash.com", ON + 20 * MIN), null);
+  refusing._resetRefusals();
+  refusing.markRefusing("acme-cap.test", "challenge", ON);
+  refusing.reachedForm("acme-cap.test"); // every challenge after a submit comes after the form
+  assert.equal(refusing.markRefusing("acme-cap.test", "challenge", ON + 15 * MIN)?.evidence, "challenge", "two challenges 15 minutes apart mark it");
+  refusing._resetRefusals();
+  refusing.markRefusing("acme-cap.test", "challenge", ON);
+  refusing.clearRefusal("acme-cap.test", ON + MIN);
+  assert.equal(refusing.markRefusing("acme-cap.test", "challenge", ON + 15 * MIN), null, "a sign-in in between: a new first strike");
+  refusing._resetRefusals();
+});
+
+test("an account-level answer clears a site's mark at once, the seed too; the strikes table holds nothing personal", () => {
+  refusing._resetRefusals();
+  refusing.markRefusing("acme-stream.test", "generic_error_twice", ON);
+  refusing.clearRefusal("acme-stream.test", ON + MIN);
+  assert.equal(refusing.refusingSite("acme-stream.test", ON + MIN), null);
+  refusing.clearRefusal("netflix.com", ON + MIN);
+  assert.equal(refusing.refusingSite("netflix.com", ON + MIN), null, "a sign-in that worked beats the seed");
+  refusing.markRefusing("netflix.com", "generic_error_twice", ON + 2 * MIN);
+  assert.ok(refusing.refusingSite("netflix.com", ON + 2 * MIN), "and a newer refusal beats the clear");
+  const cols = rdb.db.prepare("PRAGMA table_info(site_wall_strikes)").all().map((c) => c.name).sort();
+  assert.deepEqual(cols, ["at", "evidence", "site"]);
+  refusing._resetRefusals();
+});
+
+test("the words for a wall-marked site say what was seen; seed and generic-error sites keep theirs", () => {
+  refusing._resetRefusals();
+  refusing.markRefusing("doordash.com", "wall", ON);
+  const m = refusing.markRefusing("doordash.com", "wall", ON + 12 * MIN);
+  const a = refusing.refusalAnswer(m, { words: "check my doordash order" });
+  assert.match(a.say_exactly, /^doordash\.com has turned my browser away the last two times I tried, so I can't sign in there right now\. It isn't about your login\./);
+  assert.doesNotMatch(a.say_exactly, /turns away browsers run by software/);
+  assert.doesNotMatch(a.say_exactly, NO_QUESTION);
+  const n = refusing.refusalAnswer(refusing.refusingSite("netflix.com", ON), { words: "cancel netflix" });
+  assert.match(n.say_exactly, /^Netflix turns away browsers run by software, including mine/);
   refusing._resetRefusals();
 });
 
