@@ -673,6 +673,53 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
   plus its own email sign-in is signed in to by its emailed code. A site that offers ONLY Google
   cannot be signed in to; Reason says so in one line and sends no link. No wording promises to press
   or use a Google login.
+- **The right page, no phantom steps, no link loops (2026-11-12, after the owner's Stripe Link
+  attempt; `src/signinpage.js`, `test/signin-flow-1112.test.js`, 25 tests).** What went wrong that
+  night, from the attempt log: the emailed-code route read app.link.com once, 1.1 s after it loaded,
+  and said "no email box" (the page draws it 1.3 s in); the fallback named the bare site
+  "link.com", so the link opened Link's marketing home page under "finish this step on the page
+  below"; the session ran out after ten minutes and a third identical link went out. Now:
+  - *The emailed code waits for the form.* The email box is polled for, about ten seconds
+    (`REASON_SIGNIN_FORM_WAIT_MS`), stopping the moment it is there, in the page and its same-origin
+    frames. Another origin's frame is never read. The wait also stops early on a clear negative
+    (`signinpage.settleWatch`): a page that has finished loading, has words on it, is fetching
+    nothing and has not changed for two seconds (`QUIET_MS`) has no form coming, so a home page or a
+    password-only form is said in about two seconds, not ten. A blank app shell, a page still
+    fetching or still changing, and a bot check get the whole bound.
+  - *A hand-off lands on the page the sign-in was on.* The page (origin + path, never a query
+    string) is kept per person and site in `signin_pages` and read back in code
+    (`signin.entryOnItsPage`), so a bare name resolves to it whatever the model types; each
+    instruction names the page whole. With only a bare name, the site's own "Sign in" / "Log in"
+    link is followed once before anybody is shown anything (`browser.locateSigninPage`, a throwaway
+    guarded browser); when no sign-in page is found, no link is made and Reason says it cannot find
+    where to sign in.
+  - *No phantom steps.* Every picture is classed (`pageKind`: sign-in form, challenge, provider
+    prompt, not a sign-in page). "Finish this step on the page below" is said only over the first
+    three. A page that is not a sign-in page is "looking for the sign-in page", then the session
+    ends plainly; mid-way it is "a page with nothing to fill in".
+  - *No link loops.* An ending without progress (timed out, closed, expired unopened, no sign-in
+    page) gets one plain line and the next best route; the note no longer says "offer a fresh
+    link", and `signin_link` refuses a second identical link in a turn the person did not start. At
+    most one retry on its own, and only when the link would open a different page; the retry is
+    counted per run of endings (an hour apart starts over). A sign-in the person asks for
+    themselves (`signin_link` or `signin_email` in their own turn) starts the count over, so the
+    hand-off link of an attempt they asked for is never refused over an older ending. An ending is
+    kept against both the page the link named and the page its sign-in form was shown on (a link
+    that opened a home page and went through the site's own "Log in" link): a next link to either
+    is the same page again.
+  - *"Signed in" needs positive evidence on a site with no playbook*: a log-out or account control
+    in the document, or the site's own sign-in page passing the browser straight on to an inside
+    page. An absent "Sign in" is not proof: the answer is then "unknown", said as "I can't tell",
+    and nothing is retried because of it. Sites with a playbook read as before.
+  - *A step log.* One line per step (`signinlog.logStep`): link opened, Start pressed, the kind of
+    page each time it changes, the site's own link followed, submitted, signed in, expired or
+    ended. Fields: the site's host, the step, the kind, timing, a short session tag. Never a path, a
+    query string, an email, a number, a code or a conversation.
+
+  **Not proved:** a real person's sign-in to Link end to end (nothing may be submitted in a test:
+  Link's page carries hCaptcha and may refuse Reason's browser after the email goes in), and a site
+  whose "Log in" is a button that opens a box on the same page (the link is then not followed to
+  another page, and the session ends as "no sign-in page").
 
 **Not proved:** no real site has been signed in to through a real provider button here, and Uber's
 real sign-in page still bot-walls Reason's browser from the live box (2026-11-10), so the Google
