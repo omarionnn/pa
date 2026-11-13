@@ -160,6 +160,33 @@ export function pageKind(raw = {}, { provider = "", midFlow = false, framed = []
   return "not_signin";
 }
 
+/** A path that names itself a sign-in page: /login, /us/login, /signin, /account/sign-in, /auth/login. */
+export const SIGNIN_PATH = /(^|\/)(log-?in|sign-?in|sign_in|log_in|signin|login)(\/|\.|$)/i;
+
+/**
+ * The sign-in form a SAVED login may be typed into, read off one page's own boxes (never a frame's: the
+ * filler types only into the page's own frame). Pure. Stricter than pageKind, which counts any email
+ * box as a sign-in form: on 2026-11-13 Netflix's home page, whose one box is "enter your email to create
+ * or restart your membership", was pinned as its sign-in page and the filler found no password box.
+ *   "password"     one real password box (not a "new-password" one: that is making an account), the
+ *                  username/email box beside it optional.
+ *   "email_first"  exactly one email/username box and no other sign-in box, on a page whose own path
+ *                  says it is a sign-in page (never the front page: a sign-up box lives there).
+ *   null           anything else, a page with two password boxes included (making or changing one).
+ */
+export function loginFormOf(raw = {}) {
+  const fields = Array.isArray(raw?.fields) ? raw.fields : [];
+  const pw = fields.filter(f => String(f?.type ?? "").toLowerCase() === "password");
+  if (pw.length === 1) return /new-password/i.test(String(pw[0].ac ?? "")) ? null : "password";
+  if (pw.length) return null;
+  const boxes = fields.filter(signinBox);
+  const ids = boxes.filter(f => { const k = fieldKind(f); return k === "email" || k === "username"; });
+  if (ids.length !== 1 || boxes.length !== 1) return null;
+  let p = "";
+  try { p = new URL(String(raw?.url ?? "")).pathname; } catch { p = ""; }
+  return p && p !== "/" && SIGNIN_PATH.test(p) ? "email_first" : null;
+}
+
 const originOf = (u) => { try { return new URL(String(u)).origin; } catch { return ""; } };
 const hostOf = (u) => { try { return new URL(String(u)).hostname.toLowerCase(); } catch { return ""; } };
 const EMPTY = { fields: [], buttons: [], acct: "", url: "", text: "" };
