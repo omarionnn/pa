@@ -36,10 +36,12 @@ process.env.REASON_CALL_PROVIDER = "fake";
 
 // The Server row reads this machine's load average, and the full suite running beside other work
 // pushes a laptop past 2× its cores — every "is it green" assertion here then saw yellow (the
-// ops flake under full-suite load, 2026-10-24). The load is pinned; the disk is still read.
+// ops flake under full-suite load, 2026-10-24). The load is pinned, and so is the disk: a laptop
+// more than 80% full made a clean install amber the same way (the seven standing ops failures, 2026-11-13).
 import os from "node:os";
 os.loadavg = () => [0.5, 0.5, 0.5];
 const ops = await import("../src/ops.js");
+ops.serverStats.statfs = () => ({ blocks: 1000, bsize: 1e8, bavail: 500 });
 const db = await import("../src/db.js");
 const { opsRequest } = await import("../src/http.js");
 const { renderOps } = await import("../src/pages/ops.js");

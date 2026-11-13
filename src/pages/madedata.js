@@ -124,7 +124,9 @@ function callVM(page) {
   const saidAssistant = /assistant|\bAI\b/i.test(told);
   const saidRecorded = /record/i.test(told);
   const seconds = call.duration_s ?? call.recording_seconds ?? null;
-  const meta = [seconds != null ? minSec(seconds) : "", audio ? (saidRecorded ? "RECORDED, AND THEY KNEW" : "RECORDED") : ""].filter(Boolean).join(" · ");
+  // A recording they (or the retention setting) deleted: the page says so instead of going quiet about it.
+  const recNote = audio ? (saidRecorded ? "RECORDED, AND THEY KNEW" : "RECORDED") : call.recording_state === "deleted" ? "RECORDING DELETED" : "";
+  const meta = [seconds != null ? minSec(seconds) : "", recNote].filter(Boolean).join(" · ");
   // The first point is always what it said it was (handoff §4 P3) — read off the opening it really
   // used, kept verbatim on the row; never claimed when the row has no record of it.
   const first = saidAssistant

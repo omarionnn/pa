@@ -97,11 +97,12 @@ A call, purchase or checkout receipt is its own shape, not the Page's `Item`: `i
 | `Artifact.type` | Fields |
 |---|---|
 | `recording` | `url` (a path on this host, `/ios/v1/calls/7/recording`), `seconds` (may be `null`), and on a task `call_id`, `call_title` |
+| `recording_deleted` | `deleted_at` (ms, or `null` when the retention setting took it), `by` (`you` or `retention`), and on a task `call_id`, `call_title`. The call's audio was deleted; there is no `url`. |
 | `transcript` | `text`, and on a task `call_id`, `call_title` |
 | `confirmation` | `order_id`, `delivery_window` |
 | `approval` | `summary`, `approved_at`, `you_said` |
 
-**`GET /calls/{id}/recording`** (or `HEAD`), `{id}` the bare call number (`7`, not `call-7`), returns audio bytes playable on iPhone, with `Range` support, under the same bearer token.
+**`GET /calls/{id}/recording`** (or `HEAD`), `{id}` the bare call number (`7`, not `call-7`), returns audio bytes playable on iPhone, with `Range` support, under the same bearer token. A recording the person deleted (they can ask Reason to, for one call or all) answers `404` with `error: "recording_deleted"`; any other absent audio is `404` `not_found`.
 
 ## Live updates
 

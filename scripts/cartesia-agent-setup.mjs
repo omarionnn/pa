@@ -1,15 +1,20 @@
 #!/usr/bin/env node
-// Makes, once, the Cartesia Managed Agent that the operator's own calls use when he has chosen the
-// Cartesia voice (src/calls/cartesia.js, docs/calls-cartesia.md section 5). It prints the agent's id for
+// Makes, once, the Cartesia Managed Agent that people's own calls with Reason use when they are on the
+// Cartesia voice (src/calls/cartesia.js, docs/calls-cartesia.md section 5). One agent carries every
+// account's calls: nothing saved on it may be about one person (each call's own words, names and clock
+// come in as that call's dynamic variables). It prints the agent's id for
 // REASON_CARTESIA_AGENT_ID in the server's .env. Nothing here is on a call's path.
 //
 //   node scripts/cartesia-agent-setup.mjs           the plan: what it would make; calls nobody (the default)
 //   node scripts/cartesia-agent-setup.mjs --yes     makes the ask_reason client tool and the agent; prints the id
 //   options: --voice <voice id> (Gemma, en-GB)  --language <code> (en-GB)  --model <id> (the fastest listed)
-//            --keyterms "a,b,c" (extra words the recognizer should favour, besides the per-call ones)
+//            --keyterms "a,b,c" (extra words the recognizer should favour on EVERY account's calls, besides
+//            the per-call ones: product words only, never a person's places or people)
 //
-//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn]          the plan only
-//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] --yes    PATCHes it
+//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--clear-keyterms]          the plan only
+//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--clear-keyterms] --yes    PATCHes it
+//            --clear-keyterms: the saved keyterms back to "Reason" and the per-call slots only, so words
+//            given with --keyterms when it was one person's agent are not on everyone's calls.
 //            changes only what is named: the voice (e.g. Lucy, en-GB, tagged Emotive) and/or Cartesia's
 //            skip_turn tool (stay quiet when their sentence is plainly unfinished, instead of a "Yeah," that
 //            gets cut off). A PATCH makes a new agent version; calls already running keep theirs
@@ -32,7 +37,7 @@ export const GEMMA = "62ae83ad-4f6a-430b-af41-a9bede9286ca";
 export const LUCY = "2f251ac3-89a9-4a77-a452-704b474ccd01";
 /** Cartesia's skip_turn system tool, described for this line (its description field, up to 2000 chars). */
 export const SKIP_TURN_DESCRIPTION = "Say nothing this turn. Use it only when their words are plainly unfinished: they trailed off mid-sentence (\"and...\", \"so the thing is...\") or paused mid-thought, and anything you said would talk over them. Never when they asked something or finished a thought.";
-export const AGENT_NAME = "Reason (owner's own calls)";
+export const AGENT_NAME = "Reason (people's own calls)";
 /** How many per-call keyterm slots the agent has (filled by `sessionVariables` in src/calls/cartesia.js). */
 export const KEYTERM_SLOTS = 8;
 
@@ -72,11 +77,16 @@ export function toolBody() {
   };
 }
 
+/** The agent's saved keyterms: "Reason", any shared words, then the per-call slots each call fills with its own. */
+export function sharedKeyterms(extra = []) {
+  return ["Reason", ...extra, ...Array.from({ length: KEYTERM_SLOTS }, (_, i) => `{{keyterm_${i + 1}}}`)];
+}
+
 /** The body of POST /v1/agents. */
 export function agentBody({ voice = GEMMA, language = "en-GB", model, toolId, keyterms = [] }) {
   return {
     name: AGENT_NAME,
-    description: "The operator's own calls with Reason, when he has chosen the Cartesia voice. Reason's brain is the ask_reason client tool. Each call is deleted when it ends.",
+    description: "People's own calls with Reason, on the Cartesia voice. Reason's brain is the ask_reason client tool. Each call is deleted when it ends. Nothing here is about one person.",
     config: {
       instructions: INSTRUCTIONS,
       initial_message: "{{greeting}}",
@@ -84,7 +94,7 @@ export function agentBody({ voice = GEMMA, language = "en-GB", model, toolId, ke
       language: { primary: language },
       timezone: process.env.REASON_TZ || "America/New_York",
       audio: {
-        input: { noise_suppression: "auto", keyterms: ["Reason", ...keyterms, ...Array.from({ length: KEYTERM_SLOTS }, (_, i) => `{{keyterm_${i + 1}}}`)] },
+        input: { noise_suppression: "auto", keyterms: sharedKeyterms(keyterms) },
         output: { voice_id: voice },
       },
       system_tools: { end_call: {} },
@@ -134,11 +144,12 @@ export async function api(key, path, { method = "GET", body = null, fetchImpl = 
  * The body of PATCH /v1/agents/{id}: only what was asked for (an update is sparse: "Omitting the field
  * from an update preserves the agent's current setting", docs.cartesia.ai/agents/configuration).
  */
-export function updateBody({ voice = "", skipTurn = false } = {}) {
+export function updateBody({ voice = "", skipTurn = false, clearKeyterms = false } = {}) {
   const config = {};
   if (voice) config.audio = { output: { voice_id: voice } };
+  if (clearKeyterms) config.audio = { ...(config.audio ?? {}), input: { keyterms: sharedKeyterms() } };
   if (skipTurn) config.system_tools = { skip_turn: { description: SKIP_TURN_DESCRIPTION, pre_tool_speech: "off" } };
-  const what = [voice ? `voice ${voice}` : "", skipTurn ? "skip_turn on" : ""].filter(Boolean).join(", ");
+  const what = [voice ? `voice ${voice}` : "", clearKeyterms ? "keyterms cleared to Reason and the per-call slots" : "", skipTurn ? "skip_turn on" : ""].filter(Boolean).join(", ");
   return Object.keys(config).length ? { config, version_description: `Reason: ${what}` } : null;
 }
 
@@ -146,11 +157,11 @@ export async function main(argv = process.argv.slice(2), { log = console.log, ca
   const { values: o } = parseArgs({ args: argv, options: {
     yes: { type: "boolean", default: false }, voice: { type: "string", default: GEMMA }, language: { type: "string", default: "en-GB" },
     model: { type: "string", default: "" }, keyterms: { type: "string", default: "" },
-    update: { type: "string", default: "" }, "skip-turn": { type: "boolean", default: false },
+    update: { type: "string", default: "" }, "skip-turn": { type: "boolean", default: false }, "clear-keyterms": { type: "boolean", default: false },
   } });
   if (o.update) {
-    const body = updateBody({ voice: argv.includes("--voice") ? o.voice : "", skipTurn: o["skip-turn"] });
-    if (!body) { log("Nothing to change: name --voice <id> and/or --skip-turn."); return 1; }
+    const body = updateBody({ voice: argv.includes("--voice") ? o.voice : "", skipTurn: o["skip-turn"], clearKeyterms: o["clear-keyterms"] });
+    if (!body) { log("Nothing to change: name --voice <id>, --skip-turn and/or --clear-keyterms."); return 1; }
     log(`The plan: PATCH agent ${o.update}: ${body.version_description.replace(/^Reason: /, "")}. Nothing else on it changes; a new version is made.`);
     if (!o.yes) { log("Nothing was changed. Run again with --yes to change it."); return 0; }
     const k = key ?? loadKey();
@@ -161,7 +172,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, ca
     return 0;
   }
   const keyterms = o.keyterms.split(",").map(s => s.trim()).filter(Boolean).slice(0, 40);
-  log(`The plan: one client tool (ask_reason, waited for up to 60 s) and one agent "${AGENT_NAME}" in voice ${o.voice} (${o.language}), with end_call, keyterms "Reason"${keyterms.length ? ` + ${keyterms.length} of yours` : ""} + ${KEYTERM_SLOTS} per-call slots.`);
+  log(`The plan: one client tool (ask_reason, waited for up to 60 s) and one agent "${AGENT_NAME}" in voice ${o.voice} (${o.language}), with end_call, keyterms "Reason"${keyterms.length ? ` + ${keyterms.length} shared by every account's calls` : ""} + ${KEYTERM_SLOTS} per-call slots.`);
   log("Its instructions are, per call, the same words a GPT-Live own call gets ({{reason_call}}), and its first line is the call's own opening line ({{greeting}}).");
   if (!o.yes) { log("Nothing was made. Run again with --yes to make them."); return 0; }
   const k = key ?? loadKey();
