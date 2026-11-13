@@ -116,6 +116,32 @@ const storeSays = (rq, store) => rq?.question
 const approveLine = (passkey) => passkey ? "approve the exact total with Face ID" : "text yes to the exact total";
 
 // ---------------------------------------------------------------- the store's sign-in
+/**
+ * An account job's sign-in (src/accountjobs.js, view.job): what it is for, in the page's words. null for
+ * a store checkout, whose pages are untouched. Plain text: every use goes through esc or a helper that escapes.
+ */
+const jobWords = (view) => {
+  const j = view?.job;
+  if (!j) return null;
+  const cancel = j.kind === "cancel";
+  return {
+    todo: cancel ? `cancel ${j.what}` : `pay your ${j.name} bill`,
+    can: cancel ? `Cancel ${j.what}, and only after your yes in the chat.` : "Pay that one bill, and only after you approve the exact total.",
+    notYet: cancel ? "NOTHING CANCELLED YET" : "NOTHING PAID YET",
+    nothing: cancel ? "NOTHING CANCELLED" : "NOTHING PAID",
+    until: cancel ? "Nothing is cancelled until you say yes in the chat." : "Nothing is paid until you approve the exact total.",
+    ready: cancel ? `Ready to cancel ${j.what}` : "Ready to pay the bill",
+    untouched: cancel ? "Nothing was changed on your account, and nothing of yours was kept here." : "Nothing was paid, and nothing of yours was kept here.",
+  };
+};
+/** Beside a job's sign-in: the one thing it is for, and what is never seen. */
+function jobMargin(store, jw) {
+  const n = esc(nameOf(store));
+  return label("SIGNED IN, I CAN") + para(esc(jw.can))
+    + label("I NEVER SEE", { pen: true, sp: true }) + para(`Your password, or the codes ${n} sends. They're sealed and go straight to ${n}.`)
+    + label("AND", { sp: true }) + para("I change nothing else on your account.") + para(`Sign me out of ${n} any time in ${SETTINGS}.`);
+}
+
 /** What signing in lets Reason do, and what it never sees: beside the sign-in. */
 function signinMargin(store, passkey) {
   const n = esc(nameOf(store));
@@ -133,6 +159,7 @@ export function renderSignin({ view, staging = false, passkey = false }) {
   const error = state === "retry" ? "that's not it. try again?" : state === "wrongcode" ? "that's not it. check for a newer text or email?" : "";
   const drawn = fields.map((f) => storeField(f, { store, staging, error: error && f.handling === "protected" ? error : "" })).join("");
   const site = siteOf(store);
+  const jw = jobWords(view);
 
   let head, after, margin, acts;
   if (state === "retry") {
@@ -145,18 +172,18 @@ export function renderSignin({ view, staging = false, passkey = false }) {
     head = headline("That code didn't match.", "Try the newest one.", "cx-h") + lede(`Codes from ${n} run out after a few minutes, and only the latest one works.`) + storeSays(rq, store);
     acts = actions(go("Try again", { attrs: ` data-busy="1"` }));
     after = "";
-    margin = label("STILL NOTHING?") + para(`Check spam, and that the phone or email on your ${esc(n)} account is current.`) + label("NOTHING BOUGHT YET", { sp: true });
+    margin = label("STILL NOTHING?") + para(`Check spam, and that the phone or email on your ${esc(n)} account is current.`) + label(jw ? jw.notYet : "NOTHING BOUGHT YET", { sp: true });
   } else if (code) {
     head = headline(`${n} sent a code.`, "Type it here.", "cx-h") + lede(`It went to the phone or email on your ${n} account.`) + storeSays(rq, store);
     acts = actions(go("Confirm", { attrs: ` data-busy="1"` }));
-    after = label("NOTHING BOUGHT YET");
-    margin = label("ALMOST DONE") + steps([...(view.answered ? [["Password accepted", "done"]] : []), ["Confirming it's you", "now"], ["Ready to check out", "todo"]])
+    after = label(jw ? jw.notYet : "NOTHING BOUGHT YET");
+    margin = label("ALMOST DONE") + steps([...(view.answered ? [["Password accepted", "done"]] : []), ["Confirming it's you", "now"], [jw ? jw.ready : "Ready to check out", "todo"]])
       + note("no code? check spam, or wait a minute.", { sp: true });
   } else {
-    head = headline(`Sign in to ${n}.`, "Just this once.", "cx-h") + lede(`Use the same login you use on ${n}. Then I can check out there with your card.`) + storeSays(rq, store);
-    acts = actions(go("Sign in", { attrs: ` data-busy="1"` }), two(`NO ${NAME(store)} ACCOUNT?`, { attrs: ` data-show="noaccount"` }));
+    head = headline(`Sign in to ${n}.`, "Just this once.", "cx-h") + lede(jw ? `Use the same login you use on ${n}. Then I can ${jw.todo}.` : `Use the same login you use on ${n}. Then I can check out there with your card.`) + storeSays(rq, store);
+    acts = jw ? actions(go("Sign in", { attrs: ` data-busy="1"` })) : actions(go("Sign in", { attrs: ` data-busy="1"` }), two(`NO ${NAME(store)} ACCOUNT?`, { attrs: ` data-show="noaccount"` }));
     after = note(`${n} might send you a code next. that's normal.`);
-    margin = signinMargin(store, passkey);
+    margin = jw ? jobMargin(store, jw) : signinMargin(store, passkey);
   }
   const form = `<form class="pf-form" id="cx-form" data-request="${esc(rq?.requestId ?? "")}" novalidate>${drawn}${acts}${after}`
     + `<p class="pf-note" id="cx-err" role="alert" hidden></p>${live({ id: "cx-wait", lines: sendingLines(n), hidden: true })}</form>`;
@@ -164,7 +191,7 @@ export function renderSignin({ view, staging = false, passkey = false }) {
   // The store signed them out of a store they'd connected: say so first, the form one tap away.
   if (view.again) screens.push(signedOut(view));
   screens.push(frame({ main: head + form, margin, step: "signin", off: !!view.again }));
-  if (state === "signin") screens.push(noAccount(store, passkey));
+  if (state === "signin" && !jw) screens.push(noAccount(store, passkey));
   return page(`Reason — sign in to ${n}`, `${header()}<main class="pf" id="cx-main">${screens.join("")}</main>`, { staging });
 }
 
@@ -199,7 +226,8 @@ export function renderChecking({ view, staging = false, passkey = false, setupBa
       : `Keep this page open. If ${n} sends you a code, it'll ask for it right here.${setupBack ? "" : " However it goes, I'll text you too."}`)
     + steps(opening ? [[`Opening ${n}`, "now"], ["Your login, sealed", "todo"], ["Signed in", "todo"]] : [[`Sent straight to ${n}, sealed`, "done"], [`${n} is checking it`, "now"], ["Signed in", "todo"]])
     + live({ id: "cx-live", lines: opening ? [[0, `Opening ${n}.`], [8, `${n} is loading.`], [30, "Still opening. This can take a minute."], [75, "Taking longer than usual. Still on it."]] : checkingLines(n) });
-  const margin = label("WHILE YOU WAIT") + para(setupBack ? "Nothing is bought without your Face ID." : `Nothing is bought until you ${approveLine(passkey)}.`)
+  const jw = jobWords(view);
+  const margin = label("WHILE YOU WAIT") + para(jw ? esc(jw.until) : setupBack ? "Nothing is bought without your Face ID." : `Nothing is bought until you ${approveLine(passkey)}.`)
     + label("IF IT TAKES A WHILE", { sp: true }) + para(`Stores sometimes take a minute or two. If ${esc(n)} stops it, this page says so${setupBack ? "." : ", and so do I in the chat."}`);
   return page("Reason — signing in", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
 }
@@ -217,6 +245,15 @@ export function renderConnected({ view, staging = false, passkey = false, setupB
     const margin = label("SIGNED IN, I CAN") + para("Check out there, only after your Face ID.")
       + label("AND", { sp: true }) + para(`Sign out of ${esc(n)} any time in ${SETTINGS}.`);
     return page(`Reason — ${n} connected`, `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
+  }
+  const jw = jobWords(view);
+  if (jw) {
+    // An account job's sign-in: it carries on by itself, and the chat is where the next word comes.
+    const jobMain = headline(`You're signed in to ${n}.`, "Back to the chat.", "cx-h")
+      + lede(`${n} let you in. I'm carrying on from here so I can ${jw.todo}, and I'll text you before anything is final.`)
+      + paper({ stamp: "SIGNED IN", label: NAME(view.store), big: "Signed in.", mono: false })
+      + `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }))}</div>`;
+    return page(`Reason — ${n} signed in`, `${header()}<main class="pf" id="cx-main">${frame({ main: jobMain, margin: jobMargin(view.store, jw) })}</main>`, { staging });
   }
   const main = headline(`You're signed in to ${n}.`, "Back to the chat.", "cx-h")
     + lede(`Next time you want something from ${n}, just text me. I'll send the exact total before buying.`)
@@ -253,11 +290,12 @@ export function renderEnded({ view, staging = false, setupBack = "" }) {
       : view.reason === "lost" ? `I lost track of this sign-in: the checkout service stopped answering about it.`
         : view.reason === "replaced" ? `I started this checkout over, so this link is out of date. The newest link I texted you is the one to use.`
           : `${s} stopped it before it finished. It's usually on their side, and it usually passes.`;
-    main = headline(view.reason === "replaced" ? "This link was replaced." : "That sign-in didn't go through.", "Nothing was charged.", "cx-h")
-      + lede(`${why} This link is done.${view.reason === "replaced" ? "" : " Text me and I'll send a fresh one, or say so and I'll leave it."}`)
+    const jw = jobWords(view);
+    main = headline(view.reason === "replaced" ? "This link was replaced." : "That sign-in didn't go through.", jw?.nothing === "NOTHING CANCELLED" ? "Nothing was changed." : "Nothing was charged.", "cx-h")
+      + lede(jw ? `${why} This link is done. I've said in the chat where it stands.` : `${why} This link is done.${view.reason === "replaced" ? "" : " Text me and I'll send a fresh one, or say so and I'll leave it."}`)
       + `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }), siteOf(view.store) ? out(siteOf(view.store), `CHECK YOUR ${NAME(view.store)} ACCOUNT`) : "")}</div>`;
-    margin = label("NOTHING BOUGHT") + para("Nothing was charged, and nothing of yours was kept here.")
-      + label("NEXT", { sp: true }) + para(`Ask me in the chat for a new link. If ${esc(s)} keeps stopping it, check your account there first.`);
+    margin = (jw ? label(jw.nothing) + para(jw.untouched) : label("NOTHING BOUGHT") + para("Nothing was charged, and nothing of yours was kept here."))
+      + label("NEXT", { sp: true }) + para(jw ? `Ask me in the chat to try again. If ${esc(s)} keeps stopping it, check your account there first.` : `Ask me in the chat for a new link. If ${esc(s)} keeps stopping it, check your account there first.`);
     return page("Reason — link", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
   }
   main = headline("This link has expired.", "Ask me for a new one.", "cx-h")

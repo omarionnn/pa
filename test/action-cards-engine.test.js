@@ -68,6 +68,7 @@ beforeEach(() => {
   engine.resetEngine();
   // Under the test runner the engine refuses the real CLI (whyNot "test_runner") unless a scripted answer is set.
   engine.setCardsAsk(async () => ({ value: { cards: [], skipped: [] } }));
+  engine.setRouteDeps(ALL_ROUTES_OPEN);
   background.resetLane({ gapMs: 0 });
   db.db.exec(`DELETE FROM action_digests; DELETE FROM action_cards; DELETE FROM action_card_dismissed; DELETE FROM action_card_events;
     DELETE FROM action_card_days; DELETE FROM action_card_sources; DELETE FROM card_skip_rules; DELETE FROM treat_rules;
@@ -79,8 +80,23 @@ beforeEach(() => {
 
 // ---------------------------------------------------------------- a fake Google
 
+// Every fixture mail carries Gmail's own verdict for its sender, passing and aligned, unless a test
+// hands in another (the sender check: src/cardroutes.js senderCheck; test/action-cards-finish.test.js).
+const authPass = (From) => { const d = (/@([^>\s]+)/.exec(From)?.[1] ?? "example.com").toLowerCase(); return `mx.google.com; dkim=pass header.i=@${d} header.s=s1 header.b=abc; spf=pass (google.com: domain of bounce@${d} designates 192.0.2.1 as permitted sender) smtp.mailfrom=bounce@${d}; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=${d}`; };
 const hdr = (From, Subject, Date, extra = {}) => [{ name: "From", value: From }, { name: "Subject", value: Subject }, { name: "Date", value: Date }, { name: "To", value: "kofi@example.com" },
+  ...("Authentication-Results" in extra ? [] : [{ name: "Authentication-Results", value: authPass(From) }]),
   ...Object.entries(extra).map(([name, value]) => ({ name, value }))];
+// A person for whom every route is really there (the grants, a card on file, the line, a session that
+// checks out): what these tests are about is everything AROUND the gate. The gate itself, route by
+// route, is test/action-cards-finish.test.js.
+const ALL_ROUTES_OPEN = {
+  scopes: () => ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/calendar.calendars.readonly"],
+  missingScope: () => null,
+  shop: () => ({ allowed: true, card: { paymentMethodId: "pm_1", registered: 1 }, capCents: 50_000 }),
+  storeKey: (site) => String(site).split(".")[0], checkoutPlan: () => "guest", reachedATotal: () => true,
+  callsLive: () => true, callHours: () => ({ ok: true }),
+  siteEntry: (site) => ({ site }), blocked: () => false, savedSession: () => true, liveSession: async () => ({ state: "signed_in" }),
+};
 const msg = ({ id, thread = id, from, subject, date = "Mon, 16 Nov 2026 09:00:00 -0500", snippet = "", unread = true, extra = {}, labels = [] }) =>
   ({ id, threadId: thread, labelIds: [...(unread ? ["INBOX", "UNREAD"] : ["INBOX"]), ...labels], snippet, payload: { headers: hdr(from, subject, date, extra) } });
 const mine = (id, thread, snippet, date = "Mon, 16 Nov 2026 12:00:00 -0500") => msg({ id, thread, from: "Kofi Mensah <kofi@example.com>", subject: "Re:", date, snippet, unread: false });
@@ -139,10 +155,14 @@ function scriptedAsk(custom = null) {
     if (custom) return custom({ prompt, asked });
     const keys = [...prompt.matchAll(/^- \[([^\]]+)\]/gm)].map(m => m[1]).filter(k => !k.startsWith("chat:") || /cancel|need to/i.test(prompt.split(`[${k}]`)[1]?.split("\n")[0] ?? ""));
     const made = keys.map((key, i) => {
-      const verb = key.startsWith("cal:") ? "PLAN" : key.startsWith("chat:") ? "CANCEL" : key.startsWith("own:flights") ? "CONFIRM" : key.startsWith("own:") ? "RENEW" : /alert|×/.test(prompt.split(`[${key}]`)[1]?.split("\n")[0] ?? "") ? "DIAGNOSE" : "REPLY";
-      return { candidate_key: key, verb, title: `${verb[0]}${verb.slice(1).toLowerCase()} your thing number ${i + 1} by Nov 20`, why_now: `It is due soon and nothing is booked yet.`,
+      const lineOf = prompt.split(`[${key}]`)[1]?.split("\n")[0] ?? "";
+      // The route by what the candidate is: an event → their calendar; a person's mail → a reply; a
+      // machine's mail, a chat line, one of Reason's own rows → the site it is done on.
+      const route = key.startsWith("cal:") ? "calendar" : key.startsWith("mail:") && !/sent by a machine/.test(lineOf.split(")")[0] ?? "") ? "email" : "site";
+      const verb = key.startsWith("cal:") ? "ACCEPT" : key.startsWith("chat:") ? "CANCEL" : key.startsWith("own:flights") ? "CONFIRM" : key.startsWith("own:") ? "RENEW" : route === "site" ? "REPLACE" : "REPLY";
+      return { candidate_key: key, route, job: `do thing number ${i + 1} through to the end`, site: route === "site" ? "thing.example" : "", phone: "", verb, title: `${verb[0]}${verb.slice(1).toLowerCase()} your thing number ${i + 1} by Nov 20`, why_now: `It is due soon and nothing is booked yet.`,
         lead: `your thing number ${i + 1} is due Nov 20`, prefill: `${verb[0]}${verb.slice(1).toLowerCase()} my thing number ${i + 1} by Nov 20`, offer: "want me to sort it?",
-        drawing: ["key", "cake", "server", "calendar", "mail", "phone", "bag", "tooth", "note"][i % 9], urgency: 5 - (i % 5), effort_saved: 3, can_do: "most" };
+        drawing: ["key", "cake", "server", "calendar", "mail", "phone", "bag", "tooth", "note"][i % 9], urgency: 5 - (i % 5), effort_saved: 3 };
     });
     return { value: { cards: made, skipped: [] }, usage: { input_tokens: 4200, output_tokens: 650 }, models: ["claude-sonnet-5-5"] };
   };
@@ -240,8 +260,21 @@ test("eval: the ten that should card reach the model and the ten that should not
 
 test("Stage 2's answer is re-validated: bad key, long title, second-person prefill, unknown drawing are dropped; the titles pass the spec's bar", async () => {
   const known = new Set(["mail:a:1", "cal:a:2@x"]);
-  const good = { candidate_key: "mail:a:1", verb: "REPLACE", title: "Replace your Anthropic key before it expires Nov 18", why_now: "It stops working next week.", lead: "your Anthropic key expires Nov 18", prefill: "Replace my Anthropic key before it expires Nov 18", drawing: "key", urgency: 4, effort_saved: 3, can_do: "most" };
+  const good = { candidate_key: "mail:a:1", route: "site", job: "make a new key in the console and retire the old one; done when the new key is saved", site: "console.anthropic.com", verb: "REPLACE", title: "Replace your Anthropic key before it expires Nov 18", why_now: "It stops working next week.", lead: "your Anthropic key expires Nov 18", prefill: "Replace my Anthropic key before it expires Nov 18", drawing: "key", urgency: 4, effort_saved: 3 };
   assert.ok(engine.validCard(good, known));
+  // The route is part of the answer: one code does not know, a verb the route cannot promise, a job handed back.
+  assert.equal(engine.validCard({ ...good, route: "magic" }, known), null, "a route that is not one");
+  assert.equal(engine.validCard({ ...good, route: undefined }, known), null, "no route at all");
+  assert.equal(engine.validCard({ ...good, route: "email" }, known), null, "REPLACE is not something a sent reply finishes");
+  assert.equal(engine.validCard({ ...good, job: "" }, known), null, "no job");
+  for (const title of ["Draft a reply to Dana about Friday", "Remind you to renew the lease Nov 30", "Look into your server going down", "Plan Mom's birthday dinner for Nov 24"]) {
+    assert.equal(engine.validCard({ ...good, title }, known), null, `"${title}" hands the job back`);
+  }
+  assert.equal(engine.validCard({ ...good, prefill: "Remind me to replace my Anthropic key" }, known), null, "a reminder is not a job done");
+  assert.ok(!engine.VERBS.includes("PLAN") && !engine.VERBS.includes("DIAGNOSE"), "nothing Reason only starts");
+  // "none": it matters and Reason cannot finish it. Only the line has to hold; it is never a card.
+  const none = engine.validCard({ candidate_key: "mail:a:1", route: "none", lead: "your Anthropic key expires Nov 18", urgency: 4, effort_saved: 2 }, known);
+  assert.equal(none.route, "none"); assert.equal(none.lead, "your Anthropic key expires Nov 18"); assert.equal(none.prefill, undefined);
   assert.equal(engine.validCard({ ...good, candidate_key: "mail:a:9" }, known), null, "a key the model made up");
   assert.equal(engine.validCard({ ...good, title: "One two three four five six seven eight nine ten eleven twelve thirteen" }, known), null, "13 words");
   assert.equal(engine.validCard({ ...good, prefill: "Replace your key" }, known), null, "second person");
@@ -572,10 +605,13 @@ test("account notices from no-reply senders with list headers reach the model, r
   assert.equal(s1.keep.length, 7, `six notices and one reminder, got ${kept.join(",")}`);
   // What the model is shown says which is which.
   const prompt = engine.stage2Prompt({ candidates: s1.keep, chat: [] });
-  assert.match(prompt, /\(account notice, due 2026-11-23\) Anthropic/);
+  assert.match(prompt, /\(account notice, sent by a machine: nobody reads a reply, due 2026-11-23\) Anthropic/);
   assert.match(prompt, /\(reminder, due 2026-11-30\)/);
   assert.doesNotMatch(prompt, /healthchecks|linkedin|bonus|webinar|verification/i);
-  assert.match(engine.systemPrompt({ name: "Kofi", day: "Tuesday", tz: TZ }), /One great catch beats five generic ones/);
+  const system = engine.systemPrompt({ name: "Kofi", day: "Tuesday", tz: TZ });
+  assert.match(system, /One great catch beats five generic ones/);
+  assert.match(system, /A card is an offer to do the WHOLE job/);
+  assert.doesNotMatch(system, /start cancelling|look into a problem|set a reminder/, "the old list of things Reason only starts is gone");
 });
 
 test("isNotice: the subject decides; a promo, a code or Gmail's Promotions tab never is one", () => {

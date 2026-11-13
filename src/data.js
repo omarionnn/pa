@@ -207,6 +207,9 @@ const TABLES = [
   "daily_caps", "cap_changes", "offers", "uber_rides", "spotify_join_requests",
   // The Crossmint user a card saved on the web setup was saved under (src/shopconnect.js adoptSetupCard).
   "shop_crossmint_subjects",
+  // Account jobs (src/accountjobs.js): each cancellation or bill they asked for, what the site said and
+  // which proof was seen. Theirs alone, keyed by conversation: exported with the rest, gone on a delete.
+  "account_jobs",
   // Their no to "want me to use your Google login?", held 30 days per provider (src/socialsignin.js).
   "social_declines",
   // Google/Apple/Microsoft refusing Reason's browser for one of their sites, kept 7 days (src/socialsignin.js).
