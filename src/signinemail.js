@@ -12,6 +12,8 @@
 //   1. Reason opens the site's sign-in page in the person's own saved profile (headless, the same
 //      guarded browser the sign-in link uses) and takes its email route: the email box, or a
 //      "Continue with email" button first. Google is never clicked; no provider button is.
+//      The box is WAITED for (src/signinpage.js, about ten seconds, same-origin frames included):
+//      a page that draws its form with its own script has none at first (Stripe Link, 2026-11-12).
 //   2. It types the email it knows for them (or the one they named) and asks the site for a code.
 //   3. Their Gmail connected: the newest mail from THAT site (sender domain + DKIM pass for it) that
 //      arrived AFTER the request is read, and its code is typed — or its sign-in link opened in the
@@ -31,7 +33,8 @@ import * as social from "./socialsignin.js";
 import * as signin from "./signin.js";
 import * as restartGate from "./busy.js";
 import * as findings from "./sitefindings.js";
-import { logAttempt } from "./signinlog.js";
+import * as signinPage from "./signinpage.js";
+import { logAttempt, logStep } from "./signinlog.js";
 
 /** How long Gmail is polled for the site's mail, and how often. */
 export const MAIL_WAIT_MS = 90_000;
@@ -283,7 +286,38 @@ export function failureKind(text, before = "") {
   return "";
 }
 const wait = (page, ms) => (page?.waitForTimeout ? page.waitForTimeout(ms).catch(() => {}) : new Promise(r => setTimeout(r, ms)));
-const read = async (page, act = "") => { try { return await page.evaluate(emailPage, act); } catch { return { did: "", email: false, code: false, split: false, password: false, route: false, instead: false, text: "", url: "" }; } };
+const NOTHING = { did: "", email: false, code: false, split: false, password: false, route: false, instead: false, text: "", url: "" };
+const read = async (page, act = "") => { try { const f = await page.evaluate(emailPage, act); return f && typeof f === "object" ? f : NOTHING; } catch { return NOTHING; } };
+/** How long requestCode settles between reads when nobody says otherwise; the form wait scales with it. */
+const SETTLE_MS = 2500;
+/** The page's own frames on its own origin: a form the site draws inside its own iframe is its form. */
+function sameOriginFrames(page) {
+  try {
+    const main = page.mainFrame?.();
+    const origin = new URL(page.url()).origin;
+    return (page.frames?.() ?? []).filter(f => f !== main && (() => { try { return new URL(f.url()).origin === origin; } catch { return false; } })());
+  } catch { return []; }
+}
+/**
+ * Wait for the site's email box: the page and its same-origin frames are read until one has it or
+ * `waitMs` runs out. A "Continue with email" control standing where the box should be is pressed
+ * once on the way. Stops the moment the box is there.
+ *   → { found, on (the page, or the frame whose document has the box), f (the last reading), ms }
+ */
+export async function waitForEmailBox(page, { waitMs = signinPage.formWaitMs(), pollMs = 250, settleMs = SETTLE_MS } = {}) {
+  let routed = false, main = NOTHING, on = page;
+  const got = await signinPage.waitFor(page, async () => {
+    main = await read(page);
+    if (main.email) { on = page; return main; }
+    for (const fr of sameOriginFrames(page)) {
+      const f = await read(fr);
+      if (f.email) { on = fr; return f; }
+    }
+    if (main.route && !routed) { routed = true; await read(page, "route"); await wait(page, Math.min(settleMs, 400)); }
+    return null;
+  }, { waitMs, pollMs });
+  return { found: got.found, on: got.found ? on : page, f: got.found ? got.value : main, ms: got.ms };
+}
 
 /** Every page in the context but the first, closed: a provider popup is never left open. */
 async function closePopups(page) {
@@ -317,18 +351,42 @@ export async function backOutOfProvider(page, entry, conversationId, log = () =>
  * code instead" beside it takes the code. Never a provider button.
  *   → { ok, at (ms, just before the press that asks for the code), state: "code"|"sent"|"password"|"none", why }
  */
-export async function requestCode(page, entry, email, { conversationId = "", log = () => {}, settleMs = 2500 } = {}) {
+export async function requestCode(page, entry, email, { conversationId = "", log = () => {}, settleMs = SETTLE_MS, formWaitMs = null, pollMs = 250 } = {}) {
   await backOutOfProvider(page, entry, conversationId, log);
-  let f = await read(page);
-  if (!f.email && f.route) { await read(page, "route"); await wait(page, settleMs); f = await read(page); }
-  if (!f.email) {
+  // The email box is waited for, not read once: a page that draws its form with its own script has
+  // none when it first loads (app.link.com's appears 1.3 s in; the single read at 1.1 s on
+  // 2026-11-12 said "no email box"). The bound follows the settle time a caller runs at.
+  const bound = formWaitMs ?? Math.round(signinPage.formWaitMs() * (settleMs / SETTLE_MS));
+  const poll = Math.max(1, Math.min(pollMs, settleMs));
+  let waited = await waitForEmailBox(page, { waitMs: bound, pollMs: poll, settleMs });
+  let formMs = waited.ms;
+  // Only a bare name was known and the page that opened has no sign-in form: the site's own
+  // "Log in" link is followed once (src/signinpage.js), in this browser, before anybody is shown anything.
+  let followed = false;
+  if (!waited.found && entry?.generic && signinPage.isFrontPage(entry.signin_url) && !waited.f.code && !waited.f.password) {
+    const door = await signinPage.followSigninDoor(page, entry);
+    followed = door.followed;
+    log({ signin_email: "signin_link_followed", site: entry.site, followed });
+    if (followed) { await backOutOfProvider(page, entry, conversationId, log); waited = await waitForEmailBox(page, { waitMs: bound, pollMs: poll, settleMs }); formMs += waited.ms; }
+  }
+  // Where the form is: the page (or its own frame) every later read, type and press goes to.
+  const on = waited.on;
+  const here = () => (on !== page && on.isDetached?.() ? page : on);
+  const where = (() => { try { return signinPage.pageOf(page.url()); } catch { return ""; } })();
+  let f = waited.f;
+  if (!waited.found) {
+    const base = { ok: false, form_ms: formMs, where: "", followed };
     // A challenge where the form should be: the site refused the browser before any email was typed.
-    if (!f.code && CHALLENGE.test(f.text)) return { ok: false, state: "blocked", detail: "wall_before_form", why: `${entry.label} put a bot check where its sign-in form should be` };
+    if (!f.code && CHALLENGE.test(f.text)) return { ...base, state: "blocked", detail: "wall_before_form", why: `${entry.label} put a bot check where its sign-in form should be` };
     // A page whose only way in is Google: there is no route Reason's browser can take (Google
     // refuses it), and a sign-in link would only walk the person into that refusal.
     const offered = social.providersOffered(f.text);
-    if (offered.length && !offered.some(social.usableProvider)) return { ok: false, state: "google_only", why: `${entry.label}'s sign-in page offers only Google, and Google refuses Reason's browser` };
-    return { ok: false, state: "none", why: `${entry.label}'s sign-in page shows no email box Reason can use` };
+    if (offered.length && !offered.some(social.usableProvider)) return { ...base, state: "google_only", why: `${entry.label}'s sign-in page offers only Google, and Google refuses Reason's browser` };
+    // What the page IS, so a link is only ever offered onto a real step: a page with no form, no
+    // challenge and no provider prompt (a home page) is not somewhere to send a person.
+    const kind = (await signinPage.readPage(page)).kind;
+    if (kind === "not_signin") return { ...base, state: "none", detail: "no_signin_page", page_kind: kind, why: `the ${entry.label} page that opened has no sign-in form on it${followed ? ", and neither does the page its own sign-in link leads to" : entry?.generic && signinPage.isFrontPage(entry.signin_url) ? ", and no sign-in link Reason could follow" : ""}` };
+    return { ...base, where, state: "none", page_kind: kind, why: `${entry.label}'s sign-in page shows no email box Reason can use` };
   }
   const before = f.text;
   // The site's own 403 / 429 to the press that asks for the code: a refusal of the browser.
@@ -342,22 +400,32 @@ export async function requestCode(page, entry, email, { conversationId = "", log
   // "Too many attempts" and a 429 are a limit on THIS address or this hour, not the site refusing
   // everybody: said as a block to this person, never written down for the others (startEmailSignin).
   const blocked = (f2, at2) => ({ ok: false, at: at2, state: "blocked", detail: refusedStatus === 429 || /too many|rate limit/i.test((f2.text.match(SITE_REFUSED) ?? [""])[0]) ? "rate_limited" : "refused_after_email", why: `${entry.label} refused Reason's browser after the email was submitted${refusedStatus ? ` (HTTP ${refusedStatus})` : ""}${(f2.text.match(SITE_REFUSED) ?? [""])[0] ? `: "${f2.text.match(SITE_REFUSED)[0].slice(0, 60)}"` : ""}` });
-  await read(page, "mark_email");
-  await page.fill('[data-reason-box="email"]', email);
+  // Read where the form is; a frame that showed nothing gives way to the page (a site may put the
+  // code box on the page itself once its framed form has done its part).
+  const readNow = async (act = "") => {
+    const t = here();
+    const a = await read(t, act);
+    if (t === page || act || a.code || a.email || a.password) return a;
+    const b = await read(page);
+    return b.code || b.email || b.password ? b : a;
+  };
+  const found = { form_ms: formMs, where, followed, on };
+  await read(here(), "mark_email");
+  await here().fill('[data-reason-box="email"]', email);
   const at = clock.now();
   try { page.on?.("response", onResponse); } catch { /* a page with no events */ }
-  try { return await afterPress(); } finally { try { page.off?.("response", onResponse); } catch { /* same */ } }
+  try { return { ...found, ...(await afterPress()) }; } finally { try { page.off?.("response", onResponse); } catch { /* same */ } }
   async function afterPress() {
-  const pressed = await read(page, "submit");
-  if (!pressed.did) await page.press('[data-reason-box="email"]', "Enter").catch(() => {});
+  const pressed = await read(here(), "submit");
+  if (!pressed.did) await here().press('[data-reason-box="email"]', "Enter").catch(() => {});
   for (let i = 0; i < 6; i++) {
     await wait(page, settleMs);
     if (await backOutOfProvider(page, entry, conversationId, log)) return { ok: false, state: "none", why: "a provider page opened instead of the email route" };
-    f = await read(page);
+    f = await readNow();
     if (f.code) return { ok: true, at, state: "code" };
     // A password box only means "it wants a password" once the email box has gone: Notion keeps one
     // on its first page for password managers (seen live 2026-11-11).
-    if (f.password && !f.email && f.instead) { await read(page, "codeinstead"); continue; }
+    if (f.password && !f.email && f.instead) { await read(here(), "codeinstead"); continue; }
     if (SENT.test(f.text)) return { ok: true, at, state: "sent" };
     const kind = failureKind(f.text, before);
     if (f.email && kind === "rejected") break;
@@ -379,18 +447,21 @@ export async function requestCode(page, entry, email, { conversationId = "", log
 }
 
 /** Type the code into the site's box (one box, or split one-character boxes) and press its continue. */
-export async function enterCode(page, code, { settleMs = 3000 } = {}) {
-  const f = await read(page, "mark_code");
+export async function enterCode(page, code, { settleMs = 3000, on = null } = {}) {
+  // `on`: the site's own frame the sign-in form was in (requestCode), used while its code box is there.
+  let t = page;
+  if (on && on !== page && !on.isDetached?.() && (await read(on)).code) t = on;
+  const f = await read(t, "mark_code");
   if (!f.code) return { ok: false, why: "no code box on the page" };
-  if (f.split) { await page.click('[data-reason-box="code"]').catch(() => {}); await page.keyboard.type(code, { delay: 40 }); }
-  else await page.fill('[data-reason-box="code"]', code);
+  if (f.split) { await t.click('[data-reason-box="code"]').catch(() => {}); await page.keyboard.type(code, { delay: 40 }); }
+  else await t.fill('[data-reason-box="code"]', code);
   await wait(page, 600);
-  const after = await read(page);
+  const after = await read(t);
   // Many code boxes submit themselves on the last character; only press continue if still there.
-  if (after.code) { const s = await read(page, "submit"); if (!s.did) await page.press('[data-reason-box="code"]', "Enter").catch(() => {}); }
+  if (after.code) { const s = await read(t, "submit"); if (!s.did) await t.press('[data-reason-box="code"]', "Enter").catch(() => {}); }
   await wait(page, settleMs);
   // The site saying the code is wrong or expired, on a page that still shows the code box.
-  const end = await read(page);
+  const end = await read(t);
   return { ok: true, wrong: end.code && WRONG_CODE.test(end.text) && !WRONG_CODE.test(f.text) };
 }
 
@@ -442,7 +513,7 @@ export function takeCodeReply(conversationId, text) {
  * deps: launch({conversationId, url}) → { page, close }, closeBrowser(conv), check(page, conv, site),
  *       gmail(conv, entry, {since}) → codeFromGmail's answer, log, note(conv, text), timers.
  */
-export function startEmailSignin({ conversationId, entry, email, launch, closeBrowser = async () => {}, check = signin.checkAndRecord, gmail = codeFromGmail, log = () => {}, note = null, replyWaitMs = REPLY_WAIT_MS, settleMs = 2500 }) {
+export function startEmailSignin({ conversationId, entry, email, launch, closeBrowser = async () => {}, check = signin.checkAndRecord, gmail = codeFromGmail, log = () => {}, note = null, replyWaitMs = REPLY_WAIT_MS, settleMs = SETTLE_MS, formWaitMs = null }) {
   const old = jobs.get(conversationId);
   if (old && !old.done) return { ok: false, busy: true, error: `An email sign-in to ${old.entry.label} is already running for them.` };
   const tell = note ?? ((c, text) => db.createTimer(c, { fireAt: clock.now(), note: text }));
@@ -461,6 +532,13 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
     logAttempt(entry, { route, outcome: OUTCOME[state] ?? "failed", startedAt, detail });
     if (text) { try { tell(conversationId, text); } catch { /* the log still says */ } }
   };
+  // The page this attempt is on. Every later link for it opens THIS page: remembered in code
+  // (src/signinpage.js, read back by src/tools.js signinSite), and named whole in each instruction
+  // below, so nothing depends on a model retyping an address. On 2026-11-12 the instruction named
+  // the bare site ("link.com") and the link opened Link's marketing home page.
+  let where = entry.generic ? signinPage.pageOf(entry.signin_url) : "";
+  if (where && !signinPage.isFrontPage(where)) signinPage.rememberSigninPage(conversationId, entry, where);
+  const linkSite = () => (entry.generic && where && !signinPage.isFrontPage(where) ? where : entry.site);
   const run = (async () => {
     let browser = null;
     try {
@@ -468,7 +546,15 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       browser = await launch({ conversationId, url: entry.signin_url });
       const page = browser.page;
       job.state = "requesting";
-      const asked = await requestCode(page, entry, email, { conversationId, log, settleMs });
+      const asked = await requestCode(page, entry, email, { conversationId, log, settleMs, formWaitMs });
+      // A step line of its own (src/signinlog.js): whether the page showed its email box, and how
+      // long it was given. On 2026-11-12 the only trace was "no_email_route, 1147 ms".
+      const sawForm = Number.isFinite(asked.form_ms) && (asked.ok || asked.at != null);
+      if (Number.isFinite(asked.form_ms)) {
+        logStep(entry, { step: sawForm ? "form_found" : "form_not_found", route: "emailed_code", startedAt, waitedMs: asked.form_ms, pageUrl: (() => { try { return page.url(); } catch { return ""; } })(), detail: asked.followed ? "signin_link_followed" : "" });
+      }
+      // The page the form was found on (the site's own "Log in" link may have been followed to it).
+      if (asked.where && !signinPage.isFrontPage(asked.where) && signinPage.onSite(asked.where, entry)) { where = asked.where; signinPage.rememberSigninPage(conversationId, entry, where); }
       log({ signin_email: "requested", site: entry.site, ok: asked.ok, state: asked.state });
       if (!asked.ok) {
         const pw = asked.state === "password";
@@ -484,7 +570,12 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
           return finish(`the ${entry.label} email sign-in could not start: ${asked.why}. There is no route Reason's browser can take there, and a sign-in link would only walk them into Google's refusal, so do not send one. Say ONE honest line, like: "${entry.label} only lets you in with Google, and Google won't let my browser sign in, so I can't get into ${entry.label} for you." Then offer what is left: an answer from their mail if ${entry.label}'s notices are there (gmail_search), or them doing it in their own browser. Never say you will use or press their Google login.`, "google_only", "google_only");
         }
         if (asked.state === "rejected") return finish(`the ${entry.label} email sign-in stopped: ${asked.why}. Nothing was saved. Ask them ONCE, in one plain line, which email their ${entry.label} account uses, then signin_email again with it. Never offer Google.`, "rejected");
-        return finish(`the ${entry.label} email sign-in could not ask for a code: ${asked.why}. Nothing was saved. Say it in ONE plain line${pw ? `, and offer the secure sign-in link (signin_link with site "${entry.site}", no provider) where they can type their ${entry.label} password themselves` : `, and offer the secure sign-in link (signin_link with site "${entry.site}", no provider)`}. Never offer Google.`, "no_route", pw ? "wants_password" : "no_email_box");
+        // No sign-in form anywhere Reason could reach: a link would only show them that same page
+        // (a home page under "finish this step"), so none is sent and the line says what is true.
+        if (asked.detail === "no_signin_page") {
+          return finish(`the ${entry.label} email sign-in could not start: ${asked.why}. Reason cannot find where to sign in on ${entry.label}. Nothing was saved. Do NOT send a sign-in link: it would only show them a page with nothing to sign in to. Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page, signin_email or signin_link takes that address as the site.`, "no_route", "no_signin_page");
+        }
+        return finish(`the ${entry.label} email sign-in could not ask for a code: ${asked.why}. Nothing was saved. Say it in ONE plain line${pw ? `, and offer the secure sign-in link (signin_link with site "${linkSite()}", no provider) where they can type their ${entry.label} password themselves` : `, and offer the secure sign-in link (signin_link with site "${linkSite()}", no provider)`}. Use that site value exactly as written: it is the page this sign-in is on. Never offer Google.`, "no_route", pw ? "wants_password" : "no_email_box");
       }
       job.state = "waiting_mail";
       const mail = await gmail(conversationId, entry, { since: asked.at });
@@ -512,11 +603,11 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       if (got.kind !== "link" && !onSite(page, entry)) {
         got = null;
         log({ signin_email: "left_site", site: entry.site });
-        return finish(`the ${entry.label} email sign-in stopped: the sign-in page was no longer on ${entry.label}'s own site, so the code was not entered anywhere. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link, no provider).`, "left_site");
+        return finish(`the ${entry.label} email sign-in stopped: the sign-in page was no longer on ${entry.label}'s own site, so the code was not entered anywhere. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link with site "${linkSite()}", no provider).`, "left_site");
       }
-      const entered = got.kind === "link" ? await openLink(page, got.url, entry) : await enterCode(page, got.code);
+      const entered = got.kind === "link" ? await openLink(page, got.url, entry) : await enterCode(page, got.code, { on: asked.on ?? null });
       got = null; // the code is not kept a moment longer than it is needed
-      if (!entered.ok) return finish(`the ${entry.label} sign-in got its code but could not use it: ${entered.why}. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link, no provider).`, "failed");
+      if (!entered.ok) return finish(`the ${entry.label} sign-in got its code but could not use it: ${entered.why}. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link with site "${linkSite()}", no provider).`, "failed");
       if (entered.wrong) return finish(`the ${entry.label} sign-in entered the code and ${entry.label} said the code was wrong or expired. Nothing was saved. Say it in ONE plain line and offer to start again (signin_email asks ${entry.label} for a fresh code). Do not ask them to re-send the same code.`, "wrong_code");
       await backOutOfProvider(page, entry, conversationId, log);
       const out = await check(page, conversationId, entry.site);
