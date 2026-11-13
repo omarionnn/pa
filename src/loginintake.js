@@ -214,7 +214,14 @@ export function forgetSite(conversationId, site, { purpose = "" } = {}) {
   if (!base) return 0;
   let n = 0;
   for (const l of listLogins(conversationId)) if (l.site === base && removeLogin(conversationId, l.id, { purpose })) n++;
+  dropIntake(conversationId, base);
   return n;
+}
+/** Every save link for the site goes too, open or used (review 2026-11-13): a forgotten login leaves no live link and no quoted request. */
+export function dropIntake(conversationId, site) {
+  const base = registrableOf(hostOf(String(site ?? "")));
+  if (!base) return 0;
+  return Number(q("DELETE FROM login_intake WHERE conversation_id = ? AND site = ?").run(String(conversationId ?? ""), base).changes);
 }
 
 // ---------------------------------------------------------------- the page's own sealing

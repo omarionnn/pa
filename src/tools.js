@@ -425,6 +425,7 @@ const SAVED_LOGIN_TOOL_DEFS = [{
 }];
 const SAVE_LINK_NO = {
   not_available: "Saving logins isn't on for them. Say you can't sign in there for them yet, in one line.",
+  not_asked: "A save link is only sent when they ask, in their own message. Send nothing about saving a login now.",
   bad_site: "That isn't a site's domain. Ask which site, in one line.",
   walled: "That site blocks Reason's browser right now, so no link was made. Say so in one line.",
   off_site: "That site's sign-in page is on another company's domain, so no link was made. Say you can't save a login for it yet, in one line.",
@@ -12509,6 +12510,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // quoted on the page, so a page that did not come from their thread can't show them.
     case "saved_login_offer": {
       if (!saveLinkAllowedFor(c)) return { ok: false, error: "Not available." };
+      // The live ask (review 2026-11-13): a link is offered only on a turn the person started with their
+      // own message. An email, a page, a timer or the nightly review never makes Reason text a save link
+      // (a lookalike domain sent with Reason's own words is the phishing this page must never be).
+      if ((ctx.kind ?? "event") !== "user") return { ok: false, error: "not_asked", note: SAVE_LINK_NO.not_asked };
       const asked = askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? "";
       const out = await offerSaveLink(c, input.site, asked, { locate: ctx.locateSigninPage ?? null });
       if (out.ok) return { ok: true, say_exactly: `${OFFER_SENTENCE}\n${out.link}`, note: "Send say_exactly as it is: the sentence, then the link on its own line. Never ask them to type a password in the chat." };
