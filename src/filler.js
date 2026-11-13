@@ -23,7 +23,7 @@ import {
 import { dropIntake } from "./loginintake.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { recordFinding } from "./sitefindings.js";
-import { refusingSite, refusalAnswer, markRefusing } from "./refusing.js";
+import { refusingSite, refusalAnswer, markRefusing, reachedForm, clearRefusal } from "./refusing.js";
 import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs, signinDoor, followSigninDoor } from "./signinpage.js";
 import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
@@ -51,6 +51,8 @@ export const RETRY_PAUSE_MS = 24 * 60 * 60_000;
 // A refusal by the site stops the attempt for the day: one wall, CAPTCHA, "suspicious sign-in" or
 // "too many attempts" and the row is refused; the person is told and it is not retried (hard rule 4).
 const REFUSED_BY_SITE = new Set(["blocked"]);
+// The site answered about the ACCOUNT: it let the browser in (src/refusing.js clearRefusal).
+const ACCOUNT_LEVEL = new Set(["signed_in", "wrong_password", "needs_code_sms", "needs_code_email", "needs_authenticator", "needs_approval"]);
 // The site answered with its own generic error ("Something went wrong. Please try again in a few
 // minutes.") before it accepted or turned down the login. Not a wrong password, not a format problem:
 // one automatic second go in the same job after SITE_TROUBLE_RETRY_MS, and if that gets the same, the
@@ -910,6 +912,8 @@ export async function signIn(conversationId, site, {
     // relaxes it to the site for the submit. The path is the pinned one (checked on arrival, and again
     // by `ours` before every keystroke step).
     const { form } = got;
+    // The form was reached: a single earlier wall was a bad moment, not the site refusing (src/refusing.js).
+    try { reachedForm(row.site || host); } catch { /* best effort */ }
     const at = urlParts(page.url());
     if (at.origin !== row.signin_origin || at.path !== row.signin_path) { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return { out: say("origin_mismatch", host) }; }
 
@@ -939,6 +943,9 @@ export async function signIn(conversationId, site, {
 
   // Everything after the typing: the second step, the record, the words. → the result object.
   const conclude = async ({ result, diag, page }) => {
+    // An account-level answer (signed in, wrong password, a code asked): the site let the browser in, so
+    // any mark on it goes at once (src/refusing.js).
+    if (ACCOUNT_LEVEL.has(result)) { try { clearRefusal(row.site || host, now()); } catch { /* best effort */ } }
     // The second step, after the secret is gone (the code is not a saved secret): what the row says
     // the site does wins over what the page's words suggest.
     // A code the site sent INSTEAD of the password (diag.codeInstead) is relayed through their texted

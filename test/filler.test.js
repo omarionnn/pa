@@ -274,9 +274,8 @@ test("rule 4: a wall refuses once and the site is paused; a second call does not
   assert.equal(rowState(id), "refused", "one refusal marks the row refused");
   const decryptsAfterFirst = g.count("decrypt");
   const out2 = await signIn();
-  // A wall also marks the SITE as turning software-driven browsers away (src/refusing.js): the next call
-  // is answered up front, with nothing loaded and nothing unwrapped.
-  assert.equal(out2.result, "refuses_software", "a walled site is answered up front on the next call");
+  assert.equal(out2.result, "paused", "a refused site is paused on the next call");
+  assert.equal(refusing.refusingSite("acme.test"), null, "one wall never marks the site for everyone (src/refusing.js)");
   assert.equal(g.count("decrypt"), decryptsAfterFirst, "the second call does no KMS unwrap");
   sl.removeLogin(ME, id);
 });

@@ -305,6 +305,7 @@ export const KEPT_ON_DELETE = {
  * coverage test can tell "nobody's" from "forgotten". A whole-install delete leaves them, as before.
  */
 export const INSTALL_WIDE = {
+  site_wall_strikes: "A site's one unconfirmed wall or challenge (src/refusing.js): its registrable domain, a fixed evidence word and when; a second one 10+ minutes later marks the site. About the site, never a person",
   site_refusals: "Sites that turn away browsers run by software (src/refusing.js): the site's registrable domain, a fixed evidence word and the day seen; believed 30 days. About the site, never a person",
   site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain, with a short one-way mark of which sign-in page was asked (never the address itself); nothing in it says who asked.",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",

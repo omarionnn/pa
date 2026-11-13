@@ -394,7 +394,8 @@ test("reCAPTCHA: a visible picture challenge stops it as blocked, before typing 
   const b = await signIn("capafter.test");
   assert.equal(b.result, "blocked", b.say_exactly);
   const again = await signIn("capafter.test");
-  assert.equal(again.result, "refuses_software", "one refusal stops: the site is now answered up front");
+  assert.equal(again.result, "paused", "one refusal stops");
+  assert.equal(refusing.refusingSite("capafter.test"), null, "one challenge never marks the site for everyone");
 });
 
 test("review: the lock still refuses a top-level page on another origin while a sub-frame may load", skip, async () => {
@@ -456,7 +457,8 @@ test("front door: a wall stops as blocked, in honest words, with no offer to try
     assert.equal(gets.filter(g => g === `${site}/`).length, homes, `${site}: the front door at most once, never after a wall`);
     assert.equal(gets.filter(g => g === `${new URL(url).host}/auth`).length, bareLoads, `${site}: loads of the bare sign-in page`);
     assert.deepEqual(posted, []);
-    assert.equal((await signIn(site)).result, "refuses_software", `${site}: one refusal stops (answered up front now)`);
+    assert.equal((await signIn(site)).result, "paused", `${site}: one refusal stops`);
+    assert.equal(refusing.refusingSite(site), null, `${site}: one wall never marks the site`);
   }
 });
 
