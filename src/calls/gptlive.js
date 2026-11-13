@@ -44,6 +44,7 @@ import { rulesNote, RULES_HEADING } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory, onScheduleRead } from "./callmemory.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
+import { cartesiaTrialFor, passableSocket } from "./calltrial.js";
 import { ulawToPcm, pcmToUlaw } from "./ulaw.js";
 import { Hearing } from "./hearing.js";
 import * as opener from "./opener.js";
@@ -2108,11 +2109,16 @@ export class GptLiveCall {
     if (speech && this.turnGate && !this.ackFlushing) { this.talkSinceVoice = 0; this.lastReplyAt = t; }
     this.voiceOut(b64, speech);
     for (const turn of this.pending.values()) if (turn.firstAudioMs == null) turn.firstAudioMs = t - turn.startedAt;
+    // Log only (docs/calls-cartesia.md section 5): the first audio WITH SPEECH after a hand-back —
+    // `first_real_ms` is any audio, silence included — the number the Cartesia trial is set beside.
+    if (speech && this.handbackSpeech) { const h = this.handbackSpeech; this.handbackSpeech = null; this.log({ gptlive_handback_speech: this.call.id, ms: t - h.resultAt, from_ask_ms: t - h.startedAt }); }
     for (const turn of this.answered ?? []) {
       if (turn.firstRealMs == null && t >= turn.resultAt) {
         turn.firstRealMs = t - turn.startedAt;
         if (turn.firstAudioMs == null) turn.firstAudioMs = turn.firstRealMs;
         this.heard(turn);
+        if (speech) this.log({ gptlive_handback_speech: this.call.id, ms: t - turn.resultAt, from_ask_ms: t - turn.startedAt });
+        else this.handbackSpeech = { resultAt: turn.resultAt, startedAt: turn.startedAt };
       }
     }
   }
@@ -4517,7 +4523,8 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   // REASON_GPTLIVE_PRERING: the voice's socket and session.start while it rings, held silent (`WarmSession` hold).
   // The dial waits for it, up to REASON_GPTLIVE_PRERING_WAIT_MS, so even an instant pickup finds it up;
   // a session that is slow or fails never stops the call (it opens the old way on the stream).
-  if (!thirdParty && preopenOn(config.gptlivePrering, row.conversation_id)) {
+  // A Cartesia trial call opens no GPT-Live session ahead of the stream (./calltrial.js).
+  if (!thirdParty && preopenOn(config.gptlivePrering, row.conversation_id) && !cartesiaTrialFor(row)) {
     const t0 = Date.now();
     const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: config.gptlivePreringWaitMs, memoryMs: config.gptlivePreringMemoryMs });
     if (w && config.gptlivePreringWaitMs > 0) {
@@ -4768,7 +4775,7 @@ function routeInbound({ params, router, log, away, openLive = openLiveSocket }) 
   // REASON_GPTLIVE_INBOUND_PREOPEN: their voice session opened and started now, held silent until the
   // stream — after every check above (blocked, stranger, cap), with exactly the session the stream would
   // open (same instructions, brief and greeting), so nothing is known or said earlier than before.
-  if (preopenOn(config.gptliveInboundPreopen, who.conversationId)) {
+  if (preopenOn(config.gptliveInboundPreopen, who.conversationId) && !cartesiaTrialFor(row)) {
     const { w, wait } = preopen(row, { log, openLive, waitMs: config.gptliveInboundWaitMs, memoryMs: config.gptlivePreringMemoryMs, greeting: openingLineFor({ person: accounts.ownerOf(who.conversationId), conversationId: who.conversationId }) });
     // REASON_GPTLIVE_INBOUND_WAIT_MS: the TwiML (the answer) waits for it, far inside Twilio's 15 s webhook timeout.
     if (w && config.gptliveInboundWaitMs > 0) return { ...twiml(streamTwiml(row)), preopen: wait };
@@ -4861,7 +4868,7 @@ export function toldNote({ goal = "", facts = [] } = {}) {
  * Twilio's media stream for one call, upgraded. The token in the path is the call row's own; anything
  * else is closed at once.
  */
-export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket, generate = null, twilioApi = null }) {
+export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket, generate = null, twilioApi = null, openCartesia = null, cartesiaOpts = null }) {
   const stranger = rowless.get(token);
   if (stranger) {
     rowless.delete(token);
@@ -4882,18 +4889,51 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
     return null;
   }
   db.updateCall(row.conversation_id, row.id, { state: "in_progress" });
-  const call = new GptLiveCall({
-    call: db.getCall(row.conversation_id, row.id) ?? row, twilio: socket, openLive, log, warm: takeWarm(row.id), twilioApi,
-    brain: (messages, hooks = {}) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {}, onTool: hooks.onTool, onContent: hooks.onContent }),
-    warmTurn: (r) => warmTheTurn(r, log),
-    finish: async (live) => {
-      try { await settleGptLive({ row, live, settle, runtime, log }); } finally { streams.delete(row.id); }
-    },
-  });
-  streams.set(row.id, call);
-  const early = amdEarly.get(row.id);
-  if (early) { amdEarly.delete(row.id); call.amd(early); }
-  return call;
+  const brain = (messages, hooks = {}) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {}, onTool: hooks.onTool, onContent: hooks.onContent });
+  const finish = async (live) => {
+    try { await settleGptLive({ row, live, settle, runtime, log }); } finally { streams.delete(row.id); }
+  };
+  const gptLive = (twilio, warmed) => {
+    const call = new GptLiveCall({
+      call: db.getCall(row.conversation_id, row.id) ?? row, twilio, openLive, log, warm: warmed, twilioApi, brain,
+      warmTurn: (r) => warmTheTurn(r, log),
+      finish,
+    });
+    streams.set(row.id, call);
+    const early = amdEarly.get(row.id);
+    if (early) { amdEarly.delete(row.id); call.amd(early); }
+    return call;
+  };
+  // The Cartesia voice trial (./calltrial.js, docs/calls-cartesia.md section 5): the operator's own call,
+  // with REASON_CALL_CARTESIA=owner and his choice on, and nothing else. Its relay is imported only here.
+  // Not ready in 1.5 s, or broken before it is: this same call carries on with GPT-Live, no warm session.
+  if (cartesiaTrialFor(row)) {
+    const line = passableSocket(socket);
+    // `holder`: whichever relay has the call now (the Cartesia one, or GPT-Live after a fall-back).
+    const slot = { done: false, rejoining: null, cartesia: true, holder: null };
+    const back = (why, said = []) => {
+      const twilio = line.pass();
+      const c = gptLive(twilio, null);
+      // Fallen back mid-call: what he and the Cartesia voice said goes first in the call's turns.
+      if (said.length) c.turns.unshift(...said);
+      slot.holder = c;
+      twilio.flush();
+      return c;
+    };
+    streams.set(row.id, slot);
+    void (openCartesia ?? (() => import("./cartesia.js")))().then((m) => {
+      if (streams.get(row.id) !== slot) return;
+      const call = new m.CartesiaAgentCall({ call: db.getCall(row.conversation_id, row.id) ?? row, twilio: line.pass(), brain, finish, log, fallBack: back, ...(cartesiaOpts ?? {}) });
+      streams.set(row.id, call);
+      slot.holder = call;
+      call.begin();
+    }, (e) => {
+      log({ cartesia_fell_back: row.id, why: `not loaded: ${(e?.message ?? String(e)).split("\n")[0]}`.slice(0, 120), ms: 0 });
+      if (streams.get(row.id) === slot) back("not loaded");
+    });
+    return slot;
+  }
+  return gptLive(socket, takeWarm(row.id));
 }
 
 /** AMD verdicts that came in before the call's stream was up, by call id. */
