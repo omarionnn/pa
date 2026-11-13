@@ -1,6 +1,9 @@
 // Their bank, read-only, through Plaid (src/plaid.js, owner brief 2026-11-12). Everything here runs
-// through the real `plaid` SDK against test/fixture-plaid.js (documented response shapes), with
-// encryption at rest on and strict, so a plaintext write to a sealed column fails the suite.
+// through the real `plaid` SDK against test/fixture-plaid.js, with encryption at rest on and strict,
+// so a plaintext write to a sealed column fails the suite. The fixture answers the way Plaid's real
+// Sandbox did on 2026-11-13 (recorded in test/fixtures/plaid/ by scripts/plaid-sandbox-proof.mjs),
+// and the last tests here hold it to those recordings: the same fields, and the same first answer
+// (nothing, NOT_READY) from a bank that was only just connected.
 //
 //   connect            a Hosted Link made when it is sent, 30 minutes, with the heads-up to the model
 //   first sync         the SESSION_FINISHED webhook exchanges the token, saves the bank, syncs, texts
@@ -14,7 +17,7 @@
 //   last four only     no full account number, no token, in any answer, text, page, log or export
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
@@ -96,12 +99,17 @@ const week = (b) => [
   fx.tx(b.item, "s2", "2026-09-13", 11.99, "Spotify", "ENTERTAINMENT", "MUSIC_AND_AUDIO"),
   fx.tx(b.item, "s3", "2026-10-13", 11.99, "Spotify", "ENTERTAINMENT", "MUSIC_AND_AUDIO"),
 ];
-async function push(b, page) {
-  b.item.pages.push(page);
+/** Plaid's SYNC_UPDATES_AVAILABLE webhook for this bank: what brings transactions in when webhooks work. */
+async function arrive(b) {
   const res = await http.plaidWebhookRequest({ ...fx.signed({ webhook_type: "TRANSACTIONS", webhook_code: "SYNC_UPDATES_AVAILABLE", item_id: b.item.item_id, initial_update_complete: true, historical_update_complete: true, environment: "sandbox" }) });
   assert.equal(res.status, 200);
   assert.equal(res.body.handled, true);
 }
+async function push(b, page) {
+  b.item.pages.push(page);
+  await arrive(b);
+}
+const stored = (c) => raw("SELECT COUNT(*) AS n FROM plaid_transactions WHERE conversation_id = ?", c)[0].n;
 
 test("the switch: off by default, owner means the operator only, on means everyone; sandbox unless told production", () => {
   const was = process.env.REASON_PLAID;
@@ -167,7 +175,7 @@ test("connect: a Hosted Link made when it is sent, 30 minutes, read-only product
   assert.match(raw("SELECT link_token FROM plaid_links")[0].link_token, /^enc:u1:/);
 });
 
-test("first sync: the webhook is verified, the token exchanged server-side and sealed, the bank saved with last four, transactions synced, a confirmation texted", async () => {
+test("first sync: the webhook is verified, the token exchanged server-side and sealed, the bank saved with last four, a confirmation texted; the transactions come with Plaid's next webhook", async () => {
   const b = fx.addBank({ mask: "0000" });
   b.item.pages.push({ added: week(b) });
   const out = await bank(A, { action: "connect" });
@@ -182,8 +190,16 @@ test("first sync: the webhook is verified, the token exchanged server-side and s
   const item = raw("SELECT * FROM plaid_items")[0];
   assert.match(item.access_token, /^enc:u1:/);
   assert.match(d.db.prepare("SELECT access_token FROM plaid_items WHERE conversation_id = ?").get(A).access_token, /^enc:v1:/);
+  // The first sync, made the moment the token is exchanged, has nothing: that is how the real Sandbox answers every time.
+  assert.deepEqual(fx.callsTo("/transactions/sync").map(c => c.body.cursor ?? null), [null]);
+  assert.equal(stored(A), 0);
+  assert.deepEqual([item.history, item.cursor], ["NOT_READY", ""]);
+  assert.equal((await bank(A, { action: "status" })).banks[0].transactions, "still coming in from the bank");
+  // Seconds later Plaid says there is something to fetch.
+  await arrive(b);
+  assert.equal(stored(A), 9, "the August charge is older than 60 days and was never stored");
+  assert.equal(raw("SELECT history FROM plaid_items")[0].history, "HISTORICAL_UPDATE_COMPLETE");
   assert.doesNotMatch(JSON.stringify(raw("SELECT * FROM plaid_items").concat(raw("SELECT * FROM plaid_accounts"), raw("SELECT * FROM plaid_transactions"))), /access-sandbox|Sweetgreen|Platypus|Plaid Checking/);
-  assert.equal(raw("SELECT COUNT(*) AS n FROM plaid_transactions WHERE conversation_id = ?", A)[0].n, 9, "the August charge is older than 60 days and was never stored");
   assert.equal(d.db.prepare("SELECT mask FROM plaid_accounts WHERE conversation_id = ?").get(A).mask, "0000");
   // The same webhook again, or the done page arriving after it, does nothing twice.
   await http.plaidWebhookRequest({ ...fx.signed(JSON.parse(hook.rawBody)) });
@@ -191,7 +207,7 @@ test("first sync: the webhook is verified, the token exchanged server-side and s
   assert.equal(fx.callsTo("/item/public_token/exchange").length, 1);
   assert.equal(said.length, 1);
   const status = await bank(A, { action: "status" });
-  assert.deepEqual(status.banks.map(x => [x.bank, x.status, x.accounts]), [["First Platypus Bank", "connected", ["Plaid Checking ••0000"]]]);
+  assert.deepEqual(status.banks.map(x => [x.bank, x.status, x.accounts, x.transactions]), [["First Platypus Bank", "connected", ["Plaid Checking ••0000"], undefined]]);
   assert.equal(out.ok, true);
 });
 
@@ -233,20 +249,25 @@ test("how much did i spend this week: the total, by category; card payments, tra
   // The list names an account by its last four and nothing longer.
   const list = await bank(A, { action: "transactions", period: "this_week", search: "uber" });
   assert.deepEqual(list.transactions, [{ date: "2026-11-11", name: "Uber", amount: "$40.00", category: "transport", account: "First Platypus Bank Plaid Checking ••0000" }]);
-  // Sync asked Plaid with the cursor it was left, never from the start again.
+  // The first answer (NOT_READY) left no cursor, so the second sync started over; after that, always the cursor it was left.
   const cursors = fx.callsTo("/transactions/sync").map(c => c.body.cursor ?? null);
-  assert.deepEqual(cursors.slice(0, 3), [null, "cur:0", "cur:1"]);
+  assert.deepEqual(cursors, [null, null, "cur:1"], "and no question asked Plaid again inside 30 seconds of a sync");
 });
 
 test("subscriptions: Plaid's recurring streams when the plan has them, with what each costs and whether it has gone out this month", async () => {
   const b = await connect(A);
+  await push(b, { added: week(b) });
   b.item.recurring = [
-    { stream_id: "st1", account_id: b.item.accounts[0].account_id, description: "SPOTIFY USA", merchant_name: "Spotify", frequency: "MONTHLY", is_active: true, status: "MATURE", first_date: "2026-01-13", last_date: "2026-10-13", predicted_next_date: "2026-11-13", average_amount: { amount: 11.99, iso_currency_code: "USD" }, last_amount: { amount: 11.99, iso_currency_code: "USD" }, personal_finance_category: { primary: "ENTERTAINMENT", detailed: "ENTERTAINMENT_MUSIC_AND_AUDIO" }, transaction_ids: [] },
-    { stream_id: "st2", account_id: b.item.accounts[0].account_id, description: "PARKSIDE RENT", merchant_name: "", frequency: "MONTHLY", is_active: true, status: "MATURE", first_date: "2025-12-01", last_date: "2026-11-01", predicted_next_date: "2026-12-01", average_amount: { amount: 1500, iso_currency_code: "USD" }, last_amount: { amount: 1500, iso_currency_code: "USD" }, personal_finance_category: { primary: "RENT_AND_UTILITIES", detailed: "RENT_AND_UTILITIES_RENT" }, transaction_ids: [] },
-    { stream_id: "st3", account_id: b.item.accounts[0].account_id, description: "NETFLIX", merchant_name: "Netflix", frequency: "MONTHLY", is_active: false, status: "TOMBSTONED", last_date: "2026-03-01", average_amount: { amount: 15.49 }, last_amount: { amount: 15.49 }, personal_finance_category: { primary: "ENTERTAINMENT", detailed: "ENTERTAINMENT_TV_AND_MOVIES" }, transaction_ids: [] },
+    fx.stream(b.item, "Spotify", 11.99, "MONTHLY", "2026-10-13", "2026-11-13", "ENTERTAINMENT", "MUSIC_AND_AUDIO", { description: "SPOTIFY USA" }),
+    // No merchant: the real answer has "" there, and the bank's own line is the name.
+    fx.stream(b.item, "", 1500, "MONTHLY", "2026-11-01", "2026-12-01", "RENT_AND_UTILITIES", "RENT", { description: "PARKSIDE RENT" }),
+    fx.stream(b.item, "Netflix", 15.49, "MONTHLY", "2026-03-01", "2026-04-01", "ENTERTAINMENT", "TV_AND_MOVIES", { is_active: false, status: "TOMBSTONED" }),
+    // The real Sandbox lists a card's own autopay as a stream, labelled a transfer: not a subscription.
+    fx.stream(b.item, "", 2078.5, "MONTHLY", "2026-10-20", "2026-11-20", "TRANSFER_OUT", "ACCOUNT_TRANSFER", { description: "AUTOMATIC PAYMENT - THANK" }),
   ];
   const out = await bank(A, { action: "subscriptions" });
   assert.equal(out.source, "plaid");
+  assert.equal(out.per_month, "$1,511.99", "two monthly charges cost exactly their sum a month");
   assert.deepEqual(out.subscriptions, [
     { name: "PARKSIDE RENT", amount: "$1,500.00", every: "monthly", category: "bills", last_charged: "2026-11-01", next_expected: "2026-12-01", gone_out_this_month: true },
     { name: "Spotify", amount: "$11.99", every: "monthly", category: "entertainment", last_charged: "2026-10-13", next_expected: "2026-11-13", gone_out_this_month: false },
@@ -558,19 +579,23 @@ test("several connections: each is its own Item with its own sealed token, curso
   await push(card, { added: [fx.tx(card.item, "k1", "2026-11-11", 40, "Uber", "TRANSPORTATION", "TAXIS_AND_RIDE_SHARES"), fx.tx(card.item, "k2", "2026-11-10", 25, "Netflix", "ENTERTAINMENT", "TV_AND_MOVIES")] });
   // A webhook for one Item syncs that Item only, from its own cursor.
   const cursors = Object.fromEntries(d.db.prepare("SELECT item_id, cursor FROM plaid_items WHERE conversation_id = ?").all(A).map(r => [r.item_id, r.cursor]));
-  assert.deepEqual([cursors[chk.item.item_id], cursors[card.item.item_id], cursors[sav.item.item_id]], ["cur:1", "cur:1", "cur:0"]);
+  assert.deepEqual([cursors[chk.item.item_id], cursors[card.item.item_id], cursors[sav.item.item_id]], ["cur:1", "cur:1", ""], "the savings bank has only had its first, empty answer");
   const out = await bank(A, { action: "spending", period: "this_week" });
   assert.equal(out.total, "$125.25");
+  // The savings bank has nothing in yet, minutes after connecting: the answer covers the other two and says so.
+  assert.deepEqual(out.still_loading, ["Harbor Savings"]);
+  assert.match(out.loading_note, /Harbor Savings was only just connected.*never give this as their whole spending/);
   assert.deepEqual(out.by_category, [{ category: "food", amount: "$60.25" }, { category: "transport", amount: "$40.00" }, { category: "entertainment", amount: "$25.00" }]);
   assert.deepEqual(out.by_account, [{ account: "Tartan Bank Plaid Credit Card ••4321", amount: "$65.00" }, { account: "First Platypus Bank Plaid Checking ••0000", amount: "$60.25" }]);
   // Subscriptions come from every Item; a yearly one is named because Plaid's recurring data reports it.
-  const stream = (item, name, amount, frequency, last, next, primary, detailed) => ({ stream_id: `st_${name}`, account_id: item.accounts[0].account_id, description: name.toUpperCase(), merchant_name: name, frequency, is_active: true, status: "MATURE", last_date: last, predicted_next_date: next, average_amount: { amount }, last_amount: { amount }, personal_finance_category: { primary, detailed: `${primary}_${detailed}` }, transaction_ids: [] });
+  const stream = fx.stream;
   chk.item.recurring = [stream(chk.item, "Parkside Rent", 1500, "MONTHLY", "2026-11-01", "2026-12-01", "RENT_AND_UTILITIES", "RENT")];
   card.item.recurring = [stream(card.item, "Netflix", 25, "MONTHLY", "2026-11-10", "2026-12-10", "ENTERTAINMENT", "TV_AND_MOVIES"), stream(card.item, "Amazon Prime", 139, "ANNUALLY", "2026-02-02", "2027-02-02", "GENERAL_MERCHANDISE", "ONLINE_MARKETPLACES")];
   sav.item.recurring = [];
   const subs = await bank(A, { action: "subscriptions" });
   assert.equal(subs.source, "plaid");
   assert.deepEqual(subs.subscriptions.map(x => [x.name, x.amount, x.every]), [["Parkside Rent", "$1,500.00", "monthly"], ["Netflix", "$25.00", "monthly"], ["Amazon Prime", "$139.00", "annually"]]);
+  assert.equal(subs.per_month, "$1,536.58", "1500 + 25 + a twelfth of the yearly 139");
   // Update mode is per Item: the card's login expiring asks for the card's bank, with the card's token.
   said.length = 0;
   await http.plaidWebhookRequest({ ...fx.signed({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: card.item.item_id, error: { error_code: "ITEM_LOGIN_REQUIRED" } }) });
@@ -686,6 +711,8 @@ test("60 days only: the first sync stores nothing older, and the purge job delet
   Object.assign(fx.state.links.get(linkToken), { finished: true, publicTokens: [a.publicToken] });
   await http.plaidWebhookRequest({ ...fx.signed({ webhook_type: "LINK", webhook_code: "SESSION_FINISHED", status: "success", link_token: linkToken, public_tokens: [a.publicToken] }) });
   const kept = () => raw("SELECT transaction_id FROM plaid_transactions WHERE conversation_id = ? ORDER BY date", A).map(r => r.transaction_id);
+  assert.deepEqual(kept(), [], "the first answer has nothing");
+  await arrive(a);
   assert.deepEqual(kept(), ["edge", "mid", "new"]);
   // Plaid later corrects an old one: still not stored.
   await push(a, { modified: [fx.tx(a.item, "old1", "2026-05-01", 950, "Old Rent", "RENT_AND_UTILITIES", "RENT")] });
@@ -728,4 +755,248 @@ test("asked about more than 60 days: wholly older gets \"i only keep the last 60
   assert.equal(subs.source, "worked_out_here");
   assert.deepEqual(subs.subscriptions.map(x => [x.name, x.every]), [["Spotify", "monthly"]]);
   assert.match(subs.say, /last 60 days.*may miss yearly ones/);
+});
+
+// ---------------------------------------------------------------- what the real Sandbox showed (2026-11-13)
+
+test("just connected, and no webhook ever comes: asked before the transactions arrive it says they are still coming in and gives no number; asked again it reads them", async () => {
+  const b = await connect(A);
+  // Plaid still has nothing for the next three questions (it took 3 to 8 seconds in Sandbox), and its webhook never reaches us.
+  b.item.notReady = 3;
+  b.item.pages.push({ added: week(b) });
+  for (const action of ["spending", "transactions", "subscriptions"]) {
+    const out = await bank(A, { action, period: "this_week" });
+    assert.deepEqual([out.ok, out.error, out.still_loading], [false, "still_loading", ["First Platypus Bank"]], action);
+    assert.deepEqual([out.total, out.count, out.transactions, out.subscriptions], [undefined, undefined, undefined, undefined], `${action}: no number of any kind`);
+    assert.match(out.say, /only just connected.*Do not give a number: \$0 would be wrong/);
+  }
+  assert.equal(stored(A), 0);
+  assert.equal(fx.callsTo("/transactions/recurring/get").length, 0, "Plaid's recurring list is not asked for before there is anything to work from");
+  // The next question asks Plaid again, and this time they are there.
+  const out = await bank(A, { action: "spending", period: "this_week" });
+  assert.deepEqual([out.ok, out.total, out.count, out.still_loading], [true, "$112.75", 3, undefined]);
+  assert.equal((await bank(A, { action: "status" })).banks[0].transactions, undefined);
+});
+
+test("a webhook is lost: a question more than 30 seconds after the last sync asks Plaid again; one inside 30 seconds does not; Plaid being down still gets the stored answer", async () => {
+  const b = await connect(A);
+  await push(b, { added: week(b) });
+  const calls = () => fx.callsTo("/transactions/sync").length;
+  const n = calls();
+  assert.equal((await bank(A, { action: "spending", period: "this_week" })).total, "$112.75");
+  assert.equal(calls(), n, "synced a moment ago with its history in: read as it stands");
+  // A new charge at the bank. The webhook for it never arrives.
+  b.item.pages.push({ added: [fx.tx(b.item, "t9", "2026-11-12", 7.25, "Joe Coffee", "FOOD_AND_DRINK", "COFFEE")] });
+  assert.equal((await bank(A, { action: "spending", period: "this_week" })).total, "$112.75");
+  assert.equal(plaid.SYNC_FRESH_MS, 30_000);
+  clock.skip(31_000);
+  try {
+    assert.equal((await bank(A, { action: "spending", period: "this_week" })).total, "$120.00");
+    assert.equal(calls(), n + 1);
+    clock.skip(31_000);
+    b.item.failWith = "INSTITUTION_DOWN";
+    const out = await bank(A, { action: "spending", period: "this_week" });
+    assert.deepEqual([out.ok, out.total, out.still_loading], [true, "$120.00", undefined], "what is stored is still the answer");
+  } finally { clock.skip(-62_000); }
+});
+
+test("Plaid says the history is complete before any of it has arrived (seen once in Sandbox): nothing stored minutes after connecting is 'still coming in', never $0; an account that really is empty answers $0 once it has had ten minutes", async () => {
+  const b = await connect(A);
+  // The second answer: HISTORICAL_UPDATE_COMPLETE, and nothing.
+  let out = await bank(A, { action: "spending", period: "this_week" });
+  assert.deepEqual([out.ok, out.error], [false, "still_loading"]);
+  assert.equal(raw("SELECT history FROM plaid_items")[0].history, "HISTORICAL_UPDATE_COMPLETE");
+  // They land a few seconds later with no webhook: asked again at once, it does not wait out the 30 seconds.
+  b.item.pages.push({ added: week(b) });
+  out = await bank(A, { action: "spending", period: "this_week" });
+  assert.deepEqual([out.ok, out.total], [true, "$112.75"]);
+  // Somebody whose account has nothing in it.
+  await connect(B, { institution: "Tartan Bank", mask: "4321" });
+  assert.equal((await bank(B, { action: "spending", period: "this_week" })).error, "still_loading");
+  clock.skip(11 * 60_000);
+  try {
+    const zero = await bank(B, { action: "spending", period: "this_week" });
+    assert.deepEqual([zero.ok, zero.total, zero.still_loading], [true, "$0.00", undefined]);
+  } finally { clock.skip(-11 * 60_000); }
+});
+
+test("the last month is in and the weeks before it are still arriving: answered, with a note for the model, and Plaid is asked again on every question until the history is in", async () => {
+  const b = await connect(A);
+  b.item.history = "INITIAL_UPDATE_COMPLETE";
+  await push(b, { added: week(b) });
+  const n = fx.callsTo("/transactions/sync").length;
+  let out = await bank(A, { action: "spending", period: "this_week" });
+  assert.equal(out.total, "$112.75");
+  assert.deepEqual(out.history_still_arriving, ["First Platypus Bank"]);
+  assert.match(out.history_note, /Say so only if they asked about further back than a month/);
+  assert.equal((await bank(A, { action: "status" })).banks[0].transactions, "still coming in from the bank");
+  b.item.history = "HISTORICAL_UPDATE_COMPLETE";
+  out = await bank(A, { action: "spending", period: "this_week" });
+  assert.equal(out.history_still_arriving, undefined);
+  assert.equal(fx.callsTo("/transactions/sync").length, n + 2);
+});
+
+test("a loan account: interest accruing on it is not spending and not a subscription; what they pay toward the loan from checking is spending, connected or not", async () => {
+  const chk = await connect(A, { kind: "checking", mask: "0000" });
+  const loan = await connect(A, { institution: "Tartan Bank", kind: "mortgage", mask: "3000" });
+  await push(chk, { added: [
+    fx.tx(chk.item, "c1", "2026-11-09", 60.25, "Trader Joe's", "FOOD_AND_DRINK", "GROCERIES"),
+    fx.tx(chk.item, "c2", "2026-11-10", 2100, "Tartan Mortgage", "LOAN_PAYMENTS", "MORTGAGE_PAYMENT"),
+  ] });
+  // The loan's own lines, as the real Sandbox sends them: the payment arriving, and interest charged.
+  await push(loan, { added: [
+    fx.tx(loan.item, "l1", "2026-11-11", -2100, "Monthly payment", "LOAN_PAYMENTS", "MORTGAGE_PAYMENT", { merchant_name: null }),
+    fx.tx(loan.item, "l2", "2026-11-10", 62, "Interest charged", "BANK_FEES", "INTEREST_CHARGE", { merchant_name: null }),
+    fx.tx(loan.item, "l3", "2026-10-10", 62, "Interest charged", "BANK_FEES", "INTEREST_CHARGE", { merchant_name: null }),
+  ] });
+  const out = await bank(A, { action: "spending", period: "this_week" });
+  assert.equal(out.total, "$2,160.25", "groceries and the mortgage payment; not the interest line on the loan, and the payment is not hidden as a move between their accounts");
+  assert.deepEqual(out.by_category, [{ category: "bills", amount: "$2,100.00" }, { category: "food", amount: "$60.25" }]);
+  assert.equal(out.by_account, undefined, "nothing on the loan account is spending");
+  assert.equal((await bank(A, { action: "spending", period: "this_month", category: "fees" })).total, "$0.00");
+  // The list still shows the loan's lines for what they are.
+  const list = await bank(A, { action: "transactions", period: "this_week", search: "interest" });
+  assert.deepEqual(list.transactions.map(t => [t.name, t.amount, t.account]), [["Interest charged", "$62.00", "Tartan Bank Plaid Mortgage ••3000"]]);
+  // Worked out here: the monthly interest line is not a subscription.
+  let subs = await bank(A, { action: "subscriptions" });
+  assert.equal(subs.source, "worked_out_here");
+  assert.deepEqual(subs.subscriptions, []);
+  // Plaid's own list: a stream on the loan account is left out too.
+  chk.item.recurring = [fx.stream(chk.item, "Netflix", 25, "MONTHLY", "2026-11-10", "2026-12-10", "ENTERTAINMENT", "TV_AND_MOVIES")];
+  loan.item.recurring = [fx.stream(loan.item, "", 62, "MONTHLY", "2026-11-10", "2026-12-10", "BANK_FEES", "INTEREST_CHARGE", { description: "Interest charged" })];
+  subs = await bank(A, { action: "subscriptions" });
+  assert.deepEqual([subs.source, subs.subscriptions.map(x => x.name), subs.per_month], ["plaid", ["Netflix"], "$25.00"]);
+});
+
+test("a bank's own line with long numbers in it: the numbers are taken out before the name is kept, shown or searched", async () => {
+  const b = await connect(A);
+  await push(b, { added: [
+    fx.tx(b.item, "r1", "2026-11-10", 150, "ONLINE TRANSFER TO SAV 1111222233334444 REF #99887766", "GENERAL_SERVICES", "OTHER_GENERAL_SERVICES", { merchant_name: null }),
+    // Word for word from the Sandbox's own data.
+    fx.tx(b.item, "r2", "2026-11-11", 9.5, "WITHDRAWAL DEBIT CARD CONSUMER DEBIT PULSZ 252-291-2362 VA DATE 04/12 23978676735612 63546108 CARD 94353", "ENTERTAINMENT", "CASINOS_AND_GAMBLING", { merchant_name: null }),
+    fx.tx(b.item, "r3", "2026-11-12", 40, "UBER 588639690 RIDE 05/12 CA 12095 DEBIT CARD PURCHASE 04/04 TIMESTAMP 8102241", "TRANSPORTATION", "TAXIS_AND_RIDE_SHARES", { merchant_name: "Uber" }),
+  ] });
+  const list = await bank(A, { action: "transactions", period: "this_week" });
+  assert.deepEqual(list.transactions.map(t => t.name), ["Uber", "WITHDRAWAL DEBIT CARD CONSUMER DEBIT PULSZ 252-291-2362 VA DATE 04/12 CARD", "ONLINE TRANSFER TO SAV REF"]);
+  const spent = await bank(A, { action: "spending", period: "this_week" });
+  const kept = d.db.prepare("SELECT data FROM plaid_transactions WHERE conversation_id = ?").all(A).map(r => r.data);
+  assert.doesNotMatch(JSON.stringify([list, spent, kept]), /1111222233334444|99887766|23978676735612|63546108|94353|588639690|8102241/, "never shown, and never stored");
+  assert.deepEqual((await bank(A, { action: "transactions", period: "this_week", search: "pulsz" })).transactions.map(t => t.amount), ["$9.50"]);
+  assert.equal(plaid.txName({ merchant_name: null, name: "ACH Electronic CreditGUSTO PAY 123456" }), "ACH Electronic CreditGUSTO PAY");
+  assert.equal(plaid.txName({ merchant_name: "Sweetgreen", name: "SWEETGREEN 000123456" }), "Sweetgreen");
+});
+
+test("a card payment the connected card does not show yet: not counted as spending, listed as a card payment, and the note does not claim the card isn't connected", async () => {
+  const chk = await connect(A, { kind: "checking" });
+  const card = await connect(A, { institution: "Tartan Bank", kind: "credit", mask: "4321" });
+  await push(chk, { added: [fx.tx(chk.item, "c2", "2026-11-10", 300, "Tartan Card Payment", "LOAN_PAYMENTS", "CREDIT_CARD_PAYMENT")] });
+  await push(card, { added: [fx.tx(card.item, "k1", "2026-11-11", 40, "Uber", "TRANSPORTATION", "TAXIS_AND_RIDE_SHARES")] });
+  const out = await bank(A, { action: "spending", period: "this_week" });
+  assert.equal(out.total, "$40.00");
+  assert.equal(out.not_counted.paid_to_cards_not_connected, "$300.00");
+  assert.match(out.not_counted.note, /no connected card shows that payment \(a card that isn't connected, or one that hasn't posted it yet\), so what was bought on that card isn't in this total/);
+  const list = await bank(A, { action: "transactions", period: "this_week", search: "payment" });
+  assert.deepEqual(list.transactions.map(t => [t.name, t.amount, t.category]), [["Tartan Card Payment", "$300.00", "card payment"]]);
+});
+
+test("subscriptions add up: monthly charges cost exactly themselves a month, a yearly one a twelfth, a weekly one 52 twelfths", async () => {
+  const b = await connect(A);
+  await push(b, { added: week(b) });
+  b.item.recurring = [
+    fx.stream(b.item, "Gym", 78.5, "MONTHLY", "2026-11-08", "2026-12-08", "PERSONAL_CARE", "GYMS_AND_FITNESS_CENTERS"),
+    fx.stream(b.item, "Bikes", 500, "MONTHLY", "2026-10-20", "2026-11-20", "GENERAL_MERCHANDISE", "SPORTING_GOODS"),
+    fx.stream(b.item, "Prime", 139, "ANNUALLY", "2026-02-02", "2027-02-02", "GENERAL_MERCHANDISE", "ONLINE_MARKETPLACES"),
+    fx.stream(b.item, "Paper", 6, "WEEKLY", "2026-11-09", "2026-11-16", "ENTERTAINMENT", "OTHER_ENTERTAINMENT"),
+    // The price went up: what it last cost is what is listed, and what is added.
+    fx.stream(b.item, "Stream", 10, "MONTHLY", "2026-11-01", "2026-12-01", "ENTERTAINMENT", "TV_AND_MOVIES", { last_amount: { amount: 12 } }),
+  ];
+  const out = await bank(A, { action: "subscriptions" });
+  assert.deepEqual(out.subscriptions.map(x => [x.name, x.amount, x.every]), [["Bikes", "$500.00", "monthly"], ["Gym", "$78.50", "monthly"], ["Paper", "$6.00", "weekly"], ["Stream", "$12.00", "monthly"], ["Prime", "$139.00", "annually"]]);
+  assert.equal(out.per_month, "$628.08", "500 + 78.50 + 6 x 52/12 + 12 + 139/12");
+});
+
+test("the fixture is held to the real Sandbox: the fake Plaid answers with the same fields the real one sent, and no recording holds a real identifier", async () => {
+  const dir = new URL("./fixtures/plaid/", import.meta.url);
+  const files = readdirSync(dir).filter(f => f.endsWith(".json"));
+  assert.equal(files.length >= 15, true, "the recordings are there");
+  const rec = {};
+  for (const f of files) {
+    const text = readFileSync(new URL(f, dir), "utf8");
+    assert.doesNotMatch(text, /(access|public|link)-sandbox-[0-9a-f]{8}-[0-9a-f]{4}-/, `${f}: a real token`);
+    assert.doesNotMatch(text, /secure\.plaid\.com\/hl\/(?!PLACEHOLDER)/, `${f}: a real Hosted Link`);
+    assert.doesNotMatch(text, /"(item_id|account_id|transaction_id|request_id|stream_id|link_session_id)": "(?!ITEM_ID_|ACCOUNT_ID_|TRANSACTION_ID_|REQUEST_ID|STREAM_ID_|LINK_SESSION_ID_)/, `${f}: a real id`);
+    assert.doesNotMatch(text, /"(next_cursor|cursor)": "(?!CURSOR_|")/, `${f}: a real cursor`);
+    assert.doesNotMatch(text, /ts\.net|heyreason|client_id|"secret"/, `${f}: where this runs, or a key`);
+    rec[f.replace(/\.json$/, "")] = JSON.parse(text);
+  }
+  const keys = (o) => Object.keys(o ?? {}).filter(k => !k.startsWith("_")).sort();
+  const same = (got, want, what) => assert.deepEqual(keys(got), keys(want), what);
+  const call = async (path, body = {}) => { const res = await fx.fetchImpl(`https://sandbox.plaid.com${path}`, { method: "POST", body: JSON.stringify(body) }); return { status: res.status, body: await res.json() }; };
+  const real = (name) => { assert.ok(rec[name], `recording ${name}`); return rec[name]; };
+
+  const b = fx.addBank();
+  b.item.pages.push({ added: week(b) });
+  b.item.recurring = [fx.stream(b.item, "Netflix", 25, "MONTHLY", "2026-11-10", "2026-12-10", "ENTERTAINMENT", "TV_AND_MOVIES")];
+  // Hosted Link, new and update mode: link_token, hosted_link_url, expiration, request_id.
+  const made = await call("/link/token/create", { products: ["transactions"], hosted_link: {} });
+  same(made.body, real("link-token-create.new").response, "/link/token/create");
+  same((await call("/link/token/create", { access_token: b.access, hosted_link: {} })).body, real("link-token-create.update-mode").response, "/link/token/create (update mode)");
+  assert.match(real("link-token-create.new").response.hosted_link_url, /^https:\/\/secure\.plaid\.com\/hl\/\w+$/);
+  assert.match(made.body.hosted_link_url, /^https:\/\/secure\.plaid\.com\/hl\/\w+$/);
+  // A link nobody has opened: no link_sessions at all.
+  const unopened = await call("/link/token/get", { link_token: made.body.link_token });
+  same(unopened.body, real("link-token-get.ok").response, "/link/token/get, unopened");
+  same(unopened.body.metadata, real("link-token-get.ok").response.metadata, "/link/token/get metadata");
+  assert.equal("link_sessions" in real("link-token-get.ok").response, false);
+  same((await call("/item/public_token/exchange", { public_token: b.publicToken })).body, real("item-public_token-exchange.ok").response, "/item/public_token/exchange");
+  // Accounts and balances: the Item names its institution; an account has a name, a type and a mask, never a number.
+  for (const [path, name] of [["/accounts/get", "accounts-get.ok"], ["/accounts/balance/get", "accounts-balance-get.ok"]]) {
+    const got = (await call(path, { access_token: b.access })).body, want = real(name).response;
+    same(got, want, path);
+    same(got.item, want.item, `${path} item`);
+    const checking = want.accounts.find(a => a.subtype === "checking");
+    same(got.accounts[0], checking, `${path} account`);
+    same(got.accounts[0].balances, checking.balances, `${path} balances`);
+    assert.equal(typeof want.item.institution_name, "string");
+    assert.doesNotMatch(JSON.stringify(want), /"(account|routing|wire_routing)":|"numbers"/, "no account or routing number is in what was asked for");
+  }
+  // The first sync after a connection: nothing, to the letter.
+  const first = await call("/transactions/sync", { access_token: b.access, count: 500 });
+  const nothing = real("transactions-sync.nothing-yet").response;
+  assert.deepEqual({ ...first.body, request_id: "" }, { ...nothing, request_id: "" });
+  assert.deepEqual([nothing.transactions_update_status, nothing.next_cursor, nothing.added.length, nothing.accounts.length], ["NOT_READY", "", 0, 0]);
+  // Then a page of them.
+  const page = await call("/transactions/sync", { access_token: b.access, count: 500 });
+  const realPage = real("transactions-sync.page").response;
+  same(page.body, realPage, "/transactions/sync");
+  same(page.body.added[0], realPage.added[0], "a transaction");
+  same(page.body.added[0].personal_finance_category, realPage.added[0].personal_finance_category, "its category");
+  same(page.body.added[0].location, realPage.added[0].location, "its location");
+  same(page.body.added[0].payment_meta, realPage.added[0].payment_meta, "its payment_meta");
+  assert.equal(realPage.added.every(t => t.personal_finance_category.version === "v2"), true);
+  // Recurring: answered in Sandbox, with these fields.
+  const rc = (await call("/transactions/recurring/get", { access_token: b.access })).body, realRc = real("transactions-recurring-get.ok").response;
+  same(rc, realRc, "/transactions/recurring/get");
+  same(rc.outflow_streams[0], realRc.outflow_streams[0], "a recurring stream");
+  same(rc.outflow_streams[0].average_amount, realRc.outflow_streams[0].average_amount, "its average amount");
+  // The login expires.
+  b.item.failWith = "ITEM_LOGIN_REQUIRED";
+  for (const [path, name] of [["/transactions/sync", "transactions-sync.item_login_required"], ["/accounts/balance/get", "accounts-balance-get.item_login_required"]]) {
+    const got = await call(path, { access_token: b.access }), want = real(name);
+    same(got.body, want.response, `${path} with an expired login`);
+    assert.deepEqual([got.status, got.body.error_type, got.body.error_code], [want.status, want.response.error_type, want.response.error_code]);
+  }
+  b.item.failWith = null;
+  // Removed: the token then fails ITEM_NOT_FOUND.
+  same((await call("/item/remove", { access_token: b.access })).body, real("item-remove.ok").response, "/item/remove");
+  const after = await call("/accounts/get", { access_token: b.access }), wantAfter = real("accounts-get.item_not_found");
+  same(after.body, wantAfter.response, "a removed token");
+  assert.deepEqual([after.status, after.body.error_type, after.body.error_code], [wantAfter.status, "ITEM_ERROR", "ITEM_NOT_FOUND"]);
+  // A key id Plaid does not know.
+  const key = await call("/webhook_verification_key/get", { key_id: "nobody" }), wantKey = real("webhook_verification_key-get.invalid_webhook_verification_key_id");
+  same(key.body, wantKey.response, "an unknown key id");
+  assert.deepEqual([key.status, key.body.error_type, key.body.error_code], [wantKey.status, wantKey.response.error_type, wantKey.response.error_code]);
+  const { SHAPES_FROM, SHAPES_FROM_DOCS } = await import("./fixture-plaid.js");
+  assert.match(SHAPES_FROM, /^sandbox \d{4}-\d\d-\d\d$/);
+  assert.equal(SHAPES_FROM_DOCS.length, 4, "what is still from the docs alone is named");
 });

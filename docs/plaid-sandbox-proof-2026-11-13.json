@@ -1,0 +1,1392 @@
+{
+  "ran_at": "2026-11-13T05:01:33.631Z",
+  "today": "2026-11-13",
+  "plaid_host": "sandbox.plaid.com",
+  "sdk": "plaid 51.0.0",
+  "steps": {
+    "a": {
+      "title": "Hosted Link: a link token with hosted_link, made the way the code makes it",
+      "pass": true,
+      "facts": {
+        "sent": {
+          "client_name": "Reason",
+          "language": "en",
+          "country_codes": [
+            "US"
+          ],
+          "user": {
+            "client_user_id": "CLIENT_USER_ID"
+          },
+          "products": [
+            "transactions"
+          ],
+          "transactions": {
+            "days_requested": 180
+          },
+          "webhook": "https://reason.test/plaid/webhook",
+          "hosted_link": {
+            "completion_redirect_uri": "https://reason.test/bank/done?s=STATE",
+            "url_lifetime_seconds": 1800,
+            "is_mobile_app": false
+          }
+        },
+        "status": 200,
+        "ms": 466,
+        "response_keys": [
+          "expiration",
+          "hosted_link_url",
+          "link_token",
+          "request_id"
+        ],
+        "hosted_link_url_shape": "https://secure.plaid.com/hl/<34 chars>",
+        "expiration": "2026-11-13T05:31:34Z",
+        "expires_in_minutes": 30,
+        "tool_said_minutes": 30,
+        "page": {
+          "status": 200,
+          "final_host": "secure.plaid.com",
+          "title": "Connect with Plaid",
+          "bytes": 634
+        },
+        "unopened_link": {
+          "integration_says": {
+            "ok": false,
+            "pending": true,
+            "outcome": "open"
+          },
+          "link_token_get_keys": [
+            "created_at",
+            "expiration",
+            "link_token",
+            "metadata",
+            "request_id"
+          ],
+          "link_sessions": null,
+          "metadata_keys": [
+            "client_name",
+            "country_codes",
+            "initial_products",
+            "language",
+            "redirect_uri",
+            "webhook"
+          ],
+          "page_outcome": "open"
+        },
+        "probes": {
+          "empty_hosted_link_object": {
+            "accepted": true,
+            "expires_in_minutes": 30.01,
+            "has_hosted_link_url": true
+          },
+          "redirect_to_a_host_never_registered": {
+            "accepted": true,
+            "expires_in_minutes": 30.01,
+            "has_hosted_link_url": true
+          },
+          "redirect_to_loopback_http": {
+            "accepted": true,
+            "expires_in_minutes": 30,
+            "has_hosted_link_url": true
+          },
+          "lifetime_one_day": {
+            "accepted": true,
+            "expires_in_minutes": 1440,
+            "has_hosted_link_url": true
+          },
+          "no_webhook_url": {
+            "accepted": true,
+            "expires_in_minutes": 30,
+            "has_hosted_link_url": true
+          },
+          "with_webhook_url": {
+            "accepted": true,
+            "expires_in_minutes": 30,
+            "has_hosted_link_url": true
+          }
+        },
+        "line": "url https://secure.plaid.com/hl/<34 chars>, expires in 30 min, page 200"
+      },
+      "seconds": 1.52
+    },
+    "b": {
+      "title": "Connect with no person: Sandbox public token, exchange, first sync, fresh balance, recurring",
+      "pass": true,
+      "facts": {
+        "webhook_handler": {
+          "handled": "SESSION_FINISHED",
+          "ok": true,
+          "outcome": "connected",
+          "banks": [
+            "First Platypus Bank"
+          ]
+        },
+        "connect_seconds": 1.36,
+        "institution_saved": "First Platypus Bank",
+        "accounts_get": {
+          "keys": [
+            "accounts",
+            "item",
+            "request_id"
+          ],
+          "item_keys": [
+            "available_products",
+            "billed_products",
+            "consent_expiration_time",
+            "error",
+            "institution_id",
+            "institution_name",
+            "item_id",
+            "products",
+            "update_type",
+            "webhook"
+          ],
+          "institution_name_present": true,
+          "account_keys": [
+            "account_id",
+            "apy",
+            "balances",
+            "holder_category",
+            "mask",
+            "name",
+            "official_name",
+            "subtype",
+            "type"
+          ],
+          "accounts": 14
+        },
+        "first_sync": {
+          "status": 200,
+          "keys": [
+            "accounts",
+            "added",
+            "has_more",
+            "modified",
+            "next_cursor",
+            "removed",
+            "request_id",
+            "transactions_update_status"
+          ],
+          "added": 0,
+          "transactions_update_status": "NOT_READY",
+          "next_cursor_empty": true,
+          "has_more": false,
+          "stored_right_after": 0
+        },
+        "recurring_asked_at_once": {
+          "code": "PRODUCT_NOT_READY",
+          "type": "ITEM_ERROR"
+        },
+        "asked_with_no_webhook": {
+          "questions": 5,
+          "answered_after_seconds": 8.01,
+          "timeline": [
+            {
+              "at_s": 0.64,
+              "ok": false,
+              "error": "still_loading",
+              "still_loading": [
+                "First Platypus Bank"
+              ],
+              "has_a_number": false
+            },
+            {
+              "at_s": 2.49,
+              "ok": false,
+              "error": "still_loading",
+              "still_loading": [
+                "First Platypus Bank"
+              ],
+              "has_a_number": false
+            },
+            {
+              "at_s": 4.37,
+              "ok": false,
+              "error": "still_loading",
+              "still_loading": [
+                "First Platypus Bank"
+              ],
+              "has_a_number": false
+            },
+            {
+              "at_s": 6.21,
+              "ok": false,
+              "error": "still_loading",
+              "still_loading": [
+                "First Platypus Bank"
+              ],
+              "has_a_number": false
+            },
+            {
+              "at_s": 8.01,
+              "ok": true,
+              "total": "$4,274.46",
+              "count": 11,
+              "has_a_number": true
+            }
+          ],
+          "never_gave_a_number_before_the_data": true,
+          "first": {
+            "at_s": 0.64,
+            "ok": false,
+            "error": "still_loading",
+            "still_loading": [
+              "First Platypus Bank"
+            ],
+            "has_a_number": false
+          },
+          "last": {
+            "at_s": 8.01,
+            "ok": true,
+            "total": "$4,274.46",
+            "count": 11,
+            "has_a_number": true
+          }
+        },
+        "stored_after_questions": 16,
+        "settle": {
+          "seconds": 0.23,
+          "polls": 1,
+          "timeline": [
+            {
+              "at_s": 0.23,
+              "ok": true,
+              "added": 0,
+              "modified": 0,
+              "removed": 0,
+              "history": "HISTORICAL_UPDATE_COMPLETE"
+            }
+          ],
+          "done": true,
+          "stored": 16
+        },
+        "stored_after_settle": 16,
+        "sync_calls": [
+          {
+            "status": 200,
+            "ms": 457,
+            "added": 0,
+            "has_more": false,
+            "update_status": "NOT_READY",
+            "cursor_sent": false,
+            "next_cursor_empty": true
+          },
+          {
+            "status": 200,
+            "ms": 636,
+            "added": 0,
+            "has_more": false,
+            "update_status": "NOT_READY",
+            "cursor_sent": false,
+            "next_cursor_empty": true
+          },
+          {
+            "status": 200,
+            "ms": 354,
+            "added": 0,
+            "has_more": false,
+            "update_status": "INITIAL_UPDATE_COMPLETE",
+            "cursor_sent": false,
+            "next_cursor_empty": true
+          },
+          {
+            "status": 200,
+            "ms": 370,
+            "added": 0,
+            "has_more": false,
+            "update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "cursor_sent": false,
+            "next_cursor_empty": true
+          },
+          {
+            "status": 200,
+            "ms": 343,
+            "added": 0,
+            "has_more": false,
+            "update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "cursor_sent": false,
+            "next_cursor_empty": true
+          },
+          {
+            "status": 200,
+            "ms": 287,
+            "added": 16,
+            "has_more": false,
+            "update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "cursor_sent": false,
+            "next_cursor_empty": false
+          },
+          {
+            "status": 200,
+            "ms": 227,
+            "added": 0,
+            "has_more": false,
+            "update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "cursor_sent": true,
+            "next_cursor_empty": false
+          }
+        ],
+        "said": [
+          "First Platypus Bank is connected. i can see balances and tra"
+        ],
+        "balance": {
+          "ok": true,
+          "seconds": 1.67,
+          "accounts": 14,
+          "sample": [
+            {
+              "account": "First Platypus Bank Plaid Checking ••0000",
+              "available": "$100.00",
+              "current": "$110.00"
+            },
+            {
+              "account": "First Platypus Bank Plaid Saving ••1111",
+              "available": "$200.00",
+              "current": "$210.00"
+            },
+            {
+              "account": "First Platypus Bank Plaid CD ••2222",
+              "current": "$1,000.00"
+            },
+            {
+              "account": "First Platypus Bank Plaid Credit Card ••3333",
+              "current": "$410.00",
+              "limit": "$2,000.00"
+            }
+          ],
+          "fresh": true,
+          "keys": [
+            "accounts",
+            "item",
+            "request_id"
+          ],
+          "balances_keys": [
+            "available",
+            "current",
+            "iso_currency_code",
+            "limit",
+            "unofficial_currency_code"
+          ],
+          "checking_matches_plaid": true
+        },
+        "recurring": {
+          "status": 200,
+          "source": "plaid",
+          "count": 5,
+          "per_month": "$1,667.90",
+          "keys": [
+            "inflow_streams",
+            "outflow_streams",
+            "personal_finance_category_version",
+            "request_id",
+            "updated_datetime"
+          ],
+          "outflow_streams": 7,
+          "inflow_streams": 1,
+          "stream_keys": [
+            "account_id",
+            "average_amount",
+            "category",
+            "category_id",
+            "description",
+            "first_date",
+            "frequency",
+            "is_active",
+            "is_user_modified",
+            "last_amount",
+            "last_date",
+            "last_user_modified_datetime",
+            "merchant_name",
+            "personal_finance_category",
+            "predicted_next_date",
+            "status",
+            "stream_id",
+            "transaction_ids"
+          ],
+          "frequencies": [
+            "MONTHLY"
+          ],
+          "statuses": [
+            "MATURE"
+          ],
+          "fallback_logged": [],
+          "list": [
+            {
+              "name": "Madison Bicycle Center",
+              "amount": "$500.00",
+              "every": "monthly",
+              "category": "shopping",
+              "last_charged": "2026-10-20",
+              "next_expected": "2026-11-20",
+              "gone_out_this_month": false
+            },
+            {
+              "name": "Tectra Inc",
+              "amount": "$500.00",
+              "every": "monthly",
+              "category": "food",
+              "last_charged": "2026-10-21",
+              "next_expected": "2026-11-21",
+              "gone_out_this_month": false
+            },
+            {
+              "name": "United Airlines",
+              "amount": "$500.00",
+              "every": "monthly",
+              "category": "travel",
+              "last_charged": "2026-10-26",
+              "next_expected": "2026-11-26",
+              "gone_out_this_month": false
+            },
+            {
+              "name": "FUN",
+              "amount": "$89.40",
+              "every": "monthly",
+              "category": "food",
+              "last_charged": "2026-11-06",
+              "next_expected": "2026-12-06",
+              "gone_out_this_month": true
+            },
+            {
+              "name": "Touchstone Climbing",
+              "amount": "$78.50",
+              "every": "monthly",
+              "category": "health",
+              "last_charged": "2026-11-08",
+              "next_expected": "2026-12-08",
+              "gone_out_this_month": true
+            }
+          ]
+        },
+        "line": "First Platypus Bank: 14 accounts, first sync 0 tx (NOT_READY); asked at once: still_loading, answered $4,274.46 after 8.01s and 5 questions, no webhook; history in 0.23s, 16 stored; balance 1.67s; recurring 200 7 out (plaid)"
+      },
+      "seconds": 16.25
+    },
+    "c": {
+      "title": "Two banks together: combined totals, own transfer not spending, card payment not twice, accounts by name and last four",
+      "pass": true,
+      "facts": {
+        "webhook_handler": {
+          "handled": "SESSION_FINISHED",
+          "ok": true,
+          "outcome": "connected",
+          "banks": [
+            "Tartan Bank"
+          ]
+        },
+        "connect_seconds": 0.93,
+        "settle": {
+          "seconds": 5.26,
+          "polls": 3,
+          "timeline": [
+            {
+              "at_s": 0.27,
+              "ok": true,
+              "added": 0,
+              "modified": 0,
+              "removed": 0,
+              "history": "NOT_READY"
+            },
+            {
+              "at_s": 2.62,
+              "ok": true,
+              "added": 0,
+              "modified": 0,
+              "removed": 0,
+              "history": "INITIAL_UPDATE_COMPLETE"
+            },
+            {
+              "at_s": 5.26,
+              "ok": true,
+              "added": 311,
+              "modified": 0,
+              "removed": 0,
+              "history": "HISTORICAL_UPDATE_COMPLETE"
+            }
+          ],
+          "done": true,
+          "stored": 311
+        },
+        "banks": [
+          "First Platypus Bank",
+          "Tartan Bank"
+        ],
+        "accounts": {
+          "checking1": "First Platypus Bank Plaid Checking ••0000",
+          "savings1": "First Platypus Bank Plaid Saving ••1111",
+          "card1": "First Platypus Bank Plaid Credit Card ••3333",
+          "checking2": "Tartan Bank Checking ••1000",
+          "card2": "Tartan Bank Credit card ••2000"
+        },
+        "item2_account_kinds": [
+          "depository/checking",
+          "credit/credit card",
+          "loan/mortgage",
+          "loan/student",
+          "loan/auto",
+          "loan/consumer",
+          "loan/line of credit"
+        ],
+        "create_response_keys": [
+          "request_id"
+        ],
+        "settle_purchase": {
+          "seconds": 2.91,
+          "polls": 2,
+          "timeline": [
+            {
+              "at_s": 0.44,
+              "ok": true,
+              "added": 51,
+              "modified": 311,
+              "removed": 0,
+              "history": "HISTORICAL_UPDATE_COMPLETE"
+            },
+            {
+              "at_s": 2.91,
+              "ok": true,
+              "added": 1,
+              "modified": 0,
+              "removed": 0,
+              "history": "HISTORICAL_UPDATE_COMPLETE"
+            }
+          ],
+          "done": true,
+          "stored": 322
+        },
+        "settle_moves": {
+          "bank1": {
+            "seconds": 2.93,
+            "polls": 2,
+            "timeline": [
+              {
+                "at_s": 0.56,
+                "ok": true,
+                "added": 80,
+                "modified": 16,
+                "removed": 0,
+                "history": "HISTORICAL_UPDATE_COMPLETE"
+              },
+              {
+                "at_s": 2.93,
+                "ok": true,
+                "added": 4,
+                "modified": 0,
+                "removed": 0,
+                "history": "HISTORICAL_UPDATE_COMPLETE"
+              }
+            ],
+            "done": true,
+            "stored": 36
+          },
+          "bank2": {
+            "seconds": 2.54,
+            "polls": 2,
+            "timeline": [
+              {
+                "at_s": 0.23,
+                "ok": true,
+                "added": 0,
+                "modified": 0,
+                "removed": 0,
+                "history": "HISTORICAL_UPDATE_COMPLETE"
+              },
+              {
+                "at_s": 2.54,
+                "ok": true,
+                "added": 2,
+                "modified": 0,
+                "removed": 0,
+                "history": "HISTORICAL_UPDATE_COMPLETE"
+              }
+            ],
+            "done": true,
+            "stored": 324
+          }
+        },
+        "plaid_labelled": {
+          "purchase_on_card": {
+            "name": "SWEETGREEN",
+            "merchant_name": "Sweetgreen",
+            "primary": "FOOD_AND_DRINK",
+            "detailed": "FOOD_AND_DRINK_RESTAURANT",
+            "confidence": "VERY_HIGH",
+            "pending": false,
+            "date": "2026-11-13"
+          },
+          "transfer_out_checking": {
+            "name": "Online Transfer to Savings xxxx1111",
+            "merchant_name": null,
+            "primary": "TRANSFER_OUT",
+            "detailed": "TRANSFER_OUT_SAVINGS",
+            "confidence": "HIGH",
+            "pending": false,
+            "date": "2026-11-13"
+          },
+          "transfer_in_savings": {
+            "name": "Online Transfer from Checking xxxx0000",
+            "merchant_name": null,
+            "primary": "TRANSFER_IN",
+            "detailed": "TRANSFER_IN_ACCOUNT_TRANSFER",
+            "confidence": "HIGH",
+            "pending": false,
+            "date": "2026-11-13"
+          },
+          "cross_bank_out": {
+            "name": "External Transfer to Tartan Bank Checking",
+            "merchant_name": null,
+            "primary": "TRANSFER_OUT",
+            "detailed": "TRANSFER_OUT_ACCOUNT_TRANSFER",
+            "confidence": "HIGH",
+            "pending": false,
+            "date": "2026-11-13"
+          },
+          "cross_bank_in": {
+            "name": "External Transfer from First Platypus Bank Checking",
+            "merchant_name": null,
+            "primary": "TRANSFER_IN",
+            "detailed": "TRANSFER_IN_ACCOUNT_TRANSFER",
+            "confidence": "HIGH",
+            "pending": false,
+            "date": "2026-11-13"
+          },
+          "card_payment_from_checking": {
+            "name": "TARTAN BANK CREDIT CARD AUTOPAY PAYMENT",
+            "merchant_name": null,
+            "primary": "LOAN_PAYMENTS",
+            "detailed": "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+            "confidence": "HIGH",
+            "pending": false,
+            "date": "2026-11-13"
+          },
+          "card_payment_on_card": {
+            "name": "PAYMENT THANK YOU - WEB",
+            "merchant_name": null,
+            "primary": "LOAN_PAYMENTS",
+            "detailed": "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+            "confidence": "VERY_HIGH",
+            "pending": false,
+            "date": "2026-11-13"
+          }
+        },
+        "totals": {
+          "before": "$9,999.14",
+          "after_purchase": "$10,011.48",
+          "after_moves": "$10,011.48",
+          "purchase": 12.34,
+          "moved": 710.07
+        },
+        "purchase_counted_once": true,
+        "moves_not_counted": true,
+        "not_counted_note": {
+          "paid_to_cards_not_connected": "$25.00",
+          "transfers_out": "$7,123.09",
+          "note": "They paid toward a card and no connected card shows that payment (a card that isn't connected, or one that hasn't posted it yet), so what was bought on that card isn't in this total. Transfers out (to another account or a person) aren't counted as spending. Mention it in a few words only if it matters to what they asked."
+        },
+        "combined": {
+          "integration_total": "$10,011.48",
+          "integration_count": 108,
+          "plaid_rows_total": 10011.48,
+          "plaid_rows_count": 108,
+          "match": true,
+          "by_account": [
+            {
+              "account": "First Platypus Bank Plaid Credit Card ••3333",
+              "amount": "$4,157.00"
+            },
+            {
+              "account": "Tartan Bank Checking ••1000",
+              "amount": "$3,460.03"
+            },
+            {
+              "account": "Tartan Bank Credit card ••2000",
+              "amount": "$2,276.99"
+            },
+            {
+              "account": "First Platypus Bank Plaid Checking ••0000",
+              "amount": "$117.46"
+            }
+          ],
+          "per_bank_from_plaid_rows": {
+            "bank1": 4274.46,
+            "bank2": 5737.02
+          }
+        },
+        "both_banks_in_answer": true,
+        "loan_accounts": {
+          "accounts": 9,
+          "money_out_lines_in_30_days": 69,
+          "their_sum": 3103.47,
+          "what_plaid_calls_them": [
+            "Interest charged / BANK_FEES_INTEREST_CHARGE",
+            "Interest / BANK_FEES_INTEREST_CHARGE"
+          ],
+          "counted_as_spending": []
+        },
+        "names": {
+          "plaid_lines_with_5_or_more_digits_in_a_row": 6,
+          "kept_names_with_5_or_more_digits_in_a_row": 0,
+          "kept": 360,
+          "examples_kept": [
+            "CREDIT CARD 3333 PAYMENT *//",
+            "TARTAN BANK CREDIT CARD AUTOPAY PAYMENT"
+          ]
+        },
+        "status": [
+          {
+            "bank": "First Platypus Bank",
+            "status": "connected",
+            "accounts": [
+              "Plaid Checking ••0000",
+              "Plaid Saving ••1111",
+              "Plaid CD ••2222",
+              "Plaid Credit Card ••3333",
+              "Plaid Money Market ••4444",
+              "Plaid IRA ••5555",
+              "Plaid 401k ••6666",
+              "Plaid Student Loan ••7777",
+              "Plaid Mortgage ••8888",
+              "Plaid HSA ••9001",
+              "Plaid Cash Management ••9002",
+              "Plaid Auto Loan ••9003",
+              "Plaid Home Equity Line of Credit ••9004",
+              "Plaid Business Credit Card ••9999"
+            ]
+          },
+          {
+            "bank": "Tartan Bank",
+            "status": "connected",
+            "accounts": [
+              "Checking ••1000",
+              "Credit card ••2000",
+              "Mortgage loan ••3000",
+              "Student loan ••4000",
+              "Auto loan ••5000",
+              "Consumer loan ••6000",
+              "Line of credit loan ••7000"
+            ]
+          }
+        ],
+        "labels_all_name_and_last_four": true,
+        "todays_transactions": [
+          {
+            "date": "2026-11-13",
+            "name": "PAYMENT THANK YOU - WEB",
+            "amount": "+$251.07",
+            "category": "card payment",
+            "account": "Tartan Bank Credit card ••2000"
+          },
+          {
+            "date": "2026-11-13",
+            "name": "External Transfer from First Platypus Bank Checking",
+            "amount": "+$141.59",
+            "category": "transfer in",
+            "account": "Tartan Bank Checking ••1000"
+          },
+          {
+            "date": "2026-11-13",
+            "name": "Online Transfer from Checking xxxx0000",
+            "amount": "+$317.41",
+            "category": "transfer in",
+            "account": "First Platypus Bank Plaid Saving ••1111"
+          },
+          {
+            "date": "2026-11-13",
+            "name": "TARTAN BANK CREDIT CARD AUTOPAY PAYMENT",
+            "amount": "$251.07",
+            "category": "card payment",
+            "account": "First Platypus Bank Plaid Checking ••0000"
+          },
+          {
+            "date": "2026-11-13",
+            "name": "External Transfer to Tartan Bank Checking",
+            "amount": "$141.59",
+            "category": "transfer out",
+            "account": "First Platypus Bank Plaid Checking ••0000"
+          },
+          {
+            "date": "2026-11-13",
+            "name": "Online Transfer to Savings xxxx1111",
+            "amount": "$317.41",
+            "category": "transfer out",
+            "account": "First Platypus Bank Plaid Checking ••0000"
+          },
+          {
+            "date": "2026-11-13",
+            "name": "Sweetgreen",
+            "amount": "$12.34",
+            "category": "food",
+            "account": "Tartan Bank Credit card ••2000"
+          },
+          {
+            "date": "2026-11-13",
+            "name": "Monthly payment",
+            "amount": "+$540.00",
+            "category": "bills",
+            "pending": true,
+            "account": "Tartan Bank Line of credit loan ••7000"
+          }
+        ],
+        "transaction_accounts_named": true,
+        "line": "First Platypus Bank + Tartan Bank: total $9,999.14 -> +purchase $10,011.48 -> +moves $10,011.48; matches Plaid rows: true (10011.48); labels ok: true; loan lines left out: 69 ($3103.47); long numbers in names: 6 sent, 0 kept"
+      },
+      "seconds": 25.49
+    },
+    "d": {
+      "title": "The questions a person asks, answered from the real data",
+      "pass": true,
+      "facts": {
+        "this_week": {
+          "asked": "how much did i spend this week",
+          "from": "2026-11-09",
+          "to": "2026-11-13",
+          "total": "$852.52",
+          "count": 28,
+          "by_category": [
+            {
+              "category": "shopping",
+              "amount": "$452.82"
+            },
+            {
+              "category": "entertainment",
+              "amount": "$183.94"
+            },
+            {
+              "category": "food",
+              "amount": "$100.89"
+            },
+            {
+              "category": "bills",
+              "amount": "$58.00"
+            },
+            {
+              "category": "services",
+              "amount": "$40.00"
+            },
+            {
+              "category": "health",
+              "amount": "$11.47"
+            },
+            {
+              "category": "transport",
+              "amount": "$5.40"
+            }
+          ],
+          "top_merchants": [
+            {
+              "name": "Amazon",
+              "amount": "$448.99"
+            },
+            {
+              "name": "Apple",
+              "amount": "$117.65"
+            },
+            {
+              "name": "Earnin",
+              "amount": "$58.00"
+            },
+            {
+              "name": "Chick-fil-A",
+              "amount": "$39.35"
+            },
+            {
+              "name": "XGUYS XXXX ECOMM",
+              "amount": "$34.07"
+            }
+          ],
+          "plaid_rows_total": 852.52,
+          "match": true
+        },
+        "food_this_month": {
+          "asked": "how much on food this month",
+          "from": "2026-11-01",
+          "to": "2026-11-13",
+          "total": "$1,127.53",
+          "count": 27,
+          "top_merchants": [
+            {
+              "name": "McDonald's",
+              "amount": "$161.67"
+            },
+            {
+              "name": "Food Lion",
+              "amount": "$143.93"
+            },
+            {
+              "name": "Olive Garden",
+              "amount": "$121.41"
+            },
+            {
+              "name": "Dunkin'",
+              "amount": "$103.44"
+            },
+            {
+              "name": "Wegmans",
+              "amount": "$82.09"
+            }
+          ],
+          "plaid_rows_total": 1127.53,
+          "match": true
+        },
+        "subscriptions": {
+          "asked": "what are my subscriptions",
+          "ok": true,
+          "source": "plaid",
+          "count": 7,
+          "per_month": "$1,700.12",
+          "all_monthly": true,
+          "listed_amounts_add_up_to": 1700.12,
+          "per_month_is_their_sum": true,
+          "list": [
+            {
+              "name": "Madison Bicycle Center",
+              "amount": "$500.00",
+              "every": "monthly",
+              "category": "shopping",
+              "last_charged": "2026-10-20",
+              "next_expected": "2026-11-20",
+              "gone_out_this_month": false
+            },
+            {
+              "name": "Tectra Inc",
+              "amount": "$500.00",
+              "every": "monthly",
+              "category": "food",
+              "last_charged": "2026-10-21",
+              "next_expected": "2026-11-21",
+              "gone_out_this_month": false
+            },
+            {
+              "name": "United Airlines",
+              "amount": "$500.00",
+              "every": "monthly",
+              "category": "travel",
+              "last_charged": "2026-10-26",
+              "next_expected": "2026-11-26",
+              "gone_out_this_month": false
+            },
+            {
+              "name": "FUN",
+              "amount": "$89.40",
+              "every": "monthly",
+              "category": "food",
+              "last_charged": "2026-11-06",
+              "next_expected": "2026-12-06",
+              "gone_out_this_month": true
+            },
+            {
+              "name": "Touchstone Climbing",
+              "amount": "$78.50",
+              "every": "monthly",
+              "category": "health",
+              "last_charged": "2026-11-08",
+              "next_expected": "2026-12-08",
+              "gone_out_this_month": true
+            },
+            {
+              "name": "Netflix",
+              "amount": "$19.57",
+              "every": "monthly",
+              "category": "entertainment",
+              "last_charged": "2026-11-13",
+              "next_expected": "2026-12-13",
+              "gone_out_this_month": true
+            },
+            {
+              "name": "Spotify",
+              "amount": "$12.65",
+              "every": "monthly",
+              "category": "entertainment",
+              "last_charged": "2026-11-13",
+              "next_expected": "2026-12-13",
+              "gone_out_this_month": true
+            }
+          ],
+          "yearly_named": 0,
+          "say": "Lead with how many and the monthly total, then the list, short."
+        },
+        "pay_step": {
+          "too_large": {
+            "checked": true,
+            "short": true,
+            "account": "First Platypus Bank Plaid Money Market ••4444",
+            "available": "$43,200.00",
+            "needed": "$9,999,999.00"
+          },
+          "small": {
+            "checked": true,
+            "short": false
+          },
+          "fresh_balance_calls": 4,
+          "banks": 2
+        },
+        "older_than_60_days": {
+          "asked": "spending 2026-07-16..2026-08-14",
+          "answer": {
+            "ok": false,
+            "error": "beyond_60_days",
+            "has_total": false
+          },
+          "partly_older": {
+            "from": "2026-09-14",
+            "only_last_60_days": true,
+            "cutoff": "2026-09-14"
+          }
+        },
+        "line": "week $852.52 (Plaid rows 852.52); food $1,127.53 (1127.53); subs 7 via plaid; too-large short=true of $43,200.00; old period -> beyond_60_days"
+      },
+      "seconds": 10.88
+    },
+    "e": {
+      "title": "The 60-day rule on real data: nothing older stored, and the purge removes what ages out",
+      "pass": true,
+      "facts": {
+        "first_sync": {
+          "cutoff": "2026-09-14",
+          "plaid_sent": 465,
+          "plaid_sent_older_than_cutoff": 105,
+          "plaid_oldest": "2026-05-20",
+          "stored": 360,
+          "stored_oldest": "2026-09-16",
+          "stored_older_than_cutoff": 0
+        },
+        "purge": {
+          "clock_advanced_days": 25,
+          "new_cutoff": "2026-10-09",
+          "aged_out_before": 15,
+          "deleted": 15,
+          "left_older_than_new_cutoff": 0,
+          "stored_after": 345,
+          "stored_oldest_after": "2026-10-09"
+        },
+        "line": "Plaid sent 465 (oldest 2026-05-20, 105 older than 2026-09-14); stored 360, oldest 2026-09-16; +25d purge deleted 15 of 15"
+      },
+      "seconds": 0
+    },
+    "f": {
+      "title": "Expired login: /sandbox/item/reset_login, then the integration notices and makes an update-mode link",
+      "pass": true,
+      "facts": {
+        "reset_login": {
+          "request_id": "REQUEST_ID",
+          "reset_login": true
+        },
+        "sync": {
+          "integration_says": {
+            "ok": false,
+            "error": "login_required"
+          },
+          "plaid_status": 400,
+          "error_type": "ITEM_ERROR",
+          "error_code": "ITEM_LOGIN_REQUIRED",
+          "error_keys": [
+            "display_message",
+            "documentation_url",
+            "error_code",
+            "error_message",
+            "error_type",
+            "request_id",
+            "suggested_action"
+          ]
+        },
+        "update_link": {
+          "made": 1,
+          "status": 200,
+          "sent_keys": [
+            "access_token",
+            "client_name",
+            "country_codes",
+            "hosted_link",
+            "language",
+            "user",
+            "webhook"
+          ],
+          "has_access_token": true,
+          "names_products": false,
+          "hosted_link_sent": {
+            "completion_redirect_uri": "https://reason.test/bank/done?s=STATE",
+            "url_lifetime_seconds": 1800,
+            "is_mobile_app": false
+          },
+          "response_keys": [
+            "expiration",
+            "hosted_link_url",
+            "link_token",
+            "request_id"
+          ],
+          "expires_in_minutes": 30,
+          "has_hosted_link_url": true
+        },
+        "texted": {
+          "count": 1,
+          "starts": "Tartan Bank signed me out, so i can't see your account right now. tap ",
+          "ends_with_hosted_link": true
+        },
+        "item_status": "login_required",
+        "balance": {
+          "ok": true,
+          "accounts": 14,
+          "problems": [
+            {
+              "bank": "Tartan Bank",
+              "problem": "needs_reconnect"
+            }
+          ],
+          "plaid_error_code": null,
+          "balance_endpoint_asked_directly": {
+            "code": "ITEM_LOGIN_REQUIRED",
+            "type": "ITEM_ERROR"
+          }
+        },
+        "status_says": [
+          "First Platypus Bank: connected",
+          "Tartan Bank: needs_reconnect"
+        ],
+        "no_second_text": true,
+        "reconnect_tool": {
+          "ok": true,
+          "reconnecting": "Tartan Bank",
+          "has_url": true
+        },
+        "unfinished_update_link": {
+          "integration_says": {
+            "ok": false,
+            "pending": true,
+            "outcome": "open"
+          },
+          "link_sessions": null
+        },
+        "spending_still_answers": {
+          "ok": true,
+          "needs_reconnect": [
+            "Tartan Bank"
+          ]
+        },
+        "line": "sync -> login_required (Plaid 400 ITEM_LOGIN_REQUIRED); update link 200, access_token sent: true, products named: false, expires 30 min; texted 1"
+      },
+      "seconds": 4.04
+    },
+    "g": {
+      "title": "Webhooks: what /sandbox/item/fire_webhook answers, and the verification path as far as it goes without a delivery",
+      "pass": true,
+      "facts": {
+        "item_webhook_at_start": "",
+        "fired_with_no_webhook_url": {
+          "ok": false,
+          "code": "SANDBOX_WEBHOOK_INVALID",
+          "type": "SANDBOX_ERROR",
+          "message": "Webhook for this item is either not set up, or invalid. Please update the item's webhook and try again."
+        },
+        "set_webhook_url": {
+          "ok": true,
+          "keys": [
+            "item",
+            "request_id"
+          ]
+        },
+        "fired": {
+          "SYNC_UPDATES_AVAILABLE": {
+            "request_id": "REQUEST_ID",
+            "webhook_fired": true
+          },
+          "DEFAULT_UPDATE": {
+            "request_id": "REQUEST_ID",
+            "webhook_fired": true
+          },
+          "RECURRING_TRANSACTIONS_UPDATE": {
+            "request_id": "REQUEST_ID",
+            "webhook_fired": true
+          },
+          "LOGIN_REPAIRED": {
+            "request_id": "REQUEST_ID",
+            "webhook_fired": true
+          },
+          "PENDING_DISCONNECT": {
+            "request_id": "REQUEST_ID",
+            "webhook_fired": true
+          }
+        },
+        "forged_signature_unknown_key_id": {
+          "http_status": 401,
+          "asked_plaid_for_key": true,
+          "plaid_status": 400,
+          "plaid_error_type": "INVALID_INPUT",
+          "plaid_error_code": "INVALID_WEBHOOK_VERIFICATION_KEY_ID",
+          "key_keys": [],
+          "nothing_acted_on": true
+        },
+        "forged_signature_docs_example_key_id": {
+          "http_status": 401,
+          "asked_plaid_for_key": true,
+          "plaid_status": 400,
+          "plaid_error_type": "INVALID_INPUT",
+          "plaid_error_code": "INVALID_WEBHOOK_VERIFICATION_KEY_ID",
+          "key_keys": [],
+          "nothing_acted_on": true
+        },
+        "unsigned": {
+          "http_status": 401
+        },
+        "rejections_logged": [
+          "key lookup failed: INVALID_WEBHOOK_VERIFICATION_KEY_ID",
+          "key lookup failed: INVALID_WEBHOOK_VERIFICATION_KEY_ID",
+          "no signature"
+        ],
+        "real_delivery": "NOT PROVEN: no webhook was received. Plaid had no reachable address for this machine, so no real Plaid-Verification signature has been checked by this code.",
+        "line": "no url: SANDBOX_WEBHOOK_INVALID; with url: SYNC_UPDATES_AVAILABLE=true, DEFAULT_UPDATE=true, RECURRING_TRANSACTIONS_UPDATE=true, LOGIN_REPAIRED=true, PENDING_DISCONNECT=true; forged -> 401 (INVALID_WEBHOOK_VERIFICATION_KEY_ID)"
+      },
+      "seconds": 1.35
+    },
+    "h": {
+      "title": "Disconnect: one of two, then all; really gone at Plaid, and the token and that bank's rows gone here",
+      "pass": true,
+      "facts": {
+        "none_named": {
+          "ok": false,
+          "error": "which_bank",
+          "connections": [
+            {
+              "bank": "First Platypus Bank",
+              "accounts": [
+                "Plaid Checking ••0000",
+                "Plaid Saving ••1111",
+                "Plaid CD ••2222",
+                "Plaid Credit Card ••3333",
+                "Plaid Money Market ••4444",
+                "Plaid IRA ••5555",
+                "Plaid 401k ••6666",
+                "Plaid Student Loan ••7777",
+                "Plaid Mortgage ••8888",
+                "Plaid HSA ••9001",
+                "Plaid Cash Management ••9002",
+                "Plaid Auto Loan ••9003",
+                "Plaid Home Equity Line of Credit ••9004",
+                "Plaid Business Credit Card ••9999"
+              ]
+            },
+            {
+              "bank": "Tartan Bank",
+              "accounts": [
+                "Checking ••1000",
+                "Credit card ••2000",
+                "Mortgage loan ••3000",
+                "Student loan ••4000",
+                "Auto loan ••5000",
+                "Consumer loan ••6000",
+                "Line of credit loan ••7000"
+              ]
+            }
+          ],
+          "items_still": 2
+        },
+        "one": {
+          "named_by": "last four",
+          "ok": true,
+          "removed": [
+            "Tartan Bank"
+          ],
+          "plaid_removal_pending": null,
+          "item_remove_status": 200,
+          "item_remove_keys": [
+            "request_id"
+          ],
+          "a_later_call_with_that_token": {
+            "code": "ITEM_NOT_FOUND",
+            "type": "ITEM_ERROR"
+          },
+          "rows_before": {
+            "items": 1,
+            "accounts": 7,
+            "transactions": 319,
+            "links": 2
+          },
+          "rows_after": {
+            "items": 0,
+            "accounts": 0,
+            "transactions": 0,
+            "links": 0
+          },
+          "other_bank_rows_before": {
+            "items": 1,
+            "accounts": 14,
+            "transactions": 26,
+            "links": 0
+          },
+          "other_bank_rows_after": {
+            "items": 1,
+            "accounts": 14,
+            "transactions": 26,
+            "links": 0
+          },
+          "still_connected": [
+            "First Platypus Bank"
+          ]
+        },
+        "all": {
+          "ok": true,
+          "removed": [
+            "First Platypus Bank"
+          ],
+          "item_remove_status": 200,
+          "a_later_call_with_that_token": {
+            "code": "ITEM_NOT_FOUND",
+            "type": "ITEM_ERROR"
+          },
+          "rows_left_for_this_person": {
+            "plaid_items": 0,
+            "plaid_accounts": 0,
+            "plaid_transactions": 0,
+            "plaid_links": 0,
+            "plaid_pay_checks": 0
+          }
+        },
+        "asked_after": {
+          "ok": false,
+          "error": "no_bank_connected"
+        },
+        "line": "one (last four): remove 200, later call -> ITEM_NOT_FOUND, rows {\"items\":0,\"accounts\":0,\"transactions\":0,\"links\":0}; all: remove 200, later -> ITEM_NOT_FOUND, left 0"
+      },
+      "seconds": 0.98
+    },
+    "leaks": {
+      "title": "Nothing a person, the model or a log was given holds a token, an id, or more than four digits of an account",
+      "pass": true,
+      "facts": {
+        "checked_identifiers": 523,
+        "tool_answers": 28,
+        "texts": 3,
+        "log_lines": 3,
+        "leaked_kinds": [],
+        "keys_leaked": false,
+        "log_kinds": [
+          "plaid_webhook_rejected"
+        ],
+        "line": "523 real identifiers checked against 28 answers, 3 texts, 3 log lines: 0 found"
+      },
+      "seconds": 0
+    }
+  },
+  "cleanup": {
+    "items_removed_at_exit": 0
+  },
+  "calls": {
+    "total": 66,
+    "by_path": {
+      "/accounts/balance/get": 7,
+      "/accounts/get": 4,
+      "/item/get": 1,
+      "/item/public_token/exchange": 2,
+      "/item/remove": 2,
+      "/item/webhook/update": 1,
+      "/link/token/create": 11,
+      "/link/token/get": 2,
+      "/sandbox/item/fire_webhook": 6,
+      "/sandbox/item/reset_login": 1,
+      "/sandbox/public_token/create": 2,
+      "/sandbox/transactions/create": 3,
+      "/transactions/recurring/get": 4,
+      "/transactions/sync": 18,
+      "/webhook_verification_key/get": 2
+    },
+    "non_sandbox_hosts": 0
+  }
+}

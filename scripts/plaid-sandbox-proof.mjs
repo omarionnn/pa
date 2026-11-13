@@ -124,6 +124,7 @@ function scrub(v, key = "") {
 const realFetch = globalThis.fetch;
 const calls = [];          // placeholder-only: { n, path, ms, status, by, req, res }
 const rawLast = new Map(); // path -> the last real response body (memory only, for the scaffolding)
+const acctType = new Map(); // account id -> depository | credit | loan | investment, as Plaid sent it
 const ledgers = new Map(); // access token -> Map(transaction_id -> the transaction as Plaid sent it): Plaid's own truth, to check answers against
 let by = "integration";
 async function recordingFetch(input, init = {}) {
@@ -135,6 +136,7 @@ async function recordingFetch(input, init = {}) {
   const text = await res.clone().text();
   let body; try { body = JSON.parse(text); } catch { body = { _unparsed: text.slice(0, 200) }; }
   rawLast.set(url.pathname, body);
+  for (const a of Array.isArray(body.accounts) ? body.accounts : []) acctType.set(a.account_id, a.type);
   if (url.pathname === "/transactions/sync" && res.status === 200) {
     if (!ledgers.has(reqBody.access_token)) ledgers.set(reqBody.access_token, new Map());
     const L = ledgers.get(reqBody.access_token);
@@ -200,9 +202,9 @@ const liveLedger = () => [...ledgers.entries()].filter(([tok]) => !gone.has(tok)
 const gone = new Set();
 const injectedMoves = new Set(); // "account|amount" of the transfers and card payments this run put there: never spending
 const isInjectedMove = (t) => injectedMoves.has(`${t.account_id}|${Number(t.amount).toFixed(2)}`);
-/** The plain rule, applied to what Plaid sent: money out, not a transfer / income / card payment Plaid labelled, not one of this run's own moves. */
+/** The plain rule, applied to what Plaid sent: money out of an account that is not a loan, not a transfer / income / card payment Plaid labelled, not one of this run's own moves. */
 function expectSpend(from, to, pred = () => true) {
-  const rows = liveLedger().filter(t => t.date >= from && t.date <= to && t.amount > 0 && !NOT_SPENT.has(t.personal_finance_category?.primary) && t.personal_finance_category?.detailed !== "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" && !isInjectedMove(t) && pred(t));
+  const rows = liveLedger().filter(t => t.date >= from && t.date <= to && t.amount > 0 && acctType.get(t.account_id) !== "loan" && !NOT_SPENT.has(t.personal_finance_category?.primary) && t.personal_finance_category?.detailed !== "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" && !isInjectedMove(t) && pred(t));
   return { total: round2(rows.reduce((s, t) => s + t.amount, 0)), count: rows.length };
 }
 const tokenOfItem = new Map(); // item_id -> access token (memory only; the integration keeps its own copy sealed)
@@ -289,6 +291,19 @@ try {
     f.accounts_get = { keys: keysOf(acc), item_keys: keysOf(acc.item), institution_name_present: typeof acc.item?.institution_name === "string" && !!acc.item.institution_name, account_keys: keysOf(acc.accounts?.[0]), accounts: (acc.accounts ?? []).length };
     const first = callsTo("/transactions/sync").find(c => c.by === "integration");
     f.first_sync = { status: first?.status, keys: keysOf(first?.res), added: first?.res?.added?.length ?? 0, transactions_update_status: first?.res?.transactions_update_status, next_cursor_empty: first?.res?.next_cursor === "", has_more: first?.res?.has_more, stored_right_after: storedCount(item1) };
+    // What Plaid's recurring list says when asked this early (asked directly: the integration does not ask yet).
+    const early = await sb(api => api.transactions.getRecurring({ access_token: tokenOfItem.get(item1) }));
+    f.recurring_asked_at_once = early.ok ? { status: 200, outflow_streams: early.body.outflow_streams?.length ?? 0, inflow_streams: early.body.inflow_streams?.length ?? 0 } : { code: early.code, type: early.type };
+    // The person asks at once, and keeps asking. No webhook is delivered to anything: each question syncs first.
+    const tq = Date.now(), asked = [];
+    for (;;) {
+      const r = await bank({ action: "spending", period: "last_30_days" });
+      asked.push({ at_s: round2((Date.now() - tq) / 1000), ok: r.ok, ...(r.error ? { error: r.error } : {}), ...(r.ok ? { total: r.total, count: r.count } : {}), ...(r.still_loading ? { still_loading: r.still_loading } : {}), ...(r.history_still_arriving ? { history_still_arriving: r.history_still_arriving } : {}), has_a_number: "total" in r });
+      if ((r.ok && !r.still_loading) || Date.now() - tq > 90_000) break;
+      await sleep(1500);
+    }
+    f.asked_with_no_webhook = { questions: asked.length, answered_after_seconds: asked.at(-1).at_s, timeline: asked.slice(0, 40), never_gave_a_number_before_the_data: asked.every(a => (a.ok ? a.count > 0 : !a.has_a_number)), first: asked[0], last: asked.at(-1) };
+    f.stored_after_questions = storedCount(item1);
     f.settle = await settle(item1);
     f.stored_after_settle = storedCount(item1);
     f.sync_calls = callsTo("/transactions/sync").map(c => ({ status: c.status, ms: c.ms, added: c.res?.added?.length ?? null, has_more: c.res?.has_more ?? null, update_status: c.res?.transactions_update_status ?? c.res?.error_code, cursor_sent: !!c.req?.cursor, next_cursor_empty: c.res?.next_cursor === "" }));
@@ -307,8 +322,8 @@ try {
       ...(rc?.status === 200 ? { outflow_streams: rawRec.outflow_streams?.length ?? 0, inflow_streams: rawRec.inflow_streams?.length ?? 0, stream_keys: keysOf(rawRec.outflow_streams?.[0]), frequencies: [...new Set((rawRec.outflow_streams ?? []).map(s => s.frequency))], statuses: [...new Set((rawRec.outflow_streams ?? []).map(s => s.status))] }
         : { error_type: rawRec.error_type, error_code: rawRec.error_code, error_message: scrubString(String(rawRec.error_message ?? "")).slice(0, 200) }),
       fallback_logged: logged.filter(l => l.plaid_recurring_fallback).map(l => l.plaid_recurring_fallback), list: subs.subscriptions?.slice(0, 12) };
-    f.line = `${f.institution_saved}: ${f.accounts_get.accounts} accounts, first sync ${f.first_sync.added} tx (${f.first_sync.transactions_update_status}), history in ${f.settle.seconds}s, ${f.stored_after_settle} stored; balance ${f.balance.seconds}s; recurring ${f.recurring.status} ${f.recurring.error_code ?? `${f.recurring.outflow_streams} out`} (${f.recurring.source})`;
-    return f.webhook_handler.ok === true && !!f.institution_saved && f.institution_saved !== "your bank" && f.settle.done && f.stored_after_settle > 0 && bal.ok === true && f.balance.checking_matches_plaid && subs.ok === true;
+    f.line = `${f.institution_saved}: ${f.accounts_get.accounts} accounts, first sync ${f.first_sync.added} tx (${f.first_sync.transactions_update_status}); asked at once: ${asked[0].error ?? asked[0].total}, answered ${asked.at(-1).total} after ${asked.at(-1).at_s}s and ${asked.length} questions, no webhook; history in ${f.settle.seconds}s, ${f.stored_after_settle} stored; balance ${f.balance.seconds}s; recurring ${f.recurring.status} ${f.recurring.error_code ?? `${f.recurring.outflow_streams} out`} (${f.recurring.source})`;
+    return f.webhook_handler.ok === true && !!f.institution_saved && f.institution_saved !== "your bank" && f.first_sync.transactions_update_status === "NOT_READY" && f.asked_with_no_webhook.never_gave_a_number_before_the_data && asked.at(-1).ok === true && asked.at(-1).count > 0 && f.settle.done && f.stored_after_settle > 0 && bal.ok === true && f.balance.checking_matches_plaid && subs.ok === true;
   });
 
   // ============================================================ c. a second bank, with a card
@@ -359,6 +374,14 @@ try {
     f.combined = { integration_total: s2.total, integration_count: s2.count, plaid_rows_total: want.total, plaid_rows_count: want.count, match: near(usd(s2.total), want.total), by_account: s2.by_account ?? null,
       per_bank_from_plaid_rows: Object.fromEntries([[item1, "bank1"], [item2, "bank2"]].map(([id, name]) => { const ids = new Set(accts.filter(a => a.item_id === id).map(a => a.account_id)); return [name, expectSpend(from, TODAY, t => ids.has(t.account_id)).total]; })) };
     f.both_banks_in_answer = (s2.by_account ?? []).some(x => x.account.startsWith(f.banks[0])) && (s2.by_account ?? []).some(x => x.account.startsWith(f.banks[1]));
+    // Loan accounts: Plaid sends their own lines (interest charged, payments arriving). None of it is spending.
+    const loanIds = new Set(accts.filter(a => a.type === "loan").map(a => a.account_id));
+    const loanLabels = accts.filter(a => a.type === "loan").map(a => plaid.accountLabel(a, plaid.itemsOf(C).find(i => i.itemId === a.item_id)?.institution ?? ""));
+    const loanOut = liveLedger().filter(t => loanIds.has(t.account_id) && t.amount > 0 && t.date >= from && t.date <= TODAY);
+    f.loan_accounts = { accounts: loanLabels.length, money_out_lines_in_30_days: loanOut.length, their_sum: round2(loanOut.reduce((a, t) => a + t.amount, 0)), what_plaid_calls_them: [...new Set(loanOut.map(t => `${t.name} / ${t.personal_finance_category?.detailed}`))].slice(0, 4), counted_as_spending: (s2.by_account ?? []).filter(x => loanLabels.includes(x.account)) };
+    // Names: where Plaid had no merchant, the bank's own line had long runs of digits. None is kept.
+    const keptNames = d.db.prepare("SELECT data FROM plaid_transactions WHERE conversation_id = ?").all(C).map(r => { try { return JSON.parse(r.data).name; } catch { return ""; } });
+    f.names = { plaid_lines_with_5_or_more_digits_in_a_row: liveLedger().filter(t => !t.merchant_name && /\d{5,}/.test(t.name ?? "")).length, kept_names_with_5_or_more_digits_in_a_row: keptNames.filter(n => /\d{5,}/.test(n)).length, kept: keptNames.length, examples_kept: [...new Set(keptNames.filter(n => /PURCHASE|WITHDRAWAL|CARD/i.test(n)))].slice(0, 3) };
     // Names: bank, the account's name, the last four. Nothing longer, no id.
     const st = await bank({ action: "status" });
     const labels = st.banks.flatMap(b => b.accounts);
@@ -367,8 +390,8 @@ try {
     f.labels_all_name_and_last_four = labels.length > 0 && labels.every(l => /^[A-Za-z0-9 &'().-]+ ••\d{4}$/.test(l) && !/\d{5,}/.test(l));
     f.todays_transactions = tx.transactions?.slice(0, 8);
     f.transaction_accounts_named = (tx.transactions ?? []).length > 0 && (tx.transactions ?? []).every(t => /••\d{4}$/.test(t.account ?? ""));
-    f.line = `${f.banks.join(" + ")}: total ${s0.total} -> +purchase ${s1.total} -> +moves ${s2.total}; matches Plaid rows: ${f.combined.match} (${want.total}); labels ok: ${f.labels_all_name_and_last_four}`;
-    return f.purchase_counted_once && f.moves_not_counted && f.combined.match && f.both_banks_in_answer && f.labels_all_name_and_last_four && f.transaction_accounts_named;
+    f.line = `${f.banks.join(" + ")}: total ${s0.total} -> +purchase ${s1.total} -> +moves ${s2.total}; matches Plaid rows: ${f.combined.match} (${want.total}); labels ok: ${f.labels_all_name_and_last_four}; loan lines left out: ${f.loan_accounts.money_out_lines_in_30_days} ($${f.loan_accounts.their_sum}); long numbers in names: ${f.names.plaid_lines_with_5_or_more_digits_in_a_row} sent, ${f.names.kept_names_with_5_or_more_digits_in_a_row} kept`;
+    return f.purchase_counted_once && f.moves_not_counted && f.combined.match && f.both_banks_in_answer && f.labels_all_name_and_last_four && f.transaction_accounts_named && f.loan_accounts.money_out_lines_in_30_days > 0 && f.loan_accounts.counted_as_spending.length === 0 && f.names.plaid_lines_with_5_or_more_digits_in_a_row > 0 && f.names.kept_names_with_5_or_more_digits_in_a_row === 0;
   });
 
   // ============================================================ d. the questions
@@ -382,7 +405,8 @@ try {
     const wantFood = expectSpend(monthFrom, TODAY, t => t.personal_finance_category?.primary === "FOOD_AND_DRINK" || /food/i.test(`${t.personal_finance_category?.detailed ?? ""} ${t.merchant_name || t.name || ""}`.replace(/_/g, " ")));
     f.food_this_month = { asked: "how much on food this month", from: food.from, to: food.to, total: food.total, count: food.count, top_merchants: food.top_merchants, plaid_rows_total: wantFood.total, match: food.ok && near(usd(food.total), wantFood.total) && food.count > 0 };
     const subs = await bank({ action: "subscriptions" });
-    f.subscriptions = { asked: "what are my subscriptions", ok: subs.ok, source: subs.source, count: subs.count, per_month: subs.per_month, list: subs.subscriptions?.slice(0, 15), yearly_named: (subs.subscriptions ?? []).filter(s => /annual|year/i.test(s.every)).length, say: subs.say };
+    const monthlySum = round2((subs.subscriptions ?? []).filter(x => x.every === "monthly").reduce((a, x) => a + usd(x.amount), 0));
+    f.subscriptions = { asked: "what are my subscriptions", ok: subs.ok, source: subs.source, count: subs.count, per_month: subs.per_month, all_monthly: (subs.subscriptions ?? []).every(x => x.every === "monthly"), listed_amounts_add_up_to: monthlySum, per_month_is_their_sum: (subs.subscriptions ?? []).every(x => x.every === "monthly") ? near(usd(subs.per_month), monthlySum) : null, list: subs.subscriptions?.slice(0, 15), yearly_named: (subs.subscriptions ?? []).filter(s => /annual|year/i.test(s.every)).length, say: subs.say };
     // A pay step that is too large, and one that is not: the balance is fetched fresh each time.
     const before = callsTo("/accounts/balance/get").length;
     const big = await plaid.balanceCheck(C, 9_999_999);
@@ -394,7 +418,7 @@ try {
     const partly = await bank({ action: "spending", from: addDays(TODAY, -100), to: TODAY });
     f.older_than_60_days = { asked: `spending ${oldFrom}..${oldTo}`, answer: { ok: old.ok, error: old.error, has_total: "total" in old }, partly_older: { from: partly.from, only_last_60_days: partly.only_last_60_days === true, cutoff: plaid.cutoffDay(NOW) } };
     f.line = `week ${wk.total} (Plaid rows ${wantWk.total}); food ${food.total} (${wantFood.total}); subs ${subs.count} via ${subs.source}; too-large short=${big.short} of ${big.available ?? "?"}; old period -> ${old.error}`;
-    return f.this_week.match && f.food_this_month.match && subs.ok === true && big.checked === true && big.short === true && small.checked === true && small.short === false && f.pay_step.fresh_balance_calls === 2 * f.pay_step.banks
+    return f.this_week.match && f.food_this_month.match && subs.ok === true && f.subscriptions.per_month_is_their_sum !== false && big.checked === true && big.short === true && small.checked === true && small.short === false && f.pay_step.fresh_balance_calls === 2 * f.pay_step.banks
       && old.ok === false && old.error === "beyond_60_days" && !("total" in old) && f.older_than_60_days.partly_older.only_last_60_days && partly.from === plaid.cutoffDay(NOW);
   });
 

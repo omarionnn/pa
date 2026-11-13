@@ -1,0 +1,17 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/sandbox/item/fire_webhook",
+  "status": 400,
+  "request": {
+    "access_token": "access-sandbox-PLACEHOLDER-1",
+    "webhook_code": "SYNC_UPDATES_AVAILABLE"
+  },
+  "response": {
+    "display_message": null,
+    "error_code": "SANDBOX_WEBHOOK_INVALID",
+    "error_message": "Webhook for this item is either not set up, or invalid. Please update the item's webhook and try again.",
+    "error_type": "SANDBOX_ERROR",
+    "request_id": "REQUEST_ID",
+    "suggested_action": null
+  }
+}

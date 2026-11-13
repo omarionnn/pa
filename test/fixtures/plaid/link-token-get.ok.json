@@ -1,0 +1,26 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/link/token/get",
+  "status": 200,
+  "request": {
+    "link_token": "link-sandbox-PLACEHOLDER-1"
+  },
+  "response": {
+    "created_at": "2026-11-13T05:01:33Z",
+    "expiration": "2026-11-13T05:31:34Z",
+    "link_token": "link-sandbox-PLACEHOLDER-1",
+    "metadata": {
+      "client_name": "Reason",
+      "country_codes": [
+        "US"
+      ],
+      "initial_products": [
+        "transactions"
+      ],
+      "language": "en",
+      "redirect_uri": null,
+      "webhook": "https://reason.test/plaid/webhook"
+    },
+    "request_id": "REQUEST_ID"
+  }
+}

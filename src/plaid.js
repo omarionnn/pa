@@ -23,6 +23,22 @@
 //     raw body inside it.
 //   - Update mode: a link token made with the Item's access_token and no products.
 //
+// Plaid's real Sandbox, run through this file 2026-11-13 (scripts/plaid-sandbox-proof.mjs; the
+// recorded shapes are test/fixtures/plaid/). What it showed that the docs alone did not:
+//   - The first /transactions/sync after a connection ALWAYS answers with nothing: NOT_READY, no
+//     transactions, an empty cursor. They arrive 3 to 8 seconds later, the whole first month re-sent
+//     as `modified` when the history lands, and once HISTORICAL_UPDATE_COMPLETE was reported before
+//     any had arrived. So a read never trusts what is stored to be current: it syncs first (freshen).
+//   - A webhook answered 401 or 404 is never retried (Plaid's webhook docs), so a late, lost or
+//     refused webhook must not be the only way transactions get here. It is not: see freshen.
+//   - Loan accounts carry their own lines ("Interest charged", "Monthly payment"): interest accruing
+//     on a loan is not money the person spent, and it was a third of a week's "spending".
+//   - When Plaid has no merchant name the bank's own line is all there is, and it carries long runs
+//     of digits (references, card fragments): those are taken out before a name is kept (txName).
+//   - /transactions/recurring/get answers in Sandbox without any request for access (200, streams).
+//   - A token whose Item was removed fails ITEM_NOT_FOUND. /link/token/get on a link nobody has
+//     opened has no `link_sessions` at all.
+//
 // Privacy rules this file keeps (each has a test in test/plaid.test.js):
 //   - the access token is sealed with REASON_TOKEN_KEY before it touches the table (and again under
 //     the person's own key with REASON_ENCRYPT_REST2=on), is never returned to the model, never
@@ -75,6 +91,8 @@ db.db.exec(`
     access_token TEXT NOT NULL,
     institution TEXT NOT NULL DEFAULT '',
     cursor TEXT NOT NULL DEFAULT '',
+    -- Plaid's transactions_update_status at the last sync: '' | NOT_READY | INITIAL_UPDATE_COMPLETE | HISTORICAL_UPDATE_COMPLETE
+    history TEXT NOT NULL DEFAULT '',
     -- ok | login_required | removing (they disconnected and Plaid has not confirmed the removal yet)
     status TEXT NOT NULL DEFAULT 'ok',
     connected_at INTEGER NOT NULL,
@@ -136,6 +154,8 @@ db.db.exec(`
     UNIQUE (conversation_id, payment_id)
   );
 `);
+// A table made before `history` was kept gains the column.
+if (!db.db.prepare("PRAGMA table_info(plaid_items)").all().some(col => col.name === "history")) db.db.exec("ALTER TABLE plaid_items ADD COLUMN history TEXT NOT NULL DEFAULT ''");
 const q = (sql) => db.db.prepare(sql);
 const sha = (s) => createHash("sha256").update(String(s)).digest("hex");
 const sealTok = (c, t) => sealCell("plaid_items", "access_token", c, secretbox.seal(t));
@@ -171,7 +191,7 @@ export function errorCode(e) {
 const NEEDS_LOGIN = new Set(["ITEM_LOGIN_REQUIRED", "PENDING_EXPIRATION", "PENDING_DISCONNECT"]);
 
 // ---------------------------------------------------------------- rows
-const viewItem = (r) => (r ? { id: r.id, conversationId: r.conversation_id, itemId: r.item_id, institution: r.institution || "your bank", status: r.status, connectedAt: r.connected_at, syncedAt: r.synced_at, cursor: r.cursor, relinkSentAt: r.relink_sent_at } : null);
+const viewItem = (r) => (r ? { id: r.id, conversationId: r.conversation_id, itemId: r.item_id, institution: r.institution || "your bank", status: r.status, connectedAt: r.connected_at, syncedAt: r.synced_at, cursor: r.cursor, history: r.history ?? "", relinkSentAt: r.relink_sent_at } : null);
 /** Their banks. `removing` rows are ones they already disconnected: never shown, never read. */
 export const itemsOf = (c) => q("SELECT * FROM plaid_items WHERE conversation_id = ? AND status != 'removing' ORDER BY id").all(c).map(viewItem);
 const itemOf = (c, itemId) => viewItem(q("SELECT * FROM plaid_items WHERE conversation_id = ? AND item_id = ?").get(c, itemId));
@@ -361,9 +381,16 @@ export function purgeOld({ now = clock.now() } = {}) {
 }
 
 // ---------------------------------------------------------------- sync
+/**
+ * What a charge is called: Plaid's merchant name when it has one. Otherwise the bank's own line,
+ * with every run of five or more digits taken out: real ones read "WITHDRAWAL DEBIT CARD ... DATE
+ * 04/12 23978676735612 63546108 CARD 94353" (Sandbox, 2026-11-13), and a transfer's line can carry
+ * the whole number of the account it went to.
+ */
+export const txName = (t) => String(t?.merchant_name || String(t?.name ?? "").replace(/[#x*•-]*\d{5,}/gi, " ").replace(/\s+/g, " ").trim()).slice(0, 120);
 const slim = (t) => ({
   amount: Number(t.amount) || 0, currency: t.iso_currency_code || t.unofficial_currency_code || "USD",
-  name: String(t.merchant_name || t.name || "").slice(0, 120),
+  name: txName(t),
   primary: String(t.personal_finance_category?.primary ?? ""), detailed: String(t.personal_finance_category?.detailed ?? ""),
 });
 /**
@@ -405,7 +432,7 @@ export async function sync(c, itemId) {
       }
       for (const r of removed) if (r?.transaction_id) drop.run(c, r.transaction_id);
       q("DELETE FROM plaid_transactions WHERE conversation_id = ? AND date < ?").run(c, cutoff);
-      q("UPDATE plaid_items SET cursor = ?, synced_at = ?, status = CASE WHEN status = 'login_required' THEN 'ok' ELSE status END WHERE conversation_id = ? AND item_id = ?").run(cursor ?? "", clock.now(), c, itemId);
+      q("UPDATE plaid_items SET cursor = ?, synced_at = ?, history = ?, status = CASE WHEN status = 'login_required' THEN 'ok' ELSE status END WHERE conversation_id = ? AND item_id = ?").run(cursor ?? "", clock.now(), status || it.history || "", c, itemId);
       db.db.exec("COMMIT");
     } catch (e) { db.db.exec("ROLLBACK"); throw e; }
     if (accts) saveAccounts(c, itemId, accts);
@@ -413,6 +440,43 @@ export async function sync(c, itemId) {
   }
   return { ok: false, error: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" };
 }
+
+// ---------------------------------------------------------------- reading: up to date first
+/** A bank synced this recently, with its history in, is read as it stands. */
+export const SYNC_FRESH_MS = 30_000;
+/** A bank connected less than this long ago with nothing stored yet is still arriving, whatever status Plaid gave. */
+const SETTLING_MS = 10 * 60_000;
+const HISTORY_IN = "HISTORICAL_UPDATE_COMPLETE";
+/**
+ * Before a read of transactions: bring every connected bank up to date, without waiting on a
+ * webhook. Against Plaid's real Sandbox the first sync after a connection always had nothing, the
+ * transactions came seconds later, and the status once ran ahead of them; and a webhook that is
+ * late, lost or refused is never sent again after a 4xx. Without this, "you spent $0.00" stands as
+ * an answer. /transactions/sync is not billed per call (Transactions is a monthly fee per Item).
+ * A bank synced in the last 30 seconds whose history is in is left alone, unless it was connected in
+ * the last ten minutes and has nothing stored: that one is asked every time until something lands.
+ * Returns the banks with nothing in yet (`loading`) and those whose older weeks are still coming (`partial`).
+ */
+export async function freshen(c) {
+  const loading = [], partial = [];
+  const count = q("SELECT COUNT(*) AS n FROM plaid_transactions WHERE conversation_id = ? AND item_id = ?");
+  for (const it of itemsOf(c)) {
+    if (it.status !== "ok") continue; // a bank that needs signing in to is said by the caller
+    const settling = clock.now() - it.connectedAt < SETTLING_MS;
+    const empty = () => !Number(count.get(c, it.itemId)?.n ?? 0);
+    let history = it.history;
+    const fresh = history === HISTORY_IN && !!it.syncedAt && clock.now() - it.syncedAt < SYNC_FRESH_MS && !(settling && empty());
+    if (!fresh) { try { const r = await sync(c, it.itemId); if (r.ok) history = r.history || history; } catch (e) { logFn({ plaid_refresh_failed: errorCode(e) }); } }
+    if (empty() && (history !== HISTORY_IN || settling)) loading.push(it.institution);
+    else if (history === "NOT_READY" || history === "INITIAL_UPDATE_COMPLETE") partial.push(it.institution);
+  }
+  return { loading, partial };
+}
+const STILL_LOADING = (banks) => ({ ok: false, error: "still_loading", still_loading: banks, say: `${banks.join(" and ")} was only just connected and its transactions have not arrived from the bank yet (it takes a minute or so). Say that in one line and to ask again in a minute. Do not give a number: $0 would be wrong.` });
+const loadingNote = (f) => ({
+  ...(f.loading.length ? { still_loading: f.loading, loading_note: `${f.loading.join(" and ")} was only just connected and its transactions are still coming in, so none of it is in this answer yet. Say that in a few words; never give this as their whole spending.` } : {}),
+  ...(f.partial.length ? { history_still_arriving: f.partial, history_note: `${f.partial.join(" and ")}: the last month is in and the weeks before it are still arriving. Say so only if they asked about further back than a month.` } : {}),
+});
 
 // ---------------------------------------------------------------- reading: spending
 /** Plaid's personal_finance_category primaries, said the way a person would. */
@@ -464,11 +528,14 @@ const isCardPayment = (t) => t.detailed === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT";
  * out of one account and the same amount into another within three days, where Plaid called at
  * least one side a transfer or a loan payment. (That last condition is what keeps a $20 purchase on
  * one card and a $20 refund on another from being read as a transfer.) Each side is used once.
+ * Money arriving in a LOAN account is never the other half: what they pay toward a mortgage, a car
+ * or a student loan is spending whether or not that loan is connected. (A card is the opposite:
+ * what was bought on it is the spending, so paying it off is a move.)
  * Returns the transaction ids of both sides.
  */
-function ownMoves(rows) {
+function ownMoves(rows, accts = new Map()) {
   const internal = new Set();
-  const ins = rows.filter(t => t.amount < 0);
+  const ins = rows.filter(t => t.amount < 0 && accts.get(t.account_id)?.type !== "loan");
   for (const out of rows.filter(t => t.amount > 0)) {
     const hit = ins.find(u => !internal.has(u.transaction_id) && u.account_id !== out.account_id && Math.abs(u.amount + out.amount) < 0.005
       && Math.abs(Date.parse(u.date) - Date.parse(out.date)) <= 3 * 86400_000 && (MOVES.has(out.primary) || MOVES.has(u.primary)));
@@ -486,13 +553,15 @@ function ownMoves(rows) {
  * a transfer or card payment Plaid labelled correctly is left out, and `not_counted` says how much
  * went to a card Reason cannot see (what was bought on it is not in the total) and how much was
  * transferred out. One that Plaid labelled as something else is counted as spending.
+ * Nothing on a loan account is spending: interest accruing there and payments arriving there are
+ * the loan's own bookkeeping, and the payment that left their cash account is already counted.
  */
 export function spending(c, { from, to, category = "" } = {}) {
   const accts = accountMap(c);
   const wide = rowsIn(c, addDays(from, -3), addDays(to, 3));
-  const internal = ownMoves(wide);
+  const internal = ownMoves(wide, accts);
   const inRange = wide.filter(t => t.date >= from && t.date <= to);
-  const all = inRange.filter(isSpend).filter(t => !internal.has(t.transaction_id)).filter(t => matches(t, category));
+  const all = inRange.filter(isSpend).filter(t => accts.get(t.account_id)?.type !== "loan").filter(t => !internal.has(t.transaction_id)).filter(t => matches(t, category));
   const total = all.reduce((s, t) => s + t.amount, 0);
   const sumBy = (key) => { const m = new Map(); for (const t of all) m.set(key(t), (m.get(key(t)) ?? 0) + t.amount); return m; };
   const top = (m, n) => [...m].sort((a, b) => b[1] - a[1]).slice(0, n);
@@ -500,6 +569,8 @@ export function spending(c, { from, to, category = "" } = {}) {
   const outside = inRange.filter(t => t.amount > 0 && !internal.has(t.transaction_id));
   const unseenCard = outside.filter(t => isCardPayment(t) && accts.get(t.account_id)?.type === "depository").reduce((s, t) => s + t.amount, 0);
   const sentOut = outside.filter(t => t.primary === "TRANSFER_OUT").reduce((s, t) => s + t.amount, 0);
+  // A card payment with no other half: a card they have not connected, or (when a card IS connected) one that has not shown the payment yet.
+  const hasCard = [...accts.values()].some(a => a.type === "credit");
   return {
     from, to, total: money(total), count: all.length,
     by_category: top(sumBy(categoryOf), 8).map(([name, n]) => ({ category: name, amount: money(n) })),
@@ -508,7 +579,7 @@ export function spending(c, { from, to, category = "" } = {}) {
     pending_included: all.some(t => t.pending),
     ...(!category && (unseenCard || sentOut) ? { not_counted: {
       ...(unseenCard ? { paid_to_cards_not_connected: money(unseenCard) } : {}), ...(sentOut ? { transfers_out: money(sentOut) } : {}),
-      note: `${unseenCard ? "They paid toward a card that isn't connected, so what was bought on that card isn't in this total. " : ""}${sentOut ? "Transfers out (to another account or a person) aren't counted as spending. " : ""}Mention it in a few words only if it matters to what they asked.` } } : {}),
+      note: `${unseenCard ? `They paid toward a card ${hasCard ? "and no connected card shows that payment (a card that isn't connected, or one that hasn't posted it yet)" : "that isn't connected"}, so what was bought on that card isn't in this total. ` : ""}${sentOut ? "Transfers out (to another account or a person) aren't counted as spending. " : ""}Mention it in a few words only if it matters to what they asked.` } } : {}),
   };
 }
 /** Their transactions in a stretch, newest first, optionally narrowed by a word. Account shown as last four. */
@@ -518,15 +589,16 @@ export function transactions(c, { from, to, search = "", limit = 20 } = {}) {
   return {
     from, to, count: rows.length,
     transactions: rows.slice(0, Math.max(1, Math.min(50, limit))).map(t => ({
-      date: t.date, name: t.name, amount: t.amount < 0 ? `+${money(-t.amount)}` : money(t.amount), category: NOT_SPENDING.has(t.primary) ? t.primary.toLowerCase().replace(/_/g, " ") : categoryOf(t),
+      date: t.date, name: t.name, amount: t.amount < 0 ? `+${money(-t.amount)}` : money(t.amount), category: NOT_SPENDING.has(t.primary) ? t.primary.toLowerCase().replace(/_/g, " ") : isCardPayment(t) ? "card payment" : categoryOf(t),
       ...(t.pending ? { pending: true } : {}), ...(accts.get(t.account_id) ? { account: accts.get(t.account_id).label } : {}),
     })),
   };
 }
 
 // ---------------------------------------------------------------- reading: subscriptions
-const FREQ_DAYS = { WEEKLY: 7, BIWEEKLY: 14, SEMI_MONTHLY: 15, MONTHLY: 30, ANNUALLY: 365 };
-const perMonth = (amount, freq) => (FREQ_DAYS[freq] ? amount * (30.44 / FREQ_DAYS[freq]) : amount);
+/** How many times a year each of Plaid's frequencies comes round. A monthly charge costs exactly itself a month. */
+const PER_YEAR = { WEEKLY: 52, BIWEEKLY: 26, SEMI_MONTHLY: 24, MONTHLY: 12, ANNUALLY: 1 };
+const perMonth = (amount, freq) => (PER_YEAR[freq] ? amount * PER_YEAR[freq] / 12 : amount);
 /**
  * Recurring charges worked out from the 60 days kept, across every account: the same name, about the
  * same amount, twice, about a month apart. A yearly charge cannot be seen this way; only Plaid's
@@ -535,7 +607,8 @@ const perMonth = (amount, freq) => (FREQ_DAYS[freq] ? amount * (30.44 / FREQ_DAY
 export function localRecurring(c, { now = clock.now(), tz = "America/New_York" } = {}) {
   const today = ymd(now, tz);
   const groups = new Map();
-  for (const t of rowsIn(c, cutoffDay(now), today).filter(isSpend).filter(t => !t.pending)) {
+  const accts = accountMap(c);
+  for (const t of rowsIn(c, cutoffDay(now), today).filter(isSpend).filter(t => !t.pending && accts.get(t.account_id)?.type !== "loan")) {
     const k = t.name.toLowerCase();
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(t);
@@ -564,11 +637,13 @@ export async function subscriptions(c, { now = clock.now() } = {}) {
   let streams = [], source = "plaid";
   try {
     const api = await client();
+    const accts = accountMap(c);
     for (const it of itemsOf(c)) {
       if (it.status !== "ok") continue;
       const out = await api.transactions.getRecurring({ access_token: tokenOf(c, it.itemId) });
       for (const s of out?.outflow_streams ?? []) {
         if (s.is_active === false || s.status === "TOMBSTONED") continue;
+        if (accts.get(s.account_id)?.type === "loan") continue; // interest accruing on a loan is not a charge they pay
         const t = { primary: s.personal_finance_category?.primary ?? "", detailed: s.personal_finance_category?.detailed ?? "" };
         if (NOT_SPENDING.has(t.primary) || t.detailed === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT") continue;
         streams.push({ name: String(s.merchant_name || s.description || "").slice(0, 120), amount: Math.abs(Number(s.average_amount?.amount) || 0), last_amount: Math.abs(Number(s.last_amount?.amount) || 0), frequency: s.frequency || "UNKNOWN", last_date: s.last_date || "", next_date: s.predicted_next_date || "", category: categoryOf(t) });
@@ -580,12 +655,15 @@ export async function subscriptions(c, { now = clock.now() } = {}) {
     logFn({ plaid_recurring_fallback: errorCode(e) });
   }
   const month = today.slice(0, 7);
-  const list = streams.filter(s => s.name && s.amount > 0).sort((a, b) => perMonth(b.amount, b.frequency) - perMonth(a.amount, a.frequency)).map(s => ({
+  streams = streams.filter(s => s.name && s.amount > 0);
+  const costs = (s) => perMonth(s.last_amount || s.amount, s.frequency); // what it last cost: the amount listed
+  const list = [...streams].sort((a, b) => costs(b) - costs(a)).map(s => ({
     name: s.name, amount: money(s.last_amount || s.amount), every: s.frequency.toLowerCase().replace(/_/g, " "), category: s.category,
     ...(s.last_date ? { last_charged: s.last_date } : {}), ...(s.next_date ? { next_expected: s.next_date } : {}),
     gone_out_this_month: !!s.last_date && s.last_date.startsWith(month),
   }));
-  return { subscriptions: list, per_month: money(streams.reduce((s, x) => s + perMonth(x.amount, x.frequency), 0)), count: list.length, source, today };
+  // The monthly total is of the amounts listed (what each last cost), so the list adds up to it.
+  return { subscriptions: list, per_month: money(streams.reduce((s, x) => s + costs(x), 0)), count: list.length, source, today };
 }
 
 // ---------------------------------------------------------------- reading: balance (always fresh)
@@ -794,13 +872,14 @@ export const PLAID_TOOL_DEFS = [{
   description: "Their own bank accounts, READ-ONLY through Plaid: balances and transactions. It cannot pay, transfer or move money, and never returns a full account or routing number (last four only). Actions: "
     + "\"connect\" makes a secure Plaid link to connect a bank (or, with `bank`, to sign back in to one that needs it). Your reply is ONE short heads-up in your own voice (they connect through Plaid; you can only read balances and transactions, never move money) and then the url ON ITS OWN LINE as the last thing, untouched; it works for 30 minutes, so only call it when you are about to send it. A confirmation text goes by code when they finish. "
     + "\"status\" lists what is connected. "
-    + "\"spending\" totals what they spent in a `period` (or `from`/`to` days), optionally one `category` (food, transport, travel, shopping, bills, entertainment, health, services, fees, or a word like groceries, coffee, rent, or a merchant). Say the total first, then a short breakdown only if it helps. Transfers, card payments and income are not counted as spending. "
+    + "\"spending\" totals what they spent in a `period` (or `from`/`to` days), optionally one `category` (food, transport, travel, shopping, bills, entertainment, health, services, fees, or a word like groceries, coffee, rent, or a merchant). Say the total first, then a short breakdown only if it helps. Transfers, card payments, income and interest accruing on a loan are not counted as spending; a payment toward a loan is. "
     + "\"transactions\" lists them, optionally narrowed by `search`. "
     + "\"subscriptions\" lists recurring charges with what each costs, when it last went out and when the next is expected (gone_out_this_month answers \"has rent gone out yet\"). "
     + "\"balance\" fetches balances fresh from the bank (it takes a few seconds). "
     + "\"disconnect\" removes a connection at Plaid and deletes its stored token and everything synced from it. With more than one connected and none named, it answers with the list: ask which one, naming each by bank, account name and last four; `bank` takes the bank's name or an account's last four, `all` true is \"disconnect all\". Only when they ask. "
     + "They can connect several banks and cards; every answer covers all of them together, and moves between their own accounts and card payments are not counted twice. When it helps, say which account a charge came from, by the account label given (name and last four) and nothing more. "
     + "You keep only the last 60 days of transactions: asked about anything older, say so plainly (\"i only keep the last 60 days\"). A yearly subscription shows only when the bank data reports it. "
+    + "A bank's transactions take a minute to arrive after it is connected: when an answer says still_loading, say so and give no number. "
     + "No bank connected → offer the connect link, never a guess. Any question about their own money (what they spent, subscriptions, a balance, whether rent went out) is answered from this tool, never from a guess or memory; the number first, short, in your normal voice. Explain their numbers; never investment, tax or insurance advice, and never what to buy, sell or invest in. What you read is for this answer only: never save it with remember, and never put it on a page, an event, a card or anything another person can see.",
   input_schema: {
     type: "object",
@@ -852,7 +931,8 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
     if (d.to < cut) return null;
     return d.from < cut ? { from: cut, to: d.to, limited: { only_last_60_days: true, window_note: `They asked about more than you keep. This covers ${cut} onward only; tell them in a few words that you only keep the last 60 days.` } } : d;
   };
-  const reconnectNote = stale.length ? { needs_reconnect: stale.map(i => i.institution), note: `${stale.map(i => i.institution).join(" and ")} needs them to sign in again, so its numbers may be behind. Say that in a few words and offer the reconnect link (bank connect with bank).` } : {};
+  // Read after freshen: a sync that met an expired login has just marked that bank.
+  const reconnectNote = () => { const stale = itemsOf(c).filter(i => i.status === "login_required"); return stale.length ? { needs_reconnect: stale.map(i => i.institution), note: `${stale.map(i => i.institution).join(" and ")} needs them to sign in again, so its numbers may be behind. Say that in a few words and offer the reconnect link (bank connect with bank).` } : {}; };
   try {
     switch (input.action) {
       case "connect": {
@@ -866,26 +946,32 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
       }
       case "status":
         if (!mine.length) return NO_BANK;
-        return { ok: true, keeps: `the last ${KEEP_DAYS} days of transactions`, banks: mine.map(i => ({ bank: i.institution, status: i.status === "ok" ? "connected" : "needs_reconnect", accounts: accountsOf(c, i.itemId).map(a => accountLabel(a, "")), ...(i.syncedAt ? { last_synced: new Date(i.syncedAt).toISOString() } : {}) })), can: "read balances and transactions", cannot: "move money" };
+        return { ok: true, keeps: `the last ${KEEP_DAYS} days of transactions`, banks: mine.map(i => ({ bank: i.institution, status: i.status === "ok" ? "connected" : "needs_reconnect", accounts: accountsOf(c, i.itemId).map(a => accountLabel(a, "")), ...(i.syncedAt ? { last_synced: new Date(i.syncedAt).toISOString() } : {}), ...(i.status === "ok" && i.history !== HISTORY_IN ? { transactions: "still coming in from the bank" } : {}) })), can: "read balances and transactions", cannot: "move money" };
       case "spending": {
         if (!mine.length) return NO_BANK;
         const d = days();
         if (!d) return BEYOND;
+        const f = await freshen(c);
+        if (f.loading.length === mine.length) return STILL_LOADING(f.loading);
         noteRead(c);
-        return { ok: true, ...spending(c, { from: d.from, to: d.to, category: input.category ?? "" }), ...(d.limited ?? {}), ...reconnectNote, say: "Lead with the total, lowercase and short, then a brief breakdown only if it helps. No advice about what to do with their money beyond what they asked." };
+        return { ok: true, ...spending(c, { from: d.from, to: d.to, category: input.category ?? "" }), ...(d.limited ?? {}), ...reconnectNote(), ...loadingNote(f), say: "Lead with the total, lowercase and short, then a brief breakdown only if it helps. No advice about what to do with their money beyond what they asked." };
       }
       case "transactions": {
         if (!mine.length) return NO_BANK;
         const d = days();
         if (!d) return BEYOND;
+        const f = await freshen(c);
+        if (f.loading.length === mine.length) return STILL_LOADING(f.loading);
         noteRead(c);
-        return { ok: true, ...transactions(c, { from: d.from, to: d.to, search: input.search ?? "" }), ...(d.limited ?? {}), ...reconnectNote };
+        return { ok: true, ...transactions(c, { from: d.from, to: d.to, search: input.search ?? "" }), ...(d.limited ?? {}), ...reconnectNote(), ...loadingNote(f) };
       }
       case "subscriptions": {
         if (!mine.length) return NO_BANK;
+        const f = await freshen(c);
+        if (f.loading.length === mine.length) return STILL_LOADING(f.loading);
         noteRead(c);
         const out = await subscriptions(c, { now });
-        return { ok: true, ...out, ...reconnectNote, say: `Lead with how many and the monthly total, then the list, short.${out.source === "worked_out_here" ? " This list was worked out from the last 60 days of their transactions, so say it may miss yearly ones." : ""}` };
+        return { ok: true, ...out, ...reconnectNote(), ...loadingNote(f), say: `Lead with how many and the monthly total, then the list, short.${out.source === "worked_out_here" ? " This list was worked out from the last 60 days of their transactions, so say it may miss yearly ones." : ""}` };
       }
       case "balance": {
         if (!mine.length) return NO_BANK;
