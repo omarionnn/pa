@@ -13,6 +13,9 @@
 //
 //   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--clear-keyterms]          the plan only
 //   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--clear-keyterms] --yes    PATCHes it
+//            --instructions: the saved instructions to INSTRUCTIONS below; --instructions-file <file>: to a saved
+//            agent's own (a --save file, or plain text), to put them back.
+//   node scripts/cartesia-agent-setup.mjs --show <agent id> [--save <file>]   reads it (no secrets); --save keeps it
 //            --clear-keyterms: the saved keyterms back to "Reason" and the per-call slots only, so words
 //            given with --keyterms when it was one person's agent are not on everyone's calls.
 //            changes only what is named: the voice (e.g. Lucy, en-GB, tagged Emotive) and/or Cartesia's
@@ -23,7 +26,8 @@
 // --yes makes two things on the account and spends nothing by itself: an agent costs only when a call
 // uses it. Every call it carries is deleted on Cartesia's side when the call ends (DELETE /agents/calls).
 // The key is read from CARTESIA_API_KEY (the environment, ./.env or ~/Desktop/pa/.env) and never printed.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs, parseEnv } from "node:util";
@@ -53,7 +57,9 @@ export const INSTRUCTIONS = [
   "# On this line",
   "Reason's backend is the ask_reason tool. Wherever the lines above say to hand something to Reason or the backend, call ask_reason with what they asked, in full, in their words.",
   "Say Reason's answer in your own voice, briefly, keeping every fact, number and name exactly as it came back. Never add a fact of your own.",
-  "Before a lookup or an action, one short line naming exactly what you're getting (\"Checking your Thursday.\"), then call ask_reason. Never \"let me check\" on its own.",
+  "Before a lookup, one short line naming exactly what you're getting (\"Checking your Thursday.\"), then call ask_reason. Before an action, the line says you're asking Reason (\"Asking Reason to book that.\"), never that it is happening (\"Booking it.\"). Never \"let me check\" on its own.",
+  "Only an ask_reason answer from this call can say something is done, booked, sent or submitted. If they ask whether it is, call ask_reason; never answer that yourself.",
+  "Never state a price, time, distance, opening hour or limit that an ask_reason answer in this call did not give you.",
   "If ask_reason says it could not answer, say so plainly and offer to try again.",
   "When something is genuinely funny, you may laugh: write [laughter] where the laugh goes. Never more than one in a reply, and never when they are upset.",
   "When you have both said goodbye, end the call.",
@@ -144,13 +150,38 @@ export async function api(key, path, { method = "GET", body = null, fetchImpl = 
  * The body of PATCH /v1/agents/{id}: only what was asked for (an update is sparse: "Omitting the field
  * from an update preserves the agent's current setting", docs.cartesia.ai/agents/configuration).
  */
-export function updateBody({ voice = "", skipTurn = false, clearKeyterms = false } = {}) {
+export function updateBody({ voice = "", skipTurn = false, clearKeyterms = false, instructions = "" } = {}) {
   const config = {};
+  if (instructions) config.instructions = instructions;
   if (voice) config.audio = { output: { voice_id: voice } };
   if (clearKeyterms) config.audio = { ...(config.audio ?? {}), input: { keyterms: sharedKeyterms() } };
   if (skipTurn) config.system_tools = { skip_turn: { description: SKIP_TURN_DESCRIPTION, pre_tool_speech: "off" } };
-  const what = [voice ? `voice ${voice}` : "", clearKeyterms ? "keyterms cleared to Reason and the per-call slots" : "", skipTurn ? "skip_turn on" : ""].filter(Boolean).join(", ");
+  const what = [voice ? `voice ${voice}` : "", clearKeyterms ? "keyterms cleared to Reason and the per-call slots" : "", skipTurn ? "skip_turn on" : "", instructions ? `instructions (${instructions.length} chars)` : ""].filter(Boolean).join(", ");
   return Object.keys(config).length ? { config, version_description: `Reason: ${what}` } : null;
+}
+
+/** The agent as read, with anything secret-shaped taken out (keyterms and ids stay). */
+export function scrub(v) {
+  if (Array.isArray(v)) return v.map(scrub);
+  if (!v || typeof v !== "object") return v;
+  const out = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (/secret|token|password|api_?key|authorization|credential/i.test(k)) continue;
+    out[k] = scrub(x);
+  }
+  return out;
+}
+
+/** One line about the agent: its version, voice, tools and a fingerprint of its instructions. */
+export function agentSummary(a) {
+  const c = a?.config ?? a ?? {};
+  const text = String(c.instructions ?? "");
+  return {
+    id: a?.id ?? null, version: a?.version_id ?? a?.version ?? a?.current_version_id ?? a?.active_version_id ?? null,
+    voice: c.audio?.output?.voice_id ?? null, tools: (c.tools ?? []).map(t => t?.id ?? t?.name ?? null),
+    system_tools: Object.keys(c.system_tools ?? {}), instructions_chars: text.length,
+    instructions_sha256: text ? createHash("sha256").update(text).digest("hex").slice(0, 16) : null,
+  };
 }
 
 export async function main(argv = process.argv.slice(2), { log = console.log, call = api, key = null } = {}) {
@@ -158,10 +189,32 @@ export async function main(argv = process.argv.slice(2), { log = console.log, ca
     yes: { type: "boolean", default: false }, voice: { type: "string", default: GEMMA }, language: { type: "string", default: "en-GB" },
     model: { type: "string", default: "" }, keyterms: { type: "string", default: "" },
     update: { type: "string", default: "" }, "skip-turn": { type: "boolean", default: false }, "clear-keyterms": { type: "boolean", default: false },
+    instructions: { type: "boolean", default: false }, "instructions-file": { type: "string", default: "" },
+    show: { type: "string", default: "" }, save: { type: "string", default: "" },
   } });
+  if (o.show) {
+    // Read only: what the agent is now (no key, no secrets), and with --save <file> the whole of it as JSON,
+    // so a later --update --instructions-file <file> can put its instructions back.
+    const k = key ?? loadKey();
+    if (!k) { log("No CARTESIA_API_KEY in the environment, ./.env or ~/Desktop/pa/.env."); return 1; }
+    const r = await call(k, `/v1/agents/${encodeURIComponent(o.show)}`);
+    if (!r.ok || !r.json) { log(`Could not read the agent: ${r.error || "nothing came back"}`); return 1; }
+    const a = scrub(r.json);
+    if (o.save) writeFileSync(o.save, JSON.stringify(a, null, 2) + "\n", { mode: 0o600 });
+    log(JSON.stringify(agentSummary(a)));
+    return 0;
+  }
   if (o.update) {
-    const body = updateBody({ voice: argv.includes("--voice") ? o.voice : "", skipTurn: o["skip-turn"], clearKeyterms: o["clear-keyterms"] });
-    if (!body) { log("Nothing to change: name --voice <id>, --skip-turn and/or --clear-keyterms."); return 1; }
+    let instructions = "";
+    if (o["instructions-file"]) {
+      const raw = readFileSync(o["instructions-file"], "utf8");
+      let saved = null;
+      try { saved = JSON.parse(raw); } catch { /* plain text */ }
+      instructions = saved ? String(saved?.config?.instructions ?? saved?.instructions ?? "") : raw;
+      if (!instructions.trim()) { log(`No instructions in ${o["instructions-file"]}.`); return 1; }
+    } else if (o.instructions) instructions = INSTRUCTIONS;
+    const body = updateBody({ voice: argv.includes("--voice") ? o.voice : "", skipTurn: o["skip-turn"], clearKeyterms: o["clear-keyterms"], instructions });
+    if (!body) { log("Nothing to change: name --voice <id>, --skip-turn, --clear-keyterms, --instructions and/or --instructions-file <file>."); return 1; }
     log(`The plan: PATCH agent ${o.update}: ${body.version_description.replace(/^Reason: /, "")}. Nothing else on it changes; a new version is made.`);
     if (!o.yes) { log("Nothing was changed. Run again with --yes to change it."); return 0; }
     const k = key ?? loadKey();
