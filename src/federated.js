@@ -23,13 +23,13 @@ import { clock } from "./config.js";
 import { classifySite, registrableOf, refusalFor } from "./sitepolicy.js";
 import { peekForSignin, setState, recordLoginEvent, savedLoginsAllowedFor } from "./savedlogins.js";
 import {
-  closeBrowser as closeErrandBrowser, guardContext, holdProfile, releaseProfile, pinSite, unpinSite, armIdp, disarmIdp, watchGoogle,
+  closeBrowser as closeErrandBrowser, guardContext, holdProfile, releaseProfile, pinSite, unpinSite, pinExact, armIdp, disarmIdp, watchGoogle,
   isGoogleProperty, locateSigninPage,
 } from "./browser.js";
 import { namedByThem } from "./namedsite.js";
 import { askFaceId, takeApproval, takeResume, spendSaveGrants, faceIdState } from "./loginuse.js";
 import { requestOf } from "./resume.js";
-import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
+import { logAttempt, logDiag } from "./signinlog.js";
 import { awaitCodeReply } from "./signinemail.js";
 import * as restartGate from "./busy.js";
 
@@ -41,7 +41,6 @@ const STEP_MS = 15_000;
 
 const originOf = (u) => { try { return new URL(String(u)).origin; } catch { return ""; } };
 const hostOf = (u) => { try { return new URL(String(u)).hostname.toLowerCase(); } catch { return ""; } };
-const clean = (s, n = 60) => safeMessage(s).slice(0, n);
 
 // ---------------------------------------------------------------- the site's own button
 /** The site's own "Continue with Google" control: a button or link on the page's own frame, by its accessible name. */
@@ -70,6 +69,8 @@ const GOOGLE_JS = `(() => {
     chooser: all('[data-identifier]').map(function (e) { return String(e.getAttribute('data-identifier') || ''); }),
     another: all('[role=link], a, button, li, div[role=button]').some(function (e) { return /^\\s*use another account\\s*$/i.test(e.textContent || ''); }),
     scopes: all('[data-scope], li').map(function (e) { return (e.textContent || '').replace(/\\s+/g, ' ').trim(); }).filter(Boolean).slice(0, 20),
+    hidden: Array.prototype.slice.call(document.querySelectorAll('[data-scope], li')).filter(function (e) { return !vis(e); }).map(function (e) { return (e.textContent || '').replace(/\\s+/g, ' ').trim(); }).filter(Boolean).slice(0, 20),
+    checks: all('input[type=checkbox], [role=checkbox]').length,
     number: big,
     frames: Array.prototype.slice.call(document.querySelectorAll('iframe')).filter(vis).map(function (f) { return String(f.src || '').split('?')[0]; }).slice(0, 5)
   };
@@ -93,8 +94,6 @@ export const BLOCK_WORDS = {
   challenge_frame: "it showed a human check, which I don't solve",
 };
 const CONSENT = /wants (additional )?access to your google account|wants to access your google account|will allow google to share|to continue, google will share/i;
-/** Anything beyond the basic profile and email address. */
-export const MORE_THAN_BASIC = /gmail|e-?mail messages|read, compose|send (e-?)?mail|drive|docs|sheets|slides|files|contacts|calendar|photos|youtube|location|phone number|birthday|street address|home address|postal address|tasks|fitness|health|delete|manage|\bedit\b/i;
 
 /** What Google's page is asking for now. */
 export function googleStep(r) {
@@ -112,8 +111,8 @@ export function googleStep(r) {
     return { kind: "code", from };
   }
   if (/tap yes|check your (phone|device)|tap the number|choose the number|tap \d{1,3}\b|open the google app/i.test(t)) {
-    const dev = /(?:notification to|sent a notification to|prompt to|on) your ([A-Za-z0-9 ’'+-]{2,40}?)(?:[.,]| and |$)/i.exec(t)?.[1] ?? "";
-    return { kind: "tap", number: /^\d{1,3}$/.test(String(r.number ?? "")) ? String(r.number) : "", device: String(dev).replace(/[^A-Za-z0-9 '+-]/g, "").replace(/\s+/g, " ").trim().slice(0, 40) };
+    // Fixed words only (review 2026-11-13): the number, never the page's text (a device name is page text).
+    return { kind: "tap", number: /^\d{1,3}$/.test(String(r.number ?? "")) ? String(r.number) : "" };
   }
   if (r.chooser?.length || r.another) return { kind: "chooser" };
   if (r.pass === 1) return { kind: "password" };
@@ -121,13 +120,40 @@ export function googleStep(r) {
   return { kind: "unknown" };
 }
 
-/** The consent screen asks for the basic profile and email address only. */
+/** Anything beyond the basic profile and email address (named in the stop message by a fixed word). */
+export const MORE_THAN_BASIC = /gmail|e-?mail messages|read, compose|send (e-?)?mail|drive|docs|sheets|slides|files|contacts|calendar|photos|youtube|location|phone number|birth|street address|home address|postal address|tasks|fitness|health|delete|manage|\bedit\b/i;
+const MORE_WORDS = [[/gmail|e-?mail messages|read, compose|send (e-?)?mail/i, "Gmail"], [/drive|docs|sheets|slides|files/i, "Drive"], [/contacts/i, "contacts"],
+  [/calendar/i, "calendar"], [/photos/i, "photos"], [/youtube/i, "YouTube"], [/location|street address|home address|postal address/i, "location or address"],
+  [/phone number/i, "phone number"], [/birth/i, "date of birth"]];
+// The basic sign-in, positively recognised (review 2026-11-13: fail closed). A scope line is a sentence that
+// says what the site may do ("See ...", "Associate ..."); footer links (Help, Privacy, Terms) are not.
+const SCOPE_LINE = /\b(see|view|read|edit|create|delete|manage|send|access|know|associate|share|download|upload|make|modify|use|your)\b/i;
+const BASIC_SCOPE = [
+  /^(see|view) your (primary )?(google account )?email address\.?$/i,
+  /^(see|view) your personal info(,? including any personal info you['’]ve made publicly available)?\.?$/i,
+  /^(see|view) your basic profile info\.?$/i,
+  /^associate you with your personal info on google\.?$/i,
+];
+const BASIC_SHARED = /^(your )?(name|email|email address|language preference|profile picture)$/i;
+const DETAILS = /see details|show details|more details|select all|select what|choose what .{0,40}can access|wants additional access/i;
+const SHARE_LIST = /share your (.{1,160}?) with /i;
+
+/**
+ * The consent screen asks for the basic profile and email address only: every scope line, shown or hidden,
+ * is one of Google's basic ones, Google's "will share your ..." list holds only name, email, language and
+ * picture, and at least one of the two was recognised. Anything else, a "See details" or a list of
+ * checkboxes, stops. → { ok, more: fixed words for what more it asked }
+ */
 export function basicConsent(r) {
   const t = String(r?.text ?? "");
-  const share = /(?:share|access to) your ([^.]{0,200})/i.exec(t)?.[1] ?? "";
-  const items = [...(r?.scopes ?? []), share].filter(Boolean);
-  const more = items.filter((s) => MORE_THAN_BASIC.test(s));
-  return { ok: !more.length, more: more.map((s) => clean(s, 60)).slice(0, 3) };
+  const lines = [...(r?.scopes ?? []), ...(r?.hidden ?? [])].map((x) => String(x).replace(/\s+/g, " ").trim()).filter((x) => SCOPE_LINE.test(x));
+  const share = SHARE_LIST.exec(t)?.[1] ?? "";
+  const shared = share ? share.split(/\s*,\s*(?:and\s+)?|\s+and\s+/i).map((x) => x.trim()).filter(Boolean) : [];
+  const odd = [...lines.filter((x) => !BASIC_SCOPE.some((re) => re.test(x))), ...shared.filter((x) => !BASIC_SHARED.test(x))];
+  const recognised = lines.length > 0 || shared.length > 0;
+  const ok = recognised && !odd.length && !DETAILS.test(t) && !(r?.checks > 0);
+  const more = [...new Set(odd.map((x) => MORE_WORDS.find(([re]) => re.test(x))?.[1] ?? "other access"))];
+  return { ok, more: ok ? [] : (more.length ? more : ["details I couldn't check"]).slice(0, 3) };
 }
 
 async function readGoogle(gp) {
@@ -145,10 +171,10 @@ function say(result, site, extra = {}) {
     origin_mismatch: `I couldn't sign you in to ${site}: its Google button didn't lead to Google's own sign-in page (accounts.google.com), so I typed nothing.`,
     blocked: `Google stopped the sign-in to ${site}: ${BLOCK_WORDS[extra.which] ?? "it blocked it"}. That's Google's call, not something you did. I stopped and won't retry.`,
     wrong_password: `I couldn't sign you in to ${site}: Google said the saved Google password is wrong. I've stopped and won't use it again until you save it again.`,
-    not_accepted: `I couldn't sign you in to ${site}: Google didn't accept the saved Google login${extra.msg ? ` (it said: "${clean(extra.msg, 80)}")` : ""}. I've stopped and won't try again until tomorrow.`,
+    not_accepted: `I couldn't sign you in to ${site}: Google didn't accept the saved Google login. I've stopped and won't try again until tomorrow.`,
     consent_more: `I stopped signing you in to ${site}: it asked Google for more than your name and email address${extra.more?.length ? ` (${extra.more.join("; ")})` : ""}. I didn't allow it, so you're not signed in. I won't try ${site} with Google again until tomorrow.`,
     google_property: `I stopped the ${site} sign-in: something tried to open another Google page (like Gmail, Drive or your settings), which I never do with your Google login. I signed this browser out of Google.`,
-    needs_google_tap: `Google wants you to confirm it's you${extra.device ? ` on your ${extra.device}` : " on your phone"}: open the Google prompt and ${extra.number ? `tap ${extra.number}` : "tap Yes"}. I'll carry on by myself when you do; I'll wait 3 minutes.`,
+    needs_google_tap: `Google wants you to confirm it's you on your phone: open the Google prompt and ${/^\d{1,3}$/.test(String(extra.number ?? "")) ? `tap ${extra.number}` : "tap Yes"}. I'll carry on by myself when you do; I'll wait 3 minutes.`,
     needs_google_code: `Google wants a code to finish signing you in to ${site}, from ${extra.from ?? "your phone"}. Send it to me and I'll type it in, once.`,
     no_answer: `Google's check wasn't answered in time, so I stopped. You're not signed in to ${site}, and I won't try again until tomorrow.`,
     code_not_found: `The Google code didn't come in time, so I stopped. You're not signed in to ${site}, and I won't try again until tomorrow.`,
@@ -159,6 +185,28 @@ function say(result, site, extra = {}) {
     not_signin_page: `I couldn't sign you in to ${site}: its sign-in page didn't load the way I expected, so I stopped.`,
   };
   return { ok: result === "signed_in", result, route: "google", say_exactly: lines[result] ?? `I couldn't sign you in to ${site}.` };
+}
+
+// ---------------------------------------------------------------- Google's session, never kept (review 2026-11-13)
+// The profile is kept between jobs (src/browser.js launchProfile; the owner's real Chrome since #556), so a
+// Google session left in it would sign every later errand in to Gmail and Drive. At the start and at the
+// end of every chain, whatever the ending: every cookie of a Google domain, and Google's own storage, go.
+// The named site's cookies stay. Cost: Google sees a fresh browser each time and asks to verify more often.
+export const GOOGLE_COOKIE_DOMAIN = /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|gmail\.com|googlemail\.com|youtube\.com|googleusercontent\.com|googleapis\.com|gstatic\.com|withgoogle\.com)$/i;
+const GOOGLE_ORIGINS = ["https://accounts.google.com", "https://www.google.com", "https://myaccount.google.com", "https://mail.google.com",
+  "https://drive.google.com", "https://accounts.youtube.com", "https://www.youtube.com"];
+export async function signOutOfGoogle(context) {
+  if (!context) return;
+  try { await context.clearCookies({ domain: GOOGLE_COOKIE_DOMAIN }); } catch { /* closed already */ }
+  let cdp = null;
+  try {
+    const p = context.pages().find((x) => !x.isClosed());
+    cdp = p ? await context.newCDPSession(p) : null;
+    for (const origin of GOOGLE_ORIGINS) {
+      await cdp?.send("Storage.clearDataForOrigin", { origin, storageTypes: "cookies,local_storage,indexeddb,websql,cache_storage,service_workers,file_systems" }).catch(() => {});
+    }
+  } catch { /* not Chromium, or closed: the cookies above are the session */ }
+  finally { await cdp?.detach?.().catch(() => {}); }
 }
 
 // ---------------------------------------------------------------- the job
@@ -218,9 +266,6 @@ export async function signInWithGoogle(conversationId, site, {
   const startedAt = now();
   const diag = { boxes: [] };
   let session = null, handedOff = false, typed = false, breached = false;
-  const signOutOfGoogle = async (context) => {
-    try { await context?.clearCookies({ domain: /(^|\.)(google\.[a-z.]+|youtube\.com|gmail\.com)$/ }); } catch { /* best effort */ }
-  };
   const onGoogle = (context) => { breached = true; unpinSite(c); void signOutOfGoogle(context ?? session?.context); try { recordLoginEvent(c, { site: host, event: "signin", outcome: "google_property", purpose: why }); } catch { /* best effort */ } };
 
   const end = (result, extra = {}) => {
@@ -247,6 +292,8 @@ export async function signInWithGoogle(conversationId, site, {
 
     session = await launch({ conversationId: c });
     await guardContext(session.context, { conversationId: c });
+    // Start from no Google session (one left by a crash, or by anything else in this kept profile).
+    await signOutOfGoogle(session.context);
     const page = session.context.pages()[0] ?? await session.context.newPage();
     page.setDefaultTimeout(20_000);
     pinSite(c, base, { secure: true });
@@ -369,7 +416,11 @@ export async function signInWithGoogle(conversationId, site, {
           else if (originOf(gp.url()) !== GOOGLE) out = end("origin_mismatch");
           else {
             const box = gp.locator('input[autocomplete="one-time-code"]:visible, input[type="tel"]:visible, input[name*="pin" i]:visible, input[id*="pin" i]:visible, input[name*="code" i]:visible').first();
-            await box.fill(String(code), { timeout: 5_000 }).catch(() => {});
+            // Held to exactly accounts.google.com while the code is typed (no page of another origin loads in between).
+            pinExact(c, GOOGLE);
+            try {
+              if (originOf(gp.url()) === GOOGLE) await box.fill(String(code), { timeout: 5_000 }).catch(() => {});
+            } finally { pinExact(c, null); }
             await box.press("Enter").catch(() => {});
             await gp.waitForTimeout(800).catch(() => {});
             const k = gp.isClosed() || originOf(gp.url()) !== GOOGLE ? "back" : googleStep(await readGoogle(gp)).kind;
@@ -379,6 +430,7 @@ export async function signInWithGoogle(conversationId, site, {
       } catch { out = end("not_signin_page"); }
       finally {
         disarmIdp(c);
+        await signOutOfGoogle(session?.context);
         await session?.close?.();
         releaseProfile(c, holder);
         restartGate.release(`${gateId}:wait`);
@@ -392,6 +444,7 @@ export async function signInWithGoogle(conversationId, site, {
   } finally {
     if (!handedOff) {
       disarmIdp(c);
+      await signOutOfGoogle(session?.context);
       await session?.close?.();
       releaseProfile(c, holder);
       restartGate.release(gateId);
@@ -399,4 +452,4 @@ export async function signInWithGoogle(conversationId, site, {
   }
 }
 
-export const _test = { GOOGLE_JS, googleStep, basicConsent, GOOGLE_BUTTON };
+export const _test = { GOOGLE_JS, googleStep, basicConsent, GOOGLE_BUTTON, say };

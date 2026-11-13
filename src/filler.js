@@ -418,6 +418,8 @@ async function challengeShown(page) {
   try { return (await page.evaluate(CHALLENGE_FRAME_JS)) === true; } catch { return false; }
 }
 export const _test = { CHALLENGE_FRAME_JS };
+/** For tests: the Google step's typist (test/continue-with-google.test.js). */
+export const _testGoogle = { googleCredentials: (c) => googleCredentials(c) };
 
 /** How long the page is given to answer the submit: a script-driven form (Netflix) answers by XHR, not a page load. */
 const ANSWER_MS = 12_000;
@@ -809,6 +811,7 @@ function googleCredentials(conversationId) {
     const G = federated.GOOGLE;
     const here = () => urlParts(gp.url()).origin;
     const drift = () => { if (gp.isClosed() || here() !== G) { const e = new Error("left Google"); e.name = "OriginDrift"; throw e; } };
+    const hold = () => pinExact(conversationId, G), release = () => pinExact(conversationId, null);
     const read = async () => federated.googleStep(await gp.evaluate(federated._test.GOOGLE_JS).catch(() => null));
     try {
       return await withLogin(conversationId, row.id, here(), async ({ username, password }) => {
@@ -834,11 +837,16 @@ function googleCredentials(conversationId) {
             } else if (st === "email" && !typedEmail) {
               typedEmail = true;
               const box = gp.locator('input[type="email"]:visible').first();
-              drift(); typing();
-              await box.fill(want, { timeout: FILL_MS });
-              diag.boxes.push({ kind: "email", typed: await lengthIn(box), saved: want.length });
-              drift();
-              await box.press("Enter").catch(() => {});
+              // Held to exactly accounts.google.com from the last origin check to the keystroke (review
+              // 2026-11-13): the opener, a redirect or the site's own pages can't swap the tab in between.
+              hold();
+              try {
+                drift(); typing();
+                await box.fill(want, { timeout: FILL_MS });
+                diag.boxes.push({ kind: "email", typed: await lengthIn(box), saved: want.length });
+                drift();
+                await box.press("Enter").catch(() => {});
+              } finally { release(); }
             } else if (st !== "chooser" && st !== "email" && st !== "unknown") break;
             await gp.waitForTimeout(300).catch(() => {});
           }
@@ -854,11 +862,14 @@ function googleCredentials(conversationId) {
           await gp.waitForTimeout(300).catch(() => {});
         }
         if (!pass) { password.wipe?.(); return "none"; }
-        drift(); typing(); // immediately before the password keystroke
-        await password.use(async (b) => { await pass.fill(b.toString("utf8"), { timeout: FILL_MS }); diag.boxes.push({ kind: "password", typed: await lengthIn(pass), saved: b.toString("utf8").length }); });
-        drift();
-        diag.pressed = "enter";
-        await pass.press("Enter").catch(() => {});
+        hold();
+        try {
+          drift(); typing(); // immediately before the password keystroke
+          await password.use(async (b) => { await pass.fill(b.toString("utf8"), { timeout: FILL_MS }); diag.boxes.push({ kind: "password", typed: await lengthIn(pass), saved: b.toString("utf8").length }); });
+          drift();
+          diag.pressed = "enter";
+          await pass.press("Enter").catch(() => {});
+        } finally { release(); }
         await gp.waitForTimeout(600).catch(() => {});
         await pass.fill("", { timeout: 800 }).catch(() => {});
         return "typed";

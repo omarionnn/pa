@@ -503,6 +503,10 @@ export function removeLogin(conversationId, id, { purpose = "" } = {}) {
   const row = d.prepare("SELECT site FROM saved_logins WHERE id = ? AND conversation_id = ?").get(Number(id), c);
   if (!row) return false;
   d.prepare("DELETE FROM saved_logins WHERE id = ? AND conversation_id = ?").run(Number(id), c);
+  // The Google login gone (and no other kept): every site they signed in to through it goes with it (review 2026-11-13).
+  if (row.site === "google.com" && !d.prepare("SELECT 1 FROM saved_logins WHERE conversation_id = ? AND site = 'google.com'").get(c)) {
+    d.prepare("DELETE FROM signin_routes WHERE conversation_id = ? AND route = 'google'").run(c);
+  }
   logEvent(c, { site: row.site, event: "removed", outcome: "ok", purpose, kmsCalls: 0 });
   return true;
 }

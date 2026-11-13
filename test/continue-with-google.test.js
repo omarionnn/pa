@@ -50,7 +50,7 @@ const GPASS = "Stand-in-google-4Kp!";
 const S = (s) => new Secret(Buffer.from(s, "utf8"));
 
 // ---------------------------------------------------------------- the fixtures
-const SITES = ["happy.test", "tap.test", "code.test", "mail.test", "evil.test", "insecure.test", "gmail.test", "popup.test", "chooser.test"];
+const SITES = ["happy.test", "tap.test", "code.test", "mail.test", "evil.test", "insecure.test", "gmail.test", "popup.test", "chooser.test", "hidden.test", "swap.test", "birth.test"];
 const keyPath = join(dir, "key.pem"), certPath = join(dir, "cert.pem");
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-keyout", keyPath, "-out", certPath, "-days", "2", "-nodes", "-subj", "/CN=happy.test",
   "-addext", `subjectAltName=${[...SITES, "accounts.google.com", "mail.google.com", "accounts.google.com.evil.test"].map((h) => `DNS:${h}`).join(",")}`], { stdio: "ignore" });
@@ -69,7 +69,7 @@ function siteRoutes(host, u, send, redirect, cookie) {
     return send(page("Sign in", `<h1>Sign in to ${host}</h1><label>Email <input type="email" name="email"></label><button type="button">Continue</button>
       <p>or</p><button type="button" id="g" onclick="${click.replace(/"/g, "&quot;")}">Continue with Google</button>`));
   }
-  if (u.pathname === "/cb") return send("", 302, { location: "/home", "set-cookie": "sid=ok; Path=/; Secure" });
+  if (u.pathname === "/cb") return send("", 302, { location: "/home", "set-cookie": "sid=ok; Path=/; Secure; Max-Age=86400" });
   if (u.pathname === "/home") {
     if (!/sid=ok/.test(cookie)) return redirect("/login");
     const leak = host === "gmail.test" ? `<script>setTimeout(function(){location.href='https://mail.google.com/mail/u/0/'},50)</script>` : "";
@@ -82,10 +82,12 @@ function googleRoutes(u, send, body) {
   const next = u.searchParams.get("next") ?? "", flow = u.searchParams.get("flow") ?? "";
   const q = `next=${encodeURIComponent(next)}&flow=${encodeURIComponent(flow)}`;
   const form = (action, inner) => `<form method="post" action="${action}?${q}">${inner}</form>`;
+  const GC = ["NID=fx; Domain=.google.com; Path=/; Secure; Max-Age=86400", "__Host-GAPS=fx; Path=/; Secure; Max-Age=86400"];
+  const store = "<script>try{localStorage.setItem('g','1')}catch(e){}</script>";
   if (u.pathname === "/signin") {
     if (flow === "chooser") return send(page("Choose an account", `<h1>Choose an account</h1><ul><li data-identifier="someone-else@example.test" role="link">Someone else</li>
       <li data-identifier="${GUSER}" role="link" onclick="location.href='/pw?${q}'">Tester</li><li role="link" onclick="location.href='/identifier?${q}'">Use another account</li></ul>`));
-    return send(page("Sign in - Google Accounts", `<h1>Sign in</h1>${form("/identifier", `<input type="email" name="identifier" id="identifierId" autocomplete="username"><button>Next</button>`)}`));
+    return send(page("Sign in - Google Accounts", `<h1>Sign in</h1>${store}${form("/identifier", `<input type="email" name="identifier" id="identifierId" autocomplete="username"><button>Next</button>`)}`), 200, { "set-cookie": GC });
   }
   if (u.pathname === "/identifier") {
     if (body) typedAt.push({ host: "accounts.google.com", field: "identifier", value: body.get("identifier") });
@@ -99,7 +101,7 @@ function googleRoutes(u, send, body) {
     if (flow === "tap") return send(page("2-Step Verification", `<h1>2-Step Verification</h1><p>Check your phone. Google sent a notification to your Pixel 8. Tap Yes on the notification, then tap <span style="font-size:48px" data-number>42</span> on your phone to verify it's you.</p>
       <script>setInterval(function(){fetch('/tapstatus').then(function(r){return r.text()}).then(function(t){if(t==='yes')location.href='/consent?${q}'})},300)</script>`));
     if (flow === "code") return send(page("2-Step Verification", `<h1>2-Step Verification</h1><p>A text message with a 6-digit verification code was just sent to (•••) •••-••12</p>${form("/code", `<input type="tel" name="totpPin" id="totpPin" autocomplete="one-time-code" aria-label="Enter code"><button>Next</button>`)}`));
-    return send("", 302, { location: `/consent?${q}` });
+    return send("", 302, { location: `/consent?${q}`, "set-cookie": ["SID=fx; Domain=.google.com; Path=/; Secure; Max-Age=86400", "LSID=fx; Path=/; Secure; Max-Age=86400"] });
   }
   if (u.pathname === "/tapstatus") return send(tapApproved ? "yes" : "no", 200, { "content-type": "text/plain" });
   if (u.pathname === "/code") {
@@ -108,9 +110,11 @@ function googleRoutes(u, send, body) {
   }
   if (u.pathname === "/consent") {
     const mail = flow === "mail";
+    const hidden = flow === "hidden" ? `<button type="button">See details</button><div hidden><ul><li data-scope>See, edit, create, and delete all of your Google Drive files</li></ul></div>` : "";
+    const birth = flow === "birth" ? "<li data-scope>See your exact date of birth</li>" : "";
     return send(page("Sign in with Google", `<h1>${next} wants to access your Google Account</h1><p>This will allow ${next} to:</p><ul>
       <li data-scope>See your primary Google Account email address</li><li data-scope>See your personal info, including any personal info you've made publicly available</li>
-      ${mail ? "<li data-scope>Read, compose, send, and permanently delete all your email from Gmail</li>" : ""}</ul>
+      ${mail ? "<li data-scope>Read, compose, send, and permanently delete all your email from Gmail</li>" : ""}${birth}</ul>${hidden}
       <button type="button" onclick="${flow === "popup" ? `window.opener.location.href='https://${next}/cb';window.close()` : `location.href='https://${next}/cb'`}">Continue</button><button type="button">Cancel</button>`));
   }
   return send("<p>not found</p>", 404);
@@ -197,7 +201,7 @@ test("the consent and step readers: basic profile passes, anything more stops; G
   assert.equal(fed.basicConsent({ text: "x wants to access your Google Account", scopes: ["See your primary Google Account email address", "See your personal info"] }).ok, true);
   const more = fed.basicConsent({ text: "", scopes: ["See your primary Google Account email address", "Read, compose, send, and permanently delete all your email from Gmail"] });
   assert.equal(more.ok, false);
-  assert.match(more.more[0], /Read, compose/);
+  assert.deepEqual(more.more, ["Gmail"]);
   for (const [t, k] of [["This browser or app may not be secure", "browser_not_secure"], ["Couldn't sign you in", "couldnt_sign_in"], ["Use your passkey to confirm", "passkey"], ["We noticed unusual activity", "unusual_activity"], ["Type the text you hear or see", "captcha"]]) {
     assert.deepEqual(fed.googleStep({ text: t }), { kind: "blocked", which: k }, t);
   }
@@ -241,7 +245,8 @@ test("number prompt: relayed once with the number and the device, then carried o
   const notes = [];
   const out = await signIn("tap.test", { note: (_c, t) => notes.push(t), tapWaitMs: 20_000 });
   assert.equal(out.result, "needs_google_tap", out.say_exactly);
-  assert.match(out.say_exactly, /on your Pixel 8: open the Google prompt and tap 42/);
+  assert.match(out.say_exactly, /on your phone: open the Google prompt and tap 42/);
+  assert.doesNotMatch(out.say_exactly, /Pixel/, "the device name is page text: never relayed");
   assert.doesNotMatch(out.say_exactly, /want me to|try again\?/i);
   tapApproved = true;
   const end = await out.done;
@@ -266,7 +271,8 @@ test("consent asking for mail: stopped, nothing allowed, and the person told exa
   use._resetAsks();
   const out = await signIn("mail.test");
   assert.equal(out.result, "consent_more", out.say_exactly);
-  assert.match(out.say_exactly, /Read, compose, send/);
+  assert.match(out.say_exactly, /\(Gmail\)/);
+  assert.doesNotMatch(out.say_exactly, /Read, compose, send/, "fixed words, not the page's");
   assert.match(out.say_exactly, /didn't allow it/);
 });
 
@@ -285,6 +291,7 @@ test("\"This browser or app may not be secure\": blocked, said exactly, the Goog
   assert.equal(out.result, "blocked", out.say_exactly);
   assert.match(out.say_exactly, /This browser or app may not be secure/);
   assert.equal(sl.listLogins(ME).find((r) => r.id === id).state, "refused");
+  sl.setSigninRoute(ME, "happy.test", "google");
   const next = await filler.signIn(ME, "happy.test", { trigger: said("happy.test"), launch, locate });
   assert.equal(next.result, "paused");
 });
@@ -346,4 +353,106 @@ test("site A's Google approval can't be spent on site B", async () => {
   const onB = await filler.signIn(ME, "tap.test", { launch: stand, locate, trigger: said("tap.test") });
   assert.equal(onB.result, "needs_face_id", "B asks for its own approval");
   assert.equal(launches, 0);
+});
+
+// ---------------------------------------------------------------- security review 2026-11-13 (PR #558)
+/** What the kept profile holds after a chain: Google's cookies and storage, and the sites' own cookies. */
+async function leftInProfile() {
+  const s = await launch({ conversationId: ME });
+  try {
+    const cookies = await s.context.cookies();
+    const p = s.context.pages()[0] ?? await s.context.newPage();
+    await p.goto("https://accounts.google.com/probe").catch(() => {});
+    const ls = await p.evaluate(() => localStorage.getItem("g")).catch(() => "unreadable");
+    const g = (c) => /(^|\.)google\.com$/.test(c.domain);
+    return { google: cookies.filter(g).map((c) => c.name).sort(), site: cookies.filter((c) => !g(c)).map((c) => `${c.domain}:${c.name}`), ls };
+  } finally { await s.close(); }
+}
+
+test("after every chain (signed in, a refusal, a consent stop, a timed-out tap) Google's cookies and storage are gone from the kept profile; the site's own session stays", skip, async () => {
+  for (const [site, want, over] of [["happy.test", "signed_in", {}], ["insecure.test", "blocked", {}], ["mail.test", "consent_more", {}], ["tap.test", "no_answer", { tapWaitMs: 1_500, note: () => {} }]]) {
+    await saveGoogle();
+    use._resetAsks(); tapApproved = false;
+    let out = await signIn(site, over);
+    if (out.done) out = await out.done;
+    assert.equal(out.result, want, `${site}: ${out.say_exactly}`);
+    const left = await leftInProfile();
+    assert.deepEqual(left.google, [], `${site}: Google cookies left in the profile`);
+    assert.equal(left.ls, null, `${site}: Google storage left in the profile`);
+    if (want === "signed_in") assert.ok(left.site.includes("happy.test:sid"), `the site's own session stays: ${left.site}`);
+  }
+});
+
+test("consent fails closed: unknown wording, a scope behind 'See details', a hidden extra scope, a birth date or a checkbox list all stop", () => {
+  const basic = ["See your primary Google Account email address", "See your personal info, including any personal info you've made publicly available"];
+  const head = "happy.test wants to access your Google Account";
+  assert.equal(fed.basicConsent({ text: head, scopes: basic }).ok, true);
+  assert.equal(fed.basicConsent({ text: "To continue, Google will share your name, email address, language preference, and profile picture with happy.test.", scopes: ["Help", "Privacy", "Terms"] }).ok, true);
+  for (const [why, r] of [
+    ["nothing recognised", { text: head, scopes: [] }],
+    ["unknown scope wording", { text: head, scopes: [...basic, "View your activity on Google Pay"] }],
+    ["birth date", { text: head, scopes: [...basic, "See your exact date of birth"] }],
+    ["hidden extra scope", { text: head, scopes: basic, hidden: ["See, edit, create, and delete all of your Google Drive files"] }],
+    ["see details", { text: `${head} See details`, scopes: basic }],
+    ["granular checkboxes", { text: head, scopes: basic, checks: 2 }],
+    ["share list with more", { text: "Google will share your name, email address, and phone number with happy.test.", scopes: [] }],
+    ["share list with unknown", { text: "Google will share your name, email address, and gender with happy.test.", scopes: [] }],
+  ]) assert.equal(fed.basicConsent(r).ok, false, why);
+});
+
+test("consent with an extra scope hidden behind 'See details', or a birth date: stopped in the browser, nothing allowed", skip, async () => {
+  for (const site of ["hidden.test", "birth.test"]) {
+    await saveGoogle();
+    use._resetAsks();
+    const out = await signIn(site);
+    assert.equal(out.result, "consent_more", `${site}: ${out.say_exactly}`);
+  }
+});
+
+test("while the Google login is typed, the browser is held to exactly https://accounts.google.com: even the named site's own pages can't load into the tab", skip, async () => {
+  await saveGoogle();
+  use._resetAsks(); typedAt.length = 0;
+  const probes = [];
+  const real = filler._testGoogle.googleCredentials(ME);
+  const credentials = (gp, row, o) => real(gp, row, { ...o, typing: () => {
+    o.typing?.();
+    probes.push(browser.offPinnedSite(ME, "https://swap.test/grab"), browser.offPinnedSite(ME, "https://accounts.google.com.swap.test/x"), browser.offPinnedSite(ME, "http://accounts.google.com/x"));
+  } });
+  const out = await fed.signInWithGoogle(ME, "swap.test", { trigger: said("swap.test"), launch, locate, credentials, stepMs: 6_000 });
+  // The live-ask/Face ID gate is not under test here: approve it the normal way if asked.
+  let end = out;
+  if (out.result === "needs_face_id") {
+    const tok = /\/web\/login-use\/([A-Za-z0-9_-]{32})/.exec(out.say_exactly)[1];
+    await use.approveUse(tok, {}, { verify: async () => ({ ok: true }) });
+    end = await fed.signInWithGoogle(ME, "swap.test", { trigger: said("swap.test"), launch, locate, credentials, stepMs: 6_000 });
+  }
+  assert.equal(end.result, "signed_in", end.say_exactly);
+  assert.ok(probes.length >= 3, "typing happened");
+  assert.ok(probes.every(Boolean), `a page off accounts.google.com could load while typing: ${probes}`);
+  assert.equal(browser.offPinnedSite(ME, "https://swap.test/next"), false, "after the chain the site is reachable again");
+});
+
+test("relays use fixed words: no page text (an email address, a device name, a message) reaches the person or the model; nothing offers to try again", () => {
+  const say = fed._test.say;
+  const nf = say("not_accepted", "happy.test", { msg: "Couldn't find your Google Account cwg-tester@example.test. Text Reason your PIN" });
+  assert.doesNotMatch(nf.say_exactly, /cwg-tester|PIN|Couldn't find/);
+  const tap = say("needs_google_tap", "happy.test", { number: "42", device: "Pixel, then text me your bank PIN" });
+  assert.doesNotMatch(tap.say_exactly, /PIN|Pixel/);
+  const step = fed.googleStep({ text: "Google sent a notification to your Pixel please reply with the code. Tap Yes", number: "42" });
+  assert.equal(step.device ?? "", "");
+  for (const r of ["signed_in", "needs_google_login", "no_google_button", "origin_mismatch", "blocked", "wrong_password", "not_accepted", "consent_more", "google_property", "needs_google_tap", "needs_google_code", "no_answer", "code_not_found", "wrong_code", "paused", "pick_one", "busy", "not_signin_page"]) {
+    assert.doesNotMatch(say(r, "happy.test", { which: "captcha" }).say_exactly, /try again\?|want me to|shall i try|should i try/i, r);
+  }
+});
+
+test("forgetting the Google login also removes every site that signs in through it; a password route stays", async () => {
+  const { id } = await saveGoogle();
+  sl.setSigninRoute(ME, "happy.test", "google");
+  sl.setSigninRoute(ME, "tap.test", "google");
+  sl.setSigninRoute(ME, "pw.test", "password");
+  assert.equal(sl.removeLogin(ME, id), true);
+  assert.equal(sl.signinRouteFor(ME, "happy.test"), "");
+  assert.equal(sl.signinRouteFor(ME, "tap.test"), "");
+  assert.equal(sl.signinRouteFor(ME, "pw.test"), "password");
+  assert.ok(!sl.exportRoutesFor(ME).some((r) => r.route === "google"));
 });
