@@ -11476,8 +11476,13 @@ function historyFromOutbound(row) {
   // by the tool that drew it): Web serves it from there. Any other address (a contact card's .vcf) stays a file.
   const table = row.media?.table === true && /^https?:\/\/.+\/web\/media\/u\//.test(String(row.media.mediaUrl ?? ""))
     && /^image\//.test(String(row.media.mimeType ?? "image/png"));
+  // A stack of choice cards (src/stack.js): every card, in order, so Web draws the set as it was sent.
+  const stackCards = Array.isArray(row.media?.carousel) && Array.isArray(row.media.pictures)
+    ? row.media.pictures.map(p => /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(p?.file ?? ""))) : null;
   // A welcome card (src/welcome.js) is history as its words: Web cannot draw the picture, and a blank file says nothing.
-  const media = !row.media || row.media.fallbackText || row.media.carousel ? []
+  const media = stackCards?.length && stackCards.every(Boolean)
+    ? row.media.pictures.map((p, i) => ({ kind: "image", mimeType: "image/jpeg", filename: p.filename ?? null, url: `card:${stackCards[i][1]}`, choice: true }))
+    : !row.media || row.media.fallbackText || row.media.carousel ? []
     : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
       : table ? [{ kind: "image", mimeType: row.media.mimeType ?? "image/png", filename: row.media.filename ?? null, url: row.media.mediaUrl, table: true }]
         : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
