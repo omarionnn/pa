@@ -4910,7 +4910,7 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
   if (cartesiaTrialFor(row)) {
     const line = passableSocket(socket);
     // `holder`: whichever relay has the call now (the Cartesia one, or GPT-Live after a fall-back).
-    const slot = { done: false, rejoining: null, cartesia: true, holder: null };
+    const slot = { done: false, rejoining: null, cartesia: true, holder: null, amd: () => {} };
     const back = (why, said = []) => {
       const twilio = line.pass();
       const c = gptLive(twilio, null);

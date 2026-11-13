@@ -335,6 +335,9 @@ export class CartesiaAgentCall {
     return answer(reply.text);
   }
 
+  /** Answering-machine detection is only asked for on third-party calls; their own call has nothing to do with a verdict. */
+  amd() {}
+
   // --- falling back, and the end ---
 
   /** Not ready in time, or broken before it was: the same call carries on with GPT-Live. */
