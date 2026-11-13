@@ -237,11 +237,17 @@ function step(s, name, extra = {}) {
   try { logStep(s.entry, { step: name, route: s.provider ? "provider" : "password_link", startedAt: s.createdAt, session: s.tag, ...extra }); } catch { /* a log line never breaks a sign-in */ }
 }
 /** They pressed something that sends the form on: Enter, Reason's own Continue, or a tap off the boxes after typing. */
-function markSubmitted(s, how) {
+function markSubmitted(s, how, before = s.seenRaw) {
   s.submitted = true;
   s.typed = false;
   s.submits += 1;
   if (s.submits <= 12) step(s, "submitted", { detail: how });
+  // What the site answers is read off the next settled page (resolveSubmit): the reading it was sent
+  // from is kept as numbers and kinds only, never a value.
+  const b = before ?? {};
+  const hadPassword = (b.fields ?? []).some(f => fieldKind(f) === "password");
+  if (hadPassword) s.pwSubmits = (s.pwSubmits ?? 0) + 1;
+  s.pending = { how, at: clock.now(), doc: b.doc ?? null, sig: stepSig(b), step: b.url ? stepNow(s, b).step : "", kind: s.kind || "", password: hadPassword };
 }
 /**
  * What kind of page the browser is on (src/signinpage.js pageKind), noted on the session: the first
@@ -329,6 +335,15 @@ async function end(s, how) {
     if (s.browser) { try { await s.browser.close(); } catch { /* the note still goes */ } s.browser = null; }
     const a = social.refusalAnswer(entry, prov);
     note = `the ${entry.label} sign-in through ${social.LABELS[prov] ?? prov} stopped: ${s.ended.why}. Nothing was saved and it will not be tried again. Say it in ONE plain line, like: "${a.say}" ${a.instead}`;
+  } else if (how === "site_repeated") {
+    // The site answered the same step the same way twice (or the third password came back to it).
+    // Not asked again and nothing pressed: the page in hand IS the site's answer, a sign-in step.
+    s.ended.state = "signed_out";
+    s.ended.said = s.stopSaid ?? "";
+    s.ended.why = `${entry.label} showed the same sign-in step again`;
+    if (s.browser) { try { await s.browser.close(); } catch { /* the note still goes */ } s.browser = null; }
+    const said = s.ended.said;
+    note = `the ${entry.label} sign-in link you sent stopped itself: ${entry.label} answered what was sent by showing the same sign-in step again${said ? ` and said: "${said}" (${entry.label}'s own words, masked)` : ", with no message of its own"}. Reason stopped there so repeated tries don't get the account locked; ${s.pwSubmits ?? 0} password${(s.pwSubmits ?? 0) === 1 ? "" : "s"} went to ${entry.label} on this link, and nothing was saved. Do NOT make another sign-in link now (no signin_link). Say ONE plain line: what ${entry.label} said${said ? "" : " (that it gave no reason)"}, and that you stopped so the account isn't locked by repeated attempts. Do NOT say the password was wrong unless ${entry.label}'s own words above say so. Do NOT offer or ask to try again.`;
   } else if (s.browser && how === "blocked") {
     // The site never showed its sign-in page: a bot check or a CDN refusal sat where the form
     // should have been. Asking the account page now would only say "signed out", which is true and
@@ -359,6 +374,10 @@ async function end(s, how) {
     // An ending without progress gets ONE plain line and the next best route, and no new link made
     // by itself; src/tools.js signin_link refuses an identical one in a turn they did not start.
     const noProgress = signinPage.NO_PROGRESS.has(how);
+    // What the site showed last (owner, 2026-11-13: a link that ran out after four submits said
+    // nothing about Amazon's answer). Fixed words, the site's own message masked.
+    const shown = s.ended.state === "signed_in" ? "" : lastShown(s);
+    const lastLine = shown ? ` ${shown}. Say that too, in plain words, in the same line; do NOT say the password was wrong unless those words say so.` : "";
     const mins = Math.max(1, Math.round((clock.now() - (s.startedAt ?? s.createdAt)) / 60_000));
     const route = `the next best route, in a few words: they can ask you for a fresh link when they have a couple of minutes, or do this part themselves in ${entry.label}'s own app or site and tell you when it is done`;
     const noLink = `Do NOT make another sign-in link now (no signin_link): a second identical link is not help, and none is made unless THEY ask for one.`;
@@ -377,11 +396,11 @@ async function end(s, how) {
         : how === "replaced"
           ? ""
           : noProgress && s.ended.state === "signed_out"
-            ? `the ${entry.label} sign-in link you sent ended after about ${mins} minute${mins === 1 ? "" : "s"}${tail}${s.submitted ? "" : " with nothing submitted on it"}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Nothing was saved. ${noLink} Say ONE plain line that says what happened, like: "That ${entry.label} sign-in link ${how === "cancelled" ? "was closed" : "timed out"} before anything went through." Then ${route}. Or stop there.`
+            ? `the ${entry.label} sign-in link you sent ended after about ${mins} minute${mins === 1 ? "" : "s"}${tail}${s.submitted ? ` after ${s.submits} submit${s.submits === 1 ? "" : "s"} on it` : " with nothing submitted on it"}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Nothing was saved.${lastLine} ${noLink} Say ONE plain line that says what happened, like: "That ${entry.label} sign-in link ${how === "cancelled" ? "was closed" : "timed out"} ${s.submitted ? `without signing you in` : "before anything went through"}." Then ${route}. Or stop there.`
             : noProgress
-              ? `the ${entry.label} sign-in link you sent ended after about ${mins} minute${mins === 1 ? "" : "s"}${tail}, and whether they are signed in is UNKNOWN: ${entry.label}'s page showed nothing that proves it either way (${s.ended.why}). Nothing is recorded either way. ${noLink} Say ONE plain line, like: "That ${entry.label} link ended and I can't tell whether you're signed in." signin_status with recheck asks the site again when they want it checked.`
+              ? `the ${entry.label} sign-in link you sent ended after about ${mins} minute${mins === 1 ? "" : "s"}${tail}, and whether they are signed in is UNKNOWN: ${entry.label}'s page showed nothing that proves it either way (${s.ended.why}). Nothing is recorded either way.${lastLine} ${noLink} Say ONE plain line, like: "That ${entry.label} link ended and I can't tell whether you're signed in." signin_status with recheck asks the site again when they want it checked.`
               : s.ended.state === "signed_out"
-                ? `the ${entry.label} sign-in through the link you sent has ended${tail}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Say that plainly in one short line and offer a fresh link in words; make one (signin_link) only once they say yes.`
+                ? `the ${entry.label} sign-in through the link you sent has ended${tail}, and ${entry.label} says they are still NOT signed in (${s.ended.why}).${lastLine} Say that plainly in one short line and offer a fresh link in words; make one (signin_link) only once they say yes.`
                 : `the ${entry.label} sign-in through the link you sent has ended${tail}, but whether they are signed in is UNKNOWN: it could not be read (${s.ended.why}). Nothing is recorded either way. Say that in one short line, as "I can't tell", not as signed out; signin_status with recheck asks the site again. Do not send another link on your own.`;
   } else if (how === "link_expired") {
     note = `the ${entry.label} sign-in link you sent was never opened and has expired. Do not chase them about it; if they bring it up, offer a fresh one.`;
@@ -406,7 +425,7 @@ async function end(s, how) {
   if (s.startedAt || s.ended.state) {
     const st = s.ended.state;
     const outcome = st === "signed_in" ? "signed_in" : st === "blocked" || st === "refused" ? "blocked_by_site"
-      : how === "done" || how === "finished" || how === "no_signin_page" ? "failed" : "abandoned";
+      : how === "done" || how === "finished" || how === "no_signin_page" || how === "site_repeated" ? "failed" : "abandoned";
     logAttempt(entry, { route: s.provider ? "provider" : "password_link", outcome, startedAt: s.startedAt ?? s.createdAt, detail: st === "refused" ? "provider_refused" : st === "blocked" ? "wall_before_form" : how === "done" || how === "finished" ? "" : String(how) });
   }
   // Only news is worth a message. A link that was replaced unopened, or that simply lapsed, is not.
@@ -545,6 +564,144 @@ export function looksBlocked(raw) {
   return WALL.some(w => text.includes(w));
 }
 
+
+// ---------- what the site answers to a submit ----------
+/**
+ * A submit the site answers by showing the same step again (owner, 2026-11-13: Amazon's password
+ * screen came back four times, with whatever Amazon said dropped, and he was told nothing). The site's
+ * own message is shown as its words, masked; two identical answers stop the link, so repeated tries
+ * cannot lock the account; and no more than three passwords go to the site on one link.
+ */
+export const MAX_PASSWORD_SUBMITS = 3;
+export const SAME_ANSWER_STOP = 2;
+/** A submit is judged on the first settled page after it: a new document, or this long without one. */
+export const ANSWER_AFTER_MS = { newDoc: 1200, sameDoc: 6000 };
+/** "I approved it": how long the approval page is watched, and how often it is read. */
+export const APPROVE_WAIT = { pollMs: 1000, waitMs: 20_000 };
+
+/** Anything the site said, with addresses, numbers and masked numbers taken out, and kept short. */
+export function maskSiteWords(t, max = 160) {
+  let x = String(t ?? "").replace(/\s+/g, " ").trim();
+  x = x.replace(/[A-Z0-9._%+*-]+@[A-Z0-9.*-]+(?:\.[A-Z*]{2,})?/gi, "[email]");
+  x = x.replace(/\+?[\d*][\d*\s().-]{5,}[\d*]/g, (m) => ((m.match(/[\d*]/g) ?? []).length >= 6 ? "[number]" : m));
+  x = x.replace(/\d{4,}/g, "[number]");
+  return x.length > max ? `${x.slice(0, max - 1).trimEnd()}…` : x;
+}
+/** The site's own message boxes on this reading, as one masked line ("" when it showed none). */
+export function siteSaid(raw) {
+  const a = (Array.isArray(raw?.alerts) ? raw.alerts : []).map(t => String(t ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
+  return a.length ? maskSiteWords(a.join(" — ")) : "";
+}
+/** What kind of thing the site said, in a fixed word: for the log, and for the words Reason chooses. */
+export function saidClass(said) {
+  const t = String(said ?? "").toLowerCase();
+  if (!t) return "none";
+  if (/too many|try again later|temporarily|locked|suspended|disabled/.test(t)) return "too_many_attempts";
+  if (/password (?:is |was )?(?:incorrect|wrong|not correct|invalid)|(?:incorrect|wrong|invalid) password/.test(t)) return "wrong_password";
+  if (/cannot find an account|can't find an account|no account|couldn'?t find (?:an|your) account/.test(t)) return "no_account";
+  if (/characters|image|puzzle|captcha/.test(t)) return "picture_check";
+  if (/approve|notification/.test(t)) return "approval";
+  if (/\bcode\b|\botp\b|one[- ]time/.test(t)) return "code";
+  if (/important message/.test(t)) return "important_message";
+  if (/there was a problem|something went wrong|\berror\b|try again/.test(t)) return "problem";
+  return "other";
+}
+/** One step of a form, as kinds: the host, the path and which sign-in boxes it has. Never a value. */
+export function stepSig(raw) {
+  if (!raw?.url) return "";
+  let u; try { u = new URL(String(raw.url)); } catch { return ""; }
+  const ks = [...new Set((raw.fields ?? []).map(fieldKind).filter(k => ["password", "otp", "email", "username", "tel"].includes(k)))].sort();
+  return ks.length ? `${u.host}${u.pathname}|${ks.join(",")}` : "";
+}
+/** The path, with anything that looks like an id or a token cut out. */
+function pathFor(url) {
+  try {
+    const u = new URL(String(url));
+    return u.pathname.split("/").map(seg => (seg.length > 24 || /\d{6,}/.test(seg) || /[A-Za-z0-9_-]{16,}/.test(seg) && /\d/.test(seg) ? ":id" : seg)).join("/").slice(0, 80);
+  } catch { return ""; }
+}
+/** Visible inputs on a reading, by kind. Counts only. */
+function inputCounts(raw) {
+  const n = { password: 0, text: 0, code: 0, captcha_box: 0, checkbox: Number(raw?.checks) || 0 };
+  for (const f of raw?.fields ?? []) {
+    const k = fieldKind(f);
+    if (k === "password") n.password++; else if (k === "otp") n.code++; else if (k === "captcha") n.captcha_box++; else n.text++;
+  }
+  return n;
+}
+/** A picture or puzzle check on the reading, by name only. */
+function challengeOf(raw) {
+  const c = raw?.challenge ?? {};
+  return [...(c.img ? ["captcha image"] : []), ...(Array.isArray(c.frames) ? c.frames.map(String).slice(0, 4) : [])];
+}
+const hasPassword = (raw) => (raw?.fields ?? []).some(f => fieldKind(f) === "password");
+/** Past the cap, a page with a password box gets no more submits from this link. */
+function passwordCapped(s, raw) { return (s.pwSubmits ?? 0) >= MAX_PASSWORD_SUBMITS && hasPassword(raw); }
+function cappedWords(s) { return `I've stopped sending passwords to ${s.entry.label} on this link so repeated tries don't lock your account.`; }
+/** The step, said as a thing the site showed: for the thread's outcome line. */
+const STEP_WORDS = {
+  email: "its email step", password: "its password step", password_code: "its password-and-code step", code: "its code step",
+  captcha: "a picture check (\"type the characters\" or a puzzle)", approve: "a request to approve the sign-in on their phone or in its app",
+  chooser: "its choice of how to sign in", account: "an account picker", consent: "a page asking to allow access", between: "a page with nothing to fill in",
+};
+/** What the site showed last on this link, in fixed words plus its own masked message. */
+export function lastShown(s) {
+  const l = s.lastSeen;
+  if (!l) return "";
+  const what = STEP_WORDS[l.step] ?? "a page Reason could not name";
+  const back = l.returns ? `, after showing that same step again ${l.returns === 1 ? "once" : `${l.returns} times`} in answer to what was sent` : "";
+  return `${s.entry.label} last showed ${what}${back}${l.said ? `, with its own message: "${l.said}"` : ", with no message of its own"}`;
+}
+
+/**
+ * The site's answer to the last submit, once a settled page shows it: one `signin_link_diag` log line
+ * (numbers, kinds and classes; the site's own alert line masked; never anything typed), and the count
+ * of identical answers to the same step. → { stop: true } when the link should end itself.
+ */
+function resolveSubmit(s, raw) {
+  const p = s.pending;
+  if (!p || !raw?.url || frameFor(raw).blank) return null;
+  const waited = clock.now() - p.at;
+  const newDoc = raw.doc != null && p.doc != null ? raw.doc !== p.doc : null;
+  if (!(newDoc === true ? waited >= ANSWER_AFTER_MS.newDoc : waited >= ANSWER_AFTER_MS.sameDoc)) return null;
+  s.pending = null;
+  const sig = stepSig(raw), st = stepNow(s, raw).step;
+  const said = siteSaid(raw), cls = saidClass(said);
+  const same = !!sig && sig === p.sig;
+  let repeats = 0;
+  if (same) {
+    s.returns = (s.returns ?? 0) + 1;
+    s.sameAnswers ??= {};
+    const k = `${sig}|${cls}|${said}`;
+    repeats = s.sameAnswers[k] = (s.sameAnswers[k] ?? 0) + 1;
+    s.returnedSig = sig;
+  } else s.returnedSig = "";
+  let u = null; try { u = new URL(String(raw.url)); } catch { /* host stays empty */ }
+  s.log({
+    signin_link_diag: s.entry.site, session: s.tag, submit: s.submits, how: p.how, password_submits: s.pwSubmits ?? 0,
+    host: u?.host ?? "", path: pathFor(raw.url), kind_before: p.kind, kind_after: signinPage.pageKind(raw, { provider: s.provider, midFlow: s.sawStep }),
+    step_before: p.step, step_after: st, same_step: same, new_document: newDoc, returns: s.returns ?? 0,
+    alert_class: cls, alert: said, inputs: inputCounts(raw), challenge: challengeOf(raw), title: maskSiteWords(raw.title ?? "", 80),
+  });
+  if (same && (repeats >= SAME_ANSWER_STOP || (p.password && (s.pwSubmits ?? 0) >= MAX_PASSWORD_SUBMITS))) {
+    s.stopSaid = said;
+    return { stop: true };
+  }
+  return null;
+}
+/**
+ * What the person's page says about the site's answer (fixed words, the site's own message quoted,
+ * masked): only after something was submitted, and never an empty reset of the same step.
+ */
+function answerFor(s, raw) {
+  if (!s.submits || !raw?.url || frameFor(raw).blank) return "";
+  const said = siteSaid(raw);
+  const back = !!s.returnedSig && stepSig(raw) === s.returnedSig;
+  const n = s.entry.label;
+  if (back && said) return `${n} showed this step again and said: “${said}”`;
+  if (back) return `${n} showed this step again without a message I can read. Tap “Show me the page” to see it as ${n} shows it.`;
+  return said ? `${n} says: “${said}”` : "";
+}
 const cookieName = (token) => `rs_${createHash("sha256").update(token).digest("hex").slice(0, 12)}`;
 function readCookie(headers, name) {
   for (const part of String(headers?.cookie ?? "").split(";")) {
@@ -840,8 +997,16 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     }
     if (action === "key") {
       if (!KEYS.has(input.key)) return json(400, { error: "that key is not one of the few this sends" });
-      await inTurn(s, async () => { await page.keyboard.press(input.key); await settle(); });
-      if (input.key === "Enter" && s.typed) markSubmitted(s, "enter");
+      const sending = input.key === "Enter" && s.typed;
+      const r = await inTurn(s, async () => {
+        const before = sending ? await readRaw(page) : null;
+        // No fourth password to the site on one link: the account is not put at risk of a lock.
+        if (before && passwordCapped(s, before)) return { capped: true };
+        await page.keyboard.press(input.key); await settle();
+        return { before };
+      });
+      if (r.capped) return json(409, { capped: true, say: cappedWords(s) });
+      if (sending) markSubmitted(s, "enter", r.before);
       return json(200, { ok: true });
     }
     if (action === "provider") {
@@ -883,11 +1048,26 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       if (!nativeOn(s) || !RELAY_KINDS[want]) return json(400, { error: "not a relay step" });
       let text = typeof input.text === "string" ? input.text : "";
       if (!text || text.length > MAX_TYPED) return json(400, { error: `relay needs 1 to ${MAX_TYPED} characters` });
+      let code = want === "password_code" && typeof input.code === "string" ? input.code : "";
+      if (want === "password_code" && (!code || code.length > MAX_TYPED)) return json(400, { error: `relay needs 1 to ${MAX_TYPED} characters` });
+      let before = null;
       const out = await inTurn(s, async () => {
         const raw = await readRaw(page);
+        before = raw;
         if (stepNow(s, raw).step !== want) return { moved: true };
+        if (passwordCapped(s, raw)) return { capped: true };
         const f = (raw.fields ?? []).find(x => RELAY_KINDS[want].includes(fieldKind(x)));
         if (!f) return { nobox: true };
+        // The code box beside the password: typed into its own box, the same way, before Enter.
+        if (want === "password_code") {
+          const c = (raw.fields ?? []).find(x => fieldKind(x) === "otp");
+          if (!c) return { nobox: true };
+          s.lastFields = [{ ...c, focused: true }]; code = cleanCodeFor(s, code, true);
+          await page.mouse.click(Math.round((c.x + c.w / 2) * viewOf(s).width), Math.round((c.y + c.h / 2) * viewOf(s).height));
+          await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
+          await typeUnseen(page, code);
+          code = "";
+        }
         if (want === "code") { s.lastFields = [{ ...f, focused: true }]; text = cleanCodeFor(s, text, true); }
         await page.mouse.click(Math.round((f.x + f.w / 2) * viewOf(s).width), Math.round((f.y + f.h / 2) * viewOf(s).height));
         await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
@@ -900,9 +1080,24 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         return { sent: true, entered: true };
       });
       if (out.moved) return json(409, { moved: true });
+      if (out.capped) return json(409, { capped: true, say: cappedWords(s) });
       if (out.nobox) return json(409, { nobox: true });
-      if (out.entered) markSubmitted(s, "enter"); else if (out.sent) s.typed = true;
+      if (out.entered) markSubmitted(s, "enter", before); else if (out.sent) s.typed = true;
       return json(200, { ok: true, entered: out.entered });
+    }
+    if (action === "approved") {
+      // "I approved it": the site's approval page is read again for a bounded while, in short turns of
+      // the browser, until it moves on. Nothing on the page is pressed; the site decides.
+      if (!nativeOn(s)) return json(400, { error: "not an approval step" });
+      s.log({ signin_remote: "approved_tapped", site: s.entry.site });
+      const until = Date.now() + APPROVE_WAIT.waitMs;
+      for (;;) {
+        const raw = await inTurn(s, () => readRaw(page)).catch(() => null);
+        if (raw && raw.url && stepNow(s, raw).step !== "approve") return json(200, { ok: true, moved: true });
+        if (s.ended || Date.now() >= until) break;
+        await new Promise(r => setTimeout(r, APPROVE_WAIT.pollMs));
+      }
+      return json(200, { ok: true, waiting: true, say: `${s.entry.label} hasn't moved on yet. If you approved it, give it a moment — this page follows ${s.entry.label} as soon as it does.` });
     }
     if (action === "back") {
       await inTurn(s, async () => { await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {}); await settle(); });
@@ -968,6 +1163,18 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
   }
   // What kind of page this is, before anything is said about it: a real step, or not a sign-in page.
   const kind = noteKind(s, got.raw);
+  if (judge && kind !== "loading") {
+    s.seenRaw = got.raw;
+    // The site's answer to the last submit: logged, counted, and the link stopped on a repeat.
+    if (resolveSubmit(s, got.raw)?.stop) {
+      const ended = await end(s, "site_repeated");
+      return json(200, { over: true, state: ended.state });
+    }
+    const said = siteSaid(got.raw);
+    const stNow = kind === "not_signin" ? "between" : stepNow(s, got.raw).step;
+    s.lastSeen = { step: stNow, said, returns: s.returns ?? 0 };
+    extra = { ...extra, said: answerFor(s, got.raw) };
+  }
   // A site named only by its address, and the page that opened is not a sign-in page (a home page,
   // a marketing page): the person is never asked to "finish a step" on it. The page is given the
   // same bounded time to draw a form the emailed-code route gives; then the site's own "Log in" link
@@ -1045,7 +1252,7 @@ function npFor(s, raw, kind = signinPage.pageKind(raw, { provider: s.provider, m
   if (!blank) s.npSeen = true;
   // Off a provider's page the machine says "The site"; the person knows it by its name.
   st.say = String(st.say ?? "").replace(/\bThe site\b/g, s.entry.label);
-  const key = `${st.step}:${st.provider}:${st.number}:${(st.offered ?? []).join(",")}`;
+  const key = `${st.step}:${st.provider}:${st.number}:${(st.offered ?? []).join(",")}:${s.returns ?? 0}`;
   // `sum`: what the fold over the picture says when it is open. Only a real step says "finish this step".
   const np = { step: st.step, key, page: STEP_NEEDS_PAGE.has(st.step) || st.step === "between", say: st.say,
     ...(st.step === "between" ? { sum: "The page as it is now" } : {}),
@@ -1211,7 +1418,7 @@ async function typeUnseen(page, text) {
 }
 
 /** The panel's relay steps → the kinds of box (fieldKind) each one types into. */
-const RELAY_KINDS = { email: ["email", "username", "tel"], password: ["password"], code: ["otp"] };
+const RELAY_KINDS = { email: ["email", "username", "tel"], password: ["password"], code: ["otp"], password_code: ["password"] };
 /** The real page's shape and words, read in the browser's turn (no picture). Carries no field value. */
 const readRaw = (page) => page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
 /** The step the real page is on now, the same reading /view gives the panel. */
@@ -1237,19 +1444,23 @@ function livePage(s) {
 function nativeScript() {
   return `(function(){
 var B=location.pathname.replace(/\\/+$/,''),panel=document.getElementById('np-panel'),det=document.getElementById('np-page'),
-    sum=det&&det.querySelector('summary'),msg=document.getElementById('msg'),key='',step='',fields=[];
-var WANT={email:['email','username','tel'],password:['password'],code:['otp']};
+    sum=det&&det.querySelector('summary'),msg=document.getElementById('msg'),site=document.getElementById('np-site'),key='',step='',fields=[],said='';
+var WANT={email:['email','username','tel'],password:['password'],code:['otp'],password_code:['password']};
 function send(a,b){return fetch(B+'/'+a,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})
   .then(function(r){if(r.status===404||r.status===410)location.reload();return r.json().catch(function(){return{}})})}
 function openPage(on,why){if(!det)return;det.open=!!on;det.classList.toggle('forced',!!on);if(sum)sum.textContent=on?(why||'Finish this step on the page below'):'Show me the page'}
 function box(){var ks=WANT[step]||[];for(var i=0;i<fields.length;i++)if(ks.indexOf(fields[i].k)>=0)return fields[i];return null}
 function relay(){
   var inp=document.getElementById('np-in');if(!inp)return;var v=inp.value;if(!v)return;
+  var in2=document.getElementById('np-in2'),c2=in2?in2.value:'';
+  if(in2&&!c2){msg.textContent='Type the code in its box too.';in2.focus();return}
   var f=box();
   if(!f){openPage(true,'Finish this step on the page below');msg.textContent="I can't see that box on the page yet — use the page below.";return}
-  inp.value='';inp.blur();var g=document.getElementById('np-go');if(g)g.setAttribute('aria-busy','true');
+  inp.value='';inp.blur();if(in2){in2.value='';in2.blur()}var g=document.getElementById('np-go');if(g)g.setAttribute('aria-busy','true');
   msg.textContent='Sending it on…';
-  send('relay',{step:step,text:v}).then(function(j){v='';
+  var body={step:step,text:v};if(in2)body.code=c2;
+  send('relay',body).then(function(j){v='';c2='';body=null;
+    if(j&&j.capped){if(g)g.removeAttribute('aria-busy');msg.textContent=j.say||'';return}
     if(j&&j.moved){msg.textContent='The page moved on — here is where it is now.';return}
     if(j&&j.nobox){openPage(true);msg.textContent="I can't see that box on the page right now — use the page below.";return}
     msg.textContent=j&&j.entered===false?'Typed it in. The page changed before I pressed Continue — check below.':'Sent. Waiting for the next step…';
@@ -1263,11 +1474,16 @@ function wire(){
     b.setAttribute('aria-busy','true');msg.textContent='Opening '+b.textContent.replace('Continue with ','')+'…';
     send('provider',{p:p}).then(function(j){if(j&&j.moved){msg.textContent='The page moved on.';return}if(!j||!j.pressed){msg.textContent="That button isn't on the page right now — use the page below.";openPage(true)}})})})(c[i]);
   var g=document.getElementById('np-go');if(g)g.addEventListener('click',relay);
+  var ap=document.getElementById('np-approved');if(ap)ap.addEventListener('click',function(){
+    ap.setAttribute('aria-busy','true');msg.textContent='Watching for '+document.title.replace(/^Reason — sign in to /,'')+' to move on…';
+    send('approved',{}).then(function(j){ap.removeAttribute('aria-busy');msg.textContent=j&&j.moved?'The page moved on — here is where it is now.':(j&&j.say)||''})});
   var inp=document.getElementById('np-in');if(inp)inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();relay()}});
 }
-window.npStep=function(np,fl){
+window.npStep=function(np,fl,sd){
   fields=fl||[];
   if(np.html!==undefined&&np.key!==key){key=np.key;step=np.step;panel.innerHTML=np.html;wire();msg.textContent='';openPage(np.page,np.sum)}
+  // What the site said back, as its own words: shown, never an empty reset of the same step.
+  if(typeof sd==='string'&&sd!==said){said=sd;if(site){site.textContent=sd;site.hidden=!sd}if(sd)msg.textContent=''}
   var say=document.getElementById('np-say');if(say&&np.say)say.textContent=np.say;
 };
 })();`;
@@ -1283,7 +1499,7 @@ var v=document.getElementById('v'),stage=document.getElementById('stage'),veil=d
     msg=document.getElementById('msg'),tip=document.getElementById('tip'),dead=false;
 var slots={u:document.getElementById('in-u'),p:document.getElementById('in-p'),o:document.getElementById('in-o'),g:document.getElementById('in-g')};
 var SITE=${JSON.stringify(s.entry.label)},TIP='Tap the page and sign in the way you normally would.';
-var fields=[],hash='',shown=false,misses=0,blank=false,lastTyped=null;
+var fields=[],hash='',shown=false,misses=0,blank=false,lastTyped=null,lastSaid='';
 
 function say(t,spin){veil.innerHTML=(spin?'<span class="spin"></span>':'')+t;veil.className=t?'':'off'}
 function over(){if(dead)return;dead=true;location.reload()}
@@ -1347,7 +1563,8 @@ function draw(buf,then){
     // A scroll's picture older than one already shown is dropped (two can be on the way at once).
     if(then&&then(meta,!!u)===false){if(u)URL.revokeObjectURL(u);return}
     hash=meta.h||hash;fields=meta.fields||[];blank=!!meta.blank;
-    if(meta.np&&window.npStep)window.npStep(meta.np,fields);
+    if(meta.np&&window.npStep)window.npStep(meta.np,fields,meta.said);
+    else if(typeof meta.said==='string'&&meta.said&&meta.said!==lastSaid){lastSaid=meta.said;msg.textContent=meta.said}
     if(u){var old=v.src;v.src=u;if(old&&old.indexOf('blob:')===0)setTimeout(function(){URL.revokeObjectURL(old)},600)}
     place();
   }
