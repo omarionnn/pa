@@ -79,6 +79,10 @@ test("a texted password: fixed words and a fresh link, no turn, and the stored c
   assert.equal(turns.length, 0, "no model turn runs on it");
   const sent = channel.sent.slice(before).map(m => m.text).join("\n");
   assert.ok(sent.startsWith(intake.TEXTED_PASSWORD_WORDS), sent);
+  // The words say plainly it was not read or used, and how to send it if it was not a password (L3).
+  assert.match(sent, /didn't read it or use it/i, "it says the message was not read or used");
+  assert.match(sent, /looked like a password/i, "it says why");
+  assert.match(sent, /wasn't a password, send it again in a sentence/i, "it says how to send it if it wasn't one");
   const link = /https:\/\/heyreason\.com\/web\/save-login\/([A-Za-z0-9_-]{32})/.exec(sent);
   assert.ok(link, sent);
   assert.notEqual(link[1], oldToken);

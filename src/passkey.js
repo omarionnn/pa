@@ -144,23 +144,15 @@ const live = (c) => q("SELECT * FROM pay_passkeys WHERE conversation_id = ? AND 
 export const hasPasskey = (c) => live(c).length > 0;
 /** Once someone has a passkey, a texted yes never pays again: the yes gets the Face ID link. */
 export const requiredFor = (c) => passkeyAllowedFor(c) && hasPasskey(c);
-/** For Settings: when it was set up, and whether a newer one is still waiting. Never a key. `ref` names it for removePasskey. */
+/** For Settings: when it was set up, and whether a newer one is still waiting. Never a key; `ref` is an opaque handle. */
 export function passkeysOf(c) {
   return live(c).map((p) => ({ ref: refOf(p.id), createdAt: p.created_at, usableAt: p.usable_at, lastUsedAt: p.last_used_at, synced: !!p.backed_up }));
 }
 const refOf = (id) => sha(`pay-passkey-ref|${id}`).toString("hex").slice(0, 16);
-/**
- * Take a passkey off (the safe direction: no Face ID, design B8). It stops approving at once and
- * passkeysOf no longer lists it; the row stays with removed_at set, so a later passkey still waits
- * COOL_MS like any second one. `ref` from passkeysOf. Returns whether one was removed.
- */
-export function removePasskey(conversationId, ref) {
-  const p = live(conversationId).find((k) => refOf(k.id) === String(ref ?? ""));
-  if (!p) return false;
-  const done = q("UPDATE pay_passkeys SET removed_at = ? WHERE id = ? AND conversation_id = ? AND removed_at IS NULL").run(clock.now(), p.id, conversationId).changes === 1;
-  if (done) logEvent(conversationId, null, "passkey_removed");
-  return done;
-}
+// There is no way to take a passkey off in code (review 2026-11-13, L2). Removing the last one would
+// turn requiredFor false, so a texted "yes" would approve purchases again: a downgrade anyone who can
+// text from the thread, or an injected model, could reach. If Settings ever offers removal, it is built
+// then, behind a fresh verified Face ID assertion, and never as a model tool. A test pins its absence.
 const descriptor = (p) => ({ id: p.id, transports: p.transports ? p.transports.split(",") : undefined });
 
 /** An opaque per-person id for the authenticator: a hash, never their number or conversation. */

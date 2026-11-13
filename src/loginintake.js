@@ -259,8 +259,12 @@ export async function sealInBrowser(subtle, spkiBytes, intakeId, username, passw
 // only while this person has an open save link, and only a message that says "password is …", or one
 // bare token of 8 to 128 characters with letters and digits that is not a link, an address or a code.
 // A plain word ("perfect!", "thanks") is never taken for a password.
-export const PASSWORD_PLACEHOLDER = "[they texted what looked like a password; Reason did not keep it and pointed them to the save page]";
-export const TEXTED_PASSWORD_WORDS = "Don't text me passwords: texts are kept by your phone company and in my history. Use this instead:";
+export const PASSWORD_PLACEHOLDER = "[they texted what looked like a password; Reason did not read, keep or use it, told them so, asked them to send it again in a sentence if it wasn't one, and pointed them to the save page]";
+// The rule can catch an ordinary one-word text (a tracking number, an order code) while a link is open
+// (review 2026-11-13, L3). The words say plainly that the message was not read or used, and how to
+// send it if it was not a password, so nothing they meant to say is silently lost.
+export const TEXTED_PASSWORD_WORDS = "That looked like a password, so I didn't read it or use it. If it wasn't a password, send it again in a sentence. "
+  + "Please don't text me passwords: texts are kept by your phone company and in my history. To save a login, use this instead:";
 // "password is X" / "password: X" with X the last thing said, and X not a plain word ("password is wrong").
 const PASSWORD_SAID = /\b(?:pass ?word|passcode|pwd)\s*(?:is|was|=|:|-)\s*(\S{6,128})\s*$/i;
 const notAWord = (tok) => { const t = tok.replace(/[.!?,;]+$/, ""); return t.length >= 6 && /\p{L}/u.test(t) && /[^\p{L}]/u.test(t); };

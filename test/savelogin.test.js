@@ -422,8 +422,12 @@ test("rule 6: forget deletes the row and its wrapped key with no Face ID; a pass
 
   const keys = passkey.passkeysOf(P);
   assert.equal(keys.length, 1);
-  assert.equal(passkey.removePasskey(P, keys[0].ref), true);
-  assert.equal(passkey.removePasskey(P, keys[0].ref), false, "once");
+  // No code path takes a passkey off (review 2026-11-13, L2): removing the last one would bring back a
+  // texted yes for purchases. A future removal would have to be built behind a fresh Face ID.
+  assert.equal(passkey.removePasskey, undefined, "removePasskey does not exist");
+  assert.deepEqual(Object.keys(passkey).filter(k => /remove|delete|drop/i.test(k)), [], "no export takes a passkey off");
+  // A passkey marked removed (as an operator would, by hand) signs nothing.
+  rdb.db.prepare("UPDATE pay_passkeys SET removed_at = ? WHERE conversation_id = ?").run(Date.now(), P);
   assert.deepEqual(passkey.passkeysOf(P), []);
   assert.equal(passkey.loginAssertionOptions(P).error, "no_passkey");
   const t = await offer("example.test", `${ORIGIN}/signin`, P);
