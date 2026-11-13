@@ -98,11 +98,34 @@ const ANSWERS = {
   "/login-valid": () => "Please enter a valid email address or phone number.",
   "/login-code": () => null,
   "/login-ok3": () => null,
+  "/login/eftoggle": () => null, // its password step (a path the email-first rule reads as a sign-in page)
   // Netflix's own generic error, as it answered the server on 2026-11-13: every time, or only the first.
   "/login-trouble": () => "Something went wrong. Please try again in a few minutes.",
   "/login-trouble-once": () => (++troubleOnce === 1 ? "Something went wrong. Please try again in a few minutes." : null),
 };
 let troubleOnce = 0;
+// Email first, then "We sent a sign-in code to your email" with a code box and NO password (a browser the
+// site hasn't seen, 2026-11-13). `toggle`: the code step also offers the page's own "Use password instead".
+const CODE_OK = "482913";
+let codeChecks = [];
+const EMAIL_THEN_CODE = (toggle) => `<!doctype html><html><head><title>Sign in</title></head><body>
+<form id="f"><h1>Enter your info to sign in</h1>
+<div id="e"><label for="u">Email or mobile number</label><input id="u" type="text" name="userLoginId" autocomplete="email"></div>
+<div id="c" style="display:none"><p>We sent a sign-in code to your email. Enter it below.</p>
+<label for="k">Sign-in code</label><input id="k" name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="6"></div>
+<div id="pw" style="display:none"><label for="p">Password</label><input id="p" type="password" name="password" autocomplete="current-password"></div>
+<div id="msg"></div><button type="submit" id="go">Continue</button>
+${toggle ? '<button type="button" id="t" style="display:none">Use password instead</button>' : ""}</form>
+<script>
+var f=document.getElementById('f'),m=document.getElementById('msg'),step='email';
+var t=document.getElementById('t');
+if(t)t.onclick=function(){step='password';document.getElementById('c').style.display='none';document.getElementById('pw').style.display='block';t.remove();};
+f.addEventListener('submit',function(e){e.preventDefault();
+  if(step==='email'){step='code';document.getElementById('e').style.display='none';document.getElementById('c').style.display='block';if(t)t.style.display='inline';return}
+  var body=new URLSearchParams(new FormData(f));
+  fetch(location.pathname+(step==='code'?'/code':'/api'),{method:'POST',body:body}).then(function(r){return r.json()}).then(function(o){
+    if(o.ok){location.href='/browse';return}m.setAttribute('role','alert');m.textContent=o.msg;});});
+</script></body></html>`;
 // Like Netflix: an emptied box shows the page's own hint under it (not an alert). Emptying the boxes
 // after the submit made that hint read as the site's answer ("validation") on 2026-11-13.
 const HINTED = ONE_PAGE.replace('<div id="msg"></div>', '<div id="msg"></div><div id="hint"></div>').replace("<script>",
@@ -117,6 +140,16 @@ function handler(req, res) {
   const u = new URL(req.url, "https://acme.test");
   const send = (code, body, type = "text/html; charset=utf-8") => { res.writeHead(code, { "content-type": type }); res.end(body); };
   if (req.method === "POST" && u.pathname === "/code-sent") { codeSends++; return send(200, "{}", "application/json"); }
+  if (req.method === "POST" && u.pathname.endsWith("/code")) {
+    let raw = "";
+    req.on("data", (d) => { raw += d; });
+    req.on("end", () => {
+      const code = new URLSearchParams(raw).get("code");
+      codeChecks.push(code);
+      send(200, JSON.stringify(code === CODE_OK ? { ok: true } : { ok: false, msg: "That code isn't right." }), "application/json");
+    });
+    return;
+  }
   if (req.method === "POST" && u.pathname.endsWith("/api")) {
     let raw = "";
     req.on("data", (d) => { raw += d; });
@@ -136,6 +169,8 @@ function handler(req, res) {
   if (u.pathname === "/login-stale") return send(200, STALE);
   if (u.pathname === "/login-vanish") return send(200, VANISH);
   if (u.pathname.startsWith("/login-trouble")) return send(200, HINTED);
+  if (u.pathname === "/login/efcode") return send(200, EMAIL_THEN_CODE(false));
+  if (u.pathname === "/login/eftoggle") return send(200, EMAIL_THEN_CODE(true));
   if (u.pathname.startsWith("/login-")) return send(200, ONE_PAGE);
   return send(404, "<p>not found</p>");
 }
@@ -318,6 +353,56 @@ test("A2: a wrong password keeps today's rules: no retry, no note, locked until 
   assert.equal(posted.length, 1, "no automatic retry");
   assert.equal(notes.length, 0);
   assert.equal(row(id).state, "wrong_password");
+});
+
+// ---------------------------------------------------------------- A3: a code sent INSTEAD of the password (2026-11-13)
+test("A3: email, then 'we sent a sign-in code' and no password: an honest needs_code_email, relayed once by their text, typed box-only; the mailbox is not read", skip, async () => {
+  const { id } = await save("/login/efcode");
+  posted.length = 0; codeChecks = [];
+  let mailReads = 0, asked = 0;
+  const notes = [];
+  const out = await signIn({
+    emailCode: async () => { mailReads++; return { connected: true, found: true, kind: "code", code: "000000" }; },
+    awaitReply: async () => { asked++; return CODE_OK; },
+    note: (_c, text) => notes.push(text),
+  });
+  assert.equal(out.result, "needs_code_email", out.say_exactly);
+  assert.match(out.say_exactly, /emailed you a sign-in code instead of asking for the password/);
+  assert.match(out.say_exactly, /Text me that code/);
+  assert.doesNotMatch(out.say_exactly, /wrong|isn't in the form|saving again|own error|couldn't read it from your email/i);
+  assert.ok(await until(() => notes.length === 1), "the end is told");
+  assert.match(notes[0], /ended: signed_in/);
+  assert.deepEqual(codeChecks, [CODE_OK], "the code went into the site's box, once");
+  assert.equal(asked, 1, "asked once");
+  assert.equal(mailReads, 0, "the mailbox is not read for this step");
+  assert.equal(posted.length, 0, "no password was sent anywhere");
+  assert.ok(!out.say_exactly.includes(CODE_OK) && !notes[0].includes(CODE_OK), "the code is never in the words");
+  assert.equal(row(id).state, "working");
+});
+
+test("A3: the same page with its own 'Use password instead': pressed, the saved password typed, no code asked", skip, async () => {
+  const { id } = await save("/login/eftoggle");
+  posted.length = 0; codeChecks = [];
+  let asked = 0;
+  const out = await signIn({ awaitReply: async () => { asked++; return CODE_OK; } });
+  assert.equal(out.result, "signed_in", out.say_exactly);
+  assert.equal(asked, 0);
+  assert.deepEqual(codeChecks, []);
+  assert.equal(posted.length, 1);
+  assert.ok(posted[0].user === USER && posted[0].password === PASS);
+  assert.equal(row(id).state, "working");
+});
+
+test("A3: no code texted back in time: code_not_found, nothing typed, never a wrong password", skip, async () => {
+  const { id } = await save("/login/efcode");
+  codeChecks = [];
+  const notes = [];
+  const out = await signIn({ awaitReply: async () => null, note: (_c, text) => notes.push(text) });
+  assert.equal(out.result, "needs_code_email");
+  assert.ok(await until(() => notes.length === 1));
+  assert.match(notes[0], /ended: code_not_found/);
+  assert.deepEqual(codeChecks, []);
+  assert.notEqual(row(id).state, "wrong_password");
 });
 
 test("A: a code-first form: the page's own 'Use password instead' is pressed; 'Send sign-in code' never is", skip, async () => {

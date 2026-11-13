@@ -70,7 +70,7 @@ function normSite(site) {
 }
 
 /** One result object, with the fixed word and a plain sentence; never page text or a query string. */
-function say(result, site, extra = "", { msgClass = "", msg = "", retrying = false } = {}) {
+function say(result, site, extra = "", { msgClass = "", msg = "", retrying = false, codeInstead = "" } = {}) {
   const quoted = msg ? ` (it said: "${safeMessage(msg)}")` : "";
   // The site's own error before it accepted or turned down the login: the saved login is not the problem.
   const siteTrouble = retrying
@@ -109,6 +109,9 @@ function say(result, site, extra = "", { msgClass = "", msg = "", retrying = fal
     no_login: `You don't have a saved login for ${site}.`,
     pick_one: `You have more than one saved login for ${site}. Tell me which one and I'll use it.`,
     busy: `I'm already using the browser for you right now. I'll sign in to ${site} once that's done.`,
+    // The site sent a code INSTEAD of asking for the password (a browser it hasn't seen): relayed once,
+    // through the texted-code intake; the code goes into the site's box only, never the thread.
+    ...(codeInstead ? { [result]: `${site} ${codeInstead === "email" ? "emailed" : "texted"} you a sign-in code instead of asking for the password. Text me that code and I'll type it into ${site}, once.` } : {}),
   };
   const words = lines[result] ?? `I couldn't sign you in to ${site}.`;
   // `extra` is only ever a link Reason made (the Face ID page), never page text.
@@ -143,6 +146,10 @@ const WRONG_PW = /\b(incorrect|wrong|invalid|not match|didn'?t match|not recogni
 const PUSH = /approve (this|the) (sign.?in|request)|check your (phone|app|device)|we sent a (notification|request|prompt)|tap (yes|approve)|open your authenticator app and approve/i;
 const AUTHENTICATOR = /authenticator|authentication app|verification app|code (from|in) your app|google auth|\bauthy\b|\btotp\b/i;
 const EMAILED = /\b(e-?mail(ed)?|inbox)\b/i;
+// A page saying it sent a sign-in code (not a link) after the email step: "We sent a sign-in code to
+// you@…", "Enter the code we sent to your email", "Check your inbox for a code".
+const SENT_CODE = /\b(we(?:'?ve| have)?|we just) (just )?(sent|emailed|texted) (you |a |an |the |your )*((sign.?in|verification|one.?time|security|login|\d.?digit) )?code\b|enter the (\d.?digit )?code (we|that we) (just )?(sent|emailed|texted)|check your (email|inbox|messages|phone) for (a|the|your) (\d.?digit )?code/i;
+const TEXTED = /\b(text(ed)?|sms|phone|mobile number)\b/i;
 const SUSPICIOUS = /suspicious|unusual (activity|sign.?in)|unrecognized|we don'?t recognize|verify it'?s you because|protect your account|something (looks|seems) off/i;
 
 /**
@@ -327,18 +334,25 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, {
     ensure(); notOurs();
     const before = page.url();
     await form.user.press("Enter").catch(() => {});
-    let pass = await passwordStep(page, pinnedOrigin, 1_500, { toggled });
-    if (!pass && page.url() === before && !(await passwordToggle(page))) {
+    // The page's own "use password instead" is pressed only when there is a saved password to type.
+    const canToggle = !!password?.live;
+    let pass = await passwordStep(page, pinnedOrigin, 1_500, { toggled, canToggle });
+    if (!pass && page.url() === before && !(await passwordToggle(page)) && !(await codeSentInstead(page))) {
       // Enter did nothing (a "Continue" button outside any form): press the page's own one, once. Never
       // one that sends a code or a link instead ("Send sign-in code").
       await page.locator('button[type="submit"]:visible, button:has-text("Continue"):visible, button:has-text("Next"):visible')
         .filter({ hasNotText: CODE_BUTTON }).first().click({ timeout: FILL_MS }).catch(() => {});
     }
-    if (!pass) pass = await passwordStep(page, pinnedOrigin, stepMs, { toggled });
+    if (!pass) pass = await passwordStep(page, pinnedOrigin, stepMs, { toggled, canToggle });
     ensure();
     if (!pass) {
       const r = await readPage(page).catch(() => null);
-      return r?.kind === "challenge" || (await challengeShown(page)) ? "blocked" : "not_signin_page";
+      if (r?.kind === "challenge" || (await challengeShown(page))) return "blocked";
+      // It sent a code instead of asking for the password, and offered no way to the password (or one
+      // was pressed and no password box came): an honest code step, relayed once by the caller.
+      const sent = await codeSentInstead(page);
+      if (sent) { diag.codeInstead = sent; diag.msgClass = "none"; return sent === "email" ? "needs_code_email" : "needs_code_sms"; }
+      return "not_signin_page";
     }
     form = { user: form.user, pass }; // the username box too, for the clean-up after the submit (a one-page step keeps it)
     ensure(); // immediately before the password keystroke
@@ -375,7 +389,16 @@ const OWN_STEP_MS = 500;
  * Real = the page's own frame, input[type=password], exactly one, not a "new-password" box (src/
  * signinpage.js loginFormOf says "password"). Any other origin ends the wait at once.
  */
-async function passwordStep(page, pinnedOrigin, ms, { toggled = () => {} } = {}) {
+/** The page sent a code instead of asking for the password: "email", "sms" or "" (read off its own words). */
+async function codeSentInstead(page) {
+  const words = (await linesOf(page)).join(" ");
+  const m = SENT_CODE.exec(words);
+  if (!m) return "";
+  const near = words.slice(Math.max(0, m.index - 80), m.index + m[0].length + 80);
+  return EMAILED.test(near) || /@/.test(near) || !TEXTED.test(near) ? "email" : "sms";
+}
+
+async function passwordStep(page, pinnedOrigin, ms, { toggled = () => {}, canToggle = true } = {}) {
   const until = Date.now() + ms;
   let clicked = false;
   for (;;) {
@@ -385,10 +408,12 @@ async function passwordStep(page, pinnedOrigin, ms, { toggled = () => {} } = {})
     const boxes = page.locator('input[type="password"]:visible');
     if (r && loginFormOf(r.raw) === "password" && (await boxes.count().catch(() => 0)) === 1) return boxes.first();
     // The step offers a code first, with the password behind the page's own "Use password instead": press it, once.
-    if (!clicked && (await boxes.count().catch(() => 0)) === 0) {
+    if (canToggle && !clicked && (await boxes.count().catch(() => 0)) === 0) {
       const t = await passwordToggle(page);
       if (t) { clicked = true; toggled(); await t.click({ timeout: FILL_MS }).catch(() => {}); continue; }
     }
+    // A code sent instead, with no way to the password left to press: the caller names it at once.
+    if (!clicked && (await codeSentInstead(page))) return null;
     if (Date.now() >= until) return null;
     await page.waitForTimeout(250).catch(() => {});
   }
@@ -907,13 +932,17 @@ export async function signIn(conversationId, site, {
   const conclude = async ({ result, diag, page }) => {
     // The second step, after the secret is gone (the code is not a saved secret): what the row says
     // the site does wins over what the page's words suggest.
-    if (result.startsWith("needs_code")) {
+    // A code the site sent INSTEAD of the password (diag.codeInstead) is relayed through their texted
+    // reply only: the row's second step does not rename it, and the mailbox is not read for it (reading
+    // it automatically is a separate change with its own review).
+    const codeInstead = diag.codeInstead || "";
+    if (result.startsWith("needs_code") && !codeInstead) {
       if (row.second_step === "totp") result = "needs_authenticator";
       else if (row.second_step === "email") result = "needs_code_email";
       else if (row.second_step === "sms") result = "needs_code_sms";
     }
     const entry = { site: host, label: host, signin_url: pinned };
-    if (result === "needs_code_email") {
+    if (result === "needs_code_email" && !codeInstead) {
       // The existing emailed-code reader: only mail from the site's own domains, from now on.
       const got = await emailCode(c, entry, { since: startedAt, ...(waitMs != null ? { waitMs } : {}) }).catch(() => ({ connected: false }));
       if (got?.connected && got.found && got.kind === "code" && got.code) result = await typeCodeOnce(page, row.signin_origin, String(got.code), enter);
@@ -946,7 +975,7 @@ export async function signIn(conversationId, site, {
         try { note(c, `[saved-login sign-in to ${host} ended: ${end}] ${say(end, host).say_exactly}`); } catch { /* best effort */ }
       })();
       recordLoginEvent(c, { site: host, event: "signin", outcome: asked, purpose: why });
-      return say(asked, host);
+      return say(asked, host, "", { codeInstead });
     }
 
     finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
