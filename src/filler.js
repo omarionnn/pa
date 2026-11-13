@@ -12,8 +12,9 @@
 import { clock } from "./config.js";
 import * as db from "./db.js";
 import {
-  savedLoginsAllowedFor, peekForSignin, setState, withLogin, recordLoginEvent, removeLogin, VaultError,
+  savedLoginsAllowedFor, peekForSignin, listLogins, setState, withLogin, recordLoginEvent, removeLogin, VaultError,
 } from "./savedlogins.js";
+import { namedByThem, namesOf } from "./namedsite.js";
 import {
   profileDirFor, guardContext, launchOptions, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser,
   pinSite, pinExact, unpinSite,
@@ -31,7 +32,7 @@ import { askFaceId, takeApproval, dropAsks } from "./loginuse.js";
 export const SIGNIN_RESULTS = [
   "signed_in", "needs_code_sms", "needs_approval", "wrong_password", "blocked",
   "not_signin_page", "origin_mismatch", "paused", "needs_face_id", "no_login", "pick_one", "busy",
-  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code",
+  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "not_named",
 ];
 const OK_RESULT = new Set(["signed_in"]);
 // The form was found visible a moment ago, so a box that is not fillable within this is not the form.
@@ -275,6 +276,16 @@ export async function signIn(conversationId, site, {
   if (!liveAskOk(trigger)) {
     recordLoginEvent(c, { site: host, event: "signin", outcome: "needs_face_id", purpose: why });
     return { ...say("needs_face_id", host), say_exactly: `I only sign in to ${host} when you ask me in the moment. Ask me and I'll do it.` };
+  }
+  // The named-site rule (review 2026-11-13, M3): on their own turn, a page, an email or a tool result
+  // can still say "sign in to X". So the site must be named in their own recent words, or be the one
+  // saved site Reason's question just before their bare "yes" named (src/namedsite.js). Code reads the
+  // stored thread; the model's say-so is not an input. Refused: nothing opens, nothing is unwrapped, and
+  // the fixed words ask them, so their answer ("yes", or the name) lets the next call through.
+  if (!namedByThem(trigger?.messages ?? [], row, listLogins(c)).ok) {
+    recordLoginEvent(c, { site: host, event: "signin", outcome: "stopped", purpose: why });
+    const name = namesOf(row).names.size && String(row.label ?? "").trim() ? String(row.label).trim() : host;
+    return { ok: false, result: "not_named", say_exactly: `Sign in to ${name} for that?` };
   }
   // Careful sites and an "each time" permission: a fresh Face ID before EVERY use (design B8). There
   // is no standing permission for them: one approval is one sign-in, consumed here before anything opens.
