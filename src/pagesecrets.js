@@ -118,8 +118,10 @@ export function secretWords() {
     const mine = norm(list(own).join(" "));
     let k = byWords(mine);
     if (k) return k;
-    for (const s of list(said)) { k = bySaid(s); if (k) return k; }
-    const all = norm(mine + " " + list(said).join(" "), 800);
+    // The labels are read only for a box that can hold typed text (a page has many hidden boxes).
+    said = list(typeof said === "function" ? said() : said);
+    for (const s of said) { k = bySaid(s); if (k) return k; }
+    const all = norm(mine + " " + said.join(" "), 800);
     const weak = weakCode(all);
     if (weak) {
       const around = norm(typeof context === "function" ? context() : context, 3000);
@@ -155,23 +157,43 @@ export function secretRules(W) {
   }
   const attr = (el, n) => el.getAttribute(n) || "";
   const typeOf = (el) => attr(el, "type").toLowerCase();
+  // Every label that names a box by its id, found once per reading: a lookup per box is a walk of
+  // the whole page per box, which on a long page is most of a second.
+  let labels = null;
+  const labelsFor = (id) => {
+    if (!labels) {
+      labels = new Map();
+      for (const l of document.querySelectorAll("label[for]")) {
+        const f = l.getAttribute("for");
+        if (!labels.has(f)) labels.set(f, []);
+        labels.get(f).push(l);
+      }
+    }
+    return labels.get(id) || [];
+  };
   const saidOf = (el) => {
     const out = [attr(el, "aria-label")];
     for (const id of attr(el, "aria-labelledby").split(/\s+/)) { const n = id && document.getElementById(id); if (n) out.push(n.textContent || ""); }
-    if (el.id) { try { for (const l of document.querySelectorAll(`label[for="${CSS.escape(el.id)}"]`)) out.push(l.textContent || ""); } catch { /* an id no selector can hold */ } }
+    if (el.id) for (const l of labelsFor(el.id)) out.push(l.textContent || "");
     const wrap = el.closest("label");
     if (wrap) out.push(wrap.textContent || "");
     out.push(attr(el, "placeholder"), attr(el, "aria-placeholder"), attr(el, "title"));
     return out;
   };
+  const aroundText = new Map();
   const around = (el) => {
     const box = el.form || el.closest("form, [role=form], dialog, [role=dialog], fieldset, main, section, article") || document.body;
-    return box ? String(box.innerText || "").slice(0, 3000) : "";
+    if (!box) return "";
+    if (!aroundText.has(box)) aroundText.set(box, String(box.innerText || "").slice(0, 3000));
+    return aroundText.get(box);
   };
   const byRule = (el, cardForm) => W.kindOf({
     tag: el.tagName, type: typeOf(el), autocomplete: attr(el, "autocomplete"), role: attr(el, "role"),
-    own: [attr(el, "name"), el.id || "", attr(el, "data-testid")], said: saidOf(el), context: () => around(el), cardForm,
+    own: [attr(el, "name"), el.id || "", attr(el, "data-testid")], said: () => saidOf(el), context: () => around(el), cardForm,
   });
+  // What the rule says of a box on its own, worked out once per box per reading.
+  const plain = new Map();
+  const ruleOf = (el) => { if (!plain.has(el)) plain.set(el, byRule(el, false)); return plain.get(el); };
   // Four or more one-character boxes side by side are one code, a digit to a box.
   const digitBox = (el) => {
     if (el.tagName !== "INPUT" || el.maxLength !== 1 || !/^(|text|tel|number|password)$/.test(typeOf(el))) return false;
@@ -188,7 +210,7 @@ export function secretRules(W) {
   const inCardForm = (el) => {
     if (!cardForms) {
       cardForms = new Set();
-      for (const x of document.querySelectorAll("input, textarea")) if (byRule(x, false) === "card") cardForms.add(formOf(x));
+      for (const x of document.querySelectorAll("input, textarea")) if (ruleOf(x) === "card") cardForms.add(formOf(x));
     }
     return cardForms.has(formOf(el));
   };
@@ -202,7 +224,7 @@ export function secretRules(W) {
       if (tag === "INPUT" && typeOf(el) === "password") mem.add(el);
       if (mem.has(el)) k = "password";
       else if (digitBox(el)) k = "digit";
-      else k = byRule(el, false) || (inCardForm(el) ? byRule(el, true) : "");
+      else k = ruleOf(el) || (inCardForm(el) ? byRule(el, true) : "");
     }
     seen.set(el, k);
     return k;
@@ -244,9 +266,11 @@ export function secretRules(W) {
     if (run) add(run);
     const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const wholes = [...whole].sort((a, b) => b.length - a.length);
+    // Nor an amount: "$123" beside a card code of 123 is the total, and the spend guard reads it.
     const toks = [...tokens].filter(t => !whole.has(t)).map((t) => {
       const digits = /^\d+$/.test(t);
-      return new RegExp(`(?<![\\p{L}\\p{N}])${digits ? "(?<!\\d[.,])" : ""}${esc(t)}${digits ? "(?![.,]\\d)" : ""}(?![\\p{L}\\p{N}])`, "gu");
+      const money = "[$\\u00A2-\\u00A5\\u20AC\\u20B9]";
+      return new RegExp(`(?<![\\p{L}\\p{N}])${digits ? `(?<!\\d[.,])(?<!${money}\\s?)` : ""}${esc(t)}${digits ? `(?![.,]\\d)(?!\\s?${money})` : ""}(?![\\p{L}\\p{N}])`, "gu");
     });
     hider = (s) => {
       if (typeof s !== "string" || !s) return s;
