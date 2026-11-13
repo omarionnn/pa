@@ -572,7 +572,7 @@ export function alreadySeen(conversationId, key, { notice: isNote = false } = {}
   // An account notice the sweep handed to an open job on a word match (resolved_why "task:N",
   // src/landed.js) has not been said to them or settled: it stays a candidate.
   const row = db.db.prepare(`SELECT 1 FROM notice_seen WHERE conversation_id = ? AND (said_at IS NOT NULL OR (resolved_at IS NOT NULL${isNote ? " AND resolved_why NOT LIKE 'task:%'" : ""}))
-    AND (key = ? OR key = ? OR key LIKE ? ESCAPE '\\' OR key LIKE ? ESCAPE '\\') LIMIT 1`).get(conversationId, key, thread, `${esc(thread)}@%`, `%:${esc(like)}%`);
+    AND (key = ? OR key = ? OR key LIKE ? ESCAPE '\\' OR key LIKE ? ESCAPE '\\' OR key LIKE ? ESCAPE '\\') LIMIT 1`).get(conversationId, key, thread, `${esc(thread)}@%`, `%:${esc(like)}`, `%:${esc(like)}@%`);
   return !!row;
 }
 

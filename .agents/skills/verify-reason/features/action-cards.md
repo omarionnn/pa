@@ -11,8 +11,11 @@ their own voice; their text matches the open card by its words and runs as the n
 - `node --test test/action-cards-engine.test.js` — the engine: the spec's 20-item eval on a fake Google
   (prints `eval: N/20`; the bar is ≥ 18 with zero false cards from the skip set), Stage 2 re-validation,
   dedupe/rank, the morning run end to end (digest, sealed sources, day row with cost, the approved copy,
-  counted `proactive` never `turn`, no cards → no text), the 7:30–9:30 scheduler (once a day, lane parked
-  past 9:30 → `lane_unavailable`, never on the API), the urgent single (calendar thing inside 2 h, outside
+  counted `proactive` never `turn`, no cards → no text), the 7:30–9:30 scheduler (once a day; a missed morning is caught up once until noon
+  their time, a restart never skips it; a run the model or a mailbox did not answer is retried 10 min apart,
+  3 tries; account notices from no-reply senders reach the model while uptime checks, job alerts, promos and
+  codes do not; lane parked
+  past noon → `lane_unavailable`, never on the API), the urgent single (calendar thing inside 2 h, outside
   quiet hours, ≤ 2 texts/day), the two tools, settleHandled on page open, the sweep limited to
   time-critical calendar things when cards are on.
 - Contract tests that know about it: test/rules-everywhere.test.js (`stage2` is a rule reader),
