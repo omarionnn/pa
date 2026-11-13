@@ -454,7 +454,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         let out = null;
         try {
           const { loginUseRequest } = await import("./pages/loginuse.js");
-          out = await loginUseRequest({ sub: loginUseRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), log });
+          out = await loginUseRequest({ sub: loginUseRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), runtime, log });
         } catch (e) {
           log({ http: "/web/login-use", threw: e?.code ?? e?.name ?? "error" });
           return send(500, { ok: false, error: "server error" });

@@ -544,7 +544,9 @@ test("rule 4 over HTTP: a POST without Origin https://heyreason.com is refused a
   serverLog.length = 0;
   const r = await captured(() => hit(`/web/save-login/${token}/save`, { method: "POST", headers: FROM_REASON, body }));
   assert.equal(r.value.status, 200, r.value.body);
-  assert.deepEqual(JSON.parse(r.value.body), { ok: true });
+  // `carried`: whether Reason heard about it by itself (src/resume.js); never the request or a grant.
+  assert.deepEqual(Object.keys(JSON.parse(r.value.body)).sort(), ["carried", "ok"]);
+  assert.equal(JSON.parse(r.value.body).ok, true);
   assert.deepEqual(valuesIn(body), [], "the request carries ciphertext only");
   assert.deepEqual(valuesIn(r.text + JSON.stringify(serverLog)), [], "nothing typed in the server's log");
   assert.ok(serverLog.some(e => e.save_login === "save" && e.ok === true));
