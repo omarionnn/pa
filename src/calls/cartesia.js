@@ -11,6 +11,7 @@
 // carries on with GPT-Live (`fallBack`) and that is logged.
 import { writeSealed } from "../restfiles.js";
 import * as db from "../db.js";
+import * as retry from "../retry.js";
 import * as accounts from "../accounts.js";
 import { config, clock } from "../config.js";
 import { recordingFileFor } from "./recordings.js";
@@ -489,10 +490,11 @@ export class CartesiaAgentCall {
 
   /** What the agent is answered with for one reply of Reason's: `[result, isError]`. */
   spoken(reply) {
-    if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and offer to try again.", true];
+    if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and plainly; never offer to try again or ask if they want you to.", true];
     if (reply?.skip || !String(reply?.text ?? "").trim()) return ["Reason has nothing to add. Reply yourself in a few words.", false];
     if (reply?.endCall) this.endWhy = "goodbye";
-    return [reply.text, false];
+    // An offer to try again is taken out; a set re-check is said as the text it will be (src/retry.js).
+    return [retry.callLine(reply.text, this.call?.conversation_id ?? null), false];
   }
 
   /** Answering-machine detection is only asked for on third-party calls; their own call has nothing to do with a verdict. */

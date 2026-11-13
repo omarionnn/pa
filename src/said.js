@@ -201,7 +201,8 @@ export function noteAct(acts, name, out, { acting = false } = {}) {
     let body;
     try { body = typeof out === "string" ? out : JSON.stringify(out, (k, v) => (k === "_image" ? undefined : v)); } catch { body = String(out); }
     const links = [...new Set(String(body ?? "").match(URL_RE) ?? [])].slice(0, 4);
-    acts.push({ name: String(name), ok: !failed, result: one(body, 360), links, acting: !!acting });
+    const tries = out && typeof out === "object" && Number.isInteger(out.tries) ? { tries: out.tries } : {};
+    acts.push({ name: String(name), ok: !failed, result: one(body, 360), links, acting: !!acting, ...tries });
     if (acts.length > MAX_ACTS) acts.shift();
   } catch { /* the record is best-effort */ }
 }
