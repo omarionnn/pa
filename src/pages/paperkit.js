@@ -39,7 +39,7 @@ export const PAPER_CSS = `
 .pf-p{margin:0;font-size:16px;line-height:1.6}
 .pf-p.mut{color:var(--muted)}
 .pf-sp{margin-top:20px}
-.pf-note{display:block;margin:0;font:400 1.3rem/1.3 var(--hand);color:var(--pen);transform:rotate(-1deg);transform-origin:left center}
+.pf-note{display:block;margin:0;overflow-wrap:break-word;font:400 1.3rem/1.3 var(--hand);color:var(--pen);transform:rotate(-1deg);transform-origin:left center}
 .pf-form{margin:64px 0 0;display:flex;flex-direction:column;gap:40px}
 .pf-fld{display:flex;flex-direction:column;gap:6px;min-width:0}
 .pf-fld>label,.pf-fld>.pf-l{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -64,7 +64,9 @@ export const PAPER_CSS = `
 .pf-card-slot iframe{width:100%!important;display:block}
 .pf-g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}
 .pf-acts{margin-top:16px;display:flex;flex-wrap:wrap;align-items:center;gap:12px 40px}
-.pf-acts+.pf-l,.pf-acts+.pf-note{margin-top:-24px}
+.pf-acts+.pf-l,.pf-acts+.pf-note{margin-top:12px}
+.pf-form>.pf-acts+.pf-l,.pf-form>.pf-acts+.pf-note{margin-top:-24px}
+.pf-note[hidden],.pf-l[hidden]{display:none}
 .pf-go{min-height:48px;font-size:34px;line-height:1.15}
 .pf-two{min-height:44px;font-size:12px;color:var(--muted)}
 .pf-two:hover{color:var(--ink)}

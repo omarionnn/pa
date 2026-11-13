@@ -26,7 +26,8 @@ import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs } from "./signi
 import { logAttempt } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
 import { clearOriginInPage } from "./signin.js";
-import { askFaceId, takeApproval, dropAsks } from "./loginuse.js";
+import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants } from "./loginuse.js";
+import { requestOf } from "./resume.js";
 import * as restartGate from "./busy.js";
 
 // The words the tool returns, one per outcome (design B5 step 8). `ok` is only a signed-in session.
@@ -380,7 +381,12 @@ export async function signIn(conversationId, site, {
   // Hard rule 8, the conservative reading: a saved login is used only on a turn the person started
   // with their own message (a tapped Action Card arrives as one: the tap types its prefill and they
   // send it). Every event turn (an email, a page, a timer, the nightly review) is refused.
-  if (!liveAskOk(trigger)) {
+  // A job carried on by itself (src/resume.js): the event turn a Face ID yes or a save started holds a
+  // grant code issued for that one approval or save, this login and site and their own request. Only
+  // the runtime puts it on a turn; a page, an email or the model can't. Anything else is refused below.
+  const resumed = !liveAskOk(trigger) && trigger?.resume ? takeResume(c, trigger.resume, { loginId: row.id, site: host, savedSite: row.site }, { now: now() }) : null;
+  if (!liveAskOk(trigger) && !resumed) {
+    if (trigger?.resume) return { ok: false, result: "resume_spent", say_exactly: "" };
     recordLoginEvent(c, { site: host, event: "signin", outcome: "needs_face_id", purpose: why });
     return { ...say("needs_face_id", host), say_exactly: `I only sign in to ${host} when you ask me in the moment. Ask me and I'll do it.` };
   }
@@ -389,18 +395,21 @@ export async function signIn(conversationId, site, {
   // saved site Reason's question just before their bare "yes" named (src/namedsite.js). Code reads the
   // stored thread; the model's say-so is not an input. Refused: nothing opens, nothing is unwrapped, and
   // the fixed words ask them, so their answer ("yes", or the name) lets the next call through.
-  if (!namedByThem(trigger?.messages ?? [], row, listLogins(c)).ok) {
+  if (!resumed && !namedByThem(trigger?.messages ?? [], row, listLogins(c)).ok) {
     recordLoginEvent(c, { site: host, event: "signin", outcome: "stopped", purpose: why });
     const name = namesOf(row).names.size && String(row.label ?? "").trim() ? String(row.label).trim() : host;
     return { ok: false, result: "not_named", say_exactly: `Sign in to ${name} for that?` };
   }
   // Careful sites and an "each time" permission: a fresh Face ID before EVERY use (design B8). There
   // is no standing permission for them: one approval is one sign-in, consumed here before anything opens.
-  if ((verdict.policy === "careful" || row.permission === "each_time") && !takeApproval(c, row.id, { now: now() })) {
-    const ask = askFaceId(c, row.id, host, { now: now() });
+  if ((verdict.policy === "careful" || row.permission === "each_time") && resumed?.kind !== "approved" && !takeApproval(c, row.id, { now: now() })) {
+    const ask = askFaceId(c, row.id, host, { now: now(), request: resumed?.request ?? requestOf(trigger?.messages ?? []) });
     recordLoginEvent(c, { site: host, event: "signin", outcome: "needs_face_id", purpose: why });
     return say("needs_face_id", host, ask.link);
   }
+  // This sign-in is the job: a save grant still waiting for the same site (its resumed turn queued
+  // behind this one) is spent now, so the job is not signed in to and done twice (review 2026-11-13).
+  spendSaveGrants(c, [host, row.site]);
 
   // The sealed step. One lock per person covers the browser (hard rule: no stealth, no second browser).
   const holder = Symbol("filler");
