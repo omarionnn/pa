@@ -168,11 +168,19 @@ test("the sender check: Gmail's own verdict, passing and aligned with the From a
   const h = (...values) => values.map(value => ({ name: "Authentication-Results", value }));
   const check = (from, ...values) => routes.senderCheck({ headers: h(...values), from });
   assert.deepEqual(check("no-reply-aws@amazon.com", PASS("amazon.com")), { pass: true, why: "dmarc" });
-  // A subdomain of the same organisation lines up either way round.
+  // The From address at or under the domain Gmail checked lines up; a subdomain does not speak for its parent.
   assert.equal(check("billing@mail.anthropic.com", PASS("anthropic.com")).pass, true);
-  assert.equal(check("billing@anthropic.com", PASS("mail.anthropic.com")).pass, true);
+  assert.equal(check("billing@anthropic.com", PASS("mail.anthropic.com")).pass, false, "a subdomain's pass is not its parent's");
   assert.equal(check("billing@shop.example.co.uk", PASS("example.co.uk")).pass, true);
   assert.equal(check("billing@other.co.uk", PASS("example.co.uk")).pass, false, "co.uk is not an organisation");
+  // Two tenants of one shared suffix do not speak for each other, by DMARC or by signature.
+  assert.deepEqual(check("billing@victim.github.io", PASS("attacker.github.io")), { pass: false, why: "dmarc_other_domain" });
+  assert.equal(check("billing@victim.github.io", "mx.google.com; dkim=pass header.i=@attacker.github.io header.s=a header.b=b; spf=pass smtp.mailfrom=x@attacker.github.io").pass, false);
+  // Gmail prints ONE DMARC verdict: with a second one in its header (a crafted address echoed into it) nothing passes.
+  assert.deepEqual(check("no-reply-aws@amazon.com", "mx.google.com; spf=pass smtp.mailfrom=x; dmarc=pass header.from=amazon.com; dkim=fail header.i=@amazon.com; dmarc=fail (p=REJECT) header.from=amazon.com"), { pass: false, why: "dmarc_twice" });
+  assert.deepEqual(check("no-reply-aws@amazon.com", "mx.google.com; dmarc=fail (p=REJECT) header.from=amazon.com; dmarc=pass header.from=amazon.com"), { pass: false, why: "dmarc_twice" });
+  // A trailing dot or capitals in either name change nothing.
+  assert.equal(check("Billing@Mail.Anthropic.COM", PASS("anthropic.com.")).pass, true);
   // DMARC failed: a fail whatever else passed (the classic spoof: somebody else's signature, the victim's From).
   const spoof = "mx.google.com; dkim=pass header.i=@bulk-mailer.example header.s=x header.b=y; spf=softfail (google.com: domain of transitioning x@bulk-mailer.example does not designate 203.0.113.9 as permitted sender) smtp.mailfrom=x@bulk-mailer.example; dmarc=fail (p=QUARANTINE sp=QUARANTINE dis=QUARANTINE) header.from=amazon.com";
   assert.deepEqual(check("no-reply-aws@amazon.com", spoof), { pass: false, why: "dmarc_fail" });
@@ -590,6 +598,15 @@ test("a tapped card that cannot be finished: one plain line, no sign-in link (re
   assert.equal(h.channel.sent.slice(before).filter(m => m.to === num).length, 1, "still one text");
   // A turn they start themselves afterwards is theirs to ask for a link in: the guard is not on it.
   assert.equal(engine.runBlocksHandoff(c, { kind: "user" }), false);
+  // And once they HAVE asked for one themselves, what follows is their own job, not the card's: the
+  // sign-in they asked for may need a second link, and that one is not refused (kept on the card's
+  // row, so a restart does not forget it).
+  const own = await runTool("signin_link", { site: "cardboard.example" }, { conversationId: c, kind: "user" });
+  assert.notEqual(own.blocked, "card_must_finish", "their own ask is not the card's");
+  assert.equal(engine.runBlocksHandoff(c, { kind: "event" }), false, "what follows their own ask is theirs");
+  const next = await runTool("signin_link", { site: "cardboard.example" }, { conversationId: c, kind: "event" });
+  assert.notEqual(next.blocked, "card_must_finish");
+  assert.equal(engine.noteOwnHandoff(c), 0, "written once");
   // Tomorrow the same card is not offered again: the route failed there, and the title is remembered as failed.
   assert.equal(engine.failedBefore(c, "site", `site:${entry.site}`), true);
   const again = await engine.routeGate(c, [{ key: cand.key, route: "site", site: "cardboard.example", job: "x", verb: "CANCEL", title: "Cancel your Cardboard Starter before it renews Nov 27", lead: "your Cardboard Starter renews Nov 27", urgency: 3, effort: 3, candidate: cand }]);

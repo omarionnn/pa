@@ -57,13 +57,18 @@ const DAY = 24 * 3_600_000;
  * may become a card or a worth-knowing line only when Gmail's OWN authentication verdict for it
  * passes and lines up with the address it claims to be from:
  *
- *   dmarc=pass with header.from on the From address's organisational domain, or
- *   (no DMARC verdict at all) a passing DKIM signature whose domain is the From address's.
+ *   dmarc=pass with the From address's domain at or under the header.from Gmail checked, or
+ *   (no DMARC verdict at all) a passing DKIM signature of a domain the From address is at or under.
+ *
+ * "At or under" is read off the names themselves (mail.acme.com is under acme.com), never off a
+ * guessed organisation: two tenants of one shared suffix (a.github.io, b.github.io) do not speak
+ * for each other, and a subdomain does not speak for its parent.
  *
  * SPF alone never counts (it speaks for the envelope, not the From line), and a dmarc=fail is a fail
  * whatever else passed. Gmail's verdict is the Authentication-Results header ITS server stamped: the
  * topmost one, with authserv-id mx.google.com. A header further down saying the same thing is
- * something the sender wrote, and is not read.
+ * something the sender wrote, and is not read. Gmail prints ONE DMARC verdict: two in its header
+ * means part of it is not Gmail's own words (a crafted address echoed into it), and nothing passes.
  */
 export function orgDomain(host) {
   const parts = String(host ?? "").toLowerCase().replace(/\.$/, "").split(".").filter(Boolean);
@@ -72,9 +77,12 @@ export function orgDomain(host) {
   return parts.length >= 3 && /^(co|com|org|net|ac|gov|ne|or|edu)\.[a-z]{2}$/.test(two) ? parts.slice(-3).join(".") : two;
 }
 const domainOf = (address) => String(address ?? "").trim().toLowerCase().split("@")[1]?.replace(/[>\s].*$/, "") ?? "";
+const bare = (host) => String(host ?? "").toLowerCase().replace(/\.$/, "");
+/** Is `host` the domain `parent` or a name under it? Both must be real host names. */
+const atOrUnder = (host, parent) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(parent) && (host === parent || host.endsWith(`.${parent}`));
 
 export function senderCheck({ headers = [], from = "" } = {}) {
-  const fromDomain = domainOf(from);
+  const fromDomain = bare(domainOf(from));
   if (!fromDomain) return { pass: false, why: "no_from" };
   const results = (headers ?? []).filter(h => /^authentication-results$/i.test(String(h?.name ?? "")));
   const top = String(results[0]?.value ?? "");
@@ -83,21 +91,22 @@ export function senderCheck({ headers = [], from = "" } = {}) {
   const flat = top.replace(/\([^()]*\)/g, " ").replace(/\s+/g, " ").trim();
   const [server, ...verdicts] = flat.split(";").map(s => s.trim());
   if (!/^mx\.google\.com$/i.test(server.split(" ")[0] ?? "")) return { pass: false, why: "not_gmails" };
-  const want = orgDomain(fromDomain);
-  let dmarc = "", dmarcFrom = "", dkimAligned = false;
+  const dmarcs = [];
+  let dkimAligned = false;
   for (const v of verdicts) {
     const m = /^(dkim|dmarc|spf)=([a-z]+)/i.exec(v);
     if (!m) continue;
     const method = m[1].toLowerCase(), result = m[2].toLowerCase();
     if (method === "dmarc") {
-      dmarc = result;
-      dmarcFrom = (/\bheader\.from=([^\s;]+)/i.exec(v)?.[1] ?? "").toLowerCase();
+      dmarcs.push({ result, from: bare(/\bheader\.from=([^\s;]+)/i.exec(v)?.[1] ?? "") });
     } else if (method === "dkim" && result === "pass") {
-      const d = (/\bheader\.d=([^\s;]+)/i.exec(v)?.[1] ?? /\bheader\.i=[^\s;@]*@([^\s;]+)/i.exec(v)?.[1] ?? "").toLowerCase();
-      if (d && orgDomain(d) === want) dkimAligned = true;
+      const d = bare(/\bheader\.d=([^\s;]+)/i.exec(v)?.[1] ?? /\bheader\.i=[^\s;@]*@([^\s;]+)/i.exec(v)?.[1] ?? "");
+      if (atOrUnder(fromDomain, d)) dkimAligned = true;
     }
   }
-  if (dmarc === "pass") return orgDomain(dmarcFrom) === want ? { pass: true, why: "dmarc" } : { pass: false, why: "dmarc_other_domain" };
+  if (dmarcs.length > 1) return { pass: false, why: "dmarc_twice" };
+  const dmarc = dmarcs[0]?.result ?? "";
+  if (dmarc === "pass") return atOrUnder(fromDomain, dmarcs[0].from) ? { pass: true, why: "dmarc" } : { pass: false, why: "dmarc_other_domain" };
   if (dmarc && dmarc !== "none") return { pass: false, why: `dmarc_${dmarc}`.slice(0, 24) };
   return dkimAligned ? { pass: true, why: "dkim_aligned" } : { pass: false, why: "unauthenticated" };
 }

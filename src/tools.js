@@ -9693,12 +9693,16 @@ async function runToolInner(name, rawInput, ctx) {
   // A card's own job (src/actionengine.js runBlocksHandoff): a card promised Reason would finish it
   // without them, so nothing here may hand it back as a sign-in link or a page. The turn is told to
   // say once that it could not be finished. (2026-11-12: one tapped card, three sign-in links.)
-  if (cardroutes.HANDOFF_TOOLS.has(name) && actionengine.runBlocksHandoff(c, { kind: ctx.kind ?? "event" })) {
-    const refusal = { ...cardroutes.HANDOFF_REFUSAL };
-    (ctx.log ?? (() => {}))({ action_card_handoff_refused: name });
-    // On the ledger, so the card's outcome can say WHY it failed (it needed a sign-in Reason did not have).
-    try { trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) }); } catch { /* the refusal stands either way */ }
-    return refusal;
+  if (cardroutes.HANDOFF_TOOLS.has(name)) {
+    if (actionengine.runBlocksHandoff(c, { kind: ctx.kind ?? "event" })) {
+      const refusal = { ...cardroutes.HANDOFF_REFUSAL };
+      (ctx.log ?? (() => {}))({ action_card_handoff_refused: name });
+      // On the ledger, so the card's outcome can say WHY it failed (it needed a sign-in Reason did not have).
+      try { trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) }); } catch { /* the refusal stands either way */ }
+      return refusal;
+    }
+    // Not refused, and asked for in a turn of their own: what follows is their job, not a card's.
+    if ((ctx.kind ?? "event") === "user") { try { actionengine.noteOwnHandoff(c); } catch { /* the tool runs either way */ } }
   }
   // Crossmint on: AgentCard's buying tools are not shown, and one named anyway does nothing.
   if (AGENTCARD_BUY_TOOLS.has(name) && !agentcardToolVisible(name, c)) return AGENTCARD_REFUSAL;

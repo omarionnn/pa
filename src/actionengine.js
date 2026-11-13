@@ -172,7 +172,7 @@ try { db.db.exec("ALTER TABLE action_card_days ADD COLUMN attempts INTEGER NOT N
 // here before" is a lookup without the place being kept in the clear; `outcome` is '' (never tapped),
 // running, pending, done, failed or lapsed, with a reason word and when. The job's own words live
 // sealed in `refs`.
-for (const col of ["route TEXT NOT NULL DEFAULT ''", "route_target TEXT NOT NULL DEFAULT ''", "outcome TEXT NOT NULL DEFAULT ''", "outcome_why TEXT NOT NULL DEFAULT ''", "outcome_at INTEGER", "tapped_at INTEGER"]) {
+for (const col of ["route TEXT NOT NULL DEFAULT ''", "route_target TEXT NOT NULL DEFAULT ''", "outcome TEXT NOT NULL DEFAULT ''", "outcome_why TEXT NOT NULL DEFAULT ''", "outcome_at INTEGER", "tapped_at INTEGER", "handback_ok_at INTEGER"]) {
   try { db.db.exec(`ALTER TABLE action_card_sources ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 db.restStrictRefresh();
@@ -1289,14 +1289,27 @@ export function cardFrame(run) {
  * that is NOT a turn they started (a job that woke up, a resumed task) for PENDING_MS after the tap,
  * settled or not. That second half is the third link of 2026-11-12: a restart resumed the job and it
  * texted the same sign-in link again. A turn they start themselves afterwards ("send me the sign-in
- * link") is theirs to ask and is not refused.
+ * link") is theirs to ask and is not refused; and once they HAVE asked for one themselves
+ * (noteOwnHandoff), what follows is their own job and not the card's, so the jobs that wake up after
+ * that are not refused either (a sign-in they asked for may need a second link).
  */
 export function runBlocksHandoff(conversationId, { kind = "user", now = clock.now() } = {}) {
   if (cards.mode() === "off" || !conversationId) return false;
   // A card that FAILED counts too, for anything they did not start: the job it left behind must not
   // wake up later and text the link the card's own turn was refused.
-  const rows = db.db.prepare("SELECT outcome, tapped_at FROM action_card_sources WHERE conversation_id = ? AND outcome IN ('running', 'pending', 'failed') AND tapped_at > ?").all(conversationId, now - routes.PENDING_MS);
-  return rows.some(r => (r.outcome === "running" && now - r.tapped_at < RUN_GUARD_MS) || kind !== "user");
+  const rows = db.db.prepare("SELECT outcome, tapped_at, handback_ok_at FROM action_card_sources WHERE conversation_id = ? AND outcome IN ('running', 'pending', 'failed') AND tapped_at > ?").all(conversationId, now - routes.PENDING_MS);
+  return rows.some(r => (r.outcome === "running" && now - r.tapped_at < RUN_GUARD_MS) || (kind !== "user" && r.handback_ok_at == null));
+}
+
+/**
+ * They asked for a hand-off themselves (a sign-in link, a page), in a turn of their own, and it was
+ * not refused: from here on the jobs that follow are theirs, not a card's. Written on the cards
+ * tapped lately that are still out or failed, so it survives a restart.
+ */
+export function noteOwnHandoff(conversationId, { now = clock.now() } = {}) {
+  if (cards.mode() === "off" || !conversationId) return 0;
+  return db.db.prepare("UPDATE action_card_sources SET handback_ok_at = ? WHERE conversation_id = ? AND outcome IN ('running', 'pending', 'failed') AND tapped_at > ? AND handback_ok_at IS NULL")
+    .run(now, conversationId, now - routes.PENDING_MS).changes;
 }
 
 /** DONE for a route, or for a card with no route on record: any route's proof counts, none is a failure. */
