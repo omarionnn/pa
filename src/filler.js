@@ -435,7 +435,7 @@ async function walledNow(page) {
  * form; a challenge that is still there at the end of the wait is a wall. Nothing is typed here.
  *   → { verdict: "ok", form } | { verdict: "origin_mismatch" | "not_signin_page" | "wall" | "no_form" }
  */
-async function arrive(page, row, { pin = () => {}, onToggle = () => {} } = {}) {
+async function arrive(page, row, { pin = () => {}, onToggle = () => {}, need = "form" } = {}) {
   const at = urlParts(page.url());
   if (at.origin !== row.signin_origin) return { verdict: "origin_mismatch" };
   if (at.path !== row.signin_path) return { verdict: "not_signin_page" };
@@ -447,6 +447,9 @@ async function arrive(page, row, { pin = () => {}, onToggle = () => {} } = {}) {
     { waitMs: formWaitMs(), stop: () => watch.settled() }).finally(() => watch.stop());
   const read = got.found ? got.value : await readPage(page).catch(() => null);
   if (read?.kind === "challenge" || (await challengeShown(page))) return { verdict: "wall" };
+  // The Google route (src/federated.js) needs the page itself, not its password form: nothing is
+  // pressed or typed here, its own Google button is looked for by the caller.
+  if (need === "page") return { verdict: "ok", form: null };
   let form = await findForm(page);
   // The page offers a code first and keeps the password behind its own "Use password instead": press
   // it before anything is typed, so Enter in the email box never sends a code (2026-11-13).
@@ -482,8 +485,13 @@ async function frontDoor(page, row) {
   if (!went.followed) return { how: "no_door" };
   // A pressed button navigates by itself, and a link's own redirects may still be running: the page is
   // given the normal wait to reach the pinned page; where it is after that is what the caller reads.
-  await page.waitForURL((u) => { const p = urlParts(u); return p.origin === row.signin_origin && p.path === row.signin_path; },
-    { timeout: Math.max(1, formWaitMs()), waitUntil: "domcontentloaded" }).catch(() => {});
+  // Without a pin (the Google route with no sign-in page known), the page it lands on is read by the
+  // caller once the browser has moved off the home page, within the same wait.
+  const home = page.url();
+  await page.waitForURL((u) => {
+    if (!row.signin_origin) return String(u) !== home;
+    const p = urlParts(u); return p.origin === row.signin_origin && p.path === row.signin_path;
+  }, { timeout: Math.max(1, formWaitMs()), waitUntil: "domcontentloaded" }).catch(() => {});
   return { how: "followed" };
 }
 
@@ -495,7 +503,7 @@ async function frontDoor(page, row) {
  *   → { verdict: "ok", form, door } | { verdict: "origin_mismatch"|"not_signin_page"|"wall"|"no_form", door }
  *     door: "" (not walked) | "followed" | "walled" | "no_door" | "not_loaded"
  */
-export async function reachPinned(page, row, { conversationId, mark = () => {} } = {}) {
+export async function reachPinned(page, row, { conversationId, mark = () => {}, need = "form" } = {}) {
   const c = String(conversationId ?? "");
   const pinnedHost = new URL(row.signin_origin).hostname;
   const secure = row.signin_origin.startsWith("https:");
@@ -504,7 +512,7 @@ export async function reachPinned(page, row, { conversationId, mark = () => {} }
   // link from a page or an email (design B5 step 3).
   const direct = async () => {
     await page.goto(`${row.signin_origin}${row.signin_path}`, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-    return arrive(page, row, { pin: hold, onToggle: mark });
+    return arrive(page, row, { pin: hold, onToggle: mark, need });
   };
   // The front door (2026-11-13, DoorDash): a pinned page may only work when it is reached the way a
   // person reaches it, from the site's own home page through its own Sign In link, which carries the
@@ -519,7 +527,7 @@ export async function reachPinned(page, row, { conversationId, mark = () => {} }
     door = w.how;
     if (w.how === "walled") return { verdict: "wall" };
     if (w.how !== "followed") return null;
-    const got = await arrive(page, row, { pin: hold, onToggle: mark });
+    const got = await arrive(page, row, { pin: hold, onToggle: mark, need });
     // The pinned page reached through the site stands, form or wall; landing anywhere else does not.
     return got.verdict === "ok" || got.verdict === "wall" || got.verdict === "no_form" ? got : null;
   };
@@ -542,6 +550,16 @@ export async function reachPinned(page, row, { conversationId, mark = () => {} }
   }
   if (got.verdict !== "ok") unpinSite(c);
   return { ...got, door };
+}
+
+/**
+ * The Google route's way to a site's sign-in page when none is pinned (src/federated.js): the site's own
+ * home page, then its own Sign In link, the way the save flow finds one. The caller holds the browser to
+ * the site and reads where it lands. Nothing is pressed but that link; nothing is typed.
+ *   → { how: "followed" | "walled" | "no_door" | "not_loaded" }
+ */
+export async function frontDoorOf(page, site) {
+  return frontDoor(page, { site: String(site ?? ""), signin_origin: null, signin_path: null });
 }
 
 /** Is the pinned page on a host of its own, not the site's front host (the site itself or www.)? */

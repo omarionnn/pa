@@ -50,7 +50,7 @@ const GPASS = "Stand-in-google-4Kp!";
 const S = (s) => new Secret(Buffer.from(s, "utf8"));
 
 // ---------------------------------------------------------------- the fixtures
-const SITES = ["happy.test", "tap.test", "code.test", "mail.test", "evil.test", "insecure.test", "gmail.test", "popup.test", "chooser.test", "hidden.test", "swap.test", "birth.test"];
+const SITES = ["happy.test", "tap.test", "code.test", "mail.test", "evil.test", "insecure.test", "gmail.test", "popup.test", "chooser.test", "hidden.test", "swap.test", "birth.test", "fdg.test", "id.fdg.test", "fdgwall.test", "id.fdgwall.test"];
 const keyPath = join(dir, "key.pem"), certPath = join(dir, "cert.pem");
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-keyout", keyPath, "-out", certPath, "-days", "2", "-nodes", "-subj", "/CN=happy.test",
   "-addext", `subjectAltName=${[...SITES, "accounts.google.com", "mail.google.com", "accounts.google.com.evil.test"].map((h) => `DNS:${h}`).join(",")}`], { stdio: "ignore" });
@@ -61,7 +61,23 @@ const typedAt = []; // { host, field, value }: what reached each server
 let tapApproved = false;
 const flowOf = (site) => site.split(".")[0];
 
+const WALL = page("Just a moment...", "<h1>Performing security verification</h1><p>This website uses a security service to protect against malicious bots.</p>");
+const served = []; // host + path of every GET the fixture server answered (front-door tests)
+const bareLoads = []; // a front-door fixture's identity page loaded without the parameters its own Sign In link carries
 function siteRoutes(host, u, send, redirect, cookie) {
+  // The front door (2026-11-13, DoorDash): fdg.test's sign-in page lives on its own identity host, walls a
+  // bare load and draws its form (and its Google button) only when reached through the home page's own
+  // Sign In link, which carries per-visit parameters. fdgwall.test walls its home page as well.
+  if (host === "fdg.test" && u.pathname === "/") return send(page("Order food", `<header><a href="https://id.fdg.test/auth?client_id=web&amp;state=s1">Sign In</a></header><h1>Order food</h1>`));
+  if (host === "fdgwall.test" && u.pathname === "/") return send(WALL, 403);
+  if (host === "id.fdg.test" || host === "id.fdgwall.test") {
+    if (u.pathname !== "/auth") return send("<p>not found</p>", 404);
+    if (!u.searchParams.has("client_id")) { bareLoads.push(host); return send(WALL, 403); }
+    const go = `https://accounts.google.com/signin?next=${host.slice(3)}&flow=fdg`;
+    return send(page("Sign in", `<h1>Sign in</h1><form method="post" action="/auth/pw"><label>Email <input type="email" name="email" autocomplete="username"></label>
+      <label>Password <input type="password" name="password" autocomplete="current-password"></label><button type="submit">Sign in</button></form>
+      <p>or</p><button type="button" onclick="location.href=${JSON.stringify(go).replace(/"/g, "&quot;")}">Continue with Google</button>`));
+  }
   const google = host === "evil.test" ? "https://accounts.google.com.evil.test" : "https://accounts.google.com";
   const go = `${google}/signin?next=${host}&flow=${flowOf(host)}`;
   if (u.pathname === "/login") {
@@ -123,6 +139,7 @@ function googleRoutes(u, send, body) {
 function handler(req, res) {
   const host = String(req.headers.host ?? "").split(":")[0];
   const u = new URL(req.url, `https://${host}`);
+  if (req.method === "GET") served.push(`${host}${u.pathname}`);
   const send = (html, code = 200, headers = {}) => { res.writeHead(code, { "content-type": "text/html; charset=utf-8", ...headers }); res.end(html); };
   const redirect = (to) => send("", 302, { location: to });
   const done = (body) => {
@@ -131,7 +148,7 @@ function handler(req, res) {
     if (host === "mail.google.com") return send(page("Inbox", "<h1>Inbox</h1>"));
     return siteRoutes(host, u, send, redirect, String(req.headers.cookie ?? ""));
   };
-  if (req.method === "POST") { let raw = ""; req.on("data", (d) => { raw += d; }); req.on("end", () => done(new URLSearchParams(raw))); return; }
+  if (req.method === "POST") { let raw = ""; req.on("data", (d) => { raw += d; }); req.on("end", () => { const b = new URLSearchParams(raw); if (host !== "accounts.google.com" && host !== "accounts.google.com.evil.test") typedAt.push({ host, field: "any", value: [...b.values()].join("|") }); done(b); }); return; }
   done(null);
 }
 
@@ -440,7 +457,7 @@ test("relays use fixed words: no page text (an email address, a device name, a m
   assert.doesNotMatch(tap.say_exactly, /PIN|Pixel/);
   const step = fed.googleStep({ text: "Google sent a notification to your Pixel please reply with the code. Tap Yes", number: "42" });
   assert.equal(step.device ?? "", "");
-  for (const r of ["signed_in", "needs_google_login", "no_google_button", "origin_mismatch", "blocked", "wrong_password", "not_accepted", "consent_more", "google_property", "needs_google_tap", "needs_google_code", "no_answer", "code_not_found", "wrong_code", "paused", "pick_one", "busy", "not_signin_page"]) {
+  for (const r of ["signed_in", "site_walled", "off_site", "needs_google_login", "no_google_button", "origin_mismatch", "blocked", "wrong_password", "not_accepted", "consent_more", "google_property", "needs_google_tap", "needs_google_code", "no_answer", "code_not_found", "wrong_code", "paused", "pick_one", "busy", "not_signin_page"]) {
     assert.doesNotMatch(say(r, "happy.test", { which: "captcha" }).say_exactly, /try again\?|want me to|shall i try|should i try/i, r);
   }
 });
@@ -455,4 +472,38 @@ test("forgetting the Google login also removes every site that signs in through 
   assert.equal(sl.signinRouteFor(ME, "tap.test"), "");
   assert.equal(sl.signinRouteFor(ME, "pw.test"), "password");
   assert.ok(!sl.exportRoutesFor(ME).some((r) => r.route === "google"));
+});
+
+// ---------------------------------------------------------------- the front door (2026-11-13, DoorDash)
+test("front door: a site whose identity page walls a bare load is reached through its home page's own Sign In link, signed in to via its Google button; the bare page is never loaded, nothing typed on the site", skip, async () => {
+  // With the sign-in page known (the save flow's finder found it: the pin) and without it (home, then Sign In).
+  for (const where of [async () => ({ found: true, url: "https://id.fdg.test/auth" }), async () => ({ found: false, url: "" })]) {
+    await saveGoogle();
+    use._resetAsks(); typedAt.length = 0; bareLoads.length = 0; served.length = 0;
+    const out = await signIn("fdg.test", { locate: where });
+    assert.equal(out.result, "signed_in", out.say_exactly);
+    assert.deepEqual(bareLoads, [], "the identity page is never loaded bare");
+    const first = served.findIndex((x) => x === "fdg.test/"), id = served.findIndex((x) => x === "id.fdg.test/auth");
+    assert.ok(first >= 0 && id > first, `home page first: ${served.join(",")}`);
+    assert.deepEqual(typedFor("identifier"), [GUSER]);
+    assert.deepEqual(typedAt.filter((t) => t.host !== "accounts.google.com"), [], "nothing typed or posted on the site");
+    sl.removeLogin(ME, googleRow().id);
+  }
+});
+
+test("front door: a wall on the site (not Google) stops before any Google page, in honest words, with no offer to try again; the Google login is not paused for it", skip, async () => {
+  const { id } = await saveGoogle();
+  use._resetAsks(); typedAt.length = 0; bareLoads.length = 0; served.length = 0;
+  for (const where of [async () => ({ found: true, url: "https://id.fdgwall.test/auth" }), async () => ({ found: false, url: "" })]) {
+    use._resetAsks(); served.length = 0;
+    const out = await signIn("fdgwall.test", { locate: where });
+    assert.equal(out.result, "site_walled", out.say_exactly);
+    assert.match(out.say_exactly, /turned my browser away/);
+    assert.doesNotMatch(out.say_exactly, /try again\?|want me to/i);
+    assert.equal(served.filter((h) => h === "fdgwall.test/").length, 1, "the walled home page once, never retried");
+    assert.deepEqual(bareLoads, [], "the identity page is never loaded bare after the wall");
+    assert.ok(!served.some((h) => h.startsWith("accounts.google.com")), "Google never opened");
+    assert.deepEqual(typedAt, []);
+    assert.equal(sl.listLogins(ME).find((r) => r.id === id).state === "refused", false, "the Google login is not paused by a site's wall");
+  }
 });

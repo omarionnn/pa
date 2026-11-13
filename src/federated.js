@@ -32,12 +32,15 @@ import { requestOf } from "./resume.js";
 import { logAttempt, logDiag } from "./signinlog.js";
 import { awaitCodeReply } from "./signinemail.js";
 import * as restartGate from "./busy.js";
+import { reachPinned, frontDoorOf } from "./filler.js";
+import { recordFinding } from "./sitefindings.js";
 
 export const GOOGLE = "https://accounts.google.com";
 /** How long Google's "tap Yes / tap the number" prompt is waited for. */
 export const TAP_WAIT_MS = 3 * 60_000;
 const RETRY_PAUSE_MS = 24 * 60 * 60_000;
 const STEP_MS = 15_000;
+const BUTTON_WAIT_MS = 5_000;
 
 const originOf = (u) => { try { return new URL(String(u)).origin; } catch { return ""; } };
 const hostOf = (u) => { try { return new URL(String(u)).hostname.toLowerCase(); } catch { return ""; } };
@@ -168,6 +171,9 @@ function say(result, site, extra = {}) {
     signed_in: `Signed you in to ${site} with your Google account.`,
     needs_google_login: `To sign in to ${site} with Google I need your Google login saved first, so I haven't opened anything.`,
     no_google_button: `I couldn't sign you in to ${site}: its sign-in page didn't show a "Continue with Google" button of its own, so I typed nothing.`,
+    // The site itself walled the browser before its sign-in page showed (not Google): the Google login is untouched.
+    site_walled: `${site} turned my browser away before its sign-in page showed, so I typed nothing and stopped. That's their choice, not something you did.`,
+    off_site: `I couldn't sign you in to ${site}: its sign-in link didn't keep me on ${site}, so I pressed nothing and typed nothing.`,
     origin_mismatch: `I couldn't sign you in to ${site}: its Google button didn't lead to Google's own sign-in page (accounts.google.com), so I typed nothing.`,
     blocked: `Google stopped the sign-in to ${site}: ${BLOCK_WORDS[extra.which] ?? "it blocked it"}. That's Google's call, not something you did. I stopped and won't retry.`,
     wrong_password: `I couldn't sign you in to ${site}: Google said the saved Google password is wrong. I've stopped and won't use it again until you save it again.`,
@@ -268,27 +274,37 @@ export async function signInWithGoogle(conversationId, site, {
   let session = null, handedOff = false, typed = false, breached = false;
   const onGoogle = (context) => { breached = true; unpinSite(c); void signOutOfGoogle(context ?? session?.context); try { recordLoginEvent(c, { site: host, event: "signin", outcome: "google_property", purpose: why }); } catch { /* best effort */ } };
 
+  const walled = () => { try { recordFinding({ site: host, label: host, signin_url: `https://${host}/` }, { kind: "walled", why: "challenge before the sign-in page (Google route)" }); } catch { /* best effort */ } };
   const end = (result, extra = {}) => {
     if (result === "signed_in") setState(c, g.id, { state: "working", failCount: 0, clearNextTry: true });
     else if (result === "wrong_password") setState(c, g.id, { state: "wrong_password", bumpFail: true });
     else if (result === "blocked") setState(c, g.id, { state: "refused" });
     else if (typed) setState(c, g.id, { nextTryAt: now() + RETRY_PAUSE_MS });
     if (result !== "signed_in") unpinSite(c);
-    const outcome = result === "signed_in" ? "signed_in" : result === "blocked" ? "blocked_by_site" : result === "wrong_code" ? "wrong_code" : result === "code_not_found" ? "code_not_found" : "failed";
+    const outcome = result === "signed_in" ? "signed_in" : result === "blocked" || result === "site_walled" ? "blocked_by_site" : result === "wrong_code" ? "wrong_code" : result === "code_not_found" ? "code_not_found" : "failed";
     logAttempt({ signin_url: `https://${host}/` }, { route: "continue_with_google", outcome, startedAt, detail: outcome === "failed" ? result : (extra.which ?? "") });
     if (result !== "signed_in") logDiag({ signin_url: `https://${host}/` }, { ...diag, result, msgClass: extra.which ? "other" : "none", msg: extra.which ?? "" });
-    recordLoginEvent(c, { site: host, event: "signin", outcome: result === "blocked" ? "blocked" : result, purpose: why });
+    recordLoginEvent(c, { site: host, event: "signin", outcome: result === "blocked" || result === "site_walled" ? "blocked" : result === "off_site" ? "origin_mismatch" : result, purpose: why });
     return say(result, host, extra);
   };
 
   try {
     unpinSite(c);
     await closeErrandBrowser(c);
-    // The site's own sign-in page, found as the save flow finds one (never a link from a page or an email).
+    // The site's own sign-in page, found as the save flow finds one (never a link from a page or an email):
+    // its address is the pin (origin + path). It is REACHED the way the password route reaches its pinned
+    // page (src/filler.js reachPinned, 2026-11-13): a page on a host of its own (identity.doordash.com) from
+    // the site's home page through its own Sign In link first, never loaded bare first (a bare identity page
+    // is walled and spoils the visit); counted only on the exact pinned origin + path.
     let at = null;
     try { at = await locate({ site: base, label: host, signin_url: `https://${host}/`, generic: true }); } catch { at = null; }
-    const url = at?.url ? String(at.url) : `https://${host}/`;
-    if (!/^https:/.test(url) || registrableOf(hostOf(url)) !== base) return end("not_signin_page");
+    let pin = null;
+    if (at?.found && at?.url) {
+      let u = null;
+      try { u = new URL(String(at.url)); } catch { u = null; }
+      if (!u || u.protocol !== "https:" || registrableOf(u.hostname.toLowerCase()) !== base) return end("not_signin_page");
+      if (u.pathname !== "/") pin = { site: host, signin_origin: u.origin, signin_path: u.pathname };
+    }
 
     session = await launch({ conversationId: c });
     await guardContext(session.context, { conversationId: c });
@@ -296,12 +312,33 @@ export async function signInWithGoogle(conversationId, site, {
     await signOutOfGoogle(session.context);
     const page = session.context.pages()[0] ?? await session.context.newPage();
     page.setDefaultTimeout(20_000);
-    pinSite(c, base, { secure: true });
     watchGoogle(c, onGoogle);
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-    if (registrableOf(hostOf(page.url())) !== base) return end("origin_mismatch");
+    if (pin) {
+      const got = await reachPinned(page, pin, { conversationId: c, need: "page" });
+      if (breached) return end("google_property");
+      if (got.verdict === "wall") { walled(); return end("site_walled"); }
+      if (got.verdict === "origin_mismatch") return end("off_site");
+      if (got.verdict !== "ok") return end("not_signin_page");
+    } else {
+      // No sign-in page known: the site's home page, then its own Sign In link; the page it lands on
+      // under the site's own domain is where its Google button is looked for. Nothing is typed there.
+      pinSite(c, base, { secure: true });
+      const w = await frontDoorOf(page, host);
+      if (breached) return end("google_property");
+      if (w.how === "walled") { walled(); return end("site_walled"); }
+      if (w.how === "not_loaded") return end("not_signin_page");
+    }
+    // From here the browser is held to the site (its domain, https) until the one Google exception below.
+    pinSite(c, base, { secure: true });
+    if (!/^https:/.test(page.url()) || registrableOf(hostOf(page.url())) !== base) return end("off_site");
     await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
-    const button = await googleButton(page);
+    // A sign-in page drawn by its own script shows its buttons late: looked for, bounded, never pressed until found.
+    let button = null;
+    for (const until = Date.now() + BUTTON_WAIT_MS; !button && Date.now() < until && !breached;) {
+      button = await googleButton(page);
+      if (!button) await page.waitForTimeout(300).catch(() => {});
+    }
+    if (breached) return end("google_property");
     if (!button) return end("no_google_button");
 
     // The one narrow exception, armed for this press only.
