@@ -174,7 +174,7 @@ const TEXT_RE = /^[^\u0000-\u001f\u007f]{1,80}$/;
 const CRED_RE = /^[^\u0000-\u001f\u007f\s]{1,1400}$/; // a passkey credential id (base64url, up to 1023 bytes)
 const STOPPED = new Set(["refused", "paused"]);
 
-// "o…@gmail.com" / "o…7": built from the bytes, so the whole username never becomes a JS string.
+// "a…@example.com" / "a…7": built from the bytes, so the whole username never becomes a JS string.
 function charAt(buf, start) {
   const b = buf[start], n = b < 0x80 ? 1 : (b & 0xe0) === 0xc0 ? 2 : (b & 0xf0) === 0xe0 ? 3 : (b & 0xf8) === 0xf0 ? 4 : 1;
   return buf.subarray(start, start + n).toString("utf8");
