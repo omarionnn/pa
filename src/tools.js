@@ -83,6 +83,7 @@ import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool } from "./plaid.js";
+import { offerSaveLink, forgetSite, savedLoginsAllowedFor as saveLinkAllowedFor, OFFER_SENTENCE } from "./loginintake.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords, ACCOUNT_CANCEL_GATE } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
@@ -409,6 +410,28 @@ const BUILDER_INSTRUCTIONS = new Set(["remote_start", "remote_say", "remote_decl
  * no model anywhere being tempted by a tool it cannot call, and an install with the switch off looks
  * exactly like an install built before any of this was written.
  */
+// Saved logins (vault PR 5): offered only where the vault is on for this person (src/loginintake.js).
+const SAVED_LOGIN_TOOLS = new Set(["saved_login_offer", "saved_login_forget"]);
+const SAVED_LOGIN_TOOL_DEFS = [{
+  name: "saved_login_offer",
+  description: "Let them save a site's login once, on Reason's own page, so you can sign in for jobs they ask for. Call it when a job they just asked for needs them signed in to a password site and nothing else connects it. "
+    + "Code checks the site first (banks, email, payment apps and the like are refused, with words to say) and opens the site's sign-in page itself; you pass only the site's domain. "
+    + "Never ask for a password, username or code in the chat, and never repeat one they sent. On ok, send say_exactly as it is.",
+  input_schema: { type: "object", properties: { site: { type: "string", description: "The site's domain, e.g. xfinity.com" } }, required: ["site"] },
+}, {
+  name: "saved_login_forget",
+  description: "Delete their saved login for a site when they ask (\"forget my xfinity login\"). No Face ID needed. It is gone at once; say so in one line.",
+  input_schema: { type: "object", properties: { site: { type: "string", description: "The site's domain" } }, required: ["site"] },
+}];
+const SAVE_LINK_NO = {
+  not_available: "Saving logins isn't on for them. Say you can't sign in there for them yet, in one line.",
+  not_asked: "A save link is only sent when they ask, in their own message. Send nothing about saving a login now.",
+  bad_site: "That isn't a site's domain. Ask which site, in one line.",
+  walled: "That site blocks Reason's browser right now, so no link was made. Say so in one line.",
+  off_site: "That site's sign-in page is on another company's domain, so no link was made. Say you can't save a login for it yet, in one line.",
+  not_reached: "Reason's browser couldn't reach that site's sign-in page just now, so no link was made. Say so in one line and offer to try again later.",
+};
+
 export function toolsFor(conversationId) {
   const remoteOk = remoteOpen(conversationId).ok;
   const isMaster = accounts.ownerOf(conversationId).isOperator;
@@ -432,6 +455,7 @@ export function toolsFor(conversationId) {
     && socialToolVisible(t.name, conversationId)
     && foodToolVisible(t.name, conversationId)
     && plaidToolVisible(t.name, conversationId)
+    && (!SAVED_LOGIN_TOOLS.has(t.name) || saveLinkAllowedFor(conversationId))
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
     && cueToolVisible(t.name, conversationId)
@@ -4557,6 +4581,7 @@ export const tools = [
   ...ACCOUNT_JOB_TOOL_DEFS,
   ...FOOD_TOOL_DEFS,
   ...PLAID_TOOL_DEFS,
+  ...SAVED_LOGIN_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
   // Thinking a step ahead when a trip, a move, a birthday comes up (src/cues.js), behind REASON_CUES.
   ...CUE_TOOL_DEFS,
@@ -7188,6 +7213,8 @@ const S = {
   ...ACCOUNT_JOB_SCHEMAS,
   ...FOOD_SCHEMAS,
   ...PLAID_SCHEMAS,
+  saved_login_offer: z.object({ site: z.string().min(3).max(253) }),
+  saved_login_forget: z.object({ site: z.string().min(3).max(253) }),
   ...TODO_SCHEMAS,
   ...CUE_SCHEMAS,
   invites_list: z.object({}),
@@ -12476,6 +12503,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- their bank, read-only (src/plaid.js, REASON_PLAID) ----------
     case "bank":
       return await runPlaidTool(name, input, { conversationId: c });
+
+    // ---------- saved logins: the save link (src/loginintake.js, REASON_SAVED_LOGINS) ----------
+    // Code decides whether a link may exist and pins the sign-in page from its own visit; the result is
+    // one fixed sentence and the link, never anything typed (hard rule 2). Their own last words are
+    // quoted on the page, so a page that did not come from their thread can't show them.
+    case "saved_login_offer": {
+      if (!saveLinkAllowedFor(c)) return { ok: false, error: "Not available." };
+      // The live ask (review 2026-11-13): a link is offered only on a turn the person started with their
+      // own message. An email, a page, a timer or the nightly review never makes Reason text a save link
+      // (a lookalike domain sent with Reason's own words is the phishing this page must never be).
+      if ((ctx.kind ?? "event") !== "user") return { ok: false, error: "not_asked", note: SAVE_LINK_NO.not_asked };
+      const asked = askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? "";
+      const out = await offerSaveLink(c, input.site, asked, { locate: ctx.locateSigninPage ?? null });
+      if (out.ok) return { ok: true, say_exactly: `${OFFER_SENTENCE}\n${out.link}`, note: "Send say_exactly as it is: the sentence, then the link on its own line. Never ask them to type a password in the chat." };
+      if (out.say) return { ok: false, refused: true, say_exactly: out.say };
+      return { ok: false, error: out.error, note: SAVE_LINK_NO[out.error] ?? SAVE_LINK_NO.not_reached };
+    }
+    case "saved_login_forget": {
+      const n = forgetSite(c, input.site, { purpose: "they asked to forget it" });
+      return n ? { ok: true, removed: n, say_exactly: `Done. I deleted your saved login for ${String(input.site).toLowerCase().replace(/^https?:\/\//, "").split("/")[0]}.` }
+        : { ok: true, removed: 0, note: "No saved login for that site. Say so in one line." };
+    }
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
