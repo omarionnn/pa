@@ -157,8 +157,9 @@ const notify = async (c, text) => { try { if (sayFn) await sayFn(c, text); } cat
 const rouse = async (c, text, key) => { try { if (wakeFn) await wakeFn(c, text, { key }); return true; } catch { return false; } };
 let mailCode = codeFromGmail;
 let mailLook = null;
+let mailWhich = null;
 /** Tests hand in the mailbox: `code(conversationId, entry, opts)` like codeFromGmail, `look(conversationId, { domains, since })` → { ok, connected, hits }. */
-export function _setMail({ code, look } = {}) { mailCode = code ?? codeFromGmail; mailLook = look ?? null; }
+export function _setMail({ code, look, which } = {}) { mailCode = code ?? codeFromGmail; mailLook = look ?? null; mailWhich = which ?? null; }
 
 // ---------------------------------------------------------------- the site
 const hostOf = (s) => {
@@ -311,6 +312,31 @@ function knownEmail(conversationId) {
   } catch { return ""; }
 }
 const mailOn = (conversationId) => { try { return (db.listOauthTokens(conversationId, "google") ?? []).length > 0; } catch { return false; } };
+/** Which of their connected mailboxes holds mail from these senders: its address, or "" (one list call per mailbox, nothing opened). */
+async function gmailWhich(conversationId, domains) {
+  const google = await import("./google.js");
+  const tokens = await google.allAccessTokens(conversationId, { scope: google.TOOL_SCOPES.gmail_search });
+  if (!tokens.ok) return "";
+  for (const a of tokens.accounts ?? []) {
+    const list = await google.api(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q: `from:(${domains.join(" OR ")})`, maxResults: 1 } });
+    if (list.ok && (list.body?.messages ?? []).length && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(a.account ?? ""))) return String(a.account);
+  }
+  return "";
+}
+/**
+ * The email they are known by AT THIS SITE. Someone with several mailboxes connected is known to a site by
+ * the one its mail goes to (their receipt from it), not always by their default; one mailbox, or no such
+ * mail anywhere: the default.
+ */
+async function emailAt(job) {
+  const fallback = knownEmail(job.conversation_id);
+  try {
+    if ((db.listOauthTokens(job.conversation_id, "google") ?? []).length < 2) return fallback;
+    const which = mailWhich ?? (process.env.NODE_TEST_CONTEXT ? null : gmailWhich);
+    const domains = mailDomains(job);
+    return (which && domains.length ? await which(job.conversation_id, domains) : "") || fallback;
+  } catch { return fallback; }
+}
 
 // ---------------------------------------------------------------- words: every ending
 const dollars = (a) => `$${a}`;
@@ -702,7 +728,7 @@ async function onQuestion(job, run, rq, pub, kit) {
   if (kind === "secret") return await noRoute("it asked for a password in a way I won't pass on");
 
   const fields = pub.fields ?? [];
-  const email = knownEmail(run.conversation_id);
+  const email = fields.some(isIdentity) ? await emailAt(j) : "";
   const answers = {};
   for (const f of fields.filter(isIdentity)) if (auto(f) !== "tel" && !/\b(phone|mobile)\b/.test(label(f)) && email) answers[f.key] = email;
   const post = (a) => kit.sendPart(run, { type: "input_response", requestId: rq.requestId, action: "submit", response: { kind: "form", answers: a } });

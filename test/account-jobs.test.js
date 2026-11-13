@@ -1115,3 +1115,57 @@ test("the one sign-in page a job texts says what it is for, in true words: no ch
   assert.match(store, /Then I can check out there with your card\./);
   assert.match(store, /account settings/);
 });
+
+test("the real run (recorded 2026-11-13, scrubbed): what this code sends is what Crossmint accepted, and its real first question is taken as 'who are they'", async () => {
+  const fx = JSON.parse(readFileSync(new URL("./fixtures/crossmint-account-jobs/cancel-first-question.json", import.meta.url), "utf8"));
+  assert.ok(!/@|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/.test(JSON.stringify(fx)), "the fixture holds nothing personal and no ids");
+  // What the real API took (202, queued): the same body this code builds today, word for word.
+  say("cancel my Cardboard Starter subscription");
+  const out = await call("account_cancel", { site: fx.site, plan: "Cardboard Starter", name: "Link" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  const sent = calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts").body;
+  assert.equal(fx.create.status, 202);
+  assert.equal(fx.create.response_status, "queued");
+  assert.deepEqual({ ...sent, browser: { profileId: "<uuid>" } }, fx.create.request, "the start page, the task and the cap");
+  assert.equal(fx.create.request.constraints.maxCost.amount, jobs.CANCEL_CAP, "the real API took the smallest cap");
+  // Its real first question, as Crossmint sent it (the site's sign-in page, reached in seconds).
+  const real = fx.run_snapshots.find((s) => s.status === "awaiting_input");
+  assert.deepEqual(Object.keys(real.requiredAction).sort(), ["messageId", "request", "requestId", "type"]);
+  assert.deepEqual(real.requiredAction.request.interaction.fields.map((f) => [f.key, f.handling, f.required, f.input.autoComplete]), [["email", "standard", false, "email"]]);
+  const asked = () => { runs[out.run_id] = { status: real.status, revision: real.revision, requiredAction: { ...real.requiredAction, requestId: "req_real", request: { ...real.requiredAction.request, expiresAt: soon() } } }; };
+  asked();
+  await shop.step(out.run_id);
+  let job = jobs.jobRow(OMARI, out.job_id);
+  assert.equal(job.ask_kind, "identity");
+  assert.equal(job.state, "needs_answer", "no mail connected: the model is asked who they are, never for a password");
+  assert.match(woke[0].t, /Link asks who they are: "Link isn't signed in yet/);
+  // The real ending after Reason's decline and cancel.
+  const over = fx.run_snapshots.find((s) => s.status === "cancelled");
+  assert.deepEqual(over.result, { outcome: "cancelled", summary: "The checkout was cancelled." });
+  assert.deepEqual(fx.messages_sent, [{ status: 202, part: { type: "input_response", action: "decline" } }]);
+  await call("account_job_stop", { job_id: out.job_id });
+  end(out.run_id, { status: over.status, result: over.result });
+  await shop.step(out.run_id);
+  job = jobs.jobRow(OMARI, out.job_id);
+  assert.equal(job.state, "not_done");
+  assert.deepEqual(Object.keys(lines[0]).sort(), [...fx.what_reason_did.attempt_line_keys].sort(), "the attempt line has the same fields the real one had");
+});
+
+test("several mailboxes connected: the site is told the address its own mail goes to, not just their default", async () => {
+  googleOn();
+  db.saveOauthTokens(OMARI, "google", { accessToken: "t2", refreshToken: "r2", scope: "https://www.googleapis.com/auth/gmail.modify", accountLabel: "omari.work@example.com" });
+  let asked = null;
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), code: async () => ({ connected: true, found: false }), which: async (c, domains) => { asked = { c, domains }; return "omari.work@example.com"; } });
+  say("cancel my Cardboard Starter subscription");
+  const out = await call("account_cancel", { site: "app.link.com", plan: "Cardboard Starter", name: "Cardboard", notice_from: "notifications@link.com" });
+  ask(out.run_id, "req_who", "What email address should I use to sign in to your Link account?", [{ ...EMAIL, required: false }]);
+  await shop.step(out.run_id);
+  assert.deepEqual(asked, { c: OMARI, domains: ["link.com"] }, "asked of their own mailboxes only, about this site's senders only");
+  assert.deepEqual(posted().at(-1), { type: "input_response", requestId: "req_who", action: "submit", response: { kind: "form", answers: { email: "omari.work@example.com" } } });
+  assert.equal(woke.length, 0);
+  // No such mail in any mailbox: their default, as before.
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), code: async () => ({ connected: true, found: false }), which: async () => "" });
+  ask(out.run_id, "req_who2", "What email address should I use to sign in to your Link account?", [{ ...EMAIL, required: false }]);
+  await shop.step(out.run_id);
+  assert.match(posted().at(-1).response.answers.email, /^omari(\.work)?@example\.com$/);
+});
