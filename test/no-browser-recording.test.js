@@ -17,7 +17,7 @@ const files = [];
   }
 })(SRC);
 
-const LAUNCH = /\b(?:launch|launchPersistentContext|newContext|connectOverCDP|launchServer)\s*\(/;
+const LAUNCH = /\b(?:launch|launchProfile|launchPersistentContext|newContext|connectOverCDP|launchServer)\s*\(/;
 const RECORDING = /\brecordVideo\b|\brecordHar\b|videosPath|videoSize|tracesDir|routeFromHAR|\btracing\s*\.\s*start(?:Chunk)?\s*\(|--enable-logging|--log-net-log|--remote-debugging-port/;
 
 test("no source file records video, HAR or a trace", () => {

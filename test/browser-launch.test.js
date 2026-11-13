@@ -131,18 +131,20 @@ test("owner: every launch of the operator's profile has the same window, languag
 test("every launch of a saved profile goes through launchOptions", () => {
   // The launch sites, by file: the errand browser, the phone link and emailed-code sign-in, and the
   // operator's window, check and forget. A new launch that skipped the setting would fail here.
-  const want = { "src/browser.js": 1, "src/signin-remote.js": 1, "src/signin-cli.js": 3 };
+  // The vault filler too. Each goes through launchProfile (src/browser.js), the one place a profile
+  // is launched: today's directory with launchOptions, or the real browser's own directory with
+  // realLaunchOptions, which is launchOptions with the real build in a window.
+  const want = { "src/browser.js": 1, "src/signin-remote.js": 1, "src/signin-cli.js": 3, "src/filler.js": 1 };
   for (const [file, n] of Object.entries(want)) {
     const src = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
-    const calls = [...src.matchAll(/launchPersistentContext\(([^,]+),\s*([^\n]*)/g)];
+    const calls = [...src.matchAll(/await launchProfile\(\w+, conversationId, /g)];
     assert.equal(calls.length, n, `${file}: ${calls.length} launches`);
-    for (const m of calls) {
-      const second = m[2].trim();
-      // signin-remote names its options once, built by launchOptions just above the call.
-      assert.ok(second.startsWith("launchOptions(") || (file === "src/signin-remote.js" && second.startsWith("options)")), `${file}: ${second.slice(0, 60)}`);
-    }
+    if (file !== "src/browser.js") assert.equal([...src.matchAll(/launchPersistentContext\(/g)].length, 0, `${file} launches a profile itself`);
   }
-  assert.match(readFileSync(new URL("../src/signin-remote.js", import.meta.url), "utf8"), /const options = launchOptions\(conversationId, \{/);
+  const b = readFileSync(new URL("../src/browser.js", import.meta.url), "utf8");
+  const direct = [...b.matchAll(/launcher\.launchPersistentContext\(([^,]+),\s*([^\n]*)/g)].map((m) => [m[1].trim(), m[2].trim()]);
+  assert.deepEqual(direct.map(([d, o]) => [d.split("(")[0], o.split("(")[0]]), [["realProfileDirFor", "realLaunchOptions"], ["profileDirFor", "launchOptions"]]);
+  assert.match(b, /const opts = \{ \.\.\.launchOptions\(conversationId, today\), headless: false, channel: "chrome" \};/);
 });
 
 test("the lock: one holder at a time, only the holder gives it back, a throw inside still gives it back", async () => {
