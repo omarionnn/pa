@@ -2595,7 +2595,10 @@ export function withinBudget(promise, budgetMs, { name = "that tool" } = {}) {
       slow: true,
       say: `${name} is still running after ${Math.round(budgetMs / 1000)} seconds and a phone call cannot wait on it.`
         + ` Do not call it again on this call. Tell them in one sentence that you will text them the result, start the work`
-        + ` as something that outlives the call — task_start with what they asked for — and carry on talking.`,
+        + ` as something that outlives the call — task_start with what they asked for — and carry on talking.`
+        // Call 113 (2026-11-13): directions timed out and the turn said "about a fifteen minute walk, seven
+        // tenths of a mile" from its own estimate; the route came back 5 minutes, 360 m.
+        + ` Do not guess or estimate the answer yourself meanwhile: no rough time, distance, price or count of your own.`,
     }), budgetMs);
     timer.unref?.();
   });

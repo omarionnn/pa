@@ -719,3 +719,72 @@ test("setup script --update: the plan by default; with --yes, one sparse PATCH o
   assert.equal(await setup.main(["--update", "agent_x"], { log: (l) => said.push(l), call, key: "ck-test" }), 1, "nothing named, nothing done");
   assert.ok(!said.join("\n").includes("ck-test"));
 });
+
+// ---------- honesty: done is Reason's word (call 113, 2026-11-13) ----------
+
+test("call 113: the agent's own \"Yeah, it's done.\" / \"Yeah, submitted.\" with no ask_reason behind them is caught, logged and written into the record", async () => {
+  const s = slowRelay(100, { text: "Here's the Genius Bar page." });
+  s.agent.emit({ type: "turn_ended", turn: 2, role: "user", text: "Have you finished filling the form?" });
+  s.agent.emit({ type: "turn_ended", turn: 3, role: "assistant", text: "Yeah, it's done." });
+  s.agent.emit({ type: "turn_ended", turn: 4, role: "user", text: "and submitted?" });
+  s.agent.emit({ type: "turn_ended", turn: 5, role: "assistant", text: "Yeah, submitted." });
+  const flagged = s.lines.filter(l => l.cartesia_unbacked_claim);
+  assert.deepEqual(flagged.map(l => l.turn), [3, 5]);
+  assert.equal(s.call.turns.filter(t => t.text === cartesia.UNBACKED_NOTE).length, 2, "the record says it was not confirmed");
+  assert.match(cartesia.UNBACKED_NOTE, /NOT done/);
+  // Reason's next turn reads it.
+  assert.ok(s.call.messages("proof?").some(m => m.content.includes("without Reason confirming it")));
+  stop(s.call);
+});
+
+test("a done-claim Reason's answer made in the last minute is backed; a negation or a plain line is not a claim", async () => {
+  const s = slowRelay(100, { text: "Booked: Genius Bar at West 14th Street, 8:10 PM tonight. Confirmation R123." });
+  s.ask("tc_1", "book the Genius Bar for 8:10");
+  await s.timers.advance(200);
+  s.agent.emit({ type: "turn_ended", turn: 3, role: "assistant", text: "You're booked for eight ten tonight." });
+  assert.ok(!s.lines.some(l => l.cartesia_unbacked_claim), "Reason said it, so the agent may");
+  await s.timers.advance(cartesia.CLAIM_BACKED_MS + 1_000);
+  s.agent.emit({ type: "turn_ended", turn: 5, role: "assistant", text: "Nothing's booked yet. Yeah, I know you're at work until eight." });
+  assert.ok(!s.lines.some(l => l.cartesia_unbacked_claim), "a negation and a plain line claim nothing");
+  s.agent.emit({ type: "turn_ended", turn: 7, role: "assistant", text: "Yeah, it's done." });
+  assert.equal(s.lines.filter(l => l.cartesia_unbacked_claim).length, 1, "a minute on, the old answer no longer backs a new claim");
+  stop(s.call);
+});
+
+test("Reason with nothing to add: the agent is told to add no fact and claim nothing done, never to reply on its own", async () => {
+  const s = slowRelay(100, { text: "", skip: true });
+  s.ask("tc_1", "book it for 8:10");
+  await s.timers.advance(200);
+  const [back] = s.results();
+  assert.equal(back.result, cartesia.NOTHING_TO_ADD);
+  assert.match(back.result, /no fact, number or time/);
+  assert.match(back.result, /never say anything is done, booked, sent or submitted/);
+  assert.ok(!/Reply yourself/.test(back.result));
+  stop(s.call);
+});
+
+test("the honesty lines are on the agent, after the conversation lines, and name the action line", async () => {
+  const lines = cartesia.cartesiaCallLines({ tags: false });
+  for (const l of cartesia.HONESTY_LINES) assert.ok(lines.includes(l));
+  assert.ok(lines.indexOf(cartesia.HONESTY_LINES[0]) > lines.indexOf(cartesia.MOMENT_LINES.at(-1)), "after \"answer from this conversation\"");
+  assert.match(lines, /Only Reason's answer \(ask_reason\) in this call can tell you something has been done/);
+  assert.match(lines, /If they ask whether something is done, booked, sent, submitted or finished, call ask_reason/);
+  assert.match(lines, /never that it is happening or done \("Booking it\."/);
+  assert.match(lines, /picked up by text after the call, say exactly that/);
+  for (const bad of ["Omari", "Genius", "Apple"]) assert.ok(!lines.includes(bad), `no ${bad}`);
+  const { INSTRUCTIONS } = await import("../scripts/cartesia-agent-setup.mjs");
+  assert.match(INSTRUCTIONS, /Before an action, the line says you're asking Reason/);
+  assert.match(INSTRUCTIONS, /Only an ask_reason answer from this call can say something is done/);
+});
+
+test("a slow tool on a call: the turn is told not to estimate the answer itself (call 113's guessed walk)", async () => {
+  const { withinBudget } = await import("../src/calls/voice.js");
+  const out = await withinBudget(new Promise(() => {}), 5, { name: "directions" });
+  assert.equal(out.slow, true);
+  assert.match(out.say, /Do not guess or estimate the answer yourself meanwhile: no rough time, distance, price or count/);
+});
+
+test("saysDone: the forms a voice uses, and not their negations", () => {
+  for (const yes of ["Yeah, it's done.", "Yeah, submitted.", "Booked: 8:10 tonight.", "Done.", "I've sent it.", "You're all set."]) assert.ok(cartesia.saysDone(yes), yes);
+  for (const no of ["Nothing's booked yet.", "It's not done yet.", "I haven't sent it.", "Booking eight ten PM.", "Asking Reason to book that.", "Yeah, I know you're at work until eight.", "", "Done what?"]) assert.ok(!cartesia.saysDone(no), no);
+});

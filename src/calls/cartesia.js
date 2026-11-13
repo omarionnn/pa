@@ -18,7 +18,7 @@ import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
 import * as ambience from "./ambience.js";
 import { lookupMusicFor, MUSIC_DELAY_MS } from "./lookupmusic.js";
-import { CallTape, hasSpeech, voiceInstructionsFor } from "./gptlive.js";
+import { CallTape, hasSpeech, voiceInstructionsFor, claimsDone } from "./gptlive.js";
 import { queueMidCall } from "./voice.js";
 import { openingLineFor } from "./inbound.js";
 import { todaySoFar } from "./brief.js";
@@ -70,6 +70,19 @@ export const MOMENT_LINES = [
   "Call ask_reason only for what needs their data or an action: their calendar, mail or messages, the weather, a booking, a reminder, or \"do this\". If they then ask you to do something about it, that is when it goes to ask_reason.",
 ];
 
+/**
+ * Done is Reason's word, never the agent's. Call 113 (2026-11-13): asked "Have you finished filling the
+ * form?" and "and submitted?", the agent answered "Yeah, it's done." and "Yeah, submitted." on its own,
+ * with no ask_reason behind either, about a Genius Bar booking nothing had made. These win over the
+ * conversation lines above ("answer from this conversation") and over the agent's own pre-tool line.
+ */
+export const HONESTY_LINES = [
+  "Only Reason's answer (ask_reason) in this call can tell you something has been done. Never say anything is done, booked, sent, submitted, filled in, scheduled, ordered or confirmed unless Reason's answer in this call said exactly that. This wins over every other line.",
+  "If they ask whether something is done, booked, sent, submitted or finished, call ask_reason with that question; never answer it yourself, even if it was asked for earlier in this call.",
+  "Before an action, your short line says you are asking Reason (\"Asking Reason to book that.\"), never that it is happening or done (\"Booking it.\", \"On it, done.\").",
+  "If Reason's answer says it is not done yet, needs something from them, or will be picked up by text after the call, say exactly that. Never state a price, time, distance or opening hour that Reason's answers in this call did not give you.",
+];
+
 /** Expression: Sonic reads the feeling from the words, so the words carry it. */
 export const EXPRESSION_LINES = [
   "Your voice takes its feeling from your words, so write the way you'd say it: warm and easy on personal things, light on a joke, calmer and slower on something heavy (short sentences, a comma for a beat). Keep it subtle: no exclamation marks on ordinary lines, never gushing.",
@@ -81,7 +94,7 @@ export const EMOTION_TAG_LINE = "You may start a reply with one tag that sets it
 
 /** The lines added to `reason_call` on this line: no names, nothing about anyone. */
 export function cartesiaCallLines({ tags = config.cartesiaEmotionTags } = {}) {
-  return [...MANNER_LINES, ...MOMENT_LINES, ...EXPRESSION_LINES, ...(tags ? [EMOTION_TAG_LINE] : [])].join("\n");
+  return [...MANNER_LINES, ...MOMENT_LINES, ...HONESTY_LINES, ...EXPRESSION_LINES, ...(tags ? [EMOTION_TAG_LINE] : [])].join("\n");
 }
 
 // ---------- a slow ask_reason ----------
@@ -98,6 +111,22 @@ export const TEXT_MS = 25_000;
 export const TEXT_RESULT = "Reason is taking too long on this one: say in one short sentence that it's taking a while and Reason will text them the answer, then carry on the conversation (don't say it's still loading, don't ask if they're still there, and don't call ask_reason for it again).";
 /** How a late answer's text opens, so it reads as part of the call. */
 export const lateText = (text) => `From our call: ${text}`;
+/**
+ * Reason's turn had no words for the call (a skip, or nothing said). Call 113: the old "Reply yourself in a
+ * few words" was the agent's licence to answer a booking on its own three times running.
+ */
+export const NOTHING_TO_ADD = "Reason has nothing to add yet. Reply in a few words with no fact, number or time of your own, and never say anything is done, booked, sent or submitted.";
+/** How long a done-claim in Reason's answer backs the agent saying it (the GPT-Live guard's window). */
+export const CLAIM_BACKED_MS = 60_000;
+/** In the call's record after a done-claim nothing backed: the brain's next turn and the after-call text see it. */
+export const UNBACKED_NOTE = "(Said on the call without Reason confirming it: as far as Reason knows, it is NOT done.)";
+// Bare done-words the way a voice says them: "Yeah, submitted." "Booked: 8:10 tonight." "Done."
+const BARE_DONE = /(?:^|[.!?…]\s+)(?:(?:yeah|yes|yep|yup)[,.!]?\s+)?(?:all\s+)?(?:done|booked|sent|texted|submitted|scheduled|confirmed|ordered|paid|cancel+ed|reserved)\s*(?:[:.!,]|$)/i;
+/** Does this say something has been done? GPT-Live's `claimsDone`, plus the bare forms. Exported for tests. */
+export function saysDone(text) {
+  const t = String(text ?? "").trim();
+  return !!t && (claimsDone(t) || BARE_DONE.test(t));
+}
 
 // ---------- falling back, by reason ----------
 
@@ -268,7 +297,9 @@ export class CartesiaAgentCall {
     this.endWhy = "";
     this.startedAt = now();
     // The numbers the first call is for (section 5): kept per reply, logged as they happen and at the end.
-    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null };
+    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0 };
+    /** When Reason's latest answer said something was done (`claimsDone`), for `turnEnded`'s check. */
+    this.claimedAt = -Infinity;
     this.theirTurnEndAt = null;
     this.askAnsweredAt = null;
     this.replyKind = "plain";
@@ -438,6 +469,15 @@ export class CartesiaAgentCall {
     const text = String(e.text ?? "").replace(/\s+/g, " ").trim();
     const who = e.role === "user" ? "them" : "reason";
     if (text) this.turns.push({ who, text, at: this.now(), ...(e.interrupted ? { interrupted: true } : {}) });
+    // The honesty guard (GPT-Live's `claimsDone`, on this line too): the agent said something is done and
+    // no answer of Reason's in the last minute said so. The words are already spoken (their socket takes
+    // no correction mid-call), so it is logged, counted and written into the record, where Reason's next
+    // turn and the after-call text read it.
+    if (who === "reason" && text && saysDone(text) && this.now() - this.claimedAt > CLAIM_BACKED_MS) {
+      this.m.unbacked += 1;
+      this.log({ cartesia_unbacked_claim: this.call.id, turn: Number(e.turn) || 0, chars: text.length });
+      this.turns.push({ who: "reason", text: UNBACKED_NOTE, at: this.now() });
+    }
     if (who === "them") {
       this.theirTurnEndAt = this.now();
       this.replyKind = "plain";
@@ -514,6 +554,7 @@ export class CartesiaAgentCall {
     this.m.asks.push(ask);
     this.log({ cartesia_ask_reason: this.call.id, ...ask });
     this.askAnsweredAt = answeredAt;
+    if (!reply?.skip && saysDone(reply?.text)) this.claimedAt = answeredAt;
     p.reply = reply;
     if (p.texting) this.textLate(p);
     return reply;
@@ -544,7 +585,7 @@ export class CartesiaAgentCall {
   /** What the agent is answered with for one reply of Reason's: `[result, isError]`. */
   spoken(reply) {
     if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and offer to try again.", true];
-    if (reply?.skip || !String(reply?.text ?? "").trim()) return ["Reason has nothing to add. Reply yourself in a few words.", false];
+    if (reply?.skip || !String(reply?.text ?? "").trim()) return [NOTHING_TO_ADD, false];
     if (reply?.endCall) this.endWhy = "goodbye";
     return [reply.text, false];
   }
@@ -638,7 +679,7 @@ export class CartesiaAgentCall {
       asks: this.m.asks.length, ask_answered_ms: med(this.m.asks.map(a => a.asked_to_answered_ms)),
       talked_over: this.m.overs.filter(o => o.playing).length, clears: this.m.overs.length,
       talked_over_ms: med(this.m.overs.filter(o => o.playing).map(o => o.sound_to_clear_ms)),
-      asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs,
+      asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs, unbacked_claims: this.m.unbacked,
     });
     // Their copy goes whatever the settle does; both are waited for, neither stops the other.
     const deleting = this.agentCallId ? this.deleteAndCheck().catch(() => null) : Promise.resolve(null);
