@@ -11,6 +11,7 @@
 // the choice handler that posts a pick back, and the copy button. It has to look decent on a
 // four-year-old phone on bad signal, and it has to read as a page with script turned off.
 import { stamp, config, normalizeNumber } from "../config.js";
+import { threadNumber } from "./backlink.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 import { wordmark, WORDMARK_CSS, homeLink, yourPagesHref } from "./wordmark.js";
@@ -1015,20 +1016,26 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
  * "" when there is no number to text, which is the honest answer: a button that opens Messages
  * with nobody in the To field is worse than the sentence it replaced.
  */
-/** The sms: link Back to Reason opens (Messages, the reply typed), or "" when Reason has no number to text from. */
-export function backToReasonHref(text = "done, keep going") {
-  const number = normalizeNumber(config.sendblueFrom || config.linqFrom);
-  return number ? `sms:${number}&body=${encodeURIComponent(text)}` : "";
+/**
+ * The sms: link Back to Messages opens, or "" when Reason has no number to text from. With a
+ * `conversationId`, the line that person's thread is on (src/pages/backlink.js threadNumber); without
+ * one, the first configured line. `text` "" when Reason already knows (it texts them by itself): the
+ * thread opens with nothing typed.
+ */
+export function backToReasonHref(text = "done, keep going", { conversationId = "" } = {}) {
+  const number = conversationId ? threadNumber(conversationId) : normalizeNumber(config.sendblueFrom || config.linqFrom);
+  if (!number) return "";
+  return text ? `sms:${number}&body=${encodeURIComponent(text)}` : `sms:${number}`;
 }
 
-export function backToReason({ text = "done, keep going", label = "Back to Reason" } = {}) {
-  const href = backToReasonHref(text);
+export function backToReason({ text = "done, keep going", label = "Back to Messages", conversationId = "" } = {}) {
+  const href = backToReasonHref(text, { conversationId });
   if (!href) return "";
   return `<p class="b2r" style="margin:1.5rem 0 .4rem"><a href="${esc(href)}" `
     + `style="display:block;box-sizing:border-box;width:100%;max-width:22rem;padding:.95rem 1.2rem;`
     + `font:inherit;font-weight:600;text-align:center;text-decoration:none;`
     + `border-radius:.6rem;background:${BRAND_PEN};color:#fff">${esc(label)}</a></p>`
-    + `<p class="b2r" style="margin:0;font-size:.85rem;opacity:.7">opens Messages with your reply typed — just hit send.</p>`;
+    + `<p class="b2r" style="margin:0;font-size:.85rem;opacity:.7">${text ? "opens Messages with your reply typed — just hit send." : "opens your thread with Reason in Messages."}</p>`;
 }
 
 /**

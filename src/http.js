@@ -89,7 +89,7 @@ import * as agentcard from "./agentcard.js";
 import * as parallel from "./parallel.js";
 import * as x from "./x.js";
 import { connectStartRequest, refuseForeignBrowser, START_PATH as CONNECT_START_PATH } from "./connectgate.js";
-import { renderNotice, renderConnected, dark, THEME, iconLinks } from "./pages/render.js";
+import { renderNotice, renderConnected, backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN, PAPER_GLOW, NIGHT_GLOW, GLOW_OFF, SHEET_BG } from "./pages/brand.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
@@ -896,8 +896,8 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(200, HTML());
         return res.end(brandedPage(url.pathname === "/pay/done" ? "You're all set" : "No charge",
           url.pathname === "/pay/done"
-            ? `<h1>You're all set.</h1><p>Thank you. Everything is back on.</p><p class="lead">Head back to Messages — Reason will text you there in a moment, and whatever you were in the middle of picks up right where it was.</p>`
-            : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>`));
+            ? `<h1>You're all set.</h1><p>Thank you. Everything is back on.</p><p class="lead">Head back to Messages — Reason will text you there in a moment, and whatever you were in the middle of picks up right where it was.</p>${backToReason({ text: "" })}`
+            : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>${backToReason({ text: "" })}`));
       }
 
       // ---------- Plaid pushing back: a bank was connected, transactions changed, a login expired (src/plaid.js) ----------
@@ -1474,13 +1474,15 @@ export async function bankDonePage(state, { log = () => {}, waitMs = 8000 } = {}
     } catch (e) { log({ plaid_done_page_failed: plaid.errorCode(e) }); }
     outcome = plaid.linkOutcome(state);
   }
+  // The way back (src/pages/render.js backToReason): Reason texts them by itself once the bank is
+  // through, so the thread opens with nothing typed; a closed link types the ask for a fresh one.
   if (outcome === "connected" || outcome === "reconnected") {
-    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Head back to Messages: Reason will text you there in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. You can ask Reason to disconnect it any time.</p>` };
+    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Reason will text you in Messages in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. You can ask Reason to disconnect it any time.</p>${backToReason({ text: "" })}` };
   }
   if (outcome === "open") {
-    return { title: "Almost there", body: `<h1>Not connected yet.</h1><p>If you finished signing in, give it a moment: Reason will text you when it's through. If you backed out, the link in your messages still works for a little while.</p>` };
+    return { title: "Almost there", body: `<h1>Not connected yet.</h1><p>If you finished signing in, give it a moment: Reason will text you when it's through. If you backed out, the link in your messages still works for a little while.</p>${backToReason({ text: "" })}` };
   }
-  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Ask Reason in Messages and it will send a fresh one.</p>` };
+  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Send the reply that's typed for you and Reason will text a fresh one.</p>${backToReason({ text: "send me a fresh bank link" })}` };
 }
 
 export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {
@@ -1755,9 +1757,12 @@ export async function googleCallbackRequest({ code, state, error = "", headers =
   const setupBack = websetup.googleCallbackDone(out);
   if (setupBack) return setupBack;
 
+  // Reason says so in the thread by itself, so Back to Messages then opens it with nothing typed.
+  let told = false;
   if (out.ok && runtime?.say) {
     try {
       runtime.say(out.conversationId, google.connectedLine(out));
+      told = true;
     } catch (e) {
       log({ google_connected_text_failed: out.conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
     }
@@ -1772,7 +1777,7 @@ export async function googleCallbackRequest({ code, state, error = "", headers =
       lines: out.ok
         ? [out.email ? `Reason can now work with ${out.email}.` : "Reason can now work with this account."]
         : [out.error],
-      back: { text: out.ok ? "connected google, keep going" : "google didn't connect" },
+      back: { text: told ? "" : out.ok ? "connected google, keep going" : "google didn't connect", conversationId: out.conversationId ?? "" },
     }),
   };
 }

@@ -274,7 +274,7 @@ test("the button opens Messages at Reason's number with the reply pre-filled", (
   const html = backToReason({ text: "connected spotify, keep going" });
   // iOS reads `sms:NUMBER&body=...` — an ampersand, not a question mark.
   assert.match(html, /href="sms:\+14155550199&amp;body=connected%20spotify%2C%20keep%20going"/);
-  assert.match(html, />Back to Reason</, "the label says where it goes");
+  assert.match(html, />Back to Messages</, "the label says where it goes");
   assert.match(html, /opens Messages with your reply typed — just hit send\./);
 });
 
@@ -341,7 +341,7 @@ test("every page at the end of a flow we sent them to has the way back", async (
     ["x failed", x.callbackPage({ ok: false, message: "No." }), "x%20didn't%20connect"],
   ];
   for (const [name, html, body] of pages) {
-    assert.match(html, />Back to Reason</, `${name} has the button`);
+    assert.match(html, />Back to Messages</, `${name} has the button`);
     assert.equal(href(html), N + body, `${name} names itself in the reply`);
     assert.doesNotMatch(html, /You can close this/, `${name} no longer dead-ends`);
   }
@@ -349,5 +349,13 @@ test("every page at the end of a flow we sent them to has the way back", async (
   // Google's callback is the one that also texts the thread; its page still ends with the button.
   const bad = await googleCallbackRequest({ code: "", state: "", error: "access_denied" });
   assert.equal(href(bad.body), `${N}google%20didn't%20connect`);
-  assert.match(bad.body, />Back to Reason</);
+  assert.match(bad.body, />Back to Messages</);
+});
+
+test("Back to Messages: the person's own line when the page knows whose it is, and nothing typed when Reason already knows", () => {
+  // Reason texts them by itself (a connection it announces): the thread opens with nothing typed.
+  const knows = backToReason({ text: "" });
+  assert.match(knows, /href="sms:\+14155550199"/);
+  assert.match(knows, /opens your thread with Reason in Messages\./);
+  assert.doesNotMatch(knows, /body=/);
 });

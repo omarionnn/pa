@@ -111,6 +111,24 @@ test("every Back to Messages link on the vault pages is a number and a fixed rep
   }
 });
 
+test("the other end-of-flow pages share the ending: purchase approval, bank done, the Google return", async () => {
+  const { renderApprove, renderApproveEnded } = await import("../src/pages/webapprove.js");
+  const v = { a: { conversation_id: TEXTER }, kind: "pay", state: "open", amount: "$12.00", store: "Stand-in Store", item: "A thing", expiresAt: Date.now() + 600_000 };
+  const { html } = renderApprove({ v, boot: { base: "/web/approve/x", options: { rpId: "localhost", allowCredentials: [] } } });
+  for (const step of ["paid", "declined", "unsure"]) {
+    const at = html.indexOf(`data-step="${step}"`);
+    assert.ok(at > 0, step);
+    const part = html.slice(at, html.indexOf("data-step=", at + 12) >>> 0);
+    assert.match(part, /href="sms:\+15555550100" data-sms/, `${step}: Reason texts how it went, so nothing is typed`);
+  }
+  const used = renderApproveEnded({ v: { ...v, state: "used" }, state: "used" }).html;
+  assert.match(used, /sms:\+15555550100/);
+  const { bankDonePage } = await import("../src/http.js");
+  const closed = await bankDonePage("no-such-state", { waitMs: 1 });
+  assert.match(closed.body, /href="sms:\+15555550100&amp;body=send%20me%20a%20fresh%20bank%20link"/);
+  assert.match(closed.body, />Back to Messages</);
+});
+
 // ---------------------------------------------------------------- the resumption gate, against the filler
 let launches = 0;
 const launch = async () => { launches++; throw Object.assign(new Error("stand-in browser"), { code: "stand_in" }); };

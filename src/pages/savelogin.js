@@ -174,7 +174,7 @@ export function renderSave({ v, nonce, boot = null, blocked = "", proved = false
 /** A used or expired link: plain words, nothing to type. 410 so a guess at an old link reads as gone. */
 export function renderEnded({ v, nonce }) {
   const used = v.state === "used";
-  const main = headline(used ? "This link has been used." : "This link ran out.", "Nothing to type here.")
+  const main = headline(used ? "This link has been used." : "This link ran out.", used ? "Nothing to type here." : "Nothing was saved.")
     + lede(used ? "Save links work once. If your login didn't save, ask me again and I'll send a fresh one." : "Save links last thirty minutes. Send the reply that's typed for you and I'll text a fresh one.")
     + backToMessages(v.conversationId, { reply: used ? "" : "fresh" }) + FOOT;
   return page("Reason — save a login", shell(frame({ main, margin: label("WHY") + para("A link that runs out can't be used by anyone who sees it later.") })), { nonce, status: 410 });
