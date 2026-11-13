@@ -5354,3 +5354,24 @@ refusals, the day's counts). Never run:
   their docs say an omitted field keeps its setting, not how nested objects merge).
 - Whether the agent's own `timezone` setting reaches the model; each call says the person's clock in
   `reason_call` either way (`clockLine`).
+
+### 2026-11-13: how a Cartesia call feels (call 113): guards, prompt and config; not run on a call
+
+Proved only with stand-in sockets (`test/call-cartesia-feel.test.js`). Nothing about when anyone speaks
+changed. Never run:
+- Whether Cartesia's inactivity check-in ("You still there?") is written by the agent's model, so that
+  `TURN_LINES` ("never after they asked you to wait", "at most twice") reach it, or is a fixed line. The
+  settings that certainly reach it are `CALL_FEEL` in scripts/cartesia-agent-setup.mjs
+  (`turn.inactivity_check_in_secs` 20, `skip_turn.wait_timeout_secs` -1), proposed and NOT applied to the
+  live agent; `cartesia_check_in` lines (with `after_wait_ask_ms`, `lookup_pending`, `after_skip_ms`) will
+  show what happens either way.
+- Whether `turn_ended.interrupted` and its `text` ("the text the agent actually spoke") are what call 113's
+  "Got" looked like on a real line. The re-offer reads them: an interrupted turn that spoke under 60% of
+  the words of Reason's last answer counts as not heard (`HEARD_SHARE`); a paraphrase that was mostly
+  heard can still read as unheard, and the cost of that is one short repeat.
+- Whether a deferral is always visible as a change of `calls.verify_deferred` during the ask: a second
+  deferral of the same words is not a change (`queueForAfter` keeps one copy), so no line is added for it.
+- Managed agents have no setting for interruption or end-of-turn sensitivity in their config (read
+  2026-11-13: only `initial_message_interruptions` and `speculative_generation`, which never speaks before
+  the turn ends). The five talk-overs in call 113 were their end-of-turn detection replying 0.5-0.9 s
+  after a pause; `skip_turn` on a filler or a wait ask is the only lever, and it is the agent's choice.
