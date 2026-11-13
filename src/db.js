@@ -2227,6 +2227,13 @@ addColumnIfMissing("calls", "turn_log", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_opener", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_about", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
+// What the Cartesia voice ran on a call, for the plan meter on /ops (src/planmeter.js): its seconds and
+// cents at the plan's rate, written when the Cartesia relay lets the call go — at its end, or when it
+// hands the call to GPT-Live (`cartesia_fell_back` 1), whose own cost then lands in cost_cents. Numbers
+// only. Null on every call the Cartesia voice never carried.
+addColumnIfMissing("calls", "cartesia_seconds", "INTEGER");
+addColumnIfMissing("calls", "cartesia_cents", "INTEGER");
+addColumnIfMissing("calls", "cartesia_fell_back", "INTEGER NOT NULL DEFAULT 0");
 export function setItemLabel(kind, conversationId, id, label, { blurb = null } = {}) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
@@ -5825,6 +5832,8 @@ export function updateCall(conversationId, id, fields) {
     "settle_started_at", "settled_at", "settle_resumes",
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
+    // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
+    "cartesia_seconds", "cartesia_cents", "cartesia_fell_back",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
     "turn_log",
   ];
