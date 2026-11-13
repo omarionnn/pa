@@ -1,11 +1,11 @@
 // Saved logins: the vault's safe box (design B2, B3, B10, B12; build brief docs/account-access-build/pr3.md).
 //
 // A file of its own, data/logins.db, beside reason.db and keys.db, so the copies of reason.db made for
-// proofs and debugging never carry a saved login, even sealed. Each login has its own AES-256 data key
-// from AWS KMS (src/vaultkms.js); only the KMS-wrapped form is stored. Each field is AES-256-GCM with a
+// proofs and debugging never carry a saved login, even sealed. Each login has its own AES-256 data key,
+// wrapped by the key service (src/vaultkms.js: Google Cloud KMS, or AWS KMS); only the wrapped form is stored. Each field is AES-256-GCM with a
 // fresh 12-byte nonce and associated data "sl1|<id>|<field>|<signin_origin>". The KMS encryption
-// context binds the key to the person (a random handle, never a number: CloudTrail shows the context
-// in plain text), the login id and the exact sign-in origin, so a row copied to someone else, an
+// context (Google: the additional authenticated data) binds the key to the person (a random handle, never
+// a number: the key service's audit log shows it in plain text), the login id and the exact sign-in origin, so a row copied to someone else, an
 // origin edited in the file, or a tab on any other origin fails to unwrap at KMS, not only here.
 //
 // Nothing here types, shows or returns a login. withLogin is the only way in, and only src/filler.js
@@ -41,7 +41,10 @@ export function savedLoginsAllowedFor(conversationId) {
 }
 
 let saidOff = false;
-/** REASON_VAULT_KMS_KEY set, AWS login set, no 127.x KMS host outside a test. Not ready: one log line. */
+/**
+ * A working key service (vaultkms.configured): Google's key file, or AWS's key and login, and no 127.x
+ * stand-in outside a test. No file master, no .env key, no fallback. Not ready: one log line.
+ */
 export function vaultReady() {
   if (vaultkms.configured()) return true;
   if (!saidOff && savedLoginsMode() !== "off") { saidOff = true; console.log("saved logins: off (no KMS key)"); }

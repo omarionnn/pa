@@ -72,7 +72,12 @@ const run = (over = {}) => probe.runSetups({
 test("the probe and the launch code import nothing that holds a login", () => {
   // The whole static import graph of the probe script, the probe and every launch of a profile.
   const start = ["scripts/probe-sites.js", "src/probesetups.js", "src/browser.js", "src/signin-remote.js", "src/signin-cli.js", "src/signin-window.js"];
-  const seen = new Set();
+  // The walk stops at the tool runner. src/tools.js is the whole app (it reaches src/data.js, whose export
+  // and delete take the vault's named exportFor / deleteAllFor / deleteEveryLogin), and what the app may
+  // reach of the vault is held by test/savedlogins.test.js rule 2: only src/savedlogins.js imports
+  // vaultkms.js, and only src/filler.js names withLogin or takes the whole of savedlogins.js.
+  const TOOLS = join(ROOT, "src/tools.js");
+  const seen = new Set(), stoppedAt = new Set();
   const queue = start.map((f) => join(ROOT, f));
   while (queue.length) {
     const file = queue.pop();
@@ -83,12 +88,14 @@ test("the probe and the launch code import nothing that holds a login", () => {
       const spec = m[1];
       if (!spec.startsWith(".")) continue;
       const target = resolve(dirname(file), spec);
+      if (target === TOOLS) { stoppedAt.add(file.slice(ROOT.length + 1)); continue; }
       if (existsSync(target)) queue.push(target);
     }
   }
   assert.ok(seen.size > 10, `read ${seen.size} files`);
-  const vault = [...seen].filter((f) => /vault/i.test(f.slice(ROOT.length)));
-  assert.deepEqual(vault, []);
+  assert.ok(!seen.has(TOOLS), "the walk stops at src/tools.js");
+  const vault = [...seen].filter((f) => /vault|savedlogins|filler/i.test(f.slice(ROOT.length)));
+  assert.deepEqual(vault, [], `reached from the launch code without passing src/tools.js (stopped at it from: ${[...stoppedAt].join(", ") || "nowhere"})`);
 });
 
 test("a full fixture run touches nothing that types, loads each site once and types nothing", async () => {
