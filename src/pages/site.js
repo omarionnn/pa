@@ -80,7 +80,7 @@ export function privacyPage() {
   return renderNotice({
     title: "Privacy",
     kicker: "What Reason keeps, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-11-12`,
+    meta: `Reason at ${where()} · last changed 2026-11-13`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
@@ -91,12 +91,12 @@ export function privacyPage() {
       {
         title: "What Reason stores",
         lines: [
-          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service, and the only storage off that machine is the encrypted backup. Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
+          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service, and the only storage off that machine is the encrypted backup, apart from the recording Cartesia holds while a call with your Reason is happening (see below). Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
           "Your messages to Reason and its replies to you, as a running transcript. The transcript keeps the most recent 60 messages of your thread and older ones fall off it.",
           "What the transcript holds is worth being plain about: it includes the results of things Reason looked up for you. So if Reason read an email or an event for you, the text of that email or event is in the transcript on the disk until it falls out of those 60 messages. It is not stored anywhere else, it is not indexed, and nothing goes looking through it.",
           "Plans, reminders, timers and the jobs Reason is working on between messages. Facts you have asked it to remember about people. Pages it made for you, and any answers you tapped on one.",
           "A receipt for every action that touched the outside world — what it did, when, whether it worked — so that \"what did you do today\" is answered from a record rather than from memory. Every time it asked you for permission, and what you said.",
-          "Which accounts you have connected, and the tokens that make them work. Phone calls it placed for you, with their recordings as files on the same machine. A count of how many turns and calls you used each day, and what has been committed in spending.",
+          "Which accounts you have connected, and the tokens that make them work. If you connect a bank, its last 60 days of transactions (see below). Phone calls it placed for you, and your own calls with it. Your own calls are always recorded, and the recordings are kept as files on the same machine; a call it places to a business or another person is recorded only if they are told so at the start of the call. Deleting your data removes the recordings too. A count of how many turns and calls you used each day, and what has been committed in spending.",
         ],
       },
       {
@@ -108,7 +108,7 @@ export function privacyPage() {
           "Gmail, once you have given it: Reason searches and reads your mail, reads an attachment you ask about, drafts, sends and replies when you ask, and labels, archives, marks or bins messages when you ask. It cannot delete mail permanently. Reason reads a sign-in code from your Gmail only when you ask it to sign you in somewhere, and only to finish that sign-in.",
           "Why. Only to do what you asked for, in the conversation you asked in — and that includes the checks you leave running with Reason: a heads-up about an event coming up or an email that needs an answer, or watching your inbox for the confirmation of an order or ticket Reason bought for you. Your Google data is not read for any other purpose, and nothing is copied out of your account ahead of time: Reason asks Google for what a request or a check needs when it needs it.",
           "How it is stored. Your Google tokens, and everything Reason read for you that is kept in your conversation, are encrypted at rest on the machine Reason runs on, and the off-site backups are encrypted too. No access token or refresh token ever leaves that machine: not in an export, not in a receipt, not in a log.",
-          "What Reason never does with it. Your Google data is never sold. It is never used for advertising. It is never used to train or improve any AI model, Reason's or anybody else's. It is not shared with anyone, except the model provider that writes Reason's replies (see below) and only as part of answering you.",
+          "What Reason never does with it. Your Google data is never sold. It is never used for advertising. It is never used to train or improve any AI model, Reason's or anybody else's. It is not shared with anyone, except the model provider that writes Reason's replies and, on a phone call, the voice provider that speaks them (see below), and only as part of answering you.",
           "Retention. Reason keeps your Google tokens until you disconnect or Google ends the connection. Text it read for you (an email, an event, a document) stays in your conversation's running transcript until it falls out of the most recent 60 messages, or until you disconnect or ask for a delete.",
           "Disconnecting and deleting. Text Reason \"disconnect my Google\". It revokes the connection at Google, deletes the stored tokens and clears what it read out of your account. You can also remove Reason at myaccount.google.com/permissions at any time. To delete everything Reason holds about you, ask it, and see \"Getting it all, or getting rid of it\" below.",
           "It does not copy your mailbox or your Drive. There is no index and no second copy: what Google sends back for a request or a check is used for that and nothing else.",
@@ -129,7 +129,10 @@ export function privacyPage() {
         title: "What leaves the machine, and why",
         lines: [
           "To answer you at all, Reason sends your conversation to Anthropic's API, because that is the model that reads it and writes the reply. There is no model on the machine. That means the part of your conversation still in the transcript — including text from an email or an event Reason read for you — is sent to Anthropic as part of producing your answer. Anthropic's own terms govern what they do with it.",
+          "On a phone call, your voice and Reason's spoken replies also pass through the voice provider for that call (OpenAI or Cartesia), only to hear you and speak to you.",
           "When you ask Reason to do something with a service, it talks to that service: Google for your mail, calendar and Drive, and whichever of a search provider, a telephony provider or a payments provider is set up on this install. It sends what the request needs and nothing more.",
+          "Calls with your Reason. When you talk with your own Reason on the phone, the call may be handled by Cartesia, a voice company: your voice goes to Cartesia so it can hear you, and Reason's voice comes back from it. Cartesia keeps a recording of the call while it is happening, and when the call ends Reason has Cartesia delete it. Calls Reason makes to other people or businesses for you never use Cartesia.",
+          "Your bank. If you connect a bank, the connection goes through Plaid and is read-only: Reason can see your balances and transactions, and cannot move money. Reason keeps the last 60 days of transactions and deletes anything older. You can disconnect your bank at any time by asking Reason, and what it had from that bank is deleted.",
           "Paid events. Stripe processes ticket payments: the card and payment details a guest enters at checkout, and the identity and bank details an organizer gives it to be paid out, go to Stripe and never to Reason. Reason keeps only a record of each payment — the amounts, whether it went through or was refunded, and Stripe's reference for it. Stripe's own privacy policy governs what it does with those details.",
           "Encrypted backups. Once a day an encrypted copy of the database and your files goes to an off-site storage server, so nothing is lost if the machine fails. It is locked with a key the storage provider does not have, so they cannot read it, and the backups can only be added to from the machine, never changed or deleted from it.",
           "That is the whole list. Nothing is sent anywhere for analytics, advertising, or model training.",
@@ -140,6 +143,7 @@ export function privacyPage() {
         lines: [
           "Text Reason and ask it to disconnect your Google, or to stop reading your email. It revokes the connection at Google and deletes the stored tokens from the machine — one grant covers everything you gave, so disconnecting takes all of it. If Google will not confirm the revoke, Reason tells you so rather than claiming it is done.",
           "You can also take it away from your own side at any time, whatever Reason does: myaccount.google.com/permissions lists every app with access to your Google account, Reason included, and removing it there cuts it off immediately.",
+          "Text Reason \"disconnect my bank\" and it removes the connection at Plaid and deletes what it had from that bank.",
           "Disconnecting stops Reason reaching your account and clears what it had read out of your account from your transcript. Everything else Reason holds about you goes when you ask for a delete.",
         ],
       },
