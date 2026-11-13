@@ -221,6 +221,51 @@ export class LinqChannel extends Channel {
   }
 
   /**
+   * Several pictures as ONE message (src/stack.js): Linq has no carousel call, but one message may
+   * carry many media parts, each `{ type: "media", url }` Linq fetches itself — "up to 40 public-URL
+   * media parts per message", 10 MB each by address, parts "displayed in order"
+   * (docs.linqapp.com/channel/imessage/guides/messaging/sending-messages, read 2026-11-13). No text
+   * part: the line before the set is its own message, as on Sendblue.
+   *
+   * Unverified, like the rest of this adapter: docs-faithful, never run against the real API. A
+   * refusal comes back as a plain failure, and the outbox sends the pictures one by one instead.
+   */
+  get stackMax() { return 40; }
+
+  async sendCarousel({ to, mediaUrls, chatId = null, idempotencyKey = null }) {
+    const missing = this.missing();
+    if (missing.length) {
+      return { ok: false, supported: true, status: "not_connected", error: `Linq is not connected: this machine has no ${missing.join(", ")}.` };
+    }
+    const number = normalizeNumber(to);
+    if (!chatId && !number) return { ok: false, supported: true, retryable: false, error: `'${to}' is not a phone number Linq can send to. It needs E.164, e.g. +14155559876.` };
+    const urls = (mediaUrls ?? []).map(u => String(u ?? "").trim());
+    if (urls.length < 2 || urls.length > this.stackMax || urls.some(u => !/^https:\/\/\S+$/.test(u))) {
+      return { ok: false, supported: true, retryable: false, error: `a set of pictures needs 2 to ${this.stackMax} HTTPS picture addresses` };
+    }
+    const message = { parts: urls.map(url => ({ type: "media", url })) };
+    if (idempotencyKey) message.idempotency_key = String(idempotencyKey).slice(0, 255);
+    const r = chatId
+      ? await this.#post(`/v3/chats/${encodeURIComponent(chatId)}/messages`, { message })
+      : await this.#post(`/v3/messages`, { to: [number], message });
+    if (!r.ok) {
+      const why = r.json?.error?.message ?? r.json?.message ?? r.text?.slice(0, 200) ?? "no body";
+      return { ok: false, supported: true, retryable: r.status >= 500 || r.status === 429, error: `Linq refused the pictures (HTTP ${r.status}): ${why}`, http_status: r.status };
+    }
+    return {
+      ok: true, supported: true,
+      delivered: {
+        channel: this.name,
+        to: number || null,
+        chat_id: r.json?.chat_id ?? chatId ?? null,
+        message_id: r.json?.message?.id ?? null,
+        media: { media_urls: urls, renders_as: "carousel" },
+        at: this.now(),
+      },
+    };
+  }
+
+  /**
    * The typing indicator. Linq's docs say a start shows it for about 85–90 seconds, so anything
    * longer has to re-start it; this method is one call and the caller owns the repeat.
    */

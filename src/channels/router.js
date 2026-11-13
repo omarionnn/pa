@@ -1625,6 +1625,21 @@ export class Router {
   }
 
   /**
+   * Several pictures as ONE swipeable stack, durably — the welcome cards' row (src/welcome.js), for
+   * any set of cards (src/stack.js). `mediaUrls` are what the provider fetches; `pictures` are the same
+   * pictures as files, in the same order, which the outbox sends one by one if the stack cannot go.
+   */
+  async sendCarousel({ channel, to, mediaUrls, pictures, historyText = "", chatId = null, idempotencyKey, conversationId = null, toOwner = false }) {
+    const pre = this.#ready(channel, { media: true });
+    if (pre) return pre;
+    if (channel === "console" || !conversationId) return await this.sendNow({ channel, to, text: "", carousel: mediaUrls, chatId, idempotencyKey });
+    return await outbox.sendDurable({
+      channel, router: this, conversationId, to, text: "", chatId, idempotencyKey, toOwner, log: this.log,
+      media: { carousel: mediaUrls, pictures, ...(historyText ? { historyText } : {}) },
+    });
+  }
+
+  /**
    * One message with text and a file the provider fetches by address — the contact card. Not
    * durable on purpose: it is sent once as a nicety and src/contact.js remembers whether it went;
    * a retry an hour later from the outbox would be a second card.
