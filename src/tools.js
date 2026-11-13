@@ -14923,6 +14923,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!known || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(known)) {
         return { ok: false, needs_email: true, site: entry.site, ask: `Ask them ONCE, in one plain line, which email their ${entry.label} account uses (like "Which email do you use for ${entry.label}?"), then call signin_email again with it as \`email\`.` };
       }
+      // They asked for this sign-in themselves: an older link that ended without progress no longer
+      // stands in the way of the hand-off link this attempt may end in (src/signinpage.js). A turn
+      // they did not start clears nothing.
+      if ((ctx.kind ?? "event") === "user") signinPage.clearNoProgress(c, entry);
       const out = (ctx.startEmailSignin ?? signinEmail.startEmailSignin)({
         conversationId: c, entry, email: known, log: ctx.log ?? (() => {}),
         launch: ctx.launchSigninBrowser ?? signinRemote.launchProfileBrowser,
@@ -14989,6 +14993,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       if (again.retry) signinPage.markRetried(c, entry);
+      // A link they asked for themselves starts the count over.
+      if (again.asked) signinPage.clearNoProgress(c, entry);
       // The page this link opens is the page later links for this attempt open too.
       if (entry.generic) signinPage.rememberSigninPage(c, entry, entry.signin_url);
       const by = signin.linkSignin();

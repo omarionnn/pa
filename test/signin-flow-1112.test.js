@@ -59,11 +59,17 @@ const PAGES = {
   "/home": () => `<body><nav><a href="/pricing" style="display:inline-block;width:80px;height:30px">Pricing</a> <a id="door" href="/login?from=home&email=someone%40example.com" style="display:inline-block;width:80px;height:30px">Log in</a></nav><h1>Pay faster everywhere</h1><p>${"A marketing page with a demo checkout: Notion Plus $12.00 monthly. ".repeat(20)}</p></body>`,
   "/login": () => `<body><script>window.__pressed=[];</script><h1>Welcome</h1><p>Log in or sign up to get started.</p>${FORM}</body>`,
   "/pricing": () => `<body><h1>Pricing</h1><p>${"Simple pricing for everybody. ".repeat(30)}</p></body>`,
+  // A sign-in form of another shape: a phone number and a password, no email box anywhere.
+  "/pwonly": () => `<body><h1>Welcome back</h1><p>Enter your mobile number and your password to carry on with your account.</p><input type="tel" name="phone" autocomplete="tel" style="width:240px;height:34px"><input type="password" name="pw" style="width:240px;height:34px"><button>Continue</button></body>`,
+  // Words on the page from the start, and the form only once a slow request of the page's own has answered.
+  "/shell": (q) => `<body><h1>Example Pay</h1><p>The fastest way to pay, everywhere you shop. Help, terms, privacy and cookies.</p><div id="root"></div><script>window.__pressed=[];fetch('/slow?ms=${Number(q.get("ms")) || 3000}').then(function(){document.getElementById('root').innerHTML=${JSON.stringify(FORM)}});</script></body>`,
 };
 let server, base, other, browser;
 const serve = () => new Promise((done) => {
   const s = createServer((req, res) => {
     const u = new URL(req.url, "http://x");
+    // An answer that takes its time: what a page that is still fetching is waiting on.
+    if (u.pathname === "/slow") { setTimeout(() => { res.writeHead(200, { "Content-Type": "text/plain" }); res.end("ok"); }, Number(u.searchParams.get("ms")) || 1000); return; }
     const make = PAGES[u.pathname];
     res.writeHead(make ? 200 : 404, { "Content-Type": "text/html; charset=utf-8" });
     res.end(make ? `<!doctype html><html>${make(u.searchParams)}</html>` : "<html><body>Not found</body></html>");
@@ -141,6 +147,55 @@ test("the default bound is about ten seconds, set by REASON_SIGNIN_FORM_WAIT_MS,
     assert.equal(asked.state, "none");
     assert.ok(asked.form_ms >= 800 && Date.now() - t0 < 3000, `the configured bound: ${asked.form_ms} ms`);
   } finally { config.signinFormWaitMs = was; await page.close(); }
+});
+
+test("a finished page with no email box is said in a couple of seconds, not at the ten-second bound: a home page, and a form of another shape", async () => {
+  for (const [path, detail] of [["/none", "no_signin_page"], ["/pwonly", undefined]]) {
+    const page = await open(`${base}${path}`);
+    try {
+      const t0 = Date.now();
+      const asked = await em.requestCode(page, entryAt(path), EMAIL, { settleMs: 50, formWaitMs: 10_000 });
+      const took = Date.now() - t0;
+      assert.equal(asked.ok, false, path);
+      assert.equal(asked.state, "none", path);
+      assert.equal(asked.detail, detail, path);
+      assert.ok(asked.form_ms >= 1500 && asked.form_ms < 7000, `${path}: stopped once the page had stood finished for two seconds, not at the bound: ${asked.form_ms} ms`);
+      assert.ok(took < 8500, `${path}: ${took} ms`);
+    } finally { await page.close(); }
+  }
+});
+
+test("a page with words on it that is still fetching is not finished: its form is waited for past the quiet time", async () => {
+  const page = await open(`${base}/shell?ms=3200`);
+  try {
+    assert.equal((await page.evaluate(em.emailPage, "")).email, false, "no box while its own request is out");
+    const asked = await em.requestCode(page, entryAt("/shell"), EMAIL, { settleMs: 50, formWaitMs: 10_000 });
+    assert.equal(asked.ok, true, JSON.stringify({ ...asked, on: undefined }));
+    assert.equal(asked.state, "code");
+    assert.ok(asked.form_ms >= 2400 && asked.form_ms < 9000, `found when the page drew it: ${asked.form_ms} ms`);
+    assert.deepEqual(await page.evaluate(() => window.__pressed), [`continue:${EMAIL}`]);
+  } finally { await page.close(); }
+});
+
+test("what 'finished' needs: a real document that is complete, has words, fetches nothing and has stopped changing; a stand-in never is", async () => {
+  // A stand-in page (no document to read) is never settled: the wait runs to its bound as before.
+  const fake = { evaluate: async () => ({ email: false, text: "x".repeat(200) }), waitForTimeout: async () => {} };
+  const w = sp.settleWatch(fake, { quietMs: 0 });
+  assert.equal(await w.settled(), false);
+  assert.equal(await w.settled(), false);
+  w.stop();
+  const out = await sp.waitFor(fake, async () => null, { waitMs: 300, pollMs: 50, stop: () => w.settled() });
+  assert.equal(out.found, false);
+  assert.equal(out.settled, undefined, "it reached the bound; nothing stopped it early");
+  // A blank shell (an app that has not drawn yet) is not settled however long it stands.
+  const blank = await open(`${base}/late?ms=60000`);
+  try {
+    const wb = sp.settleWatch(blank, { quietMs: 200 });
+    await wb.settled();
+    await new Promise(r => setTimeout(r, 900));
+    assert.equal(await wb.settled(), false, "no words on it yet");
+    wb.stop();
+  } finally { await blank.close(); }
 });
 
 test("a form in the site's own same-origin frame is found and typed into; another origin's frame is never read", async () => {
@@ -308,6 +363,15 @@ test("in a real browser: a home page's own 'Log in' link is followed once, to th
       assert.equal(sp.pageOf(none.url()), "https://pay-example.com/", "still on the site's own page");
     } finally { await none.close(); }
   }
+
+  // With the whole ten seconds to spend, a finished page with no form and no link is said early.
+  const quick = await routed({ "pay-example.com/": MARKETING }, { width: 1280 });
+  try {
+    await quick.goto("https://pay-example.com/", { waitUntil: "domcontentloaded" });
+    const at = await sp.arriveAtSignin(quick, signin.genericEntry("pay-example.com"), { waitMs: 10_000 });
+    assert.equal(at.kind, "not_signin");
+    assert.ok(at.ms < 7000, `stopped on the finished page, not at the bound: ${at.ms} ms`);
+  } finally { await quick.close(); }
 });
 
 test("which sign-in link may be followed: on the site's own hosts always; on the domain the site itself sent the browser to only where a person will type; never a third site", async () => {
@@ -324,6 +388,14 @@ test("which sign-in link may be followed: on the site's own hosts always; on the
   assert.deepEqual(third.gotos, []);
   const plain = at("https://www.notion.com/", "http://www.notion.so/login");
   assert.equal((await sp.followSigninDoor(plain.page, notion, { allowCurrentSite: true })).followed, false, "https only");
+  // Shared hosting: another sub-host is somebody else's site, whatever the last two labels say.
+  const teamA = signin.genericEntry("https://team-a.github.io/login");
+  const neighbour = at("https://team-a.github.io/", "https://team-b.github.io/login");
+  assert.equal((await sp.followSigninDoor(neighbour.page, teamA, { allowCurrentSite: true })).followed, false, "a neighbour on shared hosting is a third site");
+  assert.equal((await sp.followSigninDoor(neighbour.page, teamA)).followed, false);
+  assert.deepEqual(neighbour.gotos, []);
+  const sameHost = at("https://team-a.github.io/", "https://team-a.github.io/login");
+  assert.equal((await sp.followSigninDoor(sameHost.page, teamA)).followed, true, "its own host is still its own");
 });
 
 test("the emailed code with only a bare name: the site's own Log in link is followed first; with none, no link is offered at all", async () => {
@@ -535,6 +607,33 @@ test("a session that times out with nothing submitted: ONE plain line, no fresh 
   const asked = await runTool("signin_link", { site: LINK_LOGIN }, { conversationId: CONV, messages: [], kind: "user", ...seam });
   assert.equal(asked.ok, true);
   assert.equal(made.length, 2);
+  assert.equal(sp.lastNoProgress(CONV, entry), null, "their own request starts the count over");
+});
+
+test("the one retry is counted per run of endings, and a sign-in they ask for themselves starts over", async () => {
+  const a = signin.genericEntry(LINK_LOGIN), b = signin.genericEntry("https://app.link.com/signin");
+  sp.noteEnding(CONV, a, { how: "timed_out", state: "signed_out" });
+  assert.deepEqual(sp.mayLinkAgain(CONV, b), { ok: true, retry: true }, "a different page: one retry");
+  sp.markRetried(CONV, b);
+  sp.noteEnding(CONV, b, { how: "timed_out", state: "signed_out" });
+  assert.equal(sp.mayLinkAgain(CONV, a).ok, false, "no second retry, back to the first page or anywhere else");
+  // More than an hour later a new run of endings has its own retry: the old one is not held against it.
+  clock.skip(sp.NO_REPEAT_MS + 60_000);
+  sp.noteEnding(CONV, a, { how: "timed_out", state: "signed_out" });
+  assert.deepEqual(sp.mayLinkAgain(CONV, b), { ok: true, retry: true });
+
+  // They ask to be signed in again and the emailed code is tried first: the hand-off link that
+  // attempt may end in is part of what they asked for, so the older ending no longer refuses it.
+  const seam = { publicUrl: pub, startEmailSignin: () => ({ ok: true, started: true }), createRemoteSignin: () => ({ ok: true, url: "https://reason.example/s/z", good_for_minutes: 10, reachable_from_a_phone: true }) };
+  assert.equal((await runTool("signin_link", { site: LINK_LOGIN }, { conversationId: CONV, messages: [], kind: "event", ...seam })).not_sent_again, true);
+  // A turn they did not start clears nothing.
+  await runTool("signin_email", { site: LINK_LOGIN, email: EMAIL }, { conversationId: CONV, messages: [], kind: "event", ...seam });
+  assert.ok(sp.lastNoProgress(CONV, a), "an event turn's own attempt is not their request");
+  // Their own does.
+  const started = await runTool("signin_email", { site: LINK_LOGIN, email: EMAIL }, { conversationId: CONV, messages: [], kind: "user", ...seam });
+  assert.equal(started.ok, true, JSON.stringify(started));
+  assert.equal(sp.lastNoProgress(CONV, a), null);
+  assert.equal((await runTool("signin_link", { site: LINK_LOGIN }, { conversationId: CONV, messages: [], kind: "event", ...seam })).ok, true, "the hand-off link of the attempt they asked for");
 });
 
 test("what counts as an ending without progress, and what wipes it", () => {
@@ -544,6 +643,9 @@ test("what counts as an ending without progress, and what wipes it", () => {
     sp.noteEnding(CONV, entry, { how, state: "signed_out" });
     assert.equal(sp.mayLinkAgain(CONV, entry).ok, false, how);
     assert.equal(sp.mayLinkAgain(CONV, entry, { asked: true }).ok, true, `${how}: their own ask`);
+    // One person's ending is theirs alone: it stops nobody else's link, and nobody else can read it.
+    assert.deepEqual(sp.mayLinkAgain("dm:fake:+14155559876", entry), { ok: true }, how);
+    assert.equal(sp.lastNoProgress("dm:fake:+14155559876", entry), null, how);
   }
   // Old news stops nothing.
   clock.skip(sp.NO_REPEAT_MS + 1000);

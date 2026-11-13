@@ -314,7 +314,8 @@ export async function probeSignedIn(page, siteName, { entry: given = null, waitM
         // A site with no playbook: the page is read for POSITIVE evidence (its shape, a log-out or
         // account control), and given the same bounded time to draw itself a sign-in form gets
         // (src/signinpage.js) — a page still blank at 1.5 s is not "no sign-in prompt".
-        const seen = await readUnknownSitePage(page, entry, { waitMs: waitMs ?? Math.max(0, signinPage.formWaitMs() - 1500) });
+        // A page the site itself answered with an error is not waited on: nothing is read off it.
+        const seen = await readUnknownSitePage(page, entry, { waitMs: status && status >= 400 ? 0 : waitMs ?? Math.max(0, signinPage.formWaitMs() - 1500) });
         text = seen.text; acct = seen.acct; form = seen.form;
       } else {
         text = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
@@ -355,6 +356,9 @@ export async function probeSignedIn(page, siteName, { entry: given = null, waitM
  */
 async function readUnknownSitePage(page, entry, { waitMs = 0 } = {}) {
   let last = null;
+  // A page that has finished and stopped changing has shown all it will (src/signinpage.js settleWatch).
+  const watch = signinPage.settleWatch(page, { forMs: waitMs });
+  try {
   await signinPage.waitFor(page, async () => {
     last = await signinPage.readPage(page);
     if (signinPage.isStep(last.kind) || last.raw.acct) return last;
@@ -362,7 +366,8 @@ async function readUnknownSitePage(page, entry, { waitMs = 0 } = {}) {
     try { url = page.url() || url; } catch { /* the reading's own address stands */ }
     const drawn = String(last.raw.text ?? "").trim().length >= 50;
     return drawn && (signinPage.isFrontPage(entry.signed_in.url) || signinPage.leftSigninPage(url, { signin_url: entry.signed_in.url })) ? last : null;
-  }, { waitMs });
+  }, { waitMs, stop: () => watch.settled() });
+  } finally { watch.stop(); }
   return { text: String(last?.raw?.text ?? ""), acct: String(last?.raw?.acct ?? ""), form: last?.kind === "signin_form" };
 }
 

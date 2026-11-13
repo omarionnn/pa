@@ -302,21 +302,31 @@ function sameOriginFrames(page) {
  * Wait for the site's email box: the page and its same-origin frames are read until one has it or
  * `waitMs` runs out. A "Continue with email" control standing where the box should be is pressed
  * once on the way. Stops the moment the box is there.
- *   → { found, on (the page, or the frame whose document has the box), f (the last reading), ms }
+ *
+ * It also stops early on a clear negative (src/signinpage.js settleWatch): a page that has finished
+ * loading, has words on it, is fetching nothing and has not changed for two seconds has no email box
+ * and is not about to draw one. Without that, every page with no email box (a home page, a
+ * password-only form, a Google-only page) cost the whole bound. A bot check is the exception and
+ * gets the whole bound: one that clears by itself is not a wall, and a wall is written down for
+ * everybody.
+ *   → { found, on (the page, or the frame whose document has the box), f (the last reading), ms, settled }
  */
-export async function waitForEmailBox(page, { waitMs = signinPage.formWaitMs(), pollMs = 250, settleMs = SETTLE_MS } = {}) {
+export async function waitForEmailBox(page, { waitMs = signinPage.formWaitMs(), pollMs = 250, settleMs = SETTLE_MS, quietMs = signinPage.QUIET_MS } = {}) {
   let routed = false, main = NOTHING, on = page;
-  const got = await signinPage.waitFor(page, async () => {
-    main = await read(page);
-    if (main.email) { on = page; return main; }
-    for (const fr of sameOriginFrames(page)) {
-      const f = await read(fr);
-      if (f.email) { on = fr; return f; }
-    }
-    if (main.route && !routed) { routed = true; await read(page, "route"); await wait(page, Math.min(settleMs, 400)); }
-    return null;
-  }, { waitMs, pollMs });
-  return { found: got.found, on: got.found ? on : page, f: got.found ? got.value : main, ms: got.ms };
+  const watch = signinPage.settleWatch(page, { quietMs, forMs: waitMs });
+  try {
+    const got = await signinPage.waitFor(page, async () => {
+      main = await read(page);
+      if (main.email) { on = page; return main; }
+      for (const fr of sameOriginFrames(page)) {
+        const f = await read(fr);
+        if (f.email) { on = fr; return f; }
+      }
+      if (main.route && !routed) { routed = true; await read(page, "route"); await wait(page, Math.min(settleMs, 400)); }
+      return null;
+    }, { waitMs, pollMs, stop: async () => !CHALLENGE.test(main.text) && await watch.settled() });
+    return { found: got.found, on: got.found ? on : page, f: got.found ? got.value : main, ms: got.ms, settled: !!got.settled };
+  } finally { watch.stop(); }
 }
 
 /** Every page in the context but the first, closed: a provider popup is never left open. */

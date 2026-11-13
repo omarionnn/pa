@@ -203,7 +203,7 @@ const sleepOn = (page, ms) => (page?.waitForTimeout ? page.waitForTimeout(ms).ca
  * (plus one look). The clock is the wall clock, not the service's (which a test may hold still).
  *   → { found, value, ms, looks }
  */
-export async function waitFor(page, look, { waitMs = formWaitMs(), pollMs = 250, now = () => Date.now() } = {}) {
+export async function waitFor(page, look, { waitMs = formWaitMs(), pollMs = 250, now = () => Date.now(), stop = null } = {}) {
   const started = now();
   let looks = 0, value = null, slept = 0;
   for (;;) {
@@ -214,10 +214,69 @@ export async function waitFor(page, look, { waitMs = formWaitMs(), pollMs = 250,
     const ms = Math.max(0, now() - started, slept);
     if (value) return { found: true, value, ms, looks };
     if (ms >= waitMs) return { found: false, value: null, ms, looks };
+    // A clear negative ends the wait before the bound (`stop`, usually settleWatch below): a page
+    // that has finished drawing itself and still has no form is not going to grow one.
+    if (stop) {
+      let over = false;
+      try { over = !!(await stop()); } catch { over = false; }
+      if (over) return { found: false, value: null, ms: Math.max(0, now() - started, slept), looks, settled: true };
+    }
     const nap = Math.max(1, Math.min(pollMs, waitMs - ms));
     await sleepOn(page, nap);
     slept += nap;
   }
+}
+
+/** How long a finished page must stand unchanged, with nothing being fetched, before "it has no form" is believed. */
+export const QUIET_MS = 2_000;
+/** What a page looks like from one moment to the next: its address, how much is in it, and whether it has finished loading. Never its words. */
+const SETTLE_JS = `(() => {
+  var t = document.body ? String(document.body.innerText || '') : '';
+  return { ready: document.readyState, drawn: t.replace(/\\s+/g, ' ').trim().length >= 50, sig: location.href + '|' + document.getElementsByTagName('*').length + '|' + t.length };
+})()`;
+
+/**
+ * The clear negative a bounded wait may stop early on: has this page FINISHED and stopped changing?
+ * `settled()` is true only when all of these hold: the document is complete; it has words on it;
+ * nothing is being fetched (the page's network went idle, and no request since has been open in the
+ * last half second); and nothing in it or in its same-origin frames has changed for `quietMs`.
+ *
+ * It errs one way only. An app's blank shell, a page still fetching, a page that keeps changing (a
+ * carousel), or a stand-in with no document are never "settled" and get the whole bound, so a form
+ * drawn late (Stripe Link's, 1.3 s in) is still waited for. What it saves is the common case: a home
+ * page or a password-only page said "no email box" after about ten seconds for no reason.
+ *   → { settled(): Promise<boolean>, stop() }
+ */
+export function settleWatch(page, { quietMs = QUIET_MS, forMs = formWaitMs(), now = () => Date.now() } = {}) {
+  let open = 0, lastNet = now(), sig = null, sigAt = now();
+  // The page's own "network idle" covers what was already being fetched before this watch began.
+  let idle = typeof page?.waitForLoadState !== "function";
+  if (!idle) { try { Promise.resolve(page.waitForLoadState("networkidle", { timeout: Math.max(1000, forMs + 2000) })).then(() => { idle = true; }, () => {}); } catch { /* never idle: the whole bound */ } }
+  const began = () => { open += 1; lastNet = now(); };
+  const ended = () => { open = Math.max(0, open - 1); lastNet = now(); };
+  const hear = (how) => { for (const [ev, fn] of [["request", began], ["requestfinished", ended], ["requestfailed", ended]]) { try { page?.[how]?.(ev, fn); } catch { /* a page with no events */ } } };
+  hear("on");
+  const origin = () => { try { return originOf(page.url()); } catch { return ""; } };
+  return {
+    async settled() {
+      let st = null;
+      try { st = await page.evaluate(SETTLE_JS); } catch { st = null; }
+      if (!st || typeof st !== "object" || typeof st.sig !== "string") return false;
+      let all = st.sig;
+      try {
+        const main = page.mainFrame?.(), o = origin();
+        for (const f of (typeof page.frames === "function" ? page.frames() : [])) {
+          if (f === main || !o || originOf(f.url()) !== o) continue;
+          const r = await f.evaluate(SETTLE_JS).catch(() => null);
+          all += `#${r?.sig ?? "?"}`;
+        }
+      } catch { /* a frame that went away mid-read is a change */ all += "#?"; }
+      const t = now();
+      if (all !== sig) { sig = all; sigAt = t; return false; }
+      return st.ready === "complete" && st.drawn === true && idle && open === 0 && t - lastNet >= 500 && t - sigAt >= quietMs;
+    },
+    stop() { hear("off"); },
+  };
 }
 
 // ---------------------------------------------------------------- the site's own way to its sign-in page
@@ -270,6 +329,12 @@ function registrableHost(host) {
   if (parts.length <= 2) return parts.join(".");
   return /^(co|com|org|net|ac|gov|edu|ne|or)$/.test(parts.at(-2)) && parts.at(-1).length === 2 ? parts.slice(-3).join(".") : parts.slice(-2).join(".");
 }
+/**
+ * Hosts where every sub-host is somebody else's site (shared hosting). The two-label rule above calls
+ * the shared part "the site" there, so a "Log in" link is only ever followed on one of these when it
+ * stays on the very host the browser is on.
+ */
+const SHARED_HOSTING = /(?:^|\.)(?:github\.io|gitlab\.io|herokuapp\.com|vercel\.app|netlify\.app|pages\.dev|workers\.dev|web\.app|firebaseapp\.com|appspot\.com|blogspot\.com|azurewebsites\.net|cloudfront\.net|amazonaws\.com|onrender\.com|fly\.dev|glitch\.me|replit\.app|wixsite\.com|webflow\.io)$/;
 /** A page's address with nothing personal on it: origin + path. No query string, no fragment; https only. */
 export function pageOf(url) {
   let u; try { u = new URL(String(url ?? "")); } catch { return ""; }
@@ -307,7 +372,9 @@ export async function followSigninDoor(page, entry, { timeoutMs = 30_000, allowC
     // on notion.com), and its sign-in link stays on that domain. Followed only where a person is
     // about to look at the page and type for themselves; never where Reason types an address in.
     const sameAsHere = allowCurrentSite && (() => { try { const here = registrableHost(hostOf(page.url())); return !!here && registrableHost(hostOf(to)) === here; } catch { return false; } })();
-    if (to && (onSite(to, entry) || sameAsHere)) {
+    // On shared hosting another sub-host is another site: only the very host the browser is on.
+    const sharedAway = SHARED_HOSTING.test(hostOf(to)) && (() => { try { return hostOf(to) !== hostOf(page.url()); } catch { return true; } })();
+    if (to && !sharedAway && (onSite(to, entry) || sameAsHere)) {
       let ok = true;
       try { await page.goto(to, { waitUntil: "domcontentloaded", timeout: timeoutMs }); } catch { ok = false; }
       return ok ? { followed: true, by: "link", why: "" } : { followed: false, by: "", why: "its sign-in link did not load" };
@@ -330,22 +397,33 @@ export async function followSigninDoor(page, entry, { timeoutMs = 30_000, allowC
 export async function arriveAtSignin(page, entry, { provider = "", waitMs = formWaitMs(), pollMs = 250, follow = true, allowCurrentSite = false, now = () => Date.now() } = {}) {
   const started = now();
   const look = async () => { const r = await readPage(page, { provider }); return isStep(r.kind) || r.kind === "signed_in" ? r : null; };
+  // Every wait below stops early on a clear negative (settleWatch): a page that has finished and
+  // stopped changing without a form is not given the rest of the bound to grow one.
+  let watch = settleWatch(page, { forMs: waitMs, now });
+  const stop = () => watch.settled();
   // A page with a "Log in" link on it rarely also draws a sign-in form late: the link is looked for
   // after a short first wait, and only a page with no link gets the whole bound to draw a form.
   const first = Math.min(waitMs, FIRST_LOOK_MS);
-  let got = await waitFor(page, look, { waitMs: first, pollMs, now });
-  let followed = false, why = "";
-  if (!got.found && follow) {
-    let door = await followSigninDoor(page, entry, { allowCurrentSite });
-    if (!door.followed && waitMs > first) {
-      got = await waitFor(page, look, { waitMs: waitMs - first, pollMs, now });
-      if (!got.found) door = await followSigninDoor(page, entry, { allowCurrentSite });
+  let got, followed = false, why = "";
+  try {
+    got = await waitFor(page, look, { waitMs: first, pollMs, now, stop });
+    if (!got.found && follow) {
+      let door = await followSigninDoor(page, entry, { allowCurrentSite });
+      if (!door.followed && waitMs > first && !got.settled) {
+        got = await waitFor(page, look, { waitMs: waitMs - first, pollMs, now, stop });
+        if (!got.found) door = await followSigninDoor(page, entry, { allowCurrentSite });
+      }
+      followed = door.followed; why = door.why;
+      if (!got.found && followed) {
+        // Another page now: what was learned about the last one says nothing about this one.
+        watch.stop();
+        watch = settleWatch(page, { forMs: waitMs, now });
+        got = await waitFor(page, look, { waitMs, pollMs, now, stop });
+      }
+    } else if (!got.found && waitMs > first && !got.settled) {
+      got = await waitFor(page, look, { waitMs: waitMs - first, pollMs, now, stop });
     }
-    followed = door.followed; why = door.why;
-    if (!got.found && followed) got = await waitFor(page, look, { waitMs, pollMs, now });
-  } else if (!got.found && waitMs > first) {
-    got = await waitFor(page, look, { waitMs: waitMs - first, pollMs, now });
-  }
+  } finally { watch.stop(); }
   const last = got.found ? got.value : await readPage(page, { provider });
   let at = "";
   try { at = pageOf(typeof page.url === "function" ? page.url() : last.raw.url); } catch { at = ""; }
@@ -412,8 +490,12 @@ export function noteEnding(conversationId, entry, { how = "", state = "", page =
     db.db.prepare("UPDATE signin_pages SET ended_how = '', ended_page = '', ended_at = 0, retried = 0 WHERE conversation_id = ? AND site = ?").run(String(conversationId), String(entry.site));
     return;
   }
-  db.db.prepare("UPDATE signin_pages SET ended_how = ?, ended_page = ?, ended_at = ? WHERE conversation_id = ? AND site = ?")
-    .run(String(how), pageOf(page || entry.signin_url), clock.now(), String(conversationId), String(entry.site));
+  // The one retry is counted per run of endings: an ending with none before it inside the hour starts
+  // the count over, so a retry taken last week does not use up this week's.
+  const before = rowFor(conversationId, entry.site);
+  const fresh = !before?.ended_how || clock.now() - Number(before.ended_at) > NO_REPEAT_MS;
+  db.db.prepare("UPDATE signin_pages SET ended_how = ?, ended_page = ?, ended_at = ?, retried = ? WHERE conversation_id = ? AND site = ?")
+    .run(String(how), pageOf(page || entry.signin_url), clock.now(), fresh ? 0 : Number(before.retried) ? 1 : 0, String(conversationId), String(entry.site));
 }
 /** The last link for this site that ended without progress, while that is still recent. */
 export function lastNoProgress(conversationId, entry) {

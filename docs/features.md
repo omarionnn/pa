@@ -573,7 +573,11 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
   below"; the session ran out after ten minutes and a third identical link went out. Now:
   - *The emailed code waits for the form.* The email box is polled for, about ten seconds
     (`REASON_SIGNIN_FORM_WAIT_MS`), stopping the moment it is there, in the page and its same-origin
-    frames. Another origin's frame is never read.
+    frames. Another origin's frame is never read. The wait also stops early on a clear negative
+    (`signinpage.settleWatch`): a page that has finished loading, has words on it, is fetching
+    nothing and has not changed for two seconds (`QUIET_MS`) has no form coming, so a home page or a
+    password-only form is said in about two seconds, not ten. A blank app shell, a page still
+    fetching or still changing, and a bot check get the whole bound.
   - *A hand-off lands on the page the sign-in was on.* The page (origin + path, never a query
     string) is kept per person and site in `signin_pages` and read back in code
     (`signin.entryOnItsPage`), so a bare name resolves to it whatever the model types; each
@@ -588,7 +592,10 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
   - *No link loops.* An ending without progress (timed out, closed, expired unopened, no sign-in
     page) gets one plain line and the next best route; the note no longer says "offer a fresh
     link", and `signin_link` refuses a second identical link in a turn the person did not start. At
-    most one retry on its own, and only when the link would open a different page.
+    most one retry on its own, and only when the link would open a different page; the retry is
+    counted per run of endings (an hour apart starts over). A sign-in the person asks for
+    themselves (`signin_link` or `signin_email` in their own turn) starts the count over, so the
+    hand-off link of an attempt they asked for is never refused over an older ending.
   - *"Signed in" needs positive evidence on a site with no playbook*: a log-out or account control
     in the document, or the site's own sign-in page passing the browser straight on to an inside
     page. An absent "Sign in" is not proof: the answer is then "unknown", said as "I can't tell",
