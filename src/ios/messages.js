@@ -19,7 +19,19 @@ export function messageOut(row, conv) {
     via: row.channel === WEB ? "app_or_web" : "text",
     client_id: row.role === "user" && row.channel === WEB && ext.startsWith(prefix) ? ext.slice(prefix.length) : null,
     attachments: media.map(m => ({ name: m?.filename ?? null })),
+    // Which of their messages this answers, and whether the turn is over (src/turnlink.js, db.finishTurn).
+    // Reason's rows: `reply_to` is the person's row id, null when it answered nobody (a reminder, a call's
+    // outcome, anything said unprompted); `turn_done` is true on the last reply of a finished turn. The
+    // person's rows: `turn_done_at`, when the turn answering it ended, null while it runs.
+    reply_to: row.role === "user" ? null : row.reply_to_id ?? null,
+    turn_done: row.role !== "user" && row.turn_last === 1,
+    turn_done_at: row.role === "user" ? row.turn_done_at ?? null : null,
   };
+}
+
+/** The `done` event's data for one finished turn (db.finishTurn's historyBus `turn` event). */
+export function turnDoneOut(e) {
+  return { reply_to: e.replyTo, answers: [...e.ids], last_reply: e.lastReply ?? null, at: e.at };
 }
 
 const pageSize = (v) => Math.min(MAX_PAGE, Math.max(1, /^\d{1,4}$/.test(String(v ?? "")) ? Number(v) : 50));

@@ -144,6 +144,8 @@ import { TITLE_HINT, normTitle, queueTitle } from "./itemtitle.js";
 import { resultFor } from "./ongoing.js";
 import * as zone from "./zone.js";
 import * as zonescope from "./zonescope.js";
+import * as turnlink from "./turnlink.js";
+import * as progress from "./progress.js";
 import { readSilence } from "./plain.js";
 import { fitLongText, shortenedNote } from "./fitlong.js";
 const confirmedZoneOf = (c) => { try { return zone.confirmedZone(c); } catch { return ""; } };
@@ -9578,8 +9580,11 @@ export function runTool(name, rawInput, ctx) {
   // Counted for the tool diet's likely set (src/tooldiet.js): what they use, by name, nothing else.
   recordToolUse(ctx?.conversationId, name);
   // On the clock of the person this call is for, whoever called it — the CLI backend's tool calls
-  // arrive as their own HTTP requests, outside the turn's scope (src/zonescope.js).
-  return zonescope.runFor(ctx?.conversationId, () => runToolOnTheirClock(name, rawInput, ctx));
+  // arrive as their own HTTP requests, outside the turn's scope (src/zonescope.js). The same goes for
+  // the turn they belong to (src/turnlink.js): found by the turn's fold token, so a text this call sends
+  // is labelled as the reply it is, and its progress line names the message being answered.
+  const turn = ctx?.conversationId ? turnlink.ofCall(ctx.conversationId, ctx.foldToken ?? null) : null;
+  return turnlink.enter(turn, () => zonescope.runFor(ctx?.conversationId, () => runToolOnTheirClock(name, rawInput, ctx)));
 }
 
 async function runToolOnTheirClock(name, rawInput, ctx) {
@@ -9723,6 +9728,9 @@ async function runToolInner(name, rawInput, ctx) {
   if (!parsed.success) return { ok: false, error: "Bad input: " + parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") };
   const input = parsed.data;
   const c = ctx.conversationId;
+  // What the app shows under their message while this runs (src/progress.js): only past the harm screen
+  // and the input check, so a refused or malformed call narrates nothing.
+  { const t = c ? turnlink.ofCall(c, ctx.foldToken ?? null) : null; if (t) progress.say(t, name, input, { answering: turnlink.answering(t) }); }
   // Whose Reason this is. Everything below that says "the owner" means this person, and every
   // table this touches is already keyed by `c` — which is what keeps one person's Reason out of
   // another's rather than any check added later.
