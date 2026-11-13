@@ -41,11 +41,18 @@ export function savedLoginsAllowedFor(conversationId) {
 }
 
 let saidOff = false;
+let saidRest = false;
 /**
  * A working key service (vaultkms.configured): Google's key file, or AWS's key and login, and no 127.x
- * stand-in outside a test. No file master, no .env key, no fallback. Not ready: one log line.
+ * stand-in outside a test. No file master, no .env key, no fallback. And encryption at rest fully on
+ * (REASON_ENCRYPT_REST, _REST2 and _REST3): the username hint, the reason for each use and the quoted
+ * request of a save link are sealed under the person's key only then. Not ready: one log line.
  */
 export function vaultReady() {
+  if (!restcrypt.flag2On() || !restcrypt.flag3On()) {
+    if (!saidRest && savedLoginsMode() !== "off") { saidRest = true; console.log("saved logins: off (encryption at rest not fully on)"); }
+    return false;
+  }
   if (vaultkms.configured()) return true;
   if (!saidOff && savedLoginsMode() !== "off") { saidOff = true; console.log("saved logins: off (no KMS key)"); }
   return false;
@@ -210,13 +217,42 @@ const siteVerdict = (hostOrUrl) => classifySite(hostOrUrl) ?? {};
 // Every save, open and removal writes one login_log row (reason.db, `purpose` sealed under the
 // person's key) and one action_ledger row, which ledger_list reads back. From fixed lists only:
 // never a username, a hint, a code or an address with a query string.
-export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all"];
-export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed"];
+export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_sent", "refused_never_list", "save_failed", "signin", "signed_out"];
+// The vault's own low-level outcomes (what withLogin's `opened` line carries), then the filler's
+// person-facing sign-in outcomes (what its `signin` line carries, vault PR 6). A result word the
+// filler returns to the model is in the second group so recordLoginEvent accepts it.
+export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed",
+  "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused",
+  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy"];
 const RECEIPT = {
   saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
   opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
   removed: (site) => `Deleted the saved login for ${site}.`,
   removed_all: (_site, _outcome, n) => `Deleted all ${n} saved login${n === 1 ? "" : "s"}.`,
+  link_sent: (site) => `Sent a link to save a login for ${site} on Reason's own page.`,
+  refused_never_list: (site) => `Did not offer to save a login for ${site}: it is on the never list.`,
+  save_failed: (site, outcome) => `Did not save the login for ${site} (${outcome.replace(/_/g, " ")}).`,
+  // The filler's person-facing line (vault PR 6, design B10): what the sign-in did, in plain words,
+  // never a username. One sentence per sign-in result word.
+  // Forgetting a login (design B11, hard rule 6): whether signing out on the site itself was confirmed.
+  signed_out: (site, outcome) => outcome === "ok" ? `Signed out of ${site} and cleared its cookies and stored data from my browser.`
+    : `Cleared ${site}'s cookies and stored data from my browser; I could not confirm a sign-out on ${site} itself.`,
+  signin: (site, outcome) => ({
+    signed_in: `Signed in to ${site} with your saved login.`,
+    wrong_password: `Could not sign in to ${site}: the saved password was not accepted. I stopped and won't try again until you save it again.`,
+    blocked: `${site} blocked the sign-in. I stopped and did not retry.`,
+    paused: `Did not sign in to ${site}: it is paused after an earlier refusal.`,
+    needs_code_sms: `Signed in to ${site}; it then asked for a texted code.`,
+    needs_approval: `Signed in to ${site}; it then asked you to approve in an app.`,
+    needs_face_id: `Did not sign in to ${site}: this one needs your Face ID approval.`,
+    origin_mismatch: `Did not sign in to ${site}: the page was not its real sign-in page.`,
+    not_signin_page: `Did not sign in to ${site}: I could not find its sign-in form.`,
+    needs_code_email: `Signed in to ${site}; it then emailed a code, and I could not read it from your email.`,
+    needs_authenticator: `Signed in to ${site}; it then asked for an authenticator app code, which I can't do yet. I stopped.`,
+    code_not_found: `Signed in to ${site}; it emailed a code that did not arrive in time. I stopped.`,
+    wrong_code: `Signed in to ${site}; it did not accept the code. I stopped and did not try another.`,
+    busy: `Did not sign in to ${site}: the browser was busy.`,
+  }[outcome] ?? `Did not sign in to ${site} (${String(outcome).replace(/_/g, " ")}).`),
 };
 /** Words for `purpose`: one line, no control characters, links without their query or fragment. */
 function cleanPurpose(s) {
@@ -316,6 +352,86 @@ export async function saveLogin(conversationId, meta, fields) {
   }
 }
 
+// ---------------------------------------------------------------- the intake (vault PR 5)
+// The save page (src/pages/savelogin.js, src/loginintake.js) seals a login inside the person's browser
+// to the intake key's public half. The sealed bytes come here, and only here are they opened: the
+// wrapped AES key by the key service (vaultkms.openIntake), the fields by AES-256-GCM, each straight
+// into a Secret, then saveLogin re-seals them under the login's own key. Nothing is kept or logged.
+//
+// The sealed form (built by sealInBrowser in src/loginintake.js; every length big-endian):
+//   0x01 | u16 wrapped length | wrapped AES key (RSA-OAEP SHA-256) | 12-byte IV | AES-GCM ciphertext and tag
+// AES-GCM's associated data is "sl-intake1|<intake id>", so a blob made for one link opens for no other.
+// Inside: three fields, username, password, setup key, each u16 length | UTF-8 bytes (setup key may be empty).
+export const SEALED_VERSION = 1;
+export const INTAKE_AAD = (intakeId) => Buffer.from(`sl-intake1|${intakeId}`, "utf8");
+
+/** The intake key can be used for this person: the vault is on for them, and the key service has the intake key. */
+export function intakeReadyFor(conversationId) {
+  return savedLoginsAllowedFor(conversationId) && vaultkms.intakeConfigured();
+}
+/** The intake key's public half (SPKI DER, base64url) for the page to seal to. Nothing secret. */
+export async function intakePublicKey() {
+  try { return (await vaultkms.intakePublicKey()).spki.toString("base64url"); }
+  catch { throw new VaultError("kms_failed"); }
+}
+
+// The three fields, read off the opened bytes into Secrets (never a string). Throws bad_sealed.
+function fieldsOf(plain) {
+  const out = [];
+  let at = 0;
+  for (let i = 0; i < 3; i++) {
+    if (at + 2 > plain.length) break;
+    const n = plain.readUInt16BE(at); at += 2;
+    if (at + n > plain.length) break;
+    out.push(n ? new Secret(Buffer.from(plain.subarray(at, at + n))) : null);
+    at += n;
+  }
+  if (out.length !== 3 || at !== plain.length) { wipeAll(...out); throw new VaultError("bad_sealed"); }
+  return out;
+}
+
+/**
+ * Open a login sealed on the save page and store it: the intake key opens the wrapped AES key, the AES
+ * key opens the fields, saveLogin re-seals them under the login's own key. `sealed` is the bytes as
+ * the page sent them; `intakeId` is the link's id (the blob's associated data). Every value is wiped
+ * whatever happens. Returns saveLogin's { id, site, state }; throws a VaultError with a fixed code.
+ * The caller has already checked the person's Face ID over this blob and claimed the link.
+ */
+export async function saveFromSealed(conversationId, meta, sealed, intakeId) {
+  const c = String(conversationId ?? "");
+  if (!intakeReadyFor(c)) throw new VaultError("not_available");
+  const b = Buffer.isBuffer(sealed) ? sealed : null;
+  if (!b || b.length < 1 + 2 + 12 + 16 || b[0] !== SEALED_VERSION || !/^[A-Za-z0-9_-]{8,128}$/.test(String(intakeId ?? ""))) throw new VaultError("bad_sealed");
+  const wl = b.readUInt16BE(1);
+  if (wl < 256 || 3 + wl + 12 + 16 > b.length) throw new VaultError("bad_sealed");
+  const wrapped = b.subarray(3, 3 + wl), iv = b.subarray(3 + wl, 3 + wl + 12), body = b.subarray(3 + wl + 12);
+  let key = null, plain = null, fields = [];
+  try {
+    try { key = await vaultkms.openIntake(wrapped); }
+    catch { throw new VaultError("unwrap_failed"); }
+    plain = key.use(k => {
+      const d = createDecipheriv("aes-256-gcm", k, iv);
+      d.setAAD(INTAKE_AAD(intakeId));
+      d.setAuthTag(body.subarray(body.length - 16));
+      const head = d.update(body.subarray(0, body.length - 16));
+      try {
+        const tail = d.final();
+        const out = Buffer.alloc(head.length + tail.length);
+        head.copy(out); tail.copy(out, head.length); tail.fill(0);
+        return out;
+      } catch { throw new VaultError("open_failed"); }
+      finally { head.fill(0); }
+    });
+    fields = fieldsOf(plain);
+    const [username, password, totp] = fields;
+    if (!username || !password) throw new VaultError("bad_fields");
+    return await saveLogin(c, meta, { username, password, totp });
+  } finally {
+    if (plain) plain.fill(0);
+    wipeAll(key, ...fields);
+  }
+}
+
 /** The person's saved logins, for lists: no ciphertext, no wrapped key, nothing secret. Works with the switch off. */
 export function listLogins(conversationId) {
   const d = open({ create: false });
@@ -324,6 +440,43 @@ export function listLogins(conversationId) {
       consent_version, consent_at, fail_count, next_try_at, last_used_at, created_at
     FROM saved_logins WHERE conversation_id = ? ORDER BY site, id`).all(String(conversationId))
     .map(r => ({ ...r, username_hint: restcrypt.openAny(r.username_hint) }));
+}
+
+/**
+ * The saved logins for one site, for the filler to find and gate on (src/filler.js, vault PR 6): id,
+ * state, next_try_at, permission, the pinned origin and path, second_step and the site. No ciphertext,
+ * no wrapped key, nothing secret. `site` is a bare host ("amazon.com"); a login whose site is that host
+ * or a parent of it matches (a login saved for "example.test" answers a request for "login.example.test").
+ */
+export function peekForSignin(conversationId, site) {
+  const d = open({ create: false });
+  const host = String(site ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+  if (!d || !conversationId || !SITE_RE.test(host)) return [];
+  return d.prepare(`SELECT id, site, label, signin_origin, signin_path, permission, second_step, state, next_try_at, fail_count
+    FROM saved_logins WHERE conversation_id = ? ORDER BY id`).all(String(conversationId))
+    .filter(r => r.site === host || host === r.site || host.endsWith(`.${r.site}`) || r.site.endsWith(`.${host}`));
+}
+
+export const SIGNIN_STATES = ["unverified", "working", "wrong_password", "needs_person", "paused", "refused"];
+/**
+ * Move a saved login's row after a sign-in (src/filler.js, vault PR 6): its state, fail_count and
+ * next_try_at. Scoped to the person. Never touches a secret. Returns true when a row changed.
+ * `bumpFail` adds one to fail_count; `failCount` sets it outright (0 clears it on a success).
+ */
+export function setState(conversationId, id, { state = null, failCount = null, bumpFail = false, nextTryAt = null, clearNextTry = false } = {}) {
+  const d = open({ create: false });
+  const c = String(conversationId ?? "");
+  if (!d || !c || !Number.isSafeInteger(Number(id))) return false;
+  if (state !== null && !SIGNIN_STATES.includes(state)) throw new VaultError("bad_state");
+  const sets = [], args = [];
+  if (state !== null) { sets.push("state = ?"); args.push(state); }
+  if (bumpFail) sets.push("fail_count = fail_count + 1");
+  else if (Number.isSafeInteger(failCount)) { sets.push("fail_count = ?"); args.push(failCount); }
+  if (clearNextTry) sets.push("next_try_at = NULL");
+  else if (Number.isSafeInteger(nextTryAt)) { sets.push("next_try_at = ?"); args.push(nextTryAt); }
+  if (!sets.length) return false;
+  args.push(Number(id), c);
+  return Number(d.prepare(`UPDATE saved_logins SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args).changes) > 0;
 }
 
 /** Delete one login: the row, its ciphertext and its wrapped key (secure_delete zeroes them). Works with the switch off. */

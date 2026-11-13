@@ -7,7 +7,9 @@
 // put one in by accident.
 import { clock } from "./config.js";
 
-export const ROUTES = ["emailed_code", "emailed_link", "provider", "password_link"];
+// saved_login: the filler's first sign-in with a saved login (src/filler.js); saved_login_again: a
+// sign-in with a login that has signed in before.
+export const ROUTES = ["emailed_code", "emailed_link", "provider", "password_link", "saved_login", "saved_login_again"];
 /** The five the owner asked for, plus three for runs that are none of them. */
 export const OUTCOMES = ["signed_in", "blocked_by_site", "code_not_found", "wrong_code", "abandoned", "email_rejected", "no_email_route", "failed"];
 

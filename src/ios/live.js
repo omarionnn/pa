@@ -9,8 +9,9 @@ import * as db from "../db.js";
 import { clock } from "../config.js";
 import { pageFeed, fingerprint } from "./feed.js";
 import { iosAccount } from "./session.js";
-import { messageOut } from "./messages.js";
+import { messageOut, turnDoneOut } from "./messages.js";
 import { WEB } from "../web.js";
+import { progressEvents } from "../progress.js";
 
 export const TICK_MS = 400;
 export const PING_MS = 15_000;
@@ -37,6 +38,8 @@ export function liveRequest({ account, token, headers, query = {}, router = null
         closed = true;
         clearInterval(tick); clearInterval(beat); clearTimeout(stop);
         db.historyBus.off("row", onRow);
+        db.historyBus.off("turn", onTurn);
+        progressEvents.off("say", onProgress);
         webCh?.events?.off?.("typing", onTyping);
         const set = open.get(conv); set?.delete(me); if (set && !set.size) open.delete(conv);
         log({ ios_stream_end: why });
@@ -58,6 +61,21 @@ export function liveRequest({ account, token, headers, query = {}, router = null
         }
       };
       const onRow = (e) => { if (e?.conversationId !== conv || closed) return; try { if (!db.pageSessionExists(token)) return signedOut(); flush(); } catch { end("failed"); } };
+      // A turn ended: its replies first (so `done` never arrives before the reply it names), then `done`.
+      const onTurn = (e) => {
+        if (e?.conversationId !== conv || closed) return;
+        try { if (!db.pageSessionExists(token)) return signedOut(); flush(); write(`event: done\ndata: ${JSON.stringify(turnDoneOut(e))}\n\n`); } catch { end("failed"); }
+      };
+      // A tool started in a turn of theirs (src/progress.js): the line, and the message the turn answers.
+      // Their own message goes first, so `reply_to` always names a message the app already has.
+      const onProgress = (e) => {
+        if (e?.conversationId !== conv || closed) return;
+        try {
+          if (!db.pageSessionExists(token)) return signedOut();
+          flush();
+          write(`event: progress\ndata: ${JSON.stringify(progressOut(e, conv))}\n\n`);
+        } catch { end("failed"); }
+      };
       const webCh = router?.get?.(WEB) ?? null;
       const onTyping = (e) => { if (e?.to === account.address && !closed && db.pageSessionExists(token)) write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`); };
       const check = () => {
@@ -84,8 +102,15 @@ export function liveRequest({ account, token, headers, query = {}, router = null
       while (set.size > MAX_STREAMS) [...set][0].end("replaced");
       write("retry: 1500\n\n");
       db.historyBus.on("row", onRow);
+      db.historyBus.on("turn", onTurn);
+      progressEvents.on("say", onProgress);
       webCh?.events?.on?.("typing", onTyping);
       check();
     },
   };
+}
+
+/** The `progress` event's data: { reply_to, text, tool, at } (docs/ios-api.md). */
+export function progressOut(e, conv) {
+  return { reply_to: db.userRowIdOf(conv, e.handle), text: e.text, tool: e.tool, at: e.at };
 }

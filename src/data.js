@@ -62,6 +62,9 @@ const TABLES = [
   // Their record of each saved-login save, open and removal (src/savedlogins.js); `purpose` sealed.
   // The logins themselves are in data/logins.db: see exportFor / deleteAllFor below.
   "login_log",
+  // Their save-login links (src/loginintake.js): site, pinned sign-in page, their quoted request
+  // (sealed), when made and used. Never a login. Dropped from an export (a live link), gone on a delete.
+  "login_intake",
   // Which new features this person has been told about. Theirs like anything else keyed by
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.
@@ -354,7 +357,8 @@ const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger deta
 // fact_embeddings: vectors made from their facts, calls, actions and messages (src/recallindex.js).
 // Nothing readable to export, but made from their words, so a delete takes them.
 // pay_passkey_regs: a Face ID registration's challenge while it is under way, nothing else.
-const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings", "pay_passkey_regs"];
+// login_intake: a save-login link, live for thirty minutes; its row holds the link's hash and nonce.
+const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings", "pay_passkey_regs", "login_intake"];
 const REDACTED = "[not exported: this is a live credential]";
 
 function keepableThreadRow(r) {
