@@ -153,6 +153,8 @@ startOps({ runtime, router, log });
     const sweep = () => {
       try { const n = plaid.purgeOld(); if (n) log({ plaid_old_transactions_deleted: n }); } catch (e) { log({ plaid_purge_failed: String(e?.message ?? e).split("\n")[0].slice(0, 120) }); }
       plaid.retryRemovals().then(n => { if (n) log({ plaid_removals_retried: n }); }).catch(() => {});
+      // Somebody told connections were full is told once when there is room (plaid.tellWaiting).
+      try { const n = plaid.tellWaiting(); if (n) log({ plaid_room_told: n }); } catch (e) { log({ plaid_room_failed: String(e?.message ?? e).split("\n")[0].slice(0, 120) }); }
     };
     sweep();
     setInterval(sweep, 3600_000).unref();

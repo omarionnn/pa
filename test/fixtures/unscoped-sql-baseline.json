@@ -500,6 +500,7 @@
  "src/passkey.js | UPDATE UPDATE pay_approvals SET state = ? WHERE id = ? AND state = 'open'": 1,
  "src/passkey.js | UPDATE UPDATE pay_passkeys SET counter = ?, last_used_at = ? WHERE id = ?": 1,
  "src/plaid.js | DELETE DELETE FROM plaid_transactions WHERE date < ?": 1,
+ "src/plaid.js | SELECT SELECT COUNT(*) AS n FROM plaid_items": 1,
  "src/plaid.js | SELECT SELECT finished_at, outcome, expires_at FROM plaid_links WHERE id = ?": 1,
  "src/plan.js | SELECT SELECT MIN(created_at) AS t FROM accounts WHERE ${db.ACCOUNT_ADDR_MATCH}": 1,
  "src/planmeter.js | SELECT SELECT COUNT(*) AS calls, COALESCE(SUM(cartesia_seconds), 0) AS secs, COALESCE(SUM(cartesia_fell_back), 0) AS fell FROM calls WHERE cartesia_seconds IS NOT NULL": 1,
