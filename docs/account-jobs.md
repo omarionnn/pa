@@ -20,8 +20,38 @@ gate into `account_cancel_confirm`, pinned to the job, plan, site, run and open 
 price where given, the date access ends, or "gave no end date") and handed to the model with the
 question. Before their yes, ANY go-ahead question that is not plainly an earlier step (a reason, which
 plan, an offer to stay) is treated as the last step and goes to the gate; `account_job_answer`
-refuses it. The run's result must carry `RESULT: CANCELLED`; the merchant's cancellation email is
-the second proof. A run that cancels without stopping to ask is said as exactly that.
+refuses it. The run's result must end with one fixed line, read by `readResult`:
+`RESULT: CANCELLED NOW | ENDS: <date> | PAGE: "<the page's own line>"`, `RESULT: ALREADY CANCELLED | ENDS: … | PAGE: "…"`,
+`RESULT: NOT FOUND | PAGE: "…"` or `RESULT: NOT CANCELLED <why>` (the old bare `RESULT: CANCELLED` still reads as
+changed now). The page's line is kept as `account_jobs.page_line` and quoted back to them. Changed now: the
+merchant's cancellation email is the second proof. A run that cancels without stopping to ask is said as
+exactly that.
+
+**Already so** (2026-11-13: the owner's plan was already set to cancel on Nov 27, the run said it worked, and
+the job waited for an email that could never come). When the page already shows the plan set to end, the
+run changes nothing and asks nothing; the job ends `done` / `already_done` with no mail watch, and the line
+says what the page shows, that nothing was changed, and until when they keep access, quoting the page.
+It counts only on the page's own words (`lineShowsDone`: ending or not renewing, and no "renews on"), and
+only when their yes never went to the site; anything weaker is `not_cancelled`, said as not done. A bill
+whose page shows it already paid (`RESULT: ALREADY PAID | PAGE: "Amount due: $0.00"`) ends the same way, with
+nothing paid; a zero balance said without the page's line stays `nothing_paid`.
+
+**The manage link first.** A `page` they or their notice gave is where the run starts, and the task says it
+is their manage link. With no link, the latest manage page an earlier cancellation of theirs started on at
+the same site is used. A `not_found` that started on the front page asks for the link in its line.
+
+**Proof pictures.** Crossmint's API returns no picture of a run: a run has `status`, `result.summary` in
+words and `run.browser.embedUrl`, "a read-only live view of the browser in your app" (agents/checkouts/
+how-it-works) that is "`null` until a session exists" (agents/checkouts/follow-run); no screenshot,
+artifact or recording field is documented (read 2026-11-13). So these jobs keep the page's own line, and
+no picture is drawn or faked for them. Where Reason's OWN browser finished the work (signed in with a saved
+login, an errand on a page it opened), `browser_proof` sends one picture of the page with the result line
+(`src/proofshot.js`): refused on a sign-in page, a page with a secret box, or words holding a full card or
+bank number; secret boxes masked; cropped to the section holding the page's line, else the viewport;
+JPEG under 1.5 MB; sealed per person; in their export, unlinked on a delete, gone with the content
+retention window; nothing of the page comes back to the model. A caller-owned browser (`browser.cdp` on
+create) would let a Crossmint run drive a browser Reason can photograph, at the cost of the saved
+Crossmint profile and its way past sign-in walls; not done here.
 
 **Bill.** `account_bill_pay` needs the biller, the amount due and the account or invoice number (or,
 where the notice prints none, the notice's own pay link on the site named), a saved card, and room
