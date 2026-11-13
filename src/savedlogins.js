@@ -426,7 +426,7 @@ export async function withLogin(conversationId, id, liveOrigin, fn, { purpose = 
         if (row.totp_ct) totp = openField(k, itemId, "totp", origin, row.totp_ct);
       });
     } catch { throw new VaultError("open_failed"); }
-    d.prepare("UPDATE saved_logins SET last_used_at = ? WHERE id = ?").run(clock.now(), itemId);
+    d.prepare("UPDATE saved_logins SET last_used_at = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), itemId, c);
     outcome = "fill_failed";
     let out;
     try { out = await fn({ username, password, totp }); }
