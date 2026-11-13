@@ -25,6 +25,21 @@ function need() {
   return vaultKeyId();
 }
 
+// Which failures the vault tries again. A refusal (wrong context, wrong key, key off, bad request) is
+// final: retrying it only repeats the refusal in CloudTrail and makes the person wait. Decided on the
+// exception name first, because AWS sends ThrottlingException as HTTP 400.
+const NO_RETRY = new Set(["InvalidCiphertextException", "AccessDeniedException", "IncorrectKeyException", "NotFoundException",
+  "DisabledException", "KMSInvalidStateException", "ValidationException"]);
+const RETRY = new Set(["ThrottlingException", "KMSInternalException", "DependencyTimeoutException"]);
+/** The vault's retry decision for kmsCall. Exported for its test. */
+export function vaultRetry(err) {
+  const type = String(err?.kmsType ?? ""), status = Number(err?.kmsStatus ?? 0);
+  if (!status) return true;                     // network error or timeout: no answer from KMS
+  if (NO_RETRY.has(type)) return false;
+  if (RETRY.has(type)) return true;
+  return status >= 500 || status === 429;       // any other 4xx is a refusal
+}
+
 // AWS wants a string -> string map. An empty or non-string value would weaken the binding: refuse it.
 function contextOf(context) {
   const entries = Object.entries(context ?? {});
@@ -45,7 +60,7 @@ function keyBytes(j, op) {
 /** A fresh AES-256 data key: { plaintext: Secret, wrapped (base64, store this), keyId (the KMS key used) }. */
 export async function generateDataKey(context) {
   const KeyId = need();
-  const j = await kmsCall("GenerateDataKey", { KeyId, KeySpec: "AES_256", EncryptionContext: contextOf(context) });
+  const j = await kmsCall("GenerateDataKey", { KeyId, KeySpec: "AES_256", EncryptionContext: contextOf(context) }, { retry: vaultRetry });
   const plain = keyBytes(j, "GenerateDataKey");
   if (typeof j.CiphertextBlob !== "string" || !j.CiphertextBlob) { plain.fill(0); throw new Error("vault KMS: GenerateDataKey returned no wrapped key."); }
   return { plaintext: new Secret(plain), wrapped: j.CiphertextBlob, keyId: String(j.KeyId || KeyId) };
@@ -54,6 +69,6 @@ export async function generateDataKey(context) {
 /** Unwrap a stored data key. KMS checks the context; the key used is the configured one, never the row's. */
 export async function unwrap(wrapped, context) {
   const KeyId = need();
-  const j = await kmsCall("Decrypt", { CiphertextBlob: String(wrapped ?? ""), EncryptionContext: contextOf(context), KeyId });
+  const j = await kmsCall("Decrypt", { CiphertextBlob: String(wrapped ?? ""), EncryptionContext: contextOf(context), KeyId }, { retry: vaultRetry });
   return new Secret(keyBytes(j, "Decrypt"));
 }

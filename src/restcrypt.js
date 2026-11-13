@@ -185,8 +185,14 @@ export function sigv4({ method = "POST", host, path = "/", query = "", headers, 
   return { ...h, authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signed}, Signature=${signature}`, signature };
 }
 
-/** One signed AWS KMS JSON call (5 tries). Exported for src/vaultkms.js, the saved-login key source. */
-export async function kmsCall(target, payload) {
+/**
+ * One signed AWS KMS JSON call (5 tries). Exported for src/vaultkms.js, the saved-login key source.
+ * Optional `retry(err)` decides whether a failure is tried again; the default retries every failure
+ * (restcrypt's own calls pass nothing and keep that). A KMS answer that is not ok throws an Error with
+ * `kmsStatus` (the HTTP status) and `kmsType` (the exception name, e.g. "ThrottlingException"); a
+ * network error or timeout has neither.
+ */
+export async function kmsCall(target, payload, { retry = null } = {}) {
   const region = process.env.REASON_REST_KMS_REGION || process.env.AWS_REGION || "us-west-2";
   const host = process.env.REASON_REST_KMS_HOST || `kms.${region}.amazonaws.com`;
   const accessKeyId = process.env.AWS_ACCESS_KEY_ID, secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
@@ -202,9 +208,18 @@ export async function kmsCall(target, payload) {
     try {
       const r = await fetch(`${scheme}://${host}/`, { method: "POST", headers, body, signal: AbortSignal.timeout(8000) });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(`KMS ${target} ${r.status} ${j.__type ?? ""} ${j.message ?? ""}`.trim());
+      if (!r.ok) {
+        const err = new Error(`KMS ${target} ${r.status} ${j.__type ?? ""} ${j.message ?? ""}`.trim());
+        err.kmsStatus = r.status;
+        err.kmsType = String(j.__type ?? "").split("#").pop();
+        throw err;
+      }
       return j;
-    } catch (e) { last = e; await new Promise(res => setTimeout(res, 500 * 2 ** i)); }
+    } catch (e) {
+      last = e;
+      if (retry && !retry(e)) throw e;
+      await new Promise(res => setTimeout(res, 500 * 2 ** i));
+    }
   }
   throw last;
 }

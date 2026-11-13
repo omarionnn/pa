@@ -32,8 +32,9 @@ process.env.REASON_VAULT_KMS_KEY = "alias/reason-vault";
 process.env.REASON_SAVED_LOGINS = "off";
 after(() => rmSync(dir, { recursive: true, force: true }));
 
-// kmsCall (src/restcrypt.js) retries any failure 5 times, waiting 0.5 s to 8 s. Refused unwraps here
-// are meant to fail, so those five waits are cut to 1 ms in this file.
+// kmsCall (src/restcrypt.js) tries 5 times, waiting 0.5 s to 8 s; the vault does not retry a refusal
+// (src/vaultkms.js vaultRetry), only throttling, KMS-side and network failures. Those waits are cut to
+// 1 ms in this file.
 const realSetTimeout = globalThis.setTimeout;
 const BACKOFF = new Set([500, 1000, 2000, 4000, 8000]);
 globalThis.setTimeout = (fn, ms, ...a) => realSetTimeout(fn, BACKOFF.has(ms) ? 1 : ms, ...a);
@@ -47,6 +48,7 @@ async function standInKms() {
   const master = randomBytes(32);
   const names = new Set(["alias/reason-vault", arn]);
   const calls = [];          // { target, context, ok, gavePlaintext }
+  const fail = [];           // queued answers before the real one: [status, __type], e.g. a throttle
   const issued = [];         // every data key handed out, for the byte scans
   const bodies = [];         // every request body, to prove no field value was ever sent
   const canon = ctx => JSON.stringify(Object.keys(ctx).sort().map(k => [k, ctx[k]]));
@@ -65,6 +67,7 @@ async function standInKms() {
       let j;
       try { j = JSON.parse(body); } catch { return send(400, { __type: "SerializationException" }); }
       const context = j.EncryptionContext ?? {};
+      if (fail.length) { const [code, type] = fail.shift(); calls.push({ target, context, ok: false, gavePlaintext: false, why: type }); return send(code, { __type: type }); }
       if (!names.has(j.KeyId)) { calls.push({ target, context, ok: false, why: "key" }); return send(400, { __type: "NotFoundException" }); }
       if (target === "GenerateDataKey") {
         if (j.KeySpec !== "AES_256") return send(400, { __type: "ValidationException" });
@@ -94,7 +97,7 @@ async function standInKms() {
     });
   });
   await new Promise(r => server.listen(0, "127.0.0.1", r));
-  return { host: `127.0.0.1:${server.address().port}`, calls, issued, bodies, close: () => server.close(),
+  return { host: `127.0.0.1:${server.address().port}`, calls, issued, bodies, fail, close: () => server.close(),
     count: (target, ok) => calls.filter(c => c.target === target && (ok === undefined || c.ok === ok)).length };
 }
 const kms = await standInKms();
@@ -299,11 +302,39 @@ test("rule 1: a row whose origin was edited fails to unwrap at the stand-in: thr
     let ran = false;
     await assert.rejects(withLogin(ME, LOGIN, edited, () => { ran = true; }), { code: "unwrap_failed" }, why);
     const these = kms.calls.slice(before);
-    assert.ok(these.length >= 1 && these.every(c => c.target === "Decrypt" && !c.ok && !c.gavePlaintext && c.context.origin === edited), why);
+    assert.equal(these.length, 1, `${why}: a refused unwrap is asked exactly once, never retried`);
+    assert.ok(these.every(c => c.target === "Decrypt" && !c.ok && !c.gavePlaintext && c.context.origin === edited), why);
     assert.equal(ran, false, why);
   }
   editRow("UPDATE saved_logins SET signin_origin = ? WHERE id = ?", ORIGIN, LOGIN);
   await withLogin(ME, LOGIN, ORIGIN, () => {}); // and the true origin still opens
+});
+
+test("KMS retries: a throttle (HTTP 400) and a KMS-side failure are retried, then the login opens; a refusal is asked once", async () => {
+  const before = kms.calls.length;
+  kms.fail.push([400, "ThrottlingException"], [500, "KMSInternalException"]);
+  let opened = false;
+  await withLogin(ME, LOGIN, ORIGIN, ({ password }) => { opened = password instanceof Secret; });
+  assert.equal(opened, true);
+  assert.deepEqual(kms.calls.slice(before).map(c => [c.target, c.ok, c.why ?? ""]),
+    [["Decrypt", false, "ThrottlingException"], ["Decrypt", false, "KMSInternalException"], ["Decrypt", true, ""]]);
+  const b2 = kms.calls.length;
+  kms.fail.push([400, "AccessDeniedException"]);
+  await assert.rejects(withLogin(ME, LOGIN, ORIGIN, () => assert.fail("opened")), { code: "unwrap_failed" });
+  assert.equal(kms.calls.length - b2, 1, "AccessDenied: one call");
+  assert.equal(kms.fail.length, 0);
+});
+
+test("KMS retries: vaultRetry decides on the exception name, not the status alone", async () => {
+  const { vaultRetry } = await import("../src/vaultkms.js");
+  const e = (kmsStatus, kmsType) => Object.assign(new Error("KMS"), { kmsStatus, kmsType });
+  for (const t of ["InvalidCiphertextException", "AccessDeniedException", "IncorrectKeyException", "NotFoundException",
+    "DisabledException", "KMSInvalidStateException", "ValidationException"]) assert.equal(vaultRetry(e(400, t)), false, t);
+  for (const [s, t] of [[400, "ThrottlingException"], [500, "KMSInternalException"], [500, "DependencyTimeoutException"],
+    [503, ""], [502, "ServiceUnavailable"], [429, ""]]) assert.equal(vaultRetry(e(s, t)), true, `${s} ${t}`);
+  assert.equal(vaultRetry(new TypeError("fetch failed")), true, "network error");
+  assert.equal(vaultRetry(Object.assign(new Error("timeout"), { name: "TimeoutError" })), true, "timeout");
+  assert.equal(vaultRetry(e(400, "SomeOtherException")), false, "an unknown 4xx is a refusal");
 });
 
 test("rule 1: a row copied to another person, or moved to another login's id, does not unwrap; swapped fields do not open", async () => {
