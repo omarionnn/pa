@@ -825,13 +825,17 @@ const isCodeField = (f) => isProtected(f) && (f.input?.autoComplete === "one-tim
  */
 export function linkView(link) {
   if (!link) return { state: "expired" };
-  if (link.state === "connected") return { state: "connected", store: link.store, kind: link.kind };
   const run = link.run_id ? runRow(link.run_id) : null;
-  if (link.state === "failed") return { state: "failed", store: link.store, kind: link.kind, reason: failReason(run) };
+  // An account job's sign-in (src/accountjobs.js): the page says what it is for, never a checkout's words.
+  let job = null;
+  try { job = run && isJobRun(run) ? acctMod?.linkWords(run) ?? null : null; } catch { job = null; }
+  const forJob = job ? { job } : {};
+  if (link.state === "connected") return { state: "connected", store: link.store, kind: link.kind, ...forJob };
+  if (link.state === "failed") return { state: "failed", store: link.store, kind: link.kind, reason: failReason(run), ...forJob };
   // The checkout itself is over while the link still says open (the run died between two polls, or the
   // process was down when it did — 2026-10-31): the page says so, never "checking" for good.
   if (run && TERMINAL.has(run.status) && link.kind === "signin" && link.state === "open") {
-    return run.status === "succeeded" ? { state: "connected", store: link.store, kind: link.kind } : { state: "failed", store: link.store, kind: link.kind, reason: failReason(run) };
+    return run.status === "succeeded" ? { state: "connected", store: link.store, kind: link.kind, ...forJob } : { state: "failed", store: link.store, kind: link.kind, reason: failReason(run), ...forJob };
   }
   if (link.state !== "open" || clock.now() > link.expires_at) return { state: "expired", store: link.store, kind: link.kind };
   if (link.kind === "card") return { state: "card", kind: "card" };
@@ -839,7 +843,7 @@ export function linkView(link) {
   if (!rq || link.answered_request_id === link.request_id) {
     // Waiting on the store: since when (the answer, else the link), and how far the checkout has got.
     const since = link.answered_at ?? link.created_at;
-    return { state: "checking", store: link.store, kind: link.kind, since, waited: Math.max(0, clock.now() - since), stage: run?.stage || "", answered: !!link.answered_at };
+    return { state: "checking", store: link.store, kind: link.kind, since, waited: Math.max(0, clock.now() - since), stage: run?.stage || "", answered: !!link.answered_at, ...forJob };
   }
   const answered = new Set(link.answered_keys ? link.answered_keys.split(",") : []);
   const secret = rq.fields.filter(isProtected);
@@ -848,7 +852,7 @@ export function linkView(link) {
   if (secret.length && secret.every(isCodeField)) state = again ? "wrongcode" : "code";
   else if (again) state = "retry";
   return {
-    state, store: link.store, kind: link.kind, request: rq, answered: answered.size > 0,
+    state, store: link.store, kind: link.kind, request: rq, answered: answered.size > 0, ...forJob,
     ...(state === "signin" && run?.mode === "signed" ? { again: true, item: run.item || "" } : {}),
   };
 }
@@ -1066,6 +1070,8 @@ export function paymentAsk(row, { allIn = false } = {}) {
   const upTo = row.amount_kind === "exact" ? "" : "up to ";
   // No breakdown to show (owner 2026-10-31): the one number is said to be the whole of it.
   const whole = allIn && row.amount_kind === "exact" ? " (total incl. shipping and tax)" : "";
+  // A bill (src/accountjobs.js) is paid TO someone, and its one number is the payment page's own total.
+  if (runRow(row.run_id)?.mode === "job_bill") return `OK to pay ${upTo}${amountText(row)}${allIn && row.amount_kind === "exact" ? " (the payment page's total)" : ""} to ${where}${row.item ? ` for ${row.item}` : ""}?`;
   return `OK to pay ${upTo}${amountText(row)}${whole} at ${where}${row.item ? ` for ${row.item}` : ""}?`;
 }
 /** What a yes is pinned to (src/tools.js confirmTargetFor): the row, its run and request, and the amount. */

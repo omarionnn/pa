@@ -334,12 +334,14 @@ test("sign-in by emailed code: read from their mail by code, answered without th
   assert.equal(jobs.jobRow(OMARI, job_id).route, "emailed_code");
   ask(run_id, "req_confirm", CONFIRM_Q, [CONFIRM]);
   await shop.step(run_id);
-  assert.match(woke[0].t, /Tell them too: I signed in with the code Cardboard emailed you\./);
+  assert.equal(said[0].t, "I signed in with the code Cardboard emailed you.", "said once, by code, before the question");
+  assert.ok(!/signed in with the code/.test(woke[0].t), "never left to the model");
   await yesThroughTheGate(job_id);
   mailbox.hits = [mail("Cancellation confirmed")];
   end(run_id, CANCELLED);
   await shop.step(run_id);
-  assert.match(lastSaid(), /^Done\. Cardboard Starter at Cardboard is cancelled; access ends Nov 27, 2026\. Seen: .* I signed in with the code Cardboard emailed you\.$/);
+  assert.equal(lastSaid(), 'Done. Cardboard Starter at Cardboard is cancelled; access ends Nov 27, 2026. Seen: Cardboard\'s page said so, and their cancellation email arrived ("Cancellation confirmed").');
+  assert.equal(said.filter((x) => /signed in with the code/.test(x.t)).length, 1, "one line, once");
   assert.equal(lines[0].route, "emailed_code");
   // The code is in no record of the job and no log line.
   assert.ok(!JSON.stringify(q("SELECT * FROM account_jobs").all()).includes("481516"));
@@ -421,7 +423,7 @@ test("a password: ONE Reason page carrying Crossmint's protected input, texted o
   await shop.step(run_id);
   assert.equal(shop.isConnected(OMARI, "cardboard"), true, "the profile stays signed in: next time nothing is asked");
   assert.equal(lines[0].route, "sign_in_page");
-  assert.match(lastSaid(), /You signed in once on the page, and Cardboard stays signed in for next time\.$/);
+  assert.equal(said.filter((x) => x.t === "You signed in once on the page, and Cardboard stays signed in for next time.").length, 1, "said once, when they were past the sign-in");
 });
 
 test("no sign-in route at all: one line and stop (the page is not set up; a password asked for in the open)", async () => {
@@ -444,11 +446,31 @@ test("no sign-in route at all: one line and stop (the page is not set up; a pass
 });
 
 test("no path makes the picture sign-in link: signin_link is refused for a site a job is on, and the job's module never reaches for it", async () => {
-  const { job_id } = await cancelStarted();
+  const { job_id, run_id } = await cancelStarted();
   const held = jt.signinLinkRefusal(OMARI, "https://app.cardboard.app/login");
   assert.equal(held.blocked, "handled_by_account_job");
   assert.equal(held.job_id, job_id);
-  assert.equal(jt.signinLinkRefusal(OMARI, "notion.so"), null, "another site is not this job's");
+  const other = jt.signinLinkRefusal(OMARI, "notion.so");
+  assert.equal(other.blocked, "handled_by_account_job", "while a job is open no link is made for any site: the job may be signing in on an address that is not the merchant's own");
+  assert.match(other.error, /while account job \d+ \(Cardboard\) is still open/);
+  // Through the tool itself: refused, no link row, nothing texted.
+  say("send me a sign in link for cardboard");
+  const tool = await call("signin_link", { site: "cardboard.app" });
+  assert.equal(tool.blocked, "handled_by_account_job", JSON.stringify(tool).slice(0, 200));
+  assert.equal(said.length, 0, "nothing was texted");
+  // The job over: another site is its own business again; the job's own site stays refused for a day.
+  end(run_id, { status: "cancelled" });
+  await shop.step(run_id);
+  assert.equal(jt.signinLinkRefusal(OMARI, "notion.so"), null);
+  assert.equal(jt.signinLinkRefusal(OMARI, "cardboard.app").blocked, "handled_by_account_job");
+  // Before any job exists: a turn that asks to cancel a subscription or pay a bill never gets a sign-in link.
+  db.db.exec("DELETE FROM account_jobs");
+  assert.equal(jt.signinLinkRefusal(OMARI, "cardboard.app", { own: "Cancel my Cardboard Starter" }).blocked, "use_account_job");
+  assert.equal(jt.signinLinkRefusal(OMARI, "coned.com", { own: "can you pay my con ed bill" }).blocked, "use_account_job");
+  assert.equal(jt.signinLinkRefusal(OMARI, "notion.so", { own: "ok", cancelling: true }).blocked, "use_account_job", "a turn where cancel_route ran");
+  assert.equal(jt.signinLinkRefusal(OMARI, "resy.com", { own: "cancel my reservation at Carbone" }), null, "a reservation is not a subscription");
+  assert.equal(jt.signinLinkRefusal(OMARI, "notion.so", { own: "sign me in to notion" }), null);
+  assert.equal(jt.signinLinkRefusal(AMA, "cardboard.app", { own: "Cancel my Cardboard Starter" }), null, "nobody else is affected");
   assert.equal(jt.signinLinkRefusal(AMA, "cardboard.app"), null, "nobody else is affected");
   const src = readFileSync(new URL("../src/accountjobs.js", import.meta.url), "utf8") + readFileSync(new URL("../src/accountjobtools.js", import.meta.url), "utf8");
   for (const never of ["signin-remote", "./signin.js", "socialsignin", "pictures.js", "browser.js", "playwright", "embedUrl"]) assert.ok(!src.includes(`from "${never}`) && !new RegExp(`import[^\\n]*${never.replace(/[.]/g, "\\.")}`).test(src), `${never} is not imported`);
@@ -666,7 +688,7 @@ test("a bill is paid on the biller's own page through the pay path: exact total 
   await shop.step(run_id);
   assert.equal(said.length, 2);
   assert.equal(said[0].t, "Con Edison's page total is $84.05; the notice said $82.10 ($1.95 more, likely a card fee). The approval below is for the page's total.");
-  assert.match(said[1].t, /^OK to pay \$84\.05 \(total incl\. shipping and tax\) at Con Edison for your Con Edison bill \(Account 44-1234-5678-9\)\?/);
+  assert.match(said[1].t, /^OK to pay \$84\.05 \(the payment page's total\) to Con Edison for your Con Edison bill \(Account 44-1234-5678-9\)\?/);
   const row = shop.openPayment(OMARI);
   assert.equal(row.amount, "84.05");
   assert.equal(jobs.jobRow(OMARI, job_id).state, "needs_approval");
@@ -735,11 +757,12 @@ test("a bill: the cap, a declined card, no receipt, and a run that breaks after 
   assert.equal(lastSaid(), "Not done: the run ended without paying anything (The account shows a zero balance; nothing to pay.). Nothing was paid.");
   // Confirmed with no receipt, mail not connected: one weak proof is not "paid".
   mailbox.connected = false;
-  job = await run({ status: "succeeded", result: { outcome: "succeeded", purchase: { kind: "confirmed_without_receipt" }, summary: "Payment submitted." } });
+  const approved = async (s) => { payAsk(s.run_id, "req_pay", "82.10"); await shop.step(s.run_id); q("UPDATE shop_payments SET status = 'paid', answered_at = ? WHERE run_id = ?").run(clock.now(), s.run_id); };
+  job = await run({ status: "succeeded", result: { outcome: "succeeded", purchase: { kind: "confirmed_without_receipt" }, summary: "Payment submitted." } }, approved);
   assert.equal(job.outcome, "unconfirmed");
   assert.equal(lastSaid(), "Not confirmed: Con Edison's page said the payment went through but gave no receipt, and I can't see your email to look for theirs. Check Con Edison before paying again.");
   // A receipt with no mail connected: done on the receipt, said as such.
-  job = await run({ status: "succeeded", result: { outcome: "succeeded", purchase: { kind: "receipt_captured", receipt: { total: { amount: "82.10", currency: "USD" } } }, summary: "Paid." } });
+  job = await run({ status: "succeeded", result: { outcome: "succeeded", purchase: { kind: "receipt_captured", receipt: { total: { amount: "82.10", currency: "USD" } } }, summary: "Paid." } }, approved);
   assert.equal(job.outcome, "done_result_only");
   assert.equal(lastSaid(), "Done as far as I can see: $82.10 went to Con Edison for Account 44-1234-5678-9. Seen: the payment page's receipt ($82.10). I can't see your email, so I couldn't look for their confirmation email.");
   // The approval went out and the run broke: never "nothing was paid".
@@ -876,4 +899,219 @@ test("can a job be finished? only with the switch on for them AND what the job n
   assert.deepEqual(jobs.canFinish(OMARI, { ...bill, reference: "" }), { ok: false, why: "missing_reference" });
   delete process.env.REASON_ACCOUNT_JOBS;
   assert.deepEqual(jobs.canFinish(OMARI, bill), { ok: false, why: "switch_off" });
+});
+
+// ---------------------------------------------------------------- review, 2026-11-13: money on a cancellation, an unmarked last step, proof that is not proof
+const CARD_NUMBER = { key: "card_number", label: "Card number", required: true, handling: "standard", input: { kind: "text", autoComplete: "cc-number" } };
+const PAY_METHOD = { key: "method", label: "Payment method", required: true, handling: "standard", input: { kind: "choice", selection: { kind: "one" }, options: [{ value: "card", label: "Card on file" }, { value: "new", label: "A new card" }] } };
+const GO = { key: "go", label: "Go ahead?", required: true, handling: "standard", input: { kind: "choice", selection: { kind: "one" }, options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }] } };
+
+test("a cancellation asked for card details, a way to pay, or a fee: declined and ended by code, never put to anyone", async () => {
+  for (const [question, fields, why] of [
+    ["To finish cancelling, enter a card for the final balance.", [CARD_NUMBER], /comes with money to pay \(it asked for payment details\)/],
+    ["Choose how to settle your account before it closes.", [PAY_METHOD], /comes with money to pay \(it asked for payment details\)/],
+    ["CONFIRM CANCELLATION: Cardboard Starter, $12.00 per month. An early termination fee of $50.00 applies. Cancel it?", [CONFIRM], /comes with money to pay \(An early termination fee of \$50\.00 applies\.\)/],
+  ]) {
+    db.db.exec("DELETE FROM account_jobs; DELETE FROM shop_runs; DELETE FROM shop_payments;"); said.length = 0; woke.length = 0; calls.length = 0;
+    const { job_id, run_id } = await cancelStarted();
+    ask(run_id, "req_money", question, fields);
+    await shop.step(run_id);
+    assert.deepEqual(posted().at(-1), { type: "input_response", requestId: "req_money", action: "decline" }, question);
+    assert.ok(calls.some((c) => c.path.endsWith(`/${run_id}/cancel`)), "the run is ended");
+    assert.equal(woke.length, 0, "the model is never asked a payment question");
+    const job = jobs.jobRow(OMARI, job_id);
+    assert.equal(job.state, "not_done");
+    assert.equal(job.outcome, "payment_asked");
+    assert.match(lastSaid(), why);
+    assert.match(lastSaid(), /A cancellation through me can never pay, so I refused it and stopped\. Nothing was charged\. Cardboard Starter is unchanged\.$/);
+    assert.equal(q("SELECT COUNT(*) AS n FROM shop_payments").get().n, 0);
+    assert.equal((await call("account_job_answer", { job_id, answers: { card_number: "4242424242424242" } })).ok, false, "and nothing can answer it afterwards");
+    assert.equal((await call("account_cancel_confirm", { job_id })).ok, false);
+  }
+});
+
+test("a bill's page that wants card details typed into a form: never passed on, the run ended, nothing paid", async () => {
+  const { job_id, run_id } = await billStarted();
+  ask(run_id, "req_card", "Enter your card to pay $82.10.", [CARD_NUMBER]);
+  await shop.step(run_id);
+  assert.deepEqual(posted().at(-1), { type: "input_response", requestId: "req_card", action: "decline" });
+  assert.equal(woke.length, 0, "the model is never asked for a card number");
+  assert.equal(jobs.jobRow(OMARI, job_id).outcome, "no_safe_path");
+  assert.equal(lastSaid(), "Not done: I found no safe way to pay this bill on Con Edison's site (its page wanted card details typed in, which I never do). Nothing was paid.");
+});
+
+test("a last step that says there is NO fee is an ordinary last step; softer money words ride in the line they are asked", async () => {
+  const { job_id, run_id } = await cancelStarted();
+  ask(run_id, "req_confirm", "CONFIRM CANCELLATION: Cardboard Starter, $12.00 per month. There is no cancellation fee. You will still be billed $12.00 on Nov 20. Your access ends Nov 27, 2026. Cancel it?", [CONFIRM]);
+  await shop.step(run_id);
+  assert.equal(jobs.jobRow(OMARI, job_id).state, "needs_confirm");
+  assert.match(woke[0].t, /From the page's words that line is: "Cancel Cardboard Starter at Cardboard \(\$12\.00 per month\)\? Access ends Nov 27, 2026\."/);
+  assert.match(woke[0].t, /The page also says this about money: "You will still be billed \$12\.00 on Nov 20\."/);
+  assert.match(woke[0].t, /Use the same line as confirm_request's summary/);
+  assert.equal(jobs.feeStated("Cancelling is free of any termination fee."), "");
+  assert.equal(jobs.feeStated("You won't pay a cancellation fee."), "");
+  assert.equal(jobs.feeStated("A cancellation fee of $25 will be charged to your card."), "A cancellation fee of $25 will be charged to your card.");
+});
+
+test("before their yes, a go-ahead question in other words is still the last step: the gate, never a plain answer", async () => {
+  const { job_id, run_id } = await cancelStarted();
+  // An earlier step is the model's to answer.
+  ask(run_id, "req_why", "Why are you cancelling?", [{ key: "reason", label: "Reason", required: true, handling: "standard", input: { kind: "text" } }]);
+  await shop.step(run_id);
+  assert.equal(jobs.jobRow(OMARI, job_id).state, "needs_answer");
+  assert.equal((await call("account_job_answer", { job_id, answers: { reason: "Other" } })).ok, true);
+  // The last step with no marker and no "confirm" in it.
+  ask(run_id, "req_go", "Ready to end your subscription?", [GO]);
+  await shop.step(run_id);
+  assert.equal(jobs.jobRow(OMARI, job_id).state, "needs_confirm");
+  assert.match(woke.at(-1).t, /is at the LAST step and asks: "Ready to end your subscription\?"/);
+  assert.match(woke.at(-1).t, /Cardboard's page gave no end date\./);
+  assert.equal((await call("account_job_answer", { job_id, answers: { go: "yes" } })).error, "needs_the_gate");
+  assert.ok(!posted().some((p) => p.requestId === "req_go"), "nothing reached the site");
+  const { done } = await yesThroughTheGate(job_id);
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.deepEqual(posted().at(-1), { type: "input_response", requestId: "req_go", action: "submit", response: { kind: "form", answers: { go: "yes" } } });
+  // What a question is, at the edges.
+  const J = { kind: "cancel", confirmed_at: null };
+  assert.equal(jobs.classify(J, { question: "Proceed?", fields: [GO] }), "confirm");
+  assert.equal(jobs.classify(J, { question: "Unsubscribe now?", fields: [GO] }), "confirm");
+  assert.equal(jobs.classify(J, { question: "Do you have an account with us?", fields: [GO] }), "plain");
+  assert.equal(jobs.classify(J, { question: "We can pause your plan for a month instead. Would you like that?", fields: [GO] }), "plain", "an offer to stay is an earlier step: the model declines it");
+  assert.equal(jobs.classify(J, { question: "Which subscription do you want to cancel?", fields: [GO] }), "plain");
+  assert.equal(jobs.classify({ kind: "cancel", confirmed_at: 5 }, { question: "Proceed?", fields: [GO] }), "plain", "after their yes it goes through");
+  assert.equal(jobs.classify({ kind: "bill" }, { question: "Proceed?", fields: [GO] }), "plain");
+  assert.equal(jobs.classify({ kind: "bill" }, { question: "How do you want to pay?", fields: [PAY_METHOD] }), "plain", "a bill may be asked how to pay; only card details are refused");
+});
+
+test("mail that is about it but does not say it happened is never proof", async () => {
+  const now = clock.now();
+  const seen = async (job, subject, from, auth) => { mailbox.hits = [mail(subject, from, auth)]; return (await jobs.lookForMail(job)).state; };
+  const cancelJob = { conversation_id: OMARI, kind: "cancel", host: "cardboard.app", name: "Cardboard", what: "Cardboard Starter", mail_domains: "", created_at: now, confirmed_at: now };
+  for (const no of ["Confirm your cancellation", "We could not cancel your subscription", "Your cancellation request is pending", "Your order was cancelled", "Before you cancel: 50% off", "Cancellation policy update"]) assert.equal(await seen(cancelJob, no), "none", no);
+  for (const yes of ["Your subscription has been canceled", "Cancellation confirmed", "Subscription cancelled", "You've cancelled Cardboard Starter", "Sorry to see you go"]) assert.equal(await seen(cancelJob, yes), "seen", yes);
+  const billJob = { conversation_id: OMARI, kind: "bill", host: "coned.com", name: "Con Edison", what: "bill", amount: "82.10", mail_domains: "", created_at: now, paid_at: now };
+  const coned = ["Con Edison <billing@coned.com>", "mx.google.com; dkim=pass header.i=@coned.com"];
+  for (const no of ["Your invoice is unpaid", "Your payment failed", "Payment declined: update your card", "Your bill is past due", "We couldn't process your payment", "Your refund receipt"]) assert.equal(await seen(billJob, no, ...coned), "none", no);
+  for (const yes of ["Payment received", "Your receipt from Con Edison", "Thank you for your payment", "Your bill has been paid"]) assert.equal(await seen(billJob, yes, ...coned), "seen", yes);
+  // A bill paid on a payment service's address: that service's mail counts only when it names the biller or the amount paid.
+  const hosted = { ...billJob, host: "invoice.stripe.com", name: "Anthropic", amount: "6.00", mail_domains: "anthropic.com" };
+  const stripe = ["Stripe <receipts@stripe.com>", "mx.google.com; dkim=pass header.i=@stripe.com"];
+  assert.equal(await seen(hosted, "Your receipt from Cardboard #1042", ...stripe), "none", "somebody else's receipt from the same service");
+  assert.equal(await seen(hosted, "Your receipt from Anthropic, PBC #2231", ...stripe), "seen");
+  assert.equal(await seen(hosted, "Payment received", "Anthropic <billing@mail.anthropic.com>", "mx.google.com; dkim=pass header.i=@mail.anthropic.com"), "seen", "the biller's own address needs no name in the subject");
+});
+
+test("a cancellation that went through without stopping for their yes is said as that; a purchase on a cancel run is never 'done'", async () => {
+  mailbox.connected = false;
+  let s = await cancelStarted();
+  end(s.run_id, CANCELLED);
+  await shop.step(s.run_id);
+  assert.match(lastSaid(), /^Done as far as I can see: Cardboard Starter at Cardboard is cancelled; access ends Nov 27, 2026\..* It went through without stopping for your yes at the last step, which I had asked Cardboard's page to do\.$/);
+  db.db.exec("DELETE FROM account_jobs"); said.length = 0;
+  s = await cancelStarted();
+  end(s.run_id, { status: "succeeded", result: { outcome: "succeeded", purchase: { kind: "receipt_captured", receipt: { total: { amount: "12.00", currency: "USD" } } }, summary: "Renewed Cardboard Starter.\nRESULT: CANCELLED" } });
+  await shop.step(s.run_id);
+  const job = jobs.jobRow(OMARI, s.job_id);
+  assert.equal(job.state, "not_done");
+  assert.equal(job.outcome, "unexpected_purchase");
+  assert.match(lastSaid(), /^Check this: Cardboard's page reports a purchase \(\$12\.00\) on a run that was only meant to cancel Cardboard Starter\. I approved no payment/);
+  assert.equal(q("SELECT COUNT(*) AS n FROM shop_payments").get().n, 0);
+});
+
+test("a bill the page says was paid without their approval (a card saved at the biller): never 'done', said as what it is", async () => {
+  mailbox.connected = false;
+  const s = await billStarted();
+  end(s.run_id, { status: "succeeded", result: { outcome: "succeeded", purchase: { kind: "receipt_captured", receipt: { total: { amount: "82.10", currency: "USD" }, merchantOrderId: "CE-1" } }, summary: "Paid with the card on file." } });
+  await shop.step(s.run_id);
+  const job = jobs.jobRow(OMARI, s.job_id);
+  assert.equal(job.state, "not_done");
+  assert.equal(job.outcome, "paid_unapproved");
+  assert.equal(lastSaid(), "Check this: Con Edison's page says a payment went through ($82.10, confirmation CE-1), but not through the approval I ask you for, so it likely used a card saved at Con Edison. I did not approve it. Look at your Con Edison account before paying anything again.");
+});
+
+test("a subscription managed on a billing service's address: the sign-in line names that address, and the site's shared name is not taught the merchant's", async () => {
+  say("cancel my Cardboard Starter subscription");
+  const out = await call("account_cancel", { site: "app.link.com", plan: "Cardboard Starter", name: "Cardboard", notice_from: "stripe.com" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  ask(out.run_id, "req_login", "Enter the code sent to your phone.", [CODE_SEALED]);
+  await shop.step(out.run_id);
+  assert.match(said[0].t, /^Cardboard's account page \(link\.com\) wants you signed in before I can cancel Cardboard Starter\. Sign in once here and it stays signed in for next time\. What you type goes straight to link\.com, not to me\.\nhttps:\/\/heyreason\.test\/web\/connect\//);
+  assert.ok(!q("SELECT name FROM shop_sites").all().some((r) => /cardboard/i.test(r.name)), "link.com is not renamed Cardboard for everyone");
+});
+
+test("a bill whose payment page names somebody else as the payee: said before the ask, in the page's word", async () => {
+  let s = await billStarted();
+  payAsk(s.run_id, "req_pay", "82.10", "QuickPay Services");
+  await shop.step(s.run_id);
+  assert.equal(said[0].t, 'Look before you approve: the payment page names who gets paid as "QuickPay Services", not Con Edison. The approval below pays QuickPay Services.');
+  assert.match(said[1].t, /^OK to pay \$82\.10 \(the payment page's total\) to QuickPay Services for your Con Edison bill/);
+  // The biller under its legal name, or the site's own name: nothing extra is said.
+  for (const name of ["Consolidated Edison / Con Edison Company of New York, Inc.", "ConEd"]) {
+    db.db.exec("DELETE FROM account_jobs; DELETE FROM shop_runs; DELETE FROM shop_payments;"); said.length = 0;
+    s = await billStarted();
+    payAsk(s.run_id, "req_pay2", "82.10", name);
+    await shop.step(s.run_id);
+    assert.ok(!said.some((x) => /Look before you approve/.test(x.t)), name);
+  }
+});
+
+test("no loops across sites either: a day's starts for one person have a ceiling", async () => {
+  say("cancel all of these");
+  for (let i = 0; i < jobs.STARTS_PER_DAY_ALL; i++) assert.equal((await call("account_cancel", { site: `site${i}.example.org`, plan: "Plan" })).ok, true, `start ${i}`);
+  const before = calls.length;
+  const more = await call("account_cancel", { site: "one-more.example.org", plan: "Plan" });
+  assert.equal(more.blocked, "tried_enough");
+  assert.equal(calls.length, before, "nothing reached Crossmint");
+});
+
+test("cancel_route where account jobs are on: the last press is account_cancel_confirm's, and that turn gets no sign-in link", async () => {
+  say("how do I get out of this subscription");
+  const all = await call("cancel_route", {});
+  assert.equal(all.ok, true, JSON.stringify(all).slice(0, 200));
+  const r = await call("cancel_route", { service: all.routes[0].service });
+  assert.match(r.gate, /account_cancel/);
+  assert.ok(!/subscription_cancel_commit/.test(r.gate));
+  assert.equal(offers.turnState(OMARI).cancelling, true);
+  assert.equal(jt.signinLinkRefusal(OMARI, "notion.so", offers.turnState(OMARI)).blocked, "use_account_job");
+  // Somebody the switch does not reach reads the old line and is refused nothing.
+  say("how do I cancel", AMA);
+  const theirs = await runTool("cancel_route", { service: all.routes[0].service }, { conversationId: AMA, messages: [] });
+  if (theirs.ok) assert.match(theirs.gate, /subscription_cancel_commit/);
+  assert.equal(jt.signinLinkRefusal(AMA, "notion.so", offers.turnState(AMA)), null);
+});
+
+test("the one sign-in page a job texts says what it is for, in true words: no checkout talk, the plan's name escaped", async () => {
+  const pages = await import("../src/pages/webconnect.js");
+  say("cancel my plan");
+  const out = await call("account_cancel", { site: "cardboard.app", plan: "Starter <b>Plus</b>", name: "Cardboard" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  ask(out.run_id, "req_login", "Enter your email and password to sign in.", [EMAIL, PASSWORD]);
+  await shop.step(out.run_id);
+  const token = said[0].t.split("/").pop();
+  const view = shop.linkView(shop.linkFor(token));
+  assert.deepEqual(view.job, { kind: "cancel", what: "Starter <b>Plus</b>", name: "Cardboard" });
+  const html = pages.renderView(view).html;
+  assert.match(html, /Sign in to Cardboard\./);
+  assert.match(html, /Then I can cancel Starter &lt;b&gt;Plus&lt;\/b&gt;\./);
+  assert.match(html, /Cancel Starter &lt;b&gt;Plus&lt;\/b&gt;, and only after your yes in the chat\./);
+  assert.match(html, /I change nothing else on your account\./);
+  assert.match(html, /data-protected="password"/, "the password is Crossmint's sealed field");
+  for (const never of ["check out", "Fill a cart", "account settings", "BOUGHT", "<b>Plus</b>", "ACCOUNT?"]) assert.ok(!html.includes(never), never);
+  // A sealed code next, then the end screens: a job's words there too.
+  ask(out.run_id, "req_otp", "Enter the code Cardboard sent you.", [CODE_SEALED]);
+  await shop.step(out.run_id);
+  const code = pages.renderView(shop.linkView(shop.linkFor(token))).html;
+  assert.match(code, /NOTHING CANCELLED YET/);
+  assert.match(code, /Ready to cancel Starter &lt;b&gt;Plus&lt;\/b&gt;/);
+  assert.ok(!/BOUGHT|check out/.test(code));
+  end(out.run_id, { status: "failed", reason: "input_expired" });
+  await shop.step(out.run_id);
+  const over = pages.renderView(shop.linkView(shop.linkFor(token))).html;
+  assert.match(over, /Nothing was changed\./);
+  assert.match(over, /NOTHING CANCELLED/);
+  assert.ok(!/BOUGHT|Nothing was charged/.test(over));
+  // A store checkout's page is word for word what it was.
+  const store = pages.renderView({ state: "signin", store: "cardboard", kind: "signin", request: { requestId: "r", fields: [EMAIL, PASSWORD] }, answered: false }).html;
+  assert.match(store, /Then I can check out there with your card\./);
+  assert.match(store, /account settings/);
 });

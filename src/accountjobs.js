@@ -124,7 +124,7 @@ const short = (s, n = 160) => { const t = String(s ?? "").replace(/\s+/g, " ").t
 // the fields are built here from fixed lists, so a caller cannot put one in by accident.
 export const ROUTES = ["saved_profile", "emailed_code", "emailed_link", "texted_code", "sign_in_page", "none"];
 export const OUTCOMES = [
-  "done", "done_result_only", "waiting_mail", "unconfirmed",
+  "done", "done_result_only", "waiting_mail", "unconfirmed", "unexpected_purchase", "paid_unapproved",
   "refused_by_cap", "payment_asked", "blocked_browser", "human_check", "site_error", "no_safe_path", "payment_declined",
   "not_found", "not_cancelled", "nothing_paid", "no_answer", "no_signin", "no_signin_route", "declined", "stopped", "service_failed", "start_failed",
 ];
@@ -223,25 +223,71 @@ const isIdentity = (f) => ["email", "username", "tel"].includes(auto(f)) || /\b(
 const isSecretWord = (f) => auto(f) === "current-password" || /\bpass ?word\b/.test(label(f));
 const isCodeLike = (f) => auto(f) === "one-time-code"
   || (/\b(code|otp|passcode|verification|magic link|sign ?in link|login link)\b/.test(label(f)) && !/\b(zip|postal|promo|coupon|discount|country|area|gift|referral|billing)\b/.test(label(f)));
-const CANCEL_Q = /\bcancel|terminat|end (my|your|the) (plan|subscription|membership)/i;
-const CONFIRM_Q = /\b(confirm|are you sure|final|proceed|go ahead|finish|yes)\b/i;
+const CANCEL_Q = /\bcancel|terminat|unsubscrib|\bend(ing)? (my |your |the |this )?(plan|subscription|membership|service)|\bstop (my |your |the |this )?(plan|subscription|membership|renewal|service)|turn(ing)? off auto-?renew/i;
+const CONFIRM_Q = /\b(confirm|are you sure|final|proceed|go ahead|continue|finish|ready|yes)\b/i;
+const SIGNIN_Q = /sign ?in|log ?in|password|verification code/i;
+// An earlier step of a cancellation, which the model answers itself: a reason, which plan, an offer to stay.
+const PRE_STEP = /\b(why|reason|feedback|survey|tell us|which|select|choose|pick|offer|discount|pause|downgrade|switch (plan|to)|stay|instead)\b/i;
+// A field that asks for money details: a card or a bank account. Never answered from anywhere here.
+const isPayField = (f) => /^cc-/.test(auto(f))
+  || /\b(card ?number|credit card|debit card|card details|cvv|cvc|card security code|name on (the )?card|expir(y|ation) (date|month|year)|mm ?\/ ?yy|bank account|routing number|iban)\b/.test(label(f));
+// On a cancellation, being asked how to pay at all is a payment question too.
+const isPayChoice = (f) => /\bpayment (method|details|card|option)s?\b|\bhow (would|do) you (like|want) to pay\b|\bpay with\b/.test(label(f));
+// Words that say cancelling itself costs money (a fee, a penalty), unless the same breath says there is none.
+const FEE_WORDS = /\b(?:cancell?ation|termination|early[- ]termination|early[- ]exit|exit|break(?:age)?)\s+(?:fee|charge|penalty)\b|\bpenalty\b|\bfee of\b|\bearly termination\b/gi;
+const NEGATED = /\b(no|not|never|without|won'?t|isn'?t|aren'?t|waived?|free of|zero)\b[^.;:!?]{0,24}$/i;
+// Softer money words on a last step (a final bill, a balance): never a stop, always said in the line they are asked.
+const MONEY_WORDS = /\b(?:will|would|may|must)\s+(?:still\s+)?(?:be\s+)?(?:charged|billed)\b|\bbalance (?:due|owed|remaining)\b|\bremaining (?:balance|payments?)\b|\bfinal (?:bill|charge|payment|invoice)\b|\bowe\b|\bno refunds?\b|\bnon-?refundable\b/i;
+/** The sentence around a place in a text (a full stop inside a number, $12.00, does not end one). */
+const sentenceAt = (text, i) => {
+  let s = 0;
+  for (const m of text.slice(0, i).matchAll(/[.!?:]\s+/g)) s = m.index + m[0].length;
+  const e = text.slice(i).search(/[.!?](\s|$)/);
+  return text.slice(s, e < 0 ? text.length : i + e + 1).trim();
+};
+/** The words in a question that say cancelling costs money, or "" when it says no such thing. */
+export function feeStated(text) {
+  const t = String(text ?? "");
+  for (const m of t.matchAll(FEE_WORDS)) {
+    if (NEGATED.test(t.slice(Math.max(0, m.index - 40), m.index))) continue;
+    return short(sentenceAt(t, m.index), 140);
+  }
+  return "";
+}
+/** Softer money words on a question (a final bill, no refund), for the line they are asked: "" when none. */
+export function moneyStated(text) {
+  const t = String(text ?? "");
+  const m = MONEY_WORDS.exec(t);
+  return m ? short(sentenceAt(t, m.index), 140) : "";
+}
 /**
  * What an open form is, from its fields and its words:
+ *   pay      — it asks for card or bank details, or (a cancellation) says cancelling costs a fee: never answered
  *   page     — a protected field (a password; a code Crossmint sealed): only the Reason page can answer
  *   secret   — a password-like field that is NOT protected: never answered from anywhere (no route)
  *   code     — a one-time code or sign-in link in a standard field (identity fields may ride along)
  *   identity — only their email / username / phone
- *   confirm  — a cancellation's last step (the task's marker, or a cancel-and-confirm question)
+ *   confirm  — a cancellation's last step: the task's marker, a cancel-and-confirm question, and, before
+ *              their yes, ANY go-ahead question that is not plainly an earlier step (asking once too
+ *              often costs a line; answering the last step without them costs a subscription)
  *   plain    — anything else
  */
 export function classify(job, rq) {
   const fields = rq?.fields ?? [];
+  if (fields.some(isPayField)) return "pay";
+  if (job.kind === "cancel" && (fields.some(isPayChoice) || feeStated(rq?.question))) return "pay";
   if (fields.some((f) => f?.handling === "protected")) return "page";
   if (fields.some(isSecretWord)) return "secret";
   if (fields.some(isCodeLike)) return "code";
   if (fields.length && fields.every(isIdentity)) return "identity";
   const words = String(rq?.question ?? "");
-  if (job.kind === "cancel" && (words.toUpperCase().includes(CONFIRM_MARK) || (CANCEL_Q.test(words) && CONFIRM_Q.test(words) && !/sign ?in|log ?in|password|verification code/i.test(words)))) return "confirm";
+  if (job.kind === "cancel") {
+    if (words.toUpperCase().includes(CONFIRM_MARK)) return "confirm";
+    if (!SIGNIN_Q.test(words)) {
+      if (CANCEL_Q.test(words) && CONFIRM_Q.test(words)) return "confirm";
+      if (!job.confirmed_at && !PRE_STEP.test(words) && (CANCEL_Q.test(words) || CONFIRM_Q.test(words))) return "confirm";
+    }
+  }
   return "plain";
 }
 /** Where the site says it sent a code: "email", "text" or "" (it did not say). */
@@ -276,6 +322,13 @@ const SIGNED_IN_BY = {
   sign_in_page: (n) => ` You signed in once on the page, and ${n} stays signed in for next time.`,
 };
 const routeLine = (job) => SIGNED_IN_BY[job.route]?.(job.name) ?? "";
+/** Is the name they know this by the site's own? "Cardboard" on cardboard.app is; on link.com (a billing service) it is not. */
+const nameFitsHost = (name, host) => sameName(name, registrableOf(host).split(".")[0]);
+// How a sign-in line names the place: the merchant where the site is its own; the site's address beside it where a billing service runs the account.
+/** Their mail was read for a sign-in code or link: the line that says so, once per job ("" when it was said, or was not so). */
+const mailRouteOnce = (job) => (["emailed_code", "emailed_link"].includes(job.route) && once(job, "routeline") ? routeLine(job) : "");
+const siteWords = (j) => (nameFitsHost(j.name, j.host) ? j.name : `${j.name}'s account page (${registrableOf(j.host)})`);
+const whereWords = (j) => (nameFitsHost(j.name, j.host) ? j.name : registrableOf(j.host));
 /**
  * Why a job is not done, in one plain line. Every reason a run can end on has its own; none claims a
  * change that was not seen, and each says what is true about money.
@@ -288,7 +341,11 @@ export function notDoneLine(job, reason, { detail = "", amount = "" } = {}) {
     case "refused_by_cap": return cancel
       ? `Not done: cancelling ${job.what} at ${n} would have cost money, and a cancellation through me can never pay. Nothing was charged. ${same}`
       : `Not done: ${n}'s page came to more than the bill plus a fee allowance, so it stopped before paying. Nothing was paid.`;
-    case "payment_asked": return `Not done: ${n}'s page asked for a payment${amount ? ` (${amount})` : ""} before it would cancel ${job.what}. I refused it and stopped. Nothing was charged. ${same}`;
+    case "payment_asked": return detail
+      ? `Not done: ${n}'s page says cancelling ${job.what} comes with money to pay${d}. A cancellation through me can never pay, so I refused it and stopped. Nothing was charged. ${same}`
+      : `Not done: ${n}'s page asked for a payment${amount ? ` (${amount})` : ""} before it would cancel ${job.what}. I refused it and stopped. Nothing was charged. ${same}`;
+    case "unexpected_purchase": return `Check this: ${n}'s page reports a purchase${d} on a run that was only meant to cancel ${job.what}. I approved no payment and my limit for it was a millionth of a dollar. Look at your ${n} account and your card.`;
+    case "paid_unapproved": return `Check this: ${n}'s page says a payment went through${d}, but not through the approval I ask you for, so it likely used a card saved at ${n}. I did not approve it. Look at your ${n} account before paying anything again.`;
     case "blocked_browser": return `Not done: ${n} refused the browser I use for this, so I never got to ${cancel ? "your subscription" : "the payment page"}. ${same}`;
     case "human_check": return `Not done: ${n} put up a human check that I can't pass. ${same}`;
     case "site_error": return `Not done: ${n}'s site kept showing an error${d}. ${same}`;
@@ -340,8 +397,12 @@ export const mailNeverLine = (job) => (job.kind === "cancel"
   : `Still no confirmation email from ${job.name} a day later. The payment page said it was paid; I can't confirm it beyond that, so check your account there.`);
 
 // ---------------------------------------------------------------- the merchant's own mail
-const CANCEL_MAIL = /cancel+(ed|ation|led)|subscription (has )?(ended|been cancel)|sorry to see you go|will not renew|won'?t (be )?renew|membership (has )?ended|plan (has )?(ended|been cancel)/i;
-const PAID_MAIL = /payment (was )?(received|confirm|success|processed|posted|complete)|receipt|thank(s| you) for (your|the) payment|we('ve| have)? received your payment|paid/i;
+// What counts as the merchant saying it happened, and what never does: mail that asks for a click to
+// finish, says it failed, or is about an order or a booking is not proof (a wrong "done" is the worst line here).
+const CANCEL_MAIL = /\b(has been|have been|is|is now|was|are|successfully|you(['’]ve| have)?) cancel+ed\b|\bcancel+ed your\b|(^|[:–—-]\s*)cancel+ed\b|\bcancel+ation (is |has been |was )?(confirm(ed|ation)|complete[d]?|processed|successful)\b|\b(subscription|plan|membership|renewal|auto-?renew(al)?) (has been |is |was )?(cancel+ed|ended|turned off)\b|\b(subscription|membership|plan) has ended\b|sorry to see you go|\bwill not renew\b|\bwon['’]?t (be )?renew/i;
+const NOT_CANCEL_MAIL = /\b(not|unable to|could ?n.t|failed to|did ?n.t) (be(en)? )?(cancel|process)|\bconfirm your cancel|\bto (complete|finish|confirm) (your |the )?cancel|\bcancel\w* (request )?(is |was )?(pending|failed|unsuccessful|declined)|\b(order|appointment|booking|reservation|delivery|shipment|payment|transaction|meeting|event|flight|trip|ticket|class|session)\b[^.]{0,30}\bcancel+ed\b/i;
+const PAID_MAIL = /\bpayment (was |has been |is )?(received|confirm(ed|ation)|successful|processed|posted|complete[d]?)\b|\breceipt\b|\bthank(s| you) for (your|the) payment\b|\bwe(['’]ve| have)? received your payment\b|\b(has been|have been|was|is|successfully|you(['’]ve| have)?) paid\b|\bpaid in full\b/i;
+const NOT_PAID_MAIL = /\b(unpaid|not (been |yet )?(paid|processed|received)|past due|overdue|unsuccessful|refund(ed)?)\b|\b(payment|charge|transaction|card)\b[^.]{0,30}\b(declined|fail(ed|ure|s)?)\b|\b(fail(ed|ure)|declined)\b[^.]{0,30}\b(payment|charge|transaction|card)\b|\b(could ?n.t|unable to) (process|charge|complete)|\bproblem (with|processing)\b|\baction (needed|required)\b|\bupdate your (payment|card|billing)/i;
 async function gmailLook(conversationId, { domains, since }) {
   const google = await import("./google.js");
   const tokens = await google.allAccessTokens(conversationId, { scope: google.TOOL_SCOPES.gmail_search });
@@ -377,15 +438,21 @@ export async function lookForMail(job) {
   if (!r?.ok) return { state: "unread" };
   if (!r.connected) return { state: "not_connected" };
   const about = job.kind === "cancel" ? CANCEL_MAIL : PAID_MAIL;
+  const never = job.kind === "cancel" ? NOT_CANCEL_MAIL : NOT_PAID_MAIL;
   const own = registrableOf(job.host);
-  const names = [job.what, job.name].map((s) => String(s ?? "").toLowerCase().trim()).filter((s) => s.length >= 3);
+  // What ties a mail to THIS job when the sender alone does not (a billing service's mail, or a site that
+  // is not the merchant's own): the plan or the merchant by name; for a bill, the merchant or the amount paid.
+  const paidAmount = job.kind === "bill" ? String((job.receipt ? JSON.parse(job.receipt).total : "") || job.amount || "") : "";
+  const names = (job.kind === "cancel" ? [job.what, job.name] : [job.name, paidAmount]).map((s) => String(s ?? "").toLowerCase().trim()).filter((s) => s.length >= 3);
+  const siteIsTheirs = nameFitsHost(job.name, job.host);
   for (const h of r.hits ?? []) {
     if (h.at && h.at < since) continue;
     if (!senderMatches({ from: h.from, auth: h.auth }, domains)) continue;
     const text = `${h.subject} ${h.snippet}`;
-    if (!about.test(text)) continue;
-    const fromSite = registrableOf(fromDomain(h.from)) === own;
-    if (!fromSite && !names.some((s) => text.toLowerCase().includes(s))) continue;
+    if (!about.test(text) || never.test(text)) continue;
+    const sender = registrableOf(fromDomain(h.from));
+    const plainlyTheirs = (sender === own && siteIsTheirs) || nameFitsHost(job.name, sender);
+    if (!plainlyTheirs && !names.some((s) => text.toLowerCase().includes(s))) continue;
     return { state: "seen", subject: h.subject };
   }
   return { state: "none" };
@@ -427,7 +494,10 @@ export function resume() {
 
 // ---------------------------------------------------------------- starting a job
 export const STARTS_PER_DAY = 3;
+/** Every site together, per person and day: a model that keeps trying other addresses for the same thing stops here. */
+export const STARTS_PER_DAY_ALL = 8;
 const startsToday = (c, kind, host) => q("SELECT COUNT(*) AS n FROM account_jobs WHERE conversation_id = ? AND kind = ? AND host = ? AND created_at > ?").get(c, kind, host, clock.now() - 24 * 3600_000).n;
+const startsTodayAll = (c) => q("SELECT COUNT(*) AS n FROM account_jobs WHERE conversation_id = ? AND created_at > ?").get(c, clock.now() - 24 * 3600_000).n;
 const openJob = (c, kind, host) => q(`SELECT * FROM account_jobs WHERE conversation_id = ? AND kind = ? AND host = ? AND state IN (${OPEN_STATES.map(() => "?").join(", ")}) ORDER BY id DESC`).get(c, kind, host, ...OPEN_STATES) ?? null;
 const cleanName = (s, host) => short(String(s ?? "").replace(/["`\n\r]/g, " "), 60) || shop.storeName(shop.storeKey(host)) || host;
 const cleanDomains = (s) => String(s ?? "").split(/[\s,;]+/).map((d) => registrableOf((d.includes("@") ? d.split("@").pop() : d).replace(/[<>]/g, "").toLowerCase())).filter((d) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d)).slice(0, 3).join(",");
@@ -440,10 +510,14 @@ async function begin({ conversationId, kind, at, name, what, amount = "", refere
   if (startsToday(conversationId, kind, at.host) >= STARTS_PER_DAY) {
     return { ok: false, blocked: "tried_enough", say: `This was tried ${STARTS_PER_DAY} times at ${name} in the last day and did not finish. Nothing new was started: say plainly that it is not working there and what the last attempt ended on (account_job_status), and do not offer to try again today.` };
   }
+  if (startsTodayAll(conversationId) >= STARTS_PER_DAY_ALL) {
+    return { ok: false, blocked: "tried_enough", say: `${STARTS_PER_DAY_ALL} of these were started for them in the last day, which is the limit. Nothing new was started: say so plainly, and what the last ones ended on (account_job_status).` };
+  }
   const id = Number(q(`INSERT INTO account_jobs (conversation_id, kind, host, name, what, amount, reference, due, mail_domains, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
     .run(conversationId, kind, at.host, name, what, amount, reference, due, cleanDomains(sender), clock.now()).lastInsertRowid);
   let job = jobRow(conversationId, id);
-  if (store) { try { shop.noteStore({ store, name, url: at.url }); } catch { /* a name for the page, no more */ } }
+  // The page's name for the site, kept for everyone: only a name that is the site's own (never a merchant's name on a billing service's address).
+  if (store) { try { shop.noteStore({ store, name: nameFitsHost(name, at.host) ? name : "", url: at.url }); } catch { /* a name for the page, no more */ } }
   let out;
   try { out = await shop.startJobRun({ conversationId, store, startUrl: at.url, task, item, cap, kind }); }
   catch (e) { out = { ok: false, error: String(e?.message ?? e).split("\n")[0] }; }
@@ -545,21 +619,36 @@ export async function onRun(run, cur, kit) {
 }
 
 /** A payment question. A cancellation never pays: declined, the run ended, said. A bill's goes to the pay path. */
+/** A cancellation met money (a payment request, card fields, a stated fee): the question is declined, the run ended, said once. */
+async function refuseToPay(job, run, requestId, kit, { amount = "", detail = "" } = {}) {
+  await kit.sendPart(run, { type: "input_response", requestId, action: "decline" });
+  await kit.cancelAtCrossmint(run);
+  kit.endRow(run, "cancelled", { code: "account job: a cancellation never pays" });
+  const link = kit.openSigninLink(run.run_id);
+  if (link) kit.finishSignin(run, link);
+  const done = set(job, { state: "not_done", outcome: "payment_asked", request_id: "", request_json: "", ask_kind: "", ended_at: clock.now(), route: job.route || "saved_profile" });
+  logAttempt(done);
+  if (once(job, "end")) await kit.say(`${notDoneLine(done, "payment_asked", { amount, detail })}${mailRouteOnce(done)}`);
+  return { done: true, status: "cancelled" };
+}
+const plainName = (s) => String(s ?? "").toLowerCase().replace(/&/g, "and").replace(/\b(inc|llc|ltd|pbc|corp|co|company|the)\b/g, "").replace(/[^a-z0-9]/g, "");
+/** Do two names mean the same payee? One inside the other, once the legal endings and spaces are gone. */
+export function sameName(a, b) {
+  const x = plainName(a), y = plainName(b);
+  return x.length >= 3 && y.length >= 3 && (x.includes(y) || y.includes(x));
+}
 async function onPayment(job, run, rq, it, kit) {
   const amount = it.amount?.value ? `${it.amount.currency === "USD" || !it.amount.currency ? "$" : ""}${it.amount.value}${it.amount.currency && it.amount.currency !== "USD" ? ` ${it.amount.currency}` : ""}` : "";
-  if (job.kind === "cancel") {
-    await kit.sendPart(run, { type: "input_response", requestId: rq.requestId, action: "decline" });
-    await kit.cancelAtCrossmint(run);
-    kit.endRow(run, "cancelled", { code: "account job: a cancellation never pays" });
-    const link = kit.openSigninLink(run.run_id);
-    if (link) kit.finishSignin(run, link);
-    const done = set(job, { state: "not_done", outcome: "payment_asked", request_id: "", request_json: "", ask_kind: "", ended_at: clock.now(), route: job.route || "saved_profile" });
-    logAttempt(done);
-    if (once(job, "end")) await kit.say(notDoneLine(done, "payment_asked", { amount }));
-    return { done: true, status: "cancelled" };
+  if (job.kind === "cancel") return await refuseToPay(job, run, rq.requestId, kit, { amount });
+  // Who the page says is being paid, when that is not who the notice named: said before the ask, in the page's word.
+  const payee = short(it.merchant?.name ?? "", 60);
+  if (payee && !sameName(payee, job.name) && !sameName(payee, registrableOf(job.host).split(".")[0]) && once(job, "payee")) {
+    await kit.say(`Look before you approve: the payment page names who gets paid as "${payee}", not ${job.name}. The approval below pays ${payee}.`);
   }
   // Reached payment with no sign-in question on the way: the saved profile (or the guest page) was enough.
   const next = set(job, { state: "needs_approval", route: job.route || "saved_profile", request_id: "", request_json: "", ask_kind: "" });
+  // How it got in, said once and by code before the total is asked.
+  if (routeLine(next) && once(job, "routeline")) await kit.say(routeLine(next).trim());
   // The page's own total against the notice, said before the ask when they differ: the yes is for the page's number.
   const exact = String(it.amount?.kind ?? "exact") === "exact" && /^\d+(\.\d{1,4})?$/.test(String(it.amount?.value ?? ""));
   if (exact && Number(it.amount.value).toFixed(2) !== Number(next.amount).toFixed(2) && once(job, "differs")) {
@@ -581,9 +670,23 @@ async function onQuestion(job, run, rq, pub, kit) {
     kit.endRow(run, "cancelled", { code: "account job: no sign-in route" });
     const done = set(j, { state: "not_done", outcome: "no_signin_route", route: j.route || "none", request_id: "", request_json: "", ask_kind: "", ended_at: clock.now() });
     logAttempt(done);
-    if (once(job, "end")) await kit.say(notDoneLine(done, "no_signin_route", { detail }));
+    if (once(job, "end")) await kit.say(`${notDoneLine(done, "no_signin_route", { detail })}${mailRouteOnce(done)}`);
     return { done: true, status: "cancelled" };
   };
+
+  if (kind === "pay") {
+    // Money asked for in a form. A cancellation never pays: declined and ended. A bill's card goes only
+    // through the payment approval (never typed into a form by anyone): declined and ended too.
+    const fee = feeStated(pub.question);
+    if (j.kind === "cancel") return await refuseToPay(j, run, rq.requestId, kit, { detail: fee || "it asked for payment details" });
+    await kit.sendPart(run, { type: "input_response", requestId: rq.requestId, action: "decline" });
+    await kit.cancelAtCrossmint(run);
+    kit.endRow(run, "cancelled", { code: "account job: card details asked for in a form" });
+    const done = set(j, { state: "not_done", outcome: "no_safe_path", route: j.route || "none", request_id: "", request_json: "", ask_kind: "", ended_at: clock.now() });
+    logAttempt(done);
+    if (once(job, "end")) await kit.say(`${notDoneLine(done, "no_safe_path", { detail: "its page wanted card details typed in, which I never do" })}${mailRouteOnce(done)}`);
+    return { done: true, status: "cancelled" };
+  }
 
   if (kind === "page") {
     // The one Reason page for this site, carrying Crossmint's protected input (src/pages/webconnect.js).
@@ -593,7 +696,7 @@ async function onQuestion(job, run, rq, pub, kit) {
     j = set(j, { state: "needs_page", route: j.route || "sign_in_page" });
     if (link) { q("UPDATE shop_links SET request_id = ?, request_json = ? WHERE id = ? AND conversation_id = ?").run(rq.requestId, JSON.stringify(pub), link.id, run.conversation_id); return { done: false, status }; }
     const token = kit.createLink({ conversationId: run.conversation_id, kind: "signin", store: run.store, runId: run.run_id, request: rq });
-    await kit.say(`${j.name} wants you signed in before I can ${j.kind === "cancel" ? `cancel ${j.what}` : "pay this"}. Sign in once here and it stays signed in for next time. What you type goes straight to ${j.name}, not to me.\n${kit.linkUrl(token)}`);
+    await kit.say(`${siteWords(j)} wants you signed in before I can ${j.kind === "cancel" ? `cancel ${j.what}` : "pay this"}. Sign in once here and it stays signed in for next time. What you type goes straight to ${whereWords(j)}, not to me.\n${kit.linkUrl(token)}`);
     return { done: false, status };
   }
   if (kind === "secret") return await noRoute("it asked for a password in a way I won't pass on");
@@ -640,7 +743,14 @@ async function onQuestion(job, run, rq, pub, kit) {
   if (kind === "confirm") {
     j = set(j, { state: "needs_confirm", route: j.route || "saved_profile" });
     const until = pub.expiresAt ? ` ${j.name}'s page holds this step until ${new Date(Date.parse(pub.expiresAt)).toISOString().slice(11, 16)} UTC (about ten minutes).` : "";
-    return await asModel(`${eventHead(j)}: ${j.name} is at the LAST step and asks: "${short(pub.question, 500)}". Fields: ${fieldList}.${routeLine(j) ? ` Tell them too:${routeLine(j)}` : ""} NOTHING IS CANCELLED YET. Ask them ONE plain line naming exactly what is cancelled and when it ends, as ${j.name} states it (say so if it gave no date), and whether to go ahead. Their yes goes through the gate: account_cancel_confirm with job_id ${j.id} and no confirmation_id first (it hands back use_target), then confirm_request, their answer, confirm_record, then account_cancel_confirm again with the confirmation_id. A no: account_job_stop.${until}`);
+    // The line they are asked, built from the page's own words: the plan, its price where the page gave one, the date access ends.
+    const ends = endsFrom(pub.question);
+    const price = (String(pub.question ?? "").match(/\$\s?\d[\d,]*(?:\.\d{2})?(?:\s?(?:\/|per|a|each)\s?(?:mo(?:nth)?|yr|year|week|wk))?/i) ?? [""])[0];
+    const line = `Cancel ${j.what} at ${j.name}${price ? ` (${price})` : ""}? ${ends ? `Access ends ${ends}.` : `${j.name}'s page gave no end date.`}`;
+    const money = moneyStated(pub.question);
+    // How it got in, said once and by code before the question (never left to the model, never twice).
+    if (routeLine(j) && once(job, "routeline")) await kit.say(routeLine(j).trim());
+    return await asModel(`${eventHead(j)}: ${j.name} is at the LAST step and asks: "${short(pub.question, 500)}". Fields: ${fieldList}. NOTHING IS CANCELLED YET. Ask them ONE plain line naming exactly what is cancelled and when it ends, as ${j.name} states it, and whether to go ahead. From the page's words that line is: "${line}" (where the page says it differently, a different plan or an end at once, say what the page says).${money ? ` The page also says this about money: "${money}". Put that in the line in its own words.` : ""} Use the same line as confirm_request's summary. Their yes goes through the gate: account_cancel_confirm with job_id ${j.id} and no confirmation_id first (it hands back use_target), then confirm_request, their answer, confirm_record, then account_cancel_confirm again with the confirmation_id. A no: account_job_stop.${until}`);
   }
 
   // A plain question (which account, a ZIP to find the bill, a reason): the model answers it, or asks them.
@@ -694,7 +804,8 @@ async function onEnd(job, run, cur, kit) {
   const finish = async (fields, line) => {
     const done = set(job, { ...base, ...fields });
     logAttempt(done);
-    if (once(job, "end")) await kit.say(typeof line === "function" ? line(done) : line);
+    // Their mail was read for a code or a link on the way in: said even when the job did not finish.
+    if (once(job, "end")) await kit.say(`${typeof line === "function" ? line(done) : line}${mailRouteOnce(done)}`);
     return { done: true, status };
   };
   const notDone = (reason, extra = {}) => finish({ state: "not_done", outcome: OUTCOMES.includes(reason) ? reason : "service_failed" }, (j) => notDoneLine(j, reason, { detail: summary || code, ...extra }));
@@ -706,11 +817,21 @@ async function onEnd(job, run, cur, kit) {
     else if (mail.state === "not_connected") j = set(j, j.kind === "bill" && JSON.parse(j.receipt || "{}").kind !== "receipt_captured" ? { state: "not_done", outcome: "unconfirmed" } : { state: "done", outcome: "done_result_only" });
     else { j = set(j, { state: "not_done", outcome: "waiting_mail", mail_until: clock.now() + MAIL_WATCH_MS }); watchMail(j.conversation_id, j.id); }
     logAttempt(j);
-    if (once(job, "end")) await kit.say(`${resultLine(j, mail)}${routeLine(j)}`);
+    // How it got in is said once: with the last step's question, or here when no question came.
+    const by = routeLine(j) && once(job, "routeline") ? routeLine(j) : "";
+    // A cancellation that went through without stopping for their yes is said as that, never passed over.
+    const unasked = j.kind === "cancel" && !j.confirmed_at ? ` It went through without stopping for your yes at the last step, which I had asked ${j.name}'s page to do.` : "";
+    if (once(job, "end")) await kit.say(`${resultLine(j, mail)}${unasked}${by}`);
     return { done: true, status };
   };
+  const bought = ["receipt_captured", "confirmed_without_receipt"].includes(String(result?.purchase?.kind ?? ""));
 
   if (job.kind === "cancel") {
+    // A purchase on a run that only cancels: never "done", said at once with what the page reported.
+    if (status === "succeeded" && bought) {
+      const total = result.purchase?.receipt?.total?.amount ? `$${Number(result.purchase.receipt.total.amount).toFixed(2)}` : "";
+      return await finish({ state: "not_done", outcome: "unexpected_purchase" }, (j) => notDoneLine(j, "unexpected_purchase", { detail: total }));
+    }
     if (status === "succeeded") {
       if (saysCancelled(summary)) return await worked({ ends: endsFrom(summary) });
       return await notDone(NOT_FOUND.test(summary) ? "not_found" : "not_cancelled");
@@ -734,6 +855,9 @@ async function onEnd(job, run, cur, kit) {
     const p = result?.purchase ?? {};
     if (p.kind === "receipt_captured" || p.kind === "confirmed_without_receipt") {
       const receipt = { kind: p.kind, total: p.receipt?.total?.amount ? Number(p.receipt.total.amount).toFixed(2) : "", order: short(p.receipt?.merchantOrderId ?? "", 40) };
+      // Paid, but not through the approval they give (a card saved at the biller): never "done", said as what it is.
+      const approved = paid ?? q("SELECT id FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status = 'paying'").get(run.run_id, run.conversation_id) ?? null;
+      if (!approved) return await finish({ state: "not_done", outcome: "paid_unapproved", receipt: JSON.stringify(receipt), paid_at: clock.now() }, (j) => notDoneLine(j, "paid_unapproved", { detail: receiptWords(receipt) }));
       return await worked({ receipt: JSON.stringify(receipt), paid_at: job.paid_at ?? run.paid_at ?? clock.now() });
     }
     return await notDone("nothing_paid");
@@ -755,7 +879,8 @@ async function onEnd(job, run, cur, kit) {
 
 // ---------------------------------------------------------------- the model's side (src/accountjobtools.js)
 const openRequest = (job) => { try { return job.request_json ? JSON.parse(job.request_json) : null; } catch { return null; } };
-const runOf = (job) => (job.run_id ? shop.runRow(job.run_id) : null);
+/** The job's run, and only when it is the same person's. */
+const runOf = (job) => { const r = job.run_id ? shop.runRow(job.run_id) : null; return r && r.conversation_id === job.conversation_id ? r : null; };
 /** What the confirm gate pins a cancellation's yes to: this job, this plan and site, this run and this very question. */
 export function cancelTarget(conversationId, jobId) {
   const job = jobRow(conversationId, jobId);
@@ -836,6 +961,10 @@ export async function answerJob({ conversationId, jobId, answers }) {
     if (job.state === "needs_page") return { ok: false, error: "needs_the_page", say: "That question has a password or a sealed code in it: it is answered on the sign-in page they were texted, never through you." };
     return { ok: false, error: "nothing_asked", state: job.state };
   }
+  // Money details are never passed on, whoever typed them: a card or bank field, or (a cancellation) any way to pay.
+  if (classify(job, rq) === "pay") return { ok: false, error: "never_payment_details", say: "Nothing was sent: that question asks for payment details, and those never go through here. Do not ask them for a card number." };
+  // A cancellation's go-ahead never rides in on a plain answer: only account_cancel_confirm, after their yes through the gate.
+  if (job.kind === "cancel" && classify(job, rq) === "confirm") return { ok: false, error: "needs_the_gate", say: "That question is the cancellation's last step: only account_cancel_confirm answers it, after their yes through the gate." };
   const checked = checkPlain(rq, answers);
   if (!checked.ok) return { ...checked, say: "Nothing was sent: give every required field, with the keys exactly as the event listed them." };
   const r = await send(run, rq.requestId, checked.answers);
@@ -863,6 +992,15 @@ export async function stopJob({ conversationId, jobId, by = "them" }) {
   return { ok: true, job_id: job.id, say: `${notDoneLine(job, by === "them" ? "declined" : "stopped")} Say that in one line.` };
 }
 
+/** What a job's sign-in page says it is for (src/shopconnect.js linkView → src/pages/webconnect.js): the kind, the plan or the biller. */
+export function linkWords(run) {
+  const job = jobOfRun(run);
+  return job ? { kind: job.kind === "bill" ? "bill" : "cancel", what: job.what, name: job.name } : null;
+}
+/** Any job of theirs still open: while one is, no sign-in link is made for any site (the job signs in itself). */
+export function openJobFor(conversationId) {
+  return q(`SELECT * FROM account_jobs WHERE conversation_id = ? AND state IN (${OPEN_STATES.map(() => "?").join(", ")}) ORDER BY id DESC`).get(String(conversationId), ...OPEN_STATES) ?? null;
+}
 /** The job working on a site (open, or started in the last day): what refuses a sign-in link for that site. */
 export function jobForSite(conversationId, site) {
   const raw = String(site ?? "").trim().toLowerCase();

@@ -16,11 +16,19 @@ in the person's own Crossmint browser profile, and nothing here opens Reason's b
 to stop at the last step and ask a question that begins `CONFIRM CANCELLATION:`. That question reaches
 the model as an `[account job]` event; the model asks one plain line; the yes goes through the confirm
 gate into `account_cancel_confirm`, pinned to the job, plan, site, run and open question
-(`cancelTarget`). The run's result must carry `RESULT: CANCELLED`; the merchant's cancellation email is
-the second proof.
+(`cancelTarget`). The line they are asked is built in code from the page's own words (the plan, its
+price where given, the date access ends, or "gave no end date") and handed to the model with the
+question. Before their yes, ANY go-ahead question that is not plainly an earlier step (a reason, which
+plan, an offer to stay) is treated as the last step and goes to the gate; `account_job_answer`
+refuses it. The run's result must carry `RESULT: CANCELLED`; the merchant's cancellation email is
+the second proof. A run that cancels without stopping to ask is said as exactly that.
 
-**Bill.** `account_bill_pay` needs the biller, the amount due and the account or invoice number, a
-saved card, and room under the day's limit. The run goes to the biller's own page (guest pay where it
+**Bill.** `account_bill_pay` needs the biller, the amount due and the account or invoice number (or,
+where the notice prints none, the notice's own pay link on the site named), a saved card, and room
+under the day's limit. The approval is asked as a bill ("OK to pay $X (the payment page's total) to
+<who the page says> for your <biller> bill?"); when the page names a different payee than the notice
+did, that is said first. A payment the page reports that did not go through their approval (a card
+saved at the biller) is never "done": it is said as that. The run goes to the biller's own page (guest pay where it
 exists). Its card payment is the shopping pay path untouched: Crossmint's exact total, the confirm
 gate, the daily cap, Face ID. Done needs the payment page's receipt and, where mail is connected, the
 biller's confirmation email.
@@ -30,7 +38,8 @@ biller's confirmation email.
 1. A saved signed-in profile: no question comes.
 2. A code or link the site emailed, in a standard field: read from their Gmail by code
    (`codeFromGmail`: that site's sender domain and Gmail's own DKIM verdict), answered without them,
-   and said afterwards in one line.
+   and said afterwards in one line, once, by code (before the last step's question or the total; with
+   the ending when the job stops first).
 3. A code they must read themselves (texted, or mail not connected), in a standard field: asked for
    once in the thread, passed on with `account_job_answer` (sealed out of the tool log and ledger).
 4. A protected field (a password; a code Crossmint sealed): ONE Reason page (`/web/connect/<token>`)
@@ -38,13 +47,34 @@ biller's confirmation email.
    same page.
 5. None of these: one line and stop.
 
-Never `signin_link`: where the switch is on, it is refused for a site a job is working on
-(`signinLinkRefusal`), and the browser-walking cancel tools are hidden and refused.
+The page is Reason's own (`src/pages/webconnect.js`), with a job's own words: what the sign-in is
+for ("Then I can cancel <plan>"), that nothing else on the account is changed, and never a
+checkout's lines. Where a billing service runs the account, the texted line names that address
+("Cardboard's account page (link.com)").
+
+Never `signin_link` (the one tool that makes the link showing Reason's browser as a picture,
+`createRemoteSignin`): where the switch is on it is refused (`signinLinkRefusal`) for a site a job is
+working on or worked on in the last day, for ANY site while one of their jobs is open, and, before
+a job exists, on a turn where they asked to cancel a subscription or pay a bill or where
+`cancel_route` ran. The browser-walking cancel tools are hidden and refused.
 
 ## A cancellation cannot charge
 
-Crossmint's cap; a payment question on a cancel run is declined and the run ended (`onPayment`);
-`recordPayment` returns null for a `job_cancel` run and `payRow` refuses one, so nothing can approve one.
+Crossmint's cap; a payment request on a cancel run is declined and the run ended (`onPayment`); so is
+a form that asks for card or bank details or a way to pay, and a question that states a
+cancellation or termination fee (`classify` → "pay", `refuseToPay`): none of these reaches the
+model or the person as a question. `recordPayment` returns null for a `job_cancel` run and `payRow`
+refuses one, so nothing can approve one. A purchase reported on a cancel run is never "done". On a
+bill, card details asked for in a form are never passed on either: the card only ever goes through
+the payment approval.
+
+## What counts as the merchant's mail
+
+Really from them (the From domain and Gmail's own DKIM verdict), after the job acted, and saying it
+happened: "has been cancelled", "cancellation confirmed", "payment received", "receipt". Mail that
+asks for a click to finish, says it failed, is unpaid or refunded, or is about an order or a booking
+is not proof. A billing service's mail, or mail for a job on an address that is not the merchant's
+own, counts only when it names the plan or the merchant (a bill: the merchant or the amount paid).
 
 ## One attempt record per run
 
@@ -75,6 +105,9 @@ in by an emailed code with mail still connected, or (a bill) amount, reference a
 - Their yes has to arrive while the site's page holds the last step (about ten minutes in runs seen). Late: "Not done ... tell me to cancel it again".
 - A sealed code or a password always needs the person, once, on the Reason page.
 - A code they send in the thread passes through the model on its way (sealed out of the tool log and ledger), not around it.
+- A fee is recognised by its words ("cancellation fee", "early termination", "penalty"). A site that charges for cancelling without saying so in the question is caught only by the cap, and a charge the merchant makes on a card it already holds is outside any cap: the task forbids it, the line they are asked carries the page's money words, and nothing more can be promised.
+- Starts are limited to 3 per site and 8 across all sites per person per day.
+- Before a job exists, the sign-in link is refused by reading the turn (their words, or `cancel_route` having run). A turn that asks for a cancellation in words the check does not know can still reach `signin_link`; the tool descriptions forbid it, code does not.
 
 ## Proving it
 

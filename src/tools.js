@@ -81,7 +81,7 @@ import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
-import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords } from "./accountjobtools.js";
+import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords, ACCOUNT_CANCEL_GATE } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
 import * as whatsnew from "./whatsnew.js";
@@ -14938,10 +14938,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // web. Signing in is the same act either way — the person does it themselves on the site's
       // own page and the session lands in their own profile — so there is one door, not two.
       // Where the social flag reaches them, any site by its web address too (signinSite).
+      // Account jobs on for them: no link while a job is open, for a job's site, or on a turn that asks to
+      // cancel a subscription or pay a bill (src/accountjobtools.js). Asked first, whatever the site turns out to be.
+      { const held = signinLinkRefusal(c, input.site, offers.turnState(c)); if (held) return held; }
       let entry = signinSite(c, input.site);
       if (!entry) return noSigninSite(c, input.site);
       // A site an account job is working on signs in inside the job (src/accountjobtools.js): no link.
-      { const held = signinLinkRefusal(c, entry.signin_url || entry.site || input.site); if (held) return held; }
+      { const held = signinLinkRefusal(c, entry.signin_url || entry.site || input.site, offers.turnState(c)); if (held) return held; }
       const offNet = await genericSiteRefused(entry, ctx);
       if (offNet) return offNet;
       // A site that bot-checks this browser off its sign-in page gets no link: the owner opened one
@@ -17816,6 +17819,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "cancel_route": {
+      // Account jobs on for them: this turn is a cancellation (no sign-in link is made on it), and the last press is account_cancel_confirm's.
+      const jobsOn = accountJobToolVisible("account_cancel", c);
+      if (jobsOn) offers.turnState(c).cancelling = true;
       const routes = ctx.cancelRoutes ?? cancelRoutes;
       if (input.service) {
         const p = routes.playbook(input.service);
@@ -17824,7 +17830,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ok: true,
           route: p,
           ...(subs.WALKABLE.has(p.route) ? {} : { cannot: routes.cannotDo(p.route, p.label) }),
-          gate: "Opening the page and clicking through it are ordinary clicks. The last press — the one that ends the subscription — goes through subscription_cancel_commit and needs their yes, whatever the button is called.",
+          gate: jobsOn ? ACCOUNT_CANCEL_GATE : "Opening the page and clicking through it are ordinary clicks. The last press — the one that ends the subscription — goes through subscription_cancel_commit and needs their yes, whatever the button is called.",
         };
       }
       return {
