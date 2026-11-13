@@ -9970,7 +9970,15 @@ async function runToolInner(name, rawInput, ctx) {
     }
   }
 
-  const out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
+  let out;
+  try {
+    out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
+  } catch (e) {
+    // A sign-in holds their saved profile (src/browser.js holdProfile): every browser tool gets the
+    // same fixed answer, nothing was opened or read, and a yes for the step is not spent.
+    if (e instanceof browser.ProfileBusy) return { ...browser.BUSY };
+    throw e;
+  }
 
   // Held, not done: the handler got all the way to the irreversible step, refused nothing, and
   // parked it for its undo window instead (parkHeld). Straight back, with none of what follows —
@@ -14217,6 +14225,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let url = String(input.url ?? "").trim();
       let via = "fetch";
       if (input.from_browser) {
+        if (browser.profileBusy(c)) return { ...browser.BUSY };
         const page = browser.openPage(c);
         if (!page) return { ok: false, error: "No page is open in the browser. Open the product page with browser_open first, or pass its url." };
         try { html = await page.content(); url = await browser.pageUrl(page); via = "browser"; }
