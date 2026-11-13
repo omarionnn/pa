@@ -17,7 +17,7 @@
 // cycles per loop, so the loop has no seam.
 //
 // When it plays (`LookupMusic`): an ask_reason lookup still running MUSIC_DELAY_MS after it began fades
-// the music in over FADE_IN_MS (a fast lookup gets none); any speech (his, or the agent's holding line)
+// the music in over FADE_IN_MS (a fast lookup gets none); any speech (his, or the agent's own line)
 // ducks it to DUCK_LEVEL; the answer coming back, or the hand-off to a text, fades it out over
 // FADE_OUT_MS, so it is gone by the time the answer is spoken. Every change is a ramp: no clicks, no
 // jumps. A barge-in clears what Twilio had queued, not the music's fades: the music comes back in from

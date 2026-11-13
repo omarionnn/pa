@@ -234,28 +234,34 @@ test("a long lookup: silence for 700 ms, a 400 ms fade in, a 600 ms fade out onc
   await end(r);
 });
 
-test("ducks under the agent's holding line and under him, then comes back up; the answer is never under it", async () => {
-  const r = relay({ music: "on", lookupMs: 11_000 });
+test("a 10 s lookup: under the agent's own line, up from 0.7 s through the whole wait, ducked under him; gone as the answer starts", async () => {
+  const r = relay({ music: "on", lookupMs: 10_400 });
   r.ask();
-  await r.timers.advance(5_000);
-  assert.equal(r.call.music.g, 1, "full while nobody talks");
-  await r.timers.advance(1_100); // the holding line goes to the agent at 6 s
-  assert.match(r.results()[0].result, /Still on it/);
-  await r.speak(600);
-  assert.equal(r.call.music.g, music.DUCK_LEVEL, "ducked under the holding line");
-  r.ask("tc_2", cartesia.COLLECT);
+  await r.timers.advance(700);
+  await r.speak(600); // the agent's own short line ("Checking Brooklyn news."), still going as the music comes in
+  assert.equal(r.call.music.g, music.DUCK_LEVEL, "ducked under the agent's line");
   await r.timers.advance(1_000);
-  assert.equal(r.call.music.g, 1, "back up once the line is done");
+  assert.equal(r.call.music.g, 1, "full once the line is done");
+  // Through the old 6 s mark and past it: still playing, nothing answered, no holding line.
+  for (const at of [5_000, 6_500, 8_000]) {
+    await r.timers.advance(at - (r.timers.now() - 1_000_000));
+    assert.equal(r.results().length, 0, `no result at ${at} ms`);
+    assert.equal(r.call.music.g, 1, `full at ${at} ms`);
+  }
   await r.him(400);
   assert.equal(r.call.music.g, music.DUCK_LEVEL, "ducked under him");
-  await r.timers.advance(1_000);
-  assert.equal(r.call.music.g, 1);
-  // The answer back at 11 s: fading; the agent starts speaking 200 ms later and it is gone within a frame.
-  await r.timers.advance(11_000 - (r.timers.now() - 1_000_000));
-  await r.timers.advance(10);
-  assert.equal(r.results().at(-1).result, "Overcast, 52 degrees near work.");
+  await r.timers.advance(10_000 - (r.timers.now() - 1_000_000));
+  assert.equal(r.results().length, 0, "no result at 10 s");
+  assert.equal(r.call.music.g, 1, "back up at 10 s");
+  const quiet = r.media().filter(f => f.t - 1_000_000 >= 1_700 && f.t - 1_000_000 < 10_000);
+  const gaps = quiet.slice(1).map((f, i) => f.t - quiet[i].t);
+  assert.ok(quiet.length > 50 && quiet[0].t - 1_000_000 < 1_800 && quiet.at(-1).t - 1_000_000 > 9_900 && Math.max(...gaps) <= 200, `music all through the wait (${quiet.length} sends, longest gap ${Math.max(...gaps)} ms)`);
+  // The answer back at 10.4 s: it is the tool result; the agent starts speaking it and the music is gone within a frame.
+  await r.timers.advance(10_400 - (r.timers.now() - 1_000_000) + 10);
+  assert.equal(r.results().length, 1);
+  assert.equal(r.results()[0].result, "Overcast, 52 degrees near work.");
   await r.timers.advance(200);
-  assert.ok(r.call.music.g > 0.4 && r.call.music.g < 1, "fading out");
+  assert.ok(r.call.music.g > 0 && r.call.music.g < 1, "fading out");
   const n = r.media().length;
   await r.speak(400);
   const answer = r.media().slice(n).filter(f => f.media.payload !== QUIET);
@@ -304,18 +310,22 @@ test("the call ends mid-lookup: the music stops, nothing more is sent and nothin
   }
 });
 
-test("handed to text at 15 s: the music fades out then, not when the late answer lands", async () => {
-  const r = relay({ music: "on", lookupMs: 25_000 });
+test("past 25 s: the music plays to the limit and fades as the \"I'll text you\" line starts, not when the late answer lands", async () => {
+  const r = relay({ music: "on", lookupMs: 30_000 });
   r.ask();
-  await r.timers.advance(6_100);
-  r.ask("tc_2", cartesia.COLLECT);
-  await r.timers.advance(8_950);
+  await r.timers.advance(24_900);
+  assert.equal(r.results().length, 0);
+  assert.equal(r.call.music.g, 1, "full right up to the limit");
+  await r.timers.advance(150);
   assert.equal(r.results().at(-1).result, cartesia.TEXT_RESULT);
-  await r.timers.advance(700);
+  const n0 = r.media().length;
+  await r.speak(400); // the "I'll text you" line
+  const line = r.media().slice(n0).filter(f => f.media.payload !== SPEECH);
+  assert.ok(line.length <= 1, `${line.length} frames of the line carried music`);
   assert.equal(r.call.music.g, 0);
   assert.equal(r.call.music.lookups.size, 0);
   const n = r.media().length;
-  await r.timers.advance(3_000);
+  await r.timers.advance(8_000); // the late answer lands at 30 s
   assert.equal(r.media().length, n, "no music after the hand-off");
   await end(r);
 });

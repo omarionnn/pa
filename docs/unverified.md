@@ -5300,11 +5300,15 @@ the setup script with `--yes`, a real agent session, or a real call. Not known u
 ### 2026-11-13: conversation manner, slow lookups, the talked-over number (Cartesia calls only): not run
 
 `src/calls/cartesia.js` adds this line's own manner after the GPT-Live own-call words in `reason_call`
-(`cartesiaCallLines`), holds a slow `ask_reason` (`HOLD_MS`, `COLLECT`, `TEXT_MS`) and times a talk-over
+(`cartesiaCallLines`), keeps a slow `ask_reason` open until Reason answers (up to `TEXT_MS`, 25 s) and times a talk-over
 from when both were talking. Proved only with stand-in sockets. Not known until a real call:
 
-- Whether the agent follows a tool result that tells it to call `ask_reason` again with `"collect the answer"`.
-  If it doesn't, the answer still goes by text at 15 s; it is just not said.
+- The 6 s holding line (#542) is gone: on calls 109 and 110 the answers came at 10.4 s and 7.7 s, after the
+  hold had released the tool call, and went by text while the agent said "still loading". Cartesia's client
+  can send only a tool result (no "say this", no context update), so the call now stays open until the
+  answer, and only past 25 s does the agent say it'll be texted ("From our call: ..."). A hang-up mid-lookup
+  texts the answer. Not known until a real call: whether gpt-5.4-mini stays quiet for a 20 s open tool call
+  with the music under it, and whether it keeps to the one "I'll text you" sentence.
 - How often the follow-up rule fires on gpt-5.4-mini, and whether "one reply in three" holds over a long call.
 - Whether a Managed Agent passes Sonic's inline tags through from the model's text to the voice. `[laughter]`
   reaches `turn_ended.text` (call 107 logged one); whether it was voiced is not known. `<emotion value="..."/>`
