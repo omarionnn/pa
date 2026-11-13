@@ -182,6 +182,24 @@ test("P3: a call page — only this conversation's calls, facts off the row, the
   assert.equal((await get(p.id, { cookie: sessionFor(KOFI, "zzzzzzzz"), sub: "audio" })).status, 404);
 });
 
+test("a call page whose recording they deleted says RECORDING DELETED, has no player, and its audio is 404", async () => {
+  on();
+  const { deleteCallRecordings } = await import("../src/calls/recordingdelete.js");
+  const call = db.createCall(OWNER, { provider: "fake", toNumber: "+17185550188", isOwner: false, goal: "dentist", announcement: "Hi, I'm an AI assistant calling for Omari. This call is recorded." });
+  mkdirSync(join(dir, "rec"), { recursive: true });
+  const wav = join(dir, "rec", `call-${call.id}.wav`);
+  writeFileSync(wav, Buffer.from("RIFF0000WAVEfmt "));
+  db.db.prepare("UPDATE calls SET state = 'completed', duration_s = 102, recording_state = 'stored', recording_file = ?, recording_format = 'wav', recording_seconds = 102, ended_at = 1 WHERE id = ?").run(wav, call.id);
+  const made = await runTool("page_create", { title: "Dr. Patel's office", blocks: [{ type: "call", call_id: call.id }] }, { conversationId: OWNER, messages: [] });
+  const p = db.getPage(made.page_id ?? made.id);
+  const t = sessionFor(OWNER, p.id);
+  assert.equal(deleteCallRecordings(OWNER, { callId: call.id }).what, "deleted");
+  const html = words((await get(p.id, { cookie: t })).body);
+  assert.match(html, /1 MIN 42 SEC · RECORDING DELETED/);
+  assert.doesNotMatch(html, /Play the call/);
+  assert.equal((await get(p.id, { cookie: t, sub: "audio" })).status, 404);
+});
+
 test("P6: a receipt only for a purchase that went through, with the card, the yes and the confirmation", async () => {
   on();
   const conf = db.askConfirmation({ conversationId: OWNER, action: "agentcard_buy", summary: "Pay Con Ed", stakes: "money", askedAfterMsgs: 0 });

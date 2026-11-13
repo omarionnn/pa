@@ -232,6 +232,16 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    22:26 ET a restart that passed the gate cut timer 537 mid-turn (retried, out 44 s late). Anything
    about a timer older than 10 minutes is ignored (a turn gets 5 on the CLI; `sweepStuckMs` is 10),
    so a dead process's claim or a held timer cannot keep a deploy waiting for ever.
+   **And no work in progress inside someone's account or saved logins**, each read from the database
+   or busy.json, never the app's memory, each with its own stale limit taken from the code (the
+   reasons are at the top of idle.sh): an account job in an open state or with its run still going,
+   touched in the last 36 min (`account_jobs` + its `shop_runs` row; shopconnect `OUTAGE_MS`); a save
+   page issued in the last 10 min and unused (`login_intake`; its link lives 30 and survives a
+   restart); a Face ID ask for a sign-in with no later sign-in row for that site, 15 min (`login_log`
+   `needs_face_id`; link 10 + yes 5, held only in memory); a saved-login sign-in holding the browser,
+   10 min (busy.json `saved_login` / `saved_login_code`), or, on code from before those, its wait for
+   a code, 7 min (`login_log` `needs_code_*`); an emailed-code sign-in (busy.json `signin_email`). A
+   table, column or kind that is not there yet is nothing to wait for, never an error.
    **Every deploy kit restarts through `/root/reason-restart.sh`** (scripts/safe-restart.sh; it runs
    `/root/reason-idle.sh` = this idle.sh with `REASON_LIVE_SSH=local`, waits up to 20 min, restarts,
    checks health). Never `systemctl restart reason` by hand in a deploy; `--force` is for a rollback

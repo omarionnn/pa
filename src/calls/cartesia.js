@@ -563,6 +563,7 @@ export class CartesiaAgentCall {
     // `reason`: one word from a fixed set, the same word counted for the day (`count`).
     count(`fell_back:${reason}`);
     this.log({ cartesia_fell_back: this.call.id, reason, why: String(why).slice(0, 120), ms: this.now() - this.startedAt });
+    this.noteMinutes(true);
     // A session that did start is a call on their side, kept until deleted. One still coming up is given
     // LATE_READY_MS to say its id (`fromAgent`), then let go.
     if (this.agentCallId) { try { this.agent?.close(); } catch { /* already gone */ } void this.deleteAndCheck(); }
@@ -570,6 +571,19 @@ export class CartesiaAgentCall {
     else { try { this.agent?.close(); } catch { /* already gone */ } }
     // What was said so far goes with the call, so Reason's turns and the thread have all of it.
     return this.fallBackTo ? this.fallBackTo(why, this.turns.map(t => ({ ...t }))) : null;
+  }
+
+  /**
+   * What the Cartesia voice ran on this call, on the call row for the plan meter on /ops
+   * (src/planmeter.js): written once, when this relay lets the call go. Numbers only.
+   */
+  noteMinutes(fellBack, seconds = Number.isFinite(this.startedAt) ? Math.round((this.now() - this.startedAt) / 1000) : 0) {
+    const s = Math.max(0, Number(seconds) || 0);
+    try {
+      db.updateCall(this.call.conversation_id, this.call.id, {
+        cartesia_seconds: s, cartesia_cents: Math.round((s / 60) * config.cartesiaRateUsdPerMin * 100), cartesia_fell_back: fellBack ? 1 : 0,
+      });
+    } catch { /* a number never breaks a call */ }
   }
 
   async deleteAndCheck() {
@@ -615,6 +629,7 @@ export class CartesiaAgentCall {
       ...(this.recorded ? {} : { notRecorded: true }),
     };
     try { db.updateCall(this.call.conversation_id, this.call.id, { first_audio_ms: this.m.firstVoiceMs ?? null }); } catch { /* a number never breaks a call */ }
+    this.noteMinutes(false, seconds);
     const med = (xs) => { const s = xs.filter(Number.isFinite).sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
     this.log({
       cartesia_call_ended: this.call.id, why: this.endWhy, seconds, cents: live.costCents, first_voice_ms: this.m.firstVoiceMs,

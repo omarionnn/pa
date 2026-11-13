@@ -78,6 +78,12 @@ form.act-ev{margin:0;display:inline-block}
 .pc .rd{margin-top:.35rem;font-size:.92rem;line-height:1.4}
 .pc .acts{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.7rem}
 .pc .trend{margin-top:.5rem}
+/* A plan meter (src/planmeter.js): one bar, filled to the share used, amber from 80%. */
+.pm{height:.55rem;border-radius:99px;background:var(--soft);border:1px solid var(--line);overflow:hidden;margin:.55rem 0 .15rem}
+.pm span{display:block;height:100%;background:#17794a}
+.pm.warn span{background:#b25f00}.pm.bad span{background:#b4232a}
+.pmg{display:grid;grid-template-columns:auto 1fr;gap:.15rem .9rem;margin:.45rem 0 0;font-size:.88rem;font-variant-numeric:tabular-nums}
+.pmg dt{color:var(--dim)}.pmg dd{margin:0}
 .pc.focused{outline:2px solid var(--accent);outline-offset:2px}
 .okline{border:1px solid var(--line);border-radius:.8rem;padding:.75rem 1rem;margin:0 0 .7rem;font-size:.9rem;color:var(--dim)}
 .okline b{color:var(--ink)}
@@ -286,8 +292,62 @@ export function renderOps({ report, now = Date.now(), focus = null, events = nul
   const fold = `<details class="fine"><summary><span class="led"></span>${fine.length} ${fine.length === 1 ? "check" : "checks"} fine<span class="chev" aria-hidden="true">▸</span></summary>${groups}${offLine}</details>`;
 
   const people = peopleSection(report.people ?? [], now);
-  const body = `${bar}<div class="cols"><div>${okLine}${problems}${fold}${eventsSection(events, now)}${webSection(web)}</div>${people}</div>`;
+  const body = `${bar}<div class="cols"><div>${okLine}${problems}${fold}${metersSection(report.meters, now)}${eventsSection(events, now)}${webSection(web)}</div>${people}</div>`;
   return shell({ title: "Reason status", body, pill: pillFor(verdict), css: CSS, head, script: JS });
+}
+
+const usd = (cents) => `$${(Number(cents) / 100).toFixed(2)}`;
+const utcDay = (ms) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+const num = (x) => (Math.round(Number(x) * 10) / 10).toString();
+
+/**
+ * The plan meters (src/planmeter.js): this cycle's window, minutes and dollars used of the plan, a bar,
+ * minutes left at the rate, where the cycle ends at this pace, and the calls that fell back to the old
+ * voice. Numbers only. Says which figure it is: the provider's own, or Reason's estimate from its calls
+ * — and both when both are there.
+ */
+export function metersSection(meters, now = Date.now()) {
+  if (!Array.isArray(meters) || !meters.length) return "";
+  const bar = (pct, tone) => `<div class="pm ${tone}" role="img" aria-label="${esc(num(pct))}% used"><span style="width:${Math.min(100, pct).toFixed(1)}%"></span></div>`;
+  // A standing count (Plaid banks): how many of how many, the share and the bar. Never which or whose.
+  const standing = (r) => {
+    const pct = Math.max(0, Number(r.pct) || 0);
+    const tone = pct >= 100 ? "bad" : pct >= 80 ? "warn" : "ok";
+    const rows = [
+      ["Connected", `${r.used} of ${r.allowance} ${r.unit} · ${num(pct)}%`],
+      ["Left", r.out ? "none — new connections stop here on this plan" : `${r.left}`],
+      ["Source", "Reason's own count of connections still held at Plaid"],
+    ];
+    const dl = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+    return `<article class="pc ck-${tone}" id="meter-${esc(anchor(r.id))}"><div class="ph"><span class="led" aria-label="${tone}"></span><div class="rm">`
+      + `<div class="rn">${esc(r.name)}</div>${bar(pct, tone)}<dl class="pmg">${dl}</dl></div></div></article>`;
+  };
+  const one = (r) => {
+    if (r.standing) return standing(r);
+    const pct = Math.max(0, Number(r.pct) || 0);
+    const tone = pct >= 100 ? "bad" : pct >= 80 ? "warn" : "ok";
+    const rows = [
+      ["Cycle", `${utcDay(r.cycle.start)} – ${utcDay(r.cycle.end)} (day ${r.day_of_cycle} of ${r.days_in_cycle}; credits refresh ${utcDay(r.cycle.end)})`],
+      ["Used", `${num(r.used_minutes)} of ${r.allowance_minutes} min · ${usd(r.used_cents)} of ${usd(r.allowance_cents)} · ${num(pct)}%`],
+      ["Left", r.out ? "none — calls fall back to the old voice until the refresh" : `${r.left_minutes} min at ${usd(r.cents_per_minute)}/min`],
+      ["At this pace", `${usd(r.projected_cents)} by the refresh (${r.projected_pct}%)${r.runs_out_at ? ` · runs out around ${utcDay(r.runs_out_at)}` : ""}`],
+    ];
+    if (r.own?.fell_back != null) rows.push(["Fell back", `${r.own.fell_back} ${r.own.fell_back === 1 ? "call" : "calls"} this cycle went to the old voice`]);
+    const ownLine = `${num(r.own.minutes)} min · ${usd(r.own.cents)} over ${r.own.calls} ${r.own.calls === 1 ? "call" : "calls"}`;
+    if (r.source === "provider") {
+      rows.push(["Cartesia's figure", `${num(r.remote.minutes ?? r.used_minutes)} min · ${usd(r.remote.cents)} · ${r.remote.calls ?? 0} calls · read ${r.remote.at ? `${ago(now - r.remote.at)} ago` : "—"}${r.remote.error ? ` (last try failed: ${r.remote.error})` : ""}`]);
+      rows.push(["Reason's count", ownLine]);
+    } else {
+      rows.push(["Source", r.remote?.error ? `Reason's own estimate from its call records — Cartesia's figure could not be read (${r.remote.error})` : "Reason's own estimate from its call records, not Cartesia's figure"]);
+      rows.push(["Reason's count", ownLine]);
+    }
+    const dl = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+    return `<article class="pc ck-${tone}" id="meter-${esc(anchor(r.id))}"><div class="ph"><span class="led" aria-label="${tone}"></span><div class="rm">`
+      + `<div class="rn">${esc(r.name)}</div>`
+      + bar(pct, tone)
+      + `<dl class="pmg">${dl}</dl></div></div></article>`;
+  };
+  return `<section class="sec" id="meters"><h2>Plans</h2>${meters.map(one).join("")}</section>`;
 }
 
 /**

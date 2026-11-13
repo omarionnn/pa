@@ -32,6 +32,8 @@ async function bodyOf(readBody) {
 
 async function callRecording(account, id, { headers, method }) {
   const c = /^\d{1,15}$/.test(id) ? db.getCall(account.conversation_id, Number(id)) : null;
+  // A deleted one is a 404 like any absent audio, with the reason named so the app can say it.
+  if (c?.recording_state === "deleted") return fail(404, "recording_deleted");
   if (!c || c.recording_state !== "stored" || !c.recording_file) return notFound();
   let path;
   try { path = realpathSync(c.recording_file); } catch { return notFound(); }

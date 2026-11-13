@@ -465,6 +465,9 @@ db.exec(`
     recording_sha256 TEXT,
     recording_why TEXT NOT NULL DEFAULT '',
     recording_sent_at INTEGER,
+    -- When the person asked for this call's recording to be deleted (call_recording_delete). The
+    -- state is then 'deleted', as when the retention setting takes it; this says it was them.
+    recording_deleted_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     ended_at INTEGER
@@ -1545,6 +1548,7 @@ addColumnIfMissing("calls", "recording_bytes", "INTEGER");
 addColumnIfMissing("calls", "recording_sha256", "TEXT");
 addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
+addColumnIfMissing("calls", "recording_deleted_at", "INTEGER");
 addColumnIfMissing("calls", "webhook_token", "TEXT");
 addColumnIfMissing("pending_inbound", "held_times", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("pending_inbound", "down_since", "INTEGER");
@@ -2227,6 +2231,13 @@ addColumnIfMissing("calls", "turn_log", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_opener", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_about", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
+// What the Cartesia voice ran on a call, for the plan meter on /ops (src/planmeter.js): its seconds and
+// cents at the plan's rate, written when the Cartesia relay lets the call go — at its end, or when it
+// hands the call to GPT-Live (`cartesia_fell_back` 1), whose own cost then lands in cost_cents. Numbers
+// only. Null on every call the Cartesia voice never carried.
+addColumnIfMissing("calls", "cartesia_seconds", "INTEGER");
+addColumnIfMissing("calls", "cartesia_cents", "INTEGER");
+addColumnIfMissing("calls", "cartesia_fell_back", "INTEGER NOT NULL DEFAULT 0");
 export function setItemLabel(kind, conversationId, id, label, { blurb = null } = {}) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
@@ -5805,7 +5816,7 @@ export function updateCall(conversationId, id, fields) {
     // What a second call_place handed into this one while it rang or ran (tools.js, calls 66/67).
     "facts",
     "recording_state", "recording_file", "recording_format", "recording_seconds",
-    "recording_bytes", "recording_sha256", "recording_why",
+    "recording_bytes", "recording_sha256", "recording_why", "recording_deleted_at",
     "language", "language_announced",
     // What a real call is like (2026-10-07): waiting, who has heard the announcement, which keys were
     // pressed, what was read back, and what the call ACHIEVED as opposed to what the phone did.
@@ -5825,6 +5836,8 @@ export function updateCall(conversationId, id, fields) {
     "settle_started_at", "settled_at", "settle_resumes",
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
+    // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
+    "cartesia_seconds", "cartesia_cents", "cartesia_fell_back",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
     "turn_log",
   ];

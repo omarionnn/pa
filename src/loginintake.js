@@ -5,7 +5,7 @@
 // saveFromSealed) is the only code that opens what was sealed.
 //
 //   offerSaveLink   code decides a link may exist: the switch, not the never list, Reason's own browser
-//                   reached the site's sign-in form just now (src/browser.js locateSigninPage) on the
+//                   reached the site's sign-in form just now (src/browser.js findLoginForm) on the
 //                   site itself, no wall on record. The pinned origin and path come from that visit,
 //                   never from the AI and never from a link in mail.
 //   viewFor         the page's data: what to show and what to seal to. Never a login.
@@ -28,7 +28,7 @@ import * as restcrypt from "./restcrypt.js";
 import * as passkey from "./passkey.js";
 import { typedOnly } from "./trust.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
-import { signinFinding } from "./sitefindings.js";
+import { signinFinding, recordFinding } from "./sitefindings.js";
 import {
   savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor, intakePublicKey, saveFromSealed, recordLoginEvent, listLogins, removeLogin,
 } from "./savedlogins.js";
@@ -44,6 +44,16 @@ const SEALED_MAX = 8_000; // base64url: RSA 4096 wrap (512) + the three fields, 
 /** What the tool returns, whatever happened: one fixed sentence (hard rule 2). The link is its own bubble. */
 export const OFFER_SENTENCE = "Here's a link to save that login on Reason's own page. Type it there, not here: I never see it.";
 
+/** The forms a pin may be: the filler types into nothing else (src/signinpage.js loginFormOf). */
+const PIN_FORMS = new Set(["password", "email_first"]);
+/** Fixed words when no link is made because Reason's own visit found no sign-in form to pin. */
+export const NO_LINK_WORDS = {
+  no_signin_form: (n) => `I couldn't find ${n}'s sign-in page from its website, so I haven't made a save link. I only save a login for a sign-in form I've seen on the site myself.`,
+  walled: (n) => `${n} showed my browser a security check instead of its sign-in page, so I haven't made a save link. I don't try to get round a site's checks.`,
+  off_site: (n) => `${n}'s sign-in is on another company's website, so I haven't made a save link. I only type a login on the site's own sign-in page.`,
+  not_reached: (n) => `I couldn't open ${n}'s website just now, so I haven't made a save link. Ask me again in a bit.`,
+};
+
 const q = (sql) => db.db.prepare(sql);
 const sha = (b) => createHash("sha256").update(b).digest();
 const hashToken = (t) => sha(`save-login|${t}`).toString("hex");
@@ -57,7 +67,7 @@ const hostOf = (s) => { try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) 
 /**
  * Make a save link for `site`, if code allows one. `quotedRequest`: the person's own words that asked
  * for the job (shown back on the page so a stranger's page can't fake it). `locate`: the visit
- * (src/browser.js locateSigninPage); in a test only a handed-in one runs.
+ * (src/browser.js findLoginForm); in a test only a handed-in one runs.
  *   → { ok: true, link, site, label, careful } | { ok: false, error, say? }
  * Never throws for the AI's input; `say` is fixed words where the person should hear why.
  */
@@ -78,12 +88,19 @@ export async function offerSaveLink(conversationId, site, quotedRequest, { locat
   const entry = { site: base, label: name, signin_url: `https://${host}/`, generic: true };
   // A wall on record: no link (a site that will not load is never asked for a login).
   const had = signinFinding(entry);
-  if (had?.fresh && had.kind === "walled") return { ok: false, error: "walled" };
-  const visit = locate ?? (process.env.NODE_TEST_CONTEXT ? null : (await import("./browser.js")).locateSigninPage);
+  if (had?.fresh && had.kind === "walled") return { ok: false, error: "walled", say: NO_LINK_WORDS.walled(name) };
+  const visit = locate ?? (process.env.NODE_TEST_CONTEXT ? null : (await import("./browser.js")).findLoginForm);
   if (!visit) return { ok: false, error: "not_reached" };
   let at;
   try { at = await visit(entry); } catch { at = null; }
-  if (!at?.found || typeof at.url !== "string") return { ok: false, error: "not_reached" };
+  // The pin is never a page without a sign-in form the filler can type into (2026-11-13: Netflix's home
+  // page, whose one box is a sign-up box, was pinned as its sign-in page). No form, no link; the person
+  // hears why in fixed words, and a wall is remembered like any other.
+  if (!at?.found || typeof at.url !== "string" || !PIN_FORMS.has(at.form)) {
+    const why = at?.why === "wall" ? "walled" : at?.why === "off_site" ? "off_site" : at?.why === "not_loaded" || !at ? "not_reached" : "no_signin_form";
+    if (why === "walled") { try { recordFinding(entry, { kind: "walled", why: "a wall before the sign-in form" }); } catch { /* a record that cannot be written never breaks the answer */ } }
+    return { ok: false, error: why, say: NO_LINK_WORDS[why](name) };
+  }
   // Hard rule 1: the sign-in page Reason reached is the site's own, over https. A sign-in page on
   // another registrable domain gets no link (an identity host for the site is not handled yet).
   let u;
@@ -92,7 +109,9 @@ export async function offerSaveLink(conversationId, site, quotedRequest, { locat
   const there = classifySite(u.origin);
   if (there.policy === "never") return { ok: false, error: "never_site", say: refusalFor(there.category, name) };
   const careful = verdict.policy === "careful" || there.policy === "careful";
-  const path = /^\/[^?#\s]{0,300}$/.test(u.pathname) ? u.pathname : "/";
+  // The path the form was found on, or no link: never a fallback to the front page (which has no form).
+  if (!/^\/[^?#\s]{0,300}$/.test(u.pathname)) return { ok: false, error: "no_signin_form", say: NO_LINK_WORDS.no_signin_form(name) };
+  const path = u.pathname;
 
   const token = randomBytes(24).toString("base64url");
   const now = clock.now();

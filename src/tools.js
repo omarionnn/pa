@@ -113,6 +113,11 @@ import { KINDS as DOCUMENT_FORMATS, documentFilename, renderDocument, writeDocum
 import { LANGUAGES, topLine, madeFor } from "./pages/render.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
+import { deleteCallRecordings } from "./calls/recordingdelete.js";
+// The off-site backups (deploy: reason-offsite-backup, restic, append-only) carry data/recordings and
+// keep every daily snapshot until the operator prunes them by hand. A recording deleted today is
+// still in the snapshots taken before today, encrypted. Said, not hidden.
+const RECORDING_BACKUP_NOTE = "One thing to say in a few words: the encrypted off-site backups made before today still hold a copy until those backups are cleared out.";
 import { SEND_STYLES, checkReaction, effectAllowed, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
 import { sendTapback } from "./tapbacks.js";
 import * as replies from "./replies.js";
@@ -197,6 +202,9 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "acc
   // what it meant to do — and a file that reached a third party is the kind of thing an audit is
   // for. Listing them is left off, like page_list: reading Reason's own rows changes nothing.
   "document_create", "document_send", "document_delete",
+  // Deleting a call's recording, or all of them, is their audio gone off this disk for good: "did you
+  // delete it" and "when" have to be answerable from the record.
+  "call_recording_delete",
   // The master's own acts on other people. "What did you do today" has to be able to answer
   // "you let Kofi in", "you blocked that number", "you deleted their Reason".
   "admin_pause", "admin_resume", "admin_remove", "admin_block", "admin_delete",
@@ -367,6 +375,8 @@ export const REACHES_SOMEBODY = new Set(["message_send", "voice_note_send", "cal
 // learns that saying yes to Reason is free.
 export const CONDITIONALLY_GATED = new Set([
   "message_send", "voice_note_send", "call_place",
+  // Every recording at once is gated; one is not, like deleting one page or one document.
+  "call_recording_delete",
   // To the owner it is their own file in their own thread and no yes is asked for; to anybody else
   // it is the same act as texting them. See needsConfirmation.
   "document_send",
@@ -720,6 +730,9 @@ function needsConfirmation(name, input, conversationId) {
   // model says otherwise, so the default has to be read the same way here as in the handler. Read
   // as undefined it would be nobody, and a send to them would collect a yes for nothing.
   if (name === "document_send") return !addressedToOwner(conversationId, input.to ?? "owner");
+  // One call's recording is one thing they named, gone like a page or a document they asked to
+  // delete. All of them at once cannot be taken back and nobody checks the list, so that asks first.
+  if (name === "call_recording_delete") return input.all === true;
   // One email at a time is a small, visible, reversible change to their own mailbox. A hundred at
   // once is a different act: nobody checks the list, and "archive everything from that sender" is
   // how a year of mail disappears out of an inbox on a misread query. So the line is drawn at more
@@ -4373,6 +4386,22 @@ export const tools = [
     input_schema: { type: "object", properties: { call_id: { type: "integer", description: "The id call_place returned. Omit for the recent ones." } } },
   },
   {
+    name: "call_recording_delete",
+    description: "Delete the audio recording of one of their calls, or of all of them, when they ask: 'delete the recording of my last call', 'delete the recording of my call with the dentist on Tuesday', 'delete all my call recordings'."
+      + " For one call, find its call_id with call_status first (no id lists the recent ones and an index of older ones); never guess an id."
+      + " The call itself stays — who, when, how long, the summary and the transcript — only the audio goes. A call still going or still being wrapped up is refused; ask again once it has finished."
+      + " all: true deletes every recording they have and cannot be undone, so it goes through the confirm gate: say back that every call recording goes, permanently, and get their yes first. One call needs no yes."
+      + " Say what the result says was removed and kept, including the note about copies already sent and backups.",
+    input_schema: {
+      type: "object",
+      properties: {
+        call_id: { type: "integer", description: "The one call whose recording goes, from call_status. Leave out when all is true." },
+        all: { type: "boolean", description: "True for every call recording they have. Needs confirmation_id." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, for deleting every call recording. Only with all: true." },
+      },
+    },
+  },
+  {
     name: "page_create",
     description: "Turn an answer into a small web page the owner opens from a link. When you send the link, never promise a preview card, a picture of the page or a title — whether their phone shows one is not yours to know. Use it when a text would be too long to read on a phone, or when pictures, a comparison or sections make it genuinely easier to use — a gift shortlist with prices, an itinerary, a plan, a guide. Offer it when an answer is getting long, and make one straight away when they ask for something they can come back to. An answer from research to a comparison or a which-should-i-get question ALWAYS goes on a page: the research result tells you so. The link you get back opens the page when they tap it on a browser they have used before. On a browser that has never opened one of their pages, the page texts them a six-digit code once — do not warn them about it in advance, and if they ask, say that is what it is. You give structured blocks, never HTML.",
     input_schema: {
@@ -7179,6 +7208,9 @@ const S = {
     errand_id: z.number().int().optional(),
   }),
   call_status: z.object({ call_id: z.number().int().optional() }),
+  call_recording_delete: z.object({
+    call_id: z.number().int().positive().optional(), all: z.boolean().optional(), confirmation_id: z.number().int().optional(),
+  }).refine(v => v.all === true ? v.call_id === undefined : v.call_id !== undefined, { message: "Pass either call_id (one call) or all: true, not both and not neither." }),
   call_errand_start: z.object({
     goal: z.string().min(1).max(600),
     ask: z.array(z.string().max(300)).max(20).optional(),
@@ -9375,6 +9407,7 @@ function confirmTargetFor(name, input, c = null) {
     // 7:15 to Atlanta must not be spendable on the 6am to Lagos.
     case "flight_checkin_commit": return `flight #${input.flight_id}: ${input.what}`;
     case "admin_delete": return input.number;
+    case "call_recording_delete": return input.all === true ? "every call recording" : `call recording #${input.call_id ?? ""}`;
     // Which provider, and which of its scopes: a yes to connecting one is not a yes to another one
     // with credentials on this server (audit lead 26).
     case "account_connect": return `connect ${String(input.name ?? "").trim()}${input.scopes?.length ? ` (${[...input.scopes].sort().join(", ")})` : ""}`;
@@ -12188,6 +12221,41 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         source: `what was said on the phone by ${[...new Set(cmp.legs.map(l => l.number))].join(", ") || "the places called"}`,
         text: spokenHere,
       });
+    }
+
+    case "call_recording_delete": {
+      const out = deleteCallRecordings(c, input.all === true ? { all: true } : { callId: input.call_id });
+      if (out.not_found) return { ok: false, error: `No call #${input.call_id} of theirs. call_status lists their calls; nothing was deleted.` };
+      const kept = "The calls themselves are kept: who, when, how long, the summary and the transcript. Only the audio is gone.";
+      const backups = RECORDING_BACKUP_NOTE;
+      if (!out.all) {
+        const said = {
+          deleted: `The recording of call #${out.call_id} is deleted: the audio file and every copy of it on this machine.`,
+          already_deleted: `The recording of call #${out.call_id} was already deleted, so there was nothing left to remove. Say it is gone.`,
+          no_recording: `Call #${out.call_id} has no recording to delete: there was never any audio saved for it. Say so plainly.`,
+          still_going: `Call #${out.call_id} is still going or still being wrapped up, so nothing was deleted. Say you can delete its recording once it has finished.`,
+          failed: `The recording of call #${out.call_id} could NOT be deleted from this machine, so it is still there. Say so plainly.`,
+        }[out.what];
+        return {
+          ok: out.ok, call_id: out.call_id, result: out.what, counts: out.counts,
+          ...(out.what === "deleted" ? {
+            removed: "the audio file and its copies on this machine", kept: "the call record, summary and transcript",
+            note: `${said} ${kept}${out.earlier_sent ? " It had already been sent to them, and the copy on their phone is theirs to delete." : ""} ${backups}`,
+          } : { note: said }),
+        };
+      }
+      const n = out.counts;
+      return {
+        ok: out.ok, all: true, counts: n,
+        removed: "every saved call recording and its copies on this machine", kept: "the call records, summaries and transcripts",
+        note: (n.deleted ? `Deleted ${n.deleted} call recording${n.deleted === 1 ? "" : "s"} from this machine.` : "There were no saved call recordings left to delete.")
+          + (n.already_deleted ? ` ${n.already_deleted} had already been deleted.` : "")
+          + (n.still_going ? ` ${n.still_going} call${n.still_going === 1 ? " is" : "s are"} still going or being wrapped up and kept ${n.still_going === 1 ? "its" : "their"} recording; say you can delete ${n.still_going === 1 ? "it" : "them"} once finished.` : "")
+          + (n.failed ? ` ${n.failed} could NOT be deleted and ${n.failed === 1 ? "is" : "are"} still here — say so.` : "")
+          + ` ${kept}`
+          + (out.earlier_sent ? ` Copies already sent to their phone are theirs to delete.` : "")
+          + (n.deleted ? ` ${backups}` : ""),
+      };
     }
 
     case "call_status": {
