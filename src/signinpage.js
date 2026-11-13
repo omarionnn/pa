@@ -482,8 +482,13 @@ export const NO_PROGRESS = new Set(["timed_out", "cancelled", "link_expired", "n
 /**
  * Write down how a link ended. Without progress: remembered, so no second identical link goes out
  * on its own. With progress (signed in): the slate is wiped.
+ *
+ * `page`: the page the link was made for. `seen`: the page its sign-in form was really shown on,
+ * when that is another one (a link that opened a home page and went through the site's own "Log in"
+ * link). Both are kept, in one column with a space between (an address never has a bare space): a
+ * next link to either of them is the same page again.
  */
-export function noteEnding(conversationId, entry, { how = "", state = "", page = "" } = {}) {
+export function noteEnding(conversationId, entry, { how = "", state = "", page = "", seen = "" } = {}) {
   if (!conversationId || !entry?.site) return;
   touch(conversationId, entry.site);
   if (state === "signed_in" || !NO_PROGRESS.has(String(how))) {
@@ -495,13 +500,14 @@ export function noteEnding(conversationId, entry, { how = "", state = "", page =
   const before = rowFor(conversationId, entry.site);
   const fresh = !before?.ended_how || clock.now() - Number(before.ended_at) > NO_REPEAT_MS;
   db.db.prepare("UPDATE signin_pages SET ended_how = ?, ended_page = ?, ended_at = ?, retried = ? WHERE conversation_id = ? AND site = ?")
-    .run(String(how), pageOf(page || entry.signin_url), clock.now(), fresh ? 0 : Number(before.retried) ? 1 : 0, String(conversationId), String(entry.site));
+    .run(String(how), [...new Set([pageOf(page || entry.signin_url), pageOf(seen)].filter(Boolean))].join(" "), clock.now(), fresh ? 0 : Number(before.retried) ? 1 : 0, String(conversationId), String(entry.site));
 }
 /** The last link for this site that ended without progress, while that is still recent. */
 export function lastNoProgress(conversationId, entry) {
   const row = rowFor(conversationId, entry?.site);
   if (!row?.ended_how || clock.now() - Number(row.ended_at) > NO_REPEAT_MS) return null;
-  return { how: row.ended_how, page: row.ended_page, at: Number(row.ended_at), retried: !!row.retried, minutes_ago: Math.round((clock.now() - Number(row.ended_at)) / 60_000) };
+  const pages = String(row.ended_page ?? "").split(" ").filter(Boolean);
+  return { how: row.ended_how, page: pages[0] ?? "", pages, at: Number(row.ended_at), retried: !!row.retried, minutes_ago: Math.round((clock.now() - Number(row.ended_at)) / 60_000) };
 }
 /** A link the person asked for themselves starts the count over; the one retry Reason takes itself is counted. */
 export function clearNoProgress(conversationId, entry) {
@@ -521,7 +527,8 @@ export function mayLinkAgain(conversationId, entry, { asked = false } = {}) {
   const last = lastNoProgress(conversationId, entry);
   if (!last) return { ok: true };
   if (asked) return { ok: true, asked: true };
-  const changed = !!last.page && pageOf(entry?.signin_url) !== last.page;
+  // Changed: it would open a page that link neither named nor showed its sign-in on.
+  const changed = last.pages.length > 0 && !last.pages.includes(pageOf(entry?.signin_url));
   if (changed && !last.retried) return { ok: true, retry: true };
   return { ok: false, last };
 }
