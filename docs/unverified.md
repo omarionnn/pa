@@ -5316,3 +5316,23 @@ from when both were talking. Proved only with stand-in sockets. Not known until 
   until some later clear), not slow barge-ins; and a clear also comes with nothing playing (their WebSocket
   page says so), which is now `playing: false`.
 
+### 2026-11-13: soft music while Reason looks something up (Cartesia calls only, REASON_CARTESIA_LOOKUP_MUSIC): not run
+
+`src/calls/lookupmusic.js` mixes a synthesized music bed under the call while an `ask_reason` lookup runs:
+in from 0.7 s (400 ms fade), ducked under any speech, out over 600 ms when the answer goes back to the
+agent or the lookup is handed to a text, gone within one frame if the agent starts speaking before then.
+Mixed on our side, through the same path as the room tone; not in the call's recording. Off by default.
+Proved only with stand-in sockets (`test/call-cartesia-music.test.js`). Not known until a real call:
+
+- Whether the level (≈ −45 dBFS, about 15 dB under the agent) sounds right on a real phone, and which of the
+  three variants he likes. REASON_CARTESIA_LOOKUP_MUSIC_GAIN tunes the level with no code change.
+- Whether his phone's echo of the music ever reads as his speech (it would only duck the music, never more).
+- Cartesia's own option, read 2026-11-13: an agent's `config.audio.output.background_sound` is "Ambient audio
+  with a `file_id` and volume from `0` to `2`. `null` disables it." (docs.cartesia.ai/agents/configuration),
+  played for the whole conversation, and `output_delivery: as_available` is "Not supported when the agent uses
+  a background sound" (docs.cartesia.ai/api-reference/agents/agent-websocket). Nothing ties it to a tool call
+  running; for tools there is only `pre_tool_speech` (auto, force, off: whether the agent speaks first,
+  docs.cartesia.ai/agents/system-tools). So theirs cannot do this, and ours is the one used: it knows when a
+  lookup starts and ends, ducks per frame, and sits on our side of the line with the room tone. After a
+  fall-back to GPT-Live there is no lookup music (GPT-Live calls are not changed).
+

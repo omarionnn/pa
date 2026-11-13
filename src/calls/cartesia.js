@@ -16,6 +16,7 @@ import { config, clock } from "../config.js";
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
 import * as ambience from "./ambience.js";
+import { lookupMusicFor, MUSIC_DELAY_MS } from "./lookupmusic.js";
 import { CallTape, hasSpeech, voiceInstructionsFor } from "./gptlive.js";
 import { queueMidCall } from "./voice.js";
 import { openingLineFor } from "./inbound.js";
@@ -199,7 +200,13 @@ export class CartesiaAgentCall {
     // The ask still being worked on after its holding line (`tool`), which a COLLECT call comes back for.
     this.pendingAsk = null;
     this.holds = 0;
-    this.bed = ambience.bedFor(call);
+    // The room under the call, and with REASON_CARTESIA_LOOKUP_MUSIC on, soft music over it while a
+    // lookup runs (./lookupmusic.js): `bed` is then the room with the music on top.
+    const room = ambience.bedFor(call);
+    const lm = lookupMusicFor(call, room, { log });
+    this.music = lm?.music ?? null;
+    this.musicSource = lm?.source ?? "";
+    this.bed = lm?.bed ?? room;
     // Their own call is taped as a GPT-Live own call is (`GptLiveCall`: only a line call asks `callRecorded`).
     this.recorded = true;
     this.tape = new CallTape();
@@ -259,7 +266,7 @@ export class CartesiaAgentCall {
       this.streamSid = m.start?.streamSid ?? m.streamSid ?? null;
       this.callSid = m.start?.callSid ?? "";
       this.streamStartAt = this.now();
-      this.log({ cartesia_stream_start: this.call.id, ...(this.bed ? { ambience: this.bed.kind } : {}) });
+      this.log({ cartesia_stream_start: this.call.id, ...(this.bed?.kind ? { ambience: this.bed.kind } : {}), ...(this.music ? { lookup_music: this.musicSource } : {}) });
       this.roomTick();
     } else if (m.event === "media" && m.media?.payload) {
       if (m.media.track && m.media.track !== "inbound") return;
@@ -270,6 +277,7 @@ export class CartesiaAgentCall {
         const t = this.now();
         if (t - this.lastSpeechAt > RUN_GAP_MS) this.speechRunAt = t;
         this.lastSpeechAt = t;
+        this.music?.speech(t);
       }
       if (this.ready) this.agent.send({ type: "audio_input", audio: m.media.payload });
     } else if (m.event === "stop") {
@@ -366,6 +374,8 @@ export class CartesiaAgentCall {
       }
       if (t - this.agentSpeechAt > RUN_GAP_MS) this.agentRunAt = t;
       this.agentSpeechAt = t;
+      // The music ducks under this frame (a holding line), or is gone within it (the answer).
+      this.music?.speech(t);
     }
     this.tape.reason(Buffer.from(b64, "base64"));
     this.toTwilio({ event: "media", media: { payload: b64 } });
@@ -421,13 +431,16 @@ export class CartesiaAgentCall {
       if (out === WAITED) { this.toText(p); this.log({ cartesia_ask_to_text: this.call.id, ms: this.now() - p.askedAt }); return answer(TEXT_RESULT); }
       p.collected = true;
       if (this.pendingAsk === p) this.pendingAsk = null;
+      this.music?.end(p);
       return answer(...this.spoken(out));
     }
     const askedAt = this.now();
     const p = { askedAt, collected: false, texting: false, texted: false, reply: undefined, done: null };
+    // The lookup has begun: music under it from MUSIC_DELAY_MS, until its answer goes back or to a text.
+    this.music?.start(p, askedAt);
     p.done = this.ask(request, p);
     const out = await this.within(p.done, this.holdMs);
-    if (out !== WAITED) return answer(...this.spoken(out));
+    if (out !== WAITED) { this.music?.end(p); return answer(...this.spoken(out)); }
     // Slow: one holding line of code's words, and the agent comes back (COLLECT) for the answer.
     this.pendingAsk = p;
     const line = HOLD_LINES[this.holds++ % HOLD_LINES.length];
@@ -440,6 +453,7 @@ export class CartesiaAgentCall {
   /** This ask goes by text now: its answer as soon as it is back (at once, if it already is). */
   toText(p) {
     p.texting = true;
+    this.music?.end(p);
     if (this.pendingAsk === p) this.pendingAsk = null;
     if (p.reply !== undefined) this.textLate(p);
   }
@@ -453,7 +467,7 @@ export class CartesiaAgentCall {
       reply = { text: "", error: (err?.message ?? String(err)).split("\n")[0] };
     }
     const answeredAt = this.now();
-    const ask = { asked_to_answered_ms: answeredAt - p.askedAt, error: !!reply?.error, skip: !!reply?.skip, held: this.pendingAsk === p || p.collected || p.texting };
+    const ask = { asked_to_answered_ms: answeredAt - p.askedAt, error: !!reply?.error, skip: !!reply?.skip, held: this.pendingAsk === p || p.collected || p.texting, ...(this.music ? { music: answeredAt - p.askedAt >= MUSIC_DELAY_MS } : {}) };
     this.m.asks.push(ask);
     this.log({ cartesia_ask_reason: this.call.id, ...ask });
     this.askAnsweredAt = answeredAt;
@@ -501,6 +515,7 @@ export class CartesiaAgentCall {
   fallBack(why) {
     if (this.done || this.handedOff) return null;
     this.handedOff = true;
+    this.music?.stop();
     for (const k of ["readyTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     this.log({ cartesia_fell_back: this.call.id, why: String(why).slice(0, 120), ms: this.now() - this.startedAt });
     // A session that did start is a call on their side, kept until deleted. One still coming up is given
@@ -521,6 +536,7 @@ export class CartesiaAgentCall {
   async end(why = "") {
     if (this.done || this.handedOff) return;
     this.done = true;
+    this.music?.stop();
     this.endWhy = this.endWhy || why;
     for (const k of ["readyTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     try { this.agent?.close(); } catch { /* already gone */ }
