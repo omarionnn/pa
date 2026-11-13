@@ -53,6 +53,7 @@
 //
 // PRIVACY. Logs carry counts and outcomes only, never a fact, a rule or a message. Every read is by
 // this person's conversation id; one person's memory never reaches another's prompt.
+import { withoutFinanceReplies } from "./plaid.js";
 import { config, clock } from "./config.js";
 import * as db from "./db.js";
 import * as background from "./background.js";
@@ -370,7 +371,10 @@ export function periodMessages(conversationId, afterId, { now = clock.now(), cal
     AND ${db.eventNotForgotten("e")} ORDER BY e.id LIMIT ?`).all(conversationId, from, MAX_MESSAGES + 1);
   const picked = [];
   let chars = 0;
+  // Reason's replies that answered from their bank are not read (src/plaid.js); their own words are.
+  const readable = new Set(withoutFinanceReplies(conversationId, rows).map(r => r.id));
   for (const r of rows.slice(0, MAX_MESSAGES)) {
+    if (!readable.has(r.id)) continue;
     const text = cut(r.content, MESSAGE_CHARS);
     if (!text) continue;
     if (picked.length && chars + text.length > MAX_TRANSCRIPT_CHARS) break;

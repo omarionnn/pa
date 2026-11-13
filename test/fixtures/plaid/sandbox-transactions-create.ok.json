@@ -1,0 +1,21 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/sandbox/transactions/create",
+  "status": 200,
+  "request": {
+    "access_token": "access-sandbox-PLACEHOLDER-2",
+    "transactions": [
+      {
+        "account_id": "ACCOUNT_ID_16",
+        "amount": 12.34,
+        "description": "SWEETGREEN NEW YORK NY",
+        "date_transacted": "2026-11-13",
+        "date_posted": "2026-11-13",
+        "iso_currency_code": "USD"
+      }
+    ]
+  },
+  "response": {
+    "request_id": "REQUEST_ID"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/sandbox/public_token/create",
+  "status": 200,
+  "request": {
+    "institution_id": "ins_109508",
+    "initial_products": [
+      "transactions"
+    ],
+    "options": {
+      "transactions": {
+        "days_requested": 180
+      }
+    }
+  },
+  "response": {
+    "public_token": "public-sandbox-PLACEHOLDER-1",
+    "request_id": "REQUEST_ID"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/link/token/create",
+  "status": 200,
+  "request": {
+    "client_name": "Reason",
+    "language": "en",
+    "country_codes": [
+      "US"
+    ],
+    "user": {
+      "client_user_id": "CLIENT_USER_ID"
+    },
+    "products": [
+      "transactions"
+    ],
+    "transactions": {
+      "days_requested": 180
+    },
+    "webhook": "https://reason.test/plaid/webhook",
+    "hosted_link": {
+      "completion_redirect_uri": "https://reason.test/bank/done?s=STATE",
+      "url_lifetime_seconds": 1800,
+      "is_mobile_app": false
+    }
+  },
+  "response": {
+    "expiration": "2026-11-13T05:38:37Z",
+    "hosted_link_url": "https://secure.plaid.com/hl/PLACEHOLDER1",
+    "link_token": "link-sandbox-PLACEHOLDER-1",
+    "request_id": "REQUEST_ID"
+  }
+}
