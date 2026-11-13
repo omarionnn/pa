@@ -143,6 +143,22 @@ startOps({ runtime, router, log });
   }
 }
 
+// Their bank through Plaid (src/plaid.js, REASON_PLAID): how the webhook and the done page text somebody.
+{
+  const plaid = await import("./plaid.js");
+  if (plaid.plaidMode() !== "off") {
+    plaid.attach({ say: (c, text) => runtime.say(c, text), log });
+    // A disconnect Plaid could not confirm at the time (their data is already gone here): tried again hourly.
+    // And the 60-day rule (plaid.purgeOld): transactions older than that are deleted, at start and every hour.
+    const sweep = () => {
+      try { const n = plaid.purgeOld(); if (n) log({ plaid_old_transactions_deleted: n }); } catch (e) { log({ plaid_purge_failed: String(e?.message ?? e).split("\n")[0].slice(0, 120) }); }
+      plaid.retryRemovals().then(n => { if (n) log({ plaid_removals_retried: n }); }).catch(() => {});
+    };
+    sweep();
+    setInterval(sweep, 3600_000).unref();
+  }
+}
+
 const server = createServer({ router, runtime, log });
 // The restart gate reads data/busy.json for this pid; written at once so an idle process says so.
 resetBusy();

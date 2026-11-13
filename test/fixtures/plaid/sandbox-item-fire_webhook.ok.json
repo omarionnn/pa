@@ -1,0 +1,13 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/sandbox/item/fire_webhook",
+  "status": 200,
+  "request": {
+    "access_token": "access-sandbox-PLACEHOLDER-1",
+    "webhook_code": "SYNC_UPDATES_AVAILABLE"
+  },
+  "response": {
+    "request_id": "REQUEST_ID",
+    "webhook_fired": true
+  }
+}

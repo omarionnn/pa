@@ -286,6 +286,21 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     // A food order's cart is held 15 minutes (src/food.js): past that, no yes pays it, whatever was said.
     { const food = await import("./food.js"); const row = shop.paymentRow(input.payment_id);
       if (row && row.conversation_id === c && row.status === "asked" && food.isFoodRun(row.run_id) && clock.now() > shop.askDeadline(row)) return { ok: false, error: "hold_lapsed", say: "The 15-minute hold on that cart passed, so nothing was placed or charged. Offer in one line to rebuild the same cart for a fresh total." }; }
+    // Their bank is connected (src/plaid.js, REASON_PLAID): a FRESH balance before paying. When no linked
+    // cash account covers Crossmint's amount they are told once and nothing is paid on the yes they
+    // already gave; a text from them after that warning is the go-ahead. Plaid not answering never blocks.
+    { const plaid = await import("./plaid.js"); const row = shop.paymentRow(input.payment_id);
+      if (row && row.conversation_id === c && row.status === "asked" && row.currency === "USD" && plaid.plaidOn(c)) {
+        const texts = trust.ownerTexts(messages).length;
+        if (!plaid.payCleared(c, row.id, texts)) {
+          const chk = await plaid.balanceCheck(c, Number(row.amount));
+          if (chk.short) {
+            plaid.payWarned(c, row.id, texts);
+            return { ok: false, error: "balance_looks_short", nothing_charged: true, account: chk.account, available: chk.available, needed: chk.needed,
+              say: `Nothing was paid. Their linked ${chk.account} has ${chk.available} available and this is ${chk.needed}. Tell them that in one short line (it may be on a different card; you can't tell) and ask if they still want to go ahead. Only if they then say yes, call shop_pay again.` };
+          }
+        }
+      } }
     // Face ID set up (src/passkey.js): no yes typed here pays; the page pays. A link already out and still
     // in its time is the one to use: minting another would close it under them (11-08, link_replaced).
     if (passkey.requiredFor(c)) {
