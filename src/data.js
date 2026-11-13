@@ -307,6 +307,7 @@ export const KEPT_ON_DELETE = {
 export const INSTALL_WIDE = {
   site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain, with a short one-way mark of which sign-in page was asked (never the address itself); nothing in it says who asked.",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
+  cartesia_daily: "Cartesia call voice counts per day (calls, ready, fall-backs by reason), no person",
   channel_limits: "what each channel refused, learned once for everyone",
   flight_provider_usage: "monthly search counts per flight provider",
   // `last_addr` is the number the last failure was about, so a fix can tell which one cleared.

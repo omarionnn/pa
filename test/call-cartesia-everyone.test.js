@@ -251,6 +251,12 @@ test("the tool is shown to every account at on, the operator only at owner, nobo
   assert.equal(tools.callTrialToolVisible("web_search", B), true, "other tools untouched");
 });
 
+test("the voice tool's progress line is fixed, never built from what was said", async () => {
+  const progress = await import("../src/progress.js");
+  assert.equal(progress.phraseFor("call_voice_trial", { choice: "on" }), "Changing your call voice");
+  assert.equal(progress.phraseFor("call_voice_trial", { choice: "Bea +13105550000" }), "Changing your call voice");
+});
+
 // ---------- per person: two accounts on calls at the same time ----------
 
 /** A line of theirs today in their own thread, stamped the way their texts are, so today's names are read. */
