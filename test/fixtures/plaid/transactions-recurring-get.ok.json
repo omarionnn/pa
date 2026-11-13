@@ -1,0 +1,93 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/transactions/recurring/get",
+  "status": 200,
+  "request": {
+    "access_token": "access-sandbox-PLACEHOLDER-1"
+  },
+  "response": {
+    "inflow_streams": [
+      {
+        "account_id": "ACCOUNT_ID_2",
+        "average_amount": {
+          "amount": -4.22
+        },
+        "category": [
+          "Transfer",
+          "Credit"
+        ],
+        "category_id": "21005000",
+        "description": "INTRST PYMNT",
+        "first_date": "2026-06-08",
+        "frequency": "MONTHLY",
+        "is_active": true,
+        "is_user_modified": false,
+        "last_amount": {
+          "amount": -4.22
+        },
+        "last_date": "2026-11-05",
+        "last_user_modified_datetime": "0001-01-01T00:00:00Z",
+        "merchant_name": "",
+        "personal_finance_category": {
+          "confidence_level": "UNKNOWN",
+          "detailed": "TRANSFER_IN_ACCOUNT_TRANSFER",
+          "primary": "TRANSFER_IN"
+        },
+        "predicted_next_date": "2026-12-05",
+        "status": "MATURE",
+        "stream_id": "STREAM_ID_1",
+        "transaction_ids": [
+          "TRANSACTION_ID_17",
+          "TRANSACTION_ID_18",
+          "TRANSACTION_ID_19",
+          "TRANSACTION_ID_20",
+          "TRANSACTION_ID_21",
+          "TRANSACTION_ID_8"
+        ]
+      }
+    ],
+    "outflow_streams": [
+      {
+        "account_id": "ACCOUNT_ID_4",
+        "average_amount": {
+          "amount": 2078.5
+        },
+        "category": [
+          "Payment"
+        ],
+        "category_id": "16000000",
+        "description": "AUTOMATIC PAYMENT - THANK",
+        "first_date": "2026-05-23",
+        "frequency": "MONTHLY",
+        "is_active": true,
+        "is_user_modified": false,
+        "last_amount": {
+          "amount": 2078.5
+        },
+        "last_date": "2026-10-20",
+        "last_user_modified_datetime": "0001-01-01T00:00:00Z",
+        "merchant_name": "",
+        "personal_finance_category": {
+          "confidence_level": "UNKNOWN",
+          "detailed": "TRANSFER_OUT_ACCOUNT_TRANSFER",
+          "primary": "TRANSFER_OUT"
+        },
+        "predicted_next_date": "2026-11-20",
+        "status": "MATURE",
+        "stream_id": "STREAM_ID_2",
+        "transaction_ids": [
+          "TRANSACTION_ID_22",
+          "TRANSACTION_ID_23",
+          "TRANSACTION_ID_24",
+          "TRANSACTION_ID_25",
+          "TRANSACTION_ID_26",
+          "TRANSACTION_ID_15"
+        ]
+      }
+    ],
+    "personal_finance_category_version": "v2",
+    "request_id": "REQUEST_ID",
+    "updated_datetime": "2026-11-13T05:08:46Z",
+    "_outflow_streams_total": 7
+  }
+}
