@@ -22,7 +22,7 @@ import {
 import { dropIntake } from "./loginintake.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { recordFinding } from "./sitefindings.js";
-import { readPage } from "./signinpage.js";
+import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs } from "./signinpage.js";
 import { logAttempt } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
 import { clearOriginInPage } from "./signin.js";
@@ -69,7 +69,11 @@ function say(result, site, extra = "") {
     needs_approval: `I signed in to ${site}; it wants you to approve the sign-in in an app.`,
     wrong_password: `I couldn't sign you in to ${site}: the saved password wasn't accepted. I've stopped and won't try again until you save it again.`,
     blocked: `${site} blocked the sign-in. That's their choice, not something you did. I stopped and did not retry.`,
-    not_signin_page: `I couldn't sign you in to ${site}: I didn't reach its real sign-in page, so I typed nothing.`,
+    not_signin_page: `I couldn't sign you in to ${site}: its sign-in page didn't show the sign-in form I expected (it may have changed, or not loaded in time), so I typed nothing. Ask me again in a bit; if it keeps happening, the saved login may need saving again.`,
+    // The saved page itself has no sign-in form (a login saved before 2026-11-13 could be pinned to a
+    // site's home page). Never re-pinned silently: the person forgets it and saves it again, and the
+    // new save link pins the page Reason's own visit finds the form on.
+    needs_resave: `I couldn't sign you in to ${site}: the page your saved login points to has no sign-in form, so I typed nothing. It needs saving again: I can forget the saved one and send you a new link to save it on ${site}'s real sign-in page.`,
     origin_mismatch: `I couldn't sign you in to ${site}: the page wasn't on its exact sign-in address, so I typed nothing.`,
     paused: `${site} is paused after an earlier refusal, so I didn't try again.`,
     needs_face_id: `${site} needs your Face ID approval for each sign-in. Approve it here, then tell me to go ahead:`,
@@ -121,6 +125,7 @@ const SUSPICIOUS = /suspicious|unusual (activity|sign.?in)|unrecognized|we don'?
 async function classifyAfterSubmit(page) {
   let read;
   try { read = await readPage(page); } catch { return "not_signin_page"; }
+  if (await challengeShown(page)) return "blocked";
   const text = String(read?.raw?.text ?? "");
   const boxes = Array.isArray(read?.raw?.fields) ? read.raw.fields : [];
   const kinds = boxes.map(f => kindOf(f));
@@ -153,13 +158,21 @@ function kindOf(f = {}) {
 // The locator for the first visible username/email box and the password box, on the page's OWN frame
 // (same origin). A password box inside another origin's frame is never reached, so a cross-origin
 // frame reads as "no form" and nothing is typed (hard rule 1).
+const USER_BOX = 'input[type="email"]:visible, input[autocomplete="username"]:visible, input[name*="user" i]:visible, input[name*="email" i]:visible, input[id*="user" i]:visible, input[id*="email" i]:visible, input[type="text"]:visible';
 async function findForm(page) {
-  const pass = page.locator('input[type="password"]:visible').first();
-  if (!(await pass.count())) return { ok: false };
-  const user = page.locator(
-    'input[type="email"]:visible, input[autocomplete="username"]:visible, input[name*="user" i]:visible, input[name*="email" i]:visible, input[id*="user" i]:visible, input[id*="email" i]:visible, input[type="text"]:visible',
-  ).first();
+  const all = page.locator('input[type="password"]:visible');
+  // Exactly one: two password boxes are making or changing one (src/signinpage.js loginFormOf).
+  if ((await all.count()) !== 1) return { ok: false };
+  const pass = all.first();
+  const user = page.locator(USER_BOX).first();
   return { ok: true, user: (await user.count()) ? user : null, pass };
+}
+
+// An email-first page (src/signinpage.js loginFormOf "email_first"): its one visible username/email box,
+// on the page's own frame. The password box comes after our own submit (fillAndSubmit).
+async function findEmailFirst(page) {
+  const user = page.locator(USER_BOX).first();
+  return (await user.count()) ? { ok: true, emailFirst: true, user, pass: null } : { ok: false };
 }
 
 /**
@@ -169,22 +182,114 @@ async function findForm(page) {
  * page to name the outcome but never returns a secret. A redirect off the pinned origin mid-fill
  * throws, which withLogin turns into the fixed code fill_failed and the caller reads as origin_mismatch.
  */
-async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, { typing = () => {}, relax = () => {} } = {}) {
+async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, { typing = () => {}, relax = () => {}, ours = () => true, atPin = () => true, stepMs = STEP_MS } = {}) {
   const here = () => urlParts(page.url()).origin;
   const ensure = () => { if (here() !== pinnedOrigin) { const e = new Error("origin drifted"); e.name = "OriginDrift"; throw e; } };
+  if (form.emailFirst) {
+    // The email-first rule (2026-11-13): type the username, submit it OURSELVES, and type the password
+    // only into a real password box that then appears on the EXACT pinned origin (scheme, host, port as
+    // strings). The path may change, and only by the page's answer to our own submit: any navigation
+    // before that submit (`ours()` false) stops it. The exact-origin lock stays on the whole time, so
+    // the browser itself refuses a step on any other origin, port or scheme.
+    const notOurs = () => { if (!ours()) { const e = new Error("navigation we did not cause"); e.name = "OriginDrift"; throw e; } };
+    ensure(); notOurs();
+    typing();
+    await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); });
+    // A moment for anything the typing set off to show itself, then the check: a page that moves on its
+    // own once the username is in is not answering our submit, and gets no password.
+    await page.waitForTimeout(OWN_STEP_MS).catch(() => {});
+    ensure(); notOurs();
+    const before = page.url();
+    await form.user.press("Enter").catch(() => {});
+    let pass = await passwordStep(page, pinnedOrigin, 1_500);
+    if (!pass && page.url() === before) {
+      // Enter did nothing (a "Continue" button outside any form): press the page's own one, once.
+      await page.locator('button[type="submit"]:visible, button:has-text("Continue"):visible, button:has-text("Next"):visible').first().click({ timeout: FILL_MS }).catch(() => {});
+    }
+    if (!pass) pass = await passwordStep(page, pinnedOrigin, stepMs);
+    ensure();
+    if (!pass) {
+      const r = await readPage(page).catch(() => null);
+      return r?.kind === "challenge" || (await challengeShown(page)) ? "blocked" : "not_signin_page";
+    }
+    form = { user: form.user, pass }; // the username box too, for the clean-up after the submit (a one-page step keeps it)
+    ensure(); // immediately before the password keystroke
+    await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); });
+    ensure();
+    relax();
+    return await submitAndRead(page, form);
+  }
   // The browser is held to the exact pinned origin until both boxes are typed (the caller pinned it, and
   // the browser refuses every page load anywhere else), so the document the keystroke lands in is
   // this origin's: a script, a meta refresh or a redirect after this check cannot swap in another
   // origin's page under the locator (review 2026-11-13). The check below is the second line.
-  ensure();
+  // And the page is still the pinned PAGE (its path): a page that moved itself to another path of the
+  // origin before anything was typed (a meta refresh, a script) gets nothing (ship review 2026-11-13).
+  const onPinnedPage = () => { if (!atPin()) { const e = new Error("left the pinned page"); e.name = "OriginDrift"; throw e; } };
+  ensure(); onPinnedPage();
   typing();
   if (form.user) await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); });
-  ensure(); // immediately before the password keystroke (design B5 step 5)
+  ensure(); onPinnedPage(); // immediately before the password keystroke (design B5 step 5)
   await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); });
   ensure();
   // Typed. The submit may go to another origin of the same site (a sign-in host posting to the account
   // host); the same-site lock still refuses any other site, and http under an https pin.
   relax();
+  return await submitAndRead(page, form);
+}
+
+/** How long an email-first page is given to show its password step after our own submit. */
+const STEP_MS = 10_000;
+/** How long after typing the username a navigation that was not ours is looked for, before our submit. */
+const OWN_STEP_MS = 500;
+/**
+ * After our own email-step submit: the one real password box on the exact pinned origin, or null.
+ * Real = the page's own frame, input[type=password], exactly one, not a "new-password" box (src/
+ * signinpage.js loginFormOf says "password"). Any other origin ends the wait at once.
+ */
+async function passwordStep(page, pinnedOrigin, ms) {
+  const until = Date.now() + ms;
+  for (;;) {
+    if (urlParts(page.url()).origin !== pinnedOrigin) return null;
+    if (await challengeShown(page)) return null; // the caller reads it again and stops as "blocked"
+    const r = await readPage(page).catch(() => null);
+    const boxes = page.locator('input[type="password"]:visible');
+    if (r && loginFormOf(r.raw) === "password" && (await boxes.count().catch(() => 0)) === 1) return boxes.first();
+    if (Date.now() >= until) return null;
+    await page.waitForTimeout(250).catch(() => {});
+  }
+}
+
+/**
+ * Runs in the page's own frame: is a human-check showing that wants a person (a visible reCAPTCHA
+ * picture grid or tick box, an hCaptcha, a Turnstile, an Arkose puzzle)? An INVISIBLE check (reCAPTCHA's
+ * size=invisible anchor, a zero-size frame, the hidden challenge frame parked off-screen) is not: it
+ * runs by itself and the site decides. Read off the frames' addresses and boxes only; another
+ * origin's frame is never read into, typed into or clicked.
+ */
+const CHALLENGE_FRAME_JS = `(() => {
+  var W = window.innerWidth || 1, H = window.innerHeight || 1;
+  var fs = document.querySelectorAll('iframe');
+  for (var i = 0; i < fs.length && i < 200; i++) {
+    var f = fs[i], src = String(f.src || ''), t = String(f.title || '');
+    var r = f.getBoundingClientRect();
+    if (r.width < 60 || r.height < 40 || r.bottom <= 0 || r.top >= H || r.right <= 0 || r.left >= W) continue;
+    var cs = window.getComputedStyle(f);
+    if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) < 0.05) continue;
+    if (/\\/recaptcha\\/(api2|enterprise)\\/bframe/i.test(src)) return true;
+    if (/\\/recaptcha\\/(api2|enterprise)\\/anchor/i.test(src) && !/[?&]size=invisible/i.test(src)) return true;
+    if (/hcaptcha\\.com/i.test(src) && !/[?&#]size=invisible/i.test(src)) return true;
+    if (/challenges\\.cloudflare\\.com|arkoselabs\\.com|funcaptcha\\.com|geo\\.captcha-delivery\\.com/i.test(src)) return true;
+    if (/recaptcha challenge|hcaptcha|verify you are human|security challenge|captcha/i.test(t) && !/[?&]size=invisible/i.test(src)) return true;
+  }
+  return false;
+})()`;
+async function challengeShown(page) {
+  try { return (await page.evaluate(CHALLENGE_FRAME_JS)) === true; } catch { return false; }
+}
+export const _test = { CHALLENGE_FRAME_JS };
+
+async function submitAndRead(page, form) {
   // "Remember this device" when the page offers it (design B5 step 5), so the next job need not sign in.
   const remember = page.locator('input[type="checkbox"][name*="remember" i], input[type="checkbox"][id*="remember" i], input[type="checkbox"][name*="trust" i]').first();
   if (await remember.count().catch(() => 0)) await remember.check().catch(() => {});
@@ -325,8 +430,23 @@ export async function signIn(conversationId, site, {
     // script sending it elsewhere mid-fill is refused by the browser itself.
     // Held to the exact origin until the login is typed (fillAndSubmit relaxes it to the site for the submit).
     pinSite(c, row.site, { hosts: [new URL(row.signin_origin).hostname], exact: row.signin_origin, secure: row.signin_origin.startsWith("https:") });
-    const read = await readPage(page).catch(() => null);
-    if (read?.kind === "challenge") {
+    // Every main-frame navigation from here on is counted: the email-first step is allowed to change
+    // path only after the filler's own submit, so one that happens before it is not ours.
+    let navs = 0;
+    // Counted when it STARTS (the request): a script's navigation still in flight when the filler checks is seen.
+    // A same-document step (pushState, replaceState) is not counted: the path check below sees one that
+    // changes the path, and a site that tidies its own address on the same path is not refused for it.
+    page.on("request", (q) => { try { if (q.isNavigationRequest() && q.frame() === page.mainFrame()) navs += 1; } catch { /* gone */ } });
+    const atPin = () => urlParts(page.url()).path === row.signin_path;
+    const ours = () => navs === 0 && atPin();
+    // A sign-in form the page draws with its own script is waited for (bounded; a finished page that
+    // stays formless ends the wait early). A challenge ends it too.
+    const watch = settleWatch(page);
+    const got = await waitFor(page, async () => { const r = await readPage(page); return r.kind === "challenge" || loginFormOf(r.raw) ? r : null; },
+      { waitMs: formWaitMs(), stop: () => watch.settled() }).finally(() => watch.stop());
+    const read = got.found ? got.value : await readPage(page).catch(() => null);
+    // A human-check that wants a person, showing before anything is typed: stop, never solve it.
+    if (read?.kind === "challenge" || (await challengeShown(page))) {
       recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "challenge on the sign-in page" });
       setState(c, row.id, { state: "refused" });
       unpinSite(c);
@@ -334,15 +454,21 @@ export async function signIn(conversationId, site, {
       recordLoginEvent(c, { site: host, event: "signin", outcome: "blocked", purpose: why });
       return say("blocked", host);
     }
-    const form = await findForm(page);
-    if (!form.ok) { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt }); return say("not_signin_page", host); }
+    let form = await findForm(page);
+    if (!form.ok && loginFormOf(read?.raw) === "email_first") form = await findEmailFirst(page);
+    if (!form.ok) {
+      // The saved page itself has no sign-in form: the pin is wrong, not the page's mood. Never re-pinned
+      // here; the person is told to save it again (forget, then a new save link pins a page with a form).
+      finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt });
+      return { ...say("needs_resave", host), result: "not_signin_page", resave: true };
+    }
 
     // Unwrap and type, one KMS call, with the origin the browser is on now (design B5 step 5; KMS
     // refuses any other origin through the encryption context).
     let result;
     try {
       result = await withLogin(c, row.id, at.origin, (fields) => fillAndSubmit(page, row.signin_origin, form, fields,
-        { typing: () => { typed = true; }, relax: () => pinExact(c, null) }), { purpose: why });
+        { typing: () => { typed = true; }, relax: () => pinExact(c, null), ours, atPin }), { purpose: why });
     } catch (e) {
       // withLogin's fixed codes, never a value. OriginDrift mid-fill comes back as fill_failed.
       const code = e instanceof VaultError ? e.code : "fill_failed";
