@@ -583,77 +583,78 @@ function slowRelay(ms, reply = { text: "Overcast, 52 degrees near work." }) {
   return { call, timers, agent, lines, texts, ask, results, release: () => release() };
 }
 
-test("a slow ask_reason: one holding line at 6 s, then the agent comes back for the answer", async () => {
-  const s = slowRelay(8_000);
+test("a 7.7 s and a 10.4 s lookup (calls 109 and 110): the tool call stays open and its result is the answer, spoken, never texted", async () => {
+  for (const ms of [7_700, 10_400]) {
+    const s = slowRelay(ms);
+    s.ask("tc_1", "Brooklyn news");
+    await s.timers.advance(ms - 100);
+    assert.equal(s.results().length, 0, `nothing answered before the answer (${ms} ms): no holding line`);
+    await s.timers.advance(200);
+    const [back] = s.results();
+    assert.deepEqual({ id: back.tool_call_id, result: back.result, err: back.is_error }, { id: "tc_1", result: "Overcast, 52 degrees near work.", err: false });
+    assert.equal(s.results().length, 1, "one result: the answer");
+    await s.timers.advance(30_000);
+    assert.equal(s.texts.length, 0, "said on the call, not texted");
+    assert.ok(!s.lines.some(l => l.cartesia_late_answer || l.cartesia_ask_to_text), "no late answer");
+    assert.equal(s.lines.find(l => l.cartesia_ask_reason).to_text, false);
+    stop(s.call);
+  }
+  assert.ok(!("HOLD_MS" in cartesia) && !("COLLECT" in cartesia) && !("HOLD_LINES" in cartesia), "no holding line left");
+});
+
+test("a 30 s lookup: at 25 s one result says it'll come by text, then the answer is texted once when it lands", async () => {
+  assert.equal(cartesia.TEXT_MS, 25_000);
+  const s = slowRelay(30_000);
   s.ask("tc_1", "weather near work");
-  await s.timers.advance(5_900);
-  assert.equal(s.results().length, 0, "nothing said before 6 s");
+  await s.timers.advance(24_900);
+  assert.equal(s.results().length, 0, "still waiting at 24.9 s");
   await s.timers.advance(200);
-  const [hold] = s.results();
-  assert.equal(hold.tool_call_id, "tc_1");
-  assert.ok(hold.result.includes(cartesia.HOLD_LINES[0]), "code's own holding line");
-  assert.ok(hold.result.includes(`"${cartesia.COLLECT}"`), "told how to come back for it");
-  assert.equal(hold.is_error, false);
-  s.ask("tc_2", cartesia.COLLECT);
-  await s.timers.advance(2_000);
-  const back = s.results()[1];
-  assert.deepEqual({ id: back.tool_call_id, result: back.result }, { id: "tc_2", result: "Overcast, 52 degrees near work." });
-  assert.equal(s.texts.length, 0, "said on the call, not texted");
-  const asked = s.lines.find(l => l.cartesia_ask_reason);
-  assert.equal(asked.held, true);
-  assert.ok(s.lines.some(l => l.cartesia_ask_held));
-  stop(s.call);
-});
-
-test("slower than 15 s: the agent says it'll text it, moves on, and the answer goes by text when it lands", async () => {
-  const s = slowRelay(21_800);
-  s.ask("tc_1", "weather near work");
-  await s.timers.advance(6_100);
-  s.ask("tc_2", cartesia.COLLECT);
-  await s.timers.advance(9_000); // 15.1 s from the ask
-  const handOff = s.results()[1];
-  assert.equal(handOff.tool_call_id, "tc_2");
+  const [handOff] = s.results();
+  assert.equal(handOff.tool_call_id, "tc_1");
   assert.equal(handOff.result, cartesia.TEXT_RESULT);
-  assert.match(handOff.result, /text them the answer/);
+  assert.match(handOff.result, /one short sentence/);
+  assert.match(handOff.result, /Reason will text them the answer/);
+  assert.match(handOff.result, /don't say it's still loading, don't ask if they're still there/);
   assert.equal(s.texts.length, 0, "nothing to text yet");
-  await s.timers.advance(7_000);
-  assert.deepEqual(s.texts, ["Overcast, 52 degrees near work."]);
-  assert.equal(s.results().length, 2, "never spoken after the hand-off");
+  await s.timers.advance(5_000);
+  assert.deepEqual(s.texts, ["From our call: Overcast, 52 degrees near work."]);
+  assert.equal(s.results().length, 1, "never spoken after the hand-off");
+  assert.ok(s.lines.some(l => l.cartesia_ask_to_text));
   assert.ok(s.lines.some(l => l.cartesia_late_answer && l.texted === true));
+  assert.equal(s.lines.find(l => l.cartesia_ask_reason).to_text, true);
   assert.match(s.call.turns.at(-1).text, /^\(Texted them: Overcast/, "the call's record says it went");
+  await s.timers.advance(30_000);
+  assert.equal(s.texts.length, 1, "texted once");
   stop(s.call);
 });
 
-test("the agent never comes back: past 15 s the answer is texted all the same, once", async () => {
-  const s = slowRelay(18_000);
-  s.ask("tc_1", "weather near work");
-  await s.timers.advance(20_000);
-  assert.equal(s.results().length, 1, "only the holding line");
-  assert.deepEqual(s.texts, ["Overcast, 52 degrees near work."]);
-  // An answer back at 10 s that nobody collected by 15 s: texted at 15 s.
-  const t = slowRelay(10_000);
-  t.ask("tc_1", "weather near work");
-  await t.timers.advance(16_000);
-  assert.deepEqual(t.texts, ["Overcast, 52 degrees near work."]);
-  t.ask("tc_9", cartesia.COLLECT);
-  await t.timers.advance(100);
-  assert.match(t.results().at(-1).result, /Nothing is waiting/);
-  assert.equal(t.texts.length, 1, "texted once");
-  stop(s.call); stop(t.call);
+test("hung up mid-lookup: the answer is texted when it lands, once, and nothing goes to the closed agent", async () => {
+  for (const hangAt of [3_000, 12_000]) {
+    const s = slowRelay(20_000);
+    s.ask("tc_1", "weather near work");
+    await s.timers.advance(hangAt);
+    await s.call.end("caller hung up");
+    await s.timers.advance(5_000);
+    assert.equal(s.texts.length, 0, "nothing to text yet");
+    await s.timers.advance(40_000);
+    assert.deepEqual(s.texts, ["From our call: Overcast, 52 degrees near work."], `hung up at ${hangAt} ms`);
+    assert.equal(s.results().length, 0, "nothing sent to the agent after the end");
+    assert.ok(!s.lines.some(l => l.cartesia_ask_to_text), "no 'I'll text you' line on a call that is over");
+  }
 });
 
 test("a late answer with nothing in it, or a fast one, is never texted", async () => {
-  const s = slowRelay(17_000, { text: "", error: "weather service timed out" });
+  const s = slowRelay(27_000, { text: "", error: "weather service timed out" });
   s.ask("tc_1", "weather near work");
-  await s.timers.advance(18_000);
+  await s.timers.advance(28_000);
   assert.equal(s.texts.length, 0);
   assert.ok(s.lines.some(l => l.cartesia_late_answer && l.texted === false));
   const f = slowRelay(900);
   f.ask("tc_1", "weather near work");
   await f.timers.advance(1_000);
   assert.equal(f.results()[0].result, "Overcast, 52 degrees near work.");
-  assert.equal(f.lines.find(l => l.cartesia_ask_reason).held, false);
-  await f.timers.advance(20_000);
+  assert.equal(f.lines.find(l => l.cartesia_ask_reason).to_text, false);
+  await f.timers.advance(30_000);
   assert.equal(f.texts.length, 0);
   stop(s.call); stop(f.call);
 });
