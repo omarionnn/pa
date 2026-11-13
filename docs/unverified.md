@@ -5354,3 +5354,27 @@ refusals, the day's counts). Never run:
   their docs say an omitted field keeps its setting, not how nested objects merge).
 - Whether the agent's own `timezone` setting reaches the model; each call says the person's clock in
   `reason_call` either way (`clockLine`).
+
+## Calls: who Reason trusts on a call (REASON_CALL_TRUST, 2026-11-13)
+
+Offline-tested in `test/call-trust.test.js` (fixtures only). Not proved, or not in our hands:
+
+- **The voice vendor hears the passphrase.** Cartesia's or OpenAI's speech-to-text and their voice model
+  hear it while the call runs and keep it in their session context for the rest of the call. Reason
+  replaces it with a marker before it is stored, logged, put in Reason's own turn or the after-call
+  summary, and tells the voice never to repeat it; what the vendor's model does with it is its own. Each
+  Cartesia session (its transcript and recording) is deleted when the call ends and the delete is checked;
+  Reason's own call recording keeps the audio under the account's ordinary recording retention.
+- **Caller ID can be spoofed.** The low level (own calendar, a free booking, a voice note to themselves)
+  runs on caller ID alone, by the owner's choice. A forwarded call (Twilio `ForwardedFrom`) or a failed
+  carrier check (`StirVerstat` containing "Failed") is not trusted; whether every carrier sets these, and
+  whether to require full attestation ("TN-Validation-Passed-A"), is not known.
+- **A free booking is read off the page.** "No price, deposit, card or fee anywhere on the open page or the
+  line" is a wording check, not a guarantee; a page that charges without saying so reads as free.
+- **The voice may answer instead of handing over.** The caller's next words after the ask are screened
+  either way; if the voice answers them itself, the action is not done on the call and stays on the
+  after-call text.
+- **Sensitive reads are a short list** (codes found in any tool's answer, the ledger, purchases, receipts,
+  boarding passes, saved travellers, today's spend). Someone else's full address read aloud is not caught.
+- **How often a real line mishears a phrase** (and so whether one word of tolerance from five words is right)
+  is a live observation.
