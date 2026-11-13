@@ -31,6 +31,7 @@ import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
 import * as findings from "./sitefindings.js";
 import * as signinEmail from "./signinemail.js";
+import * as signinPage from "./signinpage.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
 import * as uber from "./uber.js";
@@ -472,7 +473,38 @@ export function socialToolVisible(name, conversationId) {
 const renderedSigninText = (_c, entry) => browser.readPageLabels(entry.signin_url);
 
 function signinSite(c, site) {
-  return social.socialAllowedFor(c) ? signin.anyEntryFor(site) : signin.entryFor(site);
+  // On the page this person's sign-in there was on, when the site was named by its bare domain
+  // (src/signin.js entryOnItsPage): carried in code, never left to a retyped address.
+  return signin.entryOnItsPage(c, social.socialAllowedFor(c) ? signin.anyEntryFor(site) : signin.entryFor(site));
+}
+/**
+ * A site known only by its bare name, about to be shown to a person: its real sign-in page, found
+ * first (src/browser.js locateSigninPage follows the site's own "Log in" link once). Under test only
+ * a handed-in locator runs: tests never touch the real network.
+ *   → { entry } (the same entry, or the one on the page found) | { answer } (no link: said plainly)
+ */
+async function onItsSigninPage(c, entry, ctx) {
+  if (!entry?.generic || !signinPage.isFrontPage(entry.signin_url)) return { entry };
+  const locate = ctx.locateSigninPage ?? (process.env.NODE_TEST_CONTEXT ? null : browser.locateSigninPage);
+  if (!locate) return { entry };
+  let at = null;
+  try { at = await locate(entry); } catch (e) { at = { found: false, error: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) }; }
+  if (at?.found) {
+    const there = at.url && !signinPage.isFrontPage(at.url) && signinPage.onSite(at.url, entry) ? signin.genericEntry(at.url) : null;
+    if (there && there.site === entry.site) { signinPage.rememberSigninPage(c, there, there.signin_url); return { entry: there }; }
+    // The front page itself is the sign-in page (an app whose first page is its form).
+    return { entry };
+  }
+  if (at?.error) {
+    return { answer: { ok: false, could_not_open: true, site: entry.site, error: `${entry.label}'s site could not be opened just now (${at.error}), so no sign-in link was made.`, say: `Say ONE plain line, like: "I couldn't open ${entry.label} just now, so I haven't sent you anything. Want me to try again in a bit?" Do not send a link.` } };
+  }
+  return {
+    answer: {
+      ok: false, no_signin_page: true, site: entry.site,
+      error: `Reason cannot find where to sign in on ${entry.label}: the page at ${entry.site} has no sign-in form${at?.followed ? ", and neither does the page its own sign-in link leads to" : ", and no sign-in link Reason could follow"}. No link was made: it would only show them a page with nothing to sign in to.`,
+      say: `Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page, call again with that address as \`site\`. Do not send a link.`,
+    },
+  };
 }
 function noSigninSite(c, site) {
   const known = `Known by name: ${signin.signinNames().join(", ")}.`;
@@ -14934,6 +14966,31 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       // The email sign-in (src/signinemail.js) holds their saved profile while it runs.
       if (signinEmail.emailSigninFor(c)) return { ok: false, busy: true, error: "Reason is signing them in to a site by email right now, on the same saved profile. Wait for that to finish; you are told how it ends." };
+      // Only a bare name is known: the site's real sign-in page is found BEFORE anything is shown to
+      // them, and when there is none no link is made (owner, 2026-11-12: a link for "link.com"
+      // opened Link's marketing home page under "finish this step on the page below").
+      const placed = await onItsSigninPage(c, entry, ctx);
+      if (placed.answer) {
+        trust.ledgerWrite({ conversationId: c, action: "signin_link", input, out: { ok: false, site: entry.site, ...(placed.answer.no_signin_page ? { no_signin_page: true } : { could_not_open: true }) }, target: `site:${entry.site}` });
+        return placed.answer;
+      }
+      entry = placed.entry;
+      // No link loops (owner, 2026-11-12: the session timed out and a third identical link went out
+      // by itself). After a link ended without progress, a turn they did not start makes no second
+      // link to the same page; at most one more, and only when it would open a different page.
+      const again = signinPage.mayLinkAgain(c, entry, { asked: (ctx.kind ?? "event") === "user" });
+      if (!again.ok) {
+        const ago = again.last.minutes_ago;
+        const what = again.last.how === "cancelled" ? "was closed" : again.last.how === "no_signin_page" ? "found no sign-in page" : again.last.how === "link_expired" ? "expired unopened" : "timed out";
+        return {
+          ok: false, not_sent_again: true, site: entry.site,
+          error: `No new link: the last ${entry.label} sign-in link ${what} ${ago <= 1 ? "a minute ago" : `${ago} minutes ago`} without them signing in, and this one would open the same page. A second identical link is not sent unless they ask for one.`,
+          say: `Say ONE plain line that says what happened, like: "That ${entry.label} sign-in link ${what === "found no sign-in page" ? "didn't reach a sign-in page" : what} before anything went through." Then the next best route in a few words (they can ask for a fresh link when they have a couple of minutes, or do this part in ${entry.label}'s own app or site), or stop.`,
+        };
+      }
+      if (again.retry) signinPage.markRetried(c, entry);
+      // The page this link opens is the page later links for this attempt open too.
+      if (entry.generic) signinPage.rememberSigninPage(c, entry, entry.signin_url);
       const by = signin.linkSignin();
       const reach = trust.SITE_REACHABLE[entry.site];
       // Where the social flag reaches them, the site's sign-in page is asked live before a link is
@@ -15023,7 +15080,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // reading revokes the row, and the provider on it is what a sign-in-again presses.
         const before = social.socialAllowedFor(c) ? social.providerOf(c, entry.site) : "";
         const page = await (ctx.pageFor ?? browser.pageFor)(c);
-        let out = await (ctx.checkAndRecord ?? signin.checkAndRecord)(page, c, entry.site, { provider: before });
+        // The entry in hand: for a site named by its address, the page their sign-in there was on.
+        let out = await (ctx.checkAndRecord ?? signin.checkAndRecord)(page, c, entry.site, { provider: before, ...(entry.generic ? { entry } : {}) });
         // A session that lapsed on a site whose login goes through a provider: sign back in yourself
         // first — open the sign-in page, press that button, ask the site again — and only involve the
         // person when that lands on a page waiting for them (src/socialsignin.js signInAgain).
@@ -15051,9 +15109,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               : `The session lapsed and pressing the ${social.LABELS[again.provider]} button did not get back in on its own (${again.why || "the page is waiting for them"}): ${social.LABELS[again.provider]} wants them. Send a fresh signin_link with provider '${again.provider}' and say in one line what to expect: "${social.expectLine(again.provider)}"`,
           } : {}),
           ...(out.inferred ? { inferred: "Read from the absence of a sign-in prompt rather than from anything positive on the page. Nobody has loaded a signed-in page on this site here to learn what one looks like." } : {}),
+          ...(out.no_evidence ? { no_evidence: "Nothing on the page proves it either way: no sign-in form, but no log-out or account control either. That is UNKNOWN, not signed in and not signed out." } : {}),
           ...(reach ? { site_loads_for_reason: reach.loads, site_note: reach.why } : {}),
           ...(entry.ride_access ? { ride_access: entry.ride_access } : {}),
           ...(blockedNow ? { blocked: true, signin_here: "blocked", seen: blockedNow.seen, say: blockedNow.say, instead: blockedNow.instead, never: blockedNow.never }
+            : out.state === "unknown" && out.no_evidence ? { could_not_tell: true, say: `${entry.label}'s page loaded, but nothing on it shows whether they are signed in (${out.why}). Say plainly that you can't tell, in one line. Do not say they are signed in, do not say they are signed out, and do not send a sign-in link unless they ask for one.` }
             : out.state === "unknown" ? { could_not_check: true, say: `Reason could not read ${entry.label}'s account page just now (${out.why}), so whether they are signed in is not known. Say you could not check right now and can try again in a bit. Do not say they are signed out and do not ask them to sign in.` } : {}),
           ...(out.state === "signed_in" || out.state === "unknown" ? {} : { how_to_sign_in: route.can_sign_in ? signin.signinCommand(entry.site) : null, remote: route.can_sign_in ? null : signin.remoteSigninAnswer(entry.site) }),
           never_a_password: never,
@@ -15077,7 +15137,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           last_checked: last?.checked_at ? stamp(last.checked_at) : null,
           evidence: last?.evidence || "",
           ...(also.generic ? { by_address: true } : { for_cancelling_a_subscription: true }),
-          ...(live ? {} : { how_to_sign_in: `signin_link with site '${also.site}', which they open on their phone` }),
+          ...(live ? {} : { how_to_sign_in: `signin_link with site '${also.generic && !signinPage.isFrontPage(also.signin_url) ? also.signin_url : also.site}', which they open on their phone` }),
         }];
       }
       // Whether each SITE lets Reason's browser sign in, from a dated finding (src/sitefindings.js).

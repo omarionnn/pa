@@ -610,10 +610,14 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       if (!entered.ok) return finish(`the ${entry.label} sign-in got its code but could not use it: ${entered.why}. Nothing was saved. Say it in ONE plain line and offer the secure sign-in link (signin_link with site "${linkSite()}", no provider).`, "failed");
       if (entered.wrong) return finish(`the ${entry.label} sign-in entered the code and ${entry.label} said the code was wrong or expired. Nothing was saved. Say it in ONE plain line and offer to start again (signin_email asks ${entry.label} for a fresh code). Do not ask them to re-send the same code.`, "wrong_code");
       await backOutOfProvider(page, entry, conversationId, log);
-      const out = await check(page, conversationId, entry.site);
+      // Asked on the page this attempt was on, never one rebuilt from the site's bare name.
+      const out = await check(page, conversationId, entry.site, { entry: signin.entryOnItsPage(conversationId, entry) });
       const state = out?.ok === false ? "unknown" : out?.state ?? "unknown";
       if (state === "signed_in") return finish(`they are signed in to ${entry.label} now: Reason asked ${entry.label} for a code, read it ${mail?.found ? "from their Gmail" : "from their reply"} and entered it, and ${entry.label} says signed in (${out.why ?? ""}). Tell them in one short line, like "You're in to ${entry.label}." and pick up whatever they wanted it for. Never mention a code or their email being read unless they ask.`, "signed_in");
-      return finish(`the ${entry.label} email sign-in entered the code, but ${entry.label} ${state === "signed_out" ? "still says NOT signed in" : "could not be read"} (${out?.why ?? out?.error ?? ""}). Nothing is recorded as signed in. Say it in ONE plain line and offer to try again.`, state);
+      if (state === "signed_out") return finish(`the ${entry.label} email sign-in entered the code, but ${entry.label} still says NOT signed in (${out?.why ?? out?.error ?? ""}). Nothing is recorded as signed in. Say it in ONE plain line and offer to try again.`, state);
+      // Unknown is said as unknown, and nothing is started again because of it: a second run would
+      // only ask the site for another code and end on the same page.
+      return finish(`the ${entry.label} email sign-in entered the code, but whether they are signed in is UNKNOWN: ${entry.label}'s page showed nothing that proves it either way (${out?.why ?? out?.error ?? ""}). Nothing is recorded as signed in. Say ONE plain line, like: "I entered the ${entry.label} code but I can't tell whether it signed you in." Do not start another sign-in or send a link on your own; signin_status with recheck asks the site again.`, state);
     } catch (e) {
       log({ signin_email: "error", site: entry.site, why: (e?.message ?? String(e)).split("\n")[0].slice(0, 160) });
       return finish(`the ${entry.label} email sign-in broke on Reason's side before it finished. Nothing was saved. Say so in one plain line and offer to try again.`, "error");

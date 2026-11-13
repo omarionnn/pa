@@ -67,7 +67,9 @@ test("genericEntry: a domain or https URL is a site, keyed by its domain; the si
   assert.equal(n.site, "notion.so");
   assert.equal(n.label, "Notion");
   assert.equal(n.signin_url, "https://www.notion.so/login");
-  assert.equal(n.signed_in.url, "https://notion.so/");
+  // Asked on the sign-in page itself (2026-11-12): a site shows its form there to anybody not signed
+  // in and passes a signed-in browser on; its marketing front page says neither.
+  assert.equal(n.signed_in.url, "https://www.notion.so/login");
   assert.equal(n.generic, true);
   assert.deepEqual(n.hosts, ["notion.so"]);
   const bare = signin.genericEntry("airbnb.com");

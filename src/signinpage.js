@@ -173,7 +173,11 @@ const EMPTY = { fields: [], buttons: [], acct: "", url: "", text: "" };
  */
 export async function readPage(page, { provider = "", midFlow = false } = {}) {
   let raw = EMPTY;
-  try { const r = await page.evaluate(FRAME_JS); raw = r && typeof r === "object" ? r : EMPTY; } catch { raw = EMPTY; }
+  // A reader that answers with words alone (a page with no document to shape) is those words and nothing else.
+  try {
+    const r = await page.evaluate(FRAME_JS);
+    raw = r && typeof r === "object" ? r : typeof r === "string" ? { ...EMPTY, text: r, url: (() => { try { return String(page.url?.() ?? ""); } catch { return ""; } })() } : EMPTY;
+  } catch { raw = EMPTY; }
   const framed = [];
   try {
     const main = page.mainFrame?.();
@@ -187,6 +191,8 @@ export async function readPage(page, { provider = "", midFlow = false } = {}) {
   return { raw, framed, kind: pageKind(raw, { provider, midFlow, framed }) };
 }
 
+/** How long a page is looked at before its own "Log in" link is tried, when it shows no sign-in form. */
+export const FIRST_LOOK_MS = 2_500;
 /** How long a page is given to draw its sign-in form before anything concludes it has none. */
 export const formWaitMs = () => Math.max(0, Number(config.signinFormWaitMs) || 0);
 const sleepOn = (page, ms) => (page?.waitForTimeout ? page.waitForTimeout(ms).catch(() => {}) : new Promise(r => setTimeout(r, ms)));
@@ -199,14 +205,18 @@ const sleepOn = (page, ms) => (page?.waitForTimeout ? page.waitForTimeout(ms).ca
  */
 export async function waitFor(page, look, { waitMs = formWaitMs(), pollMs = 250, now = () => Date.now() } = {}) {
   const started = now();
-  let looks = 0, value = null;
+  let looks = 0, value = null, slept = 0;
   for (;;) {
     looks += 1;
     try { value = await look(); } catch { value = null; }
-    const ms = Math.max(0, now() - started);
+    // Time passed is the wall clock's, or the sleeps asked for when those are longer: a page whose
+    // sleep is not real (a test's stand-in) still reaches the bound instead of spinning to it.
+    const ms = Math.max(0, now() - started, slept);
     if (value) return { found: true, value, ms, looks };
     if (ms >= waitMs) return { found: false, value: null, ms, looks };
-    await sleepOn(page, Math.max(1, Math.min(pollMs, waitMs - ms)));
+    const nap = Math.max(1, Math.min(pollMs, waitMs - ms));
+    await sleepOn(page, nap);
+    slept += nap;
   }
 }
 
@@ -310,12 +320,21 @@ export async function followSigninDoor(page, entry, { timeoutMs = 30_000 } = {})
 export async function arriveAtSignin(page, entry, { provider = "", waitMs = formWaitMs(), pollMs = 250, follow = true, now = () => Date.now() } = {}) {
   const started = now();
   const look = async () => { const r = await readPage(page, { provider }); return isStep(r.kind) || r.kind === "signed_in" ? r : null; };
-  let got = await waitFor(page, look, { waitMs, pollMs, now });
+  // A page with a "Log in" link on it rarely also draws a sign-in form late: the link is looked for
+  // after a short first wait, and only a page with no link gets the whole bound to draw a form.
+  const first = Math.min(waitMs, FIRST_LOOK_MS);
+  let got = await waitFor(page, look, { waitMs: first, pollMs, now });
   let followed = false, why = "";
   if (!got.found && follow) {
-    const door = await followSigninDoor(page, entry);
+    let door = await followSigninDoor(page, entry);
+    if (!door.followed && waitMs > first) {
+      got = await waitFor(page, look, { waitMs: waitMs - first, pollMs, now });
+      if (!got.found) door = await followSigninDoor(page, entry);
+    }
     followed = door.followed; why = door.why;
-    if (followed) got = await waitFor(page, look, { waitMs, pollMs, now });
+    if (!got.found && followed) got = await waitFor(page, look, { waitMs, pollMs, now });
+  } else if (!got.found && waitMs > first) {
+    got = await waitFor(page, look, { waitMs: waitMs - first, pollMs, now });
   }
   const last = got.found ? got.value : await readPage(page, { provider });
   let at = "";
@@ -414,3 +433,6 @@ export function mayLinkAgain(conversationId, entry, { asked = false } = {}) {
   if (changed && !last.retried) return { ok: true, retry: true };
   return { ok: false, last };
 }
+
+/** For tests: nothing remembered about anybody's sign-in pages or endings. */
+export function _forgetAll() { db.db.exec("DELETE FROM signin_pages"); }
