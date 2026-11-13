@@ -11,8 +11,9 @@
 //            --keyterms "a,b,c" (extra words the recognizer should favour on EVERY account's calls, besides
 //            the per-call ones: product words only, never a person's places or people)
 //
-//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--clear-keyterms]          the plan only
-//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--clear-keyterms] --yes    PATCHes it
+//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--call-feel] [--clear-keyterms]          the plan only
+//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] [--call-feel] [--clear-keyterms] --yes    PATCHes it
+//            --call-feel: `CALL_FEEL` below (the check-in timing and a silent skip_turn that holds check-ins off).
 //            --instructions: the saved instructions to INSTRUCTIONS below; --instructions-file <file>: to a saved
 //            agent's own (a --save file, or plain text), to put them back.
 //   node scripts/cartesia-agent-setup.mjs --show <agent id> [--save <file>]   reads it (no secrets); --save keeps it
@@ -40,7 +41,24 @@ export const GEMMA = "62ae83ad-4f6a-430b-af41-a9bede9286ca";
 /** Lucy (en-GB), named emotive in Cartesia's "Choosing a Voice" page: the option to hear, never set by default. */
 export const LUCY = "2f251ac3-89a9-4a77-a452-704b474ccd01";
 /** Cartesia's skip_turn system tool, described for this line (its description field, up to 2000 chars). */
-export const SKIP_TURN_DESCRIPTION = "Say nothing this turn. Use it only when their words are plainly unfinished: they trailed off mid-sentence (\"and...\", \"so the thing is...\") or paused mid-thought, and anything you said would talk over them. Never when they asked something or finished a thought.";
+export const SKIP_TURN_DESCRIPTION = "Say nothing this turn, not even a word about skipping. Use it when their words are plainly unfinished: they trailed off mid-sentence (\"and...\", \"so the thing is...\"), stopped on a filler (\"um\", \"so\", \"like\", \"because\") or paused mid-thought, and anything you said would talk over them. Use it too when they ask you to wait (\"give me a second\", \"hold on\", \"one sec\"), and stay quiet until they speak. Never when they asked something or finished a thought.";
+/**
+ * The agent settings for how a call feels (call 113), as one sparse PATCH (`--call-feel`). Cartesia's
+ * names, from docs.cartesia.ai/agents/configuration ("Turn settings") and /agents/system-tools (read
+ * 2026-11-13):
+ *   turn.inactivity_check_in_secs  8 (their default) made "You still there?" come about 8 s after any
+ *     pause of his, four times in call 113. 20 s: a real dead line still gets one check-in.
+ *   turn.inactivity_end_call_secs  240, unchanged (the field is required beside the other).
+ *   skip_turn.wait_timeout_secs    -1: after a skip ("give me a second", a trailing "um") no check-in at
+ *     all until he speaks again; the end-call timer still runs.
+ *   skip_turn.pre_tool_speech      off: no words with a skip.
+ * Their config has no interruption or end-of-turn sensitivity for a managed agent (only
+ * initial_message_interruptions and speculative_generation, which never speaks before the turn ends).
+ */
+export const CALL_FEEL = {
+  turn: { inactivity_check_in_secs: 20, inactivity_end_call_secs: 240 },
+  skip_turn: { description: SKIP_TURN_DESCRIPTION, pre_tool_speech: "off", wait_timeout_secs: -1 },
+};
 export const AGENT_NAME = "Reason (people's own calls)";
 /** How many per-call keyterm slots the agent has (filled by `sessionVariables` in src/calls/cartesia.js). */
 export const KEYTERM_SLOTS = 8;
@@ -103,7 +121,8 @@ export function agentBody({ voice = GEMMA, language = "en-GB", model, toolId, ke
         input: { noise_suppression: "auto", keyterms: sharedKeyterms(keyterms) },
         output: { voice_id: voice },
       },
-      system_tools: { end_call: {} },
+      system_tools: { end_call: {}, skip_turn: { ...CALL_FEEL.skip_turn } },
+      turn: { ...CALL_FEEL.turn },
       tools: toolId ? [{ id: toolId }] : [],
     },
   };
@@ -150,13 +169,19 @@ export async function api(key, path, { method = "GET", body = null, fetchImpl = 
  * The body of PATCH /v1/agents/{id}: only what was asked for (an update is sparse: "Omitting the field
  * from an update preserves the agent's current setting", docs.cartesia.ai/agents/configuration).
  */
-export function updateBody({ voice = "", skipTurn = false, clearKeyterms = false, instructions = "" } = {}) {
+export function updateBody({ voice = "", skipTurn = false, clearKeyterms = false, callFeel = false, instructions = "" } = {}) {
   const config = {};
   if (instructions) config.instructions = instructions;
   if (voice) config.audio = { output: { voice_id: voice } };
   if (clearKeyterms) config.audio = { ...(config.audio ?? {}), input: { keyterms: sharedKeyterms() } };
   if (skipTurn) config.system_tools = { skip_turn: { description: SKIP_TURN_DESCRIPTION, pre_tool_speech: "off" } };
-  const what = [voice ? `voice ${voice}` : "", clearKeyterms ? "keyterms cleared to Reason and the per-call slots" : "", skipTurn ? "skip_turn on" : "", instructions ? `instructions (${instructions.length} chars)` : ""].filter(Boolean).join(", ");
+  if (callFeel) {
+    config.system_tools = { skip_turn: { ...CALL_FEEL.skip_turn } };
+    config.turn = { ...CALL_FEEL.turn };
+  }
+  const what = [voice ? `voice ${voice}` : "", clearKeyterms ? "keyterms cleared to Reason and the per-call slots" : "", skipTurn && !callFeel ? "skip_turn on" : "",
+    callFeel ? `check-in after ${CALL_FEEL.turn.inactivity_check_in_secs} s (was Cartesia's 8), none after a skip, skip_turn silent` : "",
+    instructions ? `instructions (${instructions.length} chars)` : ""].filter(Boolean).join(", ");
   return Object.keys(config).length ? { config, version_description: `Reason: ${what}` } : null;
 }
 
@@ -189,6 +214,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, ca
     yes: { type: "boolean", default: false }, voice: { type: "string", default: GEMMA }, language: { type: "string", default: "en-GB" },
     model: { type: "string", default: "" }, keyterms: { type: "string", default: "" },
     update: { type: "string", default: "" }, "skip-turn": { type: "boolean", default: false }, "clear-keyterms": { type: "boolean", default: false },
+    "call-feel": { type: "boolean", default: false },
     instructions: { type: "boolean", default: false }, "instructions-file": { type: "string", default: "" },
     show: { type: "string", default: "" }, save: { type: "string", default: "" },
   } });
@@ -213,8 +239,8 @@ export async function main(argv = process.argv.slice(2), { log = console.log, ca
       instructions = saved ? String(saved?.config?.instructions ?? saved?.instructions ?? "") : raw;
       if (!instructions.trim()) { log(`No instructions in ${o["instructions-file"]}.`); return 1; }
     } else if (o.instructions) instructions = INSTRUCTIONS;
-    const body = updateBody({ voice: argv.includes("--voice") ? o.voice : "", skipTurn: o["skip-turn"], clearKeyterms: o["clear-keyterms"], instructions });
-    if (!body) { log("Nothing to change: name --voice <id>, --skip-turn, --clear-keyterms, --instructions and/or --instructions-file <file>."); return 1; }
+    const body = updateBody({ voice: argv.includes("--voice") ? o.voice : "", skipTurn: o["skip-turn"], clearKeyterms: o["clear-keyterms"], callFeel: o["call-feel"], instructions });
+    if (!body) { log("Nothing to change: name --voice <id>, --skip-turn, --call-feel, --clear-keyterms, --instructions and/or --instructions-file <file>."); return 1; }
     log(`The plan: PATCH agent ${o.update}: ${body.version_description.replace(/^Reason: /, "")}. Nothing else on it changes; a new version is made.`);
     if (!o.yes) { log("Nothing was changed. Run again with --yes to change it."); return 0; }
     const k = key ?? loadKey();
