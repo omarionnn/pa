@@ -666,9 +666,16 @@ async function runTurnOnCli({
         + (turnNote ? `[${turnNote}]\n\n` : "")
         + chainNotes.text
         + CLOSING
-        + ` What you already read above (a page, a search result) need not be fetched again ONLY if it cannot have changed since:`
-        + ` anything that moves with time (weather, prices, stock, hours and whether a place is open now, scores, traffic, a flight or a delivery)`
-        + ` and anything saved or live (reminders, tasks, orders, mail, calendar, memory, where they are) is read from its tool again, as if for the first time.`;
+        // What may be out of date in a session that is continued. Two parts, each said only when it
+        // can be true. Saved or live things can be changed from outside at any moment (a timer cancelled
+        // in the app, a fact fixed on the memory page): always. Things that move with time: only after a
+        // real pause, with the stamp above. Said at large and on every reply ("weather, prices, …"), it
+        // sent a question about two prices already in the conversation off to the shops in 4 of 11
+        // real-model runs (up to 7 rounds, 56 s, a different answer) against 1 of 8 for a fresh turn.
+        + ` Anything saved or live (reminders, tasks, orders, mail, calendar, memory, where they are) may have been changed from outside since you last read it:`
+        + ` when this message needs it, read it from its tool again, as if for the first time.`
+        + (gap ? ` And what a tool or a page told you above about something that moves with time (weather, whether something is in stock or open, a score, traffic, a flight, a delivery)`
+          + ` is as old as the note at the top says: when this message needs it as it is now, fetch it again.` : "");
     };
     const promptFor = (entries, { anchor, recent } = freshParts(), standing = entries.map(e => e.t), history = recent.join("\n")) => (history
       ? `${anchor ? "The conversation so far, continued (the earlier part is at the end of your instructions)" : "The conversation so far"}:\n${history}\n\n`

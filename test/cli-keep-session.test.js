@@ -98,7 +98,8 @@ test("the next reply continues the last one's session: same instructions, and on
   assert.ok(!/WHAT YOU KNOW ABOUT THEM/.test(second.prompt), "nor a note that reads the same as last time");
   assert.match(second.prompt, /The new message:\n\[[^\]]+\] Omari: and where/, "the new message, with its timestamp");
   assert.match(second.prompt, /Reply as Reason, in one short text/);
-  assert.match(second.prompt, /anything that moves with time \(weather, prices[^)]*\)\s+and anything saved or live \([^)]*\) is read from its tool again/, "neither saved state nor anything that moves with time is answered from an old result");
+  assert.match(second.prompt, /Anything saved or live \(reminders, tasks, orders, mail, calendar, memory, where they are\) may have been changed from outside since you last read it: when this message needs it, read it from its tool again, as if for the first time\.$/, "saved and live things are read again; nothing is said of things that move with time when no time has passed");
+  assert.doesNotMatch(second.prompt, /moves with time|weather|price/);
   assert.ok(!/It is now/.test(second.prompt), "a reply seconds after the last says nothing about a gap");
   const kept = b.logs.find(e => e.session_kept === C);
   assert.deepEqual({ turns: kept.turns, since: kept.since, sent: kept.notes_sent, same: kept.notes_same, gone: kept.notes_gone }, { turns: 2, since: 0, sent: 0, same: 1, gone: 0 });
@@ -368,7 +369,7 @@ test("after a gap the continued session is told what time it is and how old ever
   chainOf(C).at = Date.now() - 20 * 60_000;
   await b.turn("and now?");
   assert.equal(b.calls[1].resume, b.calls[0].sessionId);
-  assert.match(b.calls[1].prompt, /^\[It is now [^\]]+\. Everything above, your tool results included, is from 20 minutes ago or earlier\.\]/);
+  assert.match(b.calls[1].prompt, /^\[It is now [^\]]+\. Everything above, your tool results included, is from 20 minutes ago or earlier\.\]/);  assert.match(b.calls[1].prompt, /what a tool or a page told you above about something that moves with time \(weather[^)]*\) is as old as the note at the top says: when this message needs it as it is now, fetch it again\.$/, "and only then, that what moves with time is fetched again");
 });
 
 test("one fact retired while an older one is put back (the count is unchanged) still starts afresh", async () => {
