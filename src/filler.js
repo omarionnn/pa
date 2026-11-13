@@ -23,6 +23,7 @@ import {
 import { dropIntake } from "./loginintake.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { recordFinding } from "./sitefindings.js";
+import { refusingSite, refusalAnswer, markRefusing } from "./refusing.js";
 import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs, signinDoor, followSigninDoor } from "./signinpage.js";
 import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
@@ -38,7 +39,7 @@ export const SIGNIN_RESULTS = [
   "signed_in", "needs_code_sms", "needs_approval", "wrong_password", "blocked",
   "not_signin_page", "origin_mismatch", "paused", "needs_face_id", "no_login", "pick_one", "busy",
   "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "not_named",
-  "not_accepted", "no_answer", "waiting_face_id", "site_trouble",
+  "not_accepted", "no_answer", "waiting_face_id", "site_trouble", "refuses_software",
 ];
 const OK_RESULT = new Set(["signed_in"]);
 // The form was found visible a moment ago, so a box that is not fillable within this is not the form.
@@ -763,6 +764,13 @@ export async function signIn(conversationId, site, {
     recordLoginEvent(c, { site: host, event: "refused_never_list", outcome: "stopped" });
     return { ok: false, result: "blocked", say_exactly: refusalFor(verdict.category, host), refused: true };
   }
+  // A site that turns away software-driven browsers (src/refusing.js): said up front, before any row
+  // is read, any Face ID ask or any page opened. The saved login is left exactly as it is.
+  const turnsAway = refusingSite(host);
+  if (turnsAway) {
+    recordLoginEvent(c, { site: host, event: "signin", outcome: "refuses_software", purpose: why });
+    return refusalAnswer(turnsAway, { words: why });
+  }
 
   // The saved Google login is never used to sign in to Google itself (Gmail, Drive, settings, or
   // accounts.google.com on its own): only as the Continue-with-Google step of a site they named.
@@ -883,6 +891,7 @@ export async function signIn(conversationId, site, {
     // A human-check that wants a person, showing before anything is typed and not clearing by itself
     // within the wait: stop, never solve it, never offer to try again.
     if (got.verdict === "wall") {
+      try { markRefusing(row.site || host, "wall", now()); } catch { /* best effort */ }
       recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "challenge on the sign-in page" });
       setState(c, row.id, { state: "refused" });
       unpinSite(c);
@@ -979,6 +988,8 @@ export async function signIn(conversationId, site, {
     }
 
     finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
+    // A human-check after the submit: the site turned the browser away (written down for the site).
+    if (result === "blocked" && diag.challenge === true) { try { markRefusing(row.site || host, "challenge", now()); } catch { /* best effort */ } }
     if (result !== "signed_in") logDiag({ signin_url: pinned }, { ...diag, result });
     return say(result, host, "", { msgClass: diag.msgClass, msg: diag.msg });
   };
@@ -1009,8 +1020,11 @@ export async function signIn(conversationId, site, {
           const second = await attempt();
           if (second.out) words = second.out;
           else if (second.result === "site_trouble") {
-            // The same again: stop, and rest the login 6 hours (finish). Never a third go.
+            // The same again: stop, and rest the login 6 hours (finish). Never a third go. Twice in a row
+            // is the site turning the browser away: written down for the site (src/refusing.js), so the
+            // next ask is answered up front.
             finish(c, row, host, pinned, "site_trouble", { why, again, startedAt, typed, at: now() });
+            try { markRefusing(row.site || host, "generic_error_twice", now()); } catch { /* best effort */ }
             logDiag({ signin_url: pinned }, { ...second.diag, result: "site_trouble" });
             words = say("site_trouble", host, "", { msg: second.diag.msg });
           } else words = await conclude(second);

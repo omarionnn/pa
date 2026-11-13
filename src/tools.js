@@ -31,6 +31,7 @@ import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
 import * as findings from "./sitefindings.js";
+import * as refusing from "./refusing.js";
 import * as signinEmail from "./signinemail.js";
 import * as signinPage from "./signinpage.js";
 import * as spotify from "./spotify.js";
@@ -448,6 +449,8 @@ const SAVED_LOGIN_TOOL_DEFS = [{
     with: { type: "string", enum: ["google", "password"], description: "Only when they said how they sign in to this site: \"google\" for Continue with Google." },
   }, required: ["site"] },
 }];
+/** Whether they have mail Reason can read (a connected Gmail), for the refusing-site answer. */
+function mailFor(c) { try { return google.connectedAddresses(c).length > 0; } catch { return false; } }
 const SAVE_LINK_NO = {
   not_available: "Saving logins isn't on for them. Say you can't sign in there for them yet, in one line.",
   not_asked: "A save link is only sent when they ask, in their own message. Send nothing about saving a login now.",
@@ -12607,6 +12610,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if ((ctx.kind ?? "event") !== "user") return { ok: false, error: "not_asked", note: SAVE_LINK_NO.not_asked };
       // The job the link is for, in their own typed words: not a bare "yes" (src/resume.js requestOf).
       const asked = requestOf(ctx.messages ?? []);
+      // A site that turns away software-driven browsers: said up front, no save link made (src/refusing.js).
+      { const r = refusing.refusingSite(input.site); if (r) return refusing.refusalAnswer(r, { words: askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? asked, mail: mailFor(c) }); }
       const out = await offerSaveLink(c, input.site, asked, { locate: ctx.locateSigninPage ?? null });
       if (out.ok) return { ok: true, say_exactly: `${OFFER_SENTENCE}\n${out.link}`, note: "Send say_exactly as it is: the sentence, then the link on its own line. Never ask them to type a password in the chat." };
       if (out.say) return { ok: false, refused: true, say_exactly: out.say };
@@ -12617,6 +12622,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // filler. The turn's kind is the live-ask gate's input: code's, never the model's.
       if (!saveLinkAllowedFor(c) || typeof ctx.signIn !== "function") return { ok: false, error: "Not available." };
       const asked = askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? "";
+      // A site that turns away software-driven browsers (src/refusing.js): said up front, before the
+      // filler runs, so no page opens and no Face ID ask is made. Their saved login is left as it is.
+      { const r = refusing.refusingSite(input.site); if (r) return refusing.refusalAnswer(r, { words: asked, mail: mailFor(c) }); }
       // The stored thread goes with the turn's kind: the filler checks the site was named in their own
       // words (src/namedsite.js). Nothing the model passes besides the domain is read.
       // `resumeSignin`: the grant a Face ID yes or a save put on this event turn (src/resume.js), from
