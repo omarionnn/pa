@@ -56,7 +56,7 @@ export function logAttempt(entry, { route, outcome, startedAt = null, detail = "
 // out), and whether a human-check frame was showing. Never a username, a value or a query string.
 export const DIAG_KINDS = ["email", "username", "password", "text", "otp"];
 export const DIAG_PRESSED = ["enter", "submit_button", "none"];
-export const DIAG_CLASSES = ["wrong_password", "validation", "account_not_found", "rate_limited", "other", "none"];
+export const DIAG_CLASSES = ["wrong_password", "validation", "account_not_found", "rate_limited", "site_trouble", "other", "none"];
 /** A page's message made safe to keep: no digits, nothing email-like, letters and plain punctuation, 80 chars. */
 export function safeMessage(s) {
   return String(s ?? "")

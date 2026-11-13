@@ -234,7 +234,8 @@ export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_
 export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed",
   "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused",
   "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy", "not_accepted", "no_answer",
-  "needs_google_login", "needs_google_tap", "needs_google_code", "consent_more", "google_property", "no_google_button", "waiting_face_id"];
+  "needs_google_login", "needs_google_tap", "needs_google_code", "consent_more", "google_property", "no_google_button", "waiting_face_id",
+  "site_trouble"];
 const RECEIPT = {
   saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
   opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
@@ -265,6 +266,7 @@ const RECEIPT = {
     busy: `Did not sign in to ${site}: the browser was busy.`,
     not_accepted: `Could not sign in to ${site}: it did not accept the sign-in (not a wrong password). I stopped and paused it for a day.`,
     no_answer: `Could not sign in to ${site}: the page did not answer the sign-in in time. I stopped and paused it for a day.`,
+    site_trouble: `Could not sign in to ${site}: it answered with its own error before accepting or turning down the login (not a wrong password; the saved login looks fine).`,
   }[outcome] ?? `Did not sign in to ${site} (${String(outcome).replace(/_/g, " ")}).`),
 };
 /** Words for `purpose`: one line, no control characters, links without their query or fragment. */

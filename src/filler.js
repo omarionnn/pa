@@ -38,7 +38,7 @@ export const SIGNIN_RESULTS = [
   "signed_in", "needs_code_sms", "needs_approval", "wrong_password", "blocked",
   "not_signin_page", "origin_mismatch", "paused", "needs_face_id", "no_login", "pick_one", "busy",
   "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "not_named",
-  "not_accepted", "no_answer", "waiting_face_id",
+  "not_accepted", "no_answer", "waiting_face_id", "site_trouble",
 ];
 const OK_RESULT = new Set(["signed_in"]);
 // The form was found visible a moment ago, so a box that is not fillable within this is not the form.
@@ -50,6 +50,12 @@ export const RETRY_PAUSE_MS = 24 * 60 * 60_000;
 // A refusal by the site stops the attempt for the day: one wall, CAPTCHA, "suspicious sign-in" or
 // "too many attempts" and the row is refused; the person is told and it is not retried (hard rule 4).
 const REFUSED_BY_SITE = new Set(["blocked"]);
+// The site answered with its own generic error ("Something went wrong. Please try again in a few
+// minutes.") before it accepted or turned down the login. Not a wrong password, not a format problem:
+// one automatic second go in the same job after SITE_TROUBLE_RETRY_MS, and if that gets the same, the
+// login rests SITE_TROUBLE_PAUSE_MS (not a day). Never more than one automatic retry.
+export const SITE_TROUBLE_RETRY_MS = 3 * 60_000;
+export const SITE_TROUBLE_PAUSE_MS = 6 * 60 * 60_000;
 
 /** The exact origin and path a browser reports, or "" (scheme://host[:port], then the path). */
 function urlParts(u) {
@@ -64,8 +70,12 @@ function normSite(site) {
 }
 
 /** One result object, with the fixed word and a plain sentence; never page text or a query string. */
-function say(result, site, extra = "", { msgClass = "", msg = "" } = {}) {
+function say(result, site, extra = "", { msgClass = "", msg = "", retrying = false } = {}) {
   const quoted = msg ? ` (it said: "${safeMessage(msg)}")` : "";
+  // The site's own error before it accepted or turned down the login: the saved login is not the problem.
+  const siteTrouble = retrying
+    ? `${site} answered with its own error before it accepted or turned down your login${quoted}. That isn't a wrong password, and as far as I can tell your saved login is fine and doesn't need saving again. I'll try once more by myself in a few minutes.`
+    : `I couldn't sign you in to ${site}: it answered with its own error again before it accepted or turned down your login${quoted}. That isn't a wrong password, and as far as I can tell your saved login is fine and doesn't need saving again. I've stopped and won't try ${site} again for 6 hours.`;
   const notAccepted = msgClass === "account_not_found"
     ? `I couldn't sign you in to ${site}: it said it couldn't find an account for the saved email or number${quoted}. I've stopped and won't try ${site} again until tomorrow. If that isn't the email or number you use there, the login needs saving again with the right one.`
     : msgClass === "validation"
@@ -75,6 +85,7 @@ function say(result, site, extra = "", { msgClass = "", msg = "" } = {}) {
         : `I couldn't sign you in to ${site}: it didn't accept the sign-in${quoted}. I've stopped and won't try ${site} again until tomorrow.`;
   const lines = {
     not_accepted: notAccepted,
+    site_trouble: siteTrouble,
     no_answer: `I typed your saved login into ${site} and submitted it, but the page didn't show whether it worked before I gave up waiting, so I stopped. I won't try ${site} again until tomorrow.`,
     signed_in: `Signed you in to ${site}.`,
     needs_code_sms: `${site} texted a code to your phone to finish signing in. Send me that code and I'll type it in, once.`,
@@ -145,11 +156,18 @@ const SUSPICIOUS = /suspicious|unusual (activity|sign.?in)|unrecognized|we don'?
 const VALIDATION = /please enter (a |your )?valid|enter a valid|must (contain|be|have) (between|at least|at most|from)|\bis required\b|required field|too (short|long)\b|can'?t be (blank|empty)/i;
 const NOT_FOUND = /can'?t find (an|that|this|your) account|couldn'?t find (an|that|this|your) account|no account (with|for|found)|account (doesn'?t|does not) exist|isn'?t (linked to|connected to) an account|not (registered|recognized) (as|with) an account/i;
 const RATE = /too many (attempts|tries|sign.?in|requests)|try again later|temporarily (locked|blocked|unavailable)/i;
+const TOO_MANY = /too many (attempts|tries|sign.?in|requests)|temporarily (locked|blocked)/i;
+// The site's own generic trouble, about nothing that was typed: "Something went wrong. Please try again
+// in a few minutes.", "We're having trouble", "An unexpected error occurred", "temporarily unavailable".
+const SITE_TROUBLE = /something (went|has gone) wrong|something'?s gone wrong|try again (later|shortly|soon|in a (few|couple( of)?) (minutes?|moments?)|in a (minute|moment|bit|little while|while))|we'?re having (some )?trouble|having (some )?technical (trouble|difficulties|issues|problems)|unexpected error|(an|unknown) error (has )?occurred|temporarily unavailable|service (is )?unavailable/i;
 
 /** Which kind of message the page showed, from the page's own words ("" when none of the known ones). */
 export function messageClass(msg) {
   const m = String(msg ?? "");
   if (!m.trim()) return "";
+  // Generic site trouble first, unless the same words also name the password, the account or too many
+  // tries: "validation" is only ever a message about the format of what was typed.
+  if (SITE_TROUBLE.test(m) && !WRONG_PW.test(m) && !NOT_FOUND.test(m) && !TOO_MANY.test(m)) return "site_trouble";
   if (VALIDATION.test(m)) return "validation";
   if (WRONG_PW.test(m)) return "wrong_password";
   if (NOT_FOUND.test(m)) return "account_not_found";
@@ -212,7 +230,11 @@ async function classifyAfterSubmit(page, ctx = {}) {
   const { banner, fresh } = await freshWords(page, ctx.before, ctx.bannerBefore);
   // Without a before-reading (a code step), the page's text is all there is.
   const msg = ctx.before ? [banner, fresh].filter(Boolean).join(" ") : banner;
-  const cls = messageClass(msg) || (!ctx.before && hasPassword && WRONG_PW.test(text) ? "wrong_password" : "");
+  // The page's own message (its alert) names the ending when it says something known; the other new
+  // words only when it does not (a field hint under a box is never louder than the page's alert).
+  const bannerCls = messageClass(banner);
+  const ownCls = bannerCls && bannerCls !== "other" ? bannerCls : "";
+  const cls = ownCls || messageClass(msg) || (!ctx.before && hasPassword && WRONG_PW.test(text) ? "wrong_password" : "");
   ctx.msgClass = cls || "none";
   ctx.msg = cls ? (banner || fresh || "").slice(0, 200) : "";
   if (read.kind === "challenge" || SUSPICIOUS.test(msg) || (!ctx.before && SUSPICIOUS.test(text))) return "blocked";
@@ -220,6 +242,8 @@ async function classifyAfterSubmit(page, ctx = {}) {
   if (PUSH.test(text)) return "needs_approval";
   if (hasOtp) return AUTHENTICATOR.test(text) ? "needs_authenticator" : EMAILED.test(text) ? "needs_code_email" : "needs_code_sms";
   if (cls === "wrong_password") return "wrong_password"; // the page said so, though it took the box away
+  // The site's own generic error, box there or not: it neither accepted nor turned down the login.
+  if (cls === "site_trouble") return "site_trouble";
   // No password box and no challenge: the form was accepted. A logout/account control is the
   // positive evidence a real session read uses; its absence on a fixture is still a signed-in page.
   if (!hasPassword && (!cls || cls === "other")) {
@@ -641,14 +665,18 @@ async function submitAndRead(page, form, { answerMs = ANSWER_MS, diag = {} } = {
   });
   await awaitAnswer(page, form, before, answerMs, bannerBefore);
   diag.waitedMs = Date.now() - startedAt;
+  // The page's answer is read BEFORE the clean-up: emptying a box makes a page show its own hint under
+  // it ("Please enter a valid email or mobile number."), which is not the site's answer to the login
+  // (2026-11-13: Netflix's "Something went wrong" was reported as a format problem that way).
+  const ctx = { before, bannerBefore, startUrl };
+  const result = await classifyAfterSubmit(page, ctx);
   // Clean up before anyone looks: empty any box the filler typed into that is still on the page
-  // (design B5 step 7). After a submit the page has usually navigated and the box is gone; a short
-  // timeout keeps that ordinary case from blocking on the default wait.
+  // (design B5 step 7). Reading the answer above only reads words; no picture is taken before this.
+  // After a submit the page has usually navigated and the box is gone; a short timeout keeps that
+  // ordinary case from blocking on the default wait.
   for (const loc of [form.user, form.pass]) {
     if (loc) await loc.fill("", { timeout: 800 }).catch(() => {});
   }
-  const ctx = { before, bannerBefore, startUrl };
-  const result = await classifyAfterSubmit(page, ctx);
   // A page that echoes the username back ("No account for jsmith"): its words go, before the quote or the line.
   const msg = dropMarked(ctx.msg, diag.userMarks);
   delete diag.userMarks;
@@ -666,7 +694,7 @@ function finish(c, row, host, pinned, result, { why = "", again = false, started
   else if (REFUSED_BY_SITE.has(result)) {
     recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "a wall after the password" });
     setState(c, row.id, { state: "refused" });
-  } else if (typed) setState(c, row.id, { nextTryAt: (at ?? clock.now()) + RETRY_PAUSE_MS });
+  } else if (typed) setState(c, row.id, { nextTryAt: (at ?? clock.now()) + (result === "site_trouble" ? SITE_TROUBLE_PAUSE_MS : RETRY_PAUSE_MS) });
   if (result !== "signed_in") unpinSite(c);
   const outcome = result === "signed_in" ? "signed_in" : result === "blocked" ? "blocked_by_site"
     : result === "wrong_code" ? "wrong_code" : result === "code_not_found" ? "code_not_found" : "failed";
@@ -696,7 +724,7 @@ let signIns = 0;
 export async function signIn(conversationId, site, {
   trigger = null, purpose = "", launch = realLaunch, now = () => clock.now(),
   emailCode = codeFromGmail, enter = enterCode, awaitReply = awaitCodeReply, note = defaultNote, waitMs = undefined,
-  answerMs = ANSWER_MS, locate = undefined, tapWaitMs = undefined, stepMs = undefined,
+  answerMs = ANSWER_MS, locate = undefined, tapWaitMs = undefined, stepMs = undefined, retryWaitMs = SITE_TROUBLE_RETRY_MS,
 } = {}) {
   const c = String(conversationId ?? "");
   const host = normSite(site);
@@ -791,13 +819,17 @@ export async function signIn(conversationId, site, {
   // below, die with the process. Held as long as the profile is; kind only, no site, no person.
   const gateId = `filler:${++signIns}`;
   restartGate.hold(gateId, { kind: "saved_login" });
-  const startedAt = now();
+  let startedAt = now();
   const again = row.state === "working";
   const pinned = `${row.signin_origin}${row.signin_path}`;
   let session = null;
   let handedOff = false; // a texted code is waited for in the background; that wait closes and releases
   let typed = false; // the login went into the page's boxes (a failure after this rests the login a day)
-  try {
+  let codeHanded = false; // the wait for a texted or emailed code owns the browser and the gate now
+
+  // One go at the pinned page: launch, the exact-origin checks, the form, the sealed typing and the
+  // submit. → { out } (an ending already recorded, to say as it is) or { result, diag, page }.
+  const attempt = async () => {
     unpinSite(c); // a new sign-in ends any earlier signed-in job
     await closeErrandBrowser(c);
     session = await launch({ conversationId: c });
@@ -821,8 +853,8 @@ export async function signIn(conversationId, site, {
     const door = got.door;
     // Hard rule 1: the exact origin after ALL redirects, as strings. Anything else: stop, type
     // nothing, zero KMS calls (the unwrap below never runs).
-    if (got.verdict === "origin_mismatch") { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return say("origin_mismatch", host); }
-    if (got.verdict === "not_signin_page") { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt }); return say("not_signin_page", host); }
+    if (got.verdict === "origin_mismatch") { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return { out: say("origin_mismatch", host) }; }
+    if (got.verdict === "not_signin_page") { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt }); return { out: say("not_signin_page", host) }; }
     // A human-check that wants a person, showing before anything is typed and not clearing by itself
     // within the wait: stop, never solve it, never offer to try again.
     if (got.verdict === "wall") {
@@ -831,13 +863,13 @@ export async function signIn(conversationId, site, {
       unpinSite(c);
       logAttempt({ signin_url: pinned }, { route: again ? "saved_login_again" : "saved_login", outcome: "blocked_by_site", startedAt, detail: door ? "wall_front_door" : "wall_before_form" });
       recordLoginEvent(c, { site: host, event: "signin", outcome: "blocked", purpose: why });
-      return { ...say("walled", host), result: "blocked" };
+      return { out: { ...say("walled", host), result: "blocked" } };
     }
     if (got.verdict !== "ok") {
       // The saved page itself has no sign-in form: the pin is wrong, not the page's mood. Never re-pinned
       // here; the person is told to save it again (forget, then a new save link pins a page with a form).
       finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt });
-      return { ...say("needs_resave", host), result: "not_signin_page", resave: true };
+      return { out: { ...say("needs_resave", host), result: "not_signin_page", resave: true } };
     }
     // From here the browser is held to the exact pinned origin (the same-site lock, src/browser.js): a
     // redirect or a script sending it elsewhere mid-fill is refused by the browser itself; fillAndSubmit
@@ -845,7 +877,7 @@ export async function signIn(conversationId, site, {
     // by `ours` before every keystroke step).
     const { form } = got;
     const at = urlParts(page.url());
-    if (at.origin !== row.signin_origin || at.path !== row.signin_path) { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return say("origin_mismatch", host); }
+    if (at.origin !== row.signin_origin || at.path !== row.signin_path) { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return { out: say("origin_mismatch", host) }; }
 
     // Unwrap and type, one KMS call, with the origin the browser is on now (design B5 step 5; KMS
     // refuses any other origin through the encryption context).
@@ -866,9 +898,13 @@ export async function signIn(conversationId, site, {
         : (code === "fill_failed" && /OriginDrift/.test(e?.message ?? "")) ? "origin_mismatch"
         : "not_signin_page";
       finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
-      return say(result, host);
+      return { out: say(result, host) };
     }
+    return { result, diag, page };
+  };
 
+  // Everything after the typing: the second step, the record, the words. → the result object.
+  const conclude = async ({ result, diag, page }) => {
     // The second step, after the secret is gone (the code is not a saved secret): what the row says
     // the site does wins over what the page's words suggest.
     if (result.startsWith("needs_code")) {
@@ -888,7 +924,7 @@ export async function signIn(conversationId, site, {
       // Ask them once. Their reply is taken at intake (src/signinemail.js takeCodeReply), typed once,
       // and the end is told in the thread; the browser stays held for the wait and is released after.
       const asked = result;
-      handedOff = true;
+      codeHanded = true;
       restartGate.hold(`${gateId}:code`, { kind: "saved_login_code" });
       restartGate.release(gateId);
       void (async () => {
@@ -916,12 +952,62 @@ export async function signIn(conversationId, site, {
     finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
     if (result !== "signed_in") logDiag({ signin_url: pinned }, { ...diag, result });
     return say(result, host, "", { msgClass: diag.msgClass, msg: diag.msg });
+  };
+
+  try {
+    const first = await attempt();
+    if (first.out) return first.out;
+    if (first.result === "site_trouble") {
+      // The site's own error before it accepted or turned down the login: ONE more go, by itself, in a
+      // fresh browser after a few minutes. The first go is logged but rests nothing; the person is told
+      // once now, and the second go's ending is told when it comes (the code-wait pattern below). The
+      // profile and the restart gate stay held for the whole job.
+      handedOff = true;
+      unpinSite(c);
+      logAttempt({ signin_url: pinned }, { route: again ? "saved_login_again" : "saved_login", outcome: "failed", startedAt, detail: "site_trouble" });
+      logDiag({ signin_url: pinned }, { ...first.diag, result: "site_trouble" });
+      recordLoginEvent(c, { site: host, event: "signin", outcome: "site_trouble", purpose: why });
+      void (async () => {
+        let words = null;
+        try {
+          await session?.close?.();
+          session = null;
+          await new Promise((r) => setTimeout(r, Math.max(0, Number(retryWaitMs) || 0)));
+          // Forgotten during the wait: nothing is opened and nothing is said.
+          if (!peekForSignin(c, host).some((r) => r.id === row.id)) return;
+          startedAt = now();
+          typed = false;
+          const second = await attempt();
+          if (second.out) words = second.out;
+          else if (second.result === "site_trouble") {
+            // The same again: stop, and rest the login 6 hours (finish). Never a third go.
+            finish(c, row, host, pinned, "site_trouble", { why, again, startedAt, typed, at: now() });
+            logDiag({ signin_url: pinned }, { ...second.diag, result: "site_trouble" });
+            words = say("site_trouble", host, "", { msg: second.diag.msg });
+          } else words = await conclude(second);
+        } catch {
+          try { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt, typed, at: now() }); } catch { /* best effort */ }
+          words = say("not_signin_page", host);
+        } finally {
+          if (!codeHanded) {
+            await session?.close?.();
+            releaseProfile(c, holder);
+            restartGate.release(gateId);
+          }
+        }
+        if (words?.say_exactly) {
+          try { note(c, `[saved-login sign-in to ${host} ended: ${words.result}] ${words.say_exactly}`); } catch { /* best effort */ }
+        }
+      })();
+      return say("site_trouble", host, "", { msg: first.diag.msg, retrying: true });
+    }
+    return await conclude(first);
   } catch {
     // Never the error's words: a page's or a browser's text does not go back to the model.
     try { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt, typed, at: now() }); } catch { /* best effort */ }
     return say("not_signin_page", host);
   } finally {
-    if (!handedOff) {
+    if (!handedOff && !codeHanded) {
       await session?.close?.();
       releaseProfile(c, holder);
       restartGate.release(gateId);
