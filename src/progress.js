@@ -111,6 +111,7 @@ export const NEUTRAL = {
   apple_calendar_change: "Updating your calendar", apple_calendar_delete: "Updating your calendar",
   call_place: "Getting the call ready", call_errand_start: "Setting up the call", call_status: "Checking on the call", call_errand_status: "Checking on the call",
   call_recording_delete: "Deleting the recording",
+  team_flag: "Flagging this to the team",
   recall: "Checking what I know", memory_search: "Checking what I know", graph_lookup: "Checking what I know",
   get_location: "Checking where you are", directions: "Working out the route",
   uber_options: "Checking ride prices", uber_request: "Booking the ride", uber_ride: "Checking on the ride",

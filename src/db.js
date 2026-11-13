@@ -2238,6 +2238,10 @@ addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
 addColumnIfMissing("calls", "cartesia_seconds", "INTEGER");
 addColumnIfMissing("calls", "cartesia_cents", "INTEGER");
 addColumnIfMissing("calls", "cartesia_fell_back", "INTEGER NOT NULL DEFAULT 0");
+// Whether Cartesia's own copy of the call (its transcript and recording) was deleted when the relay let
+// go: '' (never asked, or not a Cartesia call), 'deleted', or 'not_deleted' (call_status offers a report
+// to Reason's team, src/teamflag.js).
+addColumnIfMissing("calls", "cartesia_copy", "TEXT NOT NULL DEFAULT ''");
 export function setItemLabel(kind, conversationId, id, label, { blurb = null } = {}) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
@@ -5837,7 +5841,7 @@ export function updateCall(conversationId, id, fields) {
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
     // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
-    "cartesia_seconds", "cartesia_cents", "cartesia_fell_back",
+    "cartesia_seconds", "cartesia_cents", "cartesia_fell_back", "cartesia_copy",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
     "turn_log",
   ];
@@ -12137,6 +12141,20 @@ db.exec(`
     resolved_at INTEGER,
     resolved_how TEXT NOT NULL DEFAULT ''
   );
+  -- A person's own report to Reason's team (src/teamflag.js, team_flag): the exact words they were
+  -- shown and said yes to, and the reference code the operator's text carries. Theirs: exported with
+  -- their data, gone with it, sealed at rest (src/restcrypt.js). state: proposed | sent | send_failed.
+  CREATE TABLE IF NOT EXISTS team_flags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    ref TEXT NOT NULL UNIQUE,
+    text TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'proposed',
+    confirmation_id INTEGER,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS team_flags_conv ON team_flags (conversation_id, created_at);
   -- Operator notices held for the one daily digest (src/opsdigest.js, owner 2026-11-06): everything
   -- that is not an emergency waits here instead of landing in the owner's chat as it happens.
   CREATE TABLE IF NOT EXISTS ops_digest (
