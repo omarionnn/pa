@@ -1,14 +1,33 @@
 # Reason signs itself in: account access design and security review
 
-Status: design and review only. Nothing in this file is built. Written 2026-11-12 against `origin/main` `27cdace0`.
+## Decided
+
+**Yes.** The owner answered on 2026-11-12 at 23:19 ET.
+
+- **Scope:** password sites outside payments. Payments and subscriptions stay on the checkout service and its own protected password box (`REASON_ACCOUNT_JOBS`, PR #528). A saved login is never used to pay or to cancel a subscription.
+- **Who:** the owner only, until real sign-ins work end to end on real sites and the first week's numbers are in.
+- **1Password: not now.** He does not use it, and each login would need an approval in the 1Password desktop app. That breaks "Reason finishes it alone" and does not work from a phone.
+- **Builder briefs:** `docs/account-access-build/pr2.md` to `pr6.md` (rows 2 to 6 of section G; row 1 is PR #531, being built). The owner's first sites: `docs/account-access-build/first-sites.md`.
+
+The six conditions, as of 2026-11-13 00:55 ET:
+
+- [ ] **1. Owner only until real sign-ins work end to end.** Holding by default: `REASON_SAVED_LOGINS` does not exist on main yet, so nothing is on. No site has been signed into end to end.
+- [ ] **2. The key leaves the server first.** Not yet. His AWS setup note and the blank paste file have waited on his Desktop since Nov 9 (`reason-kms-setup.md`, `aws-kms-key.txt`, unchanged since then). That note makes one key, `reason-rest`. The vault needs two more, `reason-vault` and `reason-vault-intake` (B3): about 15 minutes in all, about $3 a month for the three. PRs 3, 5 and 6 cannot run live, owner mode included, until then.
+- [ ] **3. The never list in code.** Not yet (PR 4; no `src/sitepolicy.js` on main).
+- [ ] **4. An honest browser only.** The rule is in force (`src/agent.js:187`). The one stable launch setting and the shared per-person lock are not built yet (PR 2).
+- [ ] **5. The promise changes in the open before anyone but him saves a login.** Not yet (PR 11). The old lines are still on main (`src/amazonconnect.js:31`, `src/signin.js:5`, `README.md:1538`, `docs/features.md:458`).
+- [ ] **6. A lawyer before `on`.** Not yet. Nobody has been asked.
+- [ ] **Before all of it: nothing typed into a sign-in box can reach the AI** (row 1). Being built as draft PR #531, not merged.
+
+Status: design and review. Nothing in this file is built. Written 2026-11-12 against `origin/main` `27cdace0`. The briefs were checked against `origin/main` `5c9117f2` on 2026-11-13.
 Every statement about today's code carries a `file:line`. Every outside fact carries a source read on 2026-11-12 (list at the end). Lines marked "not verified" are exactly that.
 Proposed switch: `REASON_SAVED_LOGINS` = `off | owner | on`, off by default.
 
-## The one question
+## The question as it was put (2026-11-12)
 
 **May Reason keep people's logins in a vault of its own?**
 
-**Recommendation: yes, with six conditions, and the owner first.**
+**Recommendation: yes, with six conditions, and the owner first.** (Answered yes: see Decided above.)
 
 1. **Owner only** until real sign-ins work end to end on real sites and the first week's numbers are in (section G). Today no site has been signed into end to end, and 20 of 44 sites refuse Reason's browser (19 at the door, Spotify after the email step).
 2. **The key leaves the server first.** Today the master key is a file on the same machine as the data. That is the code's default (`src/restcrypt.js:254`) and what the 11-09 encryption note picked to go live; the AWS setup the upgrade needs has not been handed over (the owner's paste file is still blank). Not re-checked on the live server. A saved login must be locked by a key held in a cloud key service that the server can ask to use but can never copy. That needs about 15 minutes of the owner's time in AWS and about $3 a month. No key service, no vault.
@@ -126,17 +145,6 @@ A saved login that goes unused for 90 days is deleted after one warning text.
 - **The WorkOS sentence covers the owner, not a service.** "For individuals automating their own accounts, these techniques are practical and often sufficient. The person accepting the risk is the same person getting the benefit." That describes the owner-only stage. A company holding many people's logins is a different case, and the same article says the proper answer is scoped, revocable tokens.
 - **The emailed-code route has a ceiling.** It reads mail with Google's restricted `gmail.modify` scope, capped at 100 Google accounts for the project's lifetime until Google's review and yearly security assessment pass (`docs/google-verification.md`).
 - **Weaker spots exist today and matter as much.** Google and other connection tokens sit under one key in `.env` (`src/db.js:7117-7120`). Saved browser sessions sit unsealed on disk in folders named with the person's phone number (`src/browser.js:49-52`; absent from `src/restfiles.js:25-31`). The one typed secret Reason already stores, the Apple calendar app password, arrives through the chat as a tool argument the AI reads (`src/tools.js:7529`). The page snapshot hands the AI the contents of any filled box, password boxes included (`src/browser.js:151`). These are fixed by the first PRs whatever the answer is.
-
-### If the answer is no
-
-| Instead | What the person does | What would NOT be possible |
-|---|---|---|
-| **Official connects, emailed codes, and the checkout service's own protected box only** | One tap for connects. Types a store password into the protected box each time that store signs the checkout browser out. | Signing back in alone on any password site. Anything on sites the checkout service does not cover (utilities, insurance, schools, memberships, landlords). Reading inside an account: "a Crossmint browser profile gives Reason nothing it can read" (`src/amazonconnect.js:4-6`). |
-| **A password manager does the filling (1Password for Agents)** | Connects 1Password once, then approves each site in the 1Password app about once a month. Reason never holds the login. | Anyone who does not pay for 1Password in the US. Approval from a phone today: it works in the desktop app on a test channel, or inside an integrator's own iPhone app; the plain phone app is "In development". It is a partner preview that needs 1Password's security review. Passkey and social sign-ins. |
-| **A vendor keeps the logins and runs the browser (for example Kernel Managed Auth)** | Types the login into a Reason-styled box that sends it straight to the vendor. | Keeping the no-disguise rule: these browsers hide automation and solve CAPTCHAs by default. Keeping logins out of a third party. About $30 to $200 a month plus $0.10 to $2.40 per person. The same terms and legal exposure, or more. |
-| **Wait for the iPhone app (sign in on the real site inside the app)** | Signs in on the real site, in the app. | Anything until the app ships and passes App Review. Signing back in alone: a lapsed session needs the person again. Google sign-ins (Google refuses embedded browsers). A session made on a phone may not survive being moved to a server (Chrome now binds Google sessions to the device). |
-
-A fifth choice sits between yes and no: **the owner's own logins only, for good.** That is what the WorkOS sentence actually covers. It still needs sections B to F.
 
 ---
 
@@ -523,6 +531,16 @@ PRs 1, 2 and 4 are worth doing whatever the owner answers. PR 3 needs his AWS se
 12. A lawyer's reading of sections C and E, and of App Store guideline 5.1.1(v) for the later iPhone app ("may not store credentials or tokens to social networks off of the device").
 
 ---
+
+## Appendix: if the answer had been no (shortened)
+
+The owner said yes, so none of this is planned. Kept so the choice can be revisited.
+
+- **Official connects, emailed codes and the checkout service's own box only.** Nothing kept by Reason. The person types a store password into the checkout box each time that store signs out; no signing back in alone on any password site, and nothing on sites the checkout service does not cover.
+- **A password manager fills (1Password for Agents).** Reason never holds the login, but each site is approved in the 1Password app about once a month, the approval does not work from a plain phone today, it is a partner preview, and the person must pay for 1Password. Not chosen: see Decided.
+- **A vendor keeps the logins and runs the browser (for example Kernel Managed Auth).** Breaks the no-disguise rule (hidden automation and CAPTCHA solving by default), puts logins with a third party, and costs about $30 to $200 a month plus $0.10 to $2.40 per person.
+- **Wait for the iPhone app** and sign in on the real site inside it: nothing until the app ships, no signing back in alone, and Google refuses embedded browsers.
+- **The owner's own logins only, for good:** the fifth choice between yes and no. It still needs sections B to F.
 
 ## Sources
 
