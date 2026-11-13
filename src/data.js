@@ -41,6 +41,7 @@ import * as google from "./google.js";
 // Saved logins live in data/logins.db (their own file): exported as a list with the login REDACTED,
 // deleted before the person's key goes. Loading it creates no file.
 import { deleteAllFor, deleteEveryLogin, exportFor, exportRoutesFor } from "./savedlogins.js";
+import { exportFor as exportPassphraseFor } from "./callpass.js";
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
@@ -561,6 +562,8 @@ export function exportData({ conversation = null, audio = true, files = true } =
   for (const t of GLOBAL_TABLES) out.tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
   out.saved_logins = exportFor(conversation).map(r => ({ ...r, login: REDACTED }));
   out.signin_routes = exportRoutesFor(conversation);
+  // That a call passphrase is set, how and when (src/callpass.js); never its hash.
+  out.call_passphrase = exportPassphraseFor(conversation);
 
   // A page is only half of itself without the browsers signed in to it and the answers on it.
   // Plus the person's own event sign-in key (src/events.js signinKey), which no page row carries,

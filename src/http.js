@@ -37,6 +37,7 @@
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/save-login/{token}, POST …/save|code|passkey   save a site's login once, sealed in the browser, Face ID (src/pages/savelogin.js; REASON_SAVED_LOGINS)
+//   GET  /web/call-passphrase/{token}, POST …/save           set or change a call passphrase; hashed at once (src/pages/callpassphrase.js; REASON_CALL_TRUST)
 //   GET  /web/login-use/{token}, POST …/approve   Face ID for one sign-in with a saved login (src/pages/loginuse.js; REASON_SAVED_LOGINS)
 //   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
 //   GET  /web/connect-all/{token}, POST …/go/{service}   connect the rest, after the first task that needed a connection worked (src/pages/connectall.js; REASON_CONNECT_AFTER)
@@ -440,6 +441,24 @@ export function createServer({ router, runtime, log = () => {} }) {
         } catch (e) {
           // The name of what failed only: never the body, which is a sealed login and a signature.
           log({ http: "/web/save-login", threw: e?.code ?? e?.name ?? "error" });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
+      // Set or change a call passphrase on Reason's own page (src/pages/callpassphrase.js). Behind
+      // REASON_CALL_TRUST; off for the link's person, or a link nobody was issued: the same flat 404.
+      const callPassRoute = /^\/web\/call-passphrase\/([A-Za-z0-9_-]{1,64}(?:\/[a-z]{1,12})?)$/.exec(url.pathname);
+      if (callPassRoute && (await import("./callpass.js")).callTrustMode() !== "off") {
+        let out = null;
+        try {
+          const { callPassphraseRequest } = await import("./pages/callpassphrase.js");
+          out = await callPassphraseRequest({ sub: callPassRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), log });
+        } catch (e) {
+          // The name of what failed only: never the body, which holds the phrase.
+          log({ http: "/web/call-passphrase", threw: e?.code ?? e?.name ?? "error" });
           return send(500, { ok: false, error: "server error" });
         }
         if (out) {

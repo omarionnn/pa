@@ -23,6 +23,7 @@ import { queueMidCall } from "./voice.js";
 import { openingLineFor } from "./inbound.js";
 import { todaySoFar } from "./brief.js";
 import { NO_NAME } from "./voice-prompt.js";
+import * as calltrust from "./calltrust.js";
 import * as zonescope from "../zonescope.js";
 import { zoneFor } from "../zone.js";
 
@@ -40,6 +41,8 @@ export const ASK_REASON = "ask_reason";
 export const RESULT_MAX = 12_000;
 /** Per-call keyterm slots on the agent (scripts/cartesia-agent-setup.mjs `KEYTERM_SLOTS`). */
 export const KEYTERM_SLOTS = 8;
+/** How long an ask_reason waits for the caller's passphrase answer to be screened (./calltrust.js). */
+export const EAR_WAIT_MS = 1500;
 /** A dynamic variable's text, kept inside a size their docs do not state (docs/unverified.md). */
 export const VARIABLE_MAX = 12_000;
 
@@ -431,6 +434,15 @@ export class CartesiaAgentCall {
     this.tape = new CallTape();
     if (!this.recorded) this.tape.stopAt(0);
     this.turns = [];
+    // REASON_CALL_TRUST (./calltrust.js): what the caller's next words are for ("pass" | "setup" | null),
+    // whether the latest ones were a screened passphrase, and asks waiting on that screen.
+    this.earArmed = null;
+    this.earJust = false;
+    this.earWaiters = [];
+    // The words just screened, in memory for this call only (never kept), so the agent saying them back is not
+    // kept either; and where on the tape the ask began, so their side of the recording is silence until the screen.
+    this.earEcho = null;
+    this.earTapeFrom = null;
     this.streamSid = null;
     this.agentCallId = "";
     this.ready = false;
@@ -617,8 +629,19 @@ export class CartesiaAgentCall {
   }
 
   turnEnded(e) {
-    const text = String(e.text ?? "").replace(/\s+/g, " ").trim();
+    let text = String(e.text ?? "").replace(/\s+/g, " ").trim();
     const who = e.role === "user" ? "them" : "reason";
+    // REASON_CALL_TRUST: their words right after Reason asked for a passphrase are checked in code and
+    // kept only as a marker (./calltrust.js), before they reach the turns, the transcript or Reason.
+    if (who === "them" && this.earArmed && text) {
+      const heard = calltrust.hear(this.call, text, { log: this.log });
+      if (heard) { text = heard.text; this.earJust = true; if (heard.echo) this.earEcho = heard.echo; }
+      this.tape.blank(this.earTapeFrom ?? this.tape.callerBytes - 15_000 * 8, this.tape.callerBytes);
+      this.earTapeFrom = null;
+      this.earArmed = null;
+      this.earWaiters.splice(0).forEach(f => f());
+    }
+    if (who === "reason" && text) text = calltrust.unechoed(calltrust.scrubSaid(text), this.earEcho);
     if (text) this.turns.push({ who, text, at: this.now(), ...(e.interrupted ? { interrupted: true } : {}) });
     // The honesty guard (GPT-Live's `claimsDone`, on this line too): the agent said something is done and
     // no answer of Reason's in the last minute said so. The words are already spoken (their socket takes
@@ -666,8 +689,9 @@ export class CartesiaAgentCall {
     this.answerOut = null;
     if (out) {
       const share = heardShare(text, out.text);
-      // A code, password or long number is never said again from memory: no offer, no note quoting it.
-      if (e.interrupted && share < HEARD_SHARE && SECRETISH.test(out.text)) {
+      // A code, password or long number is never said again from memory: no offer, no note quoting it. Nor a
+      // call-passphrase line (./calltrust.js): said again later, the words after it would not be screened.
+      if (e.interrupted && share < HEARD_SHARE && (SECRETISH.test(out.text) || (calltrust.trustOn(this.call) && calltrust.isTrustLine(out.text)))) {
         this.log({ cartesia_answer_unheard: this.call.id, turn: Number(e.turn) || 0, heard_pct: Math.round(share * 100), withheld: true });
       } else if (e.interrupted && share < HEARD_SHARE) {
         this.unheard = { text: out.text, short: shortForm(out.text), at: t };
@@ -708,7 +732,13 @@ export class CartesiaAgentCall {
       this.agent.send({ type: "client_tool_result", tool_call_id: id, result: String(result).slice(0, RESULT_MAX), is_error: !!isError });
     };
     if (e.tool_name !== ASK_REASON) return answer(`No tool called ${String(e.tool_name ?? "")}.`, true);
-    const request = e.parameters?.request ?? e.parameters?.question ?? "";
+    let request = e.parameters?.request ?? e.parameters?.question ?? "";
+    // Their passphrase answer may reach this tool before its own turn_ended: waited for, briefly, so it is
+    // screened first; then the agent's copy of it is never passed on.
+    if (this.earArmed) await new Promise(r => { this.earWaiters.push(r); this.timers.setTimeout(r, EAR_WAIT_MS); });
+    // Still not screened after the wait (their turn_ended is late), or the agent's words repeat what was: the
+    // agent's copy is never passed on either way.
+    if (this.earJust || this.earArmed || calltrust.echoes(request, this.earEcho)) { this.earJust = false; request = calltrust.SCREENED_REQUEST; }
     this.replyKind = "ask_reason";
     const askedAt = this.now();
     const p = { askedAt, texting: false, texted: false, reply: undefined, done: null };
@@ -739,10 +769,18 @@ export class CartesiaAgentCall {
   async ask(request, p) {
     let reply;
     const deferredBefore = this.deferredNow();
+    const armedBefore = calltrust.listening(this.call);
     try {
       reply = await this.brain(this.messages(request));
     } catch (err) {
       reply = { text: "", error: (err?.message ?? String(err)).split("\n")[0] };
+    }
+    // REASON_CALL_TRUST: this turn asked for the passphrase (./calltrust.js). The ask is said in its fixed
+    // words, whatever the model wrote; they say the text-after-the-call half too, so no deferral line is added.
+    const armedNow = calltrust.listening(this.call);
+    if (!reply?.error && armedNow === "pass" && armedBefore !== "pass" && !String(reply?.text ?? "").includes(calltrust.LINES.ask)) {
+      reply = { ...(reply ?? {}), text: calltrust.LINES.ask, skip: false };
+      this.log({ cartesia_trust_ask_fixed: this.call.id });
     }
     // This turn put something off until after the call: it is said now, in words, never a skip.
     // verify_deferred only grows on a call (verify.js queueForAfter); a growth another ask already said is not said twice.
@@ -761,6 +799,9 @@ export class CartesiaAgentCall {
     this.askAnsweredAt = answeredAt;
     if (!reply?.skip && saysDone(reply?.text)) this.claimedAt = answeredAt;
     p.reply = reply;
+    // Reason asked for a passphrase (or a new one) in this answer: their next words are for code.
+    this.earArmed = armedNow;
+    if (armedNow && this.earTapeFrom == null) this.earTapeFrom = this.tape.callerBytes;
     if (p.texting) this.textLate(p);
     return reply;
   }

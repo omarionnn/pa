@@ -34,6 +34,7 @@ import { buildBrief } from "./brief.js";
 import { spokenPhone, spokenMoney } from "./readback.js";
 import { LIVE_STATES } from "./provider.js";
 import * as verify from "./verify.js";
+import * as calltrust from "./calltrust.js";
 import * as commit from "./commit.js";
 
 /** The states, in order, and what each is called out loud. */
@@ -234,9 +235,16 @@ export async function go({ call, requestId, saidYes = false, dial, log = () => {
 
   // Who is on the phone, first. The yes is worth nothing until this has passed.
   if (!verify.isVerified(call)) {
-    const r = verify.gateRefusal({ call, name: "make_a_call_for_me", input: { to: req.to_number, text: req.review ?? req.brief?.goal ?? "" }, log });
-    log({ call_request_unverified: req.id });
-    return { ...r, request_id: req.id, state: "preparing" };
+    const maxCents = Number(req.brief?.approved?.maxCents ?? 0);
+    // maxCents: a call that may spend is money for the call-trust levels (never by voice); describeAsk ignores it.
+    const input = { to: req.to_number, text: req.review ?? req.brief?.goal ?? "", ...(maxCents > 0 ? { maxCents } : {}) };
+    // REASON_CALL_TRUST on: a passphrase said just now may unlock this one call (./calltrust.js); null when off.
+    const trust = calltrust.decide({ call, name: "make_a_call_for_me", input, now, log });
+    if (!trust?.allow) {
+      const r = trust?.out ?? verify.gateRefusal({ call, name: "make_a_call_for_me", input, log });
+      log({ call_request_unverified: req.id });
+      return { ...r, request_id: req.id, state: "preparing", ...(trust?.line ? { trust_line: trust.line } : {}) };
+    }
   }
 
   const standing = permissions.covering({ conversationId: c, action: "call_place", target: req.to_number, amountCents: req.brief?.approved?.maxCents ?? null });

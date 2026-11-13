@@ -55,6 +55,7 @@ import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
 import * as signinEmail from "../signinemail.js";
 import * as loginIntake from "../loginintake.js";
+import * as callPass from "../callpass.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -406,6 +407,24 @@ export class Router {
       if (line) {
         await this.send({ channel: inbound.channel, to: address, text: line, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
         return { ok: true, conversationId, textedPassword: true, replied: true };
+      }
+    }
+
+    // Their call passphrase (src/callpass.js, REASON_CALL_TRUST): "set / change / remove my call passphrase"
+    // and a typed yes to Reason's own question about one, answered by code with fixed words; no turn runs.
+    // Off: fromText returns null for everyone. The phrase itself is never typed here: the link's page takes it.
+    {
+      let pass = null;
+      try { pass = callPass.fromText({ conversationId, text: inbound.text, channel: inbound.channel, reasonDb: db.db }); } catch { pass = null; }
+      if (pass) {
+        const to = { channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, conversationId, toOwner: true };
+        await this.send({ ...to, text: pass.reply }).catch(() => {});
+        if (pass.link) await this.send({ ...to, text: pass.link }).catch(() => {});
+        if (pass.noteOutbox) {
+          try { pass.noteOutbox(db.db.prepare("SELECT id FROM outbox WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversationId)?.id ?? null); } catch { /* the yes then answers nothing */ }
+        }
+        this.log({ inbound: inbound.externalId, call_passphrase: pass.kind });
+        return { ok: true, conversationId, callPassphrase: pass.kind, replied: true };
       }
     }
 
