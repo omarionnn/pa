@@ -1018,10 +1018,24 @@ export class SendblueChannel extends Channel {
    */
   async receive({ rawBody, rawBytes, headers }) {
     const v = this.verify({ headers, rawBody, rawBytes });
-    if (!v.ok && !v.unsigned) return { status: 401, body: { error: `rejected: ${v.why}` }, inbound: [] };
+    if (!v.ok && !v.unsigned) return { status: 401, body: { error: `rejected: ${v.why}` }, inbound: [], ...(looksLikeTyping(rawBody) ? { typingRefused: true } : {}) };
 
     let event;
     try { event = JSON.parse(rawBody); } catch { return { status: v.ok ? 400 : 401, body: { error: v.ok ? "bad json" : `rejected: ${v.why}` }, inbound: [] }; }
+
+    // A contact started or stopped typing (webhook type `typing_indicator`: number, is_typing,
+    // from_number, timestamp; api-v2/typing-indicators). Believed only when the delivery verified:
+    // there is no message for Sendblue to confirm, so an unsigned or mis-signed one is refused here,
+    // without the lookup below. Handed to the router as a hint (src/typingaware.js), never a turn.
+    if (typeof event?.is_typing === "boolean" && !event.message_handle) {
+      if (!v.ok) return { status: 401, body: { error: "rejected: an unverified typing indicator" }, inbound: [], typingRefused: true };
+      const who = normalizeHandle(String(event.number ?? "").trim());
+      const sentAt = Date.parse(String(event.timestamp ?? ""));
+      return {
+        status: 200, body: { ok: true, ignored: "typing_indicator" }, inbound: [],
+        ...(who && !String(event.group_id ?? "").trim() ? { typing: { address: who, isTyping: event.is_typing, sentAt: Number.isFinite(sentAt) ? sentAt : null } } : {}),
+      };
+    }
 
     // Sendblue sometimes leaves the signing header off a real delivery (seen 2026-10-16 and once on
     // 10-21, against 74+ signed that week). Taking those on trust let anybody who knew the URL text
@@ -1448,6 +1462,11 @@ async function describe(event) {
     parts.push("[they sent an iMessage app card — this is often a location share, but could be a game, a sticker or another app. You cannot read what is in it. If context suggests they were trying to share where they are, use get_location to check whether their coordinates are available]");
   }
   return parts.join("\n").trim();
+}
+
+/** Is this refused body a typing indicator? Only so the refusal can be counted as one (src/typingaware.js). */
+function looksLikeTyping(rawBody) {
+  try { const e = JSON.parse(rawBody); return typeof e?.is_typing === "boolean" && !e.message_handle; } catch { return false; }
 }
 
 /**

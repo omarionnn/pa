@@ -952,6 +952,9 @@ export function createServer({ router, runtime, log = () => {} }) {
         // behind, and it took a day of looking to learn the adapter had dropped them on purpose.
         const done = (out) => {
           const ignored = out.body?.ignored ? String(out.body.ignored) : "";
+          // A typing indicator is not a dropped message and leaves no line of its own: when
+          // somebody was typing is not written down, only counted by the hour (src/typingaware.js).
+          if (ignored === "typing_indicator" && out.status === 200) return;
           if (ignored) ops.noteDroppedInbound(hook[1], ignored);
           log({ webhook: hook[1], status: out.status, delivered: out.body?.delivered ?? 0, ...(ignored ? { ignored } : {}) });
         };
