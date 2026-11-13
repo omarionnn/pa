@@ -55,7 +55,7 @@ import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
 import * as emailRoute from "./signinemail.js";
 import { readSignedInState } from "./sites.js";
-import { profileDirFor, guardContext } from "./browser.js";
+import { profileDirFor, guardContext, launchOptions, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser } from "./browser.js";
 import * as restartGate from "./busy.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
@@ -97,16 +97,37 @@ const same = (a, b) => {
   return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
 };
 
-/** The real browser: the person's own saved profile, headless, at the size the page shows. */
+/**
+ * The real browser: the person's own saved profile, headless, at the size the page shows. The profile
+ * is this browser's until `close` (src/browser.js holdProfile): the errand browser opens nothing on it
+ * meanwhile, and one still starting is waited for and closed first. With REASON_STABLE_BROWSER on for
+ * them it opens with the one launch setting, and `view` says what size the picture is.
+ */
 async function realLaunch({ conversationId, url }) {
+  const holder = Symbol("signin_browser");
+  if (!holdProfile(conversationId, holder)) throw new Error("A sign-in is already open on their saved profile. Let it finish first.");
+  let context = null;
+  try {
+    await closeErrandBrowser(conversationId);
+    return await openHeld({ conversationId, url, holder, opened: (c) => { context = c; } });
+  } catch (e) {
+    await context?.close().catch(() => {});
+    releaseProfile(conversationId, holder);
+    throw e;
+  }
+}
+
+async function openHeld({ conversationId, url, holder, opened }) {
   const { chromium } = await import("playwright");
-  const context = await chromium.launchPersistentContext(profileDirFor(conversationId), {
+  const options = launchOptions(conversationId, {
     headless: true, viewport: VIEW, deviceScaleFactor: 2,
     // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
     // Smooth scrolling off, and only that: a wheel otherwise animates for ~300 ms, so the picture
     // taken after a scroll showed the page before it had moved (measured 2026-11-10).
     args: ["--disable-smooth-scrolling"],
   });
+  const context = await chromium.launchPersistentContext(profileDirFor(conversationId), options);
+  opened(context);
   // Never this machine's own network, on every request — a link can name any site by its address.
   await guardContext(context);
   const page = context.pages()[0] ?? await context.newPage();
@@ -124,8 +145,14 @@ async function realLaunch({ conversationId, url }) {
     return pg.screenshot({ type: "jpeg", quality });
   };
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
-  return { page, shot, close: () => context.close().catch(() => {}) };
+  const close = async () => {
+    try { await context.close().catch(() => {}); } finally { releaseProfile(conversationId, holder); }
+  };
+  return { page, shot, close, view: options.viewport ?? VIEW };
 }
+
+/** The size of the picture this session's browser takes: its launch's, else the phone frame. */
+const viewOf = (s) => s?.browser?.view ?? VIEW;
 
 /** The same browser for the email sign-in (src/signinemail.js): their saved profile, headless, guarded. */
 export const launchProfileBrowser = (args) => realLaunch(args);
@@ -723,7 +750,8 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     const point = (p) => {
       const x = Number(p?.x), y = Number(p?.y);
       if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return null;
-      return [Math.round(x * VIEW.width), Math.round(y * VIEW.height)];
+      const view = viewOf(s);
+      return [Math.round(x * view.width), Math.round(y * view.height)];
     };
 
     if (action === "tap") {
@@ -859,7 +887,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         const f = (raw.fields ?? []).find(x => RELAY_KINDS[want].includes(fieldKind(x)));
         if (!f) return { nobox: true };
         if (want === "code") { s.lastFields = [{ ...f, focused: true }]; text = cleanCodeFor(s, text, true); }
-        await page.mouse.click(Math.round((f.x + f.w / 2) * VIEW.width), Math.round((f.y + f.h / 2) * VIEW.height));
+        await page.mouse.click(Math.round((f.x + f.w / 2) * viewOf(s).width), Math.round((f.y + f.h / 2) * viewOf(s).height));
         await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
         await typeUnseen(page, text);
         text = "";
@@ -1193,8 +1221,8 @@ const nativeOn = (s) => social.socialAllowedFor(s.conversationId);
 function livePage(s) {
   // A fresh page load starts the panel over (the first /view sends its HTML again).
   s.npKey = "";
-  if (nativeOn(s)) return setupNativePage({ entry: s.entry, view: VIEW, step: { step: "loading", say: `Opening ${s.entry.label}…` }, script: liveScript(s) + nativeScript(), card: cardKind(s.entry) });
-  return setupLivePage({ entry: s.entry, view: VIEW, script: liveScript(s), card: cardKind(s.entry) });
+  if (nativeOn(s)) return setupNativePage({ entry: s.entry, view: viewOf(s), step: { step: "loading", say: `Opening ${s.entry.label}…` }, script: liveScript(s) + nativeScript(), card: cardKind(s.entry) });
+  return setupLivePage({ entry: s.entry, view: viewOf(s), script: liveScript(s), card: cardKind(s.entry) });
 }
 
 /**
@@ -1248,7 +1276,7 @@ function liveScript(s) {
   const base = `${PATH}/${s.token}`;
   const label = esc(s.entry.label);
   return `(function(){
-var B=${JSON.stringify(base)},V=${JSON.stringify(VIEW)};
+var B=${JSON.stringify(base)},V=${JSON.stringify(viewOf(s))};
 var v=document.getElementById('v'),stage=document.getElementById('stage'),veil=document.getElementById('veil'),
     msg=document.getElementById('msg'),tip=document.getElementById('tip'),dead=false;
 var slots={u:document.getElementById('in-u'),p:document.getElementById('in-p'),o:document.getElementById('in-o'),g:document.getElementById('in-g')};

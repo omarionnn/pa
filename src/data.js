@@ -263,6 +263,11 @@ const TABLES = [
   // The engine behind them (src/actionengine.js): each day's run and what it cost, where each card
   // came from (sealed), and their standing "stop showing me X" rules.
   "action_card_days", "action_card_sources", "card_skip_rules",
+  // Their bank through Plaid (src/plaid.js): the connected banks (the access token is sealed out of
+  // an export, see SECRET_COLUMNS, and removed at Plaid before a delete), each account's name and
+  // last four, every synced transaction, the links texted, when a bank read was answered, and the
+  // "that looks short" warnings before a payment.
+  "plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks",
 ];
 
 /**
@@ -337,6 +342,7 @@ export const INSTALL_WIDE = {
 // approval, a guest's directory key, a join claim's code, a public stamp page, the saved card's
 // and shopping profile's handles at Crossmint.
 const SECRET_COLUMNS = {
+  plaid_items: ["access_token"], plaid_links: ["id", "link_token", "token_hash"],
   oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
   shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], connect_after_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
   pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], event_seats: ["claim_token"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
@@ -631,6 +637,11 @@ async function revokeGoogleGrants(conversation, { fetchImpl = null } = {}) {
 export async function deleteData({ conversation = null, fetchImpl = null } = {}) {
   // Google first, while the refresh tokens are still here to revoke with.
   const googleGrants = await revokeGoogleGrants(conversation, { fetchImpl });
+  // Plaid too (src/plaid.js): /item/remove for each connected bank while its token is still here.
+  let plaidItems = null;
+  if (present("plaid_items")) {
+    try { plaidItems = await (await import("./plaid.js")).removeAllAtPlaid(conversation); } catch { plaidItems = { removed: 0, failed: -1 }; }
+  }
 
   // The files are read before the rows go, or there is nothing left pointing at them.
   const files = recordingFiles(conversation);
@@ -757,6 +768,9 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds, event_photos: eventPhotos,
     saved_logins: savedLogins,
     key_destroyed: !!sealedKey.shredded,
+    // Banks let go of at Plaid (/item/remove). A failure is said: the token is deleted here either
+    // way, so Reason cannot read the account, but the connection may still be listed at the bank.
+    ...(plaidItems && (plaidItems.removed || plaidItems.failed) ? { plaid: plaidItems } : {}),
     google: {
       ...googleGrants,
       // Said out loud rather than quietly dropped: whoever runs a delete is entitled to know whether

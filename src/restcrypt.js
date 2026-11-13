@@ -90,6 +90,13 @@ export const SENSITIVE2 = [
   // name) and the sentence behind a "stop showing me X" rule.
   { table: "action_card_sources", cols: ["refs", "first_name"], owner: "conversation_id" },
   { table: "card_skip_rules", cols: ["value", "said"], owner: "conversation_id" },
+  // Their bank through Plaid (src/plaid.js): the access token (already sealed with REASON_TOKEN_KEY, sealed
+  // again here under their own key), the bank's name, each account's name and last four, and every
+  // transaction (what, how much, which category). Ids and days stay plain so a range can be read.
+  { table: "plaid_items", cols: ["access_token", "institution"], owner: "conversation_id" },
+  { table: "plaid_accounts", cols: ["name", "mask"], owner: "conversation_id" },
+  { table: "plaid_transactions", cols: ["data"], owner: "conversation_id" },
+  { table: "plaid_links", cols: ["link_token"], owner: "conversation_id" },
 ];
 /**
  * Phase 3 (11-10), behind REASON_ENCRYPT_REST3=on, which needs phase 1 on. A person's own name, the

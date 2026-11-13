@@ -58,6 +58,7 @@ import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } fr
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { NOT_RECORDED_WHY } from "./calls/manner.js";
+import * as callTrial from "./calls/calltrial.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
 import { checkCallForPaymentDetails, checkBriefForPaymentDetails } from "./calls/payments.js";
@@ -81,6 +82,7 @@ import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } fr
 import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "./tableimage.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
+import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool } from "./plaid.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords, ACCOUNT_CANCEL_GATE } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
@@ -429,10 +431,12 @@ export function toolsFor(conversationId) {
     && browserCancelToolVisible(t.name, conversationId)
     && socialToolVisible(t.name, conversationId)
     && foodToolVisible(t.name, conversationId)
+    && plaidToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
     && cueToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
+    && callTrialToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
     .map(t => (t.name === "remember" && namingOk ? rememberWithName(t) : t))
     .map(t => (t.name === "signin_link" && !social.socialAllowedFor(conversationId) ? plainSigninLink(t) : t))
@@ -454,6 +458,13 @@ function rememberWithName(t) {
 
 // Action Cards (src/actioncards.js, src/actionengine.js, REASON_ACTION_CARDS): the two card tools are
 // only shown where the flag reaches this person; nobody else's model hears that cards exist.
+// The Cartesia voice trial on the operator's own calls (src/calls/calltrial.js, REASON_CALL_CARTESIA=owner):
+// only the operator, and only with the switch at owner, is shown call_voice_trial; the dispatch refuses it for anyone else.
+export const CALL_TRIAL_TOOLS = new Set(["call_voice_trial"]);
+export function callTrialToolVisible(name, conversationId) {
+  return !CALL_TRIAL_TOOLS.has(name) || callTrial.trialOffered(conversationId);
+}
+
 export const CARD_TOOLS = new Set(["action_card_source", "action_card_forget"]);
 export function cardsToolVisible(name, conversationId) {
   return !CARD_TOOLS.has(name) || actioncards.allowedFor(conversationId);
@@ -4545,6 +4556,7 @@ export const tools = [
   ...SHOP_TOOL_DEFS,
   ...ACCOUNT_JOB_TOOL_DEFS,
   ...FOOD_TOOL_DEFS,
+  ...PLAID_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
   // Thinking a step ahead when a trip, a move, a birthday comes up (src/cues.js), behind REASON_CUES.
   ...CUE_TOOL_DEFS,
@@ -5056,6 +5068,18 @@ export const tools = [
         stop_value: { type: "string", description: "The name, address, word or phrase, as they said it." },
         their_words: { type: "string", description: "Their sentence, word for word, when a standing rule is being set." },
       },
+    },
+  },
+  {
+    name: "call_voice_trial",
+    description: "Which voice Reason uses on their own phone calls with you. 'Try the Cartesia voice on my calls' is on; 'go back to my usual call voice' is off; 'which voice are my calls on?' is status."
+      + " Only their own calls with you change; calls to businesses or other people never do. Say back in one short line which voice their next call will use.",
+    input_schema: {
+      type: "object",
+      properties: {
+        choice: { type: "string", enum: ["on", "off", "status"], description: "on: the Cartesia voice on their own calls; off: the usual call voice; status: just say which." },
+      },
+      required: ["choice"],
     },
   },
   {
@@ -7163,6 +7187,7 @@ const S = {
   ...SHOP_SCHEMAS,
   ...ACCOUNT_JOB_SCHEMAS,
   ...FOOD_SCHEMAS,
+  ...PLAID_SCHEMAS,
   ...TODO_SCHEMAS,
   ...CUE_SCHEMAS,
   invites_list: z.object({}),
@@ -7342,6 +7367,7 @@ const S = {
     stop_value: z.string().max(120).optional(),
     their_words: z.string().max(500).optional(),
   }),
+  call_voice_trial: z.object({ choice: z.enum(["on", "off", "status"]) }),
   time_zone: z.object({ zone: z.string().min(1).max(64), their_words: z.string().min(1).max(500) }),
   call_hours_set: z.object({ hours: z.string().min(1).max(40), said: z.string().min(1).max(300) }),
   notice_settings: z.object({
@@ -9944,7 +9970,15 @@ async function runToolInner(name, rawInput, ctx) {
     }
   }
 
-  const out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
+  let out;
+  try {
+    out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
+  } catch (e) {
+    // A sign-in holds their saved profile (src/browser.js holdProfile): every browser tool gets the
+    // same fixed answer, nothing was opened or read, and a yes for the step is not spent.
+    if (e instanceof browser.ProfileBusy) return { ...browser.BUSY };
+    throw e;
+  }
 
   // Held, not done: the handler got all the way to the irreversible step, refused nothing, and
   // parked it for its undo window instead (parkHeld). Straight back, with none of what follows —
@@ -12439,6 +12473,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         })),
       });
 
+    // ---------- their bank, read-only (src/plaid.js, REASON_PLAID) ----------
+    case "bank":
+      return await runPlaidTool(name, input, { conversationId: c });
+
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
 
@@ -14187,6 +14225,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let url = String(input.url ?? "").trim();
       let via = "fetch";
       if (input.from_browser) {
+        if (browser.profileBusy(c)) return { ...browser.BUSY };
         const page = browser.openPage(c);
         if (!page) return { ok: false, error: "No page is open in the browser. Open the product page with browser_open first, or pass its url." };
         try { html = await page.content(); url = await browser.pageUrl(page); via = "browser"; }
@@ -14294,6 +14333,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         say: input.show_source && src.open_with
           ? "Open it now with the tool named in open_with and say what is there. Still never read a subject line or an address back as where the card came from."
           : `Say only: "${src.from}". No subject line, no address, no company unless the card already names it.`,
+      };
+    }
+    case "call_voice_trial": {
+      if (!callTrial.trialOffered(c)) return { ok: false, error: "There is no call voice choice on this account." };
+      const choice = String(input.choice ?? "status");
+      if (choice === "on") db.setCallTrial(c, "cartesia");
+      else if (choice === "off") db.setCallTrial(c, "");
+      else if (choice !== "status") return { ok: false, error: "choice is on, off or status." };
+      const now = db.callTrial(c) === "cartesia" ? "cartesia" : "usual";
+      const ready = !!(config.cartesiaKey && config.cartesiaAgentId);
+      return {
+        ok: true, voice: now,
+        say: now === "cartesia"
+          ? (ready ? "Say their next call with you will be in the Cartesia voice, and it drops back to the usual voice by itself if Cartesia has trouble." : "Say it is set, but the Cartesia voice is not connected on this server yet, so their calls stay on the usual voice for now.")
+          : "Say their calls with you are on the usual voice.",
       };
     }
     case "action_card_forget": {
