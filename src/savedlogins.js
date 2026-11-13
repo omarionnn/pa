@@ -23,6 +23,7 @@ import { db as reasonDb, recordAction } from "./db.js";
 import * as restcrypt from "./restcrypt.js";
 import * as vaultkms from "./vaultkms.js";
 import { Secret, wipeAll } from "./secret.js";
+import { classifySite, refusalFor } from "./sitepolicy.js";
 
 // ---------------------------------------------------------------- the switch
 export function savedLoginsMode() {
@@ -58,12 +59,9 @@ export class VaultError extends Error {
 }
 
 // ---------------------------------------------------------------- the never list (vault PR 4)
-// classifySite(hostOrUrl) -> { policy: "never" | "careful" | "allowed", category, reason, ... } lives in
-// src/sitepolicy.js (vault PR 4, not merged yet). Until it is, the policy is handed in; with none,
-// nothing can be saved. Once PR 4 merges: import { classifySite, refusalFor } from "./sitepolicy.js"
-// here, use refusalFor(category, label) for `why`, and drop useSitePolicy.
-let sitePolicy = null;
-export function useSitePolicy(p) { sitePolicy = p; }
+// classifySite(hostOrUrl) -> { policy: "never" | "careful" | "allowed", category, ... } from
+// src/sitepolicy.js: code decides, with no override and nothing handed in. A never site refuses with
+// refusalFor's fixed words; a careful one never gets a standing permission.
 
 // ---------------------------------------------------------------- the file
 export function loginsDbPath() {
@@ -191,10 +189,7 @@ function hintOf(u) {
   return `${first}…${charAt(u, i)}`;
 }
 
-function siteVerdict(hostOrUrl) {
-  if (!sitePolicy?.classifySite) throw new VaultError("no_site_policy");
-  return sitePolicy.classifySite(hostOrUrl) ?? {};
-}
+const siteVerdict = (hostOrUrl) => classifySite(hostOrUrl) ?? {};
 
 // ---------------------------------------------------------------- the person's record (hard rule 5)
 // Every save, open and removal writes one login_log row (reason.db, `purpose` sealed under the
@@ -268,7 +263,7 @@ export async function saveLogin(conversationId, meta, fields) {
 
     // Hard rule 3: the never list refuses, and says why; a careful site never gets a standing permission.
     for (const v of [siteVerdict(site), siteVerdict(origin)]) {
-      if (v.policy === "never") throw new VaultError("never_site", { why: String(v.reason ?? "") });
+      if (v.policy === "never") throw new VaultError("never_site", { why: refusalFor(v.category, m.label) });
       if (v.policy === "careful" && m.permission === "standing") throw new VaultError("careful_needs_each_time");
       if (!["careful", "allowed"].includes(v.policy)) throw new VaultError("no_site_policy");
     }

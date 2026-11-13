@@ -102,7 +102,8 @@ after(() => kms.close());
 process.env.REASON_REST_KMS_HOST = kms.host;
 
 const sl = await import("../src/savedlogins.js");
-const { saveLogin, listLogins, removeLogin, withLogin, savedLoginsAllowedFor, savedLoginsMode, vaultReady, useSitePolicy, loginsDbPath } = sl;
+const { saveLogin, listLogins, removeLogin, withLogin, savedLoginsAllowedFor, savedLoginsMode, vaultReady, loginsDbPath } = sl;
+const { classifySite, refusalFor } = await import("../src/sitepolicy.js");
 
 // ---------------------------------------------------------------- fixtures (made up, nobody's)
 const ME = "dm:owner";      // the operator's thread with no account row (src/accounts.js ownerOf)
@@ -113,14 +114,6 @@ const S = s => new Secret(Buffer.from(s, "utf8"));
 const fields = (p = PLAIN) => ({ username: S(p.username), password: S(p.password), totp: p.totp ? S(p.totp) : null });
 const meta = (over = {}) => ({ site: "example.test", label: "Example", signinOrigin: ORIGIN, signinPath: "/signin", permission: "standing",
   consentVersion: "saved-login-v1", consentAt: Date.now(), consentCredential: "standin-passkey-credential-1", ...over });
-const policy = {
-  classifySite(hostOrUrl) {
-    const host = String(hostOrUrl).replace(/^[a-z]+:\/\//, "").split(/[/:?#]/)[0];
-    if (host === "bank.test" || host.endsWith(".bank.test")) return { policy: "never", category: "bank", reason: "A bank login is on the never list." };
-    if (host === "shop.test" || host.endsWith(".shop.test")) return { policy: "careful", category: "shopping", reason: "" };
-    return { policy: "allowed", category: "unknown", reason: "" };
-  },
-};
 const fileBytes = () => {
   const p = loginsDbPath();
   return Buffer.concat([p, `${p}-journal`, `${p}-wal`].filter(f => existsSync(f)).map(f => readFileSync(f)));
@@ -195,16 +188,21 @@ test("switch on with no KMS: one log line, the vault refuses every call; owner m
 });
 
 // ---------------------------------------------------------------- hard rule 3 (stub until vault PR 4)
-test("rule 3: with no site policy nothing is saved; a never site refuses and says why; careful means each time", async () => {
-  await assert.rejects(saveLogin(ME, meta(), fields()), { code: "no_site_policy" });
-  useSitePolicy(policy);
+test("rule 3: the real never list (src/sitepolicy.js) refuses a never site and says why; careful means each time", async () => {
+  // Real hosts from PR 4's reviewed list; the stand-in KMS is the only thing ever asked, nothing is fetched.
+  assert.equal(classifySite("chase.com").policy, "never");
+  assert.equal(classifySite("https://www.amazon.com").policy, "careful");
+  assert.equal(classifySite("example.test").policy, "allowed");
+  assert.match(readFileSync(new URL("../src/savedlogins.js", import.meta.url), "utf8"), /import \{ classifySite, refusalFor \} from "\.\/sitepolicy\.js";/, "code decides: nothing handed in");
   const f = fields();
-  await assert.rejects(saveLogin(ME, meta({ site: "bank.test", signinOrigin: "https://secure.bank.test" }), f),
-    e => e.code === "never_site" && e.why === "A bank login is on the never list.");
+  await assert.rejects(saveLogin(ME, meta({ site: "chase.com", label: "Chase", signinOrigin: "https://secure.chase.com" }), f),
+    e => e.code === "never_site" && e.why === refusalFor("bank", "Chase") && e.why.length > 10);
   assert.ok(!f.username.live && !f.password.live && !f.totp.live, "handed-in secrets are wiped on a refusal too");
-  await assert.rejects(saveLogin(ME, meta({ site: "shop.test", signinOrigin: "https://www.shop.test" }), fields()), { code: "careful_needs_each_time" });
+  await assert.rejects(saveLogin(ME, meta({ site: "chase.com", label: "Chase", signinOrigin: "https://secure.chase.com", permission: "each_time" }), fields()),
+    { code: "never_site" }, "never is never, whatever the permission");
+  await assert.rejects(saveLogin(ME, meta({ site: "amazon.com", signinOrigin: "https://www.amazon.com" }), fields()), { code: "careful_needs_each_time" });
   assert.equal(kms.count("GenerateDataKey"), 0, "refused before any key was made");
-  const ok = await saveLogin(ME, meta({ site: "shop.test", label: "Shop", signinOrigin: "https://www.shop.test", permission: "each_time" }), fields());
+  const ok = await saveLogin(ME, meta({ site: "amazon.com", label: "Amazon", signinOrigin: "https://www.amazon.com", permission: "each_time" }), fields());
   assert.equal(ok.state, "unverified");
   assert.equal(kms.count("GenerateDataKey", true), 1);
   assert.ok(removeLogin(ME, ok.id));
@@ -350,7 +348,6 @@ test("rule 2: only src/filler.js may import withLogin; tools, the nightly review
     if (f !== "src/savedlogins.js" && /["'`][^"'`]*vaultkms(\.js)?["'`]/.test(t)) bad.push(`${f}: imports vaultkms.js`);
     if (f !== "src/filler.js" && (/import\s*\*\s*as\s+\w+\s+from\s*["'][^"']*savedlogins\.js["']/.test(t) || /export\s*\*[^;]*from\s*["'][^"']*savedlogins\.js["']/.test(t)
       || /import\s*\(\s*["'`][^"'`]*savedlogins/.test(t) || /require\s*\(\s*["'`][^"'`]*savedlogins/.test(t))) bad.push(`${f}: takes the whole of savedlogins.js`);
-    if (f !== "src/savedlogins.js" && /\buseSitePolicy\b/.test(t)) bad.push(`${f}: swaps the site policy`);
   }
   for (const f of ["src/tools.js", "src/dream.js", "src/recallindex.js", "src/memory.js", "src/memorynote.js"]) {
     const t = readFileSync(join(root, f), "utf8");
