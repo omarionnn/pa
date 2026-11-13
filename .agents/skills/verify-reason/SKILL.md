@@ -227,6 +227,11 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    process. The process now writes what it holds to `data/busy.json` (src/busy.js, its own pid; kind +
    site + a one-way id, nothing personal), and idle.sh reads it — or, on code from before it, the
    running pid's journal. A `shop_runs` row `running` touched in the last 30 minutes is busy too.
+   So is a timer: a try claimed and not finished (`attempts` > 0, `fired_at` and `cancelled_at`
+   NULL), or one not tried yet that is due within 60 s or due and not picked up. On 2026-11-12 at
+   22:26 ET a restart that passed the gate cut timer 537 mid-turn (retried, out 44 s late). Anything
+   about a timer older than 10 minutes is ignored (a turn gets 5 on the CLI; `sweepStuckMs` is 10),
+   so a dead process's claim or a held timer cannot keep a deploy waiting for ever.
    **Every deploy kit restarts through `/root/reason-restart.sh`** (scripts/safe-restart.sh; it runs
    `/root/reason-idle.sh` = this idle.sh with `REASON_LIVE_SSH=local`, waits up to 20 min, restarts,
    checks health). Never `systemctl restart reason` by hand in a deploy; `--force` is for a rollback

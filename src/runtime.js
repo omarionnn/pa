@@ -46,6 +46,7 @@ import { sheetView, tasteView, whyView } from "./sheet.js";
 import * as harm from "./harm.js";
 import { isPaused } from "./pause.js";
 import * as plan from "./plan.js";
+import * as plaid from "./plaid.js";
 import * as landed from "./landed.js";
 import * as subs from "./subscriptions.js";
 import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
@@ -799,7 +800,8 @@ export class Runtime extends EventEmitter {
           await heldBack({ why: "silent_reply" });
         } else {
           // Only a reply that went out is something to learn from (see the event-log write above).
-          if (aEvId && out?.ok !== false) {
+          // Not a reply that answered from their bank (src/plaid.js): those numbers are not memory.
+          if (aEvId && out?.ok !== false && !plaid.financeReply(conversationId)) {
             try { db.enqueueExtraction(conversationId, aEvId); } catch { /* best-effort */ }
           }
           // Anything new the model said it mentioned is written down HERE, after the send, and only

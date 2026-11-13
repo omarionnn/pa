@@ -1,0 +1,17 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/transactions/recurring/get",
+  "status": 400,
+  "request": {
+    "access_token": "access-sandbox-PLACEHOLDER-1"
+  },
+  "response": {
+    "display_message": null,
+    "documentation_url": "https://plaid.com/docs/errors/item/#product_not_ready",
+    "error_code": "PRODUCT_NOT_READY",
+    "error_message": "the requested product is not yet ready. please provide a webhook or try the request again later",
+    "error_type": "ITEM_ERROR",
+    "request_id": "REQUEST_ID",
+    "suggested_action": null
+  }
+}

@@ -31,7 +31,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 
 const data = await import("../src/data.js");
 // Every module that makes its own tables, so the database here has all of them.
-for (const m of ["actioncards", "actionengine", "connectafter", "daily", "eventpay", "passkey", "plan", "saved", "shipping", "shopconnect", "socialsignin", "spendcap", "stamps", "strangercalls", "ownfiles", "tooldiet", "websetupstore", "verifications"]) {
+for (const m of ["plaid", "actioncards", "actionengine", "connectafter", "daily", "eventpay", "passkey", "plan", "saved", "shipping", "shopconnect", "socialsignin", "spendcap", "stamps", "strangercalls", "ownfiles", "tooldiet", "websetupstore", "verifications"]) {
   await import(`../src/${m}.js`);
 }
 const db = await import("../src/db.js");
