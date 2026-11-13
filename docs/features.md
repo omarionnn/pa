@@ -595,7 +595,10 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
     most one retry on its own, and only when the link would open a different page; the retry is
     counted per run of endings (an hour apart starts over). A sign-in the person asks for
     themselves (`signin_link` or `signin_email` in their own turn) starts the count over, so the
-    hand-off link of an attempt they asked for is never refused over an older ending.
+    hand-off link of an attempt they asked for is never refused over an older ending. An ending is
+    kept against both the page the link named and the page its sign-in form was shown on (a link
+    that opened a home page and went through the site's own "Log in" link): a next link to either
+    is the same page again.
   - *"Signed in" needs positive evidence on a site with no playbook*: a log-out or account control
     in the document, or the site's own sign-in page passing the browser straight on to an inside
     page. An absent "Sign in" is not proof: the answer is then "unknown", said as "I can't tell",
