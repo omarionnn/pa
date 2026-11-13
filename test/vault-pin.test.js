@@ -67,10 +67,12 @@ const EMAIL_STEP = (action, script = "") => page("Sign in", `<h1>Sign in</h1><fo
   <label>Email <input type="email" name="email" autocomplete="username"></label><button type="submit">Continue</button></form>${script}`);
 const PASSWORD_STEP = (action, ac = "current-password") => page("Enter your password", `<h1>Enter your password</h1><form method="post" action="${action}">
   <label>Password <input type="password" name="password" autocomplete="${ac}"></label><button type="submit">Sign in</button></form>`);
+const WALL = page("Just a moment...", "<h1>Performing security verification</h1><p>This website uses a security service to protect against malicious bots.</p>");
 const WELCOME = page("Your account", `<h1>Who's watching?</h1><a href="/logout">Sign out</a>`);
 
 const posted = []; // { host, path, field } for every POST carrying a username or a password
 const gets = []; // host + path of every other request the fixture servers answered
+const bare = []; // a front-door fixture's sign-in page loaded without the parameters its own link carries
 const CHALLENGE_FRAME = `<iframe src="https://captcha-host.test/recaptcha/api2/bframe?k=x" title="recaptcha challenge expires in two minutes" width="400" height="580"></iframe>`;
 function handler(scheme) {
   return (req, res) => {
@@ -160,6 +162,24 @@ function handler(scheme) {
       // A visible picture challenge on the sign-in page itself, and one after the submit.
       "capshow.test": { "/login": () => send(200, FORM("/login").replace("</form>", `</form>${CHALLENGE_FRAME}`)) },
       "capafter.test": { "/login": () => send(200, FORM("/login")) },
+      // The front door (2026-11-13, DoorDash): an identity page that walls a bare load and draws its form
+      // only when reached through the home page's own Sign In link, which carries per-visit parameters.
+      "fd.test": { "/": () => send(200, HOME("https://id.fd.test/auth?client_id=web&state=s1&redirect_uri=https%3A%2F%2Ffd.test%2F")) },
+      "id.fd.test": { "/auth": () => (u.searchParams.has("client_id") ? send(200, FORM("/auth")) : (bare.push(site), send(403, WALL))) },
+      // The same, but a bare load is sent back to the home page instead of walled.
+      "fdmove.test": { "/": () => send(200, HOME("/auth?client_id=web")), "/auth": () => (u.searchParams.has("client_id") ? send(200, FORM("/auth")) : (bare.push(site), redirect("/"))) },
+      // A lookalike Sign In link on another site, an on-site open redirect off the site, and a link to
+      // another path of the identity host: nothing is typed anywhere.
+      "fdlook.test": { "/": () => send(200, HOME("https://id.fdlook.test.evil.test/auth?client_id=web")) },
+      "id.fdlook.test": { "/auth": () => send(403, WALL) },
+      "id.fdlook.test.evil.test": { "/auth": () => send(200, FORM("/steal")) },
+      "fdredir.test": { "/": () => send(200, HOME("/go?to=https://evil.test/auth")), "/go": () => redirect(u.searchParams.get("to")), "/auth": () => send(403, WALL) },
+      "fdpath.test": { "/": () => send(200, HOME("https://id.fdpath.test/login?client_id=web")) },
+      "id.fdpath.test": { "/auth": () => send(403, WALL), "/login": () => send(200, FORM("/login")) },
+      // A walled home page as well as a walled sign-in page.
+      "fdwall.test": { "/": () => send(403, WALL) },
+      "id.fdwall.test": { "/auth": () => send(403, WALL) },
+      "fdwall2.test": { "/": () => send(403, WALL), "/auth": () => send(403, WALL) },
     });
     const fn = routes[site]?.[u.pathname];
     return fn ? fn() : send(404, "<p>not found</p>");
@@ -393,4 +413,55 @@ test("review: the lock still refuses a top-level page on another origin while a 
     await p.waitForTimeout(500);
     assert.notEqual(new URL(p.url()).hostname, "evil.test", "still not on the other origin");
   } finally { browser.unpinSite("dm:lock-probe"); await s.close(); }
+});
+
+// ---------------------------------------------------------------- the front door (2026-11-13, DoorDash)
+test("front door: a sign-in page on its own host is reached through the home page's own Sign In link FIRST (the bare page never loaded); one on the site's host is opened directly and walks the front door once when sent away", skip, async () => {
+  // fdmove.test's bare page sends the browser to its home page by itself, so that page is seen twice.
+  for (const [site, url, bareLoads, homes] of [["fd.test", "https://id.fd.test/auth", 0, 1], ["fdmove.test", "https://fdmove.test/auth", 1, 2]]) {
+    posted.length = 0; gets.length = 0; bare.length = 0;
+    await save(site, url);
+    const out = await signIn(site);
+    assert.equal(out.result, "signed_in", `${site}: ${out.say_exactly}`);
+    assert.equal(gets.filter(g => g === `${site}/`).length, homes, `${site}: home page loads`);
+    assert.equal(bare.length, bareLoads, `${site}: bare loads of the pinned page`);
+    assert.deepEqual(passwordsTo().map(p => `${p.host}${p.path}`), [`${new URL(url).host}/auth`], `${site}: only the pinned page's form carried it`);
+  }
+});
+
+test("front door: a lookalike Sign In link, an open redirect off the site, a link to another path: nothing typed anywhere", skip, async () => {
+  for (const [site, url] of [["fdlook.test", "https://id.fdlook.test/auth"], ["fdredir.test", "https://fdredir.test/auth"], ["fdpath.test", "https://id.fdpath.test/auth"]]) {
+    posted.length = 0; gets.length = 0;
+    await save(site, url);
+    const out = await signIn(site);
+    assert.notEqual(out.result, "signed_in", site);
+    assert.deepEqual(posted, [], `${site}: nothing typed or posted anywhere`);
+    // A lookalike link off the site is never followed. A same-site open redirect can still carry the
+    // tab off the site (the lock sees the first request of a navigation, not a server's redirect: the
+    // same gap as any direct load); it is never typed into, the exact-origin check above stops it.
+    if (site !== "fdredir.test") assert.equal(gets.some(g => g.startsWith("evil.test") || g.includes(".evil.test")), false, `${site}: no page of another site was opened`);
+  }
+});
+
+test("front door: a wall stops as blocked, in honest words, with no offer to try again, and is not retried (own host: the walled home page, the bare page never tried after it; site host: the walled pinned page, the front door never walked after it)", skip, async () => {
+  for (const [site, url, bareLoads, homes] of [["fdwall.test", "https://id.fdwall.test/auth", 0, 1], ["fdwall2.test", "https://fdwall2.test/auth", 1, 0]]) {
+    posted.length = 0; gets.length = 0;
+    await save(site, url);
+    const out = await signIn(site);
+    assert.equal(out.result, "blocked", out.say_exactly);
+    assert.match(out.say_exactly, /turned my browser away/);
+    assert.doesNotMatch(out.say_exactly, /try again\?|want me to/i);
+    assert.equal(gets.filter(g => g === `${site}/`).length, homes, `${site}: the front door at most once, never after a wall`);
+    assert.equal(gets.filter(g => g === `${new URL(url).host}/auth`).length, bareLoads, `${site}: loads of the bare sign-in page`);
+    assert.deepEqual(posted, []);
+    assert.equal((await signIn(site)).result, "paused", `${site}: one refusal stops`);
+  }
+});
+
+test("front door: the normal direct case is unchanged (the pinned page has its form; the home page is never opened)", skip, async () => {
+  posted.length = 0; gets.length = 0;
+  await save("acme.test", "https://acme.test/login");
+  const out = await signIn("acme.test");
+  assert.equal(out.result, "signed_in", out.say_exactly);
+  assert.deepEqual(gets.filter(g => g.startsWith("acme.test")), ["acme.test/login"], "one load, the pinned page");
 });
