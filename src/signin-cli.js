@@ -21,7 +21,7 @@ import { config, stamp } from "./config.js";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
-import { profileDirFor, guardContext } from "./browser.js";
+import { profileDirFor, guardContext, launchOptions, withProfile } from "./browser.js";
 import { SITES, siteNames } from "./sites.js";
 // Both registries: the errand sites and the services whose subscriptions cancel on the web. The
 // window this command opens is the same window either way — the person signs in themselves and the
@@ -69,22 +69,34 @@ function printList(conversationId) {
   console.log(`\nNo password is ever typed into Reason, here or in a message. You sign in yourself in the window.`);
 }
 
+// Each launch below holds the profile while its browser is open (src/browser.js withProfile) and
+// opens with `launchOptions`: the flow's own setting, or the one stable setting where
+// REASON_STABLE_BROWSER reaches the operator. Run from a text, the server holds it for the whole
+// window's process too (src/signin-window.js).
+const HOLDER = "signin_cli";
+
 async function headlessProbe(conversationId, siteName, { provider = "" } = {}) {
-  const launcher = await chromium();
-  const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), {
-    headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
+  return withProfile(conversationId, HOLDER, async () => {
+    const launcher = await chromium();
+    const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), launchOptions(conversationId, {
+      headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
+    }));
+    await guardContext(ctx);
+    try {
+      const page = ctx.pages()[0] ?? await ctx.newPage();
+      page.setDefaultTimeout(config.browserTimeoutMs);
+      return await signin.checkAndRecord(page, conversationId, siteName, { provider });
+    } finally {
+      await ctx.close().catch(() => {});
+    }
   });
-  await guardContext(ctx);
-  try {
-    const page = ctx.pages()[0] ?? await ctx.newPage();
-    page.setDefaultTimeout(config.browserTimeoutMs);
-    return await signin.checkAndRecord(page, conversationId, siteName, { provider });
-  } finally {
-    await ctx.close().catch(() => {});
-  }
 }
 
 async function openForSignin(conversationId, entry, { provider = "" } = {}) {
+  return withProfile(conversationId, HOLDER, () => windowFor(conversationId, entry, { provider }));
+}
+
+async function windowFor(conversationId, entry, { provider = "" } = {}) {
   const launcher = await chromium();
   const dir = profileDirFor(conversationId);
   console.log(`Opening ${entry.label} in a window. Profile: ${dir}`);
@@ -93,7 +105,7 @@ async function openForSignin(conversationId, entry, { provider = "" } = {}) {
 
   let ctx;
   try {
-    ctx = await launcher.launchPersistentContext(dir, { headless: false, ...LAUNCH });
+    ctx = await launcher.launchPersistentContext(dir, launchOptions(conversationId, { headless: false, ...LAUNCH }));
   } catch (e) {
     if (/Executable doesn't exist|browserType.launch/i.test(e.message)) {
       fail("Chromium is not downloaded on this machine. Run: npx playwright install chromium");
@@ -162,12 +174,17 @@ const forget = flagValue("--forget");
 if (args.includes("--forget")) {
   const entry = findSite(forget);
   if (!entry) fail(`--forget needs a site. Known: ${allNames().join(", ")}`);
-  const launcher = await chromium();
-  const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), {
-    headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
+  const out = await withProfile(conversationId, HOLDER, async () => {
+    const launcher = await chromium();
+    const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), launchOptions(conversationId, {
+      headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
+    }));
+    try {
+      return await signin.forgetSite(ctx, conversationId, entry.site);
+    } finally {
+      await ctx.close().catch(() => {});
+    }
   });
-  const out = await signin.forgetSite(ctx, conversationId, entry.site);
-  await ctx.close().catch(() => {});
   console.log(`Forgot ${entry.label}.`);
   console.log(`  cookies cleared for: ${out.cleared_cookies_for?.join(", ") || "nothing"}`);
   if (out.cleared_storage_for?.length) console.log(`  local storage cleared for: ${out.cleared_storage_for.join(", ")}`);
