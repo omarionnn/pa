@@ -453,6 +453,16 @@ test("rule 4: a refused or paused row, or one before next_try_at, is not opened 
   assert.equal(listLogins(ME)[0].state, "working");
 });
 
+test("the same site twice: the same label is refused (any case, any origin), a different label is a second account", async () => {
+  await assert.rejects(saveLogin(ME, meta(), fields()), { code: "exists" });
+  await assert.rejects(saveLogin(ME, meta({ label: "EXAMPLE" }), fields()), { code: "exists" });
+  await assert.rejects(saveLogin(ME, meta({ signinOrigin: "https://www.example.test" }), fields()), { code: "exists" });
+  const second = await saveLogin(ME, meta({ label: "Example (work)" }), fields({ ...PLAIN, username: "vault-tester-work@example.test" }));
+  assert.deepEqual(listLogins(ME).map(r => r.label).sort(), ["Example", "Example (work)"]);
+  await saveLogin(OTHER, meta(), fields()).then(r => assert.ok(removeLogin(OTHER, r.id)), () => assert.fail("another person may save the same site and label"));
+  assert.ok(removeLogin(ME, second.id));
+});
+
 // ---------------------------------------------------------------- rule 6, the part in this slice
 test("removeLogin deletes the row and its wrapped key from the file's bytes; only the owner can remove it", async () => {
   await assert.rejects(saveLogin(ME, meta(), fields()), { code: "exists" });
@@ -494,7 +504,7 @@ test("rule 5: withLogin, removeLogin and deleteAllFor each write one login_log r
   });
   await step("remove", () => assert.equal(removeLogin(P, id), true));
   await saveLogin(P, meta(), fields());
-  await saveLogin(P, meta({ signinOrigin: SECOND }), fields());
+  await saveLogin(P, meta({ signinOrigin: SECOND, label: "Example 2" }), fields());
   await step("delete all", () => assert.equal(sl.deleteAllFor(P), 2));
   assert.equal(sl.deleteAllFor(P), 0, "nothing left: no second record");
   assert.throws(() => sl.deleteAllFor(""), { code: "bad_input" }, "never everyone by accident");
@@ -526,7 +536,7 @@ test("rule 6: deleteData leaves no row for the person, in logins.db or reason.db
   const Q = "dm:vault-delete";
   const keep = await saveLogin(OTHER, meta(), fields());
   const a = await saveLogin(Q, meta(), fields());
-  const b = await saveLogin(Q, meta({ signinOrigin: SECOND, permission: "each_time" }), fields());
+  const b = await saveLogin(Q, meta({ signinOrigin: SECOND, label: "Example 2", permission: "each_time" }), fields());
   await withLogin(Q, a.id, ORIGIN, () => "ok", { purpose: "sign in for them" });
   const gone = [rowOf(a.id), rowOf(b.id)];
   const data = await import("../src/data.js");

@@ -70,7 +70,8 @@ export function loginsDbPath() {
   return join(dirname(config.dbPath), "logins.db");
 }
 
-const SCHEMA = `
+/** The DDL of data/logins.db (exported for test/data-coverage.test.js, which builds the file from it). */
+export const LOGINS_SCHEMA = `
   PRAGMA busy_timeout = 5000;
   PRAGMA journal_mode = DELETE; -- no WAL: a removed login must not linger in a -wal file
   PRAGMA secure_delete = ON;    -- a deleted row is zeroed in the file, not just unlinked
@@ -103,9 +104,20 @@ const SCHEMA = `
     last_used_at INTEGER,
     unused_warned_at INTEGER,
     created_at INTEGER NOT NULL,
-    UNIQUE (conversation_id, site, signin_origin)
+    UNIQUE (conversation_id, site, label COLLATE NOCASE) -- a second account on a site needs its own name
   );
 `;
+
+/**
+ * Every table in data/logins.db, by what an export and a delete do with it, as src/data.js COVERAGE does
+ * for reason.db. test/data-coverage.test.js builds the file and holds every table to being listed here,
+ * read by exportFor or kept out of an export with a reason, and deleted by deleteAllFor and deleteEveryLogin.
+ */
+export const LOGINS_COVERAGE = {
+  exported: ["saved_logins"],   // exportFor: sites, hints, dates, permission, state; never the login (data.js REDACTED)
+  notExported: { vault_people: "a random handle that goes into the KMS context; it holds nothing of the person" },
+  deleted: ["saved_logins", "vault_people"],
+};
 
 // Opened on first use, not at load: loading this module with the switch off must not create the file.
 let ldb = null, ldbPath = null;
@@ -119,7 +131,7 @@ function open({ create }) {
     mkdirSync(dirname(p), { recursive: true });
   }
   const d = new DatabaseSync(p);
-  d.exec(SCHEMA);
+  d.exec(LOGINS_SCHEMA);
   if (onDisk) chmodSync(p, 0o600);
   ldb = d; ldbPath = p;
   return d;
@@ -269,7 +281,7 @@ export async function saveLogin(conversationId, meta, fields) {
     }
 
     const d = open({ create: true });
-    if (d.prepare("SELECT 1 FROM saved_logins WHERE conversation_id = ? AND site = ? AND signin_origin = ?").get(c, site, origin)) throw new VaultError("exists");
+    if (d.prepare("SELECT 1 FROM saved_logins WHERE conversation_id = ? AND site = ? AND label = ? COLLATE NOCASE").get(c, site, String(m.label))) throw new VaultError("exists");
     const person = handleFor(d, c, true);
     const id = randomBytes(6).readUIntBE(0, 6); // random, never a counter (src/restcrypt.js newKeyRow)
 
