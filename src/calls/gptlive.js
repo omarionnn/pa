@@ -27,12 +27,14 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as plan from "../plan.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS } from "./voice.js";
+import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS, queueMidCall } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
 import * as carryover from "./carryover.js";
 import * as turngate from "./turngate.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
+import * as calltrust from "./calltrust.js";
+import { callTrustMode } from "../callpass.js";
 import * as fromcall from "./fromcall.js";
 import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voice-prompt.js";
 import * as hold from "./hold.js";
@@ -159,7 +161,7 @@ export function whoFor(call) {
  */
 export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1, turnGate = true } = {}) {
   const who = turnGate ? whoFor(call) : { ...whoFor(call), turnGate: "" };
-  if (!line) return liveInstructions(who);
+  if (!line) return [liveInstructions(who), calltrust.voiceLines(call)].filter(Boolean).join("\n");
   // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
   if (config.lineTalk && call?.direction !== "in") {
     const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
@@ -582,10 +584,11 @@ export function lineAnnouncement() {
 export const ACK_DELAY_MS = 800;
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false, carry = false, turnGate = "" } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false, carry = false, turnGate = "", also = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered, carry, turnGate }),
+    // `also`: lines for this call only (REASON_CALL_TRUST's passphrase rule, ./calltrust.js); empty, nothing changes.
+    instructions: [instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered, carry, turnGate }), also].filter(Boolean).join("\n"),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     // Room to cancel the voice's automatic "one moment" before it is generated: a line call never has
     // one, and on every other call code decides whether a wait gets a line at all (call 79, `holdLine`).
@@ -948,7 +951,12 @@ export { ulawToPcm, pcmToUlaw };
  * sent, and a `clear` (barge-in, guard) cuts what Twilio never played.
  */
 export class CallTape {
-  constructor() { this.caller = []; this.callerBytes = 0; this.segs = []; this.reasonEnd = 0; this.limit = Infinity; }
+  constructor() { this.caller = []; this.callerBytes = 0; this.segs = []; this.reasonEnd = 0; this.limit = Infinity; this.blanks = []; }
+  /** Their side is silence from byte `from` to `to` of the caller's clock (a call passphrase, ./calltrust.js). */
+  blank(from, to = this.callerBytes) {
+    const a = Math.max(0, Math.round(Number(from) || 0)), b = Math.max(a, Math.round(Number(to) || 0));
+    if (b > a) this.blanks.push([a, b]);
+  }
   them(buf) { if (this.callerBytes < this.limit) this.caller.push(buf); this.callerBytes += buf.length; }
   reason(buf) {
     const at = Math.max(this.reasonEnd, this.callerBytes);
@@ -987,6 +995,7 @@ export class CallTape {
     const pcm = new Int16Array(n);
     let i = 0;
     for (const b of this.caller) for (const u of b) { if (i >= n) break; pcm[i++] = ulawToPcm(u); }
+    for (const [a, b] of this.blanks) pcm.fill(0, Math.min(a, n), Math.min(b, n));
     for (const s of this.segs) {
       for (let k = 0; k < s.buf.length && s.at + k < n; k++) {
         const v = pcm[s.at + k] + ulawToPcm(s.buf[k]);
@@ -1509,6 +1518,12 @@ export class GptLiveCall {
     this.openLive = openLive;
     this.warm = warm;
     this.brain = brain ?? ((messages, hooks = {}) => reasonTurn({ call, messages, log, onTool: hooks.onTool, onContent: hooks.onContent }));
+    // REASON_CALL_TRUST (./calltrust.js): what the caller's next words are for, after Reason's latest answer
+    // (read off the row: a call taken over mid-ask, from Cartesia, is still listening). `earEcho`: the words
+    // just screened, in memory only, so the voice saying them back is not kept either.
+    this.earArmed = calltrust.listening(call);
+    this.earEcho = null;
+    this.earTapeFrom = null;
     // The goodbye read gets a started CLI (kept ready from the first goodbye-ish line on); injected judges don't.
     this.judge = judge ?? ((q) => judgeEnding(q, q.kind === "goodbye" ? { warm: this.takeByeReader() } : {}));
     // The call manner's read of a business objecting to the recording (tests inject one).
@@ -1901,7 +1916,7 @@ export class GptLiveCall {
     const openedAt = this.now();
     this.live.on("open", () => {
       this.log({ gptlive_live_open: this.call.id, ms: this.now() - openedAt });
-      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: this.turnGate?.mode ?? "" }) });
+      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: this.turnGate?.mode ?? "", also: this.line ? "" : calltrust.voiceLines(this.call) }) });
     });
     this.live.on("event", (e) => this.fromLive(e));
     this.live.on("close", (code) => this.liveClosed(code));
@@ -2045,7 +2060,7 @@ export class GptLiveCall {
         } else if (this.turnGate && !this.started && !this.done) {
           this.turnGate = null;
           this.who = { ...this.who, turnGate: "" };
-          this.live.send({ type: "session.start", event_id: `start_${this.call.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: "" }) });
+          this.live.send({ type: "session.start", event_id: `start_${this.call.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: "", also: this.line ? "" : calltrust.voiceLines(this.call) }) });
           this.log({ gptlive_turn_gate_off: this.call.id, why: "start refused" });
         }
         return;
@@ -2188,6 +2203,7 @@ export class GptLiveCall {
    * with the transcript by the retention sweep and gone with the row on a delete. Never logged.
    */
   turnLog() {
+    this.screenTurns();
     const t0 = this.streamStartAt ?? this.startedAt;
     const s = (ms) => Math.round(ms / 100) / 10;
     return this.turns.map(t => {
@@ -2224,11 +2240,15 @@ export class GptLiveCall {
     const pre = this.beforeOpener(t);
     const last = this.turns.at(-1);
     if (pre) { pre.text += pre.text ? delta : delta.trimStart(); pre.at = t; }
-    else if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; if (delta.trim()) last.floored = false; }
+    // A passphrase already screened (./calltrust.js) takes no more words: the rest of it is not kept either.
+    else if (last && last.who === "them" && last.screened && t - last.at < 4000) { last.at = t; }
+    else if (last && last.who === "them" && t - last.at < 4000 && !this.earArmed) { last.text += delta; last.at = t; if (delta.trim()) last.floored = false; }
     else {
       const speechFrom = Math.min(t, this.callerSpeechFrom || t);
       // Where on the tape their words began (the caller's clock, never the wall clock: it stops with the line).
       this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t, speechFrom, tapeAt: Math.max(0, this.tape.callerBytes - (t - speechFrom) * 8) });
+      // REASON_CALL_TRUST: the turn right after Reason asked for a passphrase is code's, screened before use.
+      if (this.earArmed) { this.turns.at(-1).pass = true; this.earArmed = null; }
     }
     if (delta.trim() && !pre) this.armReplyFloor();
     // The call manner: a business told it may be recorded can say no, by meaning (`readObjection`).
@@ -2260,7 +2280,29 @@ export class GptLiveCall {
   }
 
   /** The call so far, as the messages a Reason turn reads: their words as user turns, the voice's as assistant. */
+  /**
+   * REASON_CALL_TRUST (./calltrust.js): a passphrase answer is checked and replaced by a marker before any
+   * of the turns is used, kept or handed to Reason; Reason's set-up read-back loses its first word.
+   */
+  screenTurns() {
+    for (const t of this.turns) {
+      if (t.who === "them" && t.pass && !t.screened && t.text.trim()) {
+        const heard = calltrust.hear(this.call, t.text, { log: this.log });
+        if (heard?.echo) this.earEcho = heard.echo;
+        t.text = heard?.text ?? calltrust.MARKER;
+        t.screened = true;
+        // Their side of the recording is silence from the ask to here (the recording is filed and sent to them).
+        this.tape?.blank?.(this.earTapeFrom ?? t.tapeAt ?? 0, this.tape.callerBytes);
+        this.earTapeFrom = null;
+      } else if (t.who === "reason" && t.text.includes("starting with \"")) t.text = calltrust.scrubSaid(t.text);
+      else if (t.who === "reason" && this.earEcho && !t.seeded) t.text = calltrust.unechoed(t.text, this.earEcho);
+    }
+  }
+  /** A turn's words for a reader (the end and objection judges): a passphrase not yet screened is never shown. */
+  shownText(t) { return t?.pass && !t.screened ? calltrust.MARKER : String(t?.text ?? ""); }
+
   messages() {
+    this.screenTurns();
     const out = [];
     for (const t of this.turns) {
       const text = t.text.replace(/\s+/g, " ").trim();
@@ -2358,6 +2400,9 @@ export class GptLiveCall {
       // more for the voice). A business line keeps whole turns: its words are said exactly.
       const onContent = this.line ? null : (piece) => this.speakPiece(id, turn, piece);
       reply = await this.brain(messages, { onTool, onContent });
+      // Reason asked for a passphrase (or a new one): their next words are for code (./calltrust.js).
+      this.earArmed = calltrust.listening(this.call);
+      if (this.earArmed) this.earTapeFrom = this.tape?.callerBytes ?? null;
     } catch (e) {
       reply = { text: carryover.brokeLine(this.call) || "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
@@ -2676,7 +2721,7 @@ export class GptLiveCall {
     if ([...this.pending.values()].some(p => !p.resultAt) || unheard) return this.armReplyFloor();
     them.floored = true;
     this.live.send({ type: "session.commentary.append", event_id: `reply_${this.call.id}_${t}`, delegation_id: null, content: REPLY_ASK });
-    this.log({ gptlive_reply_floor: this.call.id, ms: t - this.callerSpeechAt, said: said.slice(0, 40) });
+    this.log({ gptlive_reply_floor: this.call.id, ms: t - this.callerSpeechAt, said: this.shownText(them).trim().slice(0, 40) });
   }
 
   /**
@@ -2722,7 +2767,7 @@ export class GptLiveCall {
 
   /** The last lines of the call, as the end readers are shown them. */
   tail(n = 8) {
-    return this.turns.slice(-n).map(x => ({ who: x.who === "them" ? "Them" : "Reason", text: x.text.replace(/\s+/g, " ").trim() }))
+    return this.turns.slice(-n).map(x => ({ who: x.who === "them" ? "Them" : "Reason", text: this.shownText(x).replace(/\s+/g, " ").trim() }))
       .filter(x => x.text).map(x => `${x.who}: ${x.text}`).join("\n");
   }
 
@@ -2838,7 +2883,7 @@ export class GptLiveCall {
     const at = this.endedAt ?? this.now();
     if (!this.farewellAt || at - this.farewellAt > 20_000) return null;
     const late = this.turns.filter(x => x.who === "them" && (x.from ?? x.at) >= this.farewellAt)
-      .map(x => x.text.replace(/\s+/g, " ").trim()).join(" ").replace(/^[\s,.;:—-]+/, "").trim();
+      .map(x => this.shownText(x).replace(/\s+/g, " ").trim()).join(" ").replace(/^[\s,.;:—-]+/, "").trim();
     let cut;
     if (late) cut = (await this.judge({ kind: "cutoff", transcript: this.tail(), late }).catch(() => null)) === true;
     else {
@@ -4302,6 +4347,7 @@ export class GptLiveCall {
       if (!this.tape.stopped && this.objectionUnread()) await this.readObjection({ final: true });
     }
     const seconds = this.seconds || Math.round((this.now() - this.startedAt) / 1000);
+    this.screenTurns();
     const turns = this.turns.map(t => ({ who: t.who, text: t.text.replace(/\s+/g, " ").trim() })).filter(t => t.text);
     let recording = null;
     let recordingWhy = "";
@@ -4390,6 +4436,8 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   // now): the phone rings once more, or — it was the second ring — the one text goes (./carryover.js).
   carryover.afterScheduledCall(read, { log });
   const told = await tellTheOwner({ row: read, live, runtime, log });
+  // A call passphrase set on this call: the one text asking for their typed yes, after the call's own (./calltrust.js).
+  calltrust.afterCall(db.getCall(settled.conversation_id, settled.id) ?? read, { queue: queueMidCall, log });
   db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
   log({ post_call: settled.id, provider: PROVIDER, state: settled.state, recording: settled.recording_state, turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null });
   return settled;
@@ -4767,6 +4815,16 @@ function routeInbound({ params, router, log, away, openLive = openLiveSocket }) 
     direction: "in", externalId: `${EXT}${callSid || randomUUID()}`, state: "in_progress", announcement: "",
   });
   accounts.countUse(who.conversationId, "call");
+  // REASON_CALL_TRUST: how the number arrived, for caller ID's own trust (./calltrust.js callerIdTrusted).
+  // Twilio's ForwardedFrom (a forwarded call) and StirVerstat (the carrier's SHAKEN/STIR result). Off: not read.
+  if (callTrustMode() !== "off") {
+    try {
+      db.updateCall(who.conversationId, row.id, {
+        caller_forwarded: String(params.ForwardedFrom ?? "").slice(0, 40),
+        caller_attest: String(params.StirVerstat ?? "").slice(0, 60),
+      });
+    } catch { /* the call goes ahead; an unknown arrival is not trusted for more than today */ }
+  }
   try { plan.noteCall(who.conversationId); } catch { /* the call goes ahead either way */ }
   recordingNoteFor({ conversationId: who.conversationId, row, log });
   log({ gptlive_inbound: who.conversationId, call: row.id });

@@ -89,6 +89,8 @@ function eventWrite(name, input) {
   if (!REACHES_GUESTS.has(name)) return false;
   return !(EVENT_READS[name]?.(input) ?? false);
 }
+/** An event or album write that reaches guests (for the call-trust levels, ./calltrust.js). */
+export const reachesGuests = (name, input = null) => eventWrite(name, input);
 
 /**
  * What changes the gate itself rather than passing through it: a standing permission skips later yeses,
