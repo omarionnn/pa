@@ -527,6 +527,31 @@ export function pinExact(conversationId, origin = null) {
   if (p) p.exact = origin ? String(origin) : null;
 }
 export function unpinSite(conversationId) { pins.delete(String(conversationId)); }
+
+// ---------------------------------------------------------------- the Continue-with-Google exception
+// Owner decision 2026-11-13 (src/federated.js). One narrow exception to the lock above, for one job:
+// while armed, top-level pages of EXACTLY `origin` (https://accounts.google.com) may load, besides the
+// pinned site. Armed right before the site's own "Continue with Google" is pressed, disarmed when the
+// flow is back on the site. Any other Google property, before, during or after, is refused, and
+// `onGoogle` is called once so the job ends and the profile is signed out of Google.
+const GOOGLE_PROPERTY = /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|gmail\.com|googlemail\.com|youtube\.com|googleusercontent\.com)$/;
+export const isGoogleProperty = (host) => GOOGLE_PROPERTY.test(String(host ?? "").toLowerCase());
+export function armIdp(conversationId, origin, { onGoogle = null } = {}) {
+  const p = pins.get(String(conversationId));
+  if (!p) return false;
+  p.idp = String(origin);
+  if (onGoogle) p.onGoogle = onGoogle;
+  return true;
+}
+export function disarmIdp(conversationId) {
+  const p = pins.get(String(conversationId));
+  if (p) p.idp = null;
+}
+/** After a Google sign-in: any later top-level Google page in this job ends it (`onGoogle`), still refused. */
+export function watchGoogle(conversationId, onGoogle) {
+  const p = pins.get(String(conversationId));
+  if (p) p.onGoogle = onGoogle;
+}
 /** The site this person's browser is held to now, or null. */
 export function pinnedSite(conversationId, now = Date.now()) {
   const p = pins.get(String(conversationId));
@@ -541,6 +566,7 @@ export function offPinnedSite(conversationId, url, now = Date.now()) {
   let u;
   try { u = new URL(String(url)); } catch { return true; }
   if (!/^(https?|wss?):$/.test(u.protocol)) return u.protocol !== "about:" && u.protocol !== "data:" && u.protocol !== "blob:";
+  if (p.idp && u.origin === p.idp) return false;
   if (p.exact) return u.origin !== p.exact;
   if (p.secure && (u.protocol === "http:" || u.protocol === "ws:")) return true;
   const h = u.hostname.toLowerCase();
@@ -566,7 +592,11 @@ export async function guardContext(context, { conversationId = null } = {}) {
     // its payment or video frame) may load: the filler never types into, clicks in or reads another
     // origin's frame (src/filler.js works on the page's own frame only), so the frame never sees the
     // login. A request whose frame cannot be told is treated as top-level: locked.
-    if (conversationId != null && req.isNavigationRequest() && topLevel(req) && offPinnedSite(conversationId, u.href)) return route.abort("blockedbyclient");
+    if (conversationId != null && req.isNavigationRequest() && topLevel(req) && offPinnedSite(conversationId, u.href)) {
+      const p = pins.get(String(conversationId));
+      if (p?.onGoogle && isGoogleProperty(u.hostname)) { const f = p.onGoogle; p.onGoogle = null; try { f(context); } catch { /* the stop never breaks the guard */ } }
+      return route.abort("blockedbyclient");
+    }
     if (allowPrivate() || !/^(https?|wss?):$/.test(u.protocol)) return route.continue();
     if (isPrivateHost(u.hostname)) return route.abort("blockedbyclient");
     if (req.isNavigationRequest() && !(await publicUrl(u.href)).ok) return route.abort("blockedbyclient");

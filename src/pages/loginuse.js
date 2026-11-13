@@ -87,9 +87,13 @@ export function renderUse({ v, nonce, base }) {
   }
   const ask = frame({
     step: "ask",
-    main: label("APPROVE ONE SIGN-IN", { pen: true }) + headline(`Sign in to ${site}?`, "With your saved login.")
+    main: label("APPROVE ONE SIGN-IN", { pen: true }) + (v.google
+      ? headline(`Sign in to ${site} with your Google account?`, "Through its Continue with Google.")
+      : headline(`Sign in to ${site}?`, "With your saved login."))
       + asked(v.request)
-      + lede(`I'll sign in to ${site} once, for ${v.request ? "that" : "the job you just asked for"}, then text you how it went.`)
+      + lede(v.google
+        ? `I'll press ${site}'s own "Continue with Google" and type your saved Google login on Google's sign-in page, once, for ${v.request ? "that" : "the job you just asked for"}. This one approval covers the whole sign-in. I won't open Gmail, Drive or your Google settings. If Google asks you to confirm, I'll text you.`
+        : `I'll sign in to ${site} once, for ${v.request ? "that" : "the job you just asked for"}, then text you how it went.`)
       + `<div class="vt-act"><button class="act pf-go vt-go" type="button" id="lu-go">${FACE}<span class="vt-t">Approve with Face ID</span> <span aria-hidden="true">→</span></button></div>`
       + `<p class="pf-note vt-err" id="lu-err" role="alert" hidden></p>` + TRUST,
     margin: margin(),

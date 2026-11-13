@@ -116,6 +116,16 @@ export const LOGINS_SCHEMA = `
     created_at INTEGER NOT NULL,
     UNIQUE (conversation_id, site, label COLLATE NOCASE) -- a second account on a site needs its own name
   );
+  -- How a person signs in to a site that has no saved login of its own (owner decision 2026-11-13):
+  -- "google" = through the site's own "Continue with Google", with their saved Google login
+  -- (src/federated.js). Not a secret: a site name and a word.
+  CREATE TABLE IF NOT EXISTS signin_routes (
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL,
+    route TEXT NOT NULL CHECK (route IN ('google', 'password')),
+    set_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, site)
+  );
 `;
 
 /**
@@ -124,9 +134,9 @@ export const LOGINS_SCHEMA = `
  * read by exportFor or kept out of an export with a reason, and deleted by deleteAllFor and deleteEveryLogin.
  */
 export const LOGINS_COVERAGE = {
-  exported: ["saved_logins"],   // exportFor: sites, hints, dates, permission, state; never the login (data.js REDACTED)
+  exported: ["saved_logins", "signin_routes"], // exportFor (never the login, data.js REDACTED); exportRoutesFor: site + route
   notExported: { vault_people: "a random handle that goes into the KMS context; it holds nothing of the person" },
-  deleted: ["saved_logins", "vault_people"],
+  deleted: ["saved_logins", "vault_people", "signin_routes"],
 };
 
 // Opened on first use, not at load: loading this module with the switch off must not create the file.
@@ -223,7 +233,8 @@ export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_
 // filler returns to the model is in the second group so recordLoginEvent accepts it.
 export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed",
   "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused",
-  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy", "not_accepted", "no_answer"];
+  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy", "not_accepted", "no_answer",
+  "needs_google_login", "needs_google_tap", "needs_google_code", "consent_more", "google_property", "no_google_button", "waiting_face_id"];
 const RECEIPT = {
   saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
   opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
@@ -315,7 +326,10 @@ export async function saveLogin(conversationId, meta, fields) {
     if (totp !== null && (!(totp instanceof Secret) || !totp.live)) throw new VaultError("bad_fields");
 
     // Hard rule 3: the never list refuses, and says why; a careful site never gets a standing permission.
-    for (const v of [siteVerdict(site), siteVerdict(origin)]) {
+    // The Google login (owner decision 2026-11-13) is kept as site google.com on exactly https://accounts.google.com:
+    // only that host is judged (careful); google.com itself, and every other Google host, stays never.
+    const googleLogin = site === "google.com" && origin === "https://accounts.google.com";
+    for (const v of googleLogin ? [siteVerdict(origin)] : [siteVerdict(site), siteVerdict(origin)]) {
       if (v.policy === "never") throw new VaultError("never_site", { why: refusalFor(v.category, m.label) });
       if (v.policy === "careful" && m.permission === "standing") throw new VaultError("careful_needs_each_time");
       if (!["careful", "allowed"].includes(v.policy)) throw new VaultError("no_site_policy");
@@ -509,6 +523,7 @@ export function deleteAllFor(conversationId, { purpose = "" } = {}) {
   try {
     n = Number(d.prepare("DELETE FROM saved_logins WHERE conversation_id = ?").run(c).changes);
     had = Number(d.prepare("DELETE FROM vault_people WHERE conversation_id = ?").run(c).changes) > 0 || n > 0;
+    had = Number(d.prepare("DELETE FROM signin_routes WHERE conversation_id = ?").run(c).changes) > 0 || had;
     d.exec("COMMIT");
   } catch (e) { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
   if (had) logEvent(c, { site: "", event: "removed_all", outcome: "ok", purpose, kmsCalls: 0, count: n });
@@ -523,6 +538,7 @@ export function deleteEveryLogin() {
   try {
     const n = Number(d.prepare("DELETE FROM saved_logins").run().changes);
     d.prepare("DELETE FROM vault_people").run();
+    d.prepare("DELETE FROM signin_routes").run();
     d.exec("COMMIT");
     return n;
   } catch { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
@@ -542,6 +558,37 @@ export function exportFor(conversationId) {
       consent_version, consent_at, fail_count, next_try_at, last_used_at, unused_warned_at, created_at
     FROM saved_logins${all ? "" : " WHERE conversation_id = ?"} ORDER BY conversation_id, site, id`).all(...(all ? [] : [String(conversationId)]))
     .map(r => ({ ...r, username_hint: restcrypt.openAny(r.username_hint) }));
+}
+
+// ---------------------------------------------------------------- how they sign in to a site (owner decision 2026-11-13)
+export const SIGNIN_ROUTES = ["google", "password"];
+const routeSite = (s) => String(s ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0].split(":")[0].replace(/^www\./, "");
+/** Remember that this person signs in to `site` with Continue with Google (or a password). True when stored. */
+export function setSigninRoute(conversationId, site, route) {
+  const c = String(conversationId ?? ""), s = routeSite(site);
+  if (!savedLoginsAllowedFor(c) || !SITE_RE.test(s) || !SIGNIN_ROUTES.includes(route)) return false;
+  const d = open({ create: true });
+  d.prepare(`INSERT INTO signin_routes (conversation_id, site, route, set_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(conversation_id, site) DO UPDATE SET route = excluded.route, set_at = excluded.set_at`).run(c, s, route, clock.now());
+  return true;
+}
+/** "google", "password" or "" for this person and site (the site or a parent domain of it). */
+export function signinRouteFor(conversationId, site) {
+  const d = open({ create: false });
+  const s = routeSite(site);
+  if (!d || !conversationId || !SITE_RE.test(s)) return "";
+  const rows = d.prepare("SELECT site, route FROM signin_routes WHERE conversation_id = ?").all(String(conversationId));
+  const hit = rows.find(r => r.site === s) ?? rows.find(r => s.endsWith(`.${r.site}`));
+  return hit?.route ?? "";
+}
+/** For an export: each site and how they sign in to it. `null` = everyone. */
+export function exportRoutesFor(conversationId) {
+  const d = open({ create: false });
+  if (!d) return [];
+  const all = conversationId === null;
+  if (!all && !conversationId) return [];
+  return d.prepare(`SELECT conversation_id, site, route, set_at FROM signin_routes${all ? "" : " WHERE conversation_id = ?"} ORDER BY conversation_id, site`)
+    .all(...(all ? [] : [String(conversationId)]));
 }
 
 /**

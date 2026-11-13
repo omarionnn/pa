@@ -12,7 +12,7 @@
 import { clock } from "./config.js";
 import * as db from "./db.js";
 import {
-  savedLoginsAllowedFor, peekForSignin, listLogins, setState, withLogin, recordLoginEvent, removeLogin, VaultError,
+  savedLoginsAllowedFor, peekForSignin, listLogins, setState, withLogin, recordLoginEvent, removeLogin, VaultError, signinRouteFor,
 } from "./savedlogins.js";
 import { namedByThem, namesOf } from "./namedsite.js";
 import {
@@ -28,6 +28,8 @@ import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
 import { clearOriginInPage } from "./signin.js";
 import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants, faceIdState } from "./loginuse.js";
 import { requestOf } from "./resume.js";
+import * as federated from "./federated.js";
+import { isGoogleProperty } from "./browser.js";
 import * as restartGate from "./busy.js";
 
 // The words the tool returns, one per outcome (design B5 step 8). `ok` is only a signed-in session.
@@ -507,7 +509,7 @@ let signIns = 0;
 export async function signIn(conversationId, site, {
   trigger = null, purpose = "", launch = realLaunch, now = () => clock.now(),
   emailCode = codeFromGmail, enter = enterCode, awaitReply = awaitCodeReply, note = defaultNote, waitMs = undefined,
-  answerMs = ANSWER_MS,
+  answerMs = ANSWER_MS, locate = undefined, tapWaitMs = undefined, stepMs = undefined,
 } = {}) {
   const c = String(conversationId ?? "");
   const host = normSite(site);
@@ -522,7 +524,18 @@ export async function signIn(conversationId, site, {
     return { ok: false, result: "blocked", say_exactly: refusalFor(verdict.category, host), refused: true };
   }
 
+  // The saved Google login is never used to sign in to Google itself (Gmail, Drive, settings, or
+  // accounts.google.com on its own): only as the Continue-with-Google step of a site they named.
+  if (isGoogleProperty(host)) {
+    recordLoginEvent(c, { site: registrableOf(host), event: "refused_never_list", outcome: "stopped" });
+    return { ok: false, result: "blocked", say_exactly: refusalFor("google_property"), refused: true };
+  }
   const rows = peekForSignin(c, host);
+  // A site they sign in to with Google (src/savedlogins.js signin_routes): the federated route.
+  if (!rows.length && signinRouteFor(c, host) === "google") {
+    return federated.signInWithGoogle(c, host, { trigger, purpose, launch, now, awaitReply, note, waitMs, credentials: googleCredentials(c),
+      ...(locate ? { locate } : {}), ...(tapWaitMs != null ? { tapWaitMs } : {}), ...(stepMs != null ? { stepMs } : {}), liveAskOk });
+  }
   if (!rows.length) return say("no_login", host);
   if (rows.length > 1) return say("pick_one", host);
   const row = rows[0];
@@ -743,6 +756,79 @@ export async function signIn(conversationId, site, {
       restartGate.release(gateId);
     }
   }
+}
+
+// ---------------------------------------------------------------- the Google step (src/federated.js)
+/**
+ * The saved Google login, typed on accounts.google.com (owner decision 2026-11-13), under the same rules
+ * as any saved login: one KMS call; the page's own top frame; the exact origin checked right before
+ * every keystroke; email first (Google's identifier step), then the one real password box. On Google's
+ * account chooser, the row whose identifier is the saved username, else "Use another account". Returns
+ * "typed", "drift" (left accounts.google.com: nothing more typed) or "none".
+ */
+function googleCredentials(conversationId) {
+  return async (gp, row, { diag = { boxes: [] }, typing = () => {}, stepMs = 10_000 } = {}) => {
+    const G = federated.GOOGLE;
+    const here = () => urlParts(gp.url()).origin;
+    const drift = () => { if (gp.isClosed() || here() !== G) { const e = new Error("left Google"); e.name = "OriginDrift"; throw e; } };
+    const read = async () => federated.googleStep(await gp.evaluate(federated._test.GOOGLE_JS).catch(() => null));
+    try {
+      return await withLogin(conversationId, row.id, here(), async ({ username, password }) => {
+        let pass = null;
+        await username.use(async (b) => {
+          const want = b.toString("utf8");
+          const until = Date.now() + stepMs;
+          let chose = false, typedEmail = false;
+          while (Date.now() < until) {
+            drift();
+            const st = (await read()).kind;
+            if (st === "chooser" && !chose) {
+              chose = true;
+              const rows = gp.locator("[data-identifier]:visible");
+              const n = Math.min(await rows.count().catch(() => 0), 10);
+              let hit = null;
+              for (let i = 0; i < n; i++) {
+                const id = String(await rows.nth(i).getAttribute("data-identifier").catch(() => "") ?? "");
+                if (id.toLowerCase() === want.toLowerCase()) { hit = rows.nth(i); break; }
+              }
+              drift();
+              await (hit ?? gp.getByText(/^\s*Use another account\s*$/i).first()).click({ timeout: FILL_MS }).catch(() => {});
+            } else if (st === "email" && !typedEmail) {
+              typedEmail = true;
+              const box = gp.locator('input[type="email"]:visible').first();
+              drift(); typing();
+              await box.fill(want, { timeout: FILL_MS });
+              diag.boxes.push({ kind: "email", typed: await lengthIn(box), saved: want.length });
+              drift();
+              await box.press("Enter").catch(() => {});
+            } else if (st !== "chooser" && st !== "email" && st !== "unknown") break;
+            await gp.waitForTimeout(300).catch(() => {});
+          }
+        });
+        // The password step: exactly one real password box on accounts.google.com's own frame.
+        const until = Date.now() + stepMs;
+        while (Date.now() < until) {
+          drift();
+          const boxes = gp.locator('input[type="password"]:visible');
+          const k = (await read()).kind;
+          if (k === "password" && (await boxes.count().catch(() => 0)) === 1) { pass = boxes.first(); break; }
+          if (!["unknown", "email", "chooser"].includes(k)) break;
+          await gp.waitForTimeout(300).catch(() => {});
+        }
+        if (!pass) { password.wipe?.(); return "none"; }
+        drift(); typing(); // immediately before the password keystroke
+        await password.use(async (b) => { await pass.fill(b.toString("utf8"), { timeout: FILL_MS }); diag.boxes.push({ kind: "password", typed: await lengthIn(pass), saved: b.toString("utf8").length }); });
+        drift();
+        diag.pressed = "enter";
+        await pass.press("Enter").catch(() => {});
+        await gp.waitForTimeout(600).catch(() => {});
+        await pass.fill("", { timeout: 800 }).catch(() => {});
+        return "typed";
+      }, { purpose: "the Google step of a sign-in they asked for" });
+    } catch (e) {
+      return /OriginDrift/.test(String(e?.message ?? "")) || e?.code === "origin_mismatch" ? "drift" : "none";
+    }
+  };
 }
 
 // ---------------------------------------------------------------- forgetting (hard rule 6)

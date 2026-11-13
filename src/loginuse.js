@@ -45,7 +45,7 @@ function sweep(now) {
  * Face ID yes lands, Reason can carry on with that exact job by itself (takeResume). Nothing a page,
  * an email or the model says can set it: only the filler's live-ask path calls this.
  */
-export function askFaceId(conversationId, loginId, site, { now = clock.now(), request = "", via = "" } = {}) {
+export function askFaceId(conversationId, loginId, site, { now = clock.now(), request = "", via = "", google = false } = {}) {
   const c = String(conversationId);
   sweep(now);
   for (const [t, a] of asks) if (a.conversationId === c && a.loginId === loginId) asks.delete(t);
@@ -57,6 +57,8 @@ export function askFaceId(conversationId, loginId, site, { now = clock.now(), re
     request: cleanRequest(request), resumeId: "",
     // The thread the link was sent in: "web" (a web chat) or "phone" (their text thread). Back to Messages follows it.
     via: via === "web" ? "web" : via === "phone" ? "phone" : "",
+    // The Continue-with-Google route (src/federated.js): the login is the Google one, the site is the one they named.
+    google: google === true,
   });
   return { token, link: `${passkey.ORIGIN()}${USE_PATH}${token}` };
 }
@@ -68,7 +70,7 @@ export function useView(token, { now = clock.now() } = {}) {
   const open = a.state === "open" && a.expiresAt > now;
   return {
     conversationId: a.conversationId, site: a.site, state: open ? "open" : a.state === "approved" ? "approved" : "ended",
-    request: a.request, resumed: !!a.resumeId, via: a.via ?? "",
+    request: a.request, resumed: !!a.resumeId, via: a.via ?? "", google: a.google === true,
     challenge: a.challenge, passkey: open ? passkey.loginAssertionOptions(a.conversationId) : null,
   };
 }
@@ -123,6 +125,7 @@ export function takeResume(conversationId, id, { loginId, site, savedSite = "" }
     asks.delete(t);
     if (a.approvedAt + YES_TTL_MS <= now) return null;
     spent.set(`${c}\n${loginId}`, now);
+    spent.set(`${c}\n${loginId}\n${String(site)}`, now);
     return { kind: "approved", request: a.request };
   }
   const g = saves.get(want);
@@ -135,12 +138,14 @@ export function takeResume(conversationId, id, { loginId, site, savedSite = "" }
  * The filler's check before a careful or each-time sign-in: an approved, unused yes for this login,
  * given in the last few minutes. Consumed here, so one Face ID is one sign-in.
  */
-export function takeApproval(conversationId, loginId, { now = clock.now() } = {}) {
+export function takeApproval(conversationId, loginId, { now = clock.now(), site = null } = {}) {
   const c = String(conversationId);
   for (const [t, a] of asks) {
     if (a.conversationId !== c || a.loginId !== loginId || a.state !== "approved") continue;
+    // One Google login serves many sites (src/federated.js): its yes is for the one site it named.
+    if (site != null && a.site !== String(site)) continue;
     asks.delete(t);
-    if (a.approvedAt + YES_TTL_MS > now) { spent.set(`${c}\n${loginId}`, now); return true; }
+    if (a.approvedAt + YES_TTL_MS > now) { spent.set(`${c}\n${loginId}`, now); if (site != null) spent.set(`${c}\n${loginId}\n${site}`, now); return true; }
   }
   return false;
 }
@@ -156,16 +161,17 @@ export const SPENT_QUIET_MS = 10 * 60_000;
  * sent and not answered yet; "just_used" — a yes for it was spent in the last few minutes (the job is
  * already going); or "".
  */
-export function faceIdState(conversationId, loginId, { now = clock.now() } = {}) {
+export function faceIdState(conversationId, loginId, { now = clock.now(), site = null } = {}) {
   const c = String(conversationId);
   let waiting = false;
   for (const a of asks.values()) {
     if (a.conversationId !== c || a.loginId !== loginId) continue;
+    if (site != null && a.site !== String(site)) continue;
     if (a.state === "approved" && a.approvedAt + YES_TTL_MS > now) return "approved";
     if (a.state === "open" && a.expiresAt > now) waiting = true;
   }
   if (waiting) return "waiting";
-  const at = spent.get(`${c}\n${loginId}`);
+  const at = spent.get(site != null ? `${c}\n${loginId}\n${site}` : `${c}\n${loginId}`);
   return at != null && now - at < SPENT_QUIET_MS ? "just_used" : "";
 }
 

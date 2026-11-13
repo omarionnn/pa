@@ -35,8 +35,11 @@ const TABLE = [
   ["appleid.apple.com", NEVER, "apple_id"],
   ["https://idmsa.apple.com/appleauth", NEVER, "apple_id"],
   ["icloud.com", NEVER, "apple_id"],
-  ["accounts.google.com", NEVER, "google"],
-  ["gmail.com", NEVER, "google"],
+  // Owner decision 2026-11-13: the Google login is kept for Continue with Google on accounts.google.com only.
+  ["accounts.google.com", CAREFUL, "google"],
+  ["mail.google.com", NEVER, "google_property"],
+  ["google.com", NEVER, "google_property"],
+  ["gmail.com", NEVER, "google_property"],
   ["outlook.com", NEVER, "email"],
   ["https://login.live.com/login.srf", NEVER, "email"],
   ["proton.me", NEVER, "email"],
@@ -193,7 +196,7 @@ test("rule 3: the section C words, exactly", () => {
   assert.equal(refusalFor("bank"), "I can't work inside bank accounts yet. I can call the bank with you, or remind you.");
   assert.equal(refusalFor("bank", null, null), refusalFor("bank"));
   assert.equal(refusalFor("apple_id"), "I don't sign in to Apple accounts. That password unlocks your devices and every password you've saved, so it stays with you.");
-  assert.equal(refusalFor("google"), "Google only lets me in through its own permission page, so I never need your Google password. Here's that page:");
+  assert.equal(refusalFor("google_property"), "I don't sign in to Gmail, Drive or your Google account settings. Your email stays on the official Google connection. I can keep your Google login only to use \"Continue with Google\" on a site you name.");
   assert.equal(refusalFor("email"), "I don't keep email passwords. Your email can reset everything else you own.");
   const govHealth = "I don't sign in to government or health sites. I can call them for you, or walk you through it.";
   assert.equal(refusalFor("government"), govHealth);
