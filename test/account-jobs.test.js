@@ -536,9 +536,10 @@ test("already so: the page's own line says it is set to end, so the job ends DON
   assert.equal(said.length, 1);
   assert.equal(lines[0].outcome, "already_done");
   const view = jobs.statusView(OMARI)[0];
-  assert.equal(view.line, "done (their page already showed it; nothing was changed or paid)");
+  assert.equal(view.line, "Done, already so: the site's page already showed it so; nothing was changed or paid");
+  assert.deepEqual({ ...view.verdict, on: "x" }, { verdict: "Done, already so", evidence: "the site's page already showed it so; nothing was changed or paid", page_said: ALREADY_LINE, ends: "Nov 27, 2026", on: "x" });
   assert.equal(view.page_said, ALREADY_LINE);
-  assert.match(jobs.noteFor(OMARI), /done \(their page already showed it/);
+  assert.match(jobs.noteFor(OMARI), /Done, already so: /);
 });
 
 test("already so on a weak signal is never done: no page words, or words that show it still renewing", async () => {
@@ -644,7 +645,7 @@ test("the result says cancelled but no mail yet: NOT called done; the mail landi
   assert.equal(job.outcome, "waiting_mail");
   assert.equal(job.seen_result, 1); assert.equal(job.seen_mail, 0);
   assert.equal(lastSaid(), "Not done yet: Cardboard's page says Cardboard Starter is cancelled; access ends Nov 27, 2026, but their cancellation email hasn't arrived. I'm watching your email and will tell you when it lands, or tomorrow if it never does.");
-  assert.equal(jobs.statusView(OMARI)[0].line, "their page said it worked; their email has not arrived yet, so not called done");
+  assert.equal(jobs.statusView(OMARI)[0].line, "Not confirmed: the site's page said it worked; the confirming email hasn't arrived yet and their mail is checked every 10 minutes for a day");
   // A look with nothing new says nothing.
   const before = said.length;
   assert.deepEqual(await jobs.checkMail(OMARI, job_id), { done: false });
@@ -657,7 +658,8 @@ test("the result says cancelled but no mail yet: NOT called done; the mail landi
   job = jobs.jobRow(OMARI, job_id);
   assert.equal(job.state, "done"); assert.equal(job.seen_mail, 1);
   assert.equal(lastSaid(), `Done. Cardboard's cancellation email arrived ("Your Cardboard Starter subscription was cancelled"). Cardboard Starter is cancelled; access ends Nov 27, 2026. Seen: their page and their email.`);
-  assert.equal(jobs.statusView(OMARI)[0].line, "done (their page and their email both seen)");
+  assert.equal(jobs.statusView(OMARI)[0].line, "Done: the site's page showed the new state and the site's own confirming email arrived");
+  assert.equal(jobs.statusView(OMARI)[0].verdict.email.length > 0, true, "the mail's subject is the evidence");
   assert.deepEqual(await jobs.checkMail(OMARI, job_id), { done: true }, "the watch is over; nothing is said twice");
 
   // The other way: a day goes by.
@@ -670,8 +672,11 @@ test("the result says cancelled but no mail yet: NOT called done; the mail landi
   await shop.step(again.run_id);
   clock.skip(jobs.MAIL_WATCH_MS + 60_000);
   assert.equal((await jobs.checkMail(OMARI, again.job_id)).expired, true);
-  assert.equal(lastSaid(), "Still no cancellation email from Cardboard a day later. Their page said Cardboard Starter was cancelled; access ends Nov 27, 2026; I can't confirm it beyond that, so check your next statement.");
+  assert.equal(lastSaid(), "Not confirmed: Cardboard's page said Cardboard Starter was cancelled; access ends Nov 27, 2026, but no cancellation email came in a day. I can't confirm it beyond that, so check your next statement.");
   assert.equal(jobs.jobRow(OMARI, again.job_id).state, "not_done", "never upgraded to done without the mail");
+  assert.equal(jobs.jobRow(OMARI, again.job_id).outcome, "no_mail_came", "closed, not left waiting");
+  assert.equal(jobs.jobRow(OMARI, again.job_id).mail_until, null);
+  assert.match(jobs.statusView(OMARI)[0].line, /^Not confirmed: the site's page said it worked; no confirming email came within a day$/);
 });
 
 test("mail not connected: done on the page alone, and it says the email could not be checked", async () => {
@@ -960,7 +965,7 @@ test("a job is not a checkout: it never shows as a store order, the model's reco
   end(run_id, CANCELLED);
   await shop.step(run_id);
   assert.deepEqual(shop.ordersPlaced(OMARI), [], "a cancellation is never counted as an order placed");
-  assert.match(shop.checkoutNote(OMARI), /cancel Cardboard Starter at Cardboard: done \(their page and their email both seen\)\./);
+  assert.match(shop.checkoutNote(OMARI), /cancel Cardboard Starter at Cardboard: Done: the site's page showed the new state and the site's own confirming email arrived\./);
   // The rules riding on cancel_route: account_cancel for them, today's words for everybody else.
   const rules = (c) => toolsFor(c).find((t) => t.name === "cancel_route").description;
   assert.match(rules(OMARI), /goes through account_cancel/);
@@ -1318,4 +1323,112 @@ test("a job whose run was ended by something that never told it: closed and said
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(jobs.jobRow(OMARI, s.job_id).outcome, "unconfirmed");
   assert.match(lastSaid(), /^Not confirmed: your yes went to Cardboard, then the run broke off before it showed me the result/);
+});
+
+// ---------------------------------------------------------------- where to go, from their own mail (owner, 2026-11-13)
+const created = () => calls.filter((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts").map((c) => c.body);
+const hit = (from, html, account = "omari@example.com", subject = "Your Cardboard receipt") => ({ account, from, subject, at: clock.now(), html, text: "" });
+const LINK_MAIL = hit("Link <support@link.com>", '<p>Cardboard Starter renews Nov 27.</p><a href="https://app.link.com/manage/sub_123">Manage your subscription</a> <a href="https://app.link.com/unsubscribe/x">Unsubscribe</a>');
+
+test("their mail has a Link manage link: the job starts there, as the account it went to, with no question", async () => {
+  let looked = 0;
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), find: async (c, { site }) => { looked++; assert.equal(c, OMARI); assert.equal(site, "cardboard.app"); return { connected: true, hits: [LINK_MAIL] }; } });
+  const { job_id } = await cancelStarted();
+  assert.equal(looked, 1);
+  const [body] = created();
+  assert.equal(body.request.startUrl, "https://app.link.com/manage/sub_123", "the manage link, never the unsubscribe one");
+  assert.match(body.request.task, /my own manage-subscription link/);
+  const job = jobs.jobRow(OMARI, job_id);
+  assert.equal(job.biller, "Link (Stripe)");
+  assert.equal(job.account_email, "omari@example.com");
+  // A link they give still wins, and their mail is not searched for it.
+  db.db.exec("DELETE FROM account_jobs"); calls = [];
+  await cancelStarted({ page: "https://cardboard.app/settings/billing" });
+  assert.equal(looked, 1);
+  assert.equal(created()[0].request.startUrl, "https://cardboard.app/settings/billing");
+});
+
+test("mail to two of their mailboxes: one question before anything runs; their answer picks the account and starts it", async () => {
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), find: async () => ({ connected: true, hits: [
+    hit("Cardboard <billing@cardboard.app>", '<a href="https://cardboard.app/settings/billing">Manage billing</a>', "omari@gmail.com"),
+    hit("Cardboard <billing@cardboard.app>", '<a href="https://cardboard.app/settings/billing">Manage billing</a>', "omari@work.example"),
+  ] }) });
+  say("cancel my Cardboard Starter subscription");
+  const out = await call("account_cancel", { site: "cardboard.app", plan: "Cardboard Starter", name: "Cardboard" });
+  assert.equal(out.asking, true, JSON.stringify(out));
+  assert.equal(out.question, "Is Cardboard under omari@gmail.com or omari@work.example?");
+  assert.equal(created().length, 0, "nothing ran before the answer");
+  let job = jobs.jobRow(OMARI, out.job_id);
+  assert.equal(job.state, "needs_answer");
+  assert.equal(job.ask_kind, "place");
+  assert.match(jobs.statusView(OMARI)[0].line, /where it is billed; nothing started yet/);
+  const r = await call("account_job_answer", { job_id: out.job_id, answers: { answer: "the gmail one" } });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  job = jobs.jobRow(OMARI, out.job_id);
+  assert.equal(job.account_email, "omari@gmail.com");
+  assert.equal(job.state, "running");
+  assert.equal(created()[0].request.startUrl, "https://cardboard.app/settings/billing");
+});
+
+test("no mail about it: one question; still nothing, a second; then it stops honestly, never a run sent to guess", async () => {
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), find: async () => ({ connected: true, hits: [] }) });
+  say("cancel my Cardboard Starter subscription");
+  const out = await call("account_cancel", { site: "cardboard.app", plan: "Cardboard Starter", name: "Cardboard" });
+  assert.equal(out.question, "I can't find where Cardboard bills you. Do you have a receipt or renewal email from them, or the page where you manage it?");
+  const two = await call("account_job_answer", { job_id: out.job_id, answers: { answer: "not sure" } });
+  assert.equal(two.question, "I still can't tell where Cardboard bills you. Do you have its manage link, or the email address the account is under?");
+  const end3 = await call("account_job_answer", { job_id: out.job_id, answers: { answer: "no" } });
+  assert.equal(end3.ended, "no_place");
+  const job = jobs.jobRow(OMARI, out.job_id);
+  assert.equal(job.outcome, "no_place");
+  assert.equal(job.place_asks, 2, "two questions at most");
+  assert.equal(created().length, 0);
+  assert.match(end3.say, /^Not done: I couldn't work out where Cardboard bills you/);
+  // A link in the answer, on another site: refused, nothing started.
+  db.db.exec("DELETE FROM account_jobs");
+  const again = await call("account_cancel", { site: "cardboard.app", plan: "Cardboard Starter", name: "Cardboard" });
+  const bad = await call("account_job_answer", { job_id: again.job_id, answers: { answer: "here https://evil.example.net/cardboard/manage" } });
+  assert.equal(bad.error, "not_their_site");
+  assert.equal(created().length, 0);
+  const good = await call("account_job_answer", { job_id: again.job_id, answers: { answer: "https://cardboard.app/account/plan" } });
+  assert.equal(good.ok, true);
+  assert.equal(created()[0].request.startUrl, "https://cardboard.app/account/plan");
+});
+
+test("a tracking redirect is followed through the network guard: kept when it lands on the biller's own site, dropped when it lands elsewhere", async () => {
+  const hops = { "https://click.trk-mail.com/a": "https://app.link.com/manage/sub_9", "https://click.trk-mail.com/b": "https://evil.example.net/manage" };
+  const follow = async (u) => ({ status: hops[u] ? 302 : 200, headers: { get: (k) => (k.toLowerCase() === "location" ? hops[u] ?? null : null) } });
+  const mail = (to) => hit("Link <support@link.com>", `<a href="${to}">Manage your subscription</a>`);
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), follow, find: async () => ({ connected: true, hits: [mail("https://click.trk-mail.com/a")] }) });
+  await cancelStarted();
+  assert.equal(created()[0].request.startUrl, "https://app.link.com/manage/sub_9", "the landing page, without the tracker");
+  db.db.exec("DELETE FROM account_jobs"); calls = [];
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), follow, find: async () => ({ connected: true, hits: [mail("https://click.trk-mail.com/b")] }) });
+  await cancelStarted();
+  assert.equal(created()[0].request.startUrl, "https://cardboard.app/", "a link that lands elsewhere is never used");
+});
+
+test("billed through Apple: the store's own steps, and nothing started", async () => {
+  jobs._setMail({ look: async () => ({ ok: true, ...mailbox }), find: async () => ({ connected: true, hits: [hit("App Store <no_reply@email.apple.com>", "<p>Cardboard Starter (Monthly) $11.99</p>", "omari@example.com", "Your receipt from Apple.")] }) });
+  say("cancel my Cardboard Starter subscription");
+  const out = await call("account_cancel", { site: "cardboard.app", plan: "Cardboard Starter", name: "Cardboard" });
+  assert.equal(out.ended, "store_billed");
+  assert.match(out.say, /^Not done: Cardboard Starter at Cardboard is billed through Apple \(the App Store\), so it can only be cancelled there, not on Cardboard's site\. On their iPhone or iPad: Settings, tap their name, tap Subscriptions/);
+  assert.equal(created().length, 0);
+  assert.equal(jobs.jobRow(OMARI, out.job_id).outcome, "store_billed");
+});
+
+test("done vs not done: one table, every outcome in it with a state and plain words", () => {
+  assert.deepEqual(Object.keys(jobs.OUTCOME_TABLE).sort(), [...jobs.OUTCOMES].sort(), "every outcome code is in the table, and nothing else");
+  const cancel = { kind: "cancel", name: "Cardboard", what: "Cardboard Starter", host: "cardboard.app" };
+  const fallback = jobs.notDoneLine(cancel, "service_failed");
+  for (const [o, row] of Object.entries(jobs.OUTCOME_TABLE)) {
+    assert.ok(Object.values(jobs.VERDICTS).includes(jobs.verdictOf({ outcome: o }).verdict), o);
+    assert.ok(["done", "not_done"].includes(row.state), o);
+    assert.ok(row.evidence.length > 5, o);
+    if (row.verdict === "not_done") { assert.ok(row.reason, `${o} names its reason`); if (o !== "service_failed") assert.notEqual(jobs.notDoneLine(cancel, o), fallback, `${o} has its own line`); }
+  }
+  assert.equal(jobs.OUTCOME_TABLE.already_done.verdict, "done_already");
+  assert.equal(jobs.OUTCOME_TABLE.waiting_mail.verdict, "not_confirmed");
+  assert.equal(jobs.OUTCOME_TABLE.no_mail_came.verdict, "not_confirmed");
 });
