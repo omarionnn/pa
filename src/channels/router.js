@@ -775,7 +775,8 @@ export class Router {
     let eventNoCard = false;
     // An open Action Card this text answers (src/actioncards.js matchInbound): the words of a tap's
     // prefill, or near enough. The turn runs on the text as it is — it already IS the request, in
-    // their own voice — and the card is checked off once that turn has replied.
+    // their own voice — told what the card promised (src/actionengine.js cardFrame); and how it ended
+    // is then read back by code (settleRun), never taken from the reply having been sent.
     let cardHit = null;
     try {
       // A voice note is listened to here, with the bubble already up, so the turn reads what was
@@ -802,7 +803,12 @@ export class Router {
       if (last.channel !== web.WEB) {
         try {
           cardHit = actioncards.matchInbound(conversationId, said);
-          if (cardHit) { cardHit.at = clock.now(); actioncards.replied(cardHit.card); this.log({ action_card_reply: cardHit.card.id, score: Math.round(cardHit.score * 100) / 100 }); }
+          if (cardHit) {
+            cardHit.at = clock.now();
+            actioncards.replied(cardHit.card);
+            cardHit.run = actionengine.beginRun(cardHit.card, { now: cardHit.at });
+            this.log({ action_card_reply: cardHit.card.id, score: Math.round(cardHit.score * 100) / 100, route: cardHit.run.route || "none" });
+          }
         } catch (e) { this.log({ action_card_match_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       // REASON_THREADING (src/threading.js): parts of one send are one text, their attachments are
@@ -889,7 +895,9 @@ export class Router {
       const gap = downSince ? leftWhileDownLine({ since: downSince, count: said.length }) : "";
 
       // Event log: record what the user said (after voice-note transcription) and enqueue extraction.
-      const userText = [gap, onboardFrame, several, ...numbered, jobs, ...said].filter(Boolean).join("\n");
+      // A card's tap: what the card promised, and what failing honestly looks like, read above their words.
+      const cardNote = cardHit?.run ? actionengine.cardFrame(cardHit.run) : "";
+      const userText = [gap, onboardFrame, cardNote, several, ...numbered, jobs, ...said].filter(Boolean).join("\n");
       let evId = null;
       try {
         evId = db.writeEvent({
@@ -928,6 +936,8 @@ export class Router {
           text: downLine({ until: e.until, resetAt: e.resetAt, known: e.known }),
           idempotencyKey: `down:${conversationId}:${held[0].arrived_at}`,
         }).catch(() => {});
+        // The card's text went back to wait with the rest: its run has not happened yet.
+        if (cardHit) { try { actionengine.resetRun(cardHit.card.id, conversationId); } catch { /* the sweep settles it */ } }
         return {
           ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
           messages: held.length, replied: false, down: true, until: back.readyAt,
@@ -939,6 +949,7 @@ export class Router {
       // the next process's sweep answers it, and drop the request rows it had opened so nobody is
       // asked the same thing twice. Nothing is said to them: a restart costs a wait, not a reply.
       this.#handBack(conversationId, [...held, ...(e.foldedRows ?? [])], requests);
+      if (cardHit) { try { actionengine.resetRun(cardHit.card.id, conversationId); } catch { /* the sweep settles it */ } }
       this.log({
         drain_interrupted: conversationId, messages: held.length,
         why: (e?.message ?? String(e)).split("\n")[0],
@@ -962,13 +973,21 @@ export class Router {
       // A turn that never sent (an outage, a refusal, onboarding's own bubbles) leaves no timing line.
       timing.drop(conversationId);
     }
-    // The Action Card this text answered is done once its turn has replied (src/actioncards.js): the
-    // page sinks it below the open ones and the link's picture is drawn again.
-    if (cardHit && reply !== null) {
+    // How the Action Card this text answered really ended, read by code (src/actionengine.js
+    // settleRun): done only when its route's proof is on record (the ledger, the payment, the call),
+    // never because a reply went out. Still waiting on their yes → it waits and the sweep settles it.
+    // Could not be finished → the card comes off the note; the turn has said so, once.
+    if (cardHit) {
       try {
-        // The stall line is a reply too; a turn that died is not the task done (runtime.turnFailedSince).
-        if (this.runtime?.turnFailedSince?.(conversationId, cardHit.at)) this.log({ action_card_turn_failed: cardHit.card.id });
-        else { actioncards.markDone(cardHit.card.id, conversationId); actionengine.noteDoneVia(cardHit.card.id, conversationId, "tap"); this.log({ action_card_done: cardHit.card.id }); }
+        // No reply at all: nothing was said and nothing ran to an end. The card stays as it was.
+        if (reply === null) actionengine.resetRun(cardHit.card.id, conversationId);
+        else {
+          // The stall line is a reply too; a turn that died is not the task done or failed (runtime.turnFailedSince).
+          const turnFailed = !!this.runtime?.turnFailedSince?.(conversationId, cardHit.at);
+          const out = actionengine.settleRun(cardHit.card.id, conversationId, { since: cardHit.at, turnFailed, log: this.log });
+          if (out.state === "done") this.log({ action_card_done: cardHit.card.id });
+          else if (turnFailed) this.log({ action_card_turn_failed: cardHit.card.id });
+        }
       } catch (e) { this.log({ action_card_done_failed: cardHit.card.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
     }
     // After the turn: somebody in the first-chat onboarding who asked for something real gets the
