@@ -4929,6 +4929,7 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
       call.begin();
     }, (e) => {
       log({ cartesia_fell_back: row.id, why: `not loaded: ${(e?.message ?? String(e)).split("\n")[0]}`.slice(0, 120), ms: 0 });
+      try { db.updateCall(row.conversation_id, row.id, { cartesia_seconds: 0, cartesia_cents: 0, cartesia_fell_back: 1 }); } catch { /* a number never breaks a call */ }
       if (streams.get(row.id) === slot) back("not loaded");
     });
     return slot;

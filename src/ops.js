@@ -40,6 +40,7 @@ import * as subusage from "./subusage.js";
 import * as actionengine from "./actionengine.js";
 import * as incidents from "./incidents.js";
 import * as digest from "./opsdigest.js";
+import * as planmeter from "./planmeter.js";
 import { join } from "node:path";
 
 export const EVERY_MS = 5 * 60 * 1000;
@@ -290,9 +291,9 @@ export async function runChecks({ runtime = null, router = null, now = clock.now
   const people = emit(peopleChecks({ now, day }));
   const money = emit(moneyChecks({ now, day }));
   const quality = emit(qualityChecks({ now, day }));
-  const [services, memory, subs] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit }), subscriptionChecks({ now, day, usageFetch, emit })]);
+  const [services, memory, subs, plans] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit }), subscriptionChecks({ now, day, usageFetch, emit }), planChecks({ now, usageFetch, emit })]);
   const raised = emit([...incidentChecks(now), watchdogCheck(now), backupCheck(now)].filter(Boolean));
-  const checks = [...raised, ...alive, ...people, ...subs, ...services, ...memory, ...money, ...quality];
+  const checks = [...raised, ...alive, ...people, ...subs, ...services, ...memory, ...money, ...plans.rows, ...quality];
   // Hourly counts behind the trend lines; a database too old for a column is a page without lines,
   // never a pass that fails.
   let trends = null;
@@ -300,7 +301,24 @@ export async function runChecks({ runtime = null, router = null, now = clock.now
   if (trends) {
     try { trends.subscriptions = { reason: subusage.hourlyFive("reason", now), coding: subusage.hourlyFive("coding", now) }; } catch { /* no lines */ }
   }
-  return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks), trends };
+  return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks), trends, meters: plans.readings };
+}
+
+/**
+ * How much of each metered plan is used this cycle (src/planmeter.js): a row in Money, and the
+ * readings behind the page's panel. `quiet`: the 50/80/100% texts are sent once each per cycle by
+ * planmeter.warnings after the pass, never by `settle`. Amber from 80%. The provider's figure, if it
+ * has one, is asked for at most every 15 minutes with the raw fetch; a failure keeps the last one.
+ */
+async function planChecks({ now, usageFetch, emit = (r) => r }) {
+  let readings = [];
+  try { readings = await planmeter.readAll({ now, fetchImpl: usageFetch }); } catch { return { rows: [], readings: [] }; }
+  const rows = readings.map((r) => {
+    const meter = planmeter.METERS.find(m => m.id === r.id);
+    const told = meter ? planmeter.warnedWords(meter, r) : "";
+    return { ...check(`plan:${r.id}`, "money", r.name, r.pct >= 80 ? "warn" : "ok", planmeter.detailOf(r) + (told ? ` · ${told}` : ""), meter?.dashboard ?? null), quiet: true };
+  });
+  return { rows: emit(rows), readings };
 }
 
 /**
@@ -509,16 +527,23 @@ export function alive({ runtime = null, now = clock.now() } = {}) {
   };
 }
 
+/**
+ * Where the Server row reads the machine. A test swaps `statfs` for a disk of its own: the suite runs
+ * on whatever laptop it is on, and a laptop 86% full made a clean install amber (the seven ops tests
+ * that failed on main, 2026-11-13).
+ */
+export const serverStats = { statfs: (dir) => statfsSync(dir), loadavg: () => os.loadavg()[0], cpus: () => os.cpus().length };
+
 function serverCheck() {
   let disk = null;
   try {
-    const s = statfsSync(config.dataDir);
+    const s = serverStats.statfs(config.dataDir);
     const total = s.blocks * s.bsize;
     const free = s.bavail * s.bsize;
     disk = { total, free, usedPct: total ? Math.round(100 * (1 - free / total)) : 0 };
   } catch { /* said as unknown below */ }
-  const load = os.loadavg()[0];
-  const cpus = os.cpus().length || 1;
+  const load = serverStats.loadavg();
+  const cpus = serverStats.cpus() || 1;
   const freeShare = disk && disk.total ? disk.free / disk.total : 1;
   const state = freeShare < 0.10 ? "bad" : freeShare < 0.20 || load > cpus * 2 ? "warn" : "ok";
   return check("server", "alive", "Server", state,
@@ -1054,6 +1079,9 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
   startSpendAlerts({ send: sendNow });
   const run = () => runOnce({ runtime, router, log })
     .finally(() => { try { capWarnings({ send: sendNow, log }); } catch (e) { log({ api_warn_failed: short(e) }); } })
+    // The plan meters' 50/80/100% texts (src/planmeter.js), off the readings this pass saved. Live like
+    // the cap heads-up above: once per threshold per cycle, kept in ops_state across restarts.
+    .finally(() => { try { planmeter.warnings({ readings: snapshot()?.meters ?? [], send: sendNow, log }); } catch (e) { log({ plan_warn_failed: short(e) }); } })
     .finally(() => digest.flush({ send: sendDigest, link: opsUrl(), log }).catch(e => log({ ops_digest_failed: short(e) })));
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);
