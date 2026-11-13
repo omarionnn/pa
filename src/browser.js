@@ -548,6 +548,11 @@ export function offPinnedSite(conversationId, url, now = Date.now()) {
 }
 export const OFF_SITE_WORDS = (site) => `I'm signed in to ${site} for this job, so I stay on ${site}. I didn't open the other page.`;
 
+/** Is this navigation request for a page's own (top) frame? Unknown (a worker's, a frame gone): yes. */
+export function topLevel(req) {
+  try { const f = req.frame(); return !f || !f.parentFrame(); } catch { return true; }
+}
+
 export async function guardContext(context, { conversationId = null } = {}) {
   // And on every one of them: a box that was ever a password box stays one for the life of its page,
   // whatever a "show password" switch turns it into (src/pagesecrets.js).
@@ -556,8 +561,12 @@ export async function guardContext(context, { conversationId = null } = {}) {
     const req = route.request();
     let u;
     try { u = new URL(req.url()); } catch { return route.continue(); }
-    // The same-site lock: during a signed-in job no page load leaves the pinned site.
-    if (conversationId != null && req.isNavigationRequest() && offPinnedSite(conversationId, u.href)) return route.abort("blockedbyclient");
+    // The same-site lock: during a signed-in job no TOP-LEVEL page load leaves the pinned site (a tab or
+    // a popup's own page). A sub-frame the pinned page itself embeds (a site's invisible human-check,
+    // its payment or video frame) may load: the filler never types into, clicks in or reads another
+    // origin's frame (src/filler.js works on the page's own frame only), so the frame never sees the
+    // login. A request whose frame cannot be told is treated as top-level: locked.
+    if (conversationId != null && req.isNavigationRequest() && topLevel(req) && offPinnedSite(conversationId, u.href)) return route.abort("blockedbyclient");
     if (allowPrivate() || !/^(https?|wss?):$/.test(u.protocol)) return route.continue();
     if (isPrivateHost(u.hostname)) return route.abort("blockedbyclient");
     if (req.isNavigationRequest() && !(await publicUrl(u.href)).ok) return route.abort("blockedbyclient");

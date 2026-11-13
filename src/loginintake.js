@@ -109,7 +109,9 @@ export async function offerSaveLink(conversationId, site, quotedRequest, { locat
   const there = classifySite(u.origin);
   if (there.policy === "never") return { ok: false, error: "never_site", say: refusalFor(there.category, name) };
   const careful = verdict.policy === "careful" || there.policy === "careful";
-  const path = /^\/[^?#\s]{0,300}$/.test(u.pathname) ? u.pathname : "/";
+  // The path the form was found on, or no link: never a fallback to the front page (which has no form).
+  if (!/^\/[^?#\s]{0,300}$/.test(u.pathname)) return { ok: false, error: "no_signin_form", say: NO_LINK_WORDS.no_signin_form(name) };
+  const path = u.pathname;
 
   const token = randomBytes(24).toString("base64url");
   const now = clock.now();

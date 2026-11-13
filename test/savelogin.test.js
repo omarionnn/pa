@@ -176,6 +176,9 @@ test("rule 1: the origin is pinned from Reason's own visit; a sign-in page on an
     const out = await intake.offerSaveLink(ME, "example.test", ASKED, { locate: at(url) });
     assert.equal(out.error, why, url);
   }
+  // A form page whose path cannot be kept is never pinned as the front page instead (ship review 2026-11-13).
+  const long = await intake.offerSaveLink(ME, "example.test", ASKED, { locate: async () => ({ found: true, form: "password", url: `https://login.example.test/${"a".repeat(320)}` }) });
+  assert.equal(long.error, "no_signin_form");
   // Reason's visit found no sign-in form: no link, and fixed words say so (2026-11-13, Netflix's home page).
   const none = await intake.offerSaveLink(ME, "example.test", ASKED, { locate: async () => ({ found: false, why: "no_form" }) });
   assert.equal(none.error, "no_signin_form");

