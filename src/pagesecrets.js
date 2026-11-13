@@ -329,9 +329,10 @@ const str = (v) => (typeof v === "string" ? v : "");
 function secretBox(o) {
   const tag = str(o.tag).toLowerCase();
   const type = str(o.type).toLowerCase();
-  if (type === "password" || o.secret === true) return true;
+  if (type === "password") return true;
   const ac = str(o.autocomplete) || str(o.ac);
   if (!BOX_TAGS.has(tag)) return !!ac && !!W.acKind(ac);
+  if (o.secret === true) return true;
   return !!W.kindOf({ tag, type, autocomplete: ac, role: str(o.role), own: [str(o.id), str(o.name_attr)], said: [str(o.name), str(o.label), str(o.lb), str(o.placeholder), str(o.title)] });
 }
 
@@ -369,6 +370,69 @@ export function scrubPageSecrets(value, depth = 0) {
   for (const [k, v] of Object.entries(out)) {
     const s = scrubPageSecrets(v, depth + 1);
     if (s !== v) edit()[k] = s;
+  }
+  return out;
+}
+
+/**
+ * A credential somebody typed into the chat because there is no other way to hand it over yet (an
+ * Apple app password, `apple_calendar_connect`): the tool needs it once, and no copy of the call
+ * keeps it. The same list seals the tool log and the ledger (SECRET_TOOLS, src/privacy.js).
+ */
+export const TYPED_SECRET_ARGS = { apple_calendar_connect: ["password"] };
+export const SEALED = "[sealed]";
+
+const BOX_IN_JSON = /"(?:tag|type)"\s*:\s*"(?:input|textarea|select|password)"/i;
+
+/**
+ * A conversation as it is kept (db.saveConversation, the one writer of the thread): a typed
+ * credential is sealed in the call that carried it, and a tool result is scrubbed the same way it
+ * was when it was made, so a result saved before this existed, or by a writer that skipped runTool,
+ * is cleaned the next time its thread is saved. Returns the same array when nothing changed.
+ */
+export function keepableMessages(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let out = messages;
+  const setBlock = (i, j, block) => {
+    if (out === messages) out = messages.slice();
+    if (out[i] === messages[i]) out[i] = { ...messages[i], content: messages[i].content.slice() };
+    out[i].content[j] = block;
+  };
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || !Array.isArray(m.content)) continue;
+    for (let j = 0; j < m.content.length; j++) {
+      const b = m.content[j];
+      if (!b || typeof b !== "object") continue;
+      if (b.type === "tool_use" && b.input && typeof b.input === "object") {
+        const keys = TYPED_SECRET_ARGS[b.name];
+        if (keys && keys.some(k => k in b.input && b.input[k] !== SEALED)) {
+          const input = { ...b.input };
+          for (const k of keys) if (k in input) input[k] = SEALED;
+          setBlock(i, j, { ...b, input });
+        }
+      } else if (b.type === "tool_result") {
+        const scrubText = (t) => {
+          if (typeof t !== "string" || !BOX_IN_JSON.test(t)) return t;
+          let parsed;
+          try { parsed = JSON.parse(t); } catch { return t; }
+          const clean = scrubPageSecrets(parsed);
+          return clean === parsed ? t : JSON.stringify(clean);
+        };
+        if (typeof b.content === "string") {
+          const t = scrubText(b.content);
+          if (t !== b.content) setBlock(i, j, { ...b, content: t });
+        } else if (Array.isArray(b.content)) {
+          let parts = b.content;
+          b.content.forEach((part, k) => {
+            if (part?.type !== "text") return;
+            const t = scrubText(part.text);
+            if (t !== part.text) { if (parts === b.content) parts = b.content.slice(); parts[k] = { ...part, text: t }; }
+          });
+          if (parts !== b.content) setBlock(i, j, { ...b, content: parts });
+        }
+      }
+    }
   }
   return out;
 }

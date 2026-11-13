@@ -96,7 +96,8 @@ import * as goals from "./goals.js";
 import { CUE_TOOL_DEFS, CUE_SCHEMAS, CUE_TOOLS, cueToolVisible, runCueTool } from "./cues.js";
 import * as memory from "./memory.js";
 import { deleteData as dataDelete } from "./data.js";
-import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
+import { retentionSays, markOutside, looksLikeACredential, refuseCredential, scrubTypedSecret } from "./privacy.js";
+import { scrubPageSecrets } from "./pagesecrets.js";
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { generateIllustration } from "./pages/card.js";
@@ -8211,7 +8212,7 @@ async function captureWalk({ c, ctx = {}, page, stopped, because, oneAction = ""
     const last = (snap.elements ?? []).find(e => e.tag === "button" && clickCommits({ tag: "button", type: e.type ?? "", name: e.name ?? "", href: "", inForm: true, isSubmit: true }).commits);
     return last?.name ? `press '${last.name}'` : "";
   })();
-  const record = fromWalk({ url: snap.url ?? page.url(), elements: snap.elements, oneAction: action, stopped, because });
+  const record = fromWalk({ url: snap.url ?? await browser.pageUrl(page), elements: snap.elements, oneAction: action, stopped, because });
   if (!record) return null;
   const { link, ...row } = record;
   const task = walkTask(c, ctx);
@@ -9533,7 +9534,9 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   const fit = fitLongText(S[name], rawInput, name);
   rawInput = fit.input;
   const startedAt = Date.now();
-  let out = await runToolInner(name, rawInput, ctx);
+  // What a secret box of a page holds reaches nobody: not the model, the thread, the log or the
+  // ledger (src/pagesecrets.js). The page reading already withholds it; this is the net under it.
+  let out = scrubPageSecrets(await runToolInner(name, rawInput, ctx));
   if (fit.shortened.length && out && typeof out === "object" && !Array.isArray(out)) out = { ...out, input_shortened: shortenedNote(fit.shortened) };
   // A file this call wrote is this person's, for the tools that take a path later (src/ownfiles.js).
   if (ctx?.conversationId) ownfiles.noteMade(ctx.conversationId, out, startedAt, rawInput);
@@ -14142,7 +14145,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (input.from_browser) {
         const page = browser.openPage(c);
         if (!page) return { ok: false, error: "No page is open in the browser. Open the product page with browser_open first, or pass its url." };
-        try { html = await page.content(); url = page.url(); via = "browser"; }
+        try { html = await page.content(); url = await browser.pageUrl(page); via = "browser"; }
         catch (e) { return { ok: false, error: `Could not read the open page: ${(e?.message ?? String(e)).split("\n")[0]}` }; }
       } else {
         const got = await offers.fetchOfferPage(url, { fetchImpl: ctx.fetchImpl ?? fetch });
@@ -16133,6 +16136,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "apple_calendar_connect": {
       const result = await icloud.connect(c, input.email, input.password);
+      // The app password was typed into the chat (there is no screen for it yet): once it has been
+      // used, no copy of the conversation keeps it (src/privacy.js scrubTypedSecret), whether or
+      // not Apple took it.
+      try { scrubTypedSecret(c, input.password); } catch { /* the connect's own answer still stands */ }
       if (!result.ok) return result;
       return {
         ...result,
@@ -18011,7 +18018,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try {
         const res = await page.goto(url, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
-        db.rememberSeenUrls(c, [page.url(), url]);
+        db.rememberSeenUrls(c, [snap.url, url]);
         opened = { status: res?.status() ?? null, ...snap };
       } catch (e) {
         return {
@@ -18057,7 +18064,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (label === null) {
         return { ok: false, error: `No element ${input.ref} on this page. Nothing was pressed and ${me.name}'s yes still stands — call browser_read for fresh refs and try again with the same confirmation_id.` };
       }
-      const before = page.url();
+      const before = await browser.pageUrl(page);
       ctx.spend?.(); // past this line the service may already have been told something
       let snap;
       try {
@@ -18418,7 +18425,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try {
         const res = await page.goto(url, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
-        db.rememberSeenUrls(c, [page.url(), url]);
+        db.rememberSeenUrls(c, [snap.url, url]);
         opened = { status: res?.status() ?? null, ...snap };
       } catch (e) {
         // The site refusing is the site's decision and a finding worth telling them, which is what
@@ -18497,7 +18504,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       let before;
       try { before = await browser.snapshot(page, SNAPSHOT_CHARS); }
-      catch { before = { url: page.url(), title: "", text: "", elements: [] }; }
+      catch { before = { url: await browser.pageUrl(page), title: "", text: "", elements: [] }; }
 
       // The hard scope limit, checked BEFORE the press and therefore before the yes is spent: Reason
       // never buys a seat, a bag, an upgrade or a fare change. An airline that wants paying to carry
@@ -18572,7 +18579,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const shot = await (async () => {
         try {
           mkdirSync(dirname(shotPath), { recursive: true });
-          await page.screenshot({ path: shotPath });
+          await page.screenshot({ path: shotPath, mask: await browser.secretBoxesToMask(page), maskColor: "#888888" });
           sealInPlace(shotPath, c); // a boarding pass is theirs: sealed (REASON_ENCRYPT_REST2)
           return shotPath;
         } catch { return ""; }
@@ -19215,7 +19222,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try {
         const res = await page.goto(url.href, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
-        db.rememberSeenUrls(c, [page.url(), url.href]);
+        db.rememberSeenUrls(c, [snap.url, url.href]);
         // A page in the browser is the same thing a fetched page is: somebody else's words, with a
         // source. It was the one reading path that said nothing about that, which mattered more here
         // than anywhere — this is the snapshot a model is about to click around inside.
@@ -19254,7 +19261,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           error: `Not pressing that: ${verdict.why}. A click that commits something goes through the gate — confirm_request with the exact details, wait for ${me.name} to answer, confirm_record, then browser_submit with that confirmation_id.`
             + (got ? ` Everything up to that click is done and it is written down, so whatever ${me.name} says, this is not lost — and if they never answer, that is what you hand back rather than "couldn't do it".` : ""),
         };
-        trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${page.url()} → ${label || el.tag}` });
+        trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${await browser.pageUrl(page)} → ${label || el.tag}` });
         return blocked;
       }
       try {
@@ -19281,6 +19288,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const label = await browser.refName(page, input.ref);
       if (label === null) return { ok: false, error: `No element ${input.ref} on this page. Call browser_read for fresh refs.` };
       const el = browser.locate(page, input.ref);
+      // What goes into a password, code or card box is never repeated back: not in this result and
+      // not in the tool log line (privacy.sealCall reads `secret_box`). A box that could not be
+      // looked at counts as one.
+      const secretBox = !!(await browser.secretRef(page, input.ref).catch(() => "unknown"));
+      const hidden = secretBox ? { secret_box: true, note: "This is a password, code or card box: what was typed is not repeated back and cannot be read from the page." } : {};
       try {
         const tag = await el.evaluate(n => n.tagName.toLowerCase());
         if (tag === "select") await el.selectOption(input.text);
@@ -19290,9 +19302,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           await page.waitForLoadState("domcontentloaded").catch(() => {});
         }
         const typed = await browser.snapshot(page, SNAPSHOT_CHARS);
-        return markOutside({ ok: true, filled: label || input.ref, value: input.text, ...typed }, { source: sourceName(typed.url ?? page.url()), text: typed.text });
+        return markOutside({ ok: true, filled: label || input.ref, ...(secretBox ? hidden : { value: input.text }), ...typed }, { source: sourceName(typed.url ?? page.url()), text: typed.text });
       } catch (e) {
-        return { ok: false, error: `Could not fill ${input.ref} ('${label}'): ${e.message.split("\n")[0]}` };
+        // The browser's own words about a failed fill are not trusted to leave out what was typed.
+        const line = secretBox ? "the box would not take it" : String(e.message.split("\n")[0]).split(input.text.length >= 4 ? input.text : "\u0000").join("[what was typed]");
+        return { ok: false, ...hidden, error: `Could not fill ${input.ref} ('${label}'): ${line}` };
       }
     }
     case "browser_submit": {
@@ -19306,7 +19320,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             ? ` — call browser_read for fresh refs and submit again; "${ctx.permission.said}" still covers it.`
             : ` and ${me.name}'s yes still stands — call browser_read for fresh refs and submit again with the same confirmation_id.`) };
       }
-      const before = page.url();
+      const before = await browser.pageUrl(page);
 
       // Every guard below this line stops the walk with the form still filled and the button still
       // unpressed — the owner's own limit, the install's daily net, a total the yes does not cover.
@@ -19334,7 +19348,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const site = sites.siteFor(before, ctx.siteHosts);
       let charge = null;
       if (site) {
-        const pageText = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+        const pageText = await browser.pageText(page).catch(() => "");
         const onPage = trust.largestAmount(pageText);
         const approved = trust.largestAmount(input.what);
         if (onPage && !approved) {
@@ -19464,18 +19478,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // server can write, the shared database included.
       const path = join(config.shotRoot, `${ownfiles.shotPrefix(c)}${Date.now()}.png`);
       mkdirSync(dirname(resolve(path)), { recursive: true });
-      await page.screenshot({ path: resolve(path), fullPage: !!input.full_page });
+      // A password box draws dots, but one switched to "show" draws the password: every secret box
+      // is covered in the picture (src/pagesecrets.js).
+      await page.screenshot({ path: resolve(path), fullPage: !!input.full_page, mask: await browser.secretBoxesToMask(page), maskColor: "#888888" });
       sealInPlace(resolve(path), c); // theirs: sealed (REASON_ENCRYPT_REST2)
-      return { ok: true, path: resolve(path), url: page.url() };
+      return { ok: true, path: resolve(path), url: await browser.pageUrl(page) };
     }
     case "browser_images": {
       const page = await browser.pageFor(c);
       if (page.url() === "about:blank") return { ok: false, error: "No page open yet. Use browser_open first." };
       const images = await browser.pageImages(page);
       // Seen, with the page they are on, so one can go on a Reason page with a "via" line.
-      db.rememberSeenUrls(c, [page.url()], { kind: "page" });
-      db.rememberSeenUrls(c, images, { kind: "page", from: page.url() });
-      return { ok: true, url: page.url(), images, count: images.length, note: images.length ? "These are real image URLs from the page. You can send any of them with send_picture, or put one on a page." : "No photos found on this page." };
+      const at = await browser.pageUrl(page);
+      db.rememberSeenUrls(c, [at], { kind: "page" });
+      db.rememberSeenUrls(c, images, { kind: "page", from: at });
+      return { ok: true, url: at, images, count: images.length, note: images.length ? "These are real image URLs from the page. You can send any of them with send_picture, or put one on a page." : "No photos found on this page." };
     }
     case "browser_close": {
       const open = browser.openConversations().includes(c);

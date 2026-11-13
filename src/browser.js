@@ -8,7 +8,7 @@ import { config } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
 import { publicUrl, allowPrivate } from "./netguard.js";
 import * as signinPage from "./signinpage.js";
-import { inPage, rememberPasswordBoxes } from "./pagesecrets.js";
+import { inPage, rememberPasswordBoxes, withoutQueries } from "./pagesecrets.js";
 
 const sessions = new Map(); // conversationId -> { context, page }
 let playwright = null;
@@ -195,7 +195,8 @@ const PAGE_TEXT = inPage((S, maxChars) => S.hide(document.body ? document.body.i
 
 /** The address the page is on, as a reading may repeat it (see hideUrl in src/pagesecrets.js). */
 export async function pageUrl(page) {
-  return await page.evaluate(PAGE_URL).catch(() => "");
+  // A page that cannot be asked (mid-navigation, closed) gives its address without the query string.
+  return await page.evaluate(PAGE_URL).catch(() => { try { return withoutQueries(page.url()); } catch { return ""; } });
 }
 const PAGE_URL = inPage((S) => S.hideUrl(location.href));
 

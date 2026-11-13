@@ -6,7 +6,7 @@
 import * as db from "./db.js";
 import * as incidents from "./incidents.js";
 import { clock, config, stamp, normalizeNumber, normalizeHandle } from "./config.js";
-import { sealTravelers } from "./privacy.js";
+import { sealCall } from "./privacy.js";
 import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
@@ -1465,8 +1465,11 @@ function ledgerResult(action, out) {
  */
 export function ledgerWrite({ conversationId, action, input, out: given, target = "", confirmationId = null, permission = null }) {
   // A passenger's details stay sealed in flight_travelers; the ledger keeps that a call happened.
-  const out = sealTravelers(action, given);
-  input = sealTravelers(action, input);
+  // So does what was typed into a password, code or card box, and what a secret box of a page held
+  // (privacy.sealCall: the same rule the tool log uses).
+  const sealed = sealCall(action, input, given);
+  const out = sealed.out;
+  input = sealed.input;
   // `unknown` is its own outcome and not a kind of error. "It failed" and "nobody knows whether it
   // went through" lead to opposite next moves — one is safe to retry and the other is the one thing
   // that can charge somebody twice — so the row has to be able to say which.
