@@ -23,10 +23,10 @@ import { dropIntake } from "./loginintake.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { recordFinding } from "./sitefindings.js";
 import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs } from "./signinpage.js";
-import { logAttempt } from "./signinlog.js";
+import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
 import { clearOriginInPage } from "./signin.js";
-import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants } from "./loginuse.js";
+import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants, faceIdState } from "./loginuse.js";
 import { requestOf } from "./resume.js";
 import * as restartGate from "./busy.js";
 
@@ -35,6 +35,7 @@ export const SIGNIN_RESULTS = [
   "signed_in", "needs_code_sms", "needs_approval", "wrong_password", "blocked",
   "not_signin_page", "origin_mismatch", "paused", "needs_face_id", "no_login", "pick_one", "busy",
   "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "not_named",
+  "not_accepted", "no_answer", "waiting_face_id",
 ];
 const OK_RESULT = new Set(["signed_in"]);
 // The form was found visible a moment ago, so a box that is not fillable within this is not the form.
@@ -60,8 +61,18 @@ function normSite(site) {
 }
 
 /** One result object, with the fixed word and a plain sentence; never page text or a query string. */
-function say(result, site, extra = "") {
+function say(result, site, extra = "", { msgClass = "", msg = "" } = {}) {
+  const quoted = msg ? ` (it said: "${safeMessage(msg)}")` : "";
+  const notAccepted = msgClass === "account_not_found"
+    ? `I couldn't sign you in to ${site}: it said it couldn't find an account for the saved email or number${quoted}. I've stopped and won't try ${site} again until tomorrow. If that isn't the email or number you use there, the login needs saving again with the right one.`
+    : msgClass === "validation"
+      ? `I couldn't sign you in to ${site}: it said the saved email, number or password isn't in the form it expects${quoted}. I've stopped and won't try ${site} again until tomorrow; the saved login probably needs saving again.`
+      : msgClass === "rate_limited"
+        ? `I couldn't sign you in to ${site}: it said there have been too many sign-in tries${quoted}. I've stopped and won't try ${site} again until tomorrow.`
+        : `I couldn't sign you in to ${site}: it didn't accept the sign-in${quoted}. I've stopped and won't try ${site} again until tomorrow.`;
   const lines = {
+    not_accepted: notAccepted,
+    no_answer: `I typed your saved login into ${site} and submitted it, but the page didn't show whether it worked before I gave up waiting, so I stopped. I won't try ${site} again until tomorrow.`,
     signed_in: `Signed you in to ${site}.`,
     needs_code_sms: `${site} texted a code to your phone to finish signing in. Send me that code and I'll type it in, once.`,
     needs_code_email: `${site} emailed a code to finish signing in, and I couldn't read it from your email. Send me that code and I'll type it in, once.`,
@@ -71,11 +82,11 @@ function say(result, site, extra = "") {
     needs_approval: `I signed in to ${site}; it wants you to approve the sign-in in an app.`,
     wrong_password: `I couldn't sign you in to ${site}: the saved password wasn't accepted. I've stopped and won't try again until you save it again.`,
     blocked: `${site} blocked the sign-in. That's their choice, not something you did. I stopped and did not retry.`,
-    not_signin_page: `I couldn't sign you in to ${site}: its sign-in page didn't show the sign-in form I expected (it may have changed, or not loaded in time), so I typed nothing. Ask me again in a bit; if it keeps happening, the saved login may need saving again.`,
+    not_signin_page: `I couldn't sign you in to ${site}: its sign-in page didn't show the sign-in form I expected (it may have changed, or not loaded in time), so I typed nothing. If it keeps happening, the saved login may need saving again.`,
     // The saved page itself has no sign-in form (a login saved before 2026-11-13 could be pinned to a
     // site's home page). Never re-pinned silently: the person forgets it and saves it again, and the
     // new save link pins the page Reason's own visit finds the form on.
-    needs_resave: `I couldn't sign you in to ${site}: the page your saved login points to has no sign-in form, so I typed nothing. It needs saving again: I can forget the saved one and send you a new link to save it on ${site}'s real sign-in page.`,
+    needs_resave: `I couldn't sign you in to ${site}: the page your saved login points to has no sign-in form, so I typed nothing. It needs saving again on ${site}'s real sign-in page: tell me to forget it and I'll send you a new link to save it there.`,
     origin_mismatch: `I couldn't sign you in to ${site}: the page wasn't on its exact sign-in address, so I typed nothing.`,
     paused: `${site} is paused after an earlier refusal, so I didn't try again.`,
     needs_face_id: `${site} needs your Face ID approval for each sign-in. Approve it here, then tell me to go ahead:`,
@@ -124,24 +135,91 @@ const SUSPICIOUS = /suspicious|unusual (activity|sign.?in)|unrecognized|we don'?
  * PR #525) is the right positive-evidence check for a real session and is wired in PR 8; here a
  * fixture-grade read is used — no password box left, no challenge, no code step — and that is flagged.
  */
-async function classifyAfterSubmit(page) {
+// A message about the form's shape, not about whether the login is right ("Please enter a valid email or
+// phone number", "Your password must contain between 4 and 60 characters"): never a wrong password.
+const VALIDATION = /please enter (a |your )?valid|enter a valid|must (contain|be|have) (between|at least|at most|from)|\bis required\b|required field|too (short|long)\b|can'?t be (blank|empty)/i;
+const NOT_FOUND = /can'?t find (an|that|this|your) account|couldn'?t find (an|that|this|your) account|no account (with|for|found)|account (doesn'?t|does not) exist|isn'?t (linked to|connected to) an account|not (registered|recognized) (as|with) an account/i;
+const RATE = /too many (attempts|tries|sign.?in|requests)|try again later|temporarily (locked|blocked|unavailable)/i;
+
+/** Which kind of message the page showed, from the page's own words ("" when none of the known ones). */
+export function messageClass(msg) {
+  const m = String(msg ?? "");
+  if (!m.trim()) return "";
+  if (VALIDATION.test(m)) return "validation";
+  if (WRONG_PW.test(m)) return "wrong_password";
+  if (NOT_FOUND.test(m)) return "account_not_found";
+  if (RATE.test(m)) return "rate_limited";
+  return "other";
+}
+
+/**
+ * Runs in the page's own frame: the visible text of anything the page marks as a message (an alert, a
+ * live region, an element whose class, id or test id says error), joined. Read only to name the ending.
+ */
+const BANNER_JS = `(() => {
+  var sel = '[role=alert],[aria-live=assertive],[aria-live=polite],[data-uia*=error i],[class*=error i],[id*=error i],[class*=alert i],[class*=message--error i]';
+  var out = [], seen = 0;
+  var els = document.querySelectorAll(sel);
+  for (var i = 0; i < els.length && i < 60; i++) {
+    var el = els[i], r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (r.width < 1 || r.height < 1 || cs.visibility === 'hidden' || cs.display === 'none') continue;
+    var t = String(el.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (t && t.length < 400 && out.indexOf(t) < 0) { out.push(t); if (++seen >= 4) break; }
+  }
+  return out.join(' | ');
+})()`;
+const LINES_JS = `(() => String((document.body && document.body.innerText) || '').split(/\\n+/).map(function (s) { return s.replace(/\\s+/g, ' ').trim(); }).filter(Boolean).slice(0, 400))()`;
+async function bannerOf(page) { try { return String(await page.evaluate(BANNER_JS) ?? ""); } catch { return ""; } }
+async function linesOf(page) { try { const l = await page.evaluate(LINES_JS); return Array.isArray(l) ? l : []; } catch { return []; } }
+/** The page's words that were not on it before the submit (and the banner, which is the page's own message). */
+async function freshWords(page, before) {
+  const banner = await bannerOf(page);
+  if (!before) return { banner, fresh: "" };
+  const had = new Set(before);
+  const fresh = (await linesOf(page)).filter(l => !had.has(l)).join(" ").slice(0, 1_000);
+  return { banner, fresh };
+}
+
+/**
+ * Read the page after the secret was typed and submitted, and name what happened. It only reads the
+ * page (never types). `ctx.before` is the page's lines just before the submit: a message is the words
+ * that are NEW since then (or the page's own alert), so help text that was always there ("Forgot your
+ * password?") is never read as a verdict. "wrong_password" only when the page's message says so about
+ * the password or the credentials; a box still showing with another message is "not_accepted", and
+ * with no message at all "no_answer" (2026-11-13: a Netflix attempt was called a wrong password 400 ms
+ * after the submit, before the page answered). The message class and words go on `ctx` for the line
+ * and the fixed words; the result word is what is returned.
+ */
+async function classifyAfterSubmit(page, ctx = {}) {
   let read;
   try { read = await readPage(page); } catch { return "not_signin_page"; }
-  if (await challengeShown(page)) return "blocked";
+  const challenge = await challengeShown(page);
+  ctx.challenge = challenge;
+  if (challenge) return "blocked";
   const text = String(read?.raw?.text ?? "");
   const boxes = Array.isArray(read?.raw?.fields) ? read.raw.fields : [];
   const kinds = boxes.map(f => kindOf(f));
   const hasPassword = kinds.includes("password");
   const hasOtp = kinds.includes("otp");
-  if (read.kind === "challenge" || SUSPICIOUS.test(text)) return "blocked";
-  if (hasPassword && WRONG_PW.test(text)) return "wrong_password";
+  const { banner, fresh } = await freshWords(page, ctx.before);
+  // Without a before-reading (a code step), the page's text is all there is.
+  const msg = ctx.before ? [banner, fresh].filter(Boolean).join(" ") : banner;
+  const cls = messageClass(msg) || (!ctx.before && hasPassword && WRONG_PW.test(text) ? "wrong_password" : "");
+  ctx.msgClass = cls || "none";
+  ctx.msg = cls ? (banner || fresh || "").slice(0, 200) : "";
+  if (read.kind === "challenge" || SUSPICIOUS.test(msg) || (!ctx.before && SUSPICIOUS.test(text))) return "blocked";
+  if (cls === "wrong_password" && hasPassword) return "wrong_password";
   if (PUSH.test(text)) return "needs_approval";
   if (hasOtp) return AUTHENTICATOR.test(text) ? "needs_authenticator" : EMAILED.test(text) ? "needs_code_email" : "needs_code_sms";
+  if (cls === "wrong_password") return "wrong_password"; // the page said so, though it took the box away
   // No password box and no challenge: the form was accepted. A logout/account control is the
   // positive evidence a real session read uses; its absence on a fixture is still a signed-in page.
-  if (!hasPassword) return "signed_in";
-  // Still sitting on the password box with no error: treat as not completing rather than claim success.
-  return "wrong_password";
+  if (!hasPassword && (!cls || cls === "other")) return "signed_in";
+  // The page said something else (a validation line, no such account, too many tries): it didn't
+  // accept the sign-in, and that is not a wrong password.
+  if (cls) return "not_accepted";
+  // Still on the password box and the page said nothing: it never answered. Not a wrong password.
+  return "no_answer";
 }
 
 // The field's kind from what the site says about it (mirrors signinpage.fieldKind, kept local so the
@@ -184,8 +262,12 @@ async function findEmailFirst(page) {
  * page to name the outcome but never returns a secret. A redirect off the pinned origin mid-fill
  * throws, which withLogin turns into the fixed code fill_failed and the caller reads as origin_mismatch.
  */
-async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, { typing = () => {}, relax = () => {}, ours = () => true, atPin = () => true, stepMs = STEP_MS } = {}) {
+async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, { typing = () => {}, relax = () => {}, ours = () => true, atPin = () => true, stepMs = STEP_MS, answerMs = ANSWER_MS, diag = {}, toggled = () => {} } = {}) {
   const here = () => urlParts(page.url()).origin;
+  // The safe line's two numbers per box: what the box holds after typing, what the saved field has.
+  diag.boxes = [];
+  const note = async (loc, b, kind) => { diag.boxes.push({ kind, typed: await lengthIn(loc), saved: b.toString("utf8").length }); };
+  const userKind = async () => { try { return kindOf(await form.user.evaluate((el) => ({ type: el.type, name: el.name, id: el.id, ac: el.getAttribute("autocomplete") }))); } catch { return "text"; } };
   const ensure = () => { if (here() !== pinnedOrigin) { const e = new Error("origin drifted"); e.name = "OriginDrift"; throw e; } };
   if (form.emailFirst) {
     // The email-first rule (2026-11-13): type the username, submit it OURSELVES, and type the password
@@ -196,19 +278,22 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, {
     const notOurs = () => { if (!ours()) { const e = new Error("navigation we did not cause"); e.name = "OriginDrift"; throw e; } };
     ensure(); notOurs();
     typing();
-    await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); });
+    const uk = await userKind();
+    await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.user, b, uk); });
     // A moment for anything the typing set off to show itself, then the check: a page that moves on its
     // own once the username is in is not answering our submit, and gets no password.
     await page.waitForTimeout(OWN_STEP_MS).catch(() => {});
     ensure(); notOurs();
     const before = page.url();
     await form.user.press("Enter").catch(() => {});
-    let pass = await passwordStep(page, pinnedOrigin, 1_500);
-    if (!pass && page.url() === before) {
-      // Enter did nothing (a "Continue" button outside any form): press the page's own one, once.
-      await page.locator('button[type="submit"]:visible, button:has-text("Continue"):visible, button:has-text("Next"):visible').first().click({ timeout: FILL_MS }).catch(() => {});
+    let pass = await passwordStep(page, pinnedOrigin, 1_500, { toggled });
+    if (!pass && page.url() === before && !(await passwordToggle(page))) {
+      // Enter did nothing (a "Continue" button outside any form): press the page's own one, once. Never
+      // one that sends a code or a link instead ("Send sign-in code").
+      await page.locator('button[type="submit"]:visible, button:has-text("Continue"):visible, button:has-text("Next"):visible')
+        .filter({ hasNotText: CODE_BUTTON }).first().click({ timeout: FILL_MS }).catch(() => {});
     }
-    if (!pass) pass = await passwordStep(page, pinnedOrigin, stepMs);
+    if (!pass) pass = await passwordStep(page, pinnedOrigin, stepMs, { toggled });
     ensure();
     if (!pass) {
       const r = await readPage(page).catch(() => null);
@@ -216,10 +301,10 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, {
     }
     form = { user: form.user, pass }; // the username box too, for the clean-up after the submit (a one-page step keeps it)
     ensure(); // immediately before the password keystroke
-    await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); });
+    await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.pass, b, "password"); });
     ensure();
     relax();
-    return await submitAndRead(page, form);
+    return await submitAndRead(page, form, { answerMs, diag });
   }
   // The browser is held to the exact pinned origin until both boxes are typed (the caller pinned it, and
   // the browser refuses every page load anywhere else), so the document the keystroke lands in is
@@ -230,14 +315,14 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, {
   const onPinnedPage = () => { if (!atPin()) { const e = new Error("left the pinned page"); e.name = "OriginDrift"; throw e; } };
   ensure(); onPinnedPage();
   typing();
-  if (form.user) await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); });
+  if (form.user) { const uk = await userKind(); await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.user, b, uk); }); }
   ensure(); onPinnedPage(); // immediately before the password keystroke (design B5 step 5)
-  await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); });
+  await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.pass, b, "password"); });
   ensure();
   // Typed. The submit may go to another origin of the same site (a sign-in host posting to the account
   // host); the same-site lock still refuses any other site, and http under an https pin.
   relax();
-  return await submitAndRead(page, form);
+  return await submitAndRead(page, form, { answerMs, diag });
 }
 
 /** How long an email-first page is given to show its password step after our own submit. */
@@ -249,18 +334,46 @@ const OWN_STEP_MS = 500;
  * Real = the page's own frame, input[type=password], exactly one, not a "new-password" box (src/
  * signinpage.js loginFormOf says "password"). Any other origin ends the wait at once.
  */
-async function passwordStep(page, pinnedOrigin, ms) {
+async function passwordStep(page, pinnedOrigin, ms, { toggled = () => {} } = {}) {
   const until = Date.now() + ms;
+  let clicked = false;
   for (;;) {
     if (urlParts(page.url()).origin !== pinnedOrigin) return null;
     if (await challengeShown(page)) return null; // the caller reads it again and stops as "blocked"
     const r = await readPage(page).catch(() => null);
     const boxes = page.locator('input[type="password"]:visible');
     if (r && loginFormOf(r.raw) === "password" && (await boxes.count().catch(() => 0)) === 1) return boxes.first();
+    // The step offers a code first, with the password behind the page's own "Use password instead": press it, once.
+    if (!clicked && (await boxes.count().catch(() => 0)) === 0) {
+      const t = await passwordToggle(page);
+      if (t) { clicked = true; toggled(); await t.click({ timeout: FILL_MS }).catch(() => {}); continue; }
+    }
     if (Date.now() >= until) return null;
     await page.waitForTimeout(250).catch(() => {});
   }
 }
+
+/**
+ * The page's own "use password instead" control, when it offers a code (or a passkey) first and keeps the
+ * password behind it: a visible button or link on the page's own frame whose whole text means "use a
+ * password". A link to another origin is never it. "Forgot password?" and "Reset password" are not.
+ */
+const USE_PASSWORD = /^\s*(use|sign in with|log in with|continue with|enter|type) (a |the |your |my )?password( instead)?\s*[.!]?\s*$/i;
+async function passwordToggle(page) {
+  const c = page.locator('button:visible, a:visible, [role="button"]:visible, [role="link"]:visible').filter({ hasText: /password/i });
+  const n = Math.min(await c.count().catch(() => 0), 12);
+  for (let i = 0; i < n; i++) {
+    const el = c.nth(i);
+    const info = await el.evaluate((e) => ({ text: String(e.innerText || e.textContent || "").replace(/\s+/g, " ").trim(), href: e.tagName === "A" ? String(e.getAttribute("href") ?? "") : "" })).catch(() => null);
+    if (!info || !USE_PASSWORD.test(info.text)) continue;
+    if (info.href && !info.href.startsWith("#")) {
+      try { if (new URL(info.href, page.url()).origin !== urlParts(page.url()).origin) continue; } catch { continue; }
+    }
+    return el;
+  }
+  return null;
+}
+export const _testWords = { messageClass, USE_PASSWORD };
 
 /**
  * Runs in the page's own frame: is a human-check showing that wants a person (a visible reCAPTCHA
@@ -291,22 +404,67 @@ async function challengeShown(page) {
 }
 export const _test = { CHALLENGE_FRAME_JS };
 
-async function submitAndRead(page, form) {
+/** How long the page is given to answer the submit: a script-driven form (Netflix) answers by XHR, not a page load. */
+const ANSWER_MS = 12_000;
+/** A control that sends a code or a link instead of signing in with the password: never pressed. */
+const CODE_BUTTON = /\b(code|link|text me|email me|send|magic)\b/i;
+
+/** How many characters a box holds now: a number only, read in the page; never the value. */
+async function lengthIn(loc) {
+  try { return Number(await loc.evaluate((el) => String(el.value ?? "").length)); } catch { return null; }
+}
+
+/**
+ * After the submit: wait for the page's answer, bounded. An answer is the address changing, the
+ * password box going away (and staying away), a code box, a human-check, or a message the page shows
+ * that wasn't there before the submit (its alert, or words naming the ending). Words that are none of
+ * those (a cookie banner, a spinner) don't end the wait.
+ */
+async function awaitAnswer(page, form, before, ms) {
+  const startUrl = page.url();
+  const until = Date.now() + ms;
+  let goneSince = 0;
+  for (;;) {
+    await page.waitForTimeout(250).catch(() => {});
+    if (page.isClosed()) return;
+    if (page.url() !== startUrl) { await page.waitForLoadState("domcontentloaded").catch(() => {}); await page.waitForTimeout(300).catch(() => {}); return; }
+    if (await challengeShown(page)) return;
+    const showing = await form.pass.isVisible().catch(() => false);
+    if (!showing) { goneSince ||= Date.now(); if (Date.now() - goneSince >= 1_000) return; } else goneSince = 0;
+    const { banner, fresh } = await freshWords(page, before);
+    const words = `${banner} ${fresh}`;
+    if (messageClass(words) && messageClass(words) !== "other") return;
+    if (banner && messageClass(banner)) return;
+    if (PUSH.test(fresh) || SUSPICIOUS.test(fresh)) return;
+    if (await page.locator('input[autocomplete="one-time-code"]:visible').count().catch(() => 0)) return;
+    if (Date.now() >= until) return;
+  }
+}
+
+async function submitAndRead(page, form, { answerMs = ANSWER_MS, diag = {} } = {}) {
   // "Remember this device" when the page offers it (design B5 step 5), so the next job need not sign in.
   const remember = page.locator('input[type="checkbox"][name*="remember" i], input[type="checkbox"][id*="remember" i], input[type="checkbox"][name*="trust" i]').first();
   if (await remember.count().catch(() => 0)) await remember.check().catch(() => {});
-  await Promise.all([
-    page.waitForLoadState("domcontentloaded").catch(() => {}),
-    form.pass.press("Enter").catch(async () => { await page.locator('button[type="submit"]:visible, button:has-text("Sign in"):visible, button:has-text("Log in"):visible').first().click().catch(() => {}); }),
-  ]);
-  await page.waitForTimeout(400).catch(() => {});
+  const before = await linesOf(page);
+  const startedAt = Date.now();
+  diag.pressed = "enter";
+  await form.pass.press("Enter").catch(async () => {
+    diag.pressed = "submit_button";
+    await page.locator('button[type="submit"]:visible, button:has-text("Sign in"):visible, button:has-text("Log in"):visible, button:has-text("Continue"):visible')
+      .filter({ hasNotText: CODE_BUTTON }).first().click({ timeout: FILL_MS }).catch(() => { diag.pressed = "none"; });
+  });
+  await awaitAnswer(page, form, before, answerMs);
+  diag.waitedMs = Date.now() - startedAt;
   // Clean up before anyone looks: empty any box the filler typed into that is still on the page
   // (design B5 step 7). After a submit the page has usually navigated and the box is gone; a short
   // timeout keeps that ordinary case from blocking on the default wait.
   for (const loc of [form.user, form.pass]) {
     if (loc) await loc.fill("", { timeout: 800 }).catch(() => {});
   }
-  return await classifyAfterSubmit(page);
+  const ctx = { before };
+  const result = await classifyAfterSubmit(page, ctx);
+  Object.assign(diag, { msgClass: ctx.msgClass, msg: ctx.msg, challenge: ctx.challenge === true, finalUrl: page.url() });
+  return result;
 }
 
 
@@ -349,6 +507,7 @@ let signIns = 0;
 export async function signIn(conversationId, site, {
   trigger = null, purpose = "", launch = realLaunch, now = () => clock.now(),
   emailCode = codeFromGmail, enter = enterCode, awaitReply = awaitCodeReply, note = defaultNote, waitMs = undefined,
+  answerMs = ANSWER_MS,
 } = {}) {
   const c = String(conversationId ?? "");
   const host = normSite(site);
@@ -395,7 +554,18 @@ export async function signIn(conversationId, site, {
   // saved site Reason's question just before their bare "yes" named (src/namedsite.js). Code reads the
   // stored thread; the model's say-so is not an input. Refused: nothing opens, nothing is unwrapped, and
   // the fixed words ask them, so their answer ("yes", or the name) lets the next call through.
-  if (!resumed && !namedByThem(trigger?.messages ?? [], row, listLogins(c)).ok) {
+  // A Face ID yes for this exact login is their naming of it (2026-11-13: Netflix approved, then their
+  // bare "go ahead" got "Sign in to netflix.com for that?" twice). An approved yes lets the call through
+  // to be spent below; a link still waiting, or a yes just spent on this job, ends quietly: Reason
+  // carries on by itself when they approve, and the job already going is not started or asked again.
+  const face = resumed ? "" : faceIdState(c, row.id, { now: now() });
+  const named = resumed || face === "approved" || namedByThem(trigger?.messages ?? [], row, listLogins(c)).ok;
+  if (!named && face === "waiting") {
+    recordLoginEvent(c, { site: host, event: "signin", outcome: "needs_face_id", purpose: why });
+    return { ok: false, result: "waiting_face_id", say_exactly: "" };
+  }
+  if (!named && face === "just_used") return { ok: false, result: "resume_spent", say_exactly: "" };
+  if (!named) {
     recordLoginEvent(c, { site: host, event: "signin", outcome: "stopped", purpose: why });
     const name = namesOf(row).names.size && String(row.label ?? "").trim() ? String(row.label).trim() : host;
     return { ok: false, result: "not_named", say_exactly: `Sign in to ${name} for that?` };
@@ -403,9 +573,12 @@ export async function signIn(conversationId, site, {
   // Careful sites and an "each time" permission: a fresh Face ID before EVERY use (design B8). There
   // is no standing permission for them: one approval is one sign-in, consumed here before anything opens.
   if ((verdict.policy === "careful" || row.permission === "each_time") && resumed?.kind !== "approved" && !takeApproval(c, row.id, { now: now() })) {
-    const ask = askFaceId(c, row.id, host, { now: now(), request: resumed?.request ?? requestOf(trigger?.messages ?? []) });
+    const request = resumed?.request ?? requestOf(trigger?.messages ?? []);
+    const ask = askFaceId(c, row.id, host, { now: now(), request, via: trigger?.channel === "web" ? "web" : trigger?.channel ? "phone" : "" });
     recordLoginEvent(c, { site: host, event: "signin", outcome: "needs_face_id", purpose: why });
-    return say("needs_face_id", host, ask.link);
+    // With their request kept, the approval carries the job on by itself (src/resume.js): no "go ahead".
+    const out = say("needs_face_id", host, ask.link);
+    return request ? { ...out, say_exactly: `${host} needs your Face ID approval for each sign-in. Approve it here and I'll carry on by myself:\n${ask.link}` } : out;
   }
   // This sign-in is the job: a save grant still waiting for the same site (its resumed turn queued
   // behind this one) is spent now, so the job is not signed in to and done twice (review 2026-11-13).
@@ -453,7 +626,8 @@ export async function signIn(conversationId, site, {
     // changes the path, and a site that tidies its own address on the same path is not refused for it.
     page.on("request", (q) => { try { if (q.isNavigationRequest() && q.frame() === page.mainFrame()) navs += 1; } catch { /* gone */ } });
     const atPin = () => urlParts(page.url()).path === row.signin_path;
-    const ours = () => navs === 0 && atPin();
+    let navBase = 0; // navigations our own click on the page's "use password" control caused
+    const ours = () => navs === navBase && atPin();
     // A sign-in form the page draws with its own script is waited for (bounded; a finished page that
     // stays formless ends the wait early). A challenge ends it too.
     const watch = settleWatch(page);
@@ -470,6 +644,17 @@ export async function signIn(conversationId, site, {
       return say("blocked", host);
     }
     let form = await findForm(page);
+    // The page offers a code first and keeps the password behind its own "Use password instead": press
+    // it before anything is typed, so Enter in the email box never sends a code (2026-11-13).
+    if (!form.ok) {
+      const toggle = await passwordToggle(page);
+      if (toggle) {
+        await toggle.click({ timeout: FILL_MS }).catch(() => {});
+        await page.locator('input[type="password"]:visible').first().waitFor({ timeout: 3_000 }).catch(() => {});
+        navBase = navs;
+        form = await findForm(page);
+      }
+    }
     if (!form.ok && loginFormOf(read?.raw) === "email_first") form = await findEmailFirst(page);
     if (!form.ok) {
       // The saved page itself has no sign-in form: the pin is wrong, not the page's mood. Never re-pinned
@@ -480,10 +665,14 @@ export async function signIn(conversationId, site, {
 
     // Unwrap and type, one KMS call, with the origin the browser is on now (design B5 step 5; KMS
     // refuses any other origin through the encryption context).
+    // The page's own scripts get a moment to finish loading (a sign-in page's invisible bot check loads a
+    // few seconds after the form shows; a submit before it may be refused). Bounded, nothing typed yet.
+    await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
     let result;
+    const diag = {};
     try {
       result = await withLogin(c, row.id, at.origin, (fields) => fillAndSubmit(page, row.signin_origin, form, fields,
-        { typing: () => { typed = true; }, relax: () => pinExact(c, null), ours, atPin }), { purpose: why });
+        { typing: () => { typed = true; }, relax: () => pinExact(c, null), ours, atPin, answerMs, diag, toggled: () => { navBase = navs; } }), { purpose: why });
     } catch (e) {
       // withLogin's fixed codes, never a value. OriginDrift mid-fill comes back as fill_failed.
       const code = e instanceof VaultError ? e.code : "fill_failed";
@@ -541,7 +730,8 @@ export async function signIn(conversationId, site, {
     }
 
     finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
-    return say(result, host);
+    if (result !== "signed_in") logDiag({ signin_url: pinned }, { ...diag, result });
+    return say(result, host, "", { msgClass: diag.msgClass, msg: diag.msg });
   } catch {
     // Never the error's words: a page's or a browser's text does not go back to the model.
     try { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt, typed, at: now() }); } catch { /* best effort */ }

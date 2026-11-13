@@ -19,6 +19,7 @@
 // shadow-stage / shadow-night), so Paper and Night paper both follow.
 import { esc } from "./render.js";
 import { wordmark, action, typed } from "./webkit.js";
+import { backHref } from "./backlink.js";
 
 // tokens.json spacing / radius, by name.
 const SPACE = "--max-w:1120px;--gutter:1.25rem;--gutter-wide:3rem;--part-gap:56px;--message-gap:40px;--label-gap:.75rem;--card-pad:2rem;--radius:4px;--radius-btn:3px";
@@ -115,8 +116,21 @@ export const PAPER_CSS = `
 `;
 
 // ---------------------------------------------------------------- parts
-/** The page's header: the wordmark, home, and (StoreSignIn) a typed eyebrow on the right. */
-export const header = ({ right = "" } = {}) => `<header class="pf-hd">${wordmark({ href: "/web?home" })}${right ? `<span class="pf-l">${esc(right)}</span>` : ""}</header>`;
+/**
+ * The page's header: the wordmark and (StoreSignIn) a typed eyebrow on the right. `home`: the conversation
+ * the page's link was sent in. The wordmark then goes where Back to Messages goes (src/pages/backlink.js):
+ * a texted person's own thread in Messages, a web-chat person's web thread. Decided by that
+ * conversation, never by whether this browser holds a Reason Web session (2026-11-13: the save page's
+ * wordmark opened Reason Web for someone who texts Reason). No conversation: Reason Web's home.
+ */
+export const header = ({ right = "", home = "", via = "" } = {}) => {
+  let mark = wordmark({ href: "/web?home" });
+  if (home) {
+    const { href, sms } = backHref(home, { via });
+    mark = wordmark({ href }).replace('aria-label="Reason, home"', `aria-label="${sms ? "Back to your thread with Reason in Messages" : "Back to your thread with Reason"}"${sms ? " data-sms" : ""}`);
+  }
+  return `<header class="pf-hd">${mark}${right ? `<span class="pf-l">${esc(right)}</span>` : ""}</header>`;
+};
 
 /**
  * One screen: the main column and its margin column. `step` names it when a page holds several

@@ -89,7 +89,7 @@ test("the runtime hands the filler to every turn; the turn's kind (not the model
       conversationId: ME, kind: "event", messages: [{ role: "user", content: "check my acme bill" }], signIn: leaky.fn,
     });
     assert.equal(leaky.calls.length, 1);
-    assert.deepEqual(leaky.calls[0].opts.trigger, { kind: "event", messages: [{ role: "user", content: "check my acme bill" }] }, "the turn's own kind and the stored thread go to the gate");
+    assert.deepEqual(leaky.calls[0].opts.trigger, { kind: "event", channel: "phone", messages: [{ role: "user", content: "check my acme bill" }] }, "the turn's own kind, its thread (phone or web) and the stored thread go to the gate");
     assert.equal(leaky.calls[0].site, "acme.test");
     assert.ok(!JSON.stringify(r).includes(SECRET) && !JSON.stringify(r).includes("u@example.test"), "only the fixed fields leave the tool");
     assert.deepEqual(Object.keys(r).sort(), ["note", "ok", "result", "say_exactly"]);

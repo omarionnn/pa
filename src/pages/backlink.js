@@ -46,7 +46,10 @@ export function threadNumber(conversationId) {
  * Where Back to Messages goes. `reply`: a key of REPLIES (or "" for none). `apple`: the iOS form.
  * → { href, sms } ; sms false means the web thread (no number to text).
  */
-export function backHref(conversationId, { reply = "", apple = true } = {}) {
+export function backHref(conversationId, { reply = "", apple = true, via = "" } = {}) {
+  // The thread the link was SENT in decides (2026-11-13): a link sent in a web chat goes back to the web
+  // thread; one sent in their text thread goes to Messages. Never the browser it is opened in.
+  if (via === "web") return { href: WEB_THREAD, sms: false };
   const number = threadNumber(conversationId);
   if (!number || !/^\+\d{6,15}$/.test(number)) return { href: WEB_THREAD, sms: false };
   const body = Object.hasOwn(REPLIES, reply) ? REPLIES[reply] : "";
@@ -57,8 +60,8 @@ export function backHref(conversationId, { reply = "", apple = true } = {}) {
  * The ending: what just happened (`said`, the page's own voice), the one button, and the small line
  * under it saying what the button does. `reply` as backHref. `id` names the button for the page script.
  */
-export function backToMessages(conversationId, { reply = "", id = "", label = "Back to Messages" } = {}) {
-  const { href, sms } = backHref(conversationId, { reply });
+export function backToMessages(conversationId, { reply = "", id = "", label = "Back to Messages", via = "" } = {}) {
+  const { href, sms } = backHref(conversationId, { reply, via });
   const under = !sms ? "Opens your thread with Reason."
     : reply ? "Opens Messages with a reply typed for you. Just hit send." : "Opens your thread with Reason in Messages.";
   return `<div class="pf-back"><a class="act pf-go pf-back-a" href="${esc(href)}"${sms ? " data-sms" : ""}${id ? ` id="${esc(id)}"` : ""}>${esc(label)} <span aria-hidden="true">→</span></a>`

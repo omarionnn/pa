@@ -282,7 +282,7 @@ test("repair: a login pinned to a home page with no sign-in form types nothing a
   const out = await signIn("acme.test");
   assert.equal(out.result, "not_signin_page");
   assert.equal(out.resave, true);
-  assert.match(out.say_exactly, /needs saving again: I can forget the saved one and send you a new link/);
+  assert.match(out.say_exactly, /needs saving again on .*: tell me to forget it and I.ll send you a new link/);
   assert.equal(posted.length, 0, "nothing typed, nothing posted");
   assert.equal(sl.listLogins(ME).length, 1, "the saved login is left as it is: never re-pinned behind their back");
 });
