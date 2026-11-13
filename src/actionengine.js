@@ -827,7 +827,8 @@ Rules for the words:
 - title: under 12 words, verb first, second person, includes the date when there is one, and promises exactly what the route finishes and no more: "Accept Dana's dinner invite for Friday", "Pay your water bill before Nov 20", "Cancel your Netflix before it renews Nov 27". Never "draft", "remind", "look into", "plan", "figure out".
 - job: at most 24 words: exactly what Reason will do and what finished looks like.
 - why_now: at most 18 words, first names only. NEVER say where it came from: no sender, no subject line, no "an email said", no company unless the title already names it. No amounts, no account numbers.
-- lead: at most 14 words, second person, the fact and its date, no request verb: "your Anthropic key expires Nov 18". It opens a text that starts "morning ${name.trim().split(/\s+/)[0].toLowerCase()}." and, for a route "none" entry, it is the whole of what is said.
+- lead: at most 14 words, second person, the fact and its date, no request verb: "your Anthropic key expires Nov 18". It opens a text that starts "morning ${name.trim().split(/\s+/)[0].toLowerCase()}." and, for a route "none" entry, it is the whole of what is said. For a "none" entry with no date of its own, say what the notice said and the day it was SENT, because nobody here can see whether it has been sorted since: "AWS suspended your account on Nov 11", not "your AWS account is suspended".
+- No email address anywhere in title, lead, why_now, prefill or offer, and no account number: name the service ("your AWS account"), never the mailbox it came to.
 - prefill: first person, what ${name} would text Reason to ask for it, at most 140 characters, starts with a verb or "my". Natural, no "please".
 - offer: at most 10 words, a question starting with "want me to".
 - drawing: the one key from the list that fits: key (a credential, a login), cake (a birthday, a celebration), server (a system, an alert), calendar (a date, a meeting, an invite), mail (a reply owed, a letter), phone (a call to make), bag (something to buy or order), tooth (an appointment with a doctor or dentist), note (a renewal, anything else).
@@ -849,6 +850,7 @@ export function stage2Prompt({ candidates, chat = [] }) {
 }
 
 const wordCount = (s) => String(s ?? "").trim().split(/\s+/).filter(Boolean).length;
+const ADDRESS_RE = /[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/i;
 const FIRST_PERSON_RE = /^(my|me|i\b|i'm|help|answer|respond|add|restore|top|draft|write|review|verify|resolve|contact|dispute|return|register|sign|file|submit|stop|keep|switch|change|pull|replace|renew|reply|book|plan|pay|confirm|call|order|find|figure|look|send|cancel|check|set|get|make|move|schedule|handle|sort|start|deal|rsvp|accept|decline|remind|buy|reserve|email|text|tell|ask|follow|fix|update|see|work)\b/i;
 
 /**
@@ -864,6 +866,8 @@ export function validCard(card, known) {
   if (!ROUTE_ANSWERS.includes(route)) return null;
   const lead = cut(card.lead, 120);
   if (!lead || wordCount(lead) > 14) return null;
+  // Addresses never leave the server (the PRIVACY note above): not in a text, not on the page.
+  if ([card.lead, card.title, card.why_now, card.prefill, card.offer].some(w => ADDRESS_RE.test(String(w ?? "")))) return null;
   const urgency = Math.min(5, Math.max(1, Math.round(Number(card.urgency) || 1)));
   const effort = Math.min(5, Math.max(1, Math.round(Number(card.effort_saved) || 1)));
   const title = cut(card.title, 140);
@@ -1134,19 +1138,38 @@ export async function runMorning(conversationId, { now = clock.now(), tz = dream
   const words = (url) => (ranked.cards.length ? morningText({ name, lead: ranked.cards[0].lead, count: ranked.cards.length, url }) : knownText({ name, lines }));
   if (dry) return { outcome: ranked.cards.length ? "cards" : "known", counts, stage1: s1, ...more, bundle, text: words("<link>") };
 
-  // The note: its cards and, at the bottom, the "also worth knowing" lines. With no card there is
-  // no page to open (the note is closed as it is written): it is the record of what the line said.
-  const digest = cards.createDigest(c, ranked.cards.map(k => ({ verb: k.verb, title: k.title, whyNow: k.whyNow, prefill: k.prefill, drawing: k.drawing })), { now, also: lines });
-  db.atomically(() => {
-    digest.cards.forEach((row, i) => writeSource(c, row.id, ranked.cards[i].candidate, { now, key: ranked.cards[i].key, routed: ranked.cards[i].routed }));
-    digest.also.forEach((row, i) => writeSource(c, row.id, known[i].candidate, { now, key: known[i].key }));
-  });
-  finish(ranked.cards.length ? "cards" : "known", blind ? "source_failed_partial" : "", {}, s2.cost, digest.id);
-  // The page exists either way; the text only inside the day's caps (two from this engine, and the
-  // watchful sweep's hard cap, which this text also counts against).
   const budget = notice.budgetFor(c, { now, timeZone: tz });
   let sent = { ok: false, error: textsToday(c, day) >= MAX_TEXTS_PER_DAY ? "two_texts_today" : budget.capped ? "hard_cap" : "" };
-  if (!sent.error) sent = await sendText(c, words(digest.url), { idempotencyKey: `cards:${c}:${day}:morning`, runtime, log });
+  const write = () => {
+    // The note: its cards and, at the bottom, the "also worth knowing" lines. With no card there is
+    // no page to open (the note is closed as it is written): it is the record of what the line said.
+    const made = cards.createDigest(c, ranked.cards.map(k => ({ verb: k.verb, title: k.title, whyNow: k.whyNow, prefill: k.prefill, drawing: k.drawing })), { now, also: lines });
+    db.atomically(() => {
+      made.cards.forEach((row, i) => writeSource(c, row.id, ranked.cards[i].candidate, { now, key: ranked.cards[i].key, routed: ranked.cards[i].routed }));
+      made.also.forEach((row, i) => writeSource(c, row.id, known[i].candidate, { now, key: known[i].key }));
+    });
+    return made;
+  };
+  let digest = null;
+  if (!ranked.cards.length) {
+    // Only lines, and a line lives in the text alone (there is no page). So the text goes FIRST, and
+    // the record is written only if it went: a line the day's cap or a failed send kept back was
+    // never said, and stays sayable tomorrow.
+    if (!sent.error) sent = await sendText(c, words(""), { idempotencyKey: `cards:${c}:${day}:morning`, runtime, log });
+    if (!sent.ok) {
+      finish("empty", `known_unsent:${String(sent.error ?? "").replace(/[^a-z_]/gi, "").slice(0, 30)}`, {}, s2.cost);
+      log({ action_cards: c, texted: 0, why: String(sent.error ?? "").slice(0, 40), cards: 0, known: known.length });
+      return { outcome: "empty", why: "known_unsent", counts, texted: false, stage1: s1, ...more };
+    }
+    digest = write();
+    finish("known", blind ? "source_failed_partial" : "", {}, s2.cost, digest.id);
+  } else {
+    digest = write();
+    finish("cards", blind ? "source_failed_partial" : "", {}, s2.cost, digest.id);
+    // The page exists either way; the text only inside the day's caps (two from this engine, and the
+    // watchful sweep's hard cap, which this text also counts against).
+    if (!sent.error) sent = await sendText(c, words(digest.url), { idempotencyKey: `cards:${c}:${day}:morning`, runtime, log });
+  }
   if (sent.ok) {
     db.db.prepare("UPDATE action_card_days SET texts_sent = 1, texted_at = ? WHERE conversation_id = ? AND day = ?").run(clock.now(), c, day);
     db.bumpNoticeBudget(c, day);

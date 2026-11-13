@@ -50,6 +50,8 @@ const cards = await import("../src/actioncards.js");
 const engine = await import("../src/actionengine.js");
 const routes = await import("../src/cardroutes.js");
 const page = await import("../src/pages/actioncards.js");
+const webnotes = await import("../src/pages/webnotes.js");
+const harm = await import("../src/harm.js");
 const google = await import("../src/google.js");
 const signin = await import("../src/signin.js");
 const findings = await import("../src/sitefindings.js");
@@ -421,6 +423,12 @@ test("also worth knowing: only an authenticated notice, at most two, said once; 
   // "Where did you see that?" still has an answer, as a class and a day.
   assert.match(engine.sourceOf(C, d.also[0].id).from, /^from a mail on /);
 
+  // An address never rides in a line or a title: the entry is dropped, not trimmed.
+  const known1 = new Set(["mail:a:1"]);
+  assert.equal(engine.validCard({ candidate_key: "mail:a:1", route: "none", lead: "your AWS account on kofi@example.com is suspended", urgency: 5, effort_saved: 2 }, known1), null);
+  assert.ok(engine.validCard({ candidate_key: "mail:a:1", route: "none", lead: "AWS suspended your account on Nov 11", urgency: 5, effort_saved: 2 }, known1));
+  assert.match(engine.systemPrompt({ name: "Kofi", day: "Tuesday", tz: TZ }), /the day it was SENT/);
+
   // The next morning: the two that were said are not said again; the two that were not, are.
   const next = NOW + DAY;
   const rt2 = fakeRuntime();
@@ -432,6 +440,21 @@ test("also worth knowing: only an authenticated notice, at most two, said once; 
   const r3 = await engine.runMorning(C, { now: next + DAY, tz: TZ, read: g.read, ask: scripted(plan).ask, tokensFor, runtime: rt3 });
   assert.equal(r3.outcome, "empty");
   assert.equal(rt3.sent.length, 0);
+});
+
+test("a line the day's cap kept back was never said: nothing is recorded, and it is still sayable the next morning", async () => {
+  const g = fakeGoogle({ mail: [AWS()] });
+  const plan = () => ({ route: "none", title: "Verify your AWS account", lead: "AWS suspended your account on Nov 16", urgency: 5 });
+  const capped = { sent: [], mayInterrupt: () => false, _tell: async () => { throw new Error("must not be asked to send"); } };
+  const r = await morning(g, scripted(plan).ask, { runtime: capped });
+  assert.equal(r.outcome, "empty"); assert.equal(r.why, "known_unsent"); assert.equal(r.texted, false);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM action_digests").get().n, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM action_card_sources").get().n, 0);
+  assert.equal(engine.dayRow(C, "2026-11-17").outcome, "empty");
+  const rt = fakeRuntime();
+  const r2 = await engine.runMorning(C, { now: NOW + DAY, tz: TZ, read: g.read, ask: scripted(plan).ask, tokensFor, runtime: rt });
+  assert.equal(r2.outcome, "known");
+  assert.equal(rt.sent[0].text, "morning kofi. nothing i can finish for you today. worth knowing: AWS suspended your account on Nov 16.");
 });
 
 test("with a card on the note, what is worth knowing is one plain line at the bottom of the page: no button, no link, at most two", async () => {
@@ -543,6 +566,9 @@ test("a tapped card that cannot be finished: one plain line, no sign-in link (re
   // The turn was told what the card promised, by which route, and how to fail.
   assert.match(h.turns[1].text, /a tap on a card from the note Reason left them: "Cancel your Cardboard Starter before it renews Nov 27"/);
   assert.match(h.turns[1].text, /saved signed-in session .*\(cardboard\.example\)/);
+  // That note is code's, not theirs: a page never draws it, and the screen reads only their own words.
+  assert.equal(webnotes.displayText(h.turns[1].text), prefill);
+  assert.equal(harm.ownWords(h.turns[1].text), prefill);
   // Both asks for a sign-in link were refused by code: nothing was sent for them.
   assert.equal(tools.length, 2);
   for (const t of tools) { assert.equal(t.ok, false); assert.equal(t.blocked, "card_must_finish"); assert.match(t.error, /Do NOT send a sign-in link/); }

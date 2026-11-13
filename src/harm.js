@@ -280,6 +280,8 @@ export function ownWords(text) {
     // The first-chat onboarding's to-do note (src/onboardframes.js), word for word only.
     else if (t === TODO_FRAME || t === TODO_FRAME_UNASKED) put = "";
     else if (/^\[reason was down from [^\]\n]*\]$/i.test(t)) put = "";
+    // A card's tap carries code's own note above their words (src/actionengine.js cardFrame).
+    else if (/^\[this text is a tap on a card from the note Reason left them: [^\n]*\]$/i.test(t)) put = "";
     else if (file) put = isLinkPreviewAttachment({ filename: file[1] }) ? "(a link preview card)" : "(an attached file named " + file[1] + ")";
     else if (under) put = "(sent as an inline reply under the earlier message \"" + under[1] + "\")";
     else if (/^\[they sent this as an inline reply\b[^\]\n]*\]$/i.test(t)) put = "(sent as an inline reply to an earlier message)";
