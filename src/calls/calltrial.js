@@ -10,7 +10,9 @@ import { config } from "../config.js";
  * (`is_owner`, either direction), with the key and the agent set, and:
  *   - REASON_CALL_CARTESIA=owner: the operator's account, and his choice on (`accounts.call_trial`
  *     "cartesia", set by `call_voice_trial`). As before `on` existed.
- *   - REASON_CALL_CARTESIA=on: any account, unless that person chose the usual voice ("usual").
+ *   - REASON_CALL_CARTESIA=on: every account's own call. There is no per-person choice: nothing stored
+ *     is read, and nobody is offered the tool. GPT-Live carries a call only as the automatic fall-back
+ *     (not ready in time, refused, failed: ./cartesia.js `fallBack`).
  *   - off or unset: never.
  * Never, in any mode, a call to a business or another person, a call on someone's behalf, an event
  * call or a stranger (who has no row and never reaches this): Cartesia keeps a recording of every
@@ -22,36 +24,19 @@ export function cartesiaTrialFor(row) {
   if (!row?.conversation_id || Number(row.is_owner) !== 1) return false;
   if (!config.cartesiaKey || !config.cartesiaAgentId) return false;
   try {
-    return cartesiaChosen(row.conversation_id);
+    if (mode === "on") {
+      // Anyone with an account: an own call always has one (the console thread is the operator's).
+      const me = accounts.ownerOf(row.conversation_id);
+      return me?.known === true || me?.isOperator === true;
+    }
+    return trialOffered(row.conversation_id) && db.callTrial(row.conversation_id) === "cartesia";
   } catch { return false; }
 }
 
-/** Is the voice choice offered to this account at all? owner: the operator's only; on: every account. */
+/** Is the voice choice (call_voice_trial) offered to this account? Only at owner, and only the operator's. */
 export function trialOffered(conversationId) {
-  const mode = config.callCartesia;
-  if ((mode !== "owner" && mode !== "on") || !conversationId) return false;
-  try {
-    const me = accounts.ownerOf(conversationId);
-    if (!me) return false;
-    // on: anyone with an account (a row to keep their choice on); owner: the operator only.
-    return me.isOperator === true || (mode === "on" && me.known === true);
-  } catch { return false; }
-}
-
-/**
- * This person's own calls are on the Cartesia voice (their choice, read for the mode the switch is at):
- * owner: only "cartesia" is yes ("" was the usual voice before `on` existed); on: everything but "usual".
- * False wherever the choice is not offered.
- */
-export function cartesiaChosen(conversationId) {
-  if (!trialOffered(conversationId)) return false;
-  const t = db.callTrial(conversationId);
-  return config.callCartesia === "on" ? t !== "usual" : t === "cartesia";
-}
-
-/** What `call_voice_trial off` stores: "usual" under on (so the default does not win), "" under owner (as before). */
-export function usualValue() {
-  return config.callCartesia === "on" ? "usual" : "";
+  if (config.callCartesia !== "owner" || !conversationId) return false;
+  try { return accounts.ownerOf(conversationId)?.isOperator === true; } catch { return false; }
 }
 
 /**

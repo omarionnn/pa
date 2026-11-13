@@ -11,15 +11,19 @@ Unproved parts are in `docs/unverified.md`.
 - `off`: nothing is reachable: no tool, no Cartesia call, whatever anyone has stored.
 - `owner`: exactly as it was before `on` existed. It changes nothing by itself; it makes the choice below
   available to the operator's account only, and that account's stored choice turns it on.
-- `on`: every account's own calls with Reason use the Cartesia voice by default, and every account has
-  the choice below so a person can go back to the usual voice. **Do not set it until every item in
+- `on`: the Cartesia voice is simply the voice of every account's own calls with Reason. There is no
+  per-person choice: nobody is shown the tool below (the operator neither) and nothing stored is read.
+  The old voice (GPT-Live) is only the automatic fall-back when Cartesia is not ready in time, refuses
+  the session or fails mid-call. **Do not set it until every item in
   "Before `on` is set" below is true.** Merging the code changes nothing until the switch is set.
 
 **Before `on` is set** (all of these, checked by a person, not by code):
 1. **A paid Cartesia plan with a commercial licence.** The Free plan is "personal, non-commercial use
-   only"; the commercial licence starts at Pro (cartesia.ai/legal/terms §4.1, read 2026-11-12). Agent
-   overages are off by default on paid plans, so new calls stop at a $0 agent balance (cartesia.ai/pricing
-   FAQ, read 2026-11-13): turn overages on, or expect `refused_out_of_credits` fall-backs.
+   only"; the commercial licence starts at Pro (cartesia.ai/legal/terms §4.1, read 2026-11-12).
+   **Agent overages: OFF (the owner's decision).** On paid plans new calls stop once the agent balance
+   reaches $0 (cartesia.ai/pricing FAQ, read 2026-11-13), so when the month's credit runs out, calls
+   fall back to the old voice (`refused_out_of_credits`, or `closed_before_ready` if Cartesia says
+   nothing) until the plan refreshes. The ops meter (PR #546) texts the owner at 50/80/100%.
 2. **The training opt-out filed** at play.cartesia.ai/privacy/data-controls. By default Cartesia may train
    on inputs and outputs (terms §5.3(c)); the opt-out covers only what comes after it.
 3. **The public privacy page updated.** Draft wording: `docs/privacy-drafts/2026-11-13-voice-and-bank.md`.
@@ -60,11 +64,10 @@ A refusal is read from what Cartesia says (a close reason, an error code or mess
 429/limit/concurrency, 401/403/key); the exact words of a refused agent session are not documented, so
 one that says nothing is `closed_before_ready`.
 
-**How a person opts in and out, by text**: one small tool, `call_voice_trial`. At `owner` only the
-operator's account is shown it; at `on` every account is. "Use the new voice" (or "try the Cartesia
-voice") turns it on and "go back to my usual call voice" turns it off. Stored on their account
-(`accounts.call_trial`: "" never chosen, "cartesia", "usual"). At `owner` "" is the usual voice; at
-`on` "" is the Cartesia voice, so "off" stores "usual". Reason says back which voice the next call uses.
+**The operator's trial choice (`owner` only)**: one small tool, `call_voice_trial`, shown only to the
+operator's account and only at `owner`: "try the Cartesia voice on my calls" turns it on, "go back to my
+usual call voice" turns it off (`accounts.call_trial`, "" or "cartesia"). At `on` nobody has it: there is
+no per-person choice, and asking to change the voice finds no tool for it. At `off`, nobody either.
 
 **Which calls**: a person's own calls with Reason only (`is_owner = 1`), either direction: the
 operator's at `owner`, anyone's at `on`. Never, in any mode, a call to a business or another person,
@@ -72,15 +75,15 @@ a call on someone's behalf, an event call or a stranger's call: Cartesia stores 
 agent session while it runs and those people were not told.
 
 **How normal calls stay untouched**:
-- Off in two layers (the switch unset; the person's choice). With either off, `acceptStream` builds
-  `GptLiveCall` exactly as before.
+- Off unless the switch is set (and at `owner`, unless the operator's choice is on). Otherwise
+  `acceptStream` builds `GptLiveCall` exactly as before.
 - One branch in `acceptStream`, and the new relay is imported only inside it. `GptLiveCall`, its
   prompts, the turn gate and the opener are not edited.
 - If the Cartesia session is not ready within 1.5 s of the stream starting, or fails, that same call
   carries on with GPT-Live and the fall-back is logged. A broken session never costs anyone a call.
 - Tests pin all of it: switch unset, switch `owner` with the choice off, another account at `owner`,
-  a person who chose the usual voice at `on`, a business or third-party row in every mode — each builds
-  `GptLiveCall` and opens no Cartesia socket.
+  a business or third-party row in every mode — each builds `GptLiveCall` and opens no Cartesia socket.
+  And at `on`, a stored "usual" (or anything else) does not take a person's own call off Cartesia.
 
 **Files**:
 - `src/config.js`: `callCartesia`, `cartesiaKey` (`CARTESIA_API_KEY`), `cartesiaAgentId`, `cartesiaVoice`.

@@ -6,9 +6,11 @@ Publish (b) before REASON_PLAID=on.
 Each claim, checked against the code on 2026-11-13:
 
 (a) The call voice
-- "may be handled by Cartesia": only with REASON_CALL_CARTESIA=on (or =owner, the operator alone), and
-  only for a person who has not chosen the usual voice. src/config.js `callCartesia`;
-  src/calls/calltrial.js `cartesiaTrialFor`, `cartesiaChosen`.
+- "may be handled by Cartesia": with REASON_CALL_CARTESIA=on every own call goes to Cartesia first (no
+  per-person choice; =owner is the operator alone). "May", because a call Cartesia is not ready for
+  within 1.5 s, refuses (plan limit, credit run out) or drops carries on with Reason's usual voice
+  (GPT-Live). src/config.js `callCartesia`; src/calls/calltrial.js `cartesiaTrialFor`;
+  src/calls/cartesia.js `READY_MS`, `fallBack`.
 - "voice in and out": the caller's audio is sent to Cartesia's agent (`audio_input`) and the agent's
   speech comes back (`audio_output`). src/calls/cartesia.js `fromTwilio`, `audioOut`.
 - "keeps a recording during the call": Cartesia's Managed Agents save every call's transcript and
@@ -26,8 +28,6 @@ Each claim, checked against the code on 2026-11-13:
 - "calls Reason makes to other people or businesses for you do not use it": `is_owner` must be 1 in
   every mode. src/calls/calltrial.js `cartesiaTrialFor`; test/call-cartesia-everyone.test.js and
   test/call-cartesia.test.js pin it for both accounts, both directions, every mode.
-- "you can switch back": the call_voice_trial tool, shown to every account at `on`. src/tools.js
-  `call_voice_trial`, src/calls/calltrial.js `trialOffered`, `usualValue`.
 - NOT claimed: that Cartesia does not train on calls. Their terms allow it by default (terms §5.3(c));
   the opt-out must be filed first, and only then may a sentence about it be added.
 
@@ -47,6 +47,6 @@ Each claim, checked against the code on 2026-11-13:
   (src/plaid.js, the USER_PERMISSION_REVOKED webhook).
 -->
 
-**Calls with your Reason.** When you talk with your own Reason on the phone, the call may be handled by Cartesia, a voice company: your voice goes to Cartesia so it can hear you, and Reason's voice comes back from it. Cartesia keeps a recording of the call while it is happening, and when the call ends Reason has Cartesia delete it. You can ask Reason to go back to its usual call voice at any time. Calls Reason makes to other people or businesses for you never use Cartesia.
+**Calls with your Reason.** When you talk with your own Reason on the phone, the call may be handled by Cartesia, a voice company: your voice goes to Cartesia so it can hear you, and Reason's voice comes back from it. Cartesia keeps a recording of the call while it is happening, and when the call ends Reason has Cartesia delete it. Calls Reason makes to other people or businesses for you never use Cartesia.
 
 **Your bank.** If you connect a bank, the connection goes through Plaid and is read-only: Reason can see your balances and transactions, and cannot move money. Reason keeps the last 60 days of transactions and deletes anything older. You can disconnect your bank at any time by asking Reason, and what it had from that bank is deleted.

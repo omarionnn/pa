@@ -156,13 +156,14 @@ for (const [label, setup, rowOf] of [
   });
 }
 
-test("the switch: owner offers it to the operator only; on to every account (test/call-cartesia-everyone.test.js)", async () => {
+test("the switch: owner offers the choice to the operator only; on offers it to nobody (test/call-cartesia-everyone.test.js)", async () => {
   Object.assign(config, CARTESIA);
   db.setCallTrial(C, "cartesia");
   assert.equal(trial.cartesiaTrialFor(ownCall()), true);
   config.callCartesia = "on";
   assert.equal(trial.cartesiaTrialFor(ownCall()), true, "on: his own call too");
-  assert.equal(trial.trialOffered(OTHER), true, "on: every account is offered the choice");
+  assert.equal(trial.trialOffered(C), false, "on: no choice, not even the operator's");
+  assert.equal(trial.trialOffered(OTHER), false);
   config.callCartesia = "off";
   assert.equal(trial.trialOffered(C), false);
   config.callCartesia = "owner";
@@ -432,7 +433,7 @@ test("call_voice_trial: only the operator with the switch at owner is shown it; 
   assert.equal(db.callTrial(C), "", "empty by default");
   const on = await run(C, "on");
   assert.equal(on.voice, "cartesia");
-  assert.match(on.say, /new voice/);
+  assert.match(on.say, /Cartesia voice/);
   assert.equal(db.callTrial(C), "cartesia");
   assert.equal(trial.cartesiaTrialFor(ownCall()), true);
   assert.equal((await run(C, "status")).voice, "cartesia");

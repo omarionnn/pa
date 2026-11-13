@@ -1665,9 +1665,8 @@ addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 // a session was last used from, for the signed-in browsers list.
 addColumnIfMissing("accounts", "web_reach", "TEXT");
 addColumnIfMissing("accounts", "web_theme", "TEXT");
-// The voice on a person's own calls with Reason (src/calls/calltrial.js): "" never chosen, "cartesia" the
-// Cartesia voice, "usual" GPT-Live. With REASON_CALL_CARTESIA=owner only the operator's is read and "" is
-// the usual voice; with =on every account's is read and "" is the Cartesia voice (the default).
+// The voice on the operator's own calls (src/calls/cartesia.js): "" is today's voice, "cartesia" the trial.
+// Only read with REASON_CALL_CARTESIA=owner, and only on the operator's account (at on it is never read).
 addColumnIfMissing("accounts", "call_trial", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("page_sessions", "user_agent", "TEXT");
 // Which client a session was issued to: NULL for a browser, 'ios' for the app (src/ios/session.js).
@@ -6705,13 +6704,13 @@ export function setWebTheme(conversationId, value) {
   return db.prepare("UPDATE accounts SET web_theme = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
 }
 
-/** The call voice this account chose: "cartesia", "usual", or "" (never chosen). */
+/** The call voice trial this account chose ("cartesia"), or "" for today's voice. */
 export function callTrial(conversationId) {
   const t = db.prepare("SELECT call_trial FROM accounts WHERE conversation_id = ?").get(conversationId)?.call_trial;
-  return t === "cartesia" || t === "usual" ? t : "";
+  return t === "cartesia" ? "cartesia" : "";
 }
 export function setCallTrial(conversationId, value) {
-  if (!["", "cartesia", "usual"].includes(value)) throw new Error(`call_trial must be "", cartesia or usual, not ${value}`);
+  if (!["", "cartesia"].includes(value)) throw new Error(`call_trial must be "" or cartesia, not ${value}`);
   return db.prepare("UPDATE accounts SET call_trial = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
 }
 

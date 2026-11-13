@@ -161,14 +161,14 @@ test("REASON_CALL_CARTESIA reads on, owner or off; anything else is off", () => 
 
 // ---------- who gets it ----------
 
-test("on: every account's own call is on Cartesia by default, either direction", () => {
+test("on: every account's own call is on Cartesia, either direction, with no choice offered", () => {
   Object.assign(config, KEYS, { callCartesia: "on" });
   for (const c of [A, B]) {
-    assert.equal(db.callTrial(c), "", "never chosen");
-    assert.equal(trial.trialOffered(c), true, `${c} is offered the choice`);
+    assert.equal(trial.trialOffered(c), false, `${c} is offered no choice`);
     assert.equal(trial.cartesiaTrialFor(ownCall(c)), true, `${c}: a call Reason placed to them`);
     assert.equal(trial.cartesiaTrialFor(ownCall(c, { direction: "in" })), true, `${c}: them ringing Reason`);
   }
+  assert.equal(trial.cartesiaTrialFor({ conversation_id: "sendblue:+19995550000", is_owner: 1 }), false, "no account, no own call");
 });
 
 for (const mode of ["on", "owner", "off"]) {
@@ -192,25 +192,23 @@ for (const mode of ["on", "owner", "off"]) {
   });
 }
 
-test("on: a person who chose the usual voice gets GPT-Live; the choice is theirs alone", async () => {
+test("on: any stored choice is ignored: \"usual\", empty or \"cartesia\", every own call is on Cartesia", async () => {
   Object.assign(config, KEYS, { callCartesia: "on" });
-  const off = await run(B, "off");
-  assert.equal(off.ok, true);
-  assert.equal(off.voice, "usual");
-  assert.equal(db.callTrial(B), "usual", "stored so the default does not win");
-  assert.equal(trial.cartesiaTrialFor(ownCall(B)), false);
-  assert.equal(trial.cartesiaTrialFor(ownCall(A)), true, "the other account is untouched");
+  for (const stored of ["usual", "", "cartesia", "on", "off"]) {
+    db.db.prepare("UPDATE accounts SET call_trial = ? WHERE conversation_id = ?").run(stored, B);
+    assert.equal(trial.cartesiaTrialFor(ownCall(B)), true, `stored ${JSON.stringify(stored)}`);
+  }
+  db.db.prepare("UPDATE accounts SET call_trial = 'usual' WHERE conversation_id = ?").run(B);
   const s = accept(ownCall(B));
-  assert.ok(s.call instanceof gl.GptLiveCall);
-  await settle();
-  assert.equal(s.seen.loaded, 0);
+  await settle(); await settle();
+  assert.ok(s.call.holder instanceof cartesia.CartesiaAgentCall, "a stored usual does not take them off Cartesia");
   stop(s.call);
-  const on = await run(B, "on");
-  assert.equal(on.voice, "cartesia");
-  assert.match(on.say, /new voice/);
-  assert.equal(trial.cartesiaTrialFor(ownCall(B)), true, "\"use the new voice\" turns it back on");
-  assert.equal((await run(B, "status")).voice, "cartesia");
-  assert.equal(db.callTrial(A), "", "nothing written on the other account");
+  for (const c of [A, B]) for (const choice of ["on", "off", "status"]) {
+    const r = await run(c, choice);
+    assert.equal(r.ok, false, `${c} ${choice}: the tool refuses at on`);
+    assert.doesNotMatch(JSON.stringify(r), /usual|go back|switch|Cartesia/i, "nothing offers a way back");
+  }
+  assert.equal(db.callTrial(A), "", "nothing written");
 });
 
 test("owner: nothing changes; the operator's stored choice keeps working, nobody else is offered it", async () => {
@@ -222,11 +220,12 @@ test("owner: nothing changes; the operator's stored choice keeps working, nobody
   assert.equal(trial.trialOffered(B), false);
   assert.equal(trial.cartesiaTrialFor(ownCall(B)), false, "another account, even with a stored choice");
   assert.equal((await run(B, "on")).ok, false, "the tool refuses anyone else");
+  const on = await run(A, "on");
+  assert.equal(on.voice, "cartesia");
   const off = await run(A, "off");
   assert.equal(off.voice, "usual");
   assert.equal(db.callTrial(A), "", "off stores what it always did under owner");
-  db.setCallTrial(A, "usual");
-  assert.equal(trial.cartesiaTrialFor(ownCall(A)), false, "a choice made under on still reads as usual");
+  assert.equal(trial.cartesiaTrialFor(ownCall(A)), false);
 });
 
 test("off or unset: nothing is reachable, whatever is stored", async () => {
@@ -239,16 +238,18 @@ test("off or unset: nothing is reachable, whatever is stored", async () => {
   }
 });
 
-test("the tool is shown to every account at on, the operator only at owner, nobody at off", () => {
+test("the tool: shown to nobody at on (the operator neither), the operator only at owner, nobody at off", async () => {
   const shown = (c) => tools.callTrialToolVisible("call_voice_trial", c);
   config.callCartesia = "on";
-  assert.equal(shown(A), true); assert.equal(shown(B), true);
-  assert.equal(shown("sendblue:+19995550000"), false, "no account, no choice");
+  assert.equal(shown(A), false); assert.equal(shown(B), false);
   config.callCartesia = "owner";
   assert.equal(shown(A), true); assert.equal(shown(B), false);
   config.callCartesia = "off";
   assert.equal(shown(A), false); assert.equal(shown(B), false);
   assert.equal(tools.callTrialToolVisible("web_search", B), true, "other tools untouched");
+  // It still exists for owner mode, so the trust-line and progress-line tables keep their rows for it.
+  const src = (await import("node:fs")).readFileSync(new URL("./trustline.test.js", import.meta.url), "utf8");
+  assert.match(src, /call_voice_trial:/);
 });
 
 test("the voice tool's progress line is fixed, never built from what was said", async () => {
