@@ -458,8 +458,8 @@ function rememberWithName(t) {
 
 // Action Cards (src/actioncards.js, src/actionengine.js, REASON_ACTION_CARDS): the two card tools are
 // only shown where the flag reaches this person; nobody else's model hears that cards exist.
-// The Cartesia voice trial on the operator's own calls (src/calls/calltrial.js, REASON_CALL_CARTESIA=owner):
-// only the operator, and only with the switch at owner, is shown call_voice_trial; the dispatch refuses it for anyone else.
+// The Cartesia call voice (src/calls/calltrial.js, REASON_CALL_CARTESIA): with the switch at owner only the
+// operator is shown call_voice_trial; at on, every account is; off, nobody. The dispatch refuses it wherever it is not shown.
 export const CALL_TRIAL_TOOLS = new Set(["call_voice_trial"]);
 export function callTrialToolVisible(name, conversationId) {
   return !CALL_TRIAL_TOOLS.has(name) || callTrial.trialOffered(conversationId);
@@ -5072,12 +5072,12 @@ export const tools = [
   },
   {
     name: "call_voice_trial",
-    description: "Which voice Reason uses on their own phone calls with you. 'Try the Cartesia voice on my calls' is on; 'go back to my usual call voice' is off; 'which voice are my calls on?' is status."
+    description: "Which voice Reason uses on their own phone calls with you. 'Use the new voice' or 'try the Cartesia voice on my calls' is on; 'go back to my usual call voice' is off; 'which voice are my calls on?' is status."
       + " Only their own calls with you change; calls to businesses or other people never do. Say back in one short line which voice their next call will use.",
     input_schema: {
       type: "object",
       properties: {
-        choice: { type: "string", enum: ["on", "off", "status"], description: "on: the Cartesia voice on their own calls; off: the usual call voice; status: just say which." },
+        choice: { type: "string", enum: ["on", "off", "status"], description: "on: the new (Cartesia) voice on their own calls; off: the usual call voice; status: just say which." },
       },
       required: ["choice"],
     },
@@ -14339,14 +14339,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!callTrial.trialOffered(c)) return { ok: false, error: "There is no call voice choice on this account." };
       const choice = String(input.choice ?? "status");
       if (choice === "on") db.setCallTrial(c, "cartesia");
-      else if (choice === "off") db.setCallTrial(c, "");
+      else if (choice === "off") db.setCallTrial(c, callTrial.usualValue());
       else if (choice !== "status") return { ok: false, error: "choice is on, off or status." };
-      const now = db.callTrial(c) === "cartesia" ? "cartesia" : "usual";
+      const now = callTrial.cartesiaChosen(c) ? "cartesia" : "usual";
       const ready = !!(config.cartesiaKey && config.cartesiaAgentId);
       return {
         ok: true, voice: now,
         say: now === "cartesia"
-          ? (ready ? "Say their next call with you will be in the Cartesia voice, and it drops back to the usual voice by itself if Cartesia has trouble." : "Say it is set, but the Cartesia voice is not connected on this server yet, so their calls stay on the usual voice for now.")
+          ? (ready ? "Say their next call with you will be in the new voice, and it drops back to the usual voice by itself if it has trouble." : "Say it is set, but the new voice is not connected on this server yet, so their calls stay on the usual voice for now.")
           : "Say their calls with you are on the usual voice.",
       };
     }

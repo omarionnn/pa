@@ -1,4 +1,5 @@
-// The Cartesia voice on the operator's own calls (design 3, "bridged": docs/calls-cartesia.md section 5).
+// The Cartesia voice on a person's own calls with Reason (design 3, "bridged": docs/calls-cartesia.md
+// section 5): the operator's alone with REASON_CALL_CARTESIA=owner, every account's with =on.
 // Twilio's media stream stays ours; its audio goes to one Cartesia Managed Agent over their agent
 // WebSocket (mulaw_8000 both ways, continuous input, paced output), and what the agent says comes back
 // through the same room-tone mixer and call tape GPT-Live calls use. Reason's brain sits behind the
@@ -21,6 +22,9 @@ import { CallTape, hasSpeech, voiceInstructionsFor } from "./gptlive.js";
 import { queueMidCall } from "./voice.js";
 import { openingLineFor } from "./inbound.js";
 import { todaySoFar } from "./brief.js";
+import { NO_NAME } from "./voice-prompt.js";
+import * as zonescope from "../zonescope.js";
+import { zoneFor } from "../zone.js";
 
 export const API_BASE = "https://api.cartesia.ai";
 export const VERSION = "2026-08-14";
@@ -95,6 +99,27 @@ export const TEXT_RESULT = "Reason is taking too long on this one: say in one sh
 /** How a late answer's text opens, so it reads as part of the call. */
 export const lateText = (text) => `From our call: ${text}`;
 
+// ---------- falling back, by reason ----------
+
+/**
+ * Why a call fell back, as one of a fixed set (db.CARTESIA_FALLBACK_REASONS): read off what Cartesia
+ * said (a close reason, an error code or message) where it says a refusal, else `fallback`. Their docs
+ * name 429 for a plan's limit and say new calls stop once the agent balance is $0; the exact words of a
+ * refused agent session are not documented (docs/unverified.md), so this reads codes and plain words.
+ */
+export function fallBackReason(said, fallback = "other") {
+  const t = String(said ?? "");
+  if (/\b402\b|payment|credit|balance|insufficient|billing|quota|funds|overage/i.test(t)) return "refused_out_of_credits";
+  if (/\b429\b|rate.?limit|concurren|too many|limit (?:reached|exceeded)|plan limit|capacity/i.test(t)) return "refused_plan_limit";
+  if (/\b40[13]\b|unauthori[sz]ed|forbidden|api.?key/i.test(t)) return "refused_auth";
+  return fallback;
+}
+
+/** Today's numbers (db.cartesia_daily): calls, ready, fell_back:<reason>, on the app's clock. Never throws, never names anyone. */
+export function count(what) {
+  try { db.bumpCartesia(accounts.today(clock.now()), what); } catch { /* a number never breaks a call */ }
+}
+
 // ---------- talked over ----------
 
 /** A gap this long in his speech starts a new run of it (the onset a barge-in is timed from). */
@@ -112,7 +137,7 @@ export function openAgentSocket({ agentId = config.cartesiaAgentId, key = config
   const run = (list, ...args) => { for (const f of list) { try { f(...args); } catch { /* one call never takes the process */ } } };
   ws.onopen = () => run(handlers.open);
   ws.onmessage = (m) => { let e; try { e = JSON.parse(String(m.data)); } catch { return; } run(handlers.event, e); };
-  ws.onclose = (e) => run(handlers.close, e?.code ?? 1006);
+  ws.onclose = (e) => run(handlers.close, e?.code ?? 1006, String(e?.reason ?? "").slice(0, 200));
   ws.onerror = () => { /* the close that follows says it */ };
   return {
     send: (obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); },
@@ -151,13 +176,20 @@ export async function deleteAgentCall(callId, { key = config.cartesiaKey, base =
  * carryover and his brief), and the same opening line. No second persona is written for Cartesia.
  */
 export function sessionVariables(call) {
+  // On this person's own clock (src/zonescope.js), as their turns are: "today", "now" and the brief's
+  // times are theirs, never the install's or another account's.
+  return zonescope.runFor(call?.conversation_id, () => variablesOf(call));
+}
+
+function variablesOf(call) {
   const clip = (s, n) => { const t = String(s ?? ""); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
   let name = "";
-  try { const me = accounts.ownerOf(call.conversation_id); name = me?.name ?? ""; } catch { /* unknown */ }
+  // The name they gave, or nothing: never the stand-in an unnamed account reads as ("the person I work for").
+  try { const me = accounts.ownerOf(call.conversation_id); name = me?.name && me.name !== NO_NAME ? me.name : ""; } catch { /* unknown */ }
   const greeting = call.direction === "in"
     ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
     : String(call.announcement ?? "");
-  // Names from his chats today, the ones the brief tells GPT-Live a bad line often garbles: the recognizer
+  // Names from their own chats today (this call's conversation only), the ones the brief tells GPT-Live a bad line often garbles: the recognizer
   // favours them. A slot with nothing for it says "Reason" (an empty keyterm is not known to be allowed).
   let names = [];
   try { names = (todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id })?.names ?? []).map(n => clip(n, 60)).filter(Boolean); } catch { /* none */ }
@@ -172,15 +204,32 @@ export function sessionVariables(call) {
   };
 }
 
-/** The GPT-Live own-call words (cut to fit), then this line's manner (`cartesiaCallLines`). */
+/**
+ * Their clock, said: the agent has one time zone set on it for every call (scripts/cartesia-agent-setup.mjs),
+ * so each call says whose time it is. Their confirmed zone, else the install's (src/zone.js `zoneFor`).
+ */
+export function clockLine(call) {
+  let tz = "";
+  try { tz = zoneFor(call.conversation_id); } catch { tz = config.installTz; }
+  const at = Number(call.created_at) || clock.now();
+  let when = "";
+  try { when = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long", hour: "numeric", minute: "2-digit" }).format(new Date(at)); } catch { return ""; }
+  return `Their clock: it is ${when} where they are (${tz}) as the call starts. Any time or day you say is in their time, never another clock.`;
+}
+
+/** The GPT-Live own-call words (cut to fit), then their clock and this line's manner (`cartesiaCallLines`). */
 function reasonCall(call, clip) {
-  const lines = cartesiaCallLines();
+  const lines = [clockLine(call), cartesiaCallLines()].filter(Boolean).join("\n");
   return `${clip(voiceInstructionsFor(call, { line: false, turnGate: false }), VARIABLE_MAX - lines.length - 1)}\n${lines}`;
 }
 
 const WAITED = Symbol("waited");
 
-/** One of their own calls on the Cartesia agent: Twilio's stream on one side, the agent on the other. */
+/**
+ * One of their own calls on the Cartesia agent: Twilio's stream on one side, the agent on the other.
+ * Everything a call holds is on its own instance (its row, its socket, its turns, its asks, its tape,
+ * its Cartesia call id): calls running at once on the one agent share nothing but the agent's id.
+ */
 export class CartesiaAgentCall {
   constructor({ call, twilio, openAgent = openAgentSocket, brain, finish = async () => {}, fallBack = null, deleteCall = deleteAgentCall, log = () => {}, now = () => Date.now(), timers = globalThis, readyMs = READY_MS, textMs = TEXT_MS, textOwner = null }) {
     this.call = call;
@@ -234,24 +283,27 @@ export class CartesiaAgentCall {
 
   /** Open the agent and start the clock it has to be ready by. */
   begin() {
-    this.readyTimer = this.timers.setTimeout(() => { if (!this.ready) this.fallBack(`not ready in ${this.readyMs} ms`); }, this.readyMs);
+    count("calls");
+    this.readyTimer = this.timers.setTimeout(() => { if (!this.ready) this.fallBack(`not ready in ${this.readyMs} ms`, "not_ready"); }, this.readyMs);
     try {
       this.agent = this.openAgent();
     } catch (e) {
-      return this.fallBack(`could not open: ${(e?.message ?? String(e)).split("\n")[0]}`);
+      const msg = (e?.message ?? String(e)).split("\n")[0];
+      return this.fallBack(`could not open: ${msg}`, fallBackReason(msg, "could_not_open"));
     }
     this.agent.on("open", () => {
       this.openedMs = this.now() - this.startedAt;
       this.agent.send({ type: "session_create", audio: { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true }, dynamic_variables: sessionVariables(this.call) });
     });
     this.agent.on("event", (e) => this.fromAgent(e));
-    this.agent.on("close", (code) => {
+    this.agent.on("close", (code, said = "") => {
       if (this.done || this.handedOff) return;
-      if (!this.ready) return this.fallBack(`closed before ready (${code})`);
+      // A refused session (plan limit, no credits, a bad key) closes before it is ready: why, from what they said.
+      if (!this.ready) return this.fallBack(`closed before ready (${code})`, fallBackReason(`${code} ${said}`, "closed_before_ready"));
       // A clean close is the agent hanging up (its end_call); anything else is a failure, and he is still
       // on the line: GPT-Live takes the rest of the call.
       if (code === 1000 || this.endWhy === "goodbye") return void this.end(this.endWhy || "agent ended").catch(() => {});
-      this.fallBack(`closed mid-call (${code})`);
+      this.fallBack(`closed mid-call (${code})`, fallBackReason(`${code} ${said}`, "closed_mid_call"));
     });
     this.twilio.flush?.();
   }
@@ -319,6 +371,7 @@ export class CartesiaAgentCall {
         if (this.ready) return;
         this.ready = true;
         if (this.readyTimer) this.timers.clearTimeout(this.readyTimer);
+        count("ready");
         this.log({ cartesia_ready: this.call.id, ms: t - this.startedAt, open_ms: this.openedMs ?? null });
         return;
       }
@@ -345,8 +398,9 @@ export class CartesiaAgentCall {
       case "turn_ended": return this.turnEnded(e);
       case "error": {
         this.log({ cartesia_error: this.call.id, code: String(e.code ?? "").slice(0, 60), fatal: !!e.fatal });
-        if (e.fatal && !this.ready) return this.fallBack(`error before ready: ${String(e.code ?? "")}`);
-        if (e.fatal) return this.fallBack(`error mid-call: ${String(e.code ?? "")}`);
+        const said = `${e.code ?? ""} ${e.status ?? ""} ${e.message ?? ""}`;
+        if (e.fatal && !this.ready) return this.fallBack(`error before ready: ${String(e.code ?? "")}`, fallBackReason(said, "error_before_ready"));
+        if (e.fatal) return this.fallBack(`error mid-call: ${String(e.code ?? "")}`, fallBackReason(said, "error_mid_call"));
         return;
       }
       default: return;
@@ -501,12 +555,14 @@ export class CartesiaAgentCall {
   // --- falling back, and the end ---
 
   /** Not ready in time, or broken before it was: the same call carries on with GPT-Live. */
-  fallBack(why) {
+  fallBack(why, reason = fallBackReason(why)) {
     if (this.done || this.handedOff) return null;
     this.handedOff = true;
     this.music?.stop();
     for (const k of ["readyTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
-    this.log({ cartesia_fell_back: this.call.id, why: String(why).slice(0, 120), ms: this.now() - this.startedAt });
+    // `reason`: one word from a fixed set, the same word counted for the day (`count`).
+    count(`fell_back:${reason}`);
+    this.log({ cartesia_fell_back: this.call.id, reason, why: String(why).slice(0, 120), ms: this.now() - this.startedAt });
     // A session that did start is a call on their side, kept until deleted. One still coming up is given
     // LATE_READY_MS to say its id (`fromAgent`), then let go.
     if (this.agentCallId) { try { this.agent?.close(); } catch { /* already gone */ } void this.deleteAndCheck(); }

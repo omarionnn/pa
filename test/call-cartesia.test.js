@@ -156,12 +156,14 @@ for (const [label, setup, rowOf] of [
   });
 }
 
-test("the switch reads off for anything but owner; there is no on", async () => {
+test("the switch: owner offers it to the operator only; on to every account (test/call-cartesia-everyone.test.js)", async () => {
   Object.assign(config, CARTESIA);
   db.setCallTrial(C, "cartesia");
   assert.equal(trial.cartesiaTrialFor(ownCall()), true);
   config.callCartesia = "on";
-  assert.equal(trial.cartesiaTrialFor(ownCall()), false, "an \"on\" is not a value it takes");
+  assert.equal(trial.cartesiaTrialFor(ownCall()), true, "on: his own call too");
+  assert.equal(trial.trialOffered(OTHER), true, "on: every account is offered the choice");
+  config.callCartesia = "off";
   assert.equal(trial.trialOffered(C), false);
   config.callCartesia = "owner";
   assert.equal(trial.trialOffered(C), true);
@@ -195,7 +197,7 @@ test("his call with his choice on: one Cartesia agent, mulaw both ways, his pers
   assert.deepEqual(create.audio, { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true });
   assert.equal(create.dynamic_variables.their_name, "Omari");
   assert.equal(create.dynamic_variables.greeting, "Hey Omari, it's Reason.");
-  assert.equal(create.dynamic_variables.reason_call, `${gl.voiceInstructionsFor(db.getCall(C, s.row.id), { line: false, turnGate: false })}\n${cartesia.cartesiaCallLines()}`,
+  assert.equal(create.dynamic_variables.reason_call, `${gl.voiceInstructionsFor(db.getCall(C, s.row.id), { line: false, turnGate: false })}\n${cartesia.clockLine(db.getCall(C, s.row.id))}\n${cartesia.cartesiaCallLines()}`,
     "the same instructions a GPT-Live own call gets, not a second persona, then this line's manner");
   s.twilio.say({ event: "media", media: { payload: QUIET } });
   assert.equal(s.agent.of("audio_input").length, 0, "nothing sent before session_ready");
@@ -430,7 +432,7 @@ test("call_voice_trial: only the operator with the switch at owner is shown it; 
   assert.equal(db.callTrial(C), "", "empty by default");
   const on = await run(C, "on");
   assert.equal(on.voice, "cartesia");
-  assert.match(on.say, /Cartesia voice/);
+  assert.match(on.say, /new voice/);
   assert.equal(db.callTrial(C), "cartesia");
   assert.equal(trial.cartesiaTrialFor(ownCall()), true);
   assert.equal((await run(C, "status")).voice, "cartesia");
