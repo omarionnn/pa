@@ -134,12 +134,22 @@ test("the policy names Cartesia for calls with your own Reason and Plaid for a b
   assert.match(body, /keeps the last 60 days of transactions and deletes anything older/);
   // Both sit in the section that says what leaves the machine, so "That is the whole list" stays true.
   const leaves = body.indexOf("What leaves the machine"), whole = body.indexOf("That is the whole list");
-  for (const name of ["Cartesia, a voice company", "through Plaid"]) {
+  // The voice provider on any call, named, in the Google section and in the list (owner, 2026-11-13).
+  assert.match(body, /pass through the voice provider for that call \(OpenAI or Cartesia\), only to hear you and speak to you/);
+  assert.match(body, /on a phone call, the voice provider that speaks them/);
+  // Their own calls are recorded; a call to somebody else only with notice; recordings go with a delete.
+  assert.match(body, /Your own calls are always recorded/);
+  assert.match(body, /recorded only if they are told so at the start of the call/);
+  assert.match(body, /Deleting your data removes the recordings too/);
+  assert.match(body, /disconnect my bank(?:&quot;|")? and it removes the connection at Plaid/);
+  for (const name of ["Cartesia, a voice company", "through Plaid", "voice provider for that call"]) {
     const at = body.indexOf(name);
     assert.ok(at > leaves && at < whole, `${name} is inside the list of what leaves the machine`);
   }
   const { KEEP_DAYS } = await import("../src/plaid.js");
   assert.equal(KEEP_DAYS, 60, "if this changes, the number on the privacy page has to change with it");
+  const { callRecorded } = await import("../src/calls/manner.js");
+  assert.equal(callRecorded({ is_owner: 1, provider: "gptlive" }), true, "their own call is recorded, as the page says");
 });
 
 test("the policy carries Google's Limited Use statement word for word", async () => {
