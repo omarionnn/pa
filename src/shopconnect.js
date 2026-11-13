@@ -1791,6 +1791,19 @@ export async function startJobRun({ conversationId, store, startUrl, task, item 
     .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), `job_${kind}`, now, now, now, now);
   return { ok: true, runId };
 }
+/**
+ * An account job's run that Crossmint no longer answers about: the row is ended like any lost run, and
+ * the job module says the job's own ending (never "the checkout", never "want me to start it again").
+ */
+async function loseJob(run, say, { cancel = true } = {}) {
+  const now = clock.now();
+  failingSince.delete(run.run_id);
+  q("UPDATE shop_runs SET status = 'failed', result = 'lost: Crossmint stopped answering about this run', stage = 'failed', stage_at = ?, updated_at = ? WHERE run_id = ? AND conversation_id = ? AND status = 'running'").run(now, now, run.run_id, run.conversation_id);
+  q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND conversation_id = ? AND status = 'asked'").run(run.run_id, run.conversation_id);
+  if (cancel) await cancelAtCrossmint(run);
+  await acctReady;
+  try { await acctMod?.onLost(run, jobKit(say)); } catch { /* the row is ended either way */ }
+}
 /** One message part into a run (an account job's decline, alternative or answer). The part's values are never logged or stored. */
 export async function sendPart(run, part) {
   try {
@@ -2206,6 +2219,7 @@ export async function step(runId) {
     if (r.status === 404) {
       if (!failingSince.has(runId)) failingSince.set(runId, clock.now());
       if (clock.now() - failingSince.get(runId) >= LOST_MS) {
+        if (isJobRun(run)) { await loseJob(run, say); return { done: true, status: "failed", said, lost: true }; }
         await lose(run, say, "Crossmint stopped answering about this run");
         return { done: true, status: "failed", said, lost: true };
       }
@@ -2215,10 +2229,12 @@ export async function step(runId) {
     // Crossmint down or refusing: the run may still be going there. Given up only after OUTAGE_MS, not cancelled.
     failingSince.delete(runId);
     if (clock.now() - (run.last_ok_at ?? run.created_at) > OUTAGE_MS) {
+      if (isJobRun(run)) { await loseJob(run, say, { cancel: false }); return { done: true, status: "failed", said, lost: true }; }
       await lose(run, say, "Crossmint stopped answering about this run", { cancel: false });
       return { done: true, status: "failed", said, lost: true };
     }
-    return { done: false, said, ...(await stalled(run, say)) };
+    // An account job says its own one waiting line (src/accountjobs.js), never a checkout's.
+    return { done: false, said, ...(isJobRun(run) ? {} : await stalled(run, say)) };
   }
   failingSince.delete(runId);
   const cur = r.json;

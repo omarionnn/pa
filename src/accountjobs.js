@@ -530,6 +530,7 @@ const cleanDomains = (s) => String(s ?? "").split(/[\s,;]+/).map((d) => registra
 
 async function begin({ conversationId, kind, at, name, what, amount = "", reference = "", due = "", sender = "", task, cap, item }) {
   const store = shop.storeKey(at.host) ?? "";
+  settleOrphans(conversationId);
   // One job at a time for the same thing: a second ask answers with the one running, never a second run.
   const running = openJob(conversationId, kind, at.host);
   if (running) return { ok: true, already_running: true, job_id: running.id, state: running.state, say: `That is already under way (job ${running.id}, ${running.state.replace(/_/g, " ")}). Nothing new was started; account_job_status says where it is.` };
@@ -903,6 +904,36 @@ async function onEnd(job, run, cur, kit) {
   return await notDone("service_failed");
 }
 
+/** The run is gone (the checkout service stopped answering about it): the job ends as a run that failed with no result. */
+export async function onLost(run, kit) {
+  const job = jobOfRun(run);
+  if (!job || !isOpen(job)) return { done: true, status: "failed" };
+  return await onEnd(job, run, { status: "failed", reason: "lost" }, kit);
+}
+/**
+ * A job still marked open whose run is over (ended by something that never told this module) or that
+ * has been open for half a day: closed here, and said once. Without this an orphan would answer
+ * "already under way" for ever and hold back every new start and every sign-in link.
+ */
+export const ORPHAN_MS = 12 * 3600_000;
+export function settleOrphans(conversationId) {
+  const open = q(`SELECT * FROM account_jobs WHERE conversation_id = ? AND state IN (${OPEN_STATES.map(() => "?").join(", ")})`).all(String(conversationId), ...OPEN_STATES);
+  let n = 0;
+  for (const job of open) {
+    const run = runOf(job);
+    const over = !run || run.status !== "running";
+    const settled = clock.now() - Number(run?.updated_at ?? job.created_at) > 60_000;   // an ending in flight is left to finish
+    if (!((over && settled) || clock.now() - Number(job.created_at) > ORPHAN_MS)) continue;
+    if (!once(job, "ending")) continue;
+    const acted = !!(job.confirmed_at || job.paid_at || job.state === "paid" || job.state === "confirming");
+    const done = set(job, { state: "not_done", outcome: acted ? "unconfirmed" : "service_failed", request_id: "", request_json: "", ask_kind: "", ended_at: clock.now(), route: job.route || "none" });
+    logAttempt(done);
+    if (once(job, "end")) notify(job.conversation_id, notDoneLine(done, acted ? "unconfirmed" : "service_failed"));
+    n++;
+  }
+  return n;
+}
+
 // ---------------------------------------------------------------- the model's side (src/accountjobtools.js)
 const openRequest = (job) => { try { return job.request_json ? JSON.parse(job.request_json) : null; } catch { return null; } };
 /** The job's run, and only when it is the same person's. */
@@ -1025,6 +1056,7 @@ export function linkWords(run) {
 }
 /** Any job of theirs still open: while one is, no sign-in link is made for any site (the job signs in itself). */
 export function openJobFor(conversationId) {
+  settleOrphans(conversationId);
   return q(`SELECT * FROM account_jobs WHERE conversation_id = ? AND state IN (${OPEN_STATES.map(() => "?").join(", ")}) ORDER BY id DESC`).get(String(conversationId), ...OPEN_STATES) ?? null;
 }
 /** The job working on a site (open, or started in the last day): what refuses a sign-in link for that site. */
@@ -1044,6 +1076,7 @@ const STATE_WORDS = {
 };
 /** Where their account jobs stand, from the record: what the model answers "did it cancel?" from. */
 export function statusView(conversationId, { sinceMs = 48 * 3600_000 } = {}) {
+  settleOrphans(conversationId);
   const rows = q(`SELECT * FROM account_jobs WHERE conversation_id = ? AND (created_at > ? OR state IN (${OPEN_STATES.map(() => "?").join(", ")})) ORDER BY id DESC LIMIT 8`).all(conversationId, clock.now() - sinceMs, ...OPEN_STATES);
   return rows.map((j) => ({
     job_id: j.id, kind: j.kind, what: whatOf(j), state: j.state,

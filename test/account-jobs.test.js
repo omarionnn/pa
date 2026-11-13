@@ -1169,3 +1169,49 @@ test("several mailboxes connected: the site is told the address its own mail goe
   await shop.step(out.run_id);
   assert.match(posted().at(-1).response.answers.email, /^omari(\.work)?@example\.com$/);
 });
+
+test("the checkout service stops answering about a job's run: the job ends in its own words and is not left open", async () => {
+  const { job_id, run_id } = await cancelStarted();
+  delete runs[run_id];                       // Crossmint now answers 404 for it
+  await shop.step(run_id);
+  assert.equal(jobs.jobRow(OMARI, job_id).state, "running", "one miss is not the end");
+  clock.skip(shop.LOST_MS + 1000);
+  const out = await shop.step(run_id);
+  assert.equal(out.lost, true);
+  const job = jobs.jobRow(OMARI, job_id);
+  assert.equal(job.state, "not_done");
+  assert.equal(job.outcome, "service_failed");
+  assert.equal(said.length, 1);
+  assert.equal(said[0].t, "Not done: the service I use for this broke off partway (lost). Treat Cardboard Starter as still active.");
+  assert.ok(!/checkout|start it again|charged that I can see/.test(said[0].t), "never the shopping line");
+  assert.equal(shop.runRow(run_id).status, "failed");
+  assert.equal(lines.length, 1);
+  // Nothing holds the next ask back.
+  assert.equal(jobs.openJobFor(OMARI), null);
+  say("cancel my Cardboard Starter subscription");
+  assert.equal((await call("account_cancel", { site: "cardboard.app", plan: "Cardboard Starter", name: "Cardboard" })).already_running, undefined);
+});
+
+test("a job whose run was ended by something that never told it: closed and said once, never 'already under way' for ever", async () => {
+  const { job_id, run_id } = await cancelStarted();
+  q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled' WHERE run_id = ?").run(run_id);   // a run superseded or closed elsewhere
+  assert.equal(jobs.settleOrphans(OMARI), 0, "an ending that may still be in flight is left a minute");
+  clock.skip(61_000);
+  assert.equal(jobs.openJobFor(OMARI), null);
+  await new Promise((r) => setTimeout(r, 5));
+  const job = jobs.jobRow(OMARI, job_id);
+  assert.equal(job.state, "not_done");
+  assert.equal(job.outcome, "service_failed");
+  assert.equal(said.filter((x) => /^Not done: the service I use for this broke off partway/.test(x.t)).length, 1);
+  assert.equal(jobs.settleOrphans(OMARI), 0, "once");
+  // Their yes had gone in: never "still active", said as not confirmed.
+  db.db.exec("DELETE FROM account_jobs; DELETE FROM shop_runs;"); said.length = 0;
+  const s = await cancelStarted();
+  q("UPDATE account_jobs SET state = 'confirming', confirmed_at = ? WHERE id = ?").run(clock.now(), s.job_id);
+  q("UPDATE shop_runs SET status = 'failed' WHERE run_id = ?").run(s.run_id);
+  clock.skip(61_000);
+  jobs.statusView(OMARI);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(jobs.jobRow(OMARI, s.job_id).outcome, "unconfirmed");
+  assert.match(lastSaid(), /^Not confirmed: your yes went to Cardboard, then the run broke off before it showed me the result/);
+});
