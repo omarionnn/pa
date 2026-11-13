@@ -275,21 +275,23 @@ const threadLines = (messages) => messages.map(renderLine).filter(Boolean).filte
  */
 export function memoryMark(conversationId) {
   try {
-    const f = rawDb.prepare(`SELECT COUNT(*) AS n, COALESCE(MAX(f.id), 0) AS top FROM person_facts f JOIN people p ON p.id = f.person_id
-      WHERE p.conversation_id = ? AND f.status = 'active'`).get(conversationId);
-    const r = rawDb.prepare("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS top FROM treat_rules WHERE conversation_id = ? AND status = 'active'").get(conversationId);
-    return { facts: f.n, factTop: f.top, rules: r.n, ruleTop: r.top };
+    const f = rawDb.prepare(`SELECT f.id AS id, f.fact AS t FROM person_facts f JOIN people p ON p.id = f.person_id
+      WHERE p.conversation_id = ? AND f.status = 'active' ORDER BY f.id`).all(conversationId);
+    const r = rawDb.prepare("SELECT id, rule AS t FROM treat_rules WHERE conversation_id = ? AND status = 'active' ORDER BY id").all(conversationId);
+    // Each row by its id and a mark of its stored words: a count alone would miss one fact retired
+    // while an older one was put back (a correction back to an earlier wording), and words changed in place.
+    const marks = (rows) => Object.fromEntries(rows.map(x => [x.id, sha(x.t)]));
+    return { facts: marks(f), rules: marks(r) };
   } catch { return null; }
 }
 /** Has anything the session could have been shown been retired, reworded or deleted since `mark`? */
 export function memoryRemovedSince(conversationId, mark) {
-  if (!mark) return true;
-  try {
-    const f = rawDb.prepare(`SELECT COUNT(*) AS n FROM person_facts f JOIN people p ON p.id = f.person_id
-      WHERE p.conversation_id = ? AND f.status = 'active' AND f.id <= ?`).get(conversationId, mark.factTop).n;
-    const r = rawDb.prepare("SELECT COUNT(*) AS n FROM treat_rules WHERE conversation_id = ? AND status = 'active' AND id <= ?").get(conversationId, mark.ruleTop).n;
-    return f < mark.facts || r < mark.rules;
-  } catch { return true; }
+  if (!mark || typeof mark.facts !== "object" || typeof mark.rules !== "object" || !mark.facts || !mark.rules) return true;
+  const now = memoryMark(conversationId);
+  if (!now) return true;
+  // Every row it held must still be active and read the same; rows added since are fine.
+  for (const k of ["facts", "rules"]) for (const [id, h] of Object.entries(mark[k])) if (now[k][id] !== h) return true;
+  return false;
 }
 
 const chainsFile = () => join(config.dataDir, "cli-sessions.json");
@@ -341,6 +343,9 @@ export function chainFor(historyId, { base, all, count = all.length, now = Date.
   const c = chains.get(historyId);
   const fresh = (why) => { if (c) dropChain(historyId); log({ session_fresh: historyId, why }); return null; };
   if (!c) { log({ session_fresh: historyId, why: "none" }); return null; }
+  // A turn that was continuing it never finished (the process was killed under it): half of that
+  // turn may be in the session, and no line of the thread says so.
+  if (c.open) return fresh("unfinished");
   if (now - c.at >= CHAIN_IDLE_MS) return fresh("idle");
   if (c.turns >= CHAIN_MAX_TURNS) return fresh("turns");
   if (c.grown >= CHAIN_MAX_GROWN) return fresh("grown");
@@ -634,6 +639,8 @@ async function runTurnOnCli({
     let parts = null;
     const freshParts = () => (parts ??= historyParts(historyId, before, { system: systemBase, log, fast }));
     if (!chain) freshParts();
+    // Marked on disk as in use until this turn ends (it is rewritten whole at the end, or dropped).
+    if (chain) { chains.set(historyId, { ...chains.get(historyId), open: true }); writeChains(); }
     const freshSystem = () => systemWithAnchor(systemBase, freshParts().anchor);
     const system = chain ? systemWithAnchor(systemBase, chain.anchor) : freshSystem();
     timing.mark(conversationId, "anchor");
@@ -873,9 +880,15 @@ async function runTurnOnCli({
     if (keepSession) {
       const was = chain ?? (viaResume ? chains.get(historyId) : null);
       const continued = was && (chain || was.id === viaResume);
-      if (viaResume && !continued) dropChain(historyId);
+      const lines = threadLines(loadConversation(historyId));
+      // Every line of the thread now must be one this session was handed or wrote: a line put in by
+      // something else while the turn ran (a delivery notice, a call's summary) is in the thread and
+      // not in the session, and recording it as read would hide it from the next reply for good.
+      const held = new Set(threadLines([...before, { role: "user", content: forHistory }, ...along.map(content => ({ role: "assistant", content })), { role: "assistant", content: reply }]).map(sha));
+      const foreign = lines.some(l => !held.has(sha(l)));
+      if (foreign) log({ session_fresh: historyId, why: "thread_added_mid_turn" });
+      if (foreign || (viaResume && !continued)) dropChain(historyId);
       else {
-        const lines = threadLines(loadConversation(historyId));
         const wrote = Number(r.envelope?.usage?.cache_creation_input_tokens ?? 0);
         const raw = String(r.envelope?.result ?? "").trim();
         chains.set(historyId, {

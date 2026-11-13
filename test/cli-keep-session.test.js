@@ -370,3 +370,62 @@ test("after a gap the continued session is told what time it is and how old ever
   assert.equal(b.calls[1].resume, b.calls[0].sessionId);
   assert.match(b.calls[1].prompt, /^\[It is now [^\]]+\. Everything above, your tool results included, is from 20 minutes ago or earlier\.\]/);
 });
+
+test("one fact retired while an older one is put back (the count is unchanged) still starts afresh", async () => {
+  db.remember(C, "Maya", "works at the bakery");
+  db.remember(C, "Maya", "is allergic to peanuts");
+  const facts = () => db.listFacts(C, { limit: 500 });
+  const bakery = facts().find(f => /bakery/.test(f.fact));
+  db.retireFact(C, bakery.id);
+  const b = backend();
+  await b.turn("is it still 7?");
+  // From elsewhere: the peanuts fact goes and the bakery one comes back. As many active as before.
+  db.retireFact(C, facts().find(f => /peanuts/.test(f.fact)).id);
+  db.db.prepare("UPDATE person_facts SET status = 'active', valid_to = NULL WHERE id = ?").run(bakery.id);
+  await b.turn("ok");
+  assert.equal(b.calls[1].resume, undefined, "the session read the peanuts fact: not continued");
+  assert.ok(b.logs.some(e => e.session_fresh === C && e.why === "memory_removed"));
+});
+
+test("a fact whose stored words were changed in place starts afresh", async () => {
+  db.remember(C, "Maya", "lives in Oakland");
+  const b = backend();
+  await b.turn("is it still 7?");
+  const row = db.db.prepare("SELECT f.id FROM person_facts f JOIN people p ON p.id = f.person_id WHERE p.conversation_id = ? AND f.status = 'active' ORDER BY f.id DESC").get(C);
+  db.db.prepare("UPDATE person_facts SET fact = ? WHERE id = ?").run("something else entirely", row.id);
+  await b.turn("ok");
+  assert.equal(b.calls[1].resume, undefined);
+  assert.ok(b.logs.some(e => e.session_fresh === C && e.why === "memory_removed"));
+});
+
+test("a line put into the thread by something else WHILE a reply ran is never recorded as read: the next reply starts afresh and so sees it", async () => {
+  const b = backend(async (args, n) => {
+    if (n === 1) db.saveConversation(C, [...db.loadConversation(C), { role: "assistant", content: "heads up, your package was delivered at 3:12pm" }]);
+    return `reply ${n}`;
+  });
+  await b.turn("is it still 7?");
+  assert.equal(chainOf(C), null, "nothing is kept of a session that missed a line");
+  assert.ok(b.logs.some(e => e.session_fresh === C && e.why === "thread_added_mid_turn"));
+  await b.turn("what got delivered");
+  assert.equal(b.calls[1].resume, undefined);
+  assert.match(b.calls[1].system + b.calls[1].prompt, /package was delivered at 3:12pm/, "the fresh turn is handed the line");
+  await b.turn("thanks");
+  assert.equal(b.calls[2].resume, b.calls[1].sessionId, "and the reply after that continues again");
+});
+
+test("a session whose continuing turn never finished (the process was killed under it) is not continued after the restart", async () => {
+  const b = backend();
+  await b.turn("is it still 7?");
+  // The second turn dies with the process: what is on disk at that moment is what a restart reads.
+  let onDisk = null;
+  const b2 = backend(async () => { onDisk = readFileSync(join(dir, "cli-sessions.json"), "utf8"); return "reply"; });
+  await b2.turn("and where");
+  assert.equal(JSON.parse(onDisk)[C].open, true, "marked in use on disk while the turn runs");
+  assert.equal(chainOf(C).open, undefined, "and cleared when it ends");
+  resetChains({ disk: true });
+  writeFileSync(join(dir, "cli-sessions.json"), onDisk);
+  const b3 = backend();
+  await b3.turn("you there?");
+  assert.equal(b3.calls[0].resume, undefined);
+  assert.ok(b3.logs.some(e => e.session_fresh === C && e.why === "unfinished"));
+});
