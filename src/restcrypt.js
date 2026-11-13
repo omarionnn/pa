@@ -182,7 +182,8 @@ export function sigv4({ method = "POST", host, path = "/", query = "", headers, 
   return { ...h, authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signed}, Signature=${signature}`, signature };
 }
 
-async function kmsCall(target, payload) {
+/** One signed AWS KMS JSON call (5 tries). Exported for src/vaultkms.js, the saved-login key source. */
+export async function kmsCall(target, payload) {
   const region = process.env.REASON_REST_KMS_REGION || process.env.AWS_REGION || "us-west-2";
   const host = process.env.REASON_REST_KMS_HOST || `kms.${region}.amazonaws.com`;
   const accessKeyId = process.env.AWS_ACCESS_KEY_ID, secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
