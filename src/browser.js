@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { config } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
 import { publicUrl, allowPrivate } from "./netguard.js";
+import * as signinPage from "./signinpage.js";
 
 const sessions = new Map(); // conversationId -> { context, page }
 let playwright = null;
@@ -321,6 +322,37 @@ export async function readPageLabels(url, { timeoutMs = 20_000, settleMs = 2000 
       // Every control's label, with false provider buttons left out: a footer "Facebook" link to the
       // site's social page is not a sign-in button (src/providerbutton.js).
       return await page.evaluate(findProviderButton, { labels: true });
+    })();
+    const cap = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`no answer in ${Math.round(timeoutMs / 1000)}s`)), timeoutMs); });
+    return await Promise.race([work, cap]);
+  } finally {
+    clearTimeout(timer);
+    await b.close().catch(() => {});
+  }
+}
+
+/**
+ * Where a site's sign-in page is, found the way a person would find it: the address is opened in a
+ * throwaway guarded browser (never anybody's own profile), a sign-in form is waited for, and when
+ * the page that opened is not a sign-in page the site's own "Sign in" / "Log in" link is followed
+ * once (src/signinpage.js arriveAtSignin). For a site known only by its bare name, BEFORE a link is
+ * made: on 2026-11-12 a link for "link.com" showed the owner Link's marketing home page.
+ * Bounded, and always closed. Nothing is typed and nothing but that one link is pressed.
+ *   → { found, url (origin + path), kind, followed, ms }
+ */
+export async function locateSigninPage(entry, { timeoutMs = 40_000 } = {}) {
+  const launcher = await chromium();
+  const b = await launcher.launch({ headless: true });
+  let timer;
+  try {
+    const work = (async () => {
+      // A desktop's width: at a phone's, a site folds its "Log in" link into a menu.
+      const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
+      await guardContext(ctx);
+      const page = await ctx.newPage();
+      await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+      const at = await signinPage.arriveAtSignin(page, entry, { allowCurrentSite: true });
+      return { found: signinPage.isStep(at.kind), url: at.page, kind: at.kind, followed: at.followed, ms: at.ms };
     })();
     const cap = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`no answer in ${Math.round(timeoutMs / 1000)}s`)), timeoutMs); });
     return await Promise.race([work, cap]);

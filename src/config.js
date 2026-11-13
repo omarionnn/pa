@@ -584,6 +584,10 @@ export const config = {
   remoteSigninLinkTtlMs: Number(process.env.REASON_SIGNIN_LINK_TTL_MS || 10 * 60_000),
   remoteSigninSessionMs: Number(process.env.REASON_SIGNIN_SESSION_MS || 10 * 60_000),
   remoteSigninSettleMs: Number(process.env.REASON_SIGNIN_SETTLE_MS || 250),
+  // How long a site's sign-in page is given to draw its form before anything concludes it has none
+  // (src/signinpage.js). Stripe Link's email box appears 1.3 s after the page loads; the one read at
+  // 1.1 s on 2026-11-12 called that "no email box". Polled, and it stops the moment the form is there.
+  signinFormWaitMs: Number(process.env.REASON_SIGNIN_FORM_WAIT_MS || 10_000),
   signinWindowMaxMs: Number(process.env.REASON_SIGNIN_WINDOW_MAX_MS || 15 * 60_000),
   // Voice notes have their own model order, apart from videos (videoModel): the small model listens
   // first and the big one is the fallback. Owner's call 2026-11-09: gemini-3.8-flash kept answering
