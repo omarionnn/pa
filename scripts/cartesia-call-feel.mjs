@@ -55,7 +55,7 @@ export const INSTRUCTIONS = [
   "If they say goodbye, say a short warm goodbye and end the call.",
 ].join("\n");
 
-export const INITIAL_MESSAGE = "Hey, it's Reason, on the test line. I can't see any of your stuff from here, this one's just for hearing how I sound. So, what's on your mind?";
+export const INITIAL_MESSAGE = "Hey, it's Reason, on the test line. I can't see any of your stuff from here, this one's just for hearing how I sound. Say anything you like, or try to make me laugh.";
 
 /** The body of POST /v1/agents. */
 export function agentBody({ voice, language, model }) {
