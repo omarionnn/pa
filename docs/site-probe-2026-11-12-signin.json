@@ -1,0 +1,244 @@
+{
+  "probed_at": "2026-11-12",
+  "how": "The verdicts of the 2026-11-12 morning probe of 44 sites from Reason's own browser, as reported to the fix that reads them (PR 'sign-in probe fixes'). This file records the verdict per site, not the probe's raw output: where a per-site status was not handed over, the line says only 'bot wall'. Nothing was done to get around a wall.",
+  "finding": "Sites listed as walled answered the sign-in page with a bot wall (HTTP 403 or a challenge page that never clears). Spotify loads and takes the email, then answers \"Something went wrong\". Each line is a fact about 2026-11-12 only: src/sitefindings.js believes a probe wall for 14 days and then asks the site again.",
+  "read_by": "src/sitefindings.js PROBE (test/signin-probe-1112.test.js checks the two agree).",
+  "also_found": [
+    "Marriott: a footer \"Facebook\" link to its social page was read as a sign-in button (fixed: src/providerbutton.js).",
+    "Google: refuses Reason's browser after the email is typed (proved 2026-11-10); the Google button has not been pressed since #481. There is no working Google route in Reason's browser.",
+    "signin_status said \"can sign in here\" for DoorDash while every page answered 403 (fixed: the field was about the person being at the Mac; each site now carries a dated signin_here)."
+  ],
+  "sites": [
+    {
+      "site": "DoorDash",
+      "names": [
+        "doordash",
+        "doordash.com"
+      ],
+      "signin_hosts": [
+        "doordash.com"
+      ],
+      "verdict": "walled",
+      "why": "every page, sign-in included, answered Reason's browser with HTTP 403 and Cloudflare's check, which never clears"
+    },
+    {
+      "site": "Uber / Uber Eats",
+      "names": [
+        "uber",
+        "uber_eats",
+        "uber.com",
+        "ubereats.com"
+      ],
+      "signin_hosts": [
+        "auth.uber.com"
+      ],
+      "verdict": "walled",
+      "why": "auth.uber.com (the sign-in for Uber and Uber Eats) answered Reason's browser with HTTP 403 and Cloudflare's check"
+    },
+    {
+      "site": "LinkedIn",
+      "names": [
+        "linkedin.com"
+      ],
+      "signin_hosts": [
+        "linkedin.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Medium",
+      "names": [
+        "medium.com"
+      ],
+      "signin_hosts": [
+        "medium.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Cloudflare dashboard",
+      "names": [
+        "cloudflare.com"
+      ],
+      "signin_hosts": [
+        "dash.cloudflare.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "claude.ai",
+      "names": [
+        "claude.ai"
+      ],
+      "signin_hosts": [
+        "claude.ai"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "GoDaddy",
+      "names": [
+        "godaddy.com"
+      ],
+      "signin_hosts": [
+        "godaddy.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "AMC",
+      "names": [
+        "amctheatres.com"
+      ],
+      "signin_hosts": [
+        "amctheatres.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Ticketmaster",
+      "names": [
+        "ticketmaster",
+        "ticketmaster.com",
+        "livenation.com"
+      ],
+      "signin_hosts": [
+        "ticketmaster.com",
+        "livenation.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Canva",
+      "names": [
+        "canva.com"
+      ],
+      "signin_hosts": [
+        "canva.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "OpenAI platform",
+      "names": [
+        "openai.com"
+      ],
+      "signin_hosts": [
+        "platform.openai.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Indeed",
+      "names": [
+        "indeed.com"
+      ],
+      "signin_hosts": [
+        "indeed.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "X",
+      "names": [
+        "x.com",
+        "twitter.com"
+      ],
+      "signin_hosts": [
+        "x.com",
+        "twitter.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Walmart",
+      "names": [
+        "walmart.com"
+      ],
+      "signin_hosts": [
+        "walmart.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Target",
+      "names": [
+        "target.com"
+      ],
+      "signin_hosts": [
+        "target.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Eventbrite",
+      "names": [
+        "eventbrite.com"
+      ],
+      "signin_hosts": [
+        "eventbrite.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Reddit",
+      "names": [
+        "reddit.com"
+      ],
+      "signin_hosts": [
+        "reddit.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "OpenTable",
+      "names": [
+        "opentable",
+        "opentable.com"
+      ],
+      "signin_hosts": [
+        "opentable.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Hetzner",
+      "names": [
+        "hetzner.com"
+      ],
+      "signin_hosts": [
+        "hetzner.com"
+      ],
+      "verdict": "walled",
+      "why": "its sign-in page answered Reason's browser with a bot wall (HTTP 403 or a challenge page that never clears)"
+    },
+    {
+      "site": "Spotify",
+      "names": [
+        "spotify",
+        "spotify.com"
+      ],
+      "signin_hosts": [
+        "spotify.com"
+      ],
+      "verdict": "refuses_after_email",
+      "why": "its sign-in page loads and takes the email, then answers \"Something went wrong\": it refuses the automated browser after the email is submitted"
+    }
+  ]
+}

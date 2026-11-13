@@ -426,7 +426,7 @@ test("account A's sign-in never reads account B's mailbox: tokens come only from
 });
 
 test("the gate: REASON_SOCIAL_SIGNIN unset or off reaches nobody; owner reaches the operator only — no tool, no rules, no route, same words as before", async () => {
-  const mainText = "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form.";
+  const mainText = "Which button their account on this site signs in through, when it is one of these. It is recorded only; nothing is pressed for them, and the link opens the site's own sign-in form. Never promise to press or use their Google login: Google refuses this browser, so a Google-only site cannot be signed in to here. Only when they said so; omit for the site's own form.";
   const provText = (c) => toolsFor(c).find(t => t.name === "signin_link")?.input_schema.properties.provider.description;
   let started = 0;
   const ctx = { publicUrl: async (url) => ({ ok: true, url }), startEmailSignin: () => { started++; return { ok: true, started: true }; } };
