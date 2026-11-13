@@ -51,7 +51,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   remote.forgetAllRemoteSignins();
-  db.db.exec("DELETE FROM accounts; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals;");
+  db.db.exec("DELETE FROM accounts; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals; DELETE FROM signin_pages;");
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
   config.publicUrl = "https://reason.example";
@@ -67,7 +67,9 @@ test("genericEntry: a domain or https URL is a site, keyed by its domain; the si
   assert.equal(n.site, "notion.so");
   assert.equal(n.label, "Notion");
   assert.equal(n.signin_url, "https://www.notion.so/login");
-  assert.equal(n.signed_in.url, "https://notion.so/");
+  // Asked on the sign-in page itself (2026-11-12): a site shows its form there to anybody not signed
+  // in and passes a signed-in browser on; its marketing front page says neither.
+  assert.equal(n.signed_in.url, "https://www.notion.so/login");
   assert.equal(n.generic, true);
   assert.deepEqual(n.hosts, ["notion.so"]);
   const bare = signin.genericEntry("airbnb.com");

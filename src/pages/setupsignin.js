@@ -202,6 +202,13 @@ export function nativeStepPanel(step = {}, { entry } = {}) {
         + lede("finish this step on the page below — it's a quick check only you can do. I'll take it from there.");
     case "loading":
       return eyebrow(`SIGN IN TO ${upper(n)}`) + say + `<p class="np-wait"><span class="spin"></span>reading the page…</p>`;
+    // Not a step (owner, 2026-11-12): the page that opened is not a sign-in page. Reason says it is
+    // still looking; nothing asks the person to finish anything.
+    case "looking":
+      return eyebrow(`SIGN IN TO ${upper(n)}`) + say + `<p class="np-wait"><span class="spin"></span>this page isn't its sign-in page. finding the right one…</p>`;
+    // Not a step either: a page in the middle of a sign-in with nothing to fill in. Said as that.
+    case "between":
+      return eyebrow(`${upper(n)}`) + say + note("it may be loading, or showing a button. if it's asking you something, answer it on the page below; if not, give it a moment.", { sp: true });
     default:
       return eyebrow(`${upper(n)}`) + say + note("finish this step on the page below; I'll pick back up when it moves on.", { sp: true });
   }
@@ -313,7 +320,11 @@ export function setupResultPage({ entry, ended, back = "", thread = null, card =
     // A setup tries again from its connect screen; a thread asks Reason for a fresh link.
     const again = t ? "Ask Reason for a fresh link to try again." : "You can try again from your setup.";
     const prov = ended?.provider ? ({ google: "Google", apple: "Apple", microsoft: "Microsoft", facebook: "Facebook" })[ended.provider] ?? "The provider" : "The provider";
-    const [h1, why, reply] = state === "refused"
+    // No sign-in page was found (src/signin-remote.js): said as that, whatever the site's front page
+    // read as, and never "ask for a fresh link" — a fresh link would open the same page.
+    const [h1, why, reply] = ended?.how === "no_signin_page"
+      ? [`I couldn't find where to sign in on ${n}.`, `The ${n} page that opened has no sign-in form, and I couldn't find one from it, so there was nothing for you to do here and nothing was saved. ${t ? `If you know the address of ${n}'s sign-in page, text it to Reason.` : "You can try again from your setup."}`, `couldn't find ${n}'s sign-in page`]
+      : state === "refused"
       ? [`${prov} said no to my browser.`, `${prov} refused my browser for ${n}, so nothing was saved and I won't try it again. ${t ? `Reason is signing you in with your ${n} email instead.` : `You can sign in with your ${n} email and password from your setup.`}`, `${prov} refused the sign-in`]
       : state === "blocked"
       ? [`${n} is blocking my browser right now.`, `${n} stopped my browser with a security check before its sign-in page loaded. That's ${n}'s choice, not something you did${t ? ", and a fresh link would hit the same wall." : "."}${instead ? ` ${instead}` : ""}${t ? (instead ? " Reason will text you about it." : " Reason will text you what works instead.") : ""}`, `${n} blocked the sign-in`]

@@ -213,6 +213,8 @@ const TABLES = [
   "social_declines",
   // Google/Apple/Microsoft refusing Reason's browser for one of their sites, kept 7 days (src/socialsignin.js).
   "social_refusals",
+  // The sign-in page their last attempt on a site was on, and a link that ended without progress (src/signinpage.js).
+  "signin_pages",
   // Their food orders and food notes (src/food.js): what they ordered, where it went, places turned down.
   "food_orders", "food_notes", "food_places", "food_told",
   // The daily edition and their stamps (src/daily.js, src/stamps.js).
