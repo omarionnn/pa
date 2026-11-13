@@ -242,3 +242,41 @@ export async function sealInBrowser(subtle, spkiBytes, intakeId, username, passw
   out.set(wrapped, 3); out.set(iv, 3 + wrapped.length); out.set(ct, 3 + wrapped.length + 12);
   return out;
 }
+
+// ---------------------------------------------------------------- a password sent by text
+// A password texted into the thread is never used: not saved, not typed, not shown to the AI. The
+// router (src/channels/router.js) swaps the stored copy for PASSWORD_PLACEHOLDER before the message
+// is claimed, then answers with fixed words and the page's link instead of a turn. Narrow on purpose:
+// only while this person has an open save link, and only a message that says "password is …", or one
+// bare token of 8 to 128 characters with letters and digits that is not a link, an address or a code.
+// A plain word ("perfect!", "thanks") is never taken for a password.
+export const PASSWORD_PLACEHOLDER = "[they texted what looked like a password; Reason did not keep it and pointed them to the save page]";
+export const TEXTED_PASSWORD_WORDS = "Don't text me passwords: texts are kept by your phone company and in my history. Use this instead:";
+// "password is X" / "password: X" with X the last thing said, and X not a plain word ("password is wrong").
+const PASSWORD_SAID = /\b(?:pass ?word|passcode|pwd)\s*(?:is|was|=|:|-)\s*(\S{6,128})\s*$/i;
+const notAWord = (tok) => { const t = tok.replace(/[.!?,;]+$/, ""); return t.length >= 6 && /\p{L}/u.test(t) && /[^\p{L}]/u.test(t); };
+const openLinkOf = (c) => q("SELECT * FROM login_intake WHERE conversation_id = ? AND claimed_at IS NULL AND expires_at >= ? ORDER BY created_at DESC LIMIT 1").get(c, clock.now()) ?? null;
+
+/** Does this text look like a password sent while a save link is open for them? Never stores or logs it. */
+export function looksLikeTextedPassword(conversationId, text) {
+  const c = String(conversationId ?? "");
+  if (!c || !intakeReadyFor(c) || !openLinkOf(c)) return false;
+  const t = String(text ?? "").trim();
+  const said = PASSWORD_SAID.exec(t);
+  if (said) return notAWord(said[1]);
+  if (!/^\S{8,128}$/.test(t) || /^(?:https?:|www\.)|@|^[0-9]+$/i.test(t)) return false;
+  return /\p{L}/u.test(t) && /[0-9]/.test(t);
+}
+
+/**
+ * The fixed answer to a texted password, with the page's link. The token was kept only as a hash, so
+ * the open link gets a fresh token (the same pinned site, the same deadline); the old one stops
+ * working. Called once the message is claimed, so a retried delivery never re-issues it. null: no link open.
+ */
+export function textedPasswordReply(conversationId) {
+  const row = openLinkOf(String(conversationId ?? ""));
+  if (!row) return null;
+  const token = randomBytes(24).toString("base64url");
+  if (q("UPDATE login_intake SET token_hash = ? WHERE token_hash = ? AND claimed_at IS NULL").run(hashToken(token), row.token_hash).changes !== 1) return null;
+  return `${TEXTED_PASSWORD_WORDS}\n${passkey.ORIGIN()}${LINK_PATH}${token}`;
+}
