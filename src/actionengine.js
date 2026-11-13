@@ -251,7 +251,20 @@ export function sweepCards({ now = clock.now(), log = () => {}, queue = backgrou
         out.queued++;
         // Past the on-time window this is the catch-up; said in the log so a late note has a reason.
         if (minuteOfDay(now, tz) >= win.end && !retrying) log({ action_cards: c, catch_up: 1 });
-        Promise.resolve(queue(`cards:${c}`, () => run(c, { now: clock.now(), day, log })))
+        // A run that THROWS (a bug, a database error) left no row: without one the next sweep, 15 s
+        // on, would start it again, and again, reading the mailbox each time until the cutoff. It
+        // counts as an attempt like any other run that got no answer.
+        const job = async () => {
+          try { return await run(c, { now: clock.now(), day, log }); }
+          catch (e) {
+            if (!ranToday(c, day)) {
+              const n = (dayRow(c, day)?.attempts ?? 0) + 1;
+              recordDay(c, { day, at: clock.now(), outcome: n < MAX_ATTEMPTS ? "retry" : "skipped", why: "error", attempts: n });
+            }
+            throw e;
+          }
+        };
+        Promise.resolve(queue(`cards:${c}`, job))
           .catch(e => log({ action_cards: c, failed: errorKind(e) }))
           .finally(() => running.delete(c));
         continue;
@@ -406,6 +419,33 @@ export function deadlineFrom(text, now = clock.now(), tz = config.tz) {
 const NEWSLETTER_DOMAINS = /(substack\.com|mailchimp|mailchi\.mp|sendgrid\.net|constantcontact|hubspot|klaviyo|beehiiv|convertkit|list-manage|marketing\.|news\.|newsletter|noreply|no-reply|notifications?@|updates@|promo|offers@|deals@)/i;
 
 /**
+ * Google asked once too often is how a mailbox gets rate-limited, and a Google that is not answering
+ * costs 15 s a call on a lane that runs one job at a time. So per account: a 429 (or a quota 403)
+ * stops the asking at once, three failures in a row stop it too, and every call after that comes
+ * back failed without leaving the server. A 404 is an answer (the thread is gone), not a failure.
+ */
+const GUARDED = Symbol("guarded");
+export function guardedApi(api) {
+  if (api[GUARDED]) return api;
+  const state = new Map();
+  const f = async (acct, method, path, opts) => {
+    const k = String(acct?.account ?? "");
+    const st = state.get(k) ?? { fails: 0, stopped: false };
+    state.set(k, st);
+    if (st.stopped) return { ok: false, status: 429, error: "stopped asking: Google is not answering", stopped: true };
+    let got;
+    try { got = await api(acct, method, path, opts); } catch (e) { got = { ok: false, error: String(e?.message ?? e) }; }
+    if (got?.ok || got?.status === 404) { st.fails = 0; return got; }
+    st.fails++;
+    const limited = got?.status === 429 || (got?.status === 403 && /rate|quota|exhausted/i.test(`${got?.google_status ?? ""} ${got?.error ?? ""}`));
+    if (limited || st.fails >= 3) st.stopped = true;
+    return got ?? { ok: false };
+  };
+  f[GUARDED] = true;
+  return f;
+}
+
+/**
  * Everything the run may look at for one person. `read` is injected like notice.gather's:
  * `(account, method, path, options)` giving what google.api gives. Returns candidates with a kind, a
  * key, a source class, a factual line and server-side refs, plus the chat excerpt and what failed.
@@ -460,7 +500,7 @@ export async function gather({ conversationId, now = clock.now(), tz = config.tz
     out.failed.push({ what: "google", status: tokens.status ?? "not_connected" });
     return { ...out, timers, time_zone: tz, accounts_live: [] };
   }
-  const api = read ?? ((acct, method, path, opts) => google.api(acct.token, method, path, opts));
+  const api = guardedApi(read ?? ((acct, method, path, opts) => google.api(acct.token, method, path, opts)));
   const live = tokens.accounts.map(a => ({ ...a, timeZone: tz }));
   out.accounts = live.map(a => a.account);
   const mine = new Set(live.map(a => String(a.account).toLowerCase()));
@@ -502,9 +542,12 @@ export async function gather({ conversationId, now = clock.now(), tz = config.tz
     const pull = async (q, max, kind) => {
       const list = await api(a, "GET", "/gmail/v1/users/me/messages", { query: { q, maxResults: max } });
       if (!list.ok) { out.failed.push({ account: a.account, what: kind, status: list.status }); log({ action_cards: c, source_failed: "mail" }); return; }
+      let holes = 0;
       for (const m of list.body?.messages ?? []) {
         const one = await api(a, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, { query: { format: "metadata", metadataHeaders: google.BRIEF_HEADERS } });
-        if (!one.ok) continue;
+        // A message that could not be read is a hole in the morning, not an empty one: counted as a
+        // failed source (once per pull) so the run is tried again rather than called "nothing today".
+        if (!one.ok) { if (one.status !== 404 && !holes++) { out.failed.push({ account: a.account, what: kind, status: one.status ?? "no_answer" }); log({ action_cards: c, source_failed: "mail" }); } if (one.stopped) break; continue; }
         const v = google.messageBrief(one.body);
         const from = notice.addressOf(v.from);
         if (!from || mine.has(from) || seenThreads.has(v.thread_id)) continue;
@@ -891,9 +934,9 @@ export async function runMorning(conversationId, { now = clock.now(), tz = dream
     // passes, but a job can land between two sweeps): not at this hour.
     if (!inRunWindow(now, tz, runWindowFor(c, { now }))) { recordDay(c, { day, at: now, outcome: "skipped", why: "late" }); log({ action_cards: c, outcome: "skipped", why: "late" }); return { skipped: "late" }; }
   }
-  const bundle = await gather({ conversationId: c, now, tz, read, tokensFor, log });
+  const api = guardedApi(read ?? ((acct, method, path, opts) => google.api(acct.token, method, path, opts)));
+  const bundle = await gather({ conversationId: c, now, tz, read: api, tokensFor, log });
   const live = bundle.accounts_live ?? [];
-  const api = read ?? ((acct, method, path, opts) => google.api(acct.token, method, path, opts));
   const s1 = await stage1(c, bundle, { now, api: live.length ? api : null, accounts: live, log });
   const counts = { candidates: bundle.candidates.length, after_stage1: s1.keep.length };
   const attempts = dry ? 0 : (dayRow(c, day)?.attempts ?? 0) + 1;
@@ -974,6 +1017,9 @@ export function urgentFrom(conversationId, candidates, { now = clock.now(), tz =
   if (running.has(`urgent:${c}`)) return { skipped: "already_running" };
   running.add(`urgent:${c}`);
   const job = async () => {
+    // The lane runs one job at a time and this one may have waited behind the morning run (or its
+    // catch-up): the day's two texts are counted again here, when it starts, not when it was queued.
+    if (textsToday(c, day) >= MAX_TEXTS_PER_DAY) { log({ action_cards: c, urgent: "no_card", why: "two_texts_today" }); return { urgent: false }; }
     const cand = { kind: pick.kind, source: "calendar", key, due_at: Date.parse(pick.starts), starts_at: Date.parse(pick.starts), line: `${pick.what}${pick.detail ? ` (${pick.detail})` : ""}`, refs: { account: pick.account, event_id: pick.event_id, start: pick.starts } };
     const s2 = await stage2(c, { candidates: [cand], chat: [], now, tz, ask, log });
     if (s2.error || !s2.cards.length) { log({ action_cards: c, urgent: "no_card", why: s2.error ?? "model_passed" }); return { urgent: false }; }

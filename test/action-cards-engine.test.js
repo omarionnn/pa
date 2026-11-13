@@ -662,3 +662,52 @@ test("nothing today means nothing: a run the model or a mailbox did not answer i
   const blind = await engine.runMorning(C, { now: t0, tz: TZ, read: down, tokensFor, ask: async () => ({ value: { cards: [], skipped: [] } }) });
   assert.equal(blind.outcome, "retry"); assert.equal(blind.why, "source_failed");
 });
+
+test("a run that throws is an attempt, not a 15-second loop; a rate-limited mailbox is asked no further; a queued urgent single re-counts the day's texts", async () => {
+  const at = (iso) => Date.parse(iso);
+  process.env.REASON_ACTION_CARDS = "owner";
+  engine.setCardsAsk(async () => ({ value: { cards: [], skipped: [] } }));
+  const t0 = at("2026-11-17T12:30:00Z");
+  const now0 = clock.now;
+  let t = t0;
+  clock.now = () => t;
+  try {
+    const queue = (key, fn) => fn();
+    let ran = 0;
+    const boom = async () => { ran++; throw new Error("database is locked"); };
+    // Every sweep (15 s apart) for 45 minutes: three runs, 10 minutes apart, then the day is written off.
+    for (; t < t0 + 45 * MIN; t += 15_000) { engine.sweepCards({ now: t, queue, run: boom }); await new Promise(r => setImmediate(r)); }
+    assert.equal(ran, 3);
+    const row = engine.dayRow(C, "2026-11-17");
+    assert.equal(row.outcome, "skipped"); assert.equal(row.why, "error"); assert.equal(row.attempts, 3);
+  } finally { clock.now = now0; }
+
+  // Gmail says 429 on the first message: no further call for that account, and the morning is not "empty".
+  db.db.exec("DELETE FROM action_card_days");
+  engine.resetEngine();
+  const g = fakeGoogle(NOISY());
+  let asked = 0;
+  const limited = async (acct, method, path, opts) => {
+    if (/^\/gmail\/v1\/users\/me\/messages\/./.test(path)) { asked++; return { ok: false, status: 429 }; }
+    return g.read(acct, method, path, opts);
+  };
+  const r = await engine.runMorning(C, { now: t0, tz: TZ, read: limited, tokensFor, ask: async () => ({ value: { cards: [], skipped: [] } }) });
+  assert.equal(asked, 1, "one 429 and it stops asking");
+  assert.equal(r.outcome, "retry"); assert.equal(r.why, "source_failed");
+
+  // An urgent single queued while one text was sent, started after the morning text took the second: no third.
+  db.db.exec("DELETE FROM action_card_days");
+  engine.resetEngine();
+  const rt = fakeRuntime();
+  const { ask } = scriptedAsk();
+  const cand = { kind: "calendar_moved", key: "k:9", what: "Board call moved from 9:00 to 9:30", starts: new Date(NOW + 90 * MIN).toISOString(), account: ACCT.account, event_id: "e99" };
+  let start;
+  const later = (key, fn) => new Promise((res, rej) => { start = () => fn().then(res, rej); });
+  db.db.prepare("INSERT INTO action_card_days (conversation_id, day, run_at, outcome, urgent_sent) VALUES (?, '2026-11-17', ?, 'urgent', 1)").run(C, NOW);
+  assert.ok(engine.urgentFrom(C, [cand], { now: NOW, tz: TZ, ask, queue: later, runtime: rt }).queued);
+  db.db.prepare("UPDATE action_card_days SET texts_sent = 1 WHERE conversation_id = ? AND day = '2026-11-17'").run(C);
+  start();
+  await new Promise(res => setTimeout(res, 20));
+  assert.equal(rt.sent.length, 0);
+  assert.equal(engine.textsToday(C, "2026-11-17"), 2);
+});
