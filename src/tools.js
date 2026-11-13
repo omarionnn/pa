@@ -46,6 +46,7 @@ import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
 import * as ownfiles from "./ownfiles.js";
+import * as proofshot from "./proofshot.js";
 import * as connectafter from "./connectafter.js";
 import { judgeReply } from "./judge.js";
 import { publicUrl } from "./netguard.js";
@@ -165,7 +166,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "account_cancel_confirm", "account_bill_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "account_cancel_confirm", "account_bill_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "browser_proof", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -6929,6 +6930,18 @@ export const tools = [
     },
   },
   {
+    name: "browser_proof",
+    description: "After you FINISHED something for them on a page in your browser (a bill paid, a plan cancelled, a booking made, while signed in with their saved login), send ONE picture of the page that shows it into their thread, with your result line. Only their own account's page that proves it (the billing, subscription or receipt page), never a sign-in page: a page with a password, code or card box, or a full card or bank number, is refused. It is kept on their record as the proof. Nothing on the picture comes back to you.",
+    input_schema: {
+      type: "object",
+      properties: {
+        say: { type: "string", description: "The result line sent with it: what the page shows, what you did or didn't change, what happens next." },
+        page_line: { type: "string", description: "The page's own line that proves it, copied exactly from browser_read, so the picture is cropped to that part." },
+      },
+      required: ["say"],
+    },
+  },
+  {
     name: "browser_images",
     description: "List the real photo URLs on the page that is open — listing photos, product images, any picture worth showing. Skips icons and layout graphics. Use this to find pictures you can send with send_picture.",
     input_schema: { type: "object", properties: {} },
@@ -8019,6 +8032,7 @@ const S = {
   // `path` is still accepted from an older call and ignored: the file always goes in the shots folder.
   browser_screenshot: z.object({ path: z.string().max(400).optional(), full_page: z.boolean().optional() }),
   browser_images: z.object({}),
+  browser_proof: z.object({ say: z.string().min(1).max(600), page_line: z.string().max(300).optional() }),
   browser_close: z.object({}),
 };
 
@@ -9229,6 +9243,7 @@ function targetOf(name, input) {
     case "mark_moment": return `effect:${input.effect ?? ""}`;
     case "voice_note_send": return `voice:${input.to}`;
     case "send_picture": return `picture:${input.url?.slice(0, 120) ?? ""}`;
+    case "browser_proof": return "picture:proof of the page into this thread";
     case "image_generate": return input.send === false ? "picture:for a page" : `picture:generated x${input.count ?? 1} into this thread`;
     // What was made, and what was handed to whom. The title rather than the content: a receipt says
     // which document went where, and it is not where the contents of somebody's document live.
@@ -19677,6 +19692,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       await page.screenshot({ path: resolve(path), fullPage: !!input.full_page, mask: await browser.secretBoxesToMask(page), maskColor: "#888888" });
       sealInPlace(resolve(path), c); // theirs: sealed (REASON_ENCRYPT_REST2)
       return { ok: true, path: resolve(path), url: await browser.pageUrl(page) };
+    }
+    case "browser_proof": {
+      // One picture of the page that proves a finished job, into THIS thread only (src/proofshot.js has the rules).
+      if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing goes to their phone from here. Say the result in your reply instead." };
+      const page = browser.openPage(c);
+      if (!page || page.url() === "about:blank") return { ok: false, error: "No page is open in my browser, so there is nothing to take a picture of. Say the result in words." };
+      const router = ctx.channels;
+      const thread = db.getThread(c);
+      const channel = thread ? router?.get?.(thread.channel) : null;
+      if (!router || !thread || !channel) return { ok: false, status: "not_connected", error: "There is no texting thread here to send a picture into. Say the result in words." };
+      if (!channel.carriesFiles) return { ok: false, supported: false, error: `${thread.channel} cannot carry a picture. Say the result in words.` };
+      const shot = await proofshot.captureProof(c, page, { focus: input.page_line ?? "", what: input.say });
+      if (!shot.ok) return { ok: false, refused: shot.refused, note: `${proofshot.refusedLine(shot.refused)} Send the result in words, and say that line too.` };
+      const line = String(input.say ?? "").replace(/\bhttps?:\/\/\S+/gi, "").replace(/\s+/g, " ").trim().slice(0, 600);
+      let r;
+      try {
+        r = await router.sendMedia({ channel: thread.channel, to: thread.address, text: line, chatId: thread.chat_id ?? null, file: shot.file, mimeType: "image/jpeg", filename: "proof.jpg", idempotencyKey: `proof:${c}:${shot.id}`, conversationId: c, toOwner: true });
+      } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+      if (!r?.ok || r.queued) return { ok: false, kept: true, queued: !!r?.queued, error: r?.error ?? null, note: r?.queued ? "The picture is NOT sent yet; the send is being retried. Do not say you sent it." : "The picture did not go. Send the result in words and say the picture couldn't be sent." };
+      proofshot.markSent(c, shot.id);
+      // No page words and no image come back: the picture is evidence for them, never instructions for the model.
+      return { ok: true, sent: true, proof_id: shot.id, cropped: shot.cropped, note: "The picture of the page and your line went into their thread as one message. You may say you sent it; do not repeat the line." };
     }
     case "browser_images": {
       const page = await browser.pageFor(c);

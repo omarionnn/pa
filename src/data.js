@@ -37,6 +37,7 @@ import "./websetupstore.js"; // web_setups + the websetup_owner() SQL function C
 import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
+import { exportProofs, proofFilesFor } from "./proofshot.js";
 import * as google from "./google.js";
 // Saved logins live in data/logins.db (their own file): exported as a list with the login REDACTED,
 // deleted before the person's key goes. Loading it creates no file.
@@ -219,6 +220,9 @@ const TABLES = [
   // Account jobs (src/accountjobs.js): each cancellation or bill they asked for, what the site said and
   // which proof was seen. Theirs alone, keyed by conversation: exported with the rest, gone on a delete.
   "account_jobs",
+  // The proof pictures of pages Reason finished something on in its own browser (src/proofshot.js): the
+  // rows here, the sealed files carried in an export and unlinked on a delete, like the documents.
+  "proof_pictures",
   // Their no to "want me to use your Google login?", held 30 days per provider (src/socialsignin.js).
   "social_declines",
   // Google/Apple/Microsoft refusing Reason's browser for one of their sites, kept 7 days (src/socialsignin.js).
@@ -536,6 +540,7 @@ export function exportData({ conversation = null, audio = true, files = true } =
     tables: {},
     recordings: [],
     documents: [],
+    proof_pictures: [],
     // data/logins.db: which sites, the username hint, dates, permission and state. Never the login.
     saved_logins: [],
   };
@@ -594,6 +599,8 @@ export function exportData({ conversation = null, audio = true, files = true } =
       ...(bytes ? { file_base64: bytes.toString("base64") } : {}),
     });
   }
+  // The proof pictures (src/proofshot.js), opened from their seal, as the documents are.
+  out.proof_pictures = conversation ? exportProofs(conversation, { files }) : [];
   return out;
 }
 
@@ -650,6 +657,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   // The files are read before the rows go, or there is nothing left pointing at them.
   const files = recordingFiles(conversation);
   const docs = documentFiles(conversation);
+  const proofs = proofFilesFor(conversation);
 
   // Read the page ids before the pages go, or their children cannot be found afterwards.
   // A walk's code gate keeps its codes and attempts under the trip's id, as a page's does.
@@ -761,6 +769,12 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     else if (r.existed) documents.files_deleted++;
     else documents.already_gone++;
   }
+  // The proof pictures: the rows went with the tables above; the files go here.
+  const proof_pictures = { listed: proofs.length, files_deleted: 0, already_gone: 0, failed: [] };
+  for (const f of proofs) {
+    try { if (existsSync(f)) { rmSync(f, { force: true }); proof_pictures.files_deleted++; } else proof_pictures.already_gone++; }
+    catch (e) { proof_pictures.failed.push({ file: f, error: String(e?.message ?? e).split("\n")[0] }); }
+  }
 
   // Encryption at rest (src/restcrypt.js): their key goes too, so every backup taken before today
   // holds their words with no key. What a scoped delete keeps (KEPT_ON_DELETE) is re-sealed first.
@@ -769,7 +783,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     : { shredded: restcrypt.destroyAllKeys() > 0 };
 
   return {
-    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds, event_photos: eventPhotos,
+    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, proof_pictures, profiles, builds, event_photos: eventPhotos,
     saved_logins: savedLogins,
     key_destroyed: !!sealedKey.shredded,
     // Banks let go of at Plaid (/item/remove). A failure is said: the token is deleted here either
