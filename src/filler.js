@@ -27,6 +27,7 @@ import { logAttempt } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
 import { clearOriginInPage } from "./signin.js";
 import { askFaceId, takeApproval, dropAsks } from "./loginuse.js";
+import * as restartGate from "./busy.js";
 
 // The words the tool returns, one per outcome (design B5 step 8). `ok` is only a signed-in session.
 export const SIGNIN_RESULTS = [
@@ -238,6 +239,7 @@ const defaultNote = (c, text) => db.createTimer(c, { fireAt: clock.now(), note: 
  * (the emailed-code reader, src/signinemail.js codeFromGmail), `enter` (types a code), `awaitReply`
  * (their texted reply, taken at intake), `note` (how the end of a background wait is told), `waitMs`.
  */
+let signIns = 0;
 export async function signIn(conversationId, site, {
   trigger = null, purpose = "", launch = realLaunch, now = () => clock.now(),
   emailCode = codeFromGmail, enter = enterCode, awaitReply = awaitCodeReply, note = defaultNote, waitMs = undefined,
@@ -298,6 +300,10 @@ export async function signIn(conversationId, site, {
   // The sealed step. One lock per person covers the browser (hard rule: no stealth, no second browser).
   const holder = Symbol("filler");
   if (!holdProfile(c, holder)) return say("busy", host);
+  // The restart gate (src/busy.js; verify-reason/bin/idle.sh): this browser, and the wait for a code
+  // below, die with the process. Held as long as the profile is; kind only, no site, no person.
+  const gateId = `filler:${++signIns}`;
+  restartGate.hold(gateId, { kind: "saved_login" });
   const startedAt = now();
   const again = row.state === "working";
   const pinned = `${row.signin_origin}${row.signin_path}`;
@@ -375,6 +381,8 @@ export async function signIn(conversationId, site, {
       // and the end is told in the thread; the browser stays held for the wait and is released after.
       const asked = result;
       handedOff = true;
+      restartGate.hold(`${gateId}:code`, { kind: "saved_login_code" });
+      restartGate.release(gateId);
       void (async () => {
         let end = "code_not_found";
         try {
@@ -387,6 +395,7 @@ export async function signIn(conversationId, site, {
         finally {
           await session?.close?.();
           releaseProfile(c, holder);
+          restartGate.release(`${gateId}:code`);
         }
         if (end === null) { unpinSite(c); return; }
         try { finish(c, row, host, pinned, end, { why, again, startedAt, typed, at: now() }); } catch { /* a record that cannot be written never breaks the end */ }
@@ -406,6 +415,7 @@ export async function signIn(conversationId, site, {
     if (!handedOff) {
       await session?.close?.();
       releaseProfile(c, holder);
+      restartGate.release(gateId);
     }
   }
 }
