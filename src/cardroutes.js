@@ -178,6 +178,8 @@ const hostOf = (s) => {
 const digits = (s) => String(s ?? "").replace(/\D+/g, "");
 /** A US number as its ten digits, or "" (a card never rings a number code cannot read). */
 const national = (s) => { const d = digits(s); return d.length === 11 && d.startsWith("1") ? d.slice(1) : d.length === 10 ? d : ""; };
+/** Every US phone number written out in a text, each as its ten digits: one number is one run, never digits gathered from across the text. */
+const numbersIn = (s) => (String(s ?? "").match(/(?<!\d)(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)/g) ?? []).map(national).filter(Boolean);
 
 // ---------- what is really there, read off this person's own rows (each one injectable for tests)
 
@@ -241,6 +243,10 @@ export async function checkRoute(conversationId, proposal, cand, { now = clock.n
   const c = conversationId;
   const route = String(proposal?.route ?? "").toLowerCase();
   if (!ROUTES[route]) return { ok: false, why: "no_route" };
+  // An account notice (a key expiring, an account on hold, a payment that failed) is never settled by
+  // a calendar change or by writing back to the sender: the grant being there says nothing about the
+  // job, and a reply nobody acts on would read as "done". Such a notice is a pay or a site job, or none.
+  if ((route === "calendar" || route === "email") && cand?.notice) return { ok: false, why: "notice_no_route" };
   if (route === "calendar") {
     const account = cand?.source === "calendar" || cand?.source === "mail" ? String(cand.refs?.account ?? "") : "";
     const scopes = d.scopes(c, account);
@@ -280,7 +286,7 @@ export async function checkRoute(conversationId, proposal, cand, { now = clock.n
     if (!d.callsLive()) return { ok: false, why: "no_phone_line" };
     const number = national(proposal.phone);
     // Only a number that is in the candidate's own words: never one the model remembered or made up.
-    if (!number || !digits(`${cand?.line ?? ""} ${cand?.snippet ?? ""} ${cand?.subject ?? ""}`).includes(number)) return { ok: false, why: "no_number_on_it" };
+    if (!number || !numbersIn(`${cand?.line ?? ""}\n${cand?.snippet ?? ""}\n${cand?.subject ?? ""}`).includes(number)) return { ok: false, why: "no_number_on_it" };
     const hours = d.callHours(c, number, now);
     if (!hours?.ok) return { ok: false, why: "outside_call_hours" };
     return { ok: true, route, target: `call:${number}`, phone: `+1${number}` };

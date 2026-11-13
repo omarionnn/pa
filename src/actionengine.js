@@ -105,8 +105,13 @@ const TIMEOUT_MS = () => Number(process.env.REASON_CARDS_TIMEOUT_MS || 90_000);
 export const VERBS = Object.freeze([...new Set(Object.values(routes.ROUTES).flatMap(r => r.verbs))]);
 /** What the model may answer for the route: a real one, or `none` (it matters, Reason cannot finish it). */
 export const ROUTE_ANSWERS = Object.freeze([...routes.ROUTE_NAMES, "none"]);
-/** Words a card's title or prefill may never carry: each is a job handed back, not a job done. */
-const NOT_A_JOB_RE = /\b(remind\w*|draft\w*|look into|figure out|find out|plan\b|to-?do|add (?:it|this|that)?\s*to (?:my|your) list|take (?:me|you) there|link\b|sign (?:me|you) in|log ?in\b|help (?:me|you)\b)/i;
+/**
+ * Words a card's title or prefill may never carry: each is a job handed back, not a job done. They
+ * are refused as what the card DOES, not as things it names: "plan" as the verb (first word, or "to
+ * plan"), never a phone plan; "a link" / "the link" / "a sign-in link", never a subscription sold
+ * through Link.
+ */
+const NOT_A_JOB_RE = /\b(remind\w*|draft\w*|look into|figure out|find out|to-?do|add (?:it|this|that)?\s*to (?:my|your) list|take (?:me|you) there|(?:a|the|this|that|sign-?in|log-?in|payment|pay) link\b|sign (?:me|you) in|log ?in\b|help (?:me|you)\b)|^\s*plan\b|\bto plan\b/i;
 /** Drawing keys the page can draw (src/pages/actionart.js DRAW). */
 export const DRAWINGS = Object.freeze(["key", "cake", "server", "calendar", "mail", "phone", "bag", "tooth", "note"]);
 
@@ -172,7 +177,7 @@ try { db.db.exec("ALTER TABLE action_card_days ADD COLUMN attempts INTEGER NOT N
 // here before" is a lookup without the place being kept in the clear; `outcome` is '' (never tapped),
 // running, pending, done, failed or lapsed, with a reason word and when. The job's own words live
 // sealed in `refs`.
-for (const col of ["route TEXT NOT NULL DEFAULT ''", "route_target TEXT NOT NULL DEFAULT ''", "outcome TEXT NOT NULL DEFAULT ''", "outcome_why TEXT NOT NULL DEFAULT ''", "outcome_at INTEGER", "tapped_at INTEGER", "handback_ok_at INTEGER"]) {
+for (const col of ["route TEXT NOT NULL DEFAULT ''", "route_target TEXT NOT NULL DEFAULT ''", "outcome TEXT NOT NULL DEFAULT ''", "outcome_why TEXT NOT NULL DEFAULT ''", "outcome_at INTEGER", "tapped_at INTEGER", "handback_ok_at INTEGER", "fold_key TEXT NOT NULL DEFAULT ''"]) {
   try { db.db.exec(`ALTER TABLE action_card_sources ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 db.restStrictRefresh();
@@ -640,6 +645,17 @@ const matchesSkip = (cand, rules) => rules.some(r => {
 /** A source key as stored: a blind index (restcrypt), so an address or a thread id is not in the clear. */
 const keyIndex = (key) => db.restcrypt.blindIndex("action_source", String(key ?? ""));
 const keyIndexes = (key) => db.restcrypt.blindIndexes("action_source", String(key ?? ""));
+// The same notice from the same sender comes again every few days, in a NEW thread each time. What
+// was raised once (a card, or a line said once) is kept by a blind index of the notice's fold key
+// (sender + subject with its numbers out), so the next copy is not raised again for two weeks,
+// however the model would have worded it this time.
+const foldIndex = (fold) => db.restcrypt.blindIndex("action_fold", String(fold ?? ""));
+const foldIndexes = (fold) => db.restcrypt.blindIndexes("action_fold", String(fold ?? ""));
+export function foldSeen(conversationId, fold, { now = clock.now() } = {}) {
+  if (!fold) return false;
+  const forms = foldIndexes(fold);
+  return !!db.db.prepare(`SELECT 1 FROM action_card_sources WHERE conversation_id = ? AND fold_key IN (${forms.map(() => "?").join(",")}) AND found_at > ? LIMIT 1`).get(conversationId, ...forms, now - routes.FAILED_ROUTE_MS);
+}
 
 /** Already a card (any status) or already raised and said / resolved by the watchful sweep. */
 export function alreadySeen(conversationId, key, { notice: isNote = false } = {}) {
@@ -713,6 +729,7 @@ export async function stage1(conversationId, bundle, { now = clock.now(), api = 
     // The same notice sent again ("your access is turned off", twice in three days) is one thing: the newest.
     if (cand.source === "mail" && cand.notice) {
       const k = `notice|${String(cand.from ?? "").split("@")[1]?.split(".").slice(-2).join(".") ?? ""}|${cards.normalize(cand.subject).replace(/\d+/g, "#")}`;
+      cand.fold = k;
       const had = alerts.get(k);
       if (!had) { alerts.set(k, cand); list.push(cand); continue; }
       const [newer, older] = (cand.sent_at ?? 0) > (had.sent_at ?? 0) ? [cand, had] : [had, cand];
@@ -740,6 +757,8 @@ export async function stage1(conversationId, bundle, { now = clock.now(), api = 
     if (isMail && RECEIPT_RE.test(text) && !/\b(due|expire|action required|failed|declined)\b/i.test(text)) { drop(cand, "receipt"); continue; }
     // 2. already a card, or already raised and settled by the sweep
     if (alreadySeen(conversationId, cand.key, { notice: !!cand.notice })) { drop(cand, "seen"); continue; }
+    // 2b. the same notice, sent again in a new thread, when it was already raised in the last two weeks
+    if (cand.fold && foldSeen(conversationId, cand.fold, { now })) { drop(cand, "seen"); continue; }
     // 3. a standing rule
     if (matchesSkip(cand, rules)) { drop(cand, "skip_rule"); continue; }
     // 6 (before the network): health never becomes a card
@@ -851,6 +870,10 @@ export function stage2Prompt({ candidates, chat = [] }) {
 
 const wordCount = (s) => String(s ?? "").trim().split(/\s+/).filter(Boolean).length;
 const ADDRESS_RE = /[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/i;
+// A lead is texted as it stands, and its words come from a mail, which can be anybody's: it carries
+// no web address and no phone number ("worth knowing: call 800-…" is how a notice becomes a lure).
+const LINKISH_RE = /https?:\/\/|\bwww\.|\b[a-z0-9-]+\.[a-z]{2,}(?:\/|\b)/i;
+const PHONEISH_RE = /(?:\d[\s().-]{0,2}){7,}/;
 const FIRST_PERSON_RE = /^(my|me|i\b|i'm|help|answer|respond|add|restore|top|draft|write|review|verify|resolve|contact|dispute|return|register|sign|file|submit|stop|keep|switch|change|pull|replace|renew|reply|book|plan|pay|confirm|call|order|find|figure|look|send|cancel|check|set|get|make|move|schedule|handle|sort|start|deal|rsvp|accept|decline|remind|buy|reserve|email|text|tell|ask|follow|fix|update|see|work)\b/i;
 
 /**
@@ -865,7 +888,8 @@ export function validCard(card, known) {
   const route = String(card.route ?? "").toLowerCase();
   if (!ROUTE_ANSWERS.includes(route)) return null;
   const lead = cut(card.lead, 120);
-  if (!lead || wordCount(lead) > 14) return null;
+  if (!lead || wordCount(lead) > 14 || !/[a-z]/i.test(lead)) return null;
+  if (LINKISH_RE.test(lead) || PHONEISH_RE.test(lead)) return null;
   // Addresses never leave the server (the PRIVACY note above): not in a text, not on the page.
   if ([card.lead, card.title, card.why_now, card.prefill, card.offer].some(w => ADDRESS_RE.test(String(w ?? "")))) return null;
   const urgency = Math.min(5, Math.max(1, Math.round(Number(card.urgency) || 1)));
@@ -1181,10 +1205,10 @@ export async function runMorning(conversationId, { now = clock.now(), tz = dream
 /** Where a card (or a "worth knowing" line) came from, and for a card the route it promised: one sealed row. */
 function writeSource(conversationId, cardId, cand, { now, key = "", routed = null }) {
   const refs = { ...(cand?.refs ?? {}), ...(routed ? { route: routed } : {}) };
-  db.db.prepare(`INSERT OR REPLACE INTO action_card_sources (card_id, conversation_id, kind, source, source_key, refs, first_name, found_at, due_at, route, route_target)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  db.db.prepare(`INSERT OR REPLACE INTO action_card_sources (card_id, conversation_id, kind, source, source_key, refs, first_name, found_at, due_at, route, route_target, fold_key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(cardId, conversationId, cand?.kind ?? "", cand?.source ?? "", keyIndex(cand?.key ?? key), db.seal2(conversationId, JSON.stringify(refs)), db.seal2(conversationId, cand?.first_name ?? ""), now, cand?.due_at ?? null,
-      routed?.route ?? "", routed ? targetIndex(routed.target) : "");
+      routed?.route ?? "", routed ? targetIndex(routed.target) : "", cand?.fold ? foldIndex(cand.fold) : "");
 }
 
 // ---------------------------------------------------------------- the urgent single
@@ -1362,6 +1386,19 @@ export function settleOpenRuns(conversationId, { now = clock.now(), log = () => 
   let settled = 0;
   for (const r of rows) {
     if (r.outcome === "running" && now - (r.tapped_at ?? 0) < RUN_GUARD_MS) continue;
+    // Still "running" this long after: a crash or a restart cut the turn before it could be read.
+    // If nothing at all was done since the tap, the run never happened: the card stays theirs to tap
+    // (it did not fail, nobody was told it had, and nothing is held against the route).
+    if (r.outcome === "running") {
+      const info = routeOf(r.card_id, conversationId);
+      const got = readAnyOutcome(conversationId, info?.route ?? "", r.tapped_at ?? now, { now });
+      if (got.state === "failed" && got.why === "nothing_was_done") {
+        resetRun(r.card_id, conversationId, { now });
+        log({ action_card_outcome: r.card_id, route: info?.route || "none", state: "never_ran" });
+        settled++;
+        continue;
+      }
+    }
     const out = settleRun(r.card_id, conversationId, { since: r.tapped_at ?? null, now, log });
     if (out.state !== "pending") settled++;
   }

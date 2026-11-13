@@ -252,7 +252,7 @@ test("calendar and email: with the grant a card, without it none; a machine's ma
   assert.equal(r.ranked.cards.length, 0);
   assert.equal(r.outcome, "known");
   assert.deepEqual(r.known.map(k => k.line), ["your clinic wants a yes for Nov 21"]);
-  assert.deepEqual(r.gate.why, { no_google_account: 2, nobody_reads_replies: 1, no_address_to_send_to: 1 });
+  assert.deepEqual(r.gate.why, { no_google_account: 2, notice_no_route: 1, no_address_to_send_to: 1 });
 
   // Calendar granted, sending mail not: the invite is a card, the reply is not.
   grant(`${google.CALENDAR_EVENTS_SCOPE} ${google.CALENDAR_READ_SCOPE}`);
@@ -274,7 +274,7 @@ test("calendar and email: with the grant a card, without it none; a machine's ma
   const d = cards.digestById(r.digest);
   assert.deepEqual(d.cards.map(c => c.verb).sort(), ["ACCEPT", "CONFIRM"]);
   assert.deepEqual(d.also.map(a => a.line), ["your clinic wants a yes for Nov 21"]);
-  assert.deepEqual(r.gate.why, { nobody_reads_replies: 1, no_address_to_send_to: 1 });
+  assert.deepEqual(r.gate.why, { notice_no_route: 1, no_address_to_send_to: 1 });
   // Each card keeps the route it promised (sealed with its source), and what DONE will mean.
   const kept = d.cards.map(c => engine.routeOf(c.id, C));
   assert.deepEqual(kept.map(k => k.route).sort(), ["calendar", "email"]);
@@ -283,7 +283,7 @@ test("calendar and email: with the grant a card, without it none; a machine's ma
   // The day's row says what the gate dropped, as reason words only.
   const row = engine.dayRow(C, "2026-11-17");
   assert.equal(row.outcome, "cards"); assert.equal(row.cards, 2);
-  assert.equal(JSON.parse(row.dropped)["route:nobody_reads_replies"], 1);
+  assert.equal(JSON.parse(row.dropped)["route:notice_no_route"], 1);
 });
 
 // ---------------------------------------------------------------- 3. a site: a session that checks out now
@@ -685,4 +685,97 @@ test("what DONE means is read per route: a payment that reads paid, a call whose
   assert.deepEqual(routes.readOutcome(C, "call", since), { state: "done", via: "call_place" });
   // Nothing at all happened: failed, and it says so.
   assert.deepEqual(routes.readOutcome(C, "calendar", T + MIN), { state: "failed", why: "nothing_was_done" });
+});
+
+// ---------------------------------------------------------------- 9. the second review (2026-11-13)
+
+test("an account notice is never a calendar or an email card, whatever the model calls it: it is a line worth knowing, or nothing", async () => {
+  const deps = { scopes: () => FULL_SCOPE, missingScope: () => null };
+  const note = { key: "mail:a:n1", source: "mail", notice: true, auth: true, from: "billing@acme.example", line: "Acme: your payment failed", refs: { account: ACCT.account } };
+  assert.deepEqual(await routes.checkRoute(C, { route: "email" }, note, { now: NOW, deps }), { ok: false, why: "notice_no_route" });
+  assert.deepEqual(await routes.checkRoute(C, { route: "calendar" }, note, { now: NOW, deps }), { ok: false, why: "notice_no_route" });
+  // The gate is on the notice, not on the mailbox: somebody's own mail to them is still an email card.
+  assert.equal((await routes.checkRoute(C, { route: "email" }, { ...note, notice: false }, { now: NOW, deps })).ok, true);
+  // A machine's mail that is not a notice: nobody reads a reply there either.
+  assert.deepEqual(await routes.checkRoute(C, { route: "email" }, { ...note, notice: false, from: "no-reply@clinic.example" }, { now: NOW, deps }), { ok: false, why: "nobody_reads_replies" });
+  // Through the gate it lands where a notice Reason cannot finish belongs: no card, at most a line.
+  const out = await engine.routeGate(C, [{ key: note.key, route: "email", job: "reply to billing", verb: "REPLY", title: "Reply to Acme billing about the failed payment", lead: "Acme could not charge your card on Nov 16", urgency: 4, effort: 2, candidate: note }], { now: NOW, deps });
+  assert.equal(out.cards.length, 0);
+  assert.deepEqual(out.why, { notice_no_route: 1 });
+  assert.equal(out.known.length, 1);
+});
+
+test("the same notice sent again in a new thread is not said again for two weeks, however it would be worded this time", async () => {
+  const rt = fakeRuntime();
+  const r = await morning(fakeGoogle({ mail: [AWS()] }), scripted(() => ({ route: "none", title: "Verify your AWS account", lead: "AWS suspended your account on Nov 16", urgency: 5 })).ask, { runtime: rt });
+  assert.equal(r.outcome, "known");
+  assert.equal(rt.sent.length, 1);
+  // Two days on the sender writes again: a new message in a new thread under the same subject. The
+  // model would word it differently this time; it never gets to, the copy is dropped before it reads it.
+  const copy = { ...AWS(), id: "aws2", threadId: "aws2" };
+  const reworded = scripted(() => ({ route: "none", title: "Unlock your AWS account", lead: "your AWS account is still locked", urgency: 5 }));
+  const rt2 = fakeRuntime();
+  const r2 = await engine.runMorning(C, { now: NOW + 2 * DAY, tz: TZ, read: fakeGoogle({ mail: [copy] }).read, ask: reworded.ask, tokensFor, runtime: rt2 });
+  assert.equal(r2.stage1.dropped.seen, 1);
+  assert.deepEqual(reworded.seen, [], "the model never read the copy");
+  assert.equal(rt2.sent.length, 0, "nothing is said twice");
+  // A different notice from the same sender is a different thing, and two weeks on the same one may be said again.
+  const fold = (subject) => `notice|amazon.com|${cards.normalize(subject).replace(/\d+/g, "#")}`;
+  assert.equal(engine.foldSeen(C, fold("Action required: your AWS account is suspended"), { now: NOW + 2 * DAY }), true);
+  assert.equal(engine.foldSeen(C, fold("Your AWS account will be closed on Nov 30"), { now: NOW + 2 * DAY }), false);
+  assert.equal(engine.foldSeen(C, fold("Action required: your AWS account is suspended"), { now: NOW + 15 * DAY }), false);
+});
+
+test("a line that is texted carries no web address and no phone number, and is made of words", () => {
+  const known = new Set(["mail:a:1"]);
+  const entry = (lead, route = "none") => engine.validCard({ candidate_key: "mail:a:1", route, lead, job: "do it; done when it is through", verb: "CANCEL", title: "Cancel your plan before Nov 27", why_now: "It renews soon.", prefill: "Cancel my plan before Nov 27", drawing: "note", urgency: 4, effort_saved: 2 }, known);
+  assert.ok(entry("AWS suspended your account on Nov 11"));
+  assert.equal(entry("your account is locked, verify at aws-verify.example/login"), null);
+  assert.equal(entry("your account is locked, see https://aws.example"), null);
+  assert.equal(entry("your bank needs you to call 800-555-0199 today"), null);
+  assert.equal(entry("your bank needs you to call (800) 555 0199"), null);
+  assert.equal(entry("..."), null, "nothing would be left to say");
+  // The same holds for a card's lead: it opens the morning text.
+  assert.ok(entry("your plan renews Nov 27", "site"));
+  assert.equal(entry("your plan renews Nov 27, manage it at plan.example", "site"), null);
+  // The words that hand a job back are refused as what the card DOES, not as things it names: a
+  // phone plan and a subscription sold through Link are jobs; planning and sending a link are not.
+  const titled = (title, prefill = title.replace(/\byour\b/gi, "my")) => engine.validCard({ candidate_key: "mail:a:1", route: "site", lead: "it renews Nov 27", job: "cancel it; done when the site says cancelled", verb: "CANCEL", title, why_now: "It renews soon.", prefill, drawing: "note", urgency: 4, effort_saved: 2 }, known);
+  assert.ok(titled("Cancel your phone plan before it renews Nov 27"));
+  assert.ok(titled("Cancel your Cardboard subscription on Link before Nov 27"));
+  assert.equal(titled("Plan your move before Nov 27"), null);
+  assert.equal(titled("Cancel it or start to plan around it"), null);
+  assert.equal(titled("Cancel your plan, here is the link"), null);
+  assert.equal(titled("Cancel your Cardboard plan", "Send me a sign-in link for Cardboard"), null);
+});
+
+test("a run cut off before anything was done never ran: the card stays theirs to tap, and nothing is held against the route", async () => {
+  const cand = { key: "own:timers:9", kind: "reminder", source: "own", line: "a reminder they set" };
+  engine.setRouteDeps({ liveSession: async () => ({ state: "signed_in" }) });
+  const entry = signin.anyEntryFor("cardboard.example");
+  db.recordSiteSignin(C, entry.site, { state: "signed_in", evidence: "t" });
+  const { d, card } = await noteWith(C, { route: "site", site: "cardboard.example", title: "Cancel your Cardboard Starter before it renews Nov 27", lead: "your Cardboard Starter renews Nov 27", verb: "CANCEL", candidate: cand });
+  const at = clock.now();
+  engine.beginRun({ ...card, conversationId: C }, { now: at });
+  assert.equal(engine.routeOf(card.id, C).outcome, "running");
+  // Inside the guard the sweep leaves it alone (its turn may still be running).
+  assert.equal(engine.settleOpenRuns(C, { now: at + 5 * MIN }), 0);
+  assert.equal(engine.routeOf(card.id, C).outcome, "running");
+  // Past it, with nothing on the ledger since the tap: the process went away mid-turn. Not a failure.
+  assert.equal(engine.settleOpenRuns(C, { now: at + engine.RUN_GUARD_MS + MIN }), 1);
+  assert.equal(engine.routeOf(card.id, C).outcome, "");
+  assert.equal(cards.digestById(d.id).cards[0].status, "open");
+  assert.equal(engine.failedBefore(C, "site", `site:${entry.site}`), false);
+  assert.equal(engine.runBlocksHandoff(C, { kind: "event", now: at + engine.RUN_GUARD_MS + MIN }), false);
+});
+
+test("call: a number is one run of digits in the candidate, never digits gathered from across it", async () => {
+  const up = { callsLive: () => true, callHours: () => ({ ok: true }) };
+  const cand = { key: "mail:a:c1", source: "mail", line: "Dr. Osei's office: ref 2125 55, room 0142, or ring 212-555-0142 ext 7", snippet: "", subject: "" };
+  assert.equal((await routes.checkRoute(C, { route: "call", phone: "212-555-0142" }, cand, { now: NOW, deps: up })).ok, true);
+  const spread = { ...cand, line: "Dr. Osei's office: ref 2125 55, room 0142" };
+  assert.deepEqual(await routes.checkRoute(C, { route: "call", phone: "212-555-0142" }, spread, { now: NOW, deps: up }), { ok: false, why: "no_number_on_it" });
+  // A ten-digit stretch inside a longer number (a tracking number, a card) is not a phone number.
+  const long = { ...cand, line: "tracking 992125550142771" };
+  assert.deepEqual(await routes.checkRoute(C, { route: "call", phone: "212-555-0142" }, long, { now: NOW, deps: up }), { ok: false, why: "no_number_on_it" });
 });
