@@ -122,6 +122,26 @@ test("the policy admits the two things somebody would assume were not true", asy
   assert.match(body, /There is no model on the machine/i);
 });
 
+test("the policy names Cartesia for calls with your own Reason and Plaid for a bank, read-only, 60 days", async () => {
+  const { body } = await get("/privacy");
+  assert.match(body, /Calls with your Reason\./);
+  assert.match(body, /handled by Cartesia, a voice company/);
+  assert.match(body, /when the call ends Reason has Cartesia delete it/);
+  assert.match(body, /Calls Reason makes to other people or businesses for you never use Cartesia/);
+  assert.match(body, /Your bank\./);
+  assert.match(body, /goes through Plaid and is read-only/);
+  assert.match(body, /cannot move money/);
+  assert.match(body, /keeps the last 60 days of transactions and deletes anything older/);
+  // Both sit in the section that says what leaves the machine, so "That is the whole list" stays true.
+  const leaves = body.indexOf("What leaves the machine"), whole = body.indexOf("That is the whole list");
+  for (const name of ["Cartesia, a voice company", "through Plaid"]) {
+    const at = body.indexOf(name);
+    assert.ok(at > leaves && at < whole, `${name} is inside the list of what leaves the machine`);
+  }
+  const { KEEP_DAYS } = await import("../src/plaid.js");
+  assert.equal(KEEP_DAYS, 60, "if this changes, the number on the privacy page has to change with it");
+});
+
 test("the policy carries Google's Limited Use statement word for word", async () => {
   const { body } = await get("/privacy");
   assert.match(body, /Reason(?:'|&#39;)s use and transfer of information received from Google APIs will adhere to the Google API Services User Data Policy, including the Limited Use requirements\./);
