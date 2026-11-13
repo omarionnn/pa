@@ -837,7 +837,9 @@ export const RECEIPT_SENDERS = [
   { platform: "caviar", name: "Caviar", hosts: ["trycaviar.com"] },
   { platform: "toast", name: "Toast", hosts: ["toasttab.com"] },
   { platform: "chownow", name: "ChowNow", hosts: ["chownow.com"] },
-  { platform: "square", name: "Square", hosts: ["squareup.com", "square.site"] },
+  // Square takes the payments of any shop (a barber, a clothes shop, a gym as much as a café): its
+  // receipt is a food order only when it is clearly food (foodReceipt, below). The rest are food-only.
+  { platform: "square", name: "Square", hosts: ["squareup.com", "square.site"], shared: true },
   { platform: "slice", name: "Slice", hosts: ["slicelife.com"] },
   { platform: "olo", name: "Olo", hosts: ["olo.com"] },
 ];
@@ -935,6 +937,25 @@ function itemsIn(text) {
   if (!out.length) for (const m of flat(text).matchAll(/(?<![\w.])(\d{1,2})\s*[x×]\s+([^$]{2,60}?)\s+\$\s?\d+\.\d{2}/gi)) add(itemOf(m[1], m[2]));
   return out;
 }
+// What a food or drink line, or a restaurant's name, says: the dish, the drink, the kind of place.
+const FOOD_WORDS = /\b(?:caf[eé]s?|coffee|espresso|latte|cappuccino|americano|macchiato|mocha|cold brew|matcha|chai|tea|boba|smoothies?|juices?|lemonade|soda|kombucha|beers?|wines?|cocktails?|bakery|bakeshop|patisserie|pastry|pastries|breads?|bagels?|croissants?|muffins?|scones?|donuts?|doughnuts?|cookies?|cakes?|cupcakes?|pies?|brownies?|ice cream|gelato|creamery|froyo|pizzas?|pizzeria|pasta|burgers?|fries|sandwich(?:es)?|hoagies?|wraps?|tacos?|taqueria|burritos?|quesadillas?|nachos|salads?|soups?|chicken|wings|nuggets|bbq|barbecue|smokehouse|steaks?|steakhouse|sushi|ramen|noodles?|pho|dumplings?|rice|curry|kebabs?|gyros?|shawarma|falafel|halal|poke|acai|empanadas?|arepas?|bistro|brasserie|trattoria|osteria|taverna?|diner|deli|grill|kitchen|eatery|restaurant|cantina|pub|brewery|brewing|breakfast|brunch|lunch|dinner|eggs?|bacon|omelet(?:te)?|pancakes?|waffles?|toast|biscuits?|bao|tapas|crepes?|hummus|tofu|fish|shrimp|lobster|oysters?|wok|thai|chinese|indian|mexican|italian|japanese|korean|vietnamese|caribbean|jamaican|ethiopian|greek|lebanese|food|foods|eats)\b/i;
+// A name that says it is not a place to eat, whatever else it says ("Coffee & Cuts Barbershop").
+const NOT_FOOD_PLACE = /\b(?:barber(?:shop)?s?|salon|spa|nails?|lashes|brows?|hair|cuts|fitness|gym|yoga|pilates|crossfit|boxing|martial|boutique|apparel|clothing|clothes|fashion|tattoo|piercing|jewel(?:ry|ers?)|florist|flowers|auto|repair|cleaners|laundry|dental|clinic|pharmacy|pet|vet|books?|records|vintage|thrift|hardware|massage|barre)\b/i;
+// The lines of a receipt that are something bought, not a charge: what comes before a price.
+const boughtIn = (text) => String(text ?? "").split(/\n/).flatMap((l) => [...flat(l).matchAll(/([^$]{2,80}?)\s*\$\s?\d{1,4}\.\d{2}/g)].map((m) => m[1].trim()))
+  .filter((l) => l && !NOT_A_DISH.test(l));
+/**
+ * A receipt from a sender that takes any shop's payments (Square) is a food order only when it is
+ * clearly food: a food or drink line in it, a restaurant's kind of name, or a place already in their
+ * food history. A doubtful one is left out: a haircut named as "your last order" is worse than a
+ * smoothie not named.
+ */
+export function foodReceipt({ name = "", text = "", known = [] } = {}) {
+  const k = nameKey(name);
+  if (k && known.includes(k)) return true;
+  if (name && FOOD_WORDS.test(name) && !NOT_FOOD_PLACE.test(name)) return true;
+  return boughtIn(text).some((l) => FOOD_WORDS.test(l));
+}
 const MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec";
 /**
  * What a receipt's own text adds to its header: the restaurant where the subject did not name it,
@@ -983,8 +1004,12 @@ export async function pastOrders(c, { search, read = null, platform = "", restau
   const seen = new Map();
   const want = nameKey(restaurant);
   const orders = [];
-  let opened = 0, notReceipts = 0;
+  let opened = 0, notReceipts = 0, notFood = 0;
   const started = now();
+  const mine = history(c);
+  // The places already theirs: kept ordering links and the restaurants of orders placed here.
+  const known = [...placesOf(c).map((p) => p.restaurant), ...mine.usual.map((u) => u.restaurant)].map(nameKey).filter(Boolean);
+  const shared = (x) => !!RECEIPT_SENDERS.find((s) => s.platform === x.r.platform)?.shared;
   const take = (x) => {
     if (want && !nameKey(x.r.restaurant).includes(want) && !nameKey(x.r.subject).includes(want)) return;
     // One order sends several mails (confirmed, delivered, a tip added later): the same place on the
@@ -1018,10 +1043,14 @@ export async function pastOrders(c, { search, read = null, platform = "", restau
     const texts = can ? await Promise.all(batch.map(open1)) : batch.map(() => null);
     if (can) opened += batch.length;
     batch.forEach((x, j) => {
-      if (texts[j] == null) return take(x);
+      if (texts[j] == null) {
+        if (shared(x) && !foodReceipt({ name: x.r.restaurant, text: x.m.snippet, known })) { notFood++; return; }
+        return take(x);
+      }
       const b = readReceiptText(texts[j]);
       // Opened, and nothing in it that an order's mail has: an advert under a receipt's subject.
       if (!b.evidence.length) { notReceipts++; return; }
+      if (shared(x) && !foodReceipt({ name: x.r.restaurant || b.restaurant, text: `${texts[j]}\n${x.m.snippet ?? ""}`, known })) { notFood++; return; }
       take({ ...x, opened: true, r: { ...x.r, restaurant: x.r.restaurant || b.restaurant, items: b.items, total: b.total || x.r.total, when: b.order_day || x.r.when } });
     });
   }
@@ -1032,9 +1061,8 @@ export async function pastOrders(c, { search, read = null, platform = "", restau
     else if (lacks.length) o.receipt_lists_no = lacks.join(" or ");
     delete o.opened;
   }
-  const mine = history(c);
   const where = which ? appName(which) === "the app" ? RECEIPT_SENDERS.find((s) => s.platform === which).name : appName(which) : "a food app or a restaurant's own ordering";
-  const counts = { mail_matched: all.length, not_orders: all.length - found.length + notReceipts };
+  const counts = { mail_matched: all.length, not_orders: all.length - found.length + notReceipts + notFood, ...(notFood ? { not_food: notFood } : {}) };
   if (!orders.length) {
     return { ok: true, count: 0, orders: [], searched: query, ...counts, placed_through_reason: mine.orders,
       say: `No order receipt from ${where} in their mail in the last ${RECEIPT_DAYS} days (searched: ${query}). Say exactly that, and that receipts may go to an email address that is not connected here; ask which address their ${which ? where : "food app"} account uses, in one line. Never ask for a screenshot.` };
