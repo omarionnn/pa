@@ -38,8 +38,17 @@ export const LINES = Object.freeze({
   setupShort: "That needs at least three words. Say a longer one, or text me 'set my call passphrase'.",
   setupGiveUp: "Let's do it by text instead: text me 'set my call passphrase'.",
   setupHaveOne: "You already have one. To change it, text me 'change my call passphrase'.",
-  setupReadBack: (n, first) => `Got it: ${n} words, starting with "${first}". I'll text you to turn it on.`,
+  // The count only: a word of it said aloud is on the call's recording, which is filed and sent to their thread.
+  setupReadBack: (n) => `Got it: ${n} words. I'll text you to turn it on.`,
+  setupPending: "One is already waiting for your yes by text. To set a different one, text me 'set my call passphrase'.",
 });
+/** Is this one of the fixed lines above (never offered again after being talked over, ./cartesia.js)? */
+export function isTrustLine(text) {
+  const t = String(text ?? "");
+  if (!t.trim()) return false;
+  if (/Got it: \d+ words/.test(t)) return true;
+  return Object.values(LINES).some(l => typeof l === "string" && t.includes(l));
+}
 /** What is kept in place of what they said: the transcript, turn_log, the thread and Reason's next turn. */
 export const MARKER = "[they said their call passphrase here; the words are not kept]";
 export const SETUP_MARKER = "[they said a new call passphrase here; the words are not kept]";
@@ -66,20 +75,34 @@ export const PASSPHRASE_TOOLS = new Set([
 /** Not held on a call today and held with the switch on: deletes and changes to what already exists. */
 export const NOW_HELD = new Set(["calendar_change", "calendar_delete", "apple_calendar_change", "apple_calendar_delete", "document_delete", "page_delete"]);
 /** Reads whose answer is money or travel-document detail: said aloud only after the passphrase. */
-export const SENSITIVE_READS = new Set(["ledger_list", "purchases_recent", "uber_receipt", "boarding_pass", "flight_travelers", "spend_today"]);
+export const SENSITIVE_READS = new Set(["ledger_list", "purchases_recent", "uber_receipt", "boarding_pass", "flight_travelers", "spend_today",
+  // Bank data (Plaid), payouts, the card on file and travelers' document details: money and travel-document reads.
+  "bank", "event_payouts", "shop_card", "flight_traveler_confirm", "flight_traveler_save", "flight_traveler_forget"]);
 /** Never by voice: money, saved logins and sign-ins, the gate itself, plans that may spend, operator tools. */
 export const TEXT_ONLY = new Set([
   "purchase_confirm", "purchase", "uber_request", "uber_cancel", "event_refund", "event_ticket_refund", "event_seats", "flight_book", "pay_by_phone",
   "account_connect", "account_revoke", "vault_enroll", "subscription_cancel_commit", "flight_checkin_commit", "todo_approve",
   "permission_grant", "caps_set", "spend_limit_set", "spend_limit_confirm",
   "remote_approve", "github_pr_merge", "admin_delete",
+  // Not gated today on a call, and money, the vault or an operator's power with the switch on: account jobs
+  // (signed in with a saved login), sign-ins, checkouts, a price on an event, Reason's own subscription,
+  // a disconnect, and the operator's tools.
+  "account_bill_pay", "account_cancel", "account_signin", "account_job_answer", "saved_login_offer", "saved_login_forget",
+  "signin_link", "signin_open", "signin_email", "signin_provider", "store_checkout", "shop_answer", "event_price",
+  "subscription_cancel", "subscription_cancel_start",
+  "google_disconnect", "x_disconnect", "github_disconnect", "apple_calendar_disconnect",
 ]);
+/** Actions of a tool that spend or connect: never by voice (the rest of the tool is a read). */
+const TEXT_ACTIONS = { bank: new Set(["connect", "disconnect"]), food_order: new Set(["start", "place", "cart"]) };
+const OPEN_ACTIONS = { bank: new Set(["status"]) };
 
 /** A one-time code in a tool's answer: never read out without the passphrase. */
 const CODE_IN = /\b(?:code|passcode|otp|pin|verification|one[- ]time)\b[^\n]{0,40}?\b\d{4,8}\b|\b\d{4,8}\b[^\n]{0,30}\b(?:is your|verification|code)\b/i;
 export const hasCode = (out) => CODE_IN.test(typeof out === "string" ? out : JSON.stringify(out ?? ""));
 
-const PAYS = /\b(?:card(?:\s+(?:number|on file|details))?|credit|debit|cvv|cvc|security code|expir(?:y|ation)|billing|pay(?:ment)?|deposit|pre-?pay|charged?|total|amount due|checkout|subtotal|buy|purchase|order now|apple pay|google pay|paypal)\b|[$£€]\s?\d/i;
+const PAYS = /\b(?:card(?:\s+(?:number|on file|details))?|credit|debit|cvv|cvc|security code|expir(?:y|ation)|billing|pay(?:ment)?|deposit|pre-?pay|charged?|total|amount due|checkout|subtotal|buy|purchase|order now|apple pay|google pay|paypal|visa|mastercard|amex|american express|wallet|ending in \d{4})\b|[$£€]\s?\d|[•*]{2,}\s?\d{4}/i;
+/** The page's own sign-out or account link: this browser is signed in there, maybe with a card on file. */
+const SIGNED_IN = /\b(?:sign|log)\s?out\b|\bmy account\b|\bhi,\s+\w+/i;
 const PENALTY = /\b(?:cancell?ation fee|no[- ]show fee|late (?:cancell?ation|arrival) fee|cancell?ation policy|penalty|fee (?:if|for) (?:you )?(?:cancel|miss))\b/i;
 /**
  * What committing this page would do: "free" (nothing about money anywhere), "fee" (a cancellation or
@@ -110,14 +133,23 @@ export function levelOf(name, input = null, { toSelf = () => false, page = null,
     if (/money/i.test(String(confirmation.stakes ?? "")) || Number(confirmation.amount ?? confirmation.amount_cents ?? 0) > 0) return LEVEL.TEXT;
     return levelOf(confirmation.action, { what: confirmation.target || confirmation.summary, to: confirmation.target }, { toSelf, page });
   }
-  if (TEXT_ONLY.has(n)) return LEVEL.TEXT;
+  if (TEXT_ONLY.has(n) || /^(?:admin|remote)_/.test(n) || TEXT_ACTIONS[n]?.has(String(input?.action ?? ""))) return LEVEL.TEXT;
+  if (OPEN_ACTIONS[n]?.has(String(input?.action ?? ""))) return LEVEL.OPEN;
+  if (n === "document_send") return input?.to && !toSelf(input.to) ? LEVEL.PASSPHRASE : LEVEL.OPEN;
   if (n === "browser_submit") {
-    const k = bookingKind(input?.what ?? "", page);
-    return k === "free" ? LEVEL.LOW : k === "fee" ? LEVEL.PASSPHRASE : LEVEL.TEXT;
+    // `page`: its words, or { text, payField, savedLogin } (./voice.js openPageText).
+    const p = page && typeof page === "object" ? page : { text: page };
+    const k = bookingKind(input?.what ?? "", p.text);
+    // A card or payment field on the page is money, whatever its words say.
+    if (k === "pays" || p.payField) return LEVEL.TEXT;
+    // Signed in there (a saved login, or the page says so): a card on file may be charged without a word on the page.
+    if (k === "fee" || p.savedLogin || SIGNED_IN.test(String(p.text ?? ""))) return LEVEL.PASSPHRASE;
+    return LEVEL.LOW;
   }
   if (n === "calendar_create") return invitees(input) ? LEVEL.PASSPHRASE : LEVEL.LOW;
   // A call placed on their behalf (./fromcall.js go): it reaches the person it rings.
-  if (n === "make_a_call_for_me") return LEVEL.PASSPHRASE;
+  // One that may spend (an approved most-it-may-cost) is money: never by voice.
+  if (n === "make_a_call_for_me") return Number(input?.maxCents ?? 0) > 0 ? LEVEL.TEXT : LEVEL.PASSPHRASE;
   if (n === "voice_note_send" && input && toSelf(input.to)) return LEVEL.LOW;
   if (NOW_HELD.has(n) || SENSITIVE_READS.has(n)) return LEVEL.PASSPHRASE;
   if (!verify.isConsequential(n, input, { toSelf })) return LEVEL.OPEN;
@@ -135,11 +167,28 @@ export const trustOn = (call) => Boolean(call?.is_owner) && callpass.callTrustFo
  * numbers), not forwarded, no failed carrier check, one person on the line, on the relays that screen
  * what is said (GPT-Live and the Cartesia bridge, both `gptlive` rows).
  */
+/**
+ * REASON_CALL_TRUST_ATTEST: "pass" (only the carrier's full attestation counts) or "pass_or_missing" (that, or
+ * no attestation at all: the default).
+ */
+export const attestRule = () => (String(process.env.REASON_CALL_TRUST_ATTEST ?? "").trim().toLowerCase() === "pass" ? "pass" : "pass_or_missing");
+/**
+ * Twilio's StirVerstat, as one of: "a" (TN-Validation-Passed-A: the carrier vouches the caller may use this
+ * number), "missing" (none, or No-TN-Validation), "other" (B or C: the carrier does not vouch for the number,
+ * which is how a spoofed call usually arrives; or a failed check).
+ */
+export function attestOf(v) {
+  const s = String(v ?? "").trim();
+  if (/^TN-Validation-Passed-A$/i.test(s)) return "a";
+  if (!s || /^No-TN-Validation$/i.test(s)) return "missing";
+  return "other";
+}
 export function callerIdTrusted(call) {
   if (!call?.is_owner || String(call.direction ?? "out") !== "in") return false;
   if (String(call.provider ?? "") !== "gptlive") return false;
   if (String(call.caller_forwarded ?? "").trim()) return false;
-  if (/fail/i.test(String(call.caller_attest ?? ""))) return false;
+  const att = attestOf(call.caller_attest);
+  if (att === "other" || (att === "missing" && attestRule() === "pass")) return false;
   if (currentParty(call) > 1) return false;
   const from = normalizeNumber(call.to_number);
   if (!/^\+\d{8,15}$/.test(from)) return false;
@@ -196,13 +245,20 @@ export function decide({ call, name, input = null, toSelf = () => false, page = 
   const forAction = n === "confirm_record" ? (confirmation?.action ?? n) : n;
   if (level === LEVEL.TEXT) return refuse({ call, name: forAction, input, level, line: null, log });
   const trusted = callerIdTrusted(call);
+  // Which carrier rule applied (never a number).
+  log({ call_trust_caller: call.id, trusted, attest: attestOf(call.caller_attest), rule: attestRule() });
   if (level === LEVEL.LOW && trusted) { log({ call_trust_low: call.id, tool: n }); return { allow: true, level }; }
-  // One action, unlocked by a match a moment ago (confirm_record for that action's own yes too).
+  // One action, unlocked by a match a moment ago (confirm_record for that action's own yes too), for the
+  // same recipient it was asked for.
   const g = grantFor(fresh(call), now);
-  if (g && g.action === forAction && trusted) return { allow: true, level, granted: true };
+  if (g && g.action === forAction && trusted && (n === "confirm_record" || sameTo(g.to, input))) return { allow: true, level, granted: true };
   if (!trusted) return refuse({ call, name: forAction, input, level, line: null, log });
   return askFor({ call, name: forAction, input, now, log });
 }
+
+/** Who an action is for, as the grant keeps it: a match unlocks that action for that recipient only. */
+const toOf = (input) => String(input?.to ?? input?.recipient ?? input?.number ?? "").replace(/\s+/g, "").toLowerCase();
+const sameTo = (grantTo, input) => String(grantTo ?? "") === toOf(input);
 
 function refuse({ call, name, input, level, line, log, asked = false }) {
   // Queued for the text after the call either way: "or I'll do it by text right after" stays true.
@@ -237,7 +293,7 @@ function askFor({ call, name, input, now, log }) {
     return refuse({ call, name, input, level: LEVEL.PASSPHRASE, line: null, log });
   }
   if (Number(call.trust_tries ?? 0) >= MAX_TRIES_PER_CALL || callpass.lockedOut(c, now)) return refuse({ call, name, input, level: LEVEL.PASSPHRASE, line: null, log });
-  put(call, { trust_ask: JSON.stringify({ action: name, what: verify.describeAsk(name, input), misses: 0, state: "asked", at: now }) });
+  put(call, { trust_ask: JSON.stringify({ action: name, what: verify.describeAsk(name, input), to: toOf(input), misses: 0, state: "asked", at: now }) });
   log({ call_trust_asked: call.id, tool: name });
   return refuse({ call, name, input, level: LEVEL.PASSPHRASE, line: LINES.ask, log, asked: true });
 }
@@ -263,17 +319,19 @@ export function hear(callIn, text, { now = clock.now(), log = () => {} } = {}) {
   const c = call.conversation_id;
   if (kind === "setup") {
     const s = json(call.trust_setup) ?? {};
-    if (callpass.hasPassphrase(c, now)) { put(call, { trust_setup: JSON.stringify({ ...s, state: "done" }), trust_owed: LINES.setupHaveOne }); return { text: SETUP_MARKER, kind }; }
+    if (callpass.hasPassphrase(c, now)) { put(call, { trust_setup: JSON.stringify({ ...s, state: "done" }), trust_owed: LINES.setupHaveOne }); return { text: SETUP_MARKER, kind, echo: callpass.normalWords(text) }; }
+    // One already waiting for a yes is never replaced from a call: that yes would then turn on this one.
+    if (callpass.pendingFor(c, now)) { put(call, { trust_setup: JSON.stringify({ ...s, state: "done" }), trust_owed: LINES.setupPending }); log({ call_trust_setup_pending: call.id }); return { text: SETUP_MARKER, kind, echo: callpass.normalWords(text) }; }
     const set = callpass.normalWords(text).length >= callpass.MIN_WORDS ? callpass.setPending(c, text, { callId: call.id, now }) : null;
     if (set) {
-      put(call, { trust_setup: JSON.stringify({ ...s, state: "set", at: now }), trust_owed: LINES.setupReadBack(set.words, set.first) });
+      put(call, { trust_setup: JSON.stringify({ ...s, state: "set", at: now }), trust_owed: LINES.setupReadBack(set.words) });
       log({ call_trust_setup: call.id, words: set.words });
     } else {
       const misses = Number(s.misses ?? 0) + 1;
       put(call, { trust_setup: JSON.stringify({ ...s, misses, state: misses < 2 ? "asked" : "done" }), trust_owed: misses < 2 ? LINES.setupShort : LINES.setupGiveUp });
       log({ call_trust_setup_short: call.id, misses });
     }
-    return { text: SETUP_MARKER, kind };
+    return { text: SETUP_MARKER, kind, echo: callpass.normalWords(text) };
   }
   const ask = json(call.trust_ask) ?? {};
   const tries = Number(call.trust_tries ?? 0) + 1;
@@ -282,18 +340,18 @@ export function hear(callIn, text, { now = clock.now(), log = () => {} } = {}) {
     put(call, {
       trust_tries: tries,
       trust_ask: JSON.stringify({ ...ask, state: "matched" }),
-      trust_grant: JSON.stringify({ action: ask.action, what: ask.what, until: now + GRANT_MS, used: false }),
+      trust_grant: JSON.stringify({ action: ask.action, what: ask.what, to: ask.to ?? "", until: now + GRANT_MS, used: false }),
       trust_owed: "",
     });
     log({ call_trust_passphrase: call.id, ok: true, near: got === "near", tries });
-    return { text: MARKER, kind, ok: true };
+    return { text: MARKER, kind, ok: true, echo: callpass.normalWords(text) };
   }
   const locked = callpass.noteMiss(c, now);
   const misses = Number(ask.misses ?? 0) + 1;
   const again = misses < MAX_TRIES_PER_ASK && tries < MAX_TRIES_PER_CALL && !locked;
   put(call, { trust_tries: tries, trust_ask: JSON.stringify({ ...ask, misses, state: again ? "asked" : "failed" }), trust_owed: again ? LINES.missAgain : LINES.missLast });
   log({ call_trust_passphrase: call.id, ok: false, tries, locked });
-  return { text: MARKER, kind, ok: false };
+  return { text: MARKER, kind, ok: false, echo: callpass.normalWords(text) };
 }
 
 /** "set my passphrase" said on the call. */
@@ -310,6 +368,7 @@ export function owedLine(call, { theirWords = "", now = clock.now(), log = () =>
   if (owed) { put(call, { trust_owed: "" }); log({ call_trust_said: call.id }); return owed; }
   if (SET_ON_CALL.test(String(theirWords)) && callerIdTrusted(call) && json(call.trust_setup)?.state !== "set") {
     if (callpass.hasPassphrase(call.conversation_id, now)) return LINES.setupHaveOne;
+    if (callpass.pendingFor(call.conversation_id, now)) return LINES.setupPending;
     put(call, { trust_setup: JSON.stringify({ state: "asked", misses: 0, at: now }) });
     log({ call_trust_setup_asked: call.id });
     return LINES.setupAsk;
@@ -335,6 +394,21 @@ export function voiceLines(call) {
   return "If they say a passphrase, never repeat, spell, confirm or say back any of its words, now or later in the call."
     + " Hand it to Reason with only the words 'they said their passphrase' (or 'they said a new passphrase'), never the phrase itself.";
 }
+
+/**
+ * The voice saying back what was just screened (it heard it too): two of those words in a row in one of its
+ * lines, and that line is kept as a marker instead. `words`: the screened words, in the relay's memory for
+ * this call only (`hear` returns them as `echo`), never written anywhere.
+ */
+export const ECHO_MARKER = "[words here repeated a call passphrase; they are not kept]";
+export function echoes(text, words) {
+  if (!Array.isArray(words) || words.length < 2 || !String(text ?? "").trim()) return false;
+  const said = ` ${callpass.normalWords(text).join(" ")} `;
+  for (let i = 0; i + 1 < words.length; i++) if (said.includes(` ${words[i]} ${words[i + 1]} `)) return true;
+  return false;
+}
+/** A line kept as itself, or the marker when it repeats screened words. */
+export const unechoed = (text, words) => (echoes(text, words) ? ECHO_MARKER : text);
 
 /** The relays' request text right after a screened passphrase: never the voice's copy of it. */
 export const SCREENED_REQUEST = "they said their passphrase";

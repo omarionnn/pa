@@ -235,7 +235,9 @@ export async function go({ call, requestId, saidYes = false, dial, log = () => {
 
   // Who is on the phone, first. The yes is worth nothing until this has passed.
   if (!verify.isVerified(call)) {
-    const input = { to: req.to_number, text: req.review ?? req.brief?.goal ?? "" };
+    const maxCents = Number(req.brief?.approved?.maxCents ?? 0);
+    // maxCents: a call that may spend is money for the call-trust levels (never by voice); describeAsk ignores it.
+    const input = { to: req.to_number, text: req.review ?? req.brief?.goal ?? "", ...(maxCents > 0 ? { maxCents } : {}) };
     // REASON_CALL_TRUST on: a passphrase said just now may unlock this one call (./calltrust.js); null when off.
     const trust = calltrust.decide({ call, name: "make_a_call_for_me", input, now, log });
     if (!trust?.allow) {

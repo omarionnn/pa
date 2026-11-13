@@ -439,6 +439,10 @@ export class CartesiaAgentCall {
     this.earArmed = null;
     this.earJust = false;
     this.earWaiters = [];
+    // The words just screened, in memory for this call only (never kept), so the agent saying them back is not
+    // kept either; and where on the tape the ask began, so their side of the recording is silence until the screen.
+    this.earEcho = null;
+    this.earTapeFrom = null;
     this.streamSid = null;
     this.agentCallId = "";
     this.ready = false;
@@ -631,11 +635,13 @@ export class CartesiaAgentCall {
     // kept only as a marker (./calltrust.js), before they reach the turns, the transcript or Reason.
     if (who === "them" && this.earArmed && text) {
       const heard = calltrust.hear(this.call, text, { log: this.log });
-      if (heard) { text = heard.text; this.earJust = true; }
+      if (heard) { text = heard.text; this.earJust = true; if (heard.echo) this.earEcho = heard.echo; }
+      this.tape.blank(this.earTapeFrom ?? this.tape.callerBytes - 15_000 * 8, this.tape.callerBytes);
+      this.earTapeFrom = null;
       this.earArmed = null;
       this.earWaiters.splice(0).forEach(f => f());
     }
-    if (who === "reason" && text) text = calltrust.scrubSaid(text);
+    if (who === "reason" && text) text = calltrust.unechoed(calltrust.scrubSaid(text), this.earEcho);
     if (text) this.turns.push({ who, text, at: this.now(), ...(e.interrupted ? { interrupted: true } : {}) });
     // The honesty guard (GPT-Live's `claimsDone`, on this line too): the agent said something is done and
     // no answer of Reason's in the last minute said so. The words are already spoken (their socket takes
@@ -683,8 +689,9 @@ export class CartesiaAgentCall {
     this.answerOut = null;
     if (out) {
       const share = heardShare(text, out.text);
-      // A code, password or long number is never said again from memory: no offer, no note quoting it.
-      if (e.interrupted && share < HEARD_SHARE && SECRETISH.test(out.text)) {
+      // A code, password or long number is never said again from memory: no offer, no note quoting it. Nor a
+      // call-passphrase line (./calltrust.js): said again later, the words after it would not be screened.
+      if (e.interrupted && share < HEARD_SHARE && (SECRETISH.test(out.text) || (calltrust.trustOn(this.call) && calltrust.isTrustLine(out.text)))) {
         this.log({ cartesia_answer_unheard: this.call.id, turn: Number(e.turn) || 0, heard_pct: Math.round(share * 100), withheld: true });
       } else if (e.interrupted && share < HEARD_SHARE) {
         this.unheard = { text: out.text, short: shortForm(out.text), at: t };
@@ -729,7 +736,9 @@ export class CartesiaAgentCall {
     // Their passphrase answer may reach this tool before its own turn_ended: waited for, briefly, so it is
     // screened first; then the agent's copy of it is never passed on.
     if (this.earArmed) await new Promise(r => { this.earWaiters.push(r); this.timers.setTimeout(r, EAR_WAIT_MS); });
-    if (this.earJust) { this.earJust = false; request = calltrust.SCREENED_REQUEST; }
+    // Still not screened after the wait (their turn_ended is late), or the agent's words repeat what was: the
+    // agent's copy is never passed on either way.
+    if (this.earJust || this.earArmed || calltrust.echoes(request, this.earEcho)) { this.earJust = false; request = calltrust.SCREENED_REQUEST; }
     this.replyKind = "ask_reason";
     const askedAt = this.now();
     const p = { askedAt, texting: false, texted: false, reply: undefined, done: null };
@@ -792,6 +801,7 @@ export class CartesiaAgentCall {
     p.reply = reply;
     // Reason asked for a passphrase (or a new one) in this answer: their next words are for code.
     this.earArmed = armedNow;
+    if (armedNow && this.earTapeFrom == null) this.earTapeFrom = this.tape.callerBytes;
     if (p.texting) this.textLate(p);
     return reply;
   }

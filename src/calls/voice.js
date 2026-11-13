@@ -48,6 +48,7 @@ import { earlierCallsNote, CARRY_TURN_LINE, CARRY_TURN_GOODBYE, carryoverFor, ca
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
 import * as calltrust from "./calltrust.js";
+import { peekForSignin } from "../savedlogins.js";
 import { rulesNote } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory } from "./callmemory.js";
 import { memoryHits } from "../memorynote.js";
@@ -964,12 +965,27 @@ export function withoutSpokenLinks(text) {
  * entirely — and that is the path a paused commitment uses to ask him about a fee nobody approved
  * while a restaurant waits on the line (see `./commit.js`).
  */
-/** The open errand page's visible words, for telling a free booking from one that pays (./calltrust.js). */
+/**
+ * The open errand page, for telling a free booking from one that pays (./calltrust.js): its visible words,
+ * whether it has a card or payment field (a field, or a payment provider's frame), and whether this browser
+ * may be signed in there (a saved login for the site; the page's own sign-out link is read off the words).
+ * A field check that cannot be made counts as a field: what cannot be seen is never low risk.
+ */
+const PAY_FIELDS = `document.querySelectorAll('input[autocomplete^="cc-"], input[name*="card" i], input[id*="card" i], input[name*="cvc" i], input[name*="cvv" i], input[name*="expir" i], iframe[src*="stripe"], iframe[src*="braintree"], iframe[src*="adyen"], iframe[src*="squareup"], iframe[src*="paypal"], iframe[name*="card" i], iframe[title*="payment" i], iframe[title*="card" i]').length`;
 async function openPageText(conversationId) {
   try {
     const { openPage, pageText } = await import("../browser.js");
     const page = openPage(conversationId);
-    return page ? await pageText(page, 20_000) : null;
+    if (!page) return null;
+    const text = await pageText(page, 20_000);
+    let payField = true;
+    try { payField = Number(await page.evaluate(PAY_FIELDS)) > 0; } catch { /* unknown: a field */ }
+    let savedLogin = false;
+    try {
+      const host = new URL(page.url()).hostname;
+      savedLogin = peekForSignin(conversationId, host).length > 0;
+    } catch { /* none known */ }
+    return { text, payField, savedLogin };
   } catch { return null; }
 }
 
@@ -2497,7 +2513,7 @@ export async function* voiceTurn({
         // and then this is exactly the check it always was.
         const toSelf = (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false;
         const trustGate = call.is_owner && !verify.isVerified(call)
-          ? calltrust.decide({ call, name: t.name, input: t.input, toSelf, page: ["browser_submit", "confirm_record"].includes(String(t.name)) ? await openPageText(context.conversationId) : null, log })
+          ? calltrust.decide({ call, name: t.name, input: t.input, toSelf, page: calltrust.trustOn(call) && ["browser_submit", "confirm_record"].includes(String(t.name)) ? await openPageText(context.conversationId) : null, log })
           : null;
         if (trustGate ? !trustGate.allow : (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf }))) {
           out = trustGate?.out ?? verify.gateRefusal({ call, name: t.name, input: t.input, log });

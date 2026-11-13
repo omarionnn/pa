@@ -53,7 +53,7 @@ export function callTrustFor(conversationId) {
 export const WORDS = {
   link: "Here's a link to set your call passphrase on Reason's own page. Type it there, not here: I never see it.",
   linkChange: "Here's a link to change your call passphrase on Reason's own page. Type the new one there, not here.",
-  activateAsk: "You set a call passphrase on our call just now. Reply yes to turn it on.",
+  activateAsk: "You set a call passphrase on our call just now. Reply yes to turn it on. If that wasn't you, don't reply.",
   activated: "Your call passphrase is on. I'll only ask for it on a call when something needs it.",
   removeAsk: "Reply yes to remove your call passphrase.",
   removed: "Your call passphrase is removed.",

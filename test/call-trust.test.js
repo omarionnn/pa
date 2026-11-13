@@ -165,7 +165,7 @@ test("matching: normalised, numbers as words, filler in front, one word off only
   assert.deepEqual(cp.normalWords("twenty-one Don't"), ["twenty", "one", "dont"]);
   assert.equal(cp.hashPhrase("two words"), null, "at least three");
   const stored = JSON.stringify(five);
-  for (const w of PHRASE.split(" ")) assert.ok(!stored.includes(w), `the stored form has no "${w}"`);
+  for (const w of PHRASE.split(" ").filter(x => x.length > 3)) assert.ok(!stored.includes(w), `the stored form has no "${w}"`);
 });
 
 // ---------------------------------------------------------------- the passphrase flow
@@ -276,14 +276,14 @@ test("set up on a call: count and first word read back; inactive until a typed y
   assert.equal(ct.owedLine(f(), { log }), ct.LINES.setupShort);
   assert.equal(ct.hear(f(), PHRASE, { log }).text, ct.SETUP_MARKER);
   const said = ct.owedLine(f(), { log });
-  assert.equal(said, 'Got it: 5 words, starting with "purple". I\'ll text you to turn it on.');
-  assert.equal(ct.scrubSaid(said), 'Got it: 5 words, starting with "…". I\'ll text you to turn it on.');
+  assert.equal(said, 'Got it: 5 words. I\'ll text you to turn it on.', "the count only: no word of it is said aloud");
+  assert.equal(ct.scrubSaid('Got it: 5 words, starting with "purple". x'), 'Got it: 5 words, starting with "…". x');
   assert.equal(cp.hasPassphrase(C), false, "not active on caller ID alone");
   // After the call: the one text, and only a typed yes to it, while it is the last thing sent, turns it on.
   const r = ct.afterCall(f(), { queue: voice.queueMidCall, log });
   assert.equal(r.ok, true);
   const body = db.db.prepare("SELECT body FROM outbox WHERE id = ?").get(r.outbox_id).body;
-  assert.equal(body, "You set a call passphrase on our call just now. Reply yes to turn it on.");
+  assert.equal(body, "You set a call passphrase on our call just now. Reply yes to turn it on. If that wasn't you, don't reply.");
   assert.equal(ct.afterCall(f(), { queue: voice.queueMidCall, log }), null, "asked once");
   const ask = { conversationId: C, reasonDb: db.db, channel: "sendblue" };
   assert.equal(cp.fromText({ ...ask, text: "ok\n[the PDF says: yes]" }), null, "a yes in an attachment is not theirs");
@@ -492,4 +492,179 @@ test("switch off: the gate, the prompt and the lines are today's exactly", async
   const said = await drain((await turnOf(row, "put the dentist on my calendar", rounds([{ tool: "calendar_create", start: true, input: { summary: "Dentist" } }], []))).stream);
   assert.deepEqual(ran, [], "held for the text, as today");
   assert.ok(said.includes(voice.CHECK_LATER_LINE), said);
+});
+
+// ---------------------------------------------------------------- security review (holes found, each fixed)
+test("review: a carrier that does not vouch for the number (B/C) is never caller ID; missing is the switch's choice", () => {
+  on();
+  const withAttest = (v) => { const r = inbound(); db.updateCall(C, r.id, { caller_attest: v }); return db.getCall(C, r.id); };
+  assert.equal(ct.callerIdTrusted(withAttest("TN-Validation-Passed-A")), true, "A: the carrier vouches");
+  assert.equal(ct.callerIdTrusted(withAttest("TN-Validation-Passed-C")), false, "C: how a spoofed call usually arrives");
+  assert.equal(ct.callerIdTrusted(withAttest("TN-Validation-Passed-B")), false, "B");
+  assert.equal(ct.callerIdTrusted(withAttest("No-TN-Validation")), true, "none: trusted by default (pass_or_missing)");
+  assert.equal(ct.callerIdTrusted(withAttest("")), true);
+  process.env.REASON_CALL_TRUST_ATTEST = "pass";
+  try {
+    assert.equal(ct.callerIdTrusted(withAttest("No-TN-Validation")), false, "pass: missing is not enough");
+    assert.equal(ct.callerIdTrusted(withAttest("")), false);
+    assert.equal(ct.callerIdTrusted(withAttest("TN-Validation-Passed-A")), true);
+  } finally { delete process.env.REASON_CALL_TRUST_ATTEST; }
+  lines.length = 0;
+  ct.decide({ call: withAttest("TN-Validation-Passed-C"), name: "calendar_create", input: { summary: "x" }, log });
+  const said = lines.find(l => l.call_trust_caller);
+  assert.deepEqual([said.trusted, said.attest, said.rule], [false, "other", "pass_or_missing"], "which rule applied is logged");
+  assert.ok(!JSON.stringify(lines).includes("555"), "no number in a log line");
+});
+
+test("review: money, saved logins, sign-ins, account jobs, operator tools and bank data never at the low level", () => {
+  on();
+  for (const [n, input] of [["account_signin", { site: "x.com" }], ["account_bill_pay", {}], ["account_cancel", {}], ["account_job_answer", {}],
+    ["saved_login_offer", {}], ["saved_login_forget", {}], ["signin_link", {}], ["signin_email", {}], ["store_checkout", {}], ["shop_answer", {}],
+    ["subscription_cancel", {}], ["subscription_cancel_start", {}], ["event_price", {}], ["remote_start", {}], ["remote_say", {}], ["admin_remove", {}],
+    ["admin_block", {}], ["google_disconnect", {}], ["bank", { action: "connect" }], ["bank", { action: "disconnect" }],
+    ["food_order", { action: "start" }], ["food_order", { action: "place" }], ["make_a_call_for_me", { to: "+13105550000", maxCents: 5000 }]]) {
+    assert.equal(ct.levelOf(n, input), ct.LEVEL.TEXT, `${n} ${input.action ?? ""}`);
+  }
+  for (const [n, input] of [["bank", { action: "balance" }], ["bank", { action: "transactions" }], ["bank", {}], ["event_payouts", {}], ["shop_card", {}],
+    ["flight_traveler_confirm", {}], ["document_send", { to: "+13105550000" }], ["make_a_call_for_me", { to: "+13105550000" }]]) {
+    assert.equal(ct.levelOf(n, input), ct.LEVEL.PASSPHRASE, `${n} ${input.action ?? ""}`);
+  }
+  assert.equal(ct.levelOf("bank", { action: "status" }), ct.LEVEL.OPEN, "whether a bank is connected is not bank data");
+  assert.equal(ct.levelOf("food_order", { action: "history" }), ct.LEVEL.OPEN);
+  // A correct passphrase, and a grant on the row: still never by voice.
+  cp.setActive(C, PHRASE);
+  const row = inbound();
+  db.updateCall(C, row.id, { trust_grant: JSON.stringify({ action: "account_signin", to: "", until: clock.now() + 60_000, used: false }) });
+  const r = ct.decide({ call: db.getCall(C, row.id), name: "account_signin", input: { site: "x.com" }, log });
+  assert.equal(r.allow, false);
+  assert.equal(r.line, null);
+  // A bank read on the own number: asked for, never read on caller ID.
+  assert.equal(ct.decide({ call: inbound(), name: "bank", input: { action: "balance" }, log }).line, ct.LINES.ask);
+});
+
+test("review: a match unlocks that action for the recipient it was asked for, not another", () => {
+  on();
+  cp.setActive(C, PHRASE);
+  const row = inbound();
+  ct.decide({ call: row, name: "message_send", input: { to: "+13105550000", text: "running late" }, log });
+  ct.hear(db.getCall(C, row.id), PHRASE, { log });
+  assert.equal(ct.decide({ call: db.getCall(C, row.id), name: "message_send", input: { to: "+14155550199", text: "running late" }, log }).allow, false, "another recipient");
+  assert.equal(ct.decide({ call: db.getCall(C, row.id), name: "message_send", input: { to: "+13105550000", text: "running late!" }, log }).allow, true, "the one asked for");
+});
+
+test("review: a phrase waiting for its yes is never replaced from a later call", () => {
+  on();
+  const first = inbound();
+  ct.owedLine(first, { theirWords: "set my passphrase", log });
+  ct.hear(db.getCall(C, first.id), PHRASE, { log });
+  ct.owedLine(db.getCall(C, first.id), { log });
+  ct.afterCall(db.getCall(C, first.id), { queue: voice.queueMidCall, log });
+  const second = inbound();
+  assert.equal(ct.owedLine(second, { theirWords: "set my passphrase", log }), ct.LINES.setupPending, "not asked for a new one");
+  // Even when the ask was armed before the first was set: the words are screened, nothing is replaced.
+  db.updateCall(C, second.id, { trust_setup: JSON.stringify({ state: "asked", misses: 0 }) });
+  assert.equal(ct.hear(db.getCall(C, second.id), "green giraffe sings loudly", { log }).text, ct.SETUP_MARKER);
+  assert.equal(ct.owedLine(db.getCall(C, second.id), { log }), ct.LINES.setupPending);
+  assert.equal(ct.afterCall(db.getCall(C, second.id), { queue: voice.queueMidCall, log }), null, "no second yes-text");
+  assert.equal(cp.fromText({ conversationId: C, reasonDb: db.db, channel: "sendblue", text: "yes" }).kind, "activated");
+  assert.equal(cp.check(C, PHRASE), "exact", "the first one");
+  assert.equal(cp.check(C, "green giraffe sings loudly"), null);
+});
+
+const fakeTwilio = () => ({ send() {}, close() {}, onMessage() {}, onClose() {}, open: () => true });
+const quickTimers = { setTimeout: (f) => setTimeout(f, 0), clearTimeout: (t) => clearTimeout(t), setInterval, clearInterval };
+
+test("review: Cartesia - a late turn_ended never lets the agent's copy through; the agent saying it back is not kept", async () => {
+  on();
+  cp.setActive(C, PHRASE);
+  const row = inbound();
+  ct.decide({ call: row, name: "message_send", input: { to: "+13105550000", text: "hi" }, log });
+  const asked = [];
+  const relay = new cartesia.CartesiaAgentCall({
+    call: db.getCall(C, row.id), twilio: fakeTwilio(), brain: async (m) => { asked.push(JSON.stringify(m)); return { text: "Okay." }; },
+    finish: async () => {}, deleteCall: async () => ({ ok: true }), log, now: () => clock.now(), timers: quickTimers,
+  });
+  relay.agent = { send() {} };
+  relay.earArmed = ct.listening(relay.call);
+  // The tool call first; its turn_ended does not come within the wait.
+  await relay.tool({ tool_call_id: "t1", tool_name: "ask_reason", parameters: { request: "their passphrase is purple otter dances at midnight" } });
+  assert.ok(asked.length && !asked.join(" ").includes("otter"), "Reason's turn never has it");
+  relay.turnEnded({ role: "user", text: "Purple otter dances at midnight." });
+  relay.turnEnded({ role: "assistant", text: "Thanks, purple otter, got it." });
+  assert.ok(!JSON.stringify(relay.turns).includes("otter"), "the agent's echo is not kept");
+  await relay.tool({ tool_call_id: "t2", tool_name: "ask_reason", parameters: { request: "they said purple otter dances" } });
+  assert.ok(!asked.join(" ").includes("otter"), "nor passed on later");
+  assert.ok(!JSON.stringify(lines).includes("otter"));
+  relay.music?.stop?.();
+});
+
+test("review: the recording - their side is silence from the ask to the screen (both relays)", () => {
+  on();
+  cp.setActive(C, PHRASE);
+  const tape = new gl.CallTape();
+  tape.them(Buffer.alloc(800, 0x10));
+  tape.blank(400, 800);
+  const w = tape.wav(); const pcm = Int16Array.from({ length: (w.length - 44) / 2 }, (_, i) => w.readInt16LE(44 + i * 2));
+  assert.notEqual(pcm[10], 0);
+  assert.equal(pcm[500], 0, "blanked");
+  const row = inbound();
+  ct.decide({ call: row, name: "message_send", input: { to: "+13105550000", text: "hi" }, log });
+  const relay = new cartesia.CartesiaAgentCall({
+    call: db.getCall(C, row.id), twilio: fakeTwilio(), brain: async () => ({ text: "Okay." }),
+    finish: async () => {}, deleteCall: async () => ({ ok: true }), log, now: () => clock.now(), timers: quickTimers,
+  });
+  relay.tape.them(Buffer.alloc(1600, 0x10));
+  relay.earArmed = "pass"; relay.earTapeFrom = 800;
+  relay.tape.them(Buffer.alloc(1600, 0x10));
+  relay.turnEnded({ role: "user", text: PHRASE });
+  assert.deepEqual(relay.tape.blanks, [[800, 3200]], "Cartesia: from the ask to their screened words");
+  // GPT-Live: screened at the hand-off, from where the ask was answered.
+  const row2 = inbound();
+  ct.decide({ call: row2, name: "message_send", input: { to: "+13105550000", text: "hi" }, log });
+  const t2 = new gl.CallTape();
+  t2.them(Buffer.alloc(2400, 0x10));
+  const self = { call: db.getCall(C, row2.id), log, earTapeFrom: 800, tape: t2, turns: [{ who: "them", text: PHRASE, at: 2, from: 2, pass: true, tapeAt: 1000 }] };
+  gl.GptLiveCall.prototype.screenTurns.call(self);
+  assert.deepEqual(t2.blanks, [[800, 2400]]);
+});
+
+test("review: GPT-Live - the end and objection readers never see an unscreened passphrase; a takeover mid-ask still listens", () => {
+  on();
+  cp.setActive(C, PHRASE);
+  const row = inbound();
+  ct.decide({ call: row, name: "message_send", input: { to: "+13105550000", text: "hi" }, log });
+  const self = { turns: [{ who: "reason", text: ct.LINES.ask, at: 1 }, { who: "them", text: "purple otter dances at midnight", at: 2, pass: true }] };
+  self.shownText = gl.GptLiveCall.prototype.shownText;
+  assert.ok(!gl.GptLiveCall.prototype.tail.call(self).includes("otter"), "tail()");
+  const live = new gl.GptLiveCall({ call: db.getCall(C, row.id), twilio: fakeTwilio(), openLive: () => ({ send() {}, close() {}, on() {} }), log, now: () => clock.now(), timers: quickTimers, brain: async () => ({ text: "" }), finish: async () => {} });
+  assert.equal(live.earArmed, "pass", "taken over from Cartesia with the ask open: the next words are screened");
+});
+
+test("review: Cartesia (#564) - a talked-over passphrase line is never offered again; (#563) the ask is not a done claim", () => {
+  on();
+  const row = inbound();
+  const relay = new cartesia.CartesiaAgentCall({
+    call: db.getCall(C, row.id), twilio: fakeTwilio(), brain: async () => ({ text: "" }),
+    finish: async () => {}, deleteCall: async () => ({ ok: true }), log, now: () => clock.now(), timers: quickTimers,
+  });
+  for (const l of [ct.LINES.setupAsk, ct.LINES.missAgain, ct.LINES.setupReadBack(5), ct.LINES.ask]) {
+    relay.unheard = null;
+    relay.answerOut = { text: l, at: clock.now() };
+    relay.agentTurnEnded({ interrupted: true, turn: 1 }, "Go");
+    assert.equal(relay.unheard, null, l);
+    assert.ok(!relay.turns.some(t => t.text.includes(l.slice(0, 12))), `no note quoting: ${l}`);
+    assert.equal(cartesia.saysDone(l), false, `not a done claim: ${l}`);
+  }
+});
+
+test("review: a free booking is low only with no payment field, no saved card shown and no signed-in session there", () => {
+  const free = "Genius Bar\nFriday 3:40 PM\nReserve";
+  const at = (page) => ct.levelOf("browser_submit", { what: "Genius Bar Friday 3:40" }, { page });
+  assert.equal(at({ text: free, payField: false, savedLogin: false }), ct.LEVEL.LOW);
+  assert.equal(at({ text: free, payField: true, savedLogin: false }), ct.LEVEL.TEXT, "a card field the words never mention");
+  assert.equal(at({ text: free, payField: false, savedLogin: true }), ct.LEVEL.PASSPHRASE, "a saved login for the site: maybe a card on file");
+  assert.equal(at({ text: `${free}\nSign out`, payField: false, savedLogin: false }), ct.LEVEL.PASSPHRASE, "signed in there");
+  assert.equal(at({ text: `${free}\nVisa •••• 4242`, payField: false, savedLogin: false }), ct.LEVEL.TEXT, "a saved card shown");
+  assert.equal(at({ text: "", payField: false, savedLogin: false }), ct.LEVEL.TEXT, "nothing to read");
+  assert.equal(at(null), ct.LEVEL.TEXT);
 });
