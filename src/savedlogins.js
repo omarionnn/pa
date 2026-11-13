@@ -41,11 +41,18 @@ export function savedLoginsAllowedFor(conversationId) {
 }
 
 let saidOff = false;
+let saidRest = false;
 /**
  * A working key service (vaultkms.configured): Google's key file, or AWS's key and login, and no 127.x
- * stand-in outside a test. No file master, no .env key, no fallback. Not ready: one log line.
+ * stand-in outside a test. No file master, no .env key, no fallback. And encryption at rest fully on
+ * (REASON_ENCRYPT_REST, _REST2 and _REST3): the username hint, the reason for each use and the quoted
+ * request of a save link are sealed under the person's key only then. Not ready: one log line.
  */
 export function vaultReady() {
+  if (!restcrypt.flag2On() || !restcrypt.flag3On()) {
+    if (!saidRest && savedLoginsMode() !== "off") { saidRest = true; console.log("saved logins: off (encryption at rest not fully on)"); }
+    return false;
+  }
   if (vaultkms.configured()) return true;
   if (!saidOff && savedLoginsMode() !== "off") { saidOff = true; console.log("saved logins: off (no KMS key)"); }
   return false;
