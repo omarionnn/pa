@@ -97,6 +97,10 @@ db.db.exec(`CREATE TABLE IF NOT EXISTS account_jobs (
 CREATE INDEX IF NOT EXISTS account_jobs_by_conv ON account_jobs (conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS account_jobs_by_run ON account_jobs (conversation_id, run_id);`);
 const q = (sql) => db.db.prepare(sql);
+// page_line: the site's own words the result was read off (the proof, quoted back to them). start_url: where the run began.
+for (const [column, decl] of [["page_line", "TEXT NOT NULL DEFAULT ''"], ["start_url", "TEXT NOT NULL DEFAULT ''"]]) {
+  if (!q("SELECT name FROM pragma_table_info('account_jobs')").all().some((r) => r.name === column)) db.db.exec(`ALTER TABLE account_jobs ADD COLUMN ${column} ${decl}`);
+}
 export const OPEN_STATES = ["running", "needs_page", "needs_code", "needs_answer", "needs_confirm", "confirming", "needs_approval", "paid"];
 const isOpen = (job) => OPEN_STATES.includes(job?.state);
 export const jobRow = (conversationId, id) => q("SELECT * FROM account_jobs WHERE conversation_id = ? AND id = ?").get(String(conversationId), Number(id)) ?? null;
@@ -124,7 +128,7 @@ const short = (s, n = 160) => { const t = String(s ?? "").replace(/\s+/g, " ").t
 // the fields are built here from fixed lists, so a caller cannot put one in by accident.
 export const ROUTES = ["saved_profile", "emailed_code", "emailed_link", "texted_code", "sign_in_page", "none"];
 export const OUTCOMES = [
-  "done", "done_result_only", "waiting_mail", "unconfirmed", "unexpected_purchase", "paid_unapproved",
+  "done", "done_result_only", "already_done", "waiting_mail", "unconfirmed", "unexpected_purchase", "paid_unapproved",
   "refused_by_cap", "payment_asked", "blocked_browser", "human_check", "site_error", "no_safe_path", "payment_declined",
   "not_found", "not_cancelled", "nothing_paid", "no_answer", "no_signin", "no_signin_route", "declined", "stopped", "service_failed", "start_failed",
 ];
@@ -193,15 +197,29 @@ const mailDomains = (job) => [...new Set([registrableOf(job.host), ...String(job
 export const CANCEL_CAP = "0.000001";
 export const RESULT_YES = "RESULT: CANCELLED";
 export const RESULT_NO = "RESULT: NOT CANCELLED";
+// The run's last line says which of three things it found, with the date and the page's own words:
+// changed now, already so (nothing to change: done, and no merchant mail will ever come for it), or not there.
+export const RESULT_NOW = "RESULT: CANCELLED NOW";
+export const RESULT_ALREADY = "RESULT: ALREADY CANCELLED";
+export const RESULT_MISSING = "RESULT: NOT FOUND";
+export const RESULT_PAID = "RESULT: PAID";
+export const RESULT_PAID_ALREADY = "RESULT: ALREADY PAID";
+const LINE_FORM = (verb, ends = true) => `${verb}${ends ? " | ENDS: <the date access ends, as the page writes it>" : ""} | PAGE: "<the page's own line that shows it, copied exactly>"`;
 export const CONFIRM_MARK = "CONFIRM CANCELLATION";
-export function cancelTask({ name, plan }) {
+export function cancelTask({ name, plan, linked = false }) {
   return `Cancel one subscription in my ${name} account: "${plan}". Nothing else.`
     + ` I should already be signed in. If ${name} asks me to sign in, ask me for what it needs (my email, then a one-time code or my password) and nothing more.`
+    + (linked ? ` The page you start on is my own manage-subscription link for it: look there first.` : "")
     + ` Open the subscription or billing settings and find "${plan}". If there is no such subscription on this account, stop and say so; never cancel a different one.`
+    + ` If the page already shows "${plan}" cancelled or set to end and not renew, change nothing, take no cancellation step and ask me nothing: just report it.`
     + ` Go through the cancellation steps. Decline every offer to stay, pause, downgrade or take a discount. If a reason is required, choose "Other".`
     + ` STOP at the last step, before the click that makes the cancellation final, and ask me ONE question that begins with the words "${CONFIRM_MARK}:" and states the plan's name, its price, and the date my access ends. Only finish after I answer yes to that question.`
     + ` This must cost nothing. Never pay, never buy, never agree to a fee, never add or change a payment method. If cancelling needs a payment, stop and say so.`
-    + ` When you are done, end your final summary with one line, exactly "${RESULT_YES}" if ${name} now shows the subscription cancelled or set to end and not renew (and give the date access ends), or "${RESULT_NO}" followed by why.`;
+    + ` When you are done, end your final summary with exactly one of these lines:`
+    + ` ${LINE_FORM(RESULT_NOW)} if you cancelled it now and ${name} now shows it cancelled or set to end and not renew;`
+    + ` ${LINE_FORM(RESULT_ALREADY)} if it was already cancelled or set to end before you changed anything;`
+    + ` ${LINE_FORM(RESULT_MISSING, false)} if there is no such subscription on this account (quote what the billing page shows instead);`
+    + ` or "${RESULT_NO}" followed by why.`;
 }
 /** A bill's ceiling: the amount on the notice plus room for a card fee. Never a price anyone agreed to: the yes is for the exact total. */
 export function billCap(amount) {
@@ -211,10 +229,11 @@ export function billCap(amount) {
 export function billTask({ name, amount, reference, due }) {
   return `Pay one bill on ${name}'s own payment page. The bill: reference (account or invoice number) ${reference}; amount due ${amount} USD${due ? `; due ${due}` : ""}.`
     + ` Use ${name}'s guest or one-time payment page if it has one (no sign-in). Only if there is none, use my signed-in account; if ${name} asks me to sign in, ask me for what it needs.`
+    + ` If the page shows this bill already paid or nothing due (a zero balance), pay nothing and end your final summary with one line: ${LINE_FORM(RESULT_PAID_ALREADY, false)}.`
     + ` Pay exactly the amount due on that bill, once, as a one-time card payment. Do not turn on autopay, do not save the card, do not set up a recurring payment, do not add a tip, donation or anything else.`
     + ` If the page shows a different amount due than ${amount} USD, or adds a fee, say so in the payment request so I see the page's own total.`
     + ` Pay by card through Crossmint: when you reach payment, request payment approval from me and wait. Do not type any card number into the site yourself, never use a card saved at the site, and never submit the payment without my approval.`
-    + ` After paying, capture the confirmation or receipt number.`;
+    + ` After paying, capture the confirmation or receipt number, and end your final summary with one line: ${LINE_FORM(RESULT_PAID, false)}.`;
 }
 
 // ---------------------------------------------------------------- what a question is
@@ -377,7 +396,7 @@ export function notDoneLine(job, reason, { detail = "", amount = "" } = {}) {
     case "site_error": return `Not done: ${n}'s site kept showing an error${d}. ${same}`;
     case "no_safe_path": return `Not done: I found no safe way to ${cancel ? `cancel ${job.what}` : "pay this bill"} on ${n}'s site${d}. ${same}`;
     case "payment_declined": return `Not done: ${n} declined the card. Nothing was paid.`;
-    case "not_found": return `Not done: I got into the ${n} account, but there is no "${job.what}" subscription on it${d}. It may be under another login or billed somewhere else.`;
+    case "not_found": return `Not done: I got into the ${n} account, but there is no "${job.what}" subscription on it${d}. It may be under another login or billed somewhere else.${linkedStart(job) ? "" : " If you have its manage link (their receipt email usually has one), send it and I'll start there."}`;
     case "not_cancelled": return `Not done: ${n}'s page did not confirm the cancellation${d}. Treat ${job.what} as still active.`;
     case "nothing_paid": return `Not done: the run ended without paying anything${d}. Nothing was paid.`;
     case "no_answer": return cancel
@@ -396,6 +415,15 @@ export function notDoneLine(job, reason, { detail = "", amount = "" } = {}) {
   }
 }
 const endsWords = (job) => (job.ends ? `; access ends ${job.ends}` : "");
+/** Did the run start on a page they or their notice named (a manage or billing link), not the site's front page? */
+const linkedStart = (job) => { try { return !!job.start_url && new URL(job.start_url).pathname.replace(/\/+$/, "") !== ""; } catch { return false; } };
+const pageWords = (job) => (job.page_line ? ` ${job.name}'s page says: "${short(job.page_line, 200)}".` : "");
+/** The ending when the page already showed it so: what the page shows, that nothing was changed, what happens next. */
+export function alreadyLine(job) {
+  const n = job.name;
+  if (job.kind === "bill") return `Done: the ${n} bill${job.reference ? ` (${job.reference})` : ""} was already paid, so I paid nothing.${pageWords(job)}`;
+  return `Done: ${job.what} at ${n} was already set to end${job.ends ? ` on ${job.ends}` : ""}, so I didn't change anything${job.ends ? "; you keep access until then" : ""}.${pageWords(job)}`;
+}
 const receiptWords = (r) => (r?.total ? `${dollars(r.total)}${r.order ? `, confirmation ${r.order}` : ""}` : r?.order ? `confirmation ${r.order}` : "");
 /** The ending when the run's result says it worked: which of the two proofs was seen, by name. */
 export function resultLine(job, mail) {
@@ -404,7 +432,7 @@ export function resultLine(job, mail) {
   const did = job.kind === "cancel"
     ? `${job.what} at ${n} is cancelled${endsWords(job)}`
     : `${dollars(receipt?.total || job.amount)} went to ${n}${job.reference ? ` for ${job.reference}` : ""}`;
-  const page = job.kind === "cancel" ? `${n}'s page said so` : (receipt?.kind === "receipt_captured" ? `the payment page's receipt (${receiptWords(receipt) || "captured"})` : `${n}'s page confirmed it, with no receipt`);
+  const page = job.kind === "cancel" ? `${n}'s page said so${job.page_line ? ` ("${short(job.page_line, 160)}")` : ""}` : (receipt?.kind === "receipt_captured" ? `the payment page's receipt (${receiptWords(receipt) || "captured"})` : `${n}'s page confirmed it, with no receipt`);
   const theirMail = job.kind === "cancel" ? "cancellation email" : "confirmation email";
   if (mail.state === "seen") return `Done. ${did}. Seen: ${page}, and their ${theirMail} arrived ("${short(mail.subject, 80)}").`;
   if (mail.state === "not_connected") {
@@ -540,8 +568,8 @@ async function begin({ conversationId, kind, at, name, what, amount = "", refere
   if (startsTodayAll(conversationId) >= STARTS_PER_DAY_ALL) {
     return { ok: false, blocked: "tried_enough", say: `${STARTS_PER_DAY_ALL} of these were started for them in the last day, which is the limit. Nothing new was started: say so plainly, and what the last ones ended on (account_job_status).` };
   }
-  const id = Number(q(`INSERT INTO account_jobs (conversation_id, kind, host, name, what, amount, reference, due, mail_domains, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
-    .run(conversationId, kind, at.host, name, what, amount, reference, due, cleanDomains(sender), clock.now()).lastInsertRowid);
+  const id = Number(q(`INSERT INTO account_jobs (conversation_id, kind, host, name, what, amount, reference, due, mail_domains, start_url, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
+    .run(conversationId, kind, at.host, name, what, amount, reference, due, cleanDomains(sender), at.url, clock.now()).lastInsertRowid);
   let job = jobRow(conversationId, id);
   // The page's name for the site, kept for everyone: only a name that is the site's own (never a merchant's name on a billing service's address).
   if (store) { try { shop.noteStore({ store, name: nameFitsHost(name, at.host) ? name : "", url: at.url }); } catch { /* a name for the page, no more */ } }
@@ -560,14 +588,28 @@ async function begin({ conversationId, kind, at, name, what, amount = "", refere
   return { ok: true, job_id: id, run_id: out.runId, job };
 }
 
+/** The latest manage page a cancellation of theirs started on at this site (same registrable domain), or "". */
+function priorLink(conversationId, site) {
+  const root = startUrlFor(site);
+  if (!root) return "";
+  const own = registrableOf(root.host);
+  for (const r of q("SELECT start_url FROM account_jobs WHERE conversation_id = ? AND kind = 'cancel' AND start_url != '' ORDER BY id DESC LIMIT 20").all(conversationId)) {
+    let u;
+    try { u = new URL(r.start_url); } catch { continue; }
+    if (u.pathname.replace(/\/+$/, "") && registrableOf(u.hostname) === own) return u.toString();
+  }
+  return "";
+}
 /** Starts a cancellation. Nothing is cancelled by this: the run stops at the last step and asks. */
 export async function startCancel({ conversationId, site, plan, page = "", name = "", sender = "" }) {
   if (!jobsAllowedFor(conversationId)) return { ok: false, blocked: "not_available" };
-  const at = startUrlFor(site, page);
+  // No link this time: the manage link an earlier job of theirs started on, at the same site, goes first (a run
+  // that starts there finds the plan; one sent to the front page may not).
+  const at = startUrlFor(site, page || priorLink(conversationId, site));
   const what = short(String(plan ?? "").replace(/["`\n\r]/g, " "), 80);
   if (!at || !what) return { ok: false, error: "needs_site_and_plan", say: "Nothing was started: this needs the site the subscription is managed on (its address) and the plan's name, both from them or from the notice. Ask for what is missing in one line." };
   const n = cleanName(name, at.host);
-  const out = await begin({ conversationId, kind: "cancel", at, name: n, what, sender, task: cancelTask({ name: n, plan: what }), cap: CANCEL_CAP, item: `cancelling ${what}` });
+  const out = await begin({ conversationId, kind: "cancel", at, name: n, what, sender, task: cancelTask({ name: n, plan: what, linked: at.url !== `https://${at.host}/` }), cap: CANCEL_CAP, item: `cancelling ${what}` });
   if (!out.job) return out;
   return { ok: true, job_id: out.job_id, run_id: out.run_id,
     say: `Started (job ${out.job_id}): I'm in ${n} finding ${what}. NOTHING IS CANCELLED YET. It stops at the last step and you will be told what it found; then you ask them one plain line and their yes goes through account_cancel_confirm. Tell them in one short line that you're on it and will come back with exactly what gets cancelled and when it ends. Never offer signin_link for this: sign-in is handled inside the job.` };
@@ -813,6 +855,36 @@ export function endsFrom(summary) {
   const m = String(summary ?? "").match(ENDS);
   return m ? m[1].replace(/\.$/, "") : "";
 }
+const DATE_ONLY = new RegExp(`^${DATE}$`, "i");
+/**
+ * The task's fixed last line, read: { verdict, ends, quote }. verdict is "now" | "already" | "not_found" |
+ * "not_cancelled" | "paid" | "already_paid" | "" (no such line). ends is a date only when it reads as one;
+ * quote is the page's own words the run copied, or "".
+ */
+export function readResult(summary) {
+  const all = [...String(summary ?? "").matchAll(/RESULT:[^\n]*/gi)];
+  const line = all.length ? all.at(-1)[0] : "";
+  if (!line) return { verdict: "", ends: "", quote: "" };
+  const head = line.replace(/^RESULT:\s*/i, "").split("|")[0].trim().toUpperCase().replace(/CANCELL/g, "CANCEL");
+  const verdict = /^NOT\s+FOUND/.test(head) ? "not_found" : /^NOT\s+CANCEL/.test(head) ? "not_cancelled" : /^ALREADY\s+CANCEL/.test(head) ? "already"
+    : /^ALREADY\s+PAID/.test(head) ? "already_paid" : /^CANCELED/.test(head) ? "now" : /^PAID/.test(head) ? "paid" : "";
+  const endsRaw = (/\|\s*ENDS:\s*([^|]+)/i.exec(line)?.[1] ?? "").trim().replace(/[.\s]+$/, "");
+  const quote = (/\|\s*PAGE:\s*["“](.+?)["”]\s*(\||$)/i.exec(line)?.[1] ?? "").replace(/\s+/g, " ").trim();
+  const q2 = quote.length >= 6 ? short(quote, 240) : "";
+  return { verdict, ends: DATE_ONLY.test(endsRaw) ? endsRaw : (endsFrom(q2) || endsFrom(endsRaw ? `ends ${endsRaw}` : "")), quote: q2 };
+}
+// What the page's own line has to say before "already so" counts: ending, not renewing, or paid / nothing due.
+const ENDED_WORDS = /\bcancel+ed\b|\bset to (cancel|end|expire)\b|\b(will|is going to) (end|expire|be cancel+ed)\b|\b(will not|won['’]?t|does not|doesn['’]?t) (auto-?)?renew\b|\bno longer renew|\bnon-?renewing\b|\bauto-?renew(al)? (is )?(off|disabled)\b|\b(ends|expires) on\b/i;
+const LIVE_WORDS = /\b(renews|will renew|next (payment|billing|charge|invoice) (is |on|date)|auto-?renew(al)? (is )?on)\b/i;
+const PAID_WORDS = /\b(paid( in full)?|zero balance|no (amount|balance|payment) (is )?due|nothing (is )?(due|owed)|balance:?\s*\$?0(\.00)?\b|amount due:?\s*\$?0(\.00)?\b|\$0\.00 (due|balance|owed))/i;
+const UNPAID_WORDS = /\b(unpaid|past due|overdue|not (yet )?paid|payment (is )?due on|balance due:?\s*\$?[1-9])/i;
+/** Does the page's own line, as quoted, show the job's wanted state already? A weak or contrary line never does. */
+export function lineShowsDone(kind, quote) {
+  const t = String(quote ?? "");
+  if (t.length < 6) return false;
+  if (kind === "bill") return PAID_WORDS.test(t) && !UNPAID_WORDS.test(t);
+  return ENDED_WORDS.test(t) && !LIVE_WORDS.test(t.replace(/\b(will not|won['’]?t|does not|doesn['’]?t) (auto-?)?renew\b/gi, ""));
+}
 
 /** The run is over: what it proved, said once, with the mail looked at; the attempt logged once. */
 async function onEnd(job, run, cur, kit) {
@@ -822,12 +894,13 @@ async function onEnd(job, run, cur, kit) {
   const result = cur.result ?? (cur.reason ? { code: String(cur.reason) } : null);
   const code = String(result?.code ?? cur.reason ?? "").toLowerCase();
   const summary = String(result?.summary ?? "");
+  const read = readResult(summary);
   const paid = q("SELECT * FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status IN ('paid', 'unknown') ORDER BY id DESC").get(run.run_id, run.conversation_id) ?? null;
   const before = run.stage;
   kit.endRow(run, status, result);
   const link = kit.openSigninLink(run.run_id);
   if (link) { if (status === "succeeded") kit.finishSignin(run, link); else q("UPDATE shop_links SET state = 'failed' WHERE id = ? AND conversation_id = ?").run(link.id, run.conversation_id); }
-  const base = { request_id: "", request_json: "", ask_kind: "", summary: short(summary.replace(/RESULT:\s*(NOT\s+)?CANCEL+ED/gi, "").trim(), 300), ended_at: clock.now(), route: job.route || (status === "succeeded" ? "saved_profile" : "none") };
+  const base = { request_id: "", request_json: "", ask_kind: "", summary: short(summary.replace(/RESULT:\s*(NOT\s+FOUND|NOT\s+CANCEL+ED|ALREADY\s+CANCEL+ED|ALREADY\s+PAID|CANCEL+ED(\s+NOW)?|PAID)\b/gi, "").replace(/\|\s*(ENDS|PAGE):/gi, "").trim(), 300), page_line: read.quote, ended_at: clock.now(), route: job.route || (status === "succeeded" ? "saved_profile" : "none") };
   const finish = async (fields, line) => {
     const done = set(job, { ...base, ...fields });
     logAttempt(done);
@@ -851,6 +924,15 @@ async function onEnd(job, run, cur, kit) {
     if (once(job, "end")) await kit.say(`${resultLine(j, mail)}${unasked}${by}`);
     return { done: true, status };
   };
+  // The page already showed the wanted state (set to end; paid, nothing due): done, and final. No change was
+  // made, so no merchant mail will ever come; the proof is the page's own line, quoted back.
+  const already = async (fields) => {
+    const j = set(job, { ...base, ...fields, seen_result: 1, state: "done", outcome: "already_done", mail_until: null });
+    logAttempt(j);
+    const by = routeLine(j) && once(job, "routeline") ? routeLine(j) : "";
+    if (once(job, "end")) await kit.say(`${alreadyLine(j)}${by}`);
+    return { done: true, status };
+  };
   const bought = ["receipt_captured", "confirmed_without_receipt"].includes(String(result?.purchase?.kind ?? ""));
 
   if (job.kind === "cancel") {
@@ -860,7 +942,14 @@ async function onEnd(job, run, cur, kit) {
       return await finish({ state: "not_done", outcome: "unexpected_purchase" }, (j) => notDoneLine(j, "unexpected_purchase", { detail: total }));
     }
     if (status === "succeeded") {
-      if (saysCancelled(summary)) return await worked({ ends: endsFrom(summary) });
+      // "Already so" counts only on the page's own line saying it, and only when the run did not take the last step itself.
+      if (read.verdict === "already") {
+        if (lineShowsDone("cancel", read.quote) && !job.confirmed_at) return await already({ ends: read.ends || endsFrom(summary) });
+        if (!job.confirmed_at) return await notDone("not_cancelled", { detail: read.quote ? `the page's words were "${short(read.quote, 100)}", which don't show it ending` : "it said it was already ending, but gave me none of the page's own words" });
+      }
+      if (read.verdict === "not_found") return await notDone("not_found", { detail: read.quote ? `the billing page shows "${short(read.quote, 100)}"` : summary });
+      if (read.verdict === "not_cancelled") return await notDone(NOT_FOUND.test(summary) ? "not_found" : "not_cancelled");
+      if (read.verdict === "now" || read.verdict === "already" || saysCancelled(summary)) return await worked({ ends: read.ends || endsFrom(summary) });
       return await notDone(NOT_FOUND.test(summary) ? "not_found" : "not_cancelled");
     }
     // Their yes went to the site and the run broke before the result: unknown, and their mail is watched.
@@ -887,6 +976,8 @@ async function onEnd(job, run, cur, kit) {
       if (!approved) return await finish({ state: "not_done", outcome: "paid_unapproved", receipt: JSON.stringify(receipt), paid_at: clock.now() }, (j) => notDoneLine(j, "paid_unapproved", { detail: receiptWords(receipt) }));
       return await worked({ receipt: JSON.stringify(receipt), paid_at: job.paid_at ?? run.paid_at ?? clock.now() });
     }
+    // Nothing was bought and the biller's page shows the bill already paid: done, nothing paid by this run.
+    if (read.verdict === "already_paid" && !paid && lineShowsDone("bill", read.quote)) return await already({});
     return await notDone("nothing_paid");
   }
   // An approved payment went out and the run ended without a result: never "nothing was paid".
@@ -1081,11 +1172,13 @@ export function statusView(conversationId, { sinceMs = 48 * 3600_000 } = {}) {
   return rows.map((j) => ({
     job_id: j.id, kind: j.kind, what: whatOf(j), state: j.state,
     line: isOpen(j) ? STATE_WORDS[j.state] ?? j.state
+      : j.outcome === "already_done" ? "done (their page already showed it; nothing was changed or paid)"
       : j.state === "done" ? `done (${j.seen_mail ? "their page and their email both seen" : "their page seen; email not checked"})`
         : j.outcome === "waiting_mail" ? "their page said it worked; their email has not arrived yet, so not called done"
           : `not done: ${j.outcome.replace(/_/g, " ")}`,
     ...(j.ends ? { ends: j.ends } : {}),
     ...(j.summary ? { site_said: j.summary } : {}),
+    ...(j.page_line ? { page_said: j.page_line } : {}),
   }));
 }
 

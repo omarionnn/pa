@@ -512,6 +512,102 @@ test("the site did not confirm, or has no such plan: not done, never 'cancelled'
   assert.match(lastSaid(), /^Not done: Cardboard's page did not confirm the cancellation .* Treat Cardboard Starter as still active\.$/);
 });
 
+// The owner's run of 2026-11-13: the plan was ALREADY set to cancel on Nov 27, the run said "it worked", and the
+// job sat waiting for a cancellation email that could never come. Shapes are Crossmint's documented ending
+// (succeeded, nothing_placed, free-text summary); the summary's last line is the task's own form.
+const ALREADY_LINE = 'Your subscription is set to cancel on Nov 27, 2026';
+const confirmAt = (id) => q("UPDATE account_jobs SET confirmed_at = ? WHERE conversation_id = ? AND id = ?").run(clock.now(), OMARI, id);
+const finished = (summary) => ({ status: "succeeded", result: { outcome: "succeeded", purchase: { kind: "nothing_placed" }, summary } });
+
+test("already so: the page's own line says it is set to end, so the job ends DONE (no mail watch), with the line and the date", async () => {
+  const { job_id, run_id } = await cancelStarted();
+  const task = calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts").body.request.task;
+  for (const form of [jobs.RESULT_NOW, jobs.RESULT_ALREADY, jobs.RESULT_MISSING]) assert.ok(task.includes(form), form);
+  assert.match(task, /change nothing, take no cancellation step and ask me nothing/);
+  end(run_id, finished(`The billing page shows Cardboard Starter already set to cancel; I changed nothing.\nRESULT: ALREADY CANCELLED | ENDS: Nov 27, 2026 | PAGE: "${ALREADY_LINE}"`));
+  await shop.step(run_id);
+  const job = jobs.jobRow(OMARI, job_id);
+  assert.equal(job.state, "done");
+  assert.equal(job.outcome, "already_done");
+  assert.equal(job.ends, "Nov 27, 2026");
+  assert.equal(job.page_line, ALREADY_LINE);
+  assert.equal(job.mail_until, null, "no email is waited for: nothing was changed, so none will come");
+  assert.equal(lastSaid(), `Done: Cardboard Starter at Cardboard was already set to end on Nov 27, 2026, so I didn't change anything; you keep access until then. Cardboard's page says: "${ALREADY_LINE}".`);
+  assert.equal(said.length, 1);
+  assert.equal(lines[0].outcome, "already_done");
+  const view = jobs.statusView(OMARI)[0];
+  assert.equal(view.line, "done (their page already showed it; nothing was changed or paid)");
+  assert.equal(view.page_said, ALREADY_LINE);
+  assert.match(jobs.noteFor(OMARI), /done \(their page already showed it/);
+});
+
+test("already so on a weak signal is never done: no page words, or words that show it still renewing", async () => {
+  let { job_id, run_id } = await cancelStarted();
+  end(run_id, finished("It looks like this was already handled.\nRESULT: ALREADY CANCELLED | ENDS: Nov 27, 2026"));
+  await shop.step(run_id);
+  assert.equal(jobs.jobRow(OMARI, job_id).state, "not_done");
+  assert.equal(jobs.jobRow(OMARI, job_id).outcome, "not_cancelled");
+  assert.match(lastSaid(), /^Not done: .*gave me none of the page's own words.* Treat Cardboard Starter as still active\.$/);
+  db.db.exec("DELETE FROM account_jobs");
+  ({ job_id, run_id } = await cancelStarted());
+  end(run_id, finished('RESULT: ALREADY CANCELLED | ENDS: Nov 27, 2026 | PAGE: "Your plan renews on Nov 27, 2026"'));
+  await shop.step(run_id);
+  assert.equal(jobs.jobRow(OMARI, job_id).outcome, "not_cancelled");
+  assert.match(lastSaid(), /Your plan renews on Nov 27, 2026.*don't show it ending/);
+  assert.equal(jobs.lineShowsDone("cancel", "Auto-renew is on. Next payment on Dec 1"), false);
+  assert.equal(jobs.lineShowsDone("cancel", "Your plan won't renew. Access ends on Dec 1"), true);
+  assert.equal(jobs.lineShowsDone("bill", "Balance: $0.00"), true);
+  assert.equal(jobs.lineShowsDone("bill", "Past due: $82.10"), false);
+});
+
+test("changed now: the run's fixed line with the page's words is the page proof, and the mail is still the second proof", async () => {
+  const { job_id, run_id } = await cancelStarted();
+  confirmAt(job_id);
+  end(run_id, finished(`Cancelled Cardboard Starter.\nRESULT: CANCELLED NOW | ENDS: Nov 27, 2026 | PAGE: "${ALREADY_LINE}"`));
+  await shop.step(run_id);
+  const job = jobs.jobRow(OMARI, job_id);
+  assert.equal(job.outcome, "waiting_mail");
+  assert.equal(job.ends, "Nov 27, 2026");
+  assert.equal(job.page_line, ALREADY_LINE);
+  assert.match(lastSaid(), new RegExp(`^Not done yet: Cardboard's page says Cardboard Starter is cancelled; access ends Nov 27, 2026, but their cancellation email hasn't arrived`));
+  assert.deepEqual(jobs.readResult(`x\nRESULT: CANCELLED NOW | ENDS: Nov 27, 2026 | PAGE: "${ALREADY_LINE}"`), { verdict: "now", ends: "Nov 27, 2026", quote: ALREADY_LINE });
+  assert.deepEqual(jobs.readResult("Done.\nRESULT: CANCELLED"), { verdict: "now", ends: "", quote: "" });
+  assert.equal(jobs.readResult("no line").verdict, "");
+});
+
+test("not found: the billing page's own words are said, and with no manage link the line asks for one; a link given is used first and remembered", async () => {
+  let { job_id, run_id } = await cancelStarted();
+  end(run_id, finished('I checked Subscriptions and Billing.\nRESULT: NOT FOUND | PAGE: "You have no active subscriptions"'));
+  await shop.step(run_id);
+  assert.equal(jobs.jobRow(OMARI, job_id).outcome, "not_found");
+  assert.equal(lastSaid(), 'Not done: I got into the Cardboard account, but there is no "Cardboard Starter" subscription on it (the billing page shows "You have no active subscriptions"). It may be under another login or billed somewhere else. If you have its manage link (their receipt email usually has one), send it and I\'ll start there.');
+  db.db.exec("DELETE FROM account_jobs");
+  calls = [];
+  ({ job_id, run_id } = await cancelStarted({ page: "https://cardboard.app/settings/billing" }));
+  let body = calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts").body;
+  assert.equal(body.request.startUrl, "https://cardboard.app/settings/billing");
+  assert.match(body.request.task, /The page you start on is my own manage-subscription link for it: look there first\./);
+  end(run_id, finished('RESULT: NOT FOUND | PAGE: "No subscriptions"'));
+  await shop.step(run_id);
+  assert.ok(!/send it and I'll start there/.test(lastSaid()), "a link was used: not asked for again");
+  // The next ask with no link starts on the link that earlier job used, never on the front page.
+  calls = [];
+  await cancelStarted();
+  body = calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts").body;
+  assert.equal(body.request.startUrl, "https://cardboard.app/settings/billing");
+});
+
+test("a bill already paid: done on the biller's own line, nothing paid; a zero balance said without the line stays 'nothing paid'", async () => {
+  const s = await billStarted();
+  assert.match(calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts").body.request.task, /RESULT: ALREADY PAID \| PAGE:/);
+  end(s.run_id, finished('The bill is already paid.\nRESULT: ALREADY PAID | PAGE: "Amount due: $0.00"'));
+  await shop.step(s.run_id);
+  const job = jobs.jobRow(OMARI, s.job_id);
+  assert.equal(job.state, "done");
+  assert.equal(job.outcome, "already_done");
+  assert.equal(lastSaid(), 'Done: the Con Edison bill (Account 44-1234-5678-9) was already paid, so I paid nothing. Con Edison\'s page says: "Amount due: $0.00".');
+});
+
 test("their yes never came, or the run broke: the page timing out is said plainly; a break after their yes is 'not confirmed' and the mail is watched", async () => {
   let { job_id, run_id } = await cancelStarted();
   ask(run_id, "req_confirm", CONFIRM_Q, [CONFIRM]);
@@ -1126,7 +1222,15 @@ test("the real run (recorded 2026-11-13, scrubbed): what this code sends is what
   const sent = calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts").body;
   assert.equal(fx.create.status, 202);
   assert.equal(fx.create.response_status, "queued");
-  assert.deepEqual({ ...sent, browser: { profileId: "<uuid>" } }, fx.create.request, "the start page, the task and the cap");
+  // The task's words changed after the recording (its last line now says changed now / already so / not
+  // found, with the page's own words): the body's shape, the start page and the cap are what was accepted,
+  // and the recorded task still leads the new one up to its first added sentence.
+  const { task, ...req } = sent.request;
+  assert.deepEqual({ ...sent, request: req, browser: { profileId: "<uuid>" } }, { ...fx.create.request, request: { startUrl: fx.create.request.request.startUrl } }, "the start page and the cap");
+  const recorded = fx.create.request.request.task;
+  const lead = recorded.slice(0, recorded.indexOf(" Go through the cancellation steps."));
+  assert.ok(lead.length > 200 && task.startsWith(lead), "the recorded task still opens the one sent");
+  assert.ok(task.length < 20000, "inside the create schema's task maxLength");
   assert.equal(fx.create.request.constraints.maxCost.amount, jobs.CANCEL_CAP, "the real API took the smallest cap");
   // Its real first question, as Crossmint sent it (the site's sign-in page, reached in seconds).
   const real = fx.run_snapshots.find((s) => s.status === "awaiting_input");
