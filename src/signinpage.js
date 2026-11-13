@@ -264,6 +264,12 @@ export function onSite(url, entry) {
   return !!h && siteHosts(entry).some(a => h === a || h.endsWith(`.${a}`));
 }
 
+/** The last two labels of a host, or three under a two-letter country's second level (bbc.co.uk). */
+function registrableHost(host) {
+  const parts = String(host ?? "").toLowerCase().split(".").filter(Boolean);
+  if (parts.length <= 2) return parts.join(".");
+  return /^(co|com|org|net|ac|gov|edu|ne|or)$/.test(parts.at(-2)) && parts.at(-1).length === 2 ? parts.slice(-3).join(".") : parts.slice(-2).join(".");
+}
 /** A page's address with nothing personal on it: origin + path. No query string, no fragment; https only. */
 export function pageOf(url) {
   let u; try { u = new URL(String(url ?? "")); } catch { return ""; }
@@ -291,19 +297,23 @@ export function leftSigninPage(url, entry) {
  * reads the page afterwards; this only says whether anything was followed.
  *   → { followed, by: "link"|"button"|"", why }
  */
-export async function followSigninDoor(page, entry, { timeoutMs = 30_000 } = {}) {
+export async function followSigninDoor(page, entry, { timeoutMs = 30_000, allowCurrentSite = false } = {}) {
   let door = null;
   try { door = await page.evaluate(signinDoor, ""); } catch { door = null; }
   if (!door) return { followed: false, by: "", why: "the page has no sign-in link" };
   if (door.href) {
     const to = pageOf(door.href) ? door.href : "";
-    if (to && onSite(to, entry)) {
+    // `allowCurrentSite`: the site sent the browser to a sibling domain of its own (notion.so opens
+    // on notion.com), and its sign-in link stays on that domain. Followed only where a person is
+    // about to look at the page and type for themselves; never where Reason types an address in.
+    const sameAsHere = allowCurrentSite && (() => { try { const here = registrableHost(hostOf(page.url())); return !!here && registrableHost(hostOf(to)) === here; } catch { return false; } })();
+    if (to && (onSite(to, entry) || sameAsHere)) {
       let ok = true;
       try { await page.goto(to, { waitUntil: "domcontentloaded", timeout: timeoutMs }); } catch { ok = false; }
       return ok ? { followed: true, by: "link", why: "" } : { followed: false, by: "", why: "its sign-in link did not load" };
     }
-    // An address off the site (or not https) is never opened for them; a control in view may still be pressed.
-    if (!door.shown) return { followed: false, by: "", why: "its sign-in link leads off the site" };
+    // An address off the site (or not https) is never opened for them, by its address or by a press.
+    return { followed: false, by: "", why: "its sign-in link leads off the site" };
   }
   if (!door.shown) return { followed: false, by: "", why: "the page has no sign-in link in view" };
   let pressed = null;
@@ -317,7 +327,7 @@ export async function followSigninDoor(page, entry, { timeoutMs = 30_000 } = {})
  * again. Used wherever a sign-in opens before a person is shown anything.
  *   → { kind, raw, framed, followed, ms, page: origin+path where it ended up }
  */
-export async function arriveAtSignin(page, entry, { provider = "", waitMs = formWaitMs(), pollMs = 250, follow = true, now = () => Date.now() } = {}) {
+export async function arriveAtSignin(page, entry, { provider = "", waitMs = formWaitMs(), pollMs = 250, follow = true, allowCurrentSite = false, now = () => Date.now() } = {}) {
   const started = now();
   const look = async () => { const r = await readPage(page, { provider }); return isStep(r.kind) || r.kind === "signed_in" ? r : null; };
   // A page with a "Log in" link on it rarely also draws a sign-in form late: the link is looked for
@@ -326,10 +336,10 @@ export async function arriveAtSignin(page, entry, { provider = "", waitMs = form
   let got = await waitFor(page, look, { waitMs: first, pollMs, now });
   let followed = false, why = "";
   if (!got.found && follow) {
-    let door = await followSigninDoor(page, entry);
+    let door = await followSigninDoor(page, entry, { allowCurrentSite });
     if (!door.followed && waitMs > first) {
       got = await waitFor(page, look, { waitMs: waitMs - first, pollMs, now });
-      if (!got.found) door = await followSigninDoor(page, entry);
+      if (!got.found) door = await followSigninDoor(page, entry, { allowCurrentSite });
     }
     followed = door.followed; why = door.why;
     if (!got.found && followed) got = await waitFor(page, look, { waitMs, pollMs, now });

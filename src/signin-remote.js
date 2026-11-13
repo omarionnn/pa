@@ -341,8 +341,10 @@ async function end(s, how) {
       ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}${unlocked}`
       : how === "no_signin_page"
         ? `the ${entry.label} sign-in link you sent opened a page of ${entry.label}'s that is not a sign-in page, and Reason could not find a sign-in page from it, so they were shown no step and nothing was saved (${s.ended.why}). ${noLink} Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page they can send it, and signin_link takes that address as the site.`
+        // Replaced by a newer link and not signed in: the newer link is the one they have. There is
+        // nothing to say about the old one, so the model is not woken for it at all.
         : how === "replaced"
-          ? `the earlier ${entry.label} sign-in link ended because a newer link replaced it${s.ended.state === "signed_out" ? `, and ${entry.label} says they are not signed in yet` : ""}. The newer link is the one they have: say nothing about the old one and make no other link.`
+          ? ""
           : noProgress && s.ended.state === "signed_out"
             ? `the ${entry.label} sign-in link you sent ended after about ${mins} minute${mins === 1 ? "" : "s"}${tail}${s.submitted ? "" : " with nothing submitted on it"}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Nothing was saved. ${noLink} Say ONE plain line that says what happened, like: "That ${entry.label} sign-in link ${how === "cancelled" ? "was closed" : "timed out"} before anything went through." Then ${route}. Or stop there.`
             : noProgress
@@ -938,7 +940,7 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
       // Already signed in on their saved profile: the page's own account control says so; the site is asked properly in end().
       if (got.raw?.acct) { const ended = await end(s, "finished"); return json(200, { over: true, state: ended.state }); }
       if (!s.doorTried) {
-        const door = await inTurn(s, () => signinPage.followSigninDoor(s.browser.page, s.entry)).catch(() => ({ followed: false }));
+        const door = await inTurn(s, () => signinPage.followSigninDoor(s.browser.page, s.entry, { allowCurrentSite: true })).catch(() => ({ followed: false }));
         if (door.followed || waited >= bound) {
           s.doorTried = true;
           step(s, "signin_link_followed", { detail: door.followed ? "followed" : "none_found", pageUrl: got.raw?.url });

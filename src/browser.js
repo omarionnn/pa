@@ -351,7 +351,7 @@ export async function locateSigninPage(entry, { timeoutMs = 40_000 } = {}) {
       await guardContext(ctx);
       const page = await ctx.newPage();
       await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 20_000 });
-      const at = await signinPage.arriveAtSignin(page, entry);
+      const at = await signinPage.arriveAtSignin(page, entry, { allowCurrentSite: true });
       return { found: signinPage.isStep(at.kind), url: at.page, kind: at.kind, followed: at.followed, ms: at.ms };
     })();
     const cap = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`no answer in ${Math.round(timeoutMs / 1000)}s`)), timeoutMs); });
