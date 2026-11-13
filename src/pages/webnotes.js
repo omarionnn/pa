@@ -28,6 +28,8 @@ const KINDS = [
   { kind: "file", open: /^\[they sent a file, which you cannot open:/i },
   { kind: "file", open: /^\[they sent [^\]\n]*, which you cannot open\]$/i },
   { kind: "down", open: /^\[reason was down from /i },
+  // A card's tap (src/actionengine.js cardFrame): what the card promised, for the model only.
+  { kind: "down", open: /^\[this text is a tap on a card from the note Reason left them: /i },
   // Any other whole-line note about what came with a message: not drawn, never shown as words.
   { kind: "other", open: /^\[they (?:sent|shared) [^\n]*\]$/i },
 ];
