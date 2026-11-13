@@ -152,7 +152,7 @@ export const PENDING_MS = 6 * 3_600_000;
  * A card promised Reason would finish it alone, so on a card's own run these are refused (src/tools.js):
  * the run fails honestly, once, instead of texting links.
  */
-export const HANDOFF_TOOLS = Object.freeze(new Set(["signin_link", "signin_email", "signin_provider", "signin_open", "shop_handoff", "account_connect", "google_connect", "uber_connect", "spotify_connect", "github_connect", "x_connect", "apple_calendar_connect"]));
+export const HANDOFF_TOOLS = Object.freeze(new Set(["signin_link", "signin_email", "signin_provider", "signin_open", "shop_handoff", "uber_link", "account_connect", "google_connect", "uber_connect", "spotify_connect", "github_connect", "x_connect", "apple_calendar_connect"]));
 export const HANDOFF_REFUSAL = Object.freeze({
   ok: false, blocked: "card_must_finish",
   error: "This job came from a card on their note, and a card promises Reason finishes it without them. Do NOT send a sign-in link, a page, or anything for them to do by hand, and do not offer one. Tell them ONCE, plainly, that you could not finish it and the one real reason, say what (if anything) was already done or undone, and stop.",

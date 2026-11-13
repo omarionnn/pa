@@ -1488,10 +1488,10 @@ export function retireSkipRule(conversationId, id, now = clock.now()) {
 /** One line for /ops: today's runs across people, counts only. */
 export function opsLine({ now = clock.now() } = {}) {
   const since = now - DAY;
-  const r = db.db.prepare(`SELECT COUNT(*) AS runs, SUM(CASE WHEN outcome IN ('cards', 'urgent') THEN 1 ELSE 0 END) AS carded, SUM(CASE WHEN outcome = 'empty' THEN 1 ELSE 0 END) AS empty,
+  const r = db.db.prepare(`SELECT COUNT(*) AS runs, SUM(CASE WHEN outcome IN ('cards', 'urgent') THEN 1 ELSE 0 END) AS carded, SUM(CASE WHEN outcome IN ('empty', 'known') THEN 1 ELSE 0 END) AS empty, SUM(CASE WHEN outcome = 'known' THEN 1 ELSE 0 END) AS known,
     SUM(CASE WHEN outcome = 'skipped' THEN 1 ELSE 0 END) AS skipped, SUM(texts_sent + urgent_sent) AS texts, SUM(cards) AS cards, SUM(COALESCE(cost_usd, 0)) AS usd
     FROM action_card_days WHERE run_at > ?`).get(since) ?? {};
   const state = cards.mode() === "off" ? "off" : (r.skipped ?? 0) > 0 && !(r.carded ?? 0) && !(r.empty ?? 0) ? "warn" : "ok";
-  const detail = cards.mode() === "off" ? "REASON_ACTION_CARDS off" : `${cards.mode()} · ${MODEL()} · last 24h: ${r.runs ?? 0} run(s), ${r.carded ?? 0} with cards (${r.cards ?? 0} cards), ${r.empty ?? 0} empty, ${r.skipped ?? 0} skipped, ${r.texts ?? 0} text(s), ~$${(Number(r.usd) || 0).toFixed(3)} API-eq`;
+  const detail = cards.mode() === "off" ? "REASON_ACTION_CARDS off" : `${cards.mode()} · ${MODEL()} · last 24h: ${r.runs ?? 0} run(s), ${r.carded ?? 0} with cards (${r.cards ?? 0} cards), ${r.empty ?? 0} with none (${r.known ?? 0} of them a line worth knowing), ${r.skipped ?? 0} skipped, ${r.texts ?? 0} text(s), ~$${(Number(r.usd) || 0).toFixed(3)} API-eq`;
   return { state, detail };
 }
