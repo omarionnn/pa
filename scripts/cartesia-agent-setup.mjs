@@ -8,6 +8,13 @@
 //   options: --voice <voice id> (Gemma, en-GB)  --language <code> (en-GB)  --model <id> (the fastest listed)
 //            --keyterms "a,b,c" (extra words the recognizer should favour, besides the per-call ones)
 //
+//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn]          the plan only
+//   node scripts/cartesia-agent-setup.mjs --update <agent id> [--voice <id>] [--skip-turn] --yes    PATCHes it
+//            changes only what is named: the voice (e.g. Lucy, en-GB, tagged Emotive) and/or Cartesia's
+//            skip_turn tool (stay quiet when their sentence is plainly unfinished, instead of a "Yeah," that
+//            gets cut off). A PATCH makes a new agent version; calls already running keep theirs
+//            (docs.cartesia.ai/agents/configuration, "Versions"). An earlier version can be restored.
+//
 // --yes makes two things on the account and spends nothing by itself: an agent costs only when a call
 // uses it. Every call it carries is deleted on Cartesia's side when the call ends (DELETE /agents/calls).
 // The key is read from CARTESIA_API_KEY (the environment, ./.env or ~/Desktop/pa/.env) and never printed.
@@ -21,6 +28,10 @@ export const VERSION = "2026-08-14";
 export const API_BASE = (process.env.CARTESIA_API_BASE || "https://api.cartesia.ai").replace(/\/+$/, "");
 /** Gemma (en-GB), the voice the owner chose on the call feel test line. */
 export const GEMMA = "62ae83ad-4f6a-430b-af41-a9bede9286ca";
+/** Lucy (en-GB), named emotive in Cartesia's "Choosing a Voice" page: the option to hear, never set by default. */
+export const LUCY = "2f251ac3-89a9-4a77-a452-704b474ccd01";
+/** Cartesia's skip_turn system tool, described for this line (its description field, up to 2000 chars). */
+export const SKIP_TURN_DESCRIPTION = "Say nothing this turn. Use it only when their words are plainly unfinished: they trailed off mid-sentence (\"and...\", \"so the thing is...\") or paused mid-thought, and anything you said would talk over them. Never when they asked something or finished a thought.";
 export const AGENT_NAME = "Reason (owner's own calls)";
 /** How many per-call keyterm slots the agent has (filled by `sessionVariables` in src/calls/cartesia.js). */
 export const KEYTERM_SLOTS = 8;
@@ -119,11 +130,36 @@ export async function api(key, path, { method = "GET", body = null, fetchImpl = 
   return { ok: r.ok, status: r.status, json, error: r.ok ? "" : `${r.status} ${json?.message ?? text.slice(0, 200)}` };
 }
 
+/**
+ * The body of PATCH /v1/agents/{id}: only what was asked for (an update is sparse: "Omitting the field
+ * from an update preserves the agent's current setting", docs.cartesia.ai/agents/configuration).
+ */
+export function updateBody({ voice = "", skipTurn = false } = {}) {
+  const config = {};
+  if (voice) config.audio = { output: { voice_id: voice } };
+  if (skipTurn) config.system_tools = { skip_turn: { description: SKIP_TURN_DESCRIPTION, pre_tool_speech: "off" } };
+  const what = [voice ? `voice ${voice}` : "", skipTurn ? "skip_turn on" : ""].filter(Boolean).join(", ");
+  return Object.keys(config).length ? { config, version_description: `Reason: ${what}` } : null;
+}
+
 export async function main(argv = process.argv.slice(2), { log = console.log, call = api, key = null } = {}) {
   const { values: o } = parseArgs({ args: argv, options: {
     yes: { type: "boolean", default: false }, voice: { type: "string", default: GEMMA }, language: { type: "string", default: "en-GB" },
     model: { type: "string", default: "" }, keyterms: { type: "string", default: "" },
+    update: { type: "string", default: "" }, "skip-turn": { type: "boolean", default: false },
   } });
+  if (o.update) {
+    const body = updateBody({ voice: argv.includes("--voice") ? o.voice : "", skipTurn: o["skip-turn"] });
+    if (!body) { log("Nothing to change: name --voice <id> and/or --skip-turn."); return 1; }
+    log(`The plan: PATCH agent ${o.update}: ${body.version_description.replace(/^Reason: /, "")}. Nothing else on it changes; a new version is made.`);
+    if (!o.yes) { log("Nothing was changed. Run again with --yes to change it."); return 0; }
+    const k = key ?? loadKey();
+    if (!k) { log("No CARTESIA_API_KEY in the environment, ./.env or ~/Desktop/pa/.env."); return 1; }
+    const r = await call(k, `/v1/agents/${encodeURIComponent(o.update)}`, { method: "PATCH", body });
+    if (!r.ok) { log(`Could not update the agent: ${r.error}`); return 1; }
+    log("Updated. New calls use the new version; a call already running keeps the one it started on.");
+    return 0;
+  }
   const keyterms = o.keyterms.split(",").map(s => s.trim()).filter(Boolean).slice(0, 40);
   log(`The plan: one client tool (ask_reason, waited for up to 60 s) and one agent "${AGENT_NAME}" in voice ${o.voice} (${o.language}), with end_call, keyterms "Reason"${keyterms.length ? ` + ${keyterms.length} of yours` : ""} + ${KEYTERM_SLOTS} per-call slots.`);
   log("Its instructions are, per call, the same words a GPT-Live own call gets ({{reason_call}}), and its first line is the call's own opening line ({{greeting}}).");

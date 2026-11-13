@@ -16,7 +16,9 @@ import { config, clock } from "../config.js";
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
 import * as ambience from "./ambience.js";
+import { lookupMusicFor, MUSIC_DELAY_MS } from "./lookupmusic.js";
 import { CallTape, hasSpeech, voiceInstructionsFor } from "./gptlive.js";
+import { queueMidCall } from "./voice.js";
 import { openingLineFor } from "./inbound.js";
 import { todaySoFar } from "./brief.js";
 
@@ -36,6 +38,71 @@ export const RESULT_MAX = 12_000;
 export const KEYTERM_SLOTS = 8;
 /** A dynamic variable's text, kept inside a size their docs do not state (docs/unverified.md). */
 export const VARIABLE_MAX = 12_000;
+
+// ---------- how this call sounds (Cartesia calls only) ----------
+
+// The GPT-Live own-call words in `reason_call` were written for a voice that hands nearly everything to
+// Reason and stops ("Answer first, then stop", "don't add questions"). On this line that made every
+// reply close the topic, and a person thinking out loud got a lookup. These lines are added after them
+// on the Cartesia agent only, and win where they differ. No GPT-Live prompt changes.
+
+/** Conversation manner: react, then the substance, and now and then one step further. */
+export const MANNER_LINES = [
+  "# How this call sounds (these win over any line above that differs)",
+  "Talk like a friend on the phone, not an assistant taking questions. React first, the way a person does, with a few genuine words (\"Oh, nice.\", \"Ah, that's annoying.\", \"Ha, fair.\"), then the substance.",
+  "After you answer, when there's a real opening (they shared a plan, a feeling, a worry or something unfinished, or invited your reaction), you may add ONE short follow-up question or a thought of your own that moves things on. About one reply in three at most, never two questions in a row: if your last reply ended in a question, this one doesn't.",
+  "No follow-up after a lookup, a task, a goodbye, or when they sound busy or rushed: just the answer.",
+  "Never repeat their sentence back to them. Keep replies short: no lists, and never \"is there anything else\".",
+  "Like this (made-up examples):",
+  "- They: \"Repainting the kitchen this weekend, finally.\" Closed: \"Nice, good luck with it.\" Better: \"Oh, finally! What colour are you going for?\"",
+  "- They: \"Long day. Glad it's over.\" Closed: \"Glad it's over.\" Better: \"Ah, one of those. Go easy on yourself tonight.\"",
+  "- They: \"I keep putting off ringing my landlord.\" Closed: \"Want me to set a reminder?\" Better: \"Ugh, I get it. Is it the call itself, or what you've got to say?\"",
+  "- They: \"What's on tomorrow?\" Answer what Reason gives you, and stop.",
+];
+
+/** Stay in the moment: talk about them from what is already known; ask_reason is for data and actions. */
+export const MOMENT_LINES = [
+  "When they talk about themselves (how they feel, what they're thinking, what they want, something they've been putting off), answer from this conversation and what you already know from the brief and earlier calls above. That is a conversation, not a lookup: stay in it.",
+  "Call ask_reason only for what needs their data or an action: their calendar, mail or messages, the weather, a booking, a reminder, or \"do this\". If they then ask you to do something about it, that is when it goes to ask_reason.",
+];
+
+/** Expression: Sonic reads the feeling from the words, so the words carry it. */
+export const EXPRESSION_LINES = [
+  "Your voice takes its feeling from your words, so write the way you'd say it: warm and easy on personal things, light on a joke, calmer and slower on something heavy (short sentences, a comma for a beat). Keep it subtle: no exclamation marks on ordinary lines, never gushing.",
+  "Say temperatures and measures in the units Reason's answer uses (it picks them from their profile, as their texts do); never convert them, and don't tack the unit's name on the end unless it would be unclear.",
+];
+
+/** With REASON_CARTESIA_EMOTION_TAGS=on: Sonic's inline emotion tag (docs.cartesia.ai .../ssml-tags, beta). */
+export const EMOTION_TAG_LINE = "You may start a reply with one tag that sets its feel: <emotion value=\"content\"/> for warm, <emotion value=\"happy\"/> for good news or a joke, <emotion value=\"calm\"/> for something heavy or serious, <emotion value=\"sympathetic\"/> for something hard. Most replies need none. Never more than one in a reply, never one at odds with the words.";
+
+/** The lines added to `reason_call` on this line: no names, nothing about anyone. */
+export function cartesiaCallLines({ tags = config.cartesiaEmotionTags } = {}) {
+  return [...MANNER_LINES, ...MOMENT_LINES, ...EXPRESSION_LINES, ...(tags ? [EMOTION_TAG_LINE] : [])].join("\n");
+}
+
+// ---------- a slow ask_reason ----------
+
+// The ask_reason call stays open until Reason answers, so the answer is what the agent speaks (the agent
+// says its own short line before calling, and the lookup music covers the wait). Cartesia's client can send
+// only a tool result back (docs.cartesia.ai/api-reference/agents/agent-websocket: session_create,
+// audio_input, dtmf_input, client_tool_result), so a line said mid-wait would mean answering the call
+// early, and the real answer would then have no way back onto the call: there is no holding line.
+// The tool is waited for up to 60 s on their side (scripts/cartesia-agent-setup.mjs).
+
+/** Not back by now (from the ask): the agent says it will text it, and the answer goes by text. */
+export const TEXT_MS = 25_000;
+export const TEXT_RESULT = "Reason is taking too long on this one: say in one short sentence that it's taking a while and Reason will text them the answer, then carry on the conversation (don't say it's still loading, don't ask if they're still there, and don't call ask_reason for it again).";
+/** How a late answer's text opens, so it reads as part of the call. */
+export const lateText = (text) => `From our call: ${text}`;
+
+// ---------- talked over ----------
+
+/** A gap this long in his speech starts a new run of it (the onset a barge-in is timed from). */
+export const RUN_GAP_MS = 500;
+/** He counts as talking at a clear when his last speech frame was this recent. */
+export const TALKING_MS = 1_000;
+/** The agent counts as playing at a clear when its last speech frame was this recent. */
+export const PLAYING_MS = 300;
 
 /** Cartesia's agent WebSocket, as `{ send(obj), close(), on(name, fn) }` (the shape `openLiveSocket` has). */
 export function openAgentSocket({ agentId = config.cartesiaAgentId, key = config.cartesiaKey, base = API_BASE } = {}) {
@@ -98,15 +165,24 @@ export function sessionVariables(call) {
   return {
     ...keyterms,
     // No turn gate here: the agent's own turn-taking replaces it (section 3), so its lines are left out.
-    reason_call: clip(voiceInstructionsFor(call, { line: false, turnGate: false }), VARIABLE_MAX),
+    // This line's own manner goes last, after the brief, and is never the part cut.
+    reason_call: reasonCall(call, clip),
     greeting: clip(greeting || "Hey, it's Reason.", 400),
     their_name: clip(name, 80),
   };
 }
 
+/** The GPT-Live own-call words (cut to fit), then this line's manner (`cartesiaCallLines`). */
+function reasonCall(call, clip) {
+  const lines = cartesiaCallLines();
+  return `${clip(voiceInstructionsFor(call, { line: false, turnGate: false }), VARIABLE_MAX - lines.length - 1)}\n${lines}`;
+}
+
+const WAITED = Symbol("waited");
+
 /** One of their own calls on the Cartesia agent: Twilio's stream on one side, the agent on the other. */
 export class CartesiaAgentCall {
-  constructor({ call, twilio, openAgent = openAgentSocket, brain, finish = async () => {}, fallBack = null, deleteCall = deleteAgentCall, log = () => {}, now = () => Date.now(), timers = globalThis, readyMs = READY_MS }) {
+  constructor({ call, twilio, openAgent = openAgentSocket, brain, finish = async () => {}, fallBack = null, deleteCall = deleteAgentCall, log = () => {}, now = () => Date.now(), timers = globalThis, readyMs = READY_MS, textMs = TEXT_MS, textOwner = null }) {
     this.call = call;
     this.twilio = twilio;
     this.openAgent = openAgent;
@@ -118,7 +194,18 @@ export class CartesiaAgentCall {
     this.now = now;
     this.timers = timers;
     this.readyMs = readyMs;
-    this.bed = ambience.bedFor(call);
+    this.textMs = textMs;
+    // A slow answer the agent said it would text: the outbox, as any mid-call text of Reason's (./voice.js).
+    this.textOwner = textOwner ?? ((text) => queueMidCall({ call, text, kind: "cartesia_late_answer", log }));
+    // Asks still waiting on Reason; one still waiting when the call ends goes by text.
+    this.asking = new Set();
+    // The room under the call, and with REASON_CARTESIA_LOOKUP_MUSIC on, soft music over it while a
+    // lookup runs (./lookupmusic.js): `bed` is then the room with the music on top.
+    const room = ambience.bedFor(call);
+    const lm = lookupMusicFor(call, room, { log });
+    this.music = lm?.music ?? null;
+    this.musicSource = lm?.source ?? "";
+    this.bed = lm?.bed ?? room;
     // Their own call is taped as a GPT-Live own call is (`GptLiveCall`: only a line call asks `callRecorded`).
     this.recorded = true;
     this.tape = new CallTape();
@@ -136,8 +223,11 @@ export class CartesiaAgentCall {
     this.theirTurnEndAt = null;
     this.askAnsweredAt = null;
     this.replyKind = "plain";
+    // Talked over (`audio_output_clear`): his current run of speech, and the agent's, each from its onset.
     this.agentSpeechAt = -Infinity;
-    this.overSoundAt = null;
+    this.agentRunAt = null;
+    this.lastSpeechAt = -Infinity;
+    this.speechRunAt = null;
     twilio.onMessage((text) => { if (!this.handedOff) this.fromTwilio(text); });
     twilio.onClose(() => { if (!this.handedOff) this.end("caller hung up").catch(() => {}); });
   }
@@ -175,14 +265,19 @@ export class CartesiaAgentCall {
       this.streamSid = m.start?.streamSid ?? m.streamSid ?? null;
       this.callSid = m.start?.callSid ?? "";
       this.streamStartAt = this.now();
-      this.log({ cartesia_stream_start: this.call.id, ...(this.bed ? { ambience: this.bed.kind } : {}) });
+      this.log({ cartesia_stream_start: this.call.id, ...(this.bed?.kind ? { ambience: this.bed.kind } : {}), ...(this.music ? { lookup_music: this.musicSource } : {}) });
       this.roomTick();
     } else if (m.event === "media" && m.media?.payload) {
       if (m.media.track && m.media.track !== "inbound") return;
       const buf = Buffer.from(m.media.payload, "base64");
       this.tape.them(buf);
-      // Talked over: his first sound while the agent's words are still playing.
-      if (this.overSoundAt == null && this.now() - this.agentSpeechAt < 300 && hasSpeech(m.media.payload)) this.overSoundAt = this.now();
+      // His speech, as runs: a gap of RUN_GAP_MS starts a new one (the onset a barge-in is timed from).
+      if (hasSpeech(m.media.payload)) {
+        const t = this.now();
+        if (t - this.lastSpeechAt > RUN_GAP_MS) this.speechRunAt = t;
+        this.lastSpeechAt = t;
+        this.music?.speech(t);
+      }
       if (this.ready) this.agent.send({ type: "audio_input", audio: m.media.payload });
     } else if (m.event === "stop") {
       this.end("caller hung up").catch(() => {});
@@ -233,11 +328,17 @@ export class CartesiaAgentCall {
         this.toTwilio({ event: "clear" });
         this.tape.cut();
         this.bed?.cleared(t);
-        const over = { sound_to_clear_ms: this.overSoundAt == null ? null : t - this.overSoundAt, clear_to_twilio_ms: this.now() - t };
+        // Timed from when the two of them were first talking at once: his run's onset, or the agent's if it
+        // started over him. Their clear also comes with nothing playing (their docs: "there is nothing to
+        // clear"); that is no barge-in, and `playing` says which. Not talking now: no time.
+        const playing = t - this.agentSpeechAt < PLAYING_MS;
+        const talking = t - this.lastSpeechAt < TALKING_MS && this.speechRunAt != null;
+        const from = talking ? Math.max(this.speechRunAt, playing && this.agentRunAt != null ? this.agentRunAt : -Infinity) : null;
+        const over = { sound_to_clear_ms: from == null ? null : t - from, playing, clear_to_twilio_ms: this.now() - t };
         this.m.overs.push(over);
         this.log({ cartesia_talked_over: this.call.id, ...over });
-        this.overSoundAt = null;
         this.agentSpeechAt = -Infinity;
+        this.agentRunAt = null;
         return;
       }
       case "client_tool_call": return void this.tool(e);
@@ -270,7 +371,10 @@ export class CartesiaAgentCall {
         this.askAnsweredAt = null;
         this.replyKind = "plain";
       }
+      if (t - this.agentSpeechAt > RUN_GAP_MS) this.agentRunAt = t;
       this.agentSpeechAt = t;
+      // The music ducks under this frame (the agent's own line), or is gone within it (the answer).
+      this.music?.speech(t);
     }
     this.tape.reason(Buffer.from(b64, "base64"));
     this.toTwilio({ event: "media", media: { payload: b64 } });
@@ -316,23 +420,79 @@ export class CartesiaAgentCall {
       this.agent.send({ type: "client_tool_result", tool_call_id: id, result: String(result).slice(0, RESULT_MAX), is_error: !!isError });
     };
     if (e.tool_name !== ASK_REASON) return answer(`No tool called ${String(e.tool_name ?? "")}.`, true);
-    const askedAt = this.now();
+    const request = e.parameters?.request ?? e.parameters?.question ?? "";
     this.replyKind = "ask_reason";
+    const askedAt = this.now();
+    const p = { askedAt, texting: false, texted: false, reply: undefined, done: null };
+    // The lookup has begun: music under it from MUSIC_DELAY_MS, until its answer goes back or to a text.
+    this.music?.start(p, askedAt);
+    this.asking.add(p);
+    p.done = this.ask(request, p);
+    // Waited for, up to TEXT_MS: the answer itself is the result, and the agent speaks it.
+    const out = await this.within(p.done, this.textMs);
+    if (p.texting) return; // the call ended meanwhile: it went by text
+    if (out !== WAITED) { this.asking.delete(p); this.music?.end(p); return answer(...this.spoken(out)); }
+    // Past TEXT_MS: the agent says once that it will come by text, and the answer is texted when it lands.
+    this.toText(p);
+    this.log({ cartesia_ask_to_text: this.call.id, ms: this.now() - askedAt });
+    return answer(TEXT_RESULT);
+  }
+
+  /** This ask goes by text now: its answer as soon as it is back (at once, if it already is). */
+  toText(p) {
+    if (p.texting) return;
+    p.texting = true;
+    this.asking.delete(p);
+    this.music?.end(p);
+    if (p.reply !== undefined) this.textLate(p);
+  }
+
+  /** Reason's turn for one ask; logged once it is back. A late one the agent said it would text goes by text. */
+  async ask(request, p) {
     let reply;
     try {
-      reply = await this.brain(this.messages(e.parameters?.request ?? e.parameters?.question ?? ""));
+      reply = await this.brain(this.messages(request));
     } catch (err) {
       reply = { text: "", error: (err?.message ?? String(err)).split("\n")[0] };
     }
     const answeredAt = this.now();
-    const ask = { asked_to_answered_ms: answeredAt - askedAt, error: !!reply?.error, skip: !!reply?.skip };
+    const ask = { asked_to_answered_ms: answeredAt - p.askedAt, error: !!reply?.error, skip: !!reply?.skip, to_text: p.texting, ...(this.music ? { music: answeredAt - p.askedAt >= MUSIC_DELAY_MS } : {}) };
     this.m.asks.push(ask);
     this.log({ cartesia_ask_reason: this.call.id, ...ask });
     this.askAnsweredAt = answeredAt;
-    if (reply?.error && !reply?.text) return answer("Reason could not answer that just now. Say so briefly and offer to try again.", true);
-    if (reply?.skip || !String(reply?.text ?? "").trim()) return answer("Reason has nothing to add. Reply yourself in a few words.");
+    p.reply = reply;
+    if (p.texting) this.textLate(p);
+    return reply;
+  }
+
+  /** A late answer by text, once, through the outbox; words only when Reason had some. */
+  textLate(p) {
+    if (p.texted) return;
+    p.texted = true;
+    const reply = p.reply;
+    const text = String(reply?.text ?? "").trim();
+    if (!text || reply?.skip) { this.log({ cartesia_late_answer: this.call.id, texted: false, why: reply?.error ? "error" : "nothing to say" }); return; }
+    let r;
+    try { r = this.textOwner(lateText(text)); } catch (e) { r = { ok: false, why: (e?.message ?? String(e)).split("\n")[0] }; }
+    this.log({ cartesia_late_answer: this.call.id, texted: !!r?.ok });
+    // In the call's own record, so the after-call turn sees it went (and the read of the call does too).
+    if (r?.ok && !this.done) this.turns.push({ who: "reason", text: `(Texted them: ${text.length > 300 ? `${text.slice(0, 299)}…` : text})`, at: this.now() });
+  }
+
+  /** `promise`'s value, or WAITED once `ms` have gone by first. */
+  within(promise, ms) {
+    return new Promise((resolve) => {
+      const timer = this.timers.setTimeout(() => resolve(WAITED), Math.max(0, ms));
+      promise.then((v) => { this.timers.clearTimeout(timer); resolve(v); });
+    });
+  }
+
+  /** What the agent is answered with for one reply of Reason's: `[result, isError]`. */
+  spoken(reply) {
+    if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and offer to try again.", true];
+    if (reply?.skip || !String(reply?.text ?? "").trim()) return ["Reason has nothing to add. Reply yourself in a few words.", false];
     if (reply?.endCall) this.endWhy = "goodbye";
-    return answer(reply.text);
+    return [reply.text, false];
   }
 
   /** Answering-machine detection is only asked for on third-party calls; their own call has nothing to do with a verdict. */
@@ -344,6 +504,7 @@ export class CartesiaAgentCall {
   fallBack(why) {
     if (this.done || this.handedOff) return null;
     this.handedOff = true;
+    this.music?.stop();
     for (const k of ["readyTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     this.log({ cartesia_fell_back: this.call.id, why: String(why).slice(0, 120), ms: this.now() - this.startedAt });
     // A session that did start is a call on their side, kept until deleted. One still coming up is given
@@ -364,6 +525,9 @@ export class CartesiaAgentCall {
   async end(why = "") {
     if (this.done || this.handedOff) return;
     this.done = true;
+    this.music?.stop();
+    // A lookup still running when the call ends: its answer goes by text when it lands.
+    for (const p of [...this.asking]) this.toText(p);
     this.endWhy = this.endWhy || why;
     for (const k of ["readyTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     try { this.agent?.close(); } catch { /* already gone */ }
@@ -401,7 +565,9 @@ export class CartesiaAgentCall {
       replies: this.m.replies.length, plain_reply_ms: med(this.m.replies.filter(r => r.kind === "plain").map(r => r.ms)),
       ask_reply_ms: med(this.m.replies.filter(r => r.kind === "ask_reason").map(r => r.ms)),
       asks: this.m.asks.length, ask_answered_ms: med(this.m.asks.map(a => a.asked_to_answered_ms)),
-      talked_over: this.m.overs.length, laughs_written: this.m.laughs,
+      talked_over: this.m.overs.filter(o => o.playing).length, clears: this.m.overs.length,
+      talked_over_ms: med(this.m.overs.filter(o => o.playing).map(o => o.sound_to_clear_ms)),
+      asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs,
     });
     // Their copy goes whatever the settle does; both are waited for, neither stops the other.
     const deleting = this.agentCallId ? this.deleteAndCheck().catch(() => null) : Promise.resolve(null);

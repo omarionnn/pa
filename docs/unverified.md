@@ -5297,3 +5297,46 @@ the setup script with `--yes`, a real agent session, or a real call. Not known u
 - Whether the agent passes `[laughter]` through to Sonic as a laugh.
 - Measured: nothing yet. The first call's `cartesia_*` log lines are the numbers section 5 asks for. `gptlive_handback_speech` is the same-day comparison from a normal call.
 
+### 2026-11-13: conversation manner, slow lookups, the talked-over number (Cartesia calls only): not run
+
+`src/calls/cartesia.js` adds this line's own manner after the GPT-Live own-call words in `reason_call`
+(`cartesiaCallLines`), keeps a slow `ask_reason` open until Reason answers (up to `TEXT_MS`, 25 s) and times a talk-over
+from when both were talking. Proved only with stand-in sockets. Not known until a real call:
+
+- The 6 s holding line (#542) is gone: on calls 109 and 110 the answers came at 10.4 s and 7.7 s, after the
+  hold had released the tool call, and went by text while the agent said "still loading". Cartesia's client
+  can send only a tool result (no "say this", no context update), so the call now stays open until the
+  answer, and only past 25 s does the agent say it'll be texted ("From our call: ..."). A hang-up mid-lookup
+  texts the answer. Not known until a real call: whether gpt-5.4-mini stays quiet for a 20 s open tool call
+  with the music under it, and whether it keeps to the one "I'll text you" sentence.
+- How often the follow-up rule fires on gpt-5.4-mini, and whether "one reply in three" holds over a long call.
+- Whether a Managed Agent passes Sonic's inline tags through from the model's text to the voice. `[laughter]`
+  reaches `turn_ended.text` (call 107 logged one); whether it was voiced is not known. `<emotion value="..."/>`
+  is behind REASON_CARTESIA_EMOTION_TAGS (off): Cartesia calls emotion tags beta and "may not work reliably"
+  with voices not tagged Emotive (docs.cartesia.ai/build-with-cartesia/capability-guides/ssml-tags), and Gemma
+  is listed as a stable voice for agents (docs.cartesia.ai/build-with-cartesia/capability-guides/choosing-a-voice).
+- What Cartesia counts as "the user started speaking" for `audio_output_clear`. Read off calls 106-108: the old
+  `sound_to_clear_ms` of 3-11 s were timed from a stale sound (the first one heard during agent speech, kept
+  until some later clear), not slow barge-ins; and a clear also comes with nothing playing (their WebSocket
+  page says so), which is now `playing: false`.
+
+### 2026-11-13: soft music while Reason looks something up (Cartesia calls only, REASON_CARTESIA_LOOKUP_MUSIC): not run
+
+`src/calls/lookupmusic.js` mixes a synthesized music bed under the call while an `ask_reason` lookup runs:
+in from 0.7 s (400 ms fade), ducked under any speech, out over 600 ms when the answer goes back to the
+agent or the lookup is handed to a text, gone within one frame if the agent starts speaking before then.
+Mixed on our side, through the same path as the room tone; not in the call's recording. Off by default.
+Proved only with stand-in sockets (`test/call-cartesia-music.test.js`). Not known until a real call:
+
+- Whether the level (≈ −45 dBFS, about 15 dB under the agent) sounds right on a real phone, and which of the
+  three variants he likes. REASON_CARTESIA_LOOKUP_MUSIC_GAIN tunes the level with no code change.
+- Whether his phone's echo of the music ever reads as his speech (it would only duck the music, never more).
+- Cartesia's own option, read 2026-11-13: an agent's `config.audio.output.background_sound` is "Ambient audio
+  with a `file_id` and volume from `0` to `2`. `null` disables it." (docs.cartesia.ai/agents/configuration),
+  played for the whole conversation, and `output_delivery: as_available` is "Not supported when the agent uses
+  a background sound" (docs.cartesia.ai/api-reference/agents/agent-websocket). Nothing ties it to a tool call
+  running; for tools there is only `pre_tool_speech` (auto, force, off: whether the agent speaks first,
+  docs.cartesia.ai/agents/system-tools). So theirs cannot do this, and ours is the one used: it knows when a
+  lookup starts and ends, ducks per frame, and sits on our side of the line with the room tone. After a
+  fall-back to GPT-Live there is no lookup music (GPT-Live calls are not changed).
+
