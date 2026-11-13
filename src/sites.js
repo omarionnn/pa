@@ -355,7 +355,9 @@ export function commitPattern() {
  * carried none of the signed-out signals — and the evidence line says that is what happened,
  * rather than claiming something was seen that was not.
  */
-export function readSignedInState(entry, { url = "", text = "", status = null, error = null } = {}) {
+export function readSignedInState(entry, { url = "", text = "", status = null, error = null, acct = "", form = false } = {}) {
+  // A site nobody has a playbook for is never called signed in from what is ABSENT on a page.
+  if (entry?.generic) return readUnknownSite(entry, { url, text, status, error, acct, form });
   const spec = entry.signed_in;
   if (error) return { state: "unknown", why: `could not load ${spec.url}: ${error}` };
   if (status && status >= 400) return { state: "unknown", why: `${spec.url} answered HTTP ${status}` };
@@ -380,6 +382,51 @@ export function readSignedInState(entry, { url = "", text = "", status = null, e
     state: "signed_in",
     why: `${spec.url} loaded and asked for no sign-in (none of ${spec.when_out.map(t => `"${t}"`).join(", ")} on it). Inferred from what is absent, not from anything positive on the page`,
     inferred: true,
+  };
+}
+
+/**
+ * "Signed in?" for a site Reason has no playbook for (src/signin.js genericEntry): only ever said on
+ * POSITIVE evidence. Before 2026-11-12 the rule was "its front page no longer says Sign in", which a
+ * marketing page satisfies or fails for reasons that have nothing to do with the person's account.
+ *
+ * What counts, read off the page the probe landed on:
+ *   - `acct`: a log-out or account control in the document (FRAME_JS's one-word answer), or
+ *   - the probe asked for the site's own sign-in page and the site passed the browser straight on to
+ *     another page of its own with no sign-in form or prompt on it — an answer a site only gives a
+ *     session it accepts.
+ * A sign-in form in view (`form`), or the page still saying "log in", is signed out. Anything else
+ * is "unknown", said as that: nothing is recorded as signed in and nothing is retried because of it.
+ */
+function readUnknownSite(entry, { url = "", text = "", status = null, error = null, acct = "", form = false } = {}) {
+  const spec = entry.signed_in;
+  if (error) return { state: "unknown", why: `could not load ${spec.url}: ${error}` };
+  if (status && status >= 400) return { state: "unknown", why: `${spec.url} answered HTTP ${status}` };
+  const body = String(text ?? "").toLowerCase();
+  const at = (u) => { try { const x = new URL(String(u)); return { host: x.hostname.toLowerCase(), path: x.pathname.replace(/\/+$/, "").toLowerCase() }; } catch { return { host: "", path: "" }; } };
+  const asked = at(spec.url), landed = at(url);
+  // Was the probe sent to a sign-in page (a path), or only to the front door?
+  const askedSignin = !!asked.path;
+  const still = askedSignin && landed.host === asked.host && (landed.path === asked.path || landed.path.startsWith(`${asked.path}/`));
+  const onSite = !!landed.host && (entry.hosts ?? []).some(h => landed.host === h || landed.host.endsWith(`.${h}`));
+  if (form) return { state: "signed_out", why: still ? `its sign-in page still shows the sign-in form` : `it shows a sign-in form at ${landed.host || "the page it opened"}` };
+  if (!askedSignin && spec.when_out_url && String(url ?? "").toLowerCase().includes(spec.when_out_url.toLowerCase())) {
+    return { state: "signed_out", why: `it bounced to ${landed.host}${landed.path}, which is the sign-in page` };
+  }
+  if (acct === "logout" || acct === "account") {
+    return { state: "signed_in", evidence: acct, why: `the page at ${landed.host || "the site"} has ${acct === "logout" ? "a log-out control" : "an account control"}, which only shows when signed in` };
+  }
+  if (body.trim().length < 50) {
+    return { state: "unknown", why: `${spec.url} came back with almost no readable text (${body.trim().length} characters), so neither state can be read off it` };
+  }
+  const outHit = spec.when_out.find(t => body.includes(t.toLowerCase()));
+  if (outHit) return { state: "signed_out", why: `the page still says "${outHit}"` };
+  if (askedSignin && !still && onSite) {
+    return { state: "signed_in", evidence: "passed_through", why: `${entry.label}'s own sign-in page passed the browser straight on to ${landed.host}${landed.path.split("/").slice(0, 2).join("/")}, with no sign-in form or prompt on it, which a site does only for a session it accepts` };
+  }
+  return {
+    state: "unknown", no_evidence: true,
+    why: `${landed.host || spec.url} loaded with no sign-in prompt, but nothing on it shows an account either (no log-out or account control). An absent prompt is not proof of being signed in`,
   };
 }
 
