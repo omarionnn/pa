@@ -6931,14 +6931,15 @@ export const tools = [
   },
   {
     name: "browser_proof",
-    description: "After you FINISHED something for them on a page in your browser (a bill paid, a plan cancelled, a booking made, while signed in with their saved login), send ONE picture of the page that shows it into their thread, with your result line. Only their own account's page that proves it (the billing, subscription or receipt page), never a sign-in page: a page with a password, code or card box, or a full card or bank number, is refused. It is kept on their record as the proof. Nothing on the picture comes back to you.",
+    description: "After you FINISHED something for them on a page in your browser, send ONE picture of the part of the page that lets them check it, with your result line. Only for: a cancellation notice, a paid/receipt confirmation, a changed plan, a confirmation number, or an error the site showed (proves). A routine success (signed in, still loading, a status whose answer is already in your line) is text only: do not call this. It is cropped to the block holding page_line and refused if that block can't be found or cut clear of payment, invoice, address or email rows; then send the line in words. Nothing on the picture comes back to you.",
     input_schema: {
       type: "object",
       properties: {
-        say: { type: "string", description: "The result line sent with it: what the page shows, what you did or didn't change, what happens next." },
-        page_line: { type: "string", description: "The page's own line that proves it, copied exactly from browser_read, so the picture is cropped to that part." },
+        proves: { type: "string", enum: ["cancellation", "payment", "plan_change", "confirmation_number", "site_error", "signed_in", "loading", "status", "other"], description: "What the picture lets them check." },
+        say: { type: "string", description: "The result line, which must stand on its own without the picture: what the page shows, what you did or didn't change, what happens next." },
+        page_line: { type: "string", description: "The page's own line that proves it, copied exactly from browser_read. The picture is that block only." },
       },
-      required: ["say"],
+      required: ["proves", "say", "page_line"],
     },
   },
   {
@@ -8032,7 +8033,7 @@ const S = {
   // `path` is still accepted from an older call and ignored: the file always goes in the shots folder.
   browser_screenshot: z.object({ path: z.string().max(400).optional(), full_page: z.boolean().optional() }),
   browser_images: z.object({}),
-  browser_proof: z.object({ say: z.string().min(1).max(600), page_line: z.string().max(300).optional() }),
+  browser_proof: z.object({ proves: z.string().max(40), say: z.string().min(1).max(600), page_line: z.string().min(1).max(300) }),
   browser_close: z.object({}),
 };
 
@@ -19695,6 +19696,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "browser_proof": {
       // One picture of the page that proves a finished job, into THIS thread only (src/proofshot.js has the rules).
+      // The owner's rule: a picture only when it helps them check something; otherwise text is enough.
+      if (!proofshot.pictureHelps(input.proves)) return { ok: false, text_only: true, note: "Text is enough for this: no picture. Send the result line in words." };
+      if (proofshot.sentRecently(c)) return { ok: false, text_only: true, note: "This result already has its one picture. Send anything else in words." };
       if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing goes to their phone from here. Say the result in your reply instead." };
       const page = browser.openPage(c);
       if (!page || page.url() === "about:blank") return { ok: false, error: "No page is open in my browser, so there is nothing to take a picture of. Say the result in words." };
@@ -19703,8 +19707,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const channel = thread ? router?.get?.(thread.channel) : null;
       if (!router || !thread || !channel) return { ok: false, status: "not_connected", error: "There is no texting thread here to send a picture into. Say the result in words." };
       if (!channel.carriesFiles) return { ok: false, supported: false, error: `${thread.channel} cannot carry a picture. Say the result in words.` };
-      const shot = await proofshot.captureProof(c, page, { focus: input.page_line ?? "", what: input.say });
-      if (!shot.ok) return { ok: false, refused: shot.refused, note: `${proofshot.refusedLine(shot.refused)} Send the result in words, and say that line too.` };
+      const shot = await proofshot.captureProof(c, page, { proves: input.proves, focus: input.page_line ?? "", what: input.say });
+      if (!shot.ok) return { ok: false, refused: shot.refused, note: `No picture. Send the result in words, quoting the page's line ("${String(input.page_line ?? "").slice(0, 200)}").` };
       const line = String(input.say ?? "").replace(/\bhttps?:\/\/\S+/gi, "").replace(/\s+/g, " ").trim().slice(0, 600);
       let r;
       try {
@@ -19713,7 +19717,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!r?.ok || r.queued) return { ok: false, kept: true, queued: !!r?.queued, error: r?.error ?? null, note: r?.queued ? "The picture is NOT sent yet; the send is being retried. Do not say you sent it." : "The picture did not go. Send the result in words and say the picture couldn't be sent." };
       proofshot.markSent(c, shot.id);
       // No page words and no image come back: the picture is evidence for them, never instructions for the model.
-      return { ok: true, sent: true, proof_id: shot.id, cropped: shot.cropped, note: "The picture of the page and your line went into their thread as one message. You may say you sent it; do not repeat the line." };
+      return { ok: true, sent: true, proof_id: shot.id, note: "The picture of the page and your line went into their thread as one message. You may say you sent it; do not repeat the line." };
     }
     case "browser_images": {
       const page = await browser.pageFor(c);

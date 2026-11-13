@@ -32,11 +32,25 @@ const { isSealedFile } = await import("../src/restfiles.js");
 
 const OMARI = "dm:owner";
 const AMA = "dm:sendblue:+13475550000";
+// Modelled on a real billing page: Plan / Payment / Invoices / Cancellation, one section each.
+const SECTION = "padding:16px;margin:32px 24px;width:620px;border:1px solid #ccc";
+const NOTICE = "Your subscription is set to cancel on Nov 27, 2026";
 const BILLING = `<!doctype html><html><head><title>Billing</title></head><body style="margin:0;font:16px sans-serif">
-  <header style="height:300px;background:#eee">Cardboard</header>
-  <section id="plan" style="padding:24px;width:600px"><h2>Cardboard Starter</h2><p>$12.00 per month</p>
-    <p>Your subscription is set to cancel on Nov 27, 2026</p><p>Last invoice: Oct 27, 2026, $12.00, Visa ending in 4242</p></section>
-  <footer style="height:900px;background:#ddd">Help</footer></body></html>`;
+  <header style="height:120px;background:#eee">Cardboard</header>
+  <main>
+  <section id="plan" style="${SECTION}"><h3>Plan</h3><p>Cardboard Starter</p><p>$12.00 per month</p></section>
+  <section id="payment" style="${SECTION}"><h3>Payment</h3><p>Visa ending in 1929</p><p>Expires 08/28</p></section>
+  <section id="invoices" style="${SECTION}"><h3>Invoices</h3><table><tr><td>Oct 27, 2026</td><td>$12.00</td><td>Paid</td></tr></table></section>
+  <section id="cancellation" style="${SECTION}"><h3>Cancellation</h3><p>${NOTICE}</p><p>You keep access until then.</p></section>
+  </main><footer style="height:900px;background:#ddd">Help</footer></body></html>`;
+const RECEIPT_LINE = "Confirmation number: CE-88123";
+const RECEIPT = `<!doctype html><html><head><title>Payment complete</title></head><body style="margin:0;font:16px sans-serif"><main>
+  <section id="method" style="${SECTION}"><h3>Paid with</h3><p>Visa ending in 1929</p></section>
+  <section id="receipt" style="${SECTION}"><h3>Payment received</h3><p>Amount paid: $82.10</p><p>${RECEIPT_LINE}</p><p>Account 44-1234-5678-9</p></section>
+  </main></body></html>`;
+// What the picture holds: every leaf element whose box meets the crop, and the crop against a section's box.
+const inCrop = (p, c) => p.evaluate((c) => [...document.querySelectorAll("body *")].filter((e) => !e.children.length).filter((e) => { const b = e.getBoundingClientRect(); return b.width && b.left < c.x + c.width && b.right > c.x && b.top < c.y + c.height && b.bottom > c.y; }).map((e) => e.innerText).join(" | "), c);
+const meets = (p, sel, c) => p.evaluate(([s, c]) => { const b = document.querySelector(s).getBoundingClientRect(); return b.left < c.x + c.width && b.right > c.x && b.top < c.y + c.height && b.bottom > c.y; }, [sel, c]);
 let b, page;
 const serve = async (p, url, html) => { await p.route(url, (r) => r.fulfill({ status: 200, contentType: "text/html", body: html })); await p.goto(url); };
 const jpegSize = (buf) => { // the SOF0/SOF2 frame's height and width
@@ -57,17 +71,21 @@ before(async () => {
 });
 after(async () => { await b?.close(); await browser.closeAllBrowsers(); rmSync(dir, { recursive: true, force: true }); });
 
-test("the billing page: one picture, cropped to the section holding the page's line, capped, sealed and on their record only", async () => {
+test("the billing page: the picture is the Cancellation notice block only; Payment, Invoices and Plan are outside it", async () => {
   await serve(page, "https://billing.cardboard.test/settings/billing", BILLING);
-  const out = await proof.captureProof(OMARI, page, { focus: "Your subscription is set to cancel on Nov 27, 2026", what: "Cardboard Starter set to cancel" });
+  const out = await proof.captureProof(OMARI, page, { proves: "cancellation", focus: NOTICE, what: "Cardboard Starter set to cancel" });
   assert.equal(out.ok, true, JSON.stringify(out));
-  assert.equal(out.cropped, true);
+  for (const sel of ["#payment", "#invoices", "#plan", "header"]) assert.equal(await meets(page, sel, out.clip), false, `${sel} is outside the crop`);
+  assert.equal(await meets(page, "#cancellation", out.clip), true);
+  const words = await inCrop(page, out.clip);
+  assert.match(words, /Cancellation \| Your subscription is set to cancel on Nov 27, 2026 \| You keep access until then\./);
+  assert.ok(!/1929|Visa|Invoices|\$12\.00|Oct 27/.test(words), words);
   const raw = readFileSync(out.file);
   assert.ok(isSealedFile(raw), "sealed on disk");
   const plain = proof.proofBytes(OMARI, out.id);
   assert.equal(plain[0], 0xff, "a jpeg");
   const size = jpegSize(plain);
-  assert.ok(size.width <= 700 && size.height < 400, `cropped to the plan section, not the page: ${JSON.stringify(size)}`);
+  assert.ok(size.width <= 700 && size.height <= 200, `the notice block, not the page: ${JSON.stringify(size)}`);
   assert.ok(plain.length <= proof.MAX_BYTES);
   assert.equal(proof.proofRow(OMARI, out.id).host, "billing.cardboard.test");
   assert.ok(db.db.prepare("SELECT 1 FROM conversation_files WHERE conversation_id = ? AND path = ?").get(OMARI, out.file), "theirs on the file record");
@@ -77,13 +95,50 @@ test("the billing page: one picture, cropped to the section holding the page's l
   assert.equal(proof.proofsFor(AMA).length, 0);
 });
 
-test("no line to crop to: the viewport only, never the whole scrolled page", async () => {
+test("a bill paid: the receipt block is the picture, amount and confirmation number in, the card row out", async () => {
+  await serve(page, "https://pay.coned.test/receipt", RECEIPT);
+  const out = await proof.captureProof(OMARI, page, { proves: "payment", focus: RECEIPT_LINE });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  const words = await inCrop(page, out.clip);
+  assert.match(words, /Amount paid: \$82\.10/);
+  assert.match(words, /CE-88123/);
+  assert.ok(!/1929|Visa/.test(words), words);
+  assert.equal(await meets(page, "#method", out.clip), false);
+  // The same block for a cancellation claim: the amount is not its claim, so only the line itself would do,
+  // and it is cropped tight to that line.
+  const tight = await proof.captureProof(OMARI, page, { proves: "confirmation_number", focus: RECEIPT_LINE });
+  assert.equal(tight.ok, true);
+  assert.equal(await inCrop(page, tight.clip), RECEIPT_LINE);
+});
+
+test("text is enough: a routine success, or anything not in the table, takes no picture", async () => {
   await serve(page, "https://billing.cardboard.test/settings/billing", BILLING);
-  const out = await proof.captureProof(OMARI, page, {});
-  assert.equal(out.ok, true);
-  assert.equal(out.cropped, false);
-  const size = jpegSize(proof.proofBytes(OMARI, out.id));
-  assert.ok(size.height <= 900 && size.width <= 1280, JSON.stringify(size));
+  const n = proof.proofsFor(OMARI).length;
+  for (const proves of ["signed_in", "loading", "status", "other", "", "anything"]) {
+    assert.deepEqual(await proof.captureProof(OMARI, page, { proves, focus: NOTICE }), { ok: false, refused: "text_only" }, proves);
+  }
+  assert.equal(proof.proofsFor(OMARI).length, n);
+  assert.deepEqual(Object.keys(proof.PICTURE_FOR), ["cancellation", "payment", "plan_change", "confirmation_number", "site_error"]);
+  assert.equal(proof.pictureForJob({ kind: "cancel", outcome: "already_done" }), "cancellation");
+  assert.equal(proof.pictureForJob({ kind: "bill", outcome: "done" }), "payment");
+  assert.equal(proof.pictureForJob({ kind: "cancel", outcome: "site_error" }), "site_error");
+  for (const outcome of ["not_found", "stopped", "declined", "no_signin", "nothing_paid", "service_failed", ""]) assert.equal(proof.pictureForJob({ kind: "cancel", outcome }), null, outcome);
+});
+
+test("the proving line can't be found, or can't be cut clear of the payment rows: no picture, never the page or the screen", async () => {
+  await serve(page, "https://billing.cardboard.test/settings/billing", BILLING);
+  const n = proof.proofsFor(OMARI).length;
+  assert.deepEqual(await proof.captureProof(OMARI, page, { proves: "cancellation", focus: "Your plan renews on Dec 1" }), { ok: false, refused: "not_located" });
+  assert.deepEqual(await proof.captureProof(OMARI, page, { proves: "cancellation", focus: "" }), { ok: false, refused: "no_line" });
+  // The notice in the same line as the card: nothing clean to cut.
+  await serve(page, "https://billing.cardboard.test/settings/billing", BILLING.replace(`<p>${NOTICE}</p>`, `<p>${NOTICE}. Visa ending in 1929 will not be charged.</p>`));
+  assert.deepEqual(await proof.captureProof(OMARI, page, { proves: "cancellation", focus: NOTICE }), { ok: false, refused: "kept_out" });
+  // An email address in the notice block itself.
+  await serve(page, "https://billing.cardboard.test/settings/billing", BILLING.replace("You keep access until then.", "We emailed someone@example.com"));
+  const e = await proof.captureProof(OMARI, page, { proves: "cancellation", focus: NOTICE });
+  assert.equal(e.ok, true, "shrunk to the line, without the email row");
+  assert.ok(!/@/.test(await inCrop(page, e.clip)));
+  assert.equal(proof.proofsFor(OMARI).length, n + 1);
 });
 
 test("never a sign-in page, never a page with a secret box, never a full card or bank number", async () => {
@@ -100,7 +155,7 @@ test("never a sign-in page, never a page with a secret box, never a full card or
   const before = proof.proofsFor(OMARI).length;
   for (const [url, html, why] of cases) {
     await serve(page, url, `<!doctype html><html><body>${html}</body></html>`);
-    const out = await proof.captureProof(OMARI, page, {});
+    const out = await proof.captureProof(OMARI, page, { proves: "cancellation", focus: "Welcome back" });
     assert.deepEqual(out, { ok: false, refused: why }, `${url} ${html}`);
   }
   assert.equal(proof.proofsFor(OMARI).length, before, "nothing kept for a refused page");
@@ -111,8 +166,8 @@ test("never a sign-in page, never a page with a secret box, never a full card or
 });
 
 test("a secret box that is not shown is still covered in the picture", async () => {
-  await serve(page, "https://billing.cardboard.test/settings/billing", BILLING.replace("</section>", '<input type=password style="display:none" value="hunter2"></section>'));
-  const out = await proof.captureProof(OMARI, page, { focus: "Your subscription is set to cancel on Nov 27, 2026" });
+  await serve(page, "https://billing.cardboard.test/settings/billing", BILLING.replace("You keep access until then.</p>", 'You keep access until then.</p><input type=password style="display:none" value="hunter2">'));
+  const out = await proof.captureProof(OMARI, page, { proves: "cancellation", focus: NOTICE });
   assert.equal(out.ok, true);
   assert.equal(await page.locator("[data-reason-secret]").count(), 1, "marked, so the screenshot masks it");
 });
@@ -125,25 +180,34 @@ test("browser_proof: the picture and the result line go to their own thread as o
   const sent = [];
   const router = { get: () => ({ carriesFiles: true }), list: () => [{ name: "test" }], async sendMedia(m) { sent.push(m); return { ok: true, delivered: { message_id: "m1" } }; } };
   const say = "Cardboard Starter was already set to cancel on Nov 27, so I didn't change anything; you keep access until then.";
-  const out = await runTool("browser_proof", { say: `${say} https://evil.test/x`, page_line: "Your subscription is set to cancel on Nov 27, 2026" }, { conversationId: OMARI, channels: router, messages: [] });
+  const ctx = { conversationId: OMARI, channels: router, messages: [] };
+  // A routine success: text only, nothing sent.
+  const routine = await runTool("browser_proof", { proves: "signed_in", say: "You're signed in.", page_line: NOTICE }, ctx);
+  assert.equal(routine.ok, false);
+  assert.equal(routine.text_only, true);
+  // A sign-in page: refused, nothing sent.
+  await serve(p, "https://cardboard.test/signin", "<!doctype html><p>Your subscription is set to cancel</p>");
+  const no = await runTool("browser_proof", { proves: "cancellation", say, page_line: "Your subscription is set to cancel" }, ctx);
+  assert.equal(no.refused, "sign_in_page");
+  assert.equal(sent.length, 0);
+  await serve(p, "https://billing.cardboard.test/settings/billing", BILLING);
+  const out = await runTool("browser_proof", { proves: "cancellation", say: `${say} https://evil.test/x`, page_line: NOTICE }, ctx);
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(sent.length, 1, "one picture");
   assert.equal(sent[0].to, "+12025551234", "their own thread's address, never one the model typed");
   assert.equal(sent[0].text, say, "the line, with no link");
   assert.equal(sent[0].mimeType, "image/jpeg");
   assert.equal(proof.proofRow(OMARI, out.proof_id).sent, 1);
-  assert.ok(!/subscription is set|Cardboard Starter|Visa/.test(JSON.stringify(out)), "no page words back to the model");
-  // A sign-in page: refused, nothing sent.
-  await serve(p, "https://cardboard.test/signin", "<!doctype html><p>hi</p>");
-  const no = await runTool("browser_proof", { say }, { conversationId: OMARI, channels: router, messages: [] });
-  assert.equal(no.ok, false);
-  assert.equal(no.refused, "sign_in_page");
+  assert.ok(!/Visa|1929|Invoices|Cardboard Starter/.test(JSON.stringify(out)), "no page words back to the model");
+  // One picture per result.
+  const again = await runTool("browser_proof", { proves: "cancellation", say, page_line: NOTICE }, ctx);
+  assert.equal(again.text_only, true);
   assert.equal(sent.length, 1);
 });
 
 test("export carries their pictures; a delete unlinks them and takes the rows; another person's stay", async () => {
   await serve(page, "https://billing.cardboard.test/settings/billing", BILLING);
-  const theirs = await proof.captureProof(AMA, page, { focus: "Your subscription is set to cancel on Nov 27, 2026" });
+  const theirs = await proof.captureProof(AMA, page, { proves: "cancellation", focus: NOTICE });
   const mine = proof.proofsFor(OMARI);
   assert.ok(mine.length >= 2);
   const ex = data.exportData({ conversation: OMARI });
@@ -162,7 +226,7 @@ test("retention: a picture older than the content window goes, file and row, lik
   const { config, clock } = await import("../src/config.js");
   const { sweepRetention } = await import("../src/privacy.js");
   await serve(page, "https://billing.cardboard.test/settings/billing", BILLING);
-  const out = await proof.captureProof(OMARI, page, { focus: "Your subscription is set to cancel on Nov 27, 2026" });
+  const out = await proof.captureProof(OMARI, page, { proves: "cancellation", focus: NOTICE });
   const was = config.keepContentDays;
   config.keepContentDays = 30;
   try {

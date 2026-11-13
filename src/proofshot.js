@@ -21,8 +21,12 @@
 //     number or code box: src/pagesecrets.js kind()). Refused, not masked; every box is masked anyway.
 //   - Never a page whose visible words hold a full card number (a Luhn-valid 13-19 digit run), a card
 //     code, or a bank account or routing number: refused. Last 4 as the page prints it is fine.
-//   - Cropped to the section that holds the line it proves when the page has one; else the viewport,
-//     never the whole scrolled page. JPEG, capped (MAX_BYTES, MAX_SIDE).
+//   - Only when it helps them check something (PICTURE_FOR: a cancellation notice, a paid receipt, a changed
+//     plan, a confirmation number, a site's error); a routine success is text only. One per result.
+//   - Cropped to the block holding the line it proves, never the screen or the whole page; a block that
+//     cannot be found, or cannot be cut clear of card rows, invoices, amounts, addresses and email
+//     addresses, means no picture (a bill's amount paid and confirmation number are its claim, so kept).
+//     JPEG, capped (MAX_BYTES, MAX_SIDE).
 //   - Sealed per person (REASON_ENCRYPT_REST2) and on their record (proof_pictures, conversation_files):
 //     an export carries it, a delete unlinks it (src/data.js), and nobody else's turn can open it.
 //   - It is evidence for the person: the tool's result carries no page words and no image back to the
@@ -88,9 +92,34 @@ export function isSigninPage(url, title = "") {
   return SIGNIN_PATH.test(u.pathname) || SIGNIN_PATH.test(u.hostname.split(".")[0]) || SIGNIN_TITLE.test(String(title ?? ""));
 }
 
-// Reads the page once: visible secret boxes (pagesecrets' own rules), the visible words, and marks the
-// section that holds the line to prove (data-reason-proof) when there is one of a sane size.
-const INSPECT = inPage((S, focus) => {
+// ---------------------------------------------------------------- when a picture helps
+// The owner's rule (2026-11-13): "I send a picture when it helps you check something, compare options, or
+// see what I'm referring to. Otherwise, text is enough." So a picture goes only for something the person
+// can CHECK on it; everything else is text. Anything not in this table is text only.
+export const PICTURE_FOR = Object.freeze({
+  cancellation: "a cancellation notice (cancelled, or set to end on a date)",
+  payment: "a paid / receipt confirmation: the amount paid and its confirmation number",
+  plan_change: "a changed plan as the page now shows it",
+  confirmation_number: "a confirmation or booking number",
+  site_error: "an error the site showed",
+});
+export const TEXT_ONLY = Object.freeze(["signed_in", "loading", "status", "other"]);
+/** Does a picture help for this? Unsure is no. */
+export const pictureHelps = (proves) => Object.hasOwn(PICTURE_FOR, String(proves ?? ""));
+/** An account job's ending → what its picture would prove, or null for text only (default). */
+export function pictureForJob({ kind, outcome } = {}) {
+  if (outcome === "site_error") return "site_error";
+  if (kind === "cancel" && ["done", "done_result_only", "already_done", "waiting_mail"].includes(outcome)) return "cancellation";
+  if (kind === "bill" && ["done", "done_result_only", "already_done", "waiting_mail"].includes(outcome)) return "payment";
+  return null;
+}
+
+// Reads the page once: visible secret boxes (pagesecrets' own rules), the visible words, and the crop:
+// the smallest element holding the proving line, grown toward its section only while what it adds holds
+// nothing to keep out (a card row, an invoice list or amount, an address, an email address), then a
+// little padding that may not touch any such row. No such element, or no clean crop: no picture.
+const INSPECT = inPage((S, arg) => {
+  const { focus, bill } = arg || {};
   const shown = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none"; };
   let secrets = 0;
   for (const el of document.querySelectorAll("input, textarea, select")) {
@@ -98,53 +127,83 @@ const INSPECT = inPage((S, focus) => {
     if (k) el.setAttribute("data-reason-secret", "1"); else el.removeAttribute("data-reason-secret");
     if (k && shown(el)) secrets++;
   }
-  for (const el of document.querySelectorAll("[data-reason-proof]")) el.removeAttribute("data-reason-proof");
   const words = (document.body && document.body.innerText) || "";
-  let section = false;
-  const want = String(focus || "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (want.length >= 6 && document.body) {
-    let best = null, bestLen = Infinity;
-    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-      const t = (n.innerText || "").toLowerCase().replace(/\s+/g, " ");
-      if (t.length < bestLen && t.includes(want)) { best = n; bestLen = t.length; }
-    }
-    // Up to the block around it (the plan, its invoice, its line), never past a screen and a half.
-    let box = best;
-    while (box && box.parentElement && box.parentElement !== document.body && box.getBoundingClientRect().height < 260 && box.parentElement.getBoundingClientRect().height <= 1400) box = box.parentElement;
-    if (box && shown(box)) {
-      const r = box.getBoundingClientRect();
-      if (r.height <= 1600 && r.width <= 1600) { box.setAttribute("data-reason-proof", "1"); section = true; }
-    }
+  const norm = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const want = norm(focus);
+  const out = { secrets, words: words.slice(0, 200000), title: document.title || "", clip: null, why: "" };
+  if (want.length < 6 || !document.body) { out.why = "no_line"; return out; }
+  // What is kept out of a crop. For a bill paid, the amount and the confirmation number ARE the claim.
+  const KEEP_OUT = [
+    /\b(visa|mastercard|master card|amex|american express|discover|diners|jcb|unionpay|debit|credit card|card)\b[^\n]{0,24}?(ending|ends|•|\*{2,}|x{2,}|…)\s*(in\s*)?\d{4}\b/i,
+    /(•{2,}|\*{2,}|x{4,})\s*\d{4}\b/i,
+    /\bpayment (method|details|info(rmation)?|card)s?\b/i,
+    /[^\s@]+@[^\s@]+\.[a-z]{2,}/i,
+    /\b\d{1,6}\s+[a-z0-9.' ]{2,30}\s(street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|way|place|pl)\b/i,
+    /\b(billing|shipping|mailing|home) address\b/i,
+  ];
+  if (!bill) KEEP_OUT.push(/\binvoices?\b|\bbilling history\b|\bpayment history\b/i, /[$€£]\s?\d/);
+  const dirty = (text) => { const t = norm(text).split(want).join(" "); return KEEP_OUT.some((re) => re.test(t)); };
+  let best = null, bestLen = Infinity;
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    const t = norm(n.innerText);
+    if (t.length < bestLen && t.includes(want) && shown(n)) { best = n; bestLen = t.length; }
   }
-  return { secrets, words: words.slice(0, 200000), section, title: document.title || "" };
+  if (!best) { out.why = "not_located"; return out; }
+  if (dirty(best.innerText)) { out.why = "kept_out"; return out; }
+  let box = best;
+  while (box.parentElement && box.parentElement !== document.body && box.parentElement !== document.documentElement) {
+    const up = box.parentElement;
+    const r = up.getBoundingClientRect();
+    if (r.height > 600 || r.width > 1400 || dirty(up.innerText)) break;
+    box = up;
+  }
+  box.scrollIntoView({ block: "center" });
+  const r = box.getBoundingClientRect();
+  // Every element holding something kept out: the crop may not touch it.
+  const bad = [];
+  for (const el of document.body.querySelectorAll("*")) {
+    if (box.contains(el) || el.contains(box) || !shown(el)) continue;
+    if (el.children.length > 8) continue;
+    if (KEEP_OUT.some((re) => re.test(norm(el.innerText)))) bad.push(el.getBoundingClientRect());
+  }
+  const hits = (c) => bad.some((b) => b.left < c.x + c.width && b.right > c.x && b.top < c.y + c.height && b.bottom > c.y);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  for (const pad of [12, 6, 0]) {
+    const x = Math.max(0, r.left - pad), y = Math.max(0, r.top - pad);
+    const c = { x, y, width: Math.min(vw, r.right + pad) - x, height: Math.min(vh, r.bottom + pad) - y };
+    if (c.width < 20 || c.height < 10) continue;
+    if (!hits(c)) { out.clip = c; break; }
+  }
+  if (!out.clip) out.why = "kept_out";
+  return out;
 });
 
 /**
- * One picture of this page as proof, kept on their record.
- *   → { ok: true, id, file, bytes, cropped } | { ok: false, refused: "sign_in_page" | "secret_box" |
- *     "card_number" | "card_code" | "bank_number" | "blank" | "too_big" | "failed" }
+ * One picture of the part of the page that proves it, kept on their record.
+ *   proves — a PICTURE_FOR key; anything else is text only (refused: "text_only")
+ *   focus  — the page's own line the result quotes; the crop is built around it, and without it no picture
+ *   → { ok: true, id, file, bytes, clip } | { ok: false, refused: "text_only" | "sign_in_page" | "secret_box" |
+ *     "card_number" | "card_code" | "bank_number" | "blank" | "no_line" | "not_located" | "kept_out" | "too_big" | "failed" }
  */
-export async function captureProof(conversationId, page, { focus = "", what = "" } = {}) {
+export async function captureProof(conversationId, page, { proves = "", focus = "", what = "" } = {}) {
   if (!conversationId || !page) return { ok: false, refused: "failed" };
+  if (!pictureHelps(proves)) return { ok: false, refused: "text_only" };
   const url = String(page.url?.() ?? "");
   if (!url || url === "about:blank") return { ok: false, refused: "blank" };
   let look;
-  try { look = await page.evaluate(INSPECT, String(focus ?? "")); } catch { return { ok: false, refused: "failed" }; }
+  try { look = await page.evaluate(INSPECT, { focus: String(focus ?? ""), bill: proves === "payment" }); } catch { return { ok: false, refused: "failed" }; }
   if (isSigninPage(url, look.title)) return { ok: false, refused: "sign_in_page" };
   if (look.secrets > 0) return { ok: false, refused: "secret_box" };
   const why = wordsRefused(look.words);
   if (why) return { ok: false, refused: why };
+  // Never the whole page, never the screen: the proving block, or nothing.
+  if (!look.clip) return { ok: false, refused: look.why || "not_located" };
+  const clip = { x: Math.round(look.clip.x), y: Math.round(look.clip.y), width: Math.min(MAX_SIDE, Math.round(look.clip.width)), height: Math.min(MAX_SIDE, Math.round(look.clip.height)) };
   const file = resolve(join(config.shotRoot, `${shotPrefix(conversationId)}proof-${clock.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`));
   mkdirSync(dirname(file), { recursive: true });
-  const mask = [page.locator("[data-reason-secret]")];
-  const opts = { path: file, type: "jpeg", quality: QUALITY, mask, maskColor: "#888888", animations: "disabled" };
   try {
-    if (look.section) await page.locator("[data-reason-proof]").first().screenshot({ ...opts, timeout: 10_000 });
-    else {
-      const v = page.viewportSize?.() ?? { width: 1280, height: 900 };
-      await page.screenshot({ ...opts, clip: { x: 0, y: 0, width: Math.min(v.width, MAX_SIDE), height: Math.min(v.height, MAX_SIDE) } });
-    }
+    await page.screenshot({ path: file, type: "jpeg", quality: QUALITY, mask: [page.locator("[data-reason-secret]")], maskColor: "#888888", animations: "disabled", clip });
   } catch { try { if (existsSync(file)) unlinkSync(file); } catch { /* nothing kept */ } return { ok: false, refused: "failed" }; }
   const bytes = statSync(file).size;
   if (bytes > MAX_BYTES) { try { unlinkSync(file); } catch { /* gone either way */ } return { ok: false, refused: "too_big" }; }
@@ -154,8 +213,11 @@ export async function captureProof(conversationId, page, { focus = "", what = ""
   const id = Number(q("INSERT INTO proof_pictures (conversation_id, file, host, what, bytes, at) VALUES (?, ?, ?, ?, ?, ?)").run(conversationId, file, host, short(what, 160), bytes, clock.now()).lastInsertRowid);
   // Theirs on the file record too (src/ownfiles.js), so it is sendable in their thread and nobody else's.
   q("INSERT OR IGNORE INTO conversation_files (conversation_id, path, at) VALUES (?, ?, ?)").run(conversationId, file, clock.now());
-  return { ok: true, id, file, bytes, cropped: !!look.section };
+  return { ok: true, id, file, bytes, clip };
 }
+/** One picture per result: one already sent to them in the last few minutes means this result already has its picture. */
+export const ONE_PER_RESULT_MS = 5 * 60_000;
+export const sentRecently = (conversationId, now = clock.now()) => !!q("SELECT 1 FROM proof_pictures WHERE conversation_id = ? AND sent = 1 AND at > ?").get(String(conversationId), now - ONE_PER_RESULT_MS);
 
 /** A proof picture of THIS conversation, or null: another person's id is never found. */
 export const proofRow = (conversationId, id) => q("SELECT * FROM proof_pictures WHERE conversation_id = ? AND id = ?").get(String(conversationId), Number(id)) ?? null;
@@ -199,6 +261,9 @@ export function refusedLine(why) {
     case "secret_box": return "I didn't take a picture: the page has a password, code or card box on it.";
     case "card_number": case "card_code": case "bank_number": return "I didn't take a picture: the page shows a full card or bank number.";
     case "blank": return "I didn't take a picture: no page is open.";
+    case "text_only": return "";
+    case "no_line": case "not_located": return "I didn't send a picture: I couldn't find the exact part of the page that shows it.";
+    case "kept_out": return "I didn't send a picture: that part of the page sits right against your payment or invoice details.";
     case "too_big": return "I didn't take a picture: it came out too large to send.";
     default: return "I couldn't take a picture of the page.";
   }
