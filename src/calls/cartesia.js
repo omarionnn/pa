@@ -182,19 +182,34 @@ export const VOICE_MARKERS = [
   "Skipping for now.", "Skipping this turn.", "Skipping my turn.", "Skip turn.", "skip_turn", "[skip]", "<skip/>",
   "[silence]", "[no reply]", "NO_REPLY", "ask_reason", "verify_caller", "end_call", "message_send", "task_start", "web_search",
 ];
+// A spoken skip marker is a sentence of its own ("Skipping for now.", "Okay, skip turn."), never words inside
+// one: "skip the turn onto Main" and "I'm skipping for now the 8 am class" are left alone.
+const SENTENCE_START = String.raw`(?:^|(?<=[.!?…]\s*))(?:(?:ok(?:ay)?|alright|sure|right)[,.]?\s+)?`;
+const SENTENCE_END = String.raw`(?:[.!…]+(?=\s|$)|\s*$)`;
 const MARKER_RES = [
-  /\b(?:I'?m\s+|I\s+am\s+|I'?ll\s+be\s+)?skipping\s+(?:this\s+turn|my\s+turn|the\s+turn|a\s+turn|for\s+now)\b[.!,…]*/gi,
-  /\bskip(?:ped|ping)?[\s_-]+(?:this\s+|my\s+|the\s+|a\s+)?turn\b[.!,…]*/gi,
+  new RegExp(`${SENTENCE_START}(?:I'?m\\s+|I\\s+am\\s+|I'?ll\\s+be\\s+)?skipping\\s+(?:this\\s+turn|my\\s+turn|the\\s+turn|a\\s+turn|for\\s+now)${SENTENCE_END}`, "gi"),
+  new RegExp(`${SENTENCE_START}skip(?:ped|ping)?[\\s-]+(?:this\\s+|my\\s+|the\\s+|a\\s+)?turn${SENTENCE_END}`, "gi"),
   /[[<]\/?\s*(?:skip|silence|pause|turn|no[\s_-]?reply)\s*\/?\s*[\]>]/gi,
   /\bNO[_\s]REPLY\b[.!,]*/g,
-  // A tool name, or any snake_case word: nothing anybody says out loud (not inside a link).
-  /(?<![\w/.:@-])[a-z]+(?:_[a-z0-9]+)+(?![\w/@-])[.!,]*/g,
 ];
-/** Reason's words with every internal marker taken out, and the spacing put right after. */
+// A snake_case word (not inside a link or an address): a tool name or marker of ours comes out; any other
+// ("store_credit", "model_error") is said as its words, so nothing real is lost.
+const SNAKE = /(?<![\w/.:@-])[a-z]+(?:_[a-z0-9]+)+(?![\w/@-]|\.\w)([.!,]*)/g;
+const DROP_SNAKE = new Set(VOICE_MARKERS.filter(m => /^[a-z]+(?:_[a-z0-9]+)+$/.test(m)));
+/** Reason's words with every internal marker taken out, and the spacing put right after; words with none are returned as they came. */
 export function forVoice(text) {
   let t = String(text ?? "");
-  for (const re of MARKER_RES) t = t.replace(re, " ");
-  return t.replace(/\s+([.,!?;:])/g, "$1").replace(/^[\s.,;:!?…-]+/, "").replace(/([.!?])[.,;:]+/g, "$1").replace(/\s{2,}/g, " ").trim();
+  let removed = false;
+  for (const re of MARKER_RES) t = t.replace(re, () => { removed = true; return " "; });
+  t = t.replace(SNAKE, (w, punct) => {
+    const word = w.slice(0, w.length - punct.length);
+    if (DROP_SNAKE.has(word)) { removed = true; return " "; }
+    return word.replace(/_/g, " ") + punct;
+  });
+  if (!removed) return t.trim();
+  // Only where something came out: the spacing and stray punctuation it left (an ellipsis stays).
+  return t.replace(/\(\s*\)/g, " ").replace(/\s+([.,!?;:)])/g, "$1").replace(/^[\s.,;:!?…-]+/, "")
+    .replace(/([.!?])[,;:]+/g, "$1").replace(/(?<!\.)\.\.(?!\.)/g, ".").replace(/([!?])\./g, "$1").replace(/\s{2,}/g, " ").trim();
 }
 /** Did this line carry a marker? (Text the agent already spoke: logged, it cannot be unsaid.) */
 export const hasMarker = (text) => { const t = String(text ?? "").replace(/\s+/g, " ").trim(); return !!t && forVoice(t) !== t.replace(/\s+([.,!?;:])/g, "$1"); };
@@ -221,6 +236,8 @@ export function heardShare(spoken, answer) {
   const got = new Set(wordsOf(spoken));
   return want.filter(w => got.has(w)).length / want.length;
 }
+/** An answer carrying a code, password or account-like number: never offered again by `unheard`. */
+export const SECRETISH = /\b(?:code|passcode|password|passphrase|pin|one[-\s]time|otp|verification|cvv|card\s+number|account\s+number|routing\s+number|social\s+security|ssn)\b|\b\d(?:[\s-]?\d){5,}\b/i;
 /** What the next answer leads with when they talked over the last one before its point. */
 export const reofferLead = (short) => `They spoke over Reason's last answer before hearing it: first say its point again in one short sentence ("${short}"), then the new answer.`;
 /** The result when Reason has nothing new but an answer was lost: say the lost point again. */
@@ -430,6 +447,8 @@ export class CartesiaAgentCall {
     // When they last asked Reason to wait, and when Reason last had nothing to say (a skip).
     this.waitAskedAt = -Infinity;
     this.skippedAt = -Infinity;
+    // The after-call queue as it stood when the deferral line was last added (`ask`).
+    this.deferredSaidFor = "";
     /** When Reason's latest answer said something was done (`claimsDone`), for `turnEnded`'s check. */
     this.claimedAt = -Infinity;
     this.theirTurnEndAt = null;
@@ -647,7 +666,10 @@ export class CartesiaAgentCall {
     this.answerOut = null;
     if (out) {
       const share = heardShare(text, out.text);
-      if (e.interrupted && share < HEARD_SHARE) {
+      // A code, password or long number is never said again from memory: no offer, no note quoting it.
+      if (e.interrupted && share < HEARD_SHARE && SECRETISH.test(out.text)) {
+        this.log({ cartesia_answer_unheard: this.call.id, turn: Number(e.turn) || 0, heard_pct: Math.round(share * 100), withheld: true });
+      } else if (e.interrupted && share < HEARD_SHARE) {
         this.unheard = { text: out.text, short: shortForm(out.text), at: t };
         this.m.unheard += 1;
         this.turns.push({ who: "reason", text: unheardNote(this.unheard.short), at: t });
@@ -723,7 +745,10 @@ export class CartesiaAgentCall {
       reply = { text: "", error: (err?.message ?? String(err)).split("\n")[0] };
     }
     // This turn put something off until after the call: it is said now, in words, never a skip.
-    if (!reply?.error && this.deferredNow() !== deferredBefore) {
+    // verify_deferred only grows on a call (verify.js queueForAfter); a growth another ask already said is not said twice.
+    const deferredAfter = this.deferredNow();
+    if (!reply?.error && deferredAfter && deferredAfter !== deferredBefore && deferredAfter !== this.deferredSaidFor) {
+      this.deferredSaidFor = deferredAfter;
       const d = withDeferredLine(reply);
       reply = d.reply;
       this.m.deferredSaid += 1;

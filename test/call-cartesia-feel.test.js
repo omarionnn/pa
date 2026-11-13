@@ -331,3 +331,46 @@ test("an answer back after 12 s opens by owning the wait; one back sooner is jus
   assert.equal(cartesia.TEXT_MS, 25_000, "the 25 s hand-off to a text is as it was");
   s.stop();
 });
+
+// ---------- review fixes (ship of #564) ----------
+
+test("ordinary words are never eaten: a skip phrase inside a sentence, an ellipsis and a snake_case word said as its words", () => {
+  for (const keep of [
+    "Skip the turn onto Main Street and take the next left.", "One sec... Nothing on file.", "Just a moment... Verifying you are human.",
+    "I'm skipping for now the 8 am class, right?", "We're skipping a turn in the rotation this week.", "Email omar_i@x.com or see apple.com/retail/genius_bar.",
+    "Saved as notes_2026.pdf, done.", "Wait... what time was that?", "Sure, I'll skip the turn signal check.",
+  ]) assert.equal(cartesia.forVoice(keep), keep, keep);
+  assert.equal(cartesia.forVoice("It broke off partway (model_error). Treat it as still active."), "It broke off partway (model error). Treat it as still active.");
+  assert.equal(cartesia.forVoice("I can't approve that (by store_credit), so I didn't."), "I can't approve that (by store credit), so I didn't.");
+  assert.equal(cartesia.forVoice("Okay, skipping for now. Sure, take your time."), "Sure, take your time.");
+  assert.equal(cartesia.forVoice("I should call skip_turn here."), "I should call here.");
+});
+
+test("an answer with a code or password that they spoke over is never said again from memory", async () => {
+  const s = relay([{ reply: { text: "Your Notion code is 482913, it's in the box now." } }, { reply: { text: "It's on West 14th." } }]);
+  s.ask("what's the code?");
+  await s.timers.advance(200);
+  s.said("Your", true);
+  assert.equal(s.call.unheard, null);
+  assert.ok(s.lines.some(l => l.cartesia_answer_unheard && l.withheld));
+  assert.ok(!s.call.turns.some(t => /482913/.test(t.text) && /NOT heard/.test(t.text)));
+  s.ask("where is it?");
+  await s.timers.advance(200);
+  assert.equal(s.results()[1], "It's on West 14th.");
+  assert.ok(cartesia.SECRETISH.test("Your password is hunter2.") && !cartesia.SECRETISH.test("It's on West 14th, open until 9."));
+  s.stop();
+});
+
+test("one deferral is said once, even when a second ask was running while it was queued", async () => {
+  const s = relay([
+    { ms: 300, reply: { text: "Eight ten works." } },
+    { ms: 100, before: (row) => verify.queueForAfter(row, "book it"), reply: { text: "On it." } },
+  ]);
+  s.ask("does 8:10 work?");
+  s.ask("book it");
+  await s.timers.advance(500);
+  const withLine = s.results().filter(r => r.startsWith(cartesia.DEFERRED_LINE));
+  assert.equal(withLine.length, 1, JSON.stringify(s.results()));
+  assert.equal(s.lines.filter(l => l.cartesia_deferred_said).length, 1);
+  s.stop();
+});
