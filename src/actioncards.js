@@ -27,8 +27,14 @@ import * as db from "./db.js";
 import { clock, config } from "./config.js";
 
 export const DIGEST_TTL_MS = 7 * 24 * 3_600_000;
-export const STATUSES = Object.freeze(["open", "done", "dismissed"]);
-export const EVENTS = Object.freeze(["view", "tap", "reply", "dismiss", "done"]);
+// `failed`: tapped, and Reason could not finish it (said once in the thread; off the note, never
+// offered again as it was). `known`: not a card at all but a line of the note's "also worth knowing"
+// (a notice Reason cannot finish): no tap, no reply match, kept as a row so it is sealed, deleted and
+// remembered like the rest of the note.
+export const STATUSES = Object.freeze(["open", "done", "dismissed", "failed", "known"]);
+export const EVENTS = Object.freeze(["view", "tap", "reply", "dismiss", "done", "fail"]);
+/** The most "also worth knowing" items one note carries (Omari 2026-11-12: one line, up to two). */
+export const MAX_ALSO = 2;
 /** The most cards one digest carries (the page and its picture are drawn for up to this many). */
 export const MAX_CARDS = 4;
 
@@ -152,7 +158,7 @@ const clean = (v, max) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, m
  * (the margin note), `prefill` (first person, what the tap types), `drawing` (a key in
  * src/pages/actionart.js). Returns the digest with its token and link.
  */
-export function createDigest(conversationId, cards, { now = clock.now(), ttlMs = DIGEST_TTL_MS } = {}) {
+export function createDigest(conversationId, cards, { now = clock.now(), ttlMs = DIGEST_TTL_MS, also = [] } = {}) {
   const list = (Array.isArray(cards) ? cards : []).slice(0, MAX_CARDS).map(c => ({
     verb: clean(c.verb, 24).toUpperCase().replace(/[^A-Z0-9 -]/g, "").trim() || "DO", // letters, digits, spaces: the page renumbers eyebrows client-side from this
     title: clean(c.title, 140),
@@ -160,18 +166,24 @@ export function createDigest(conversationId, cards, { now = clock.now(), ttlMs =
     prefill: clean(c.prefill ?? c.reply, 200),
     drawing: clean(c.drawing ?? c.art, 32).toLowerCase(),
   })).filter(c => c.title && c.prefill);
-  if (!list.length) throw new Error("a digest needs at least one card with a title and a prefill");
+  // "Also worth knowing": plain lines with nothing to tap (a notice Reason cannot finish). A note may
+  // be nothing but these — then it has no page to open (it is closed as it is written) and is only
+  // the record of what the morning's one line said.
+  const known = (Array.isArray(also) ? also : []).map(l => clean(l, 140)).filter(Boolean).slice(0, MAX_ALSO);
+  if (!list.length && !known.length) throw new Error("a digest needs at least one card with a title and a prefill");
   const id = randomBytes(9).toString("base64url");
   db.atomically(() => {
-    db.db.prepare("INSERT INTO action_digests (id, conversation_id, created_at, expires_at, changed_at) VALUES (?, ?, ?, ?, ?)")
-      .run(id, conversationId, now, now + ttlMs, now);
-    const ins = db.db.prepare("INSERT INTO action_cards (digest_id, conversation_id, code, position, verb, title, why_now, prefill, drawing, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)");
-    list.forEach((c, i) => {
+    db.db.prepare("INSERT INTO action_digests (id, conversation_id, created_at, expires_at, closed_at, changed_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(id, conversationId, now, now + ttlMs, list.length ? null : now, now);
+    const ins = db.db.prepare("INSERT INTO action_cards (digest_id, conversation_id, code, position, verb, title, why_now, prefill, drawing, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    const put = (c, i, status) => {
       for (let tries = 0; ; tries++) {
-        try { ins.run(id, conversationId, newCode(), i + 1, c.verb, db.seal2(conversationId, c.title), db.seal2(conversationId, c.whyNow), db.seal2(conversationId, c.prefill), c.drawing, now); return; }
+        try { ins.run(id, conversationId, newCode(), i + 1, c.verb, db.seal2(conversationId, c.title), db.seal2(conversationId, c.whyNow), db.seal2(conversationId, c.prefill), c.drawing, status, now); return; }
         catch (e) { if (tries > 4 || !/UNIQUE/.test(e?.message ?? "")) throw e; }
       }
-    });
+    };
+    list.forEach((c, i) => put(c, i, "open"));
+    known.forEach((line, i) => put({ verb: "KNOW", title: line, whyNow: "", prefill: "", drawing: "" }, list.length + i, "known"));
   });
   return digestById(id, { now });
 }
@@ -186,11 +198,14 @@ export function digestById(id, { now = clock.now() } = {}) {
   if (!ID_RE.test(String(id ?? ""))) return null;
   const d = digestRow(id);
   if (!d) return null;
-  const cards = cardRows(id, d.conversation_id);
+  const rows = cardRows(id, d.conversation_id);
+  // `cards` are the offers; the "also worth knowing" lines travel beside them, never among them.
+  const cards = rows.filter(c => c.status !== "known");
   return {
     id: d.id, token: tokenOf(d.id), url: urlOf(tokenOf(d.id)),
     conversationId: d.conversation_id, createdAt: d.created_at, expiresAt: d.expires_at, closedAt: d.closed_at ?? null, changedAt: d.changed_at,
     gone: now >= d.expires_at || d.closed_at != null,
+    also: rows.filter(c => c.status === "known").map(c => ({ id: c.id, line: c.title })),
     cards: cards.map(c => ({
       id: c.id, code: c.code, position: c.position, verb: c.verb, title: c.title, whyNow: c.why_now, prefill: c.prefill,
       drawing: c.drawing, status: c.status, createdAt: c.created_at, resolvedAt: c.resolved_at ?? null,
@@ -274,6 +289,28 @@ export function markDone(cardId, conversationId, { now = clock.now() } = {}) {
     });
   }
   return { ...c, status: "done" };
+}
+
+/**
+ * A tapped card Reason could not finish. It comes off the note (the thread already carries the one
+ * plain line saying so) and is not remembered as struck out: they did not refuse it, Reason failed it.
+ */
+export function markFailed(cardId, conversationId, { now = clock.now() } = {}) {
+  const c = db.db.prepare("SELECT * FROM action_cards WHERE id = ? AND conversation_id = ?").get(cardId, conversationId);
+  if (!c) return null;
+  if (c.status === "open") {
+    db.atomically(() => {
+      db.db.prepare("UPDATE action_cards SET status = 'failed', resolved_at = ? WHERE id = ? AND conversation_id = ? AND status = 'open'").run(now, c.id, conversationId);
+      event("fail", c, now);
+      touch(c.digest_id, conversationId, now);
+    });
+  }
+  return { ...c, status: "failed" };
+}
+
+/** Titles of this person's cards in one state since `since` (failed cards, "worth knowing" lines), for the engine's dedupe. */
+export function titlesIn(conversationId, status, since) {
+  return db.db.prepare("SELECT title FROM action_cards WHERE conversation_id = ? AND status = ? AND created_at > ?").all(conversationId, String(status), since).map(r => r.title);
 }
 
 /** A text matched this card and is running as its task. */
