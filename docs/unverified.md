@@ -5282,3 +5282,18 @@ not been run against the real model: no live lane exists for it, and none was ru
 - **The Uber sign-in page fixture is hand-made.** `test/fixtures/uber-login.html` is written from how
   Uber's page is laid out, not captured from it (the capture is exactly what the wall refuses). The
   finder pressing "Continue with Google" there is proof about the finder, not about Uber's page.
+
+## 2026-11-13: the Cartesia voice on the operator's own calls (REASON_CALL_CARTESIA=owner): not run
+
+Built from design 3 in `docs/calls-cartesia.md` (#527): `src/calls/cartesia.js`, `src/calls/calltrial.js`,
+`scripts/cartesia-agent-setup.mjs`. Proved only with stand-in sockets (`test/call-cartesia.test.js`). Never run:
+the setup script with `--yes`, a real agent session, or a real call. Not known until it is:
+
+- The largest dynamic variable Cartesia takes. `reason_call` (the own-call instructions) is cut at 12,000 characters.
+- Whether a keyterm made of a variable (`{{keyterm_1}}`) is substituted per call, and whether an empty one would be refused. Unused slots say "Reason".
+- Whether the agent's own `end_call` closes the socket with 1000. Any other close code is treated as a failure, and GPT-Live takes the rest of the call.
+- Whether a socket closed before `session_ready` leaves a call record on their side that cannot be deleted (there is no id to delete). A session that comes up within 5 s of the fall-back is deleted.
+- How long a call takes to become deletable after it ends. The delete is tried four times, 1.5 s apart.
+- Whether the agent passes `[laughter]` through to Sonic as a laugh.
+- Measured: nothing yet. The first call's `cartesia_*` log lines are the numbers section 5 asks for. `gptlive_handback_speech` is the same-day comparison from a normal call.
+

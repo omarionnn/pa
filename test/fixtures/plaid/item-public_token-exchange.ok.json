@@ -1,0 +1,13 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/item/public_token/exchange",
+  "status": 200,
+  "request": {
+    "public_token": "public-sandbox-PLACEHOLDER-1"
+  },
+  "response": {
+    "access_token": "access-sandbox-PLACEHOLDER-1",
+    "item_id": "ITEM_ID_1",
+    "request_id": "REQUEST_ID"
+  }
+}

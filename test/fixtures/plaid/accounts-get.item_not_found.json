@@ -1,0 +1,17 @@
+{
+  "_from": "Plaid Sandbox, 2026-11-13, plaid 51.0.0; identifiers replaced by placeholders",
+  "path": "/accounts/get",
+  "status": 400,
+  "request": {
+    "access_token": "access-sandbox-PLACEHOLDER-2"
+  },
+  "response": {
+    "display_message": null,
+    "documentation_url": "https://plaid.com/docs/errors/item/#item_not_found",
+    "error_code": "ITEM_NOT_FOUND",
+    "error_message": "The Item you requested cannot be found. This Item does not exist, has been previously removed via /item/remove, or has had access removed by the user.",
+    "error_type": "ITEM_ERROR",
+    "request_id": "REQUEST_ID",
+    "suggested_action": null
+  }
+}

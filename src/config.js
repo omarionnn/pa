@@ -668,6 +668,14 @@ export const config = {
   // (or on) for every account's own calls, =owner for the operator's only. With REASON_CALL_PROVIDER=gptlive
   // every call is GPT-Live already and this changes nothing.
   callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
+  // The Cartesia voice on the operator's own calls (src/calls/cartesia.js, docs/calls-cartesia.md section 5):
+  // off | owner; unset or anything else is off. There is no "on": owner by itself changes nothing, it only
+  // offers the operator the call_voice_trial tool, and his own choice (accounts.call_trial) turns it on.
+  callCartesia: String(process.env.REASON_CALL_CARTESIA ?? "").trim().toLowerCase() === "owner" ? "owner" : "off",
+  cartesiaKey: process.env.CARTESIA_API_KEY || "",
+  // The agent made once by scripts/cartesia-agent-setup.mjs; the voice is set on it (Gemma, en-GB).
+  cartesiaAgentId: String(process.env.REASON_CARTESIA_AGENT_ID ?? "").trim(),
+  cartesiaVoice: String(process.env.REASON_CARTESIA_VOICE ?? "").trim() || "62ae83ad-4f6a-430b-af41-a9bede9286ca",
   // How Reason sounds on calls (Omari's call voice spec 11-11, src/calls/manner.js): owner | on | off (unset = off).
   callManner: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_MANNER ?? "").trim().toLowerCase()),
   // What a call carries into the next call and the text after it (call audit 11-11, src/calls/carryover.js): owner | on | off (unset = off).

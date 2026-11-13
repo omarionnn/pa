@@ -9,8 +9,12 @@ import { isPrivateHost } from "./pictures.js";
 import { publicUrl, allowPrivate } from "./netguard.js";
 import * as signinPage from "./signinpage.js";
 import { inPage, rememberPasswordBoxes, withoutQueries } from "./pagesecrets.js";
+import * as accounts from "./accounts.js";
+import { zoneFor } from "./zone.js";
 
 const sessions = new Map(); // conversationId -> { context, page }
+/** conversationId -> the errand launch in progress, so a sign-in that takes the profile waits for it to finish and close. */
+const launching = new Map();
 let playwright = null;
 
 async function chromium() {
@@ -25,6 +29,128 @@ async function chromium() {
 }
 
 export class NoBrowser extends Error {}
+
+// ---------- one stable, honest browser per person (REASON_STABLE_BROWSER) ----------
+//
+// A site that sees one saved profile open at 430x700 one day and 1280x900 the next, in another build,
+// sees a new device, and a new device is when sites mail "was this you?" and ask for more proof
+// (docs/account-access-design.md section D). With the switch on for a person, every launch of their
+// profile uses ONE setting: the same Chromium build in the same mode, one window size, one language,
+// their time zone. Nothing in it hides what the browser is: no stealth flag and no user-agent change
+// (the no-stealth rule, src/agent.js). Off, the default, every flow launches exactly as before.
+
+/** `off` | `owner` | `on`, read at call time, the same way as connectMode (src/shopconnect.js). */
+export function stableBrowserMode() {
+  const v = String(process.env.REASON_STABLE_BROWSER ?? "").trim().toLowerCase();
+  if (v === "owner") return "owner";
+  return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
+}
+export function stableBrowserAllowedFor(conversationId) {
+  if (!conversationId) return false;
+  const mode = stableBrowserMode();
+  if (mode === "owner") return accounts.featureOwner(conversationId);
+  return mode === "on";
+}
+
+/** The one window: the errands' size, which is where most of a profile's visits happen. */
+export const STABLE_VIEW = Object.freeze({ width: 1280, height: 900 });
+/**
+ * The one language. Reason works in English; a person's `language` (src/accounts.js) names only the
+ * top line of Reason's own pages, not a language they browse the web in.
+ */
+export const STABLE_LOCALE = "en-US";
+
+/**
+ * The setting itself, the same for every flow. `channel: "chromium"` is Playwright's full Chromium in
+ * its new headless mode rather than the separate headless shell, so a window and no window are one
+ * build; Playwright's words for that mode: "the real Chrome browser". Service workers are off in
+ * every flow, because their requests do not pass the request guard. Smooth scrolling is off, and
+ * only that, so a picture taken after a scroll shows where the page went (src/signin-remote.js).
+ */
+export function stableSetting(conversationId) {
+  return {
+    channel: "chromium",
+    viewport: { ...STABLE_VIEW },
+    deviceScaleFactor: 1,
+    locale: STABLE_LOCALE,
+    timezoneId: zoneFor(conversationId),
+    serviceWorkers: "block",
+    args: ["--disable-smooth-scrolling"],
+  };
+}
+
+/**
+ * What to launch this person's profile with. `today` is the flow's own launch as it was before the
+ * switch, and with the switch off for them it is handed back as it is, the same object. On, only
+ * whether a window shows stays the flow's own; everything a site can see is the one setting.
+ */
+export function launchOptions(conversationId, today) {
+  if (!stableBrowserAllowedFor(conversationId)) return today;
+  return { headless: today?.headless !== false, ...stableSetting(conversationId) };
+}
+
+// ---------- one person's profile, one browser at a time ----------
+//
+// A profile directory can be open in one browser at once. The sign-in flows (the phone link and the
+// emailed code, src/signin-remote.js; the window on the Mac, src/signin-window.js and
+// src/signin-cli.js) take it here for as long as their browser is open, and close the errand browser
+// first. While one holds it, the errand browser opens nothing and reads nothing: every browser tool
+// gets the same fixed answer. Not behind the switch: it is a fix for everyone.
+const holders = new Map(); // conversationId -> holder
+
+/** The fixed answer while a sign-in holds the profile. `ok: false`, so a yes given for the step is not spent. */
+export const BUSY = Object.freeze({ ok: false, busy: "signing_in" });
+
+/** Thrown by `pageFor` while the profile is held; the tool runner answers `BUSY` (src/tools.js). */
+export class ProfileBusy extends Error {
+  constructor() { super("browser busy: signing_in"); this.answer = BUSY; }
+}
+
+let busySink = (line) => { if (!process.env.NODE_TEST_CONTEXT) console.log("   ·", line); };
+/** For tests: where the busy line goes. Returns the old one. */
+export function setBusySink(fn) { const old = busySink; busySink = fn; return old; }
+/** One fixed line, no conversation id: a sign-in somewhere held a profile when a tool wanted it. */
+function saidBusy() {
+  try { busySink("browser busy: signing_in"); } catch { /* a log line never breaks a tool */ }
+  return new ProfileBusy();
+}
+
+/**
+ * Take the profile for `holder` (any value that names one flow's run). True when it is theirs now,
+ * false when somebody else has it. Taking it again under the same holder is a yes.
+ */
+export function holdProfile(conversationId, holder) {
+  const key = String(conversationId);
+  const cur = holders.get(key);
+  if (cur !== undefined && cur !== holder) return false;
+  holders.set(key, holder);
+  return true;
+}
+/** Give it back. Only the holder can: a late release from an older run never frees a newer one. */
+export function releaseProfile(conversationId, holder) {
+  const key = String(conversationId);
+  if (holders.get(key) === holder) holders.delete(key);
+}
+/** Who has it, or null. */
+export function profileHolder(conversationId) {
+  return holders.get(String(conversationId)) ?? null;
+}
+/** `BUSY` while a sign-in holds this person's profile, else null: for a tool that asks before it looks. */
+export function profileBusy(conversationId) {
+  return holders.has(String(conversationId)) ? BUSY : null;
+}
+/**
+ * Run `work` holding the profile, and give it back however `work` ends, a throw included.
+ * `busy` answers instead when somebody else has it.
+ */
+export async function withProfile(conversationId, holder, work, { busy = () => { throw saidBusy(); } } = {}) {
+  if (!holdProfile(conversationId, holder)) return busy();
+  try {
+    return await work();
+  } finally {
+    releaseProfile(conversationId, holder);
+  }
+}
 
 /**
  * Where one person's logins live on disk.
@@ -57,22 +183,38 @@ function profileDir(conversationId) {
   return profileDirFor(conversationId);
 }
 
-/** The live page for this conversation, launching Chromium the first time. */
+/**
+ * The live page for this conversation, launching Chromium the first time. While a sign-in holds
+ * their profile it throws `ProfileBusy` and touches no page: nothing is opened, read or pictured.
+ */
 export async function pageFor(conversationId) {
+  if (holders.has(String(conversationId))) throw saidBusy();
   const existing = sessions.get(conversationId);
   if (existing && !existing.page.isClosed()) return existing.page;
+  const inFlight = launching.get(conversationId);
+  if (inFlight) { await inFlight.catch(() => {}); return pageFor(conversationId); }
 
+  const work = launchErrand(conversationId);
+  launching.set(conversationId, work);
+  try {
+    return await work;
+  } finally {
+    if (launching.get(conversationId) === work) launching.delete(conversationId);
+  }
+}
+
+async function launchErrand(conversationId) {
   const launcher = await chromium();
   let context;
   try {
-    context = await launcher.launchPersistentContext(profileDir(conversationId), {
+    context = await launcher.launchPersistentContext(profileDir(conversationId), launchOptions(conversationId, {
       headless: !config.browserHeaded,
       viewport: { width: 1280, height: 900 },
       // A service worker's requests do not pass the request guard below, so pages get none.
       serviceWorkers: "block",
       // No launch flag that hides automation from the site (removed 2026-10-23). A site that blocks
       // an automated browser gets a hand-back, never a workaround — the no-stealth rule in agent.js.
-    });
+    }));
   } catch (e) {
     if (/Executable doesn't exist|browserType.launch/i.test(e.message)) {
       throw new NoBrowser("Chromium is not downloaded on this machine. Run: npx playwright install chromium");
@@ -83,6 +225,11 @@ export async function pageFor(conversationId) {
   // script on it) pointing at 127.0.0.1, 169.254.169.254 or a name that resolves there is refused.
   // Every request by name; a page load also by its resolved addresses (security audit 2026-11-06).
   await guardContext(context);
+  // A sign-in took the profile while this one was starting: it is theirs, so this one goes.
+  if (holders.has(String(conversationId))) {
+    await context.close().catch(() => {});
+    throw saidBusy();
+  }
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
   sessions.set(conversationId, { context, page });
@@ -97,12 +244,18 @@ export async function pageFor(conversationId) {
  * answer is usually no, and `pageFor` would answer it by opening Chromium.
  */
 export function openPage(conversationId) {
+  // A sign-in holds the profile: there is no errand page to look at. Null rather than `BUSY`, since
+  // every caller reads a non-null answer as a page; one that must say why asks `profileBusy` first.
+  if (holders.has(String(conversationId))) return null;
   const s = sessions.get(conversationId);
   if (!s || s.page.isClosed()) return null;
   return s.page;
 }
 
 export async function closeBrowser(conversationId) {
+  // An errand launch still starting is waited for, so the sign-in that called this never opens the
+  // profile while that browser does.
+  await launching.get(conversationId)?.catch(() => {});
   const s = sessions.get(conversationId);
   sessions.delete(conversationId);
   await s?.context.close().catch(() => {});

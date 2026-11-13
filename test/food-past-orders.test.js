@@ -40,7 +40,7 @@ const INBOX = [
   mail("Grubhub <orders@eat.grubhub.com>", "Your order from Francesco's Pizzeria is being prepared", "Mon, 2 Nov 2026 23:20:00 +0000", "", "gh1"),
   mail("Grubhub <orders@eat.grubhub.com>", "Your order from Francesco's Pizzeria has been delivered", "Mon, 2 Nov 2026 23:58:00 +0000", "", "gh2"),
   mail("Nizza <no-reply@toasttab.com>", "Your Nizza order is confirmed", "Sun, 1 Nov 2026 22:00:00 +0000", "", "t1"),
-  mail("Square <receipts@messaging.squareup.com>", "Receipt from Feel it Healthy Spot", "Sat, 31 Oct 2026 22:00:00 +0000", "Total $10.83", "sq1"),
+  mail("Square <receipts@messaging.squareup.com>", "Receipt from Feel it Healthy Spot", "Sat, 31 Oct 2026 22:00:00 +0000", "Green Smoothie $8.50 Acai Bowl $1.00 Total $10.83", "sq1"),
   mail("A Friend <friend@example.com>", "your order from Joe's", "Sun, 8 Nov 2026 22:00:00 +0000"),
 ];
 const searchOf = (messages, seen = []) => async (query, limit) => { seen.push({ query, limit }); return { ok: true, messages }; };

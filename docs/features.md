@@ -192,6 +192,114 @@ reach gets an honest answer now rather than a guess. Nothing about any of their 
 assumed: where the credentials are not known yet, the registry says that instead of naming one.
 
 
+### Their bank, read-only (`REASON_PLAID`, `src/plaid.js`) (added 2026-11-12)
+
+A person connects a bank through Plaid and asks Reason about their own money by text. Reason reads
+balances and transactions. It cannot move money: the only Plaid products used are Transactions and
+Balance, and no endpoint that pays, transfers or returns an account or routing number is called.
+**Off by default** (`REASON_PLAID=off | owner | on`), Sandbox by default (`PLAID_ENV`).
+**Run against Plaid's real Sandbox on 2026-11-13** (`scripts/plaid-sandbox-proof.mjs`, the
+integration's own functions, a throwaway database, a made-up person; the record is
+`docs/plaid-sandbox-proof-2026-11-13.json` and the real response shapes are `test/fixtures/plaid/`):
+Hosted Link creation, connecting, syncing, a fresh balance, recurring, two banks combined, the
+60-day rule, an expired login and update mode, and disconnecting all behaved as written below.
+**Not proven:** a real webhook arriving and its signature being checked (Plaid could not reach the
+machine it ran on; a forged one is refused), a person going through Hosted Link in a browser
+(`scripts/plaid-sandbox-link.mjs` makes a link for that), and anything in production.
+
+- **Connecting.** "connect my bank" (or a money question with no bank connected) → the `bank` tool
+  makes a Plaid Hosted Link at that moment (it lasts 30 minutes) and Reason sends one short heads-up
+  (they connect through Plaid; read-only, can't move money) with the link on its own line. Plaid's
+  `SESSION_FINISHED` webhook brings the public token; it is exchanged server-side, the bank and its
+  accounts (name, type, last four) are saved, the first `/transactions/sync` runs, and Reason texts
+  "<bank> is connected...". Plaid opens `/bank/done` whether they finished or backed out, so that
+  page asks Plaid which it was (it also covers a lost webhook) and shows only connected / not yet /
+  closed. No bank name, balance or transaction is on it.
+- **Several banks and cards.** Each connection is its own Plaid Item: its own sealed token, sync
+  cursor, webhooks and update-mode link. Spending, categories and subscriptions cover all of them
+  together. Nothing is counted twice: Plaid's `TRANSFER_IN` / `TRANSFER_OUT` and
+  `LOAN_PAYMENTS_CREDIT_CARD_PAYMENT` are not spending, and a move whose two sides are both visible
+  (the same amount out of one of their accounts and into another within three days, where Plaid
+  called at least one side a transfer or loan payment) is left out even when Plaid mislabelled the
+  other side. With only one side connected there is nothing to match, so Plaid's category decides:
+  a card payment or transfer it labelled is left out and the answer carries `not_counted` (how much
+  went to a card Reason cannot see, whose purchases are therefore not in the total, and how much was
+  transferred out); one it labelled as something else counts as spending. Accounts are named by
+  bank, account name and last four (`by_account`, and on each listed transaction); a run of five or
+  more digits in a bank's account name is taken out.
+- **60 days.** Raw transactions are kept for 60 days. A sync never stores an older one (the first
+  sync brings months), and a sweep at start and every hour deletes what has aged past it
+  (`purgeOld`). Asked about a stretch wholly older, Reason says "i only keep the last 60 days" and
+  gives no number; partly older, it answers from the cutoff and says so. A monthly subscription is
+  spotted from two charges inside the window or from Plaid's recurring data; a yearly one is named
+  only when Plaid's recurring data reports it. Plaid itself is still asked for 180 days of history
+  (`days_requested`), because that is what its recurring detection works from; none of it older than
+  60 days is stored here.
+- **Disconnecting with more than one.** "disconnect my bank" lists them (bank, account name, last
+  four) and asks which; a last four or an unambiguous bank name picks one; "disconnect all" removes
+  each Item at Plaid and deletes each token and its data.
+- **Answers.** `bank` actions: `spending` (a period or two days, optional category or word; the
+  total first, by category; card payments, transfers between accounts and income are not counted;
+  nothing on a loan account is, so interest accruing on a mortgage is not "spending", while what
+  they pay toward a loan from a cash account is, whether or not the loan is connected),
+  `transactions`, `subscriptions` (Plaid's `/transactions/recurring/get` when the plan has that
+  add-on, otherwise worked out from their synced rows and said to be so; each with last charge, next
+  expected and `gone_out_this_month`, which is what "has rent gone out yet" reads), `balance`
+  (always `/accounts/balance/get`, never a kept number: there is no column for one), `status`,
+  `disconnect`. Categories come from Plaid's `personal_finance_category`. No bank connected → the
+  link is offered, never a guess. No investment, tax or insurance advice (the tool's description; nothing is added to the system prompt).
+- **Up to date before any answer, webhook or not** (`freshen`). In the real Sandbox the first sync
+  after a connection always came back empty (`NOT_READY`, no cursor); the transactions arrived 3 to
+  8 seconds later; and twice Plaid said `HISTORICAL_UPDATE_COMPLETE` with nothing delivered yet.
+  Plaid also never re-sends a webhook that was answered 401 or 404. So `spending`, `transactions`
+  and `subscriptions` sync each bank first unless it was synced in the last 30 seconds with its
+  history in, and a bank connected in the last ten minutes with nothing stored is asked every time.
+  While nothing has arrived the answer is `still_loading` and carries no number ("$0" would be
+  wrong); with one bank loading and another in, the total is given and the missing bank is named.
+  `/transactions/sync` is not billed per call.
+- **Names.** A charge is called by Plaid's merchant name. Where Plaid has none, the bank's own
+  line is used with every run of five or more digits taken out (real lines carry 14-digit
+  references and card fragments), before it is stored.
+- **Kept fresh.** `POST /plaid/webhook`, verified the documented way (ES256 JWT in
+  `Plaid-Verification`, key by `kid`, five-minute `iat`, SHA-256 of the raw body, constant-time).
+  `SYNC_UPDATES_AVAILABLE` syncs from the saved cursor. `ITEM_LOGIN_REQUIRED` (webhook or met on a
+  call), `PENDING_EXPIRATION`, `PENDING_DISCONNECT` → one text a day at most with a fresh update-mode
+  link; `LOGIN_REPAIRED` clears it. `USER_PERMISSION_REVOKED` → the same as a disconnect.
+- **Before paying.** The one real pay step today is `shop_pay` (a Crossmint checkout, paid by their
+  saved card). With a bank connected it first fetches a fresh balance; if no linked checking or
+  savings account covers the amount, nothing is paid on the yes already given, Reason says what the
+  account has and asks, and only a text sent after that warning lets the payment through. Plaid not
+  answering never blocks a payment. **There is no bill pay in Reason**, and Reason cannot tell which
+  account a card draws on, so this is a heads-up, not a guarantee. Proactive nudges ("rent hasn't
+  gone out", "spotify renews tomorrow") are not sent on their own yet: the data is there when asked.
+- **Privacy.** The access token is sealed with `REASON_TOKEN_KEY` before it is stored and, with
+  `REASON_ENCRYPT_REST2=on`, again under the person's own key, along with the bank's name, account
+  names and last fours, and every transaction; it is never logged, never returned to the model and
+  never exported (`SECRET_COLUMNS`). Every read is by conversation id. Reason's replies that answered
+  from the bank are kept out of the memory extractor and the nightly review (`plaid_reads`); what
+  the person says themselves is still read. "disconnect my bank" → `/item/remove`, then the token
+  and everything synced from that bank are deleted (if Plaid cannot be reached the data still goes
+  at once and the removal is retried). A full delete of somebody's data removes their Items at Plaid
+  first. Plaid is given a hash as the user id, never their number.
+- **To turn on:** `PLAID_CLIENT_ID`, `PLAID_SECRET`, `REASON_PLAID=owner`, and `REASON_PUBLIC_URL`
+  reachable by Plaid (the webhook is `<public url>/plaid/webhook`, passed on each link token; nothing
+  to register in the dashboard for Hosted Link's completion page). **Needs Plaid's approval:**
+  production access for Transactions and Balance (application, company profile, security
+  questionnaire), the Recurring Transactions add-on (a product access request), and OAuth
+  institution registration (Chase, Capital One and others need it and can take weeks). Balance is
+  billed per call in production; Transactions per connected Item per month, and Recurring
+  Transactions is a second monthly fee per Item once `/transactions/recurring/get` is called on it.
+  In Sandbox recurring answers with no access request (200, real streams; `PRODUCT_NOT_READY` if
+  asked in the first seconds), so whether production has it is only known once Plaid grants it.
+- Tests: `test/plaid.test.js` (36), against `test/fixture-plaid.js`, which answers the way the real
+  Sandbox did and is held to the recordings in `test/fixtures/plaid/` field for field.
+- By hand, with Sandbox keys: `REASON_PLAID_SANDBOX=1 node scripts/plaid-sandbox-proof.mjs
+  --env-file .env` (the whole flow against sandbox.plaid.com, about a minute, every Item removed at
+  the end; `--save test/fixtures/plaid` re-records the shapes) and `node
+  scripts/plaid-sandbox-link.mjs --env-file .env` (prints a fresh Sandbox Hosted Link and its
+  expiry for a person to open: First Platypus Bank, `user_good` / `pass_good`; `--check` then
+  connects it through the integration and says what came in; `--disconnect` cleans up).
+
 ### Food ordering (`REASON_FOOD`, `src/food.js`)
 
 What was seen to work and what was not, as of 2026-11-12. No food order has yet been paid for
