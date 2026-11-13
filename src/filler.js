@@ -26,8 +26,8 @@ import { readPage } from "./signinpage.js";
 import { logAttempt } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
 import { clearOriginInPage } from "./signin.js";
-import { askFaceId, takeApproval, dropAsks, takeResume } from "./loginuse.js";
-import { ownerTexts } from "./trust.js";
+import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants } from "./loginuse.js";
+import { requestOf } from "./resume.js";
 
 // The words the tool returns, one per outcome (design B5 step 8). `ok` is only a signed-in session.
 export const SIGNIN_RESULTS = [
@@ -296,10 +296,13 @@ export async function signIn(conversationId, site, {
   // Careful sites and an "each time" permission: a fresh Face ID before EVERY use (design B8). There
   // is no standing permission for them: one approval is one sign-in, consumed here before anything opens.
   if ((verdict.policy === "careful" || row.permission === "each_time") && resumed?.kind !== "approved" && !takeApproval(c, row.id, { now: now() })) {
-    const ask = askFaceId(c, row.id, host, { now: now(), request: resumed?.request ?? ownerTexts(trigger?.messages ?? []).slice(-1)[0] ?? "" });
+    const ask = askFaceId(c, row.id, host, { now: now(), request: resumed?.request ?? requestOf(trigger?.messages ?? []) });
     recordLoginEvent(c, { site: host, event: "signin", outcome: "needs_face_id", purpose: why });
     return say("needs_face_id", host, ask.link);
   }
+  // This sign-in is the job: a save grant still waiting for the same site (its resumed turn queued
+  // behind this one) is spent now, so the job is not signed in to and done twice (review 2026-11-13).
+  spendSaveGrants(c, [host, row.site]);
 
   // The sealed step. One lock per person covers the browser (hard rule: no stealth, no second browser).
   const holder = Symbol("filler");

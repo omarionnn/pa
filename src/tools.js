@@ -15,6 +15,7 @@ import { clock, stamp, config, RECORDING_RIDES_MS, weekdayMismatch, normalizeNum
 import * as trust from "./trust.js";
 import * as permissions from "./permissions.js";
 import * as askedCall from "./askedcall.js";
+import { requestOf } from "./resume.js";
 import * as aside from "./aside.js";
 import * as represent from "./represent.js";
 import * as browser from "./browser.js";
@@ -12531,7 +12532,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // own message. An email, a page, a timer or the nightly review never makes Reason text a save link
       // (a lookalike domain sent with Reason's own words is the phishing this page must never be).
       if ((ctx.kind ?? "event") !== "user") return { ok: false, error: "not_asked", note: SAVE_LINK_NO.not_asked };
-      const asked = askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? "";
+      // The job the link is for, in their own typed words: not a bare "yes" (src/resume.js requestOf).
+      const asked = requestOf(ctx.messages ?? []);
       const out = await offerSaveLink(c, input.site, asked, { locate: ctx.locateSigninPage ?? null });
       if (out.ok) return { ok: true, say_exactly: `${OFFER_SENTENCE}\n${out.link}`, note: "Send say_exactly as it is: the sentence, then the link on its own line. Never ask them to type a password in the chat." };
       if (out.say) return { ok: false, refused: true, say_exactly: out.say };

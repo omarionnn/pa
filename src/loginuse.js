@@ -142,6 +142,16 @@ export function takeApproval(conversationId, loginId, { now = clock.now() } = {}
 }
 
 /** Drop every ask for a person (a login forgotten, or all their logins deleted). */
+/**
+ * A sign-in to one of `sites` is going ahead (src/filler.js, past every gate): any save grant for those
+ * sites is spent with it. One save carries on one job once, whichever turn gets there first.
+ */
+export function spendSaveGrants(conversationId, sites = []) {
+  const c = String(conversationId);
+  const want = new Set(sites.filter(Boolean).map(String));
+  for (const [id, g] of saves) if (g.conversationId === c && want.has(g.site)) saves.delete(id);
+}
+
 export function dropAsks(conversationId, loginId = null) {
   const c = String(conversationId);
   for (const [t, a] of asks) if (a.conversationId === c && (loginId == null || a.loginId === loginId)) asks.delete(t);

@@ -18,6 +18,22 @@
 // No runtime (a test, a page served alone) or a runtime that is stopping: nothing starts, and the
 // page says so, its button typing "done, go ahead" for them instead.
 
+import { ownerTexts } from "./trust.js";
+import { isBareYes, NAMED_WINDOW } from "./namedsite.js";
+
+/**
+ * The job a link is made for, in their own typed words (trust.ownerTexts: never an event line, a
+ * PDF's or a photo's note, Reason's own text): their newest message that says something, within the
+ * named-site window. Their bare "yes" to Reason's "Sign in to X for that?" is not the job; the
+ * message it answered is (review 2026-11-13). Only a yes in the window: that yes.
+ */
+export function requestOf(messages = []) {
+  const theirs = ownerTexts(Array.isArray(messages) ? messages : []).slice(-NAMED_WINDOW)
+    .map((t) => t.split("\n").filter((l) => !l.trim().startsWith("[")).join(" ").trim()).filter(Boolean);
+  for (let i = theirs.length - 1; i >= 0; i--) if (!isBareYes(theirs[i])) return theirs[i];
+  return theirs.at(-1) ?? "";
+}
+
 /** The event line the resumed turn reads. Their request is quoted as their own words, on one line. */
 export function approvedLine({ site, request }) {
   return `They approved signing in to ${site} with Face ID on Reason's page, for what they asked: "${request}". `
