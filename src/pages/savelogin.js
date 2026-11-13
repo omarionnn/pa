@@ -150,10 +150,11 @@ export function renderSave({ v, nonce, boot = null, blocked = "", proved = false
       + `</form>` + `<p class="pf-l">${sealedTag("SEALED ON THIS PHONE")}</p>`
       + label("WHAT SAVING MEANS", { sp: true }) + wording(name)
       + choice
-      + (careful && v.warning ? `<p class="sl-warn">${esc(v.warning)} So I'll ask you with Face ID every time.</p>` : "")
+      + (v.google ? `<p class="sl-warn" id="sl-google-warn">${esc(v.warning)}</p>`
+        : careful && v.warning ? `<p class="sl-warn">${esc(v.warning)} So I'll ask you with Face ID every time.</p>` : "")
       // What saving here starts, said before they save (review 2026-11-13): with their request quoted
       // above, this page and their Face ID are the confirmation the save grant stands on (src/resume.js).
-      + (v.quoted ? para(`Once it's saved, I'll sign in to ${esc(v.host)} for that and carry on${careful ? ", after you say yes with Face ID" : ""}. You don't need to tell me to go ahead.`) : "")
+      + (v.quoted && !v.google ? para(`Once it's saved, I'll sign in to ${esc(v.host)} for that and carry on${careful ? ", after you say yes with Face ID" : ""}. You don't need to tell me to go ahead.`) : "")
       + `<div class="vt-act"><button class="act pf-go vt-go" type="button" id="sl-go" disabled>${FACE}<span class="vt-t">Save with Face ID</span> <span aria-hidden="true">→</span></button></div>`
       + `<p class="pf-l vt-small">RUNS OUT IN ${minutes(v.expiresAt - Date.now())} MIN · NOTHING SAVED YET</p>`
       + `<p class="pf-note vt-err" id="sl-err" role="alert" hidden></p>` + FOOT,

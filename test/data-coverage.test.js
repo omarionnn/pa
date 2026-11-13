@@ -101,6 +101,7 @@ test("the vault cannot be forgotten: every logins.db table is in LOGINS_COVERAGE
     ld.prepare(`INSERT INTO saved_logins (id, conversation_id, site, label, signin_origin, signin_path, username_ct, password_ct, wrapped_key,
       kms_key, permission, consent_version, consent_at, consent_credential, created_at) VALUES (?, ?, 'example.test', 'Example',
       'https://example.test', '/signin', x'00', x'00', 'wrapped-${id}', 'stand-in', 'each_time', 'v1', 1, 'cred', 1)`).run(id, c);
+    ld.prepare("INSERT INTO signin_routes (conversation_id, site, route, set_at) VALUES (?, 'doordash.test', 'google', 1)").run(c);
   };
   row(GONE, 1); row(STAYS, 2);
   const shown = sl.exportFor(GONE);

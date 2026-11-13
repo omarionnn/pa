@@ -70,7 +70,8 @@ test("switch on: the tool is shown (owner mode: the operator only), with a schem
     assert.ok(t, "shown to the operator");
     assert.equal(toolsFor("dm:not-the-owner").some(x => x.name === "account_signin"), false);
     assert.deepEqual(t.input_schema.required, ["site"]);
-    assert.deepEqual(Object.keys(t.input_schema.properties), ["site"], "the model passes only a site name");
+    assert.deepEqual(Object.keys(t.input_schema.properties), ["site", "with"], "the model passes only a site name, and how they sign in to it");
+    assert.deepEqual(t.input_schema.properties.with.enum, ["google", "password"], "with is one of two fixed words: never a login");
     const bad = await runTool("account_signin", { site: 42 }, { conversationId: ME, kind: "user", messages: [], signIn: spy().fn });
     assert.equal(bad.ok, false, "the zod check refuses a non-string site");
   } finally { process.env.REASON_SAVED_LOGINS = "off"; }
