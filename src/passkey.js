@@ -342,7 +342,7 @@ export async function verifyLoginAssertion(conversationId, challenge, response) 
     });
   } catch (e) { return fail(/counter/i.test(e?.message ?? "") ? "counter" : /challenge/i.test(e?.message ?? "") ? "details_changed" : /verif/i.test(e?.message ?? "") ? "no_user_verification" : "not_verified"); }
   if (!out?.verified || !out.authenticationInfo?.userVerified) return fail("not_verified");
-  q("UPDATE pay_passkeys SET counter = ?, last_used_at = ? WHERE id = ?").run(out.authenticationInfo.newCounter ?? cred.counter, clock.now(), cred.id);
+  q("UPDATE pay_passkeys SET counter = ?, last_used_at = ? WHERE id = ? AND conversation_id = ?").run(out.authenticationInfo.newCounter ?? cred.counter, clock.now(), cred.id, conversationId);
   logEvent(conversationId, null, "login_approved");
   return { ok: true, credentialId: cred.id };
 }

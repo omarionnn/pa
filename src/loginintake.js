@@ -117,12 +117,14 @@ export function serverPart(row, permission) {
 export const challengeOf = (part, sealed) => sha(Buffer.concat([part, sha(sealed)])).toString("base64url");
 
 // ---------------------------------------------------------------- the row
+// The token IS the identity here (a link anyone may open): looked up by its hash alone, as an
+// approval link is; every statement after this one names the row's person.
 function rowFor(token) {
   if (!TOKEN_RE.test(String(token ?? ""))) return null;
   return q("SELECT * FROM login_intake WHERE token_hash = ?").get(hashToken(token)) ?? null;
 }
 const stateOf = (row, now = clock.now()) => (row.claimed_at ? "used" : row.expires_at < now ? "expired" : "open");
-const close = (row) => q("UPDATE login_intake SET claimed_at = ? WHERE token_hash = ? AND claimed_at IS NULL").run(clock.now(), row.token_hash);
+const close = (row) => q("UPDATE login_intake SET claimed_at = ? WHERE token_hash = ? AND conversation_id = ? AND claimed_at IS NULL").run(clock.now(), row.token_hash, row.conversation_id);
 
 /**
  * The page's data contract. null: no such link, or the vault is off for its person (the page is then
@@ -185,7 +187,7 @@ export async function storeFromIntake(token, body) {
   if (!signed.ok) return refuse(signed.error);
   // Claimed once: a second POST, or the same one again, finds it used.
   const now = clock.now();
-  if (q("UPDATE login_intake SET claimed_at = ? WHERE token_hash = ? AND claimed_at IS NULL AND expires_at >= ?").run(now, row.token_hash, now).changes !== 1) {
+  if (q("UPDATE login_intake SET claimed_at = ? WHERE token_hash = ? AND conversation_id = ? AND claimed_at IS NULL AND expires_at >= ?").run(now, row.token_hash, c, now).changes !== 1) {
     log(c, { site: row.site, event: "save_failed", outcome: "stopped" });
     return { ok: false, error: "link_used" };
   }
@@ -277,6 +279,6 @@ export function textedPasswordReply(conversationId) {
   const row = openLinkOf(String(conversationId ?? ""));
   if (!row) return null;
   const token = randomBytes(24).toString("base64url");
-  if (q("UPDATE login_intake SET token_hash = ? WHERE token_hash = ? AND claimed_at IS NULL").run(hashToken(token), row.token_hash).changes !== 1) return null;
+  if (q("UPDATE login_intake SET token_hash = ? WHERE token_hash = ? AND conversation_id = ? AND claimed_at IS NULL").run(hashToken(token), row.token_hash, row.conversation_id).changes !== 1) return null;
   return `${TEXTED_PASSWORD_WORDS}\n${passkey.ORIGIN()}${LINK_PATH}${token}`;
 }
