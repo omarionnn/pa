@@ -16189,7 +16189,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // used, no copy of the conversation keeps it (src/privacy.js scrubTypedSecret), whether or
       // not Apple took it.
       try { scrubTypedSecret(c, input.password); } catch { /* the connect's own answer still stands */ }
-      if (!result.ok) return result;
+      if (!result.ok) return { ...result, note: "The app password they typed is no longer in this conversation: it is taken out of every copy once used. To try again, ask them to type it again (a new one from account.apple.com if Apple rejected it)." };
       return {
         ...result,
         say: `apple calendar's connected ✅ (${result.calendars.join(", ")}). ask me anything about it`,

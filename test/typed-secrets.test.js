@@ -154,6 +154,29 @@ test("the Apple app password is sealed in every record of the call and cut from 
   assert.equal(leaks(events), 0, "the memory extractor reads event_log: the password is gone from it");
 });
 
+test("an Apple connect that fails says the app password is gone from the conversation, so they are asked again", async () => {
+  const real = globalThis.fetch;
+  let asked = 0;
+  globalThis.fetch = async () => { asked++; return new Response("", { status: 401 }); };
+  try {
+    const out = await call("apple_calendar_connect", { email: "ada@example.com", password: APP_PW });
+    assert.equal(out.ok, false);
+    assert.ok(asked >= 1, "the stub answered, nothing left this machine");
+    assert.match(out.note ?? "", /no longer in this conversation.*type it again/);
+    assert.equal(leaks(out), 0);
+  } finally { globalThis.fetch = real; }
+});
+
+test("the record of where a stopped walk got to still lists a filled card or code box, without what it holds", async () => {
+  const { filledFrom } = await import("../src/furthest.js");
+  const rows = filledFrom([
+    { ref: "e1", tag: "input", type: "text", name: "Card number", secret: true, filled: true },
+    { ref: "e2", tag: "input", type: "text", name: "Security code", secret: true, filled: false },
+    { ref: "e3", tag: "input", type: "text", name: "Full name", value: "Ada Lovelace" },
+  ]);
+  assert.deepEqual(rows, [{ field: "Card number", value: "(filled in — not written down)" }, { field: "Full name", value: "Ada Lovelace" }]);
+});
+
 test("sign-in evidence and page addresses carry no query string", () => {
   assert.equal(withoutQueries("it bounced to https://x.example/login?email=a%40b.c&code=99, which is the sign-in page"), "it bounced to https://x.example/login, which is the sign-in page");
   assert.equal(HIDDEN, "[hidden]");
