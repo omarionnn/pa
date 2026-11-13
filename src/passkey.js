@@ -144,20 +144,32 @@ const live = (c) => q("SELECT * FROM pay_passkeys WHERE conversation_id = ? AND 
 export const hasPasskey = (c) => live(c).length > 0;
 /** Once someone has a passkey, a texted yes never pays again: the yes gets the Face ID link. */
 export const requiredFor = (c) => passkeyAllowedFor(c) && hasPasskey(c);
-/** For Settings: when it was set up, and whether a newer one is still waiting. Never a key. */
+/** For Settings: when it was set up, and whether a newer one is still waiting. Never a key; `ref` is an opaque handle. */
 export function passkeysOf(c) {
-  return live(c).map((p) => ({ createdAt: p.created_at, usableAt: p.usable_at, lastUsedAt: p.last_used_at, synced: !!p.backed_up }));
+  return live(c).map((p) => ({ ref: refOf(p.id), createdAt: p.created_at, usableAt: p.usable_at, lastUsedAt: p.last_used_at, synced: !!p.backed_up }));
 }
+const refOf = (id) => sha(`pay-passkey-ref|${id}`).toString("hex").slice(0, 16);
+// There is no way to take a passkey off in code (review 2026-11-13, L2). Removing the last one would
+// turn requiredFor false, so a texted "yes" would approve purchases again: a downgrade anyone who can
+// text from the thread, or an injected model, could reach. If Settings ever offers removal, it is built
+// then, behind a fresh verified Face ID assertion, and never as a model tool. A test pins its absence.
 const descriptor = (p) => ({ id: p.id, transports: p.transports ? p.transports.split(",") : undefined });
 
 /** An opaque per-person id for the authenticator: a hash, never their number or conversation. */
 const userIdOf = (c) => new Uint8Array(sha(`reason-pay-user|${c}`).subarray(0, 16));
 
-/** Step 1 of adding a passkey (signed in to Web, flag on). The challenge is kept, single use, 5 minutes. */
-export async function registrationOptions(conversationId) {
-  if (!passkeyAllowedFor(conversationId)) return { ok: false, error: "not_available" };
+/**
+ * Step 1 of adding a passkey (signed in to Web, flag on). The challenge is kept, single use, 5 minutes.
+ * `allowed`: the caller's own switch, for a page outside purchases (the save-login page passes the
+ * vault's); otherwise REASON_PASSKEY_PAY decides. One passkey per person serves both. Named "Reason".
+ */
+export async function registrationOptions(conversationId, { allowed = null } = {}) {
+  if (!(allowed ?? passkeyAllowedFor(conversationId))) return { ok: false, error: "not_available" };
   const options = await generateRegistrationOptions({
-    rpName: "Reason", rpID: RP_ID(), userID: userIdOf(conversationId), userName: "Purchases", userDisplayName: "Reason purchases",
+    // The save-login page (it passes `allowed`) names it "Reason"; the purchase page keeps its old names,
+    // so with the vault off nothing a person sees changes (review 2026-11-13).
+    rpName: "Reason", rpID: RP_ID(), userID: userIdOf(conversationId),
+    userName: allowed === null ? "Purchases" : "Reason", userDisplayName: allowed === null ? "Reason purchases" : "Reason",
     attestationType: "none", timeout: 120_000,
     excludeCredentials: live(conversationId).map(descriptor),
     authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
@@ -169,9 +181,9 @@ export async function registrationOptions(conversationId) {
   return { ok: true, options };
 }
 
-/** Step 2: the browser's answer. Saved only if it verifies with UV, for heyreason.com, against our challenge. */
-export async function register(conversationId, response) {
-  if (!passkeyAllowedFor(conversationId)) return { ok: false, error: "not_available" };
+/** Step 2: the browser's answer. Saved only if it verifies with UV, for heyreason.com, against our challenge. `for: "login"`: the save-login page's words. */
+export async function register(conversationId, response, { allowed = null, for: purpose = "pay" } = {}) {
+  if (!(allowed ?? passkeyAllowedFor(conversationId))) return { ok: false, error: "not_available" };
   const reg = q("SELECT * FROM pay_passkey_regs WHERE conversation_id = ?").get(conversationId);
   q("DELETE FROM pay_passkey_regs WHERE conversation_id = ?").run(conversationId);
   if (!reg || reg.expires_at < clock.now()) return { ok: false, error: "expired" };
@@ -190,6 +202,12 @@ export async function register(conversationId, response) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(credential.id, conversationId, Buffer.from(credential.publicKey), credential.counter ?? 0,
     (credential.transports ?? []).join(","), credentialDeviceType ?? "", credentialBackedUp ? 1 : 0, now, usableAt);
   logEvent(conversationId, null, before ? "passkey_added_cooling" : "passkey_added");
+  if (purpose === "login") {
+    await tell(conversationId, before
+      ? "A new Face ID was just set up for Reason. It can approve anything from tomorrow at this time. If that wasn't you, tell me now and I'll take it off."
+      : "Face ID is set up for Reason. Saving a login, and widening what I may do with one, needs it.");
+    return { ok: true, coolingUntil: before ? usableAt : null };
+  }
   await tell(conversationId, before
     ? "A new Face ID was just set up to approve your purchases. It can approve payments from tomorrow at this time. If that wasn't you, tell me now and I'll take it off."
     : "Face ID now approves your purchases. When I'm about to pay, I'll text you a link; a texted yes on its own won't pay anymore.");
@@ -285,6 +303,43 @@ export async function verifyApproval(a, row, response) {
   q("UPDATE pay_passkeys SET counter = ?, last_used_at = ? WHERE id = ?").run(out.authenticationInfo.newCounter ?? cred.counter, clock.now(), cred.id);
   logEvent(a.conversation_id, row, "approved");
   return { ok: true };
+}
+
+// ---------------------------------------------------------------- a saved login (kind 'login', vault PR 5)
+// The save page signs one login for one site under one wording (src/loginintake.js builds the
+// challenge from the link's row and the hash of the sealed blob). The link itself is the login_intake
+// row, one use; here only the passkey part: options for the page, and the check of what came back.
+
+/** What the save page needs to ask for Face ID: this person's usable passkeys, UV required. The page supplies the challenge. */
+export function loginAssertionOptions(conversationId) {
+  const now = clock.now();
+  const keys = live(conversationId).filter((p) => p.usable_at <= now);
+  if (!keys.length) return { ok: false, error: hasPasskey(conversationId) ? "cooling_off" : "no_passkey" };
+  return { ok: true, options: { rpId: RP_ID(), timeout: 120_000, userVerification: "required", allowCredentials: keys.map((p) => ({ type: "public-key", ...descriptor(p) })) } };
+}
+
+/**
+ * Check an assertion over `challenge` (base64url, recomputed by the caller from the link's row and the
+ * blob): one of this person's passkeys, past its wait, Face ID or passcode (UV), heyreason.com, the sign
+ * counter. → { ok: true, credentialId } | { ok: false, error }. Logged as kind login, never the assertion.
+ */
+export async function verifyLoginAssertion(conversationId, challenge, response) {
+  const fail = (error) => { logEvent(conversationId, null, "login_rejected", error); return { ok: false, error }; };
+  if (!/^[A-Za-z0-9_-]{43}$/.test(String(challenge ?? ""))) return fail("bad_challenge");
+  const cred = typeof response?.id === "string" ? q("SELECT * FROM pay_passkeys WHERE id = ? AND conversation_id = ? AND removed_at IS NULL").get(response.id, conversationId) : null;
+  if (!cred) return fail("unknown_passkey");
+  if (cred.usable_at > clock.now()) return fail("cooling_off");
+  let out;
+  try {
+    out = await verifyAuthenticationResponse({
+      response, expectedChallenge: challenge, expectedOrigin: ORIGINS(), expectedRPID: RP_ID(), requireUserVerification: true,
+      credential: { id: cred.id, publicKey: new Uint8Array(cred.public_key), counter: cred.counter, transports: cred.transports ? cred.transports.split(",") : undefined },
+    });
+  } catch (e) { return fail(/counter/i.test(e?.message ?? "") ? "counter" : /challenge/i.test(e?.message ?? "") ? "details_changed" : /verif/i.test(e?.message ?? "") ? "no_user_verification" : "not_verified"); }
+  if (!out?.verified || !out.authenticationInfo?.userVerified) return fail("not_verified");
+  q("UPDATE pay_passkeys SET counter = ?, last_used_at = ? WHERE id = ? AND conversation_id = ?").run(out.authenticationInfo.newCounter ?? cred.counter, clock.now(), cred.id, conversationId);
+  logEvent(conversationId, null, "login_approved");
+  return { ok: true, credentialId: cred.id };
 }
 
 /**

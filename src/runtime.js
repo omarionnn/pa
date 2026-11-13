@@ -69,6 +69,7 @@ import * as onboarding from "./onboarding.js";
 import * as eventonb from "./eventonboarding.js";
 import * as opsDigest from "./opsdigest.js";
 import { withPlainPath, sealLike } from "./restfiles.js";
+import * as filler from "./filler.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -268,7 +269,9 @@ export class Runtime extends EventEmitter {
     this.fetchImpl = fetchImpl;
     // Handed to every turn, and from there into the tools, so `message_send` and `call_place`
     // reach the real adapters when serve.js wired them and nothing at all when it did not.
-    this.turnExtras = { channels, calls };
+    // And the filler (vault PR 6, src/filler.js): account_signin and the forget path reach it only
+    // through here, because src/tools.js may not import the vault (test/savedlogins.test.js rule 2).
+    this.turnExtras = { channels, calls, signIn: filler.signIn, forgetLogin: filler.forgetLogin };
     // How a message actually leaves. `deliver` is for a caller that can report back whether an
     // attachment really went — serve.js passes one; without it the "outbound" event is emitted and
     // the send is taken at face value, which is what the console and the tests want.
