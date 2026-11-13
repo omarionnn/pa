@@ -28,7 +28,7 @@ const fakeStripe = (await import("node:http")).createServer((req, res) => {
   req.on("data", (c) => { body += c; });
   req.on("end", () => {
     const form = Object.fromEntries(new URLSearchParams(body));
-    stripeCalls.push({ method: req.method, path: req.url, form });
+    stripeCalls.push({ method: req.method, path: req.url, form, account: req.headers["stripe-account"] ?? null });
     res.setHeader("content-type", "application/json");
     if (req.method === "POST" && req.url === "/v1/accounts") return res.end(JSON.stringify({ id: `acct_drive_${++stripeN}`, object: "account", type: "express", charges_enabled: false, details_submitted: false }));
     if (req.method === "POST" && req.url === "/v1/account_links") return res.end(JSON.stringify({ object: "account_link", url: `https://connect.stripe.test/setup/${form.account}` }));
@@ -36,7 +36,13 @@ const fakeStripe = (await import("node:http")).createServer((req, res) => {
     if (/^\/v1\/accounts\/[^/]+\/login_links$/.test(req.url)) return res.end(JSON.stringify({ object: "login_link", url: "https://connect.stripe.test/express/x" }));
     if (req.method === "POST" && req.url === "/v1/checkout/sessions") return res.end(JSON.stringify({ id: `cs_drive_${++stripeN}`, object: "checkout.session", url: `https://checkout.stripe.test/c/pay/cs_drive_${stripeN}` }));
     if (/\/expire$/.test(req.url)) return res.end(JSON.stringify({ object: "checkout.session", status: "expired" }));
+    // The organizer's balance and payouts (sales summary): asked on their connected account.
+    if (req.method === "GET" && req.url === "/v1/balance") return res.end(JSON.stringify({ object: "balance", available: [], pending: [{ amount: 2437, currency: "usd" }] }));
+    if (req.method === "GET" && req.url.startsWith("/v1/payouts")) return res.end(JSON.stringify({ object: "list", data: [] }));
     if (req.method === "POST" && req.url === "/v1/refunds") return res.end(JSON.stringify({ id: `re_drive_${++stripeN}`, object: "refund", status: "succeeded" }));
+    const piGet = /^\/v1\/payment_intents\/([^/?]+)\?expand\[\]=latest_charge$/.exec(decodeURIComponent(req.url));
+    if (piGet && req.method === "GET") return res.end(JSON.stringify({ id: piGet[1], object: "payment_intent", latest_charge: { id: `ch_${piGet[1]}`, application_fee: `fee_${piGet[1]}` } }));
+    if (req.method === "POST" && /^\/v1\/application_fees\/[^/]+\/refunds$/.test(req.url)) return res.end(JSON.stringify({ id: `fr_drive_${++stripeN}`, object: "fee_refund", amount: Number(form.amount) }));
     res.statusCode = 404;
     res.end(JSON.stringify({ error: { message: `no such route in the fake: ${req.method} ${req.url}` } }));
   });
@@ -637,6 +643,18 @@ config.events = "owner";
   const rf = stripeCalls.filter(c => c.path === "/v1/refunds").at(-1);
   step("pay: with the yes the guest gets everything back (transfer reversed, fee refunded), leaves, and is told", refunded.ok && refunded.refunded === "$26.06" && !!rf && rf.form.reverse_transfer === "true" && rf.form.refund_application_fee === "true" && rf.form.payment_intent === `pi_drive_${hold.id}`
     && db.attendeeRow(pev.id, C.ama)?.state === "left" && eventpay.paidRow(pev.id, C.ama) === null && toNum(AMA).some(t => /refunded your \$26\.06 for Paid Supper/.test(t)), JSON.stringify({ refunded, state: db.attendeeRow(pev.id, C.ama)?.state }));
+  // the refund policy (default: until 48 hours before it starts) and the sales summary
+  const lastCs = stripeCalls.filter(c => c.path === "/v1/checkout/sessions").at(-1);
+  step("pay: the refund policy is on Stripe's page and in the paid-join receipt (default: until 48 hours before)", /^Refunds until 48 hours before it starts\./.test(lastCs?.form["custom_text[submit][message]"] ?? "") && toNum(AMA).some(t => /you're in\. refunds until 48 hours before it starts — just text me "refund my ticket"/.test(t)), lastCs?.form["custom_text[submit][message]"]);
+  const sales = await tool("event_payouts", { event_id: pev.id, event_named: pev.name, action: "status" }, C.owner);
+  step("pay: \"how are ticket sales\": sold, gross, refunded, Reason's 2.5%, coming to them, next payout from their Stripe account",
+    sales.ok && sales.tickets?.sold === 2 && sales.tickets?.refunded_amount === "$25" && sales.tickets?.reason_fee === "$0.63" && sales.tickets?.you_get === "$24.37"
+      && /Next payout: None scheduled yet — \$24\.37 is still clearing at Stripe/.test(sales.say ?? "") && stripeCalls.some(c => c.path === "/v1/balance" && /^acct_drive_/.test(c.account ?? "")), sales.say);
+  const tight = await tool("event_price", { event_id: pev.id, event_named: pev.name, refund_policy: "none" }, C.owner);
+  const yawAsk = await tool("event_ticket_refund", { event_id: pev.id, event_named: pev.name }, C.yaw);
+  step("pay: tightening to no refunds spares tickets already sold: Yaw's ask still goes to the yes, pinned to his ticket", tight.ok && /keep the looser policy/.test(tight.note ?? "") && yawAsk.blocked === "needs_confirmation" && /^cancel my ticket for Paid Supper \(event #\d+\): \$25\.00 back/.test(yawAsk.use_target ?? ""), JSON.stringify({ note: tight.note, yaw: yawAsk.use_target ?? yawAsk.error }));
+  const kofiAsk = await tool("event_ticket_refund", { event_id: pev.id, event_named: pev.name }, C.kofi);
+  step("pay: somebody without a ticket is never offered a guest refund", kofiAsk.ok === false && !kofiAsk.use_target, kofiAsk.error);
   const dash = await tool("event_payouts", { event_id: pev.id, event_named: pev.name, action: "dashboard" }, C.owner);
   step("pay: the organizer gets a one-time Stripe Express dashboard link", dash.ok && /^https:\/\/connect\.stripe\.test\/express\//.test(dash.dashboard_link ?? ""), dash.dashboard_link);
   // cancelling refunds everyone who paid, fee included
@@ -644,6 +662,43 @@ config.events = "owner";
   const cancelled = await tool("event_cancel", { event_id: pev.id, event_named: pev.name }, C.owner);
   await new Promise(r => setTimeout(r, 80));
   step("pay: cancelling refunds everyone who paid, application fee included, and the guest hears it's cancelled and refunded", cancelled.ok && cancelled.refunds?.refunded === 1 && cancelled.refunds?.failed === 0 && stripeCalls.filter(c => c.path === "/v1/refunds").length === nR + 1 && eventpay.paidRows(pev.id).length === 0 && toNum(YAW).some(t => /is cancelled, so your \$26\.06 has been refunded in full/.test(t)), JSON.stringify(cancelled.refunds));
+
+  // ---- buy for friends (src/eventpay.js seats): each friend is their own guest ----
+  const fmade = await tool("event_create", { name: "Friends Supper", description: "bring people", starts_at: "2027-08-21T19:00", timezone: "America/New_York", location: "9 Pine St", password: "friends-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: true, capacity: 4 }, C.owner);
+  const fev = db.getEventRow(fmade.event.event_id);
+  await tool("event_price", { event_id: fev.id, event_named: fev.name, price_dollars: 25 }, C.owner);
+  const buy = await tool("event_join", { name: "Friends Supper", password: "friends-pw", tickets: 3 }, C.kofi);
+  const fcs = [...stripeCalls].reverse().find(c => c.path === "/v1/checkout/sessions");
+  const fhold = eventpay.openRow(fev.id, C.kofi);
+  step("pay: 3 tickets by text → one Checkout, quantity 3 on both lines, Reason's fee 3×, a hold for 3 places", buy.ok && buy.payment_required && buy.tickets === 3 && fcs?.form["line_items[0][quantity]"] === "3" && fcs?.form["line_items[1][quantity]"] === "3"
+    && fcs?.form["payment_intent_data[application_fee_amount]"] === String(qt.application_fee * 3) && eventpay.openHolds(fev.id) === 3 && eventpay.spotsLeft(fev) === 1, JSON.stringify({ t: buy.tickets, q: fcs?.form["line_items[0][quantity]"] }));
+  await webhook("checkout.session.completed", { id: fhold.checkout_session_id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_drive_${fhold.id}`, amount_total: qt.total * 3, client_reference_id: `evpay:${fhold.id}` });
+  await new Promise(r => setTimeout(r, 60));
+  const fseats = eventpay.seatsOfPayment(fhold.id);
+  const links = fseats.slice(1).map(st => eventpay.seatUrl(fev, st));
+  step("pay: paid → the buyer is in, two open seats with their own links, each texted as its own message", db.attendeeRow(fev.id, C.kofi)?.state === "joined" && fseats.length === 3 && fseats.slice(1).every(st => st.state === "open" && /^[A-Za-z0-9_-]{32}$/.test(st.claim_token))
+    && links.every(l => toNum(KOFI).includes(l)) && toNum(KOFI).some(t => /here are your 2 tickets for friends/.test(t)) && eventpay.unclaimedSeats(fev.id) === 2, JSON.stringify(fseats.map(st => st.state)));
+  const yawClaim = eventpay.claimSeat({ ev: fev, seatId: fseats[1].id, conversationId: C.yaw, displayName: "Yaw" });
+  step("pay: a friend claims a seat as their own guest; the link is spent; a second seat for somebody already in is refused and stays open",
+    yawClaim.ok && db.attendeeRow(fev.id, C.yaw)?.state === "joined" && eventpay.seatById(fseats[1].id).claim_token === null && eventpay.seatByToken(fseats[1].claim_token) === null
+    && eventpay.claimSeat({ ev: fev, seatId: fseats[2].id, conversationId: C.yaw, displayName: "Yaw" }).reason === "already" && eventpay.seatById(fseats[2].id).state === "open", JSON.stringify(yawClaim.reason ?? "ok"));
+  const fullNow = await tool("event_join", { name: "Friends Supper", password: "friends-pw", tickets: 2 }, C.ama);
+  step("pay: an unclaimed seat holds its place: 2 in + 1 unclaimed of 4 leaves 1, so 2 tickets won't fit", fullNow.ok === false && /Only 1 spot is left/.test(fullNow.error ?? ""), fullNow.error);
+  const seatAsk = await tool("event_seats", { event_id: fev.id, event_named: fev.name, action: "refund", seat_id: fseats[2].id }, C.kofi);
+  const seatDone = await withYes(runTool, "event_seats", { event_id: fev.id, event_named: fev.name, action: "refund", seat_id: fseats[2].id }, { conversationId: C.kofi, messages: [], events: runtime });
+  const srf = [...stripeCalls].reverse().find(c => c.path === "/v1/refunds");
+  const sfee = [...stripeCalls].reverse().find(c => /^\/v1\/application_fees\/[^/]+\/refunds$/.test(c.path));
+  step("pay: the buyer gives back the unclaimed seat behind the yes: the ticket price back (processing kept), transfer reversed by it, Reason's 2.5% back; the rest stands",
+    seatAsk.blocked === "needs_confirmation" && /: \$25\.00 back \[seat/.test(seatAsk.use_target ?? "") && seatDone.ok && srf?.form.amount === String(qt.price) && srf?.form.reverse_transfer === "true" && srf?.form.refund_application_fee === "false" && sfee?.form.amount === String(qt.reason_fee)
+    && eventpay.paymentRow(fhold.id).status === "paid" && eventpay.summary(fev).sold_count === 3 && eventpay.summary(fev).refunded_count === 1, JSON.stringify({ ask: seatAsk.blocked, amount: srf?.form.amount }));
+  const yawBack = await withYes(runTool, "event_ticket_refund", { event_id: fev.id, event_named: fev.name }, { conversationId: C.yaw, messages: [], events: runtime });
+  await new Promise(r => setTimeout(r, 60));
+  step("pay: the friend gives back their own seat: off the list, told the money goes to the buyer's card, and the buyer hears it", yawBack.ok && yawBack.given_back === "$25.00" && db.attendeeRow(fev.id, C.yaw)?.state === "left"
+    && toNum(YAW).some(t => /Kofi's card gets \$25\.00 back; the \$1\.06 processing fee isn't refundable/.test(t)) && toNum(KOFI).some(t => /Yaw gave back the ticket you got them/.test(t)), JSON.stringify(yawBack));
+  await tool("event_cancel", { event_id: fev.id, event_named: fev.name }, C.owner);
+  await new Promise(r => setTimeout(r, 60));
+  const crf = [...stripeCalls].reverse().find(c => c.path === "/v1/refunds");
+  step("pay: cancelling refunds what still stands on the payment (the buyer's own ticket) and closes it", crf?.form.amount === String(qt.total) && eventpay.paymentRow(fhold.id).status === "refunded" && crf?.form.refund_application_fee === "true" && eventpay.paymentRow(fhold.id).refunded_cents === qt.price * 2 + qt.total, JSON.stringify(crf?.form));
   clock.reset();
 }
 

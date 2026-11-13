@@ -62,7 +62,9 @@ const HOW = {
   i_worked_it_out: "I worked this out — nobody told me",
   i_saw_it_in_a_photo: "I read this off a picture — nobody told me",
   i_noticed_a_pattern: "I noticed this across a few weeks — nobody told me",
+  i_noticed_it_across_days: "I noticed this in what they said on more than one day — a pattern I think I see, not something they told me as a fact",
 };
+const receiptsOf = (g) => { try { const v = JSON.parse(g.evidence || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
 
 /**
  * What a permission's scope means, in words somebody reads.
@@ -113,6 +115,7 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
   const guesses = db.listGuesses(conversationId).map(g => ({
     id: g.id, about: g.about, guess: g.guess, how: HOW[g.how] ?? HOW.i_worked_it_out,
     noted: stamp(g.noted_at),
+    ...(g.how === db.NOTICED_SOURCE ? { noticed_pattern: true, off_messages: receiptsOf(g).length, on_days: new Set(receiptsOf(g).map(e => e.day)).size, so_i: g.use || "" } : {}),
     ...(g.corrected_at ? { corrected: stamp(g.corrected_at) } : {}),
   }));
   const patterns = db.listPatterns(conversationId).map(p => ({

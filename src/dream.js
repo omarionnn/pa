@@ -23,12 +23,37 @@
 //      superseded_by) — nothing is hard-deleted, and nothing they took back is ever written again;
 //   5. the profile is rebuilt.
 //
+// COVERAGE (2026-11-12). Three ways somebody used to go unreviewed, each closed here:
+//   - a first review only looked back a week, so somebody whose last message was older than that was
+//     queued every night, found "nothing new", and was never read at all (9 of 16 accounts on live).
+//     A first review with nothing in the last week now reads their newest messages instead;
+//   - the window is three hours; a server that was down through it, or a CLI over its limit at 4am,
+//     lost the night. Now any time after the window that same day the night is caught up — at most one
+//     ask per person per CATCHUP_GAP_H, the time of each ask kept on disk (memory_reviews.attempted_at)
+//     so a run of restarts cannot ask again and again, a few minutes after boot at the earliest, and
+//     never more than MAX_PASSES_PER_DAY asks a day;
+//   - one pass reads at most MAX_MESSAGES; somebody who says more than that a day never caught up
+//     ("more": true every night). A pass that left a backlog is followed by another the same way.
+//
+// CALLS (REASON_REVIEW_CALLS). What they said on their own phone calls is in event_log too
+// (src/calls/postcall.js, role call_user). With the switch on for them those lines are read and can
+// be cited exactly like a text. Only a call that is theirs AND verified is their own word; a caller
+// matched by caller ID alone, and the other side of a call Reason made for them (a business), are
+// shown marked and can never be cited as something the person said. The same forget rule applies.
+//
+// PATTERNS (REASON_REVIEW_PATTERNS, `noticePatterns`). About once a week, after their review, one more
+// pass reads only THEIR OWN lines from the last four weeks for things that recur. Each one kept must
+// cite their own messages on two different days (code checks), is saved as a GUESS (db.NOTICED_SOURCE),
+// never a fact, shows on their memory page with its receipts, is theirs to delete, and expires when
+// nothing bears it out. Sensitive subjects are refused. Nobody who said no to patterns is ever read.
+//
 // WHERE IT RUNS. On the Claude subscription, through the claude CLI, on the background lane — the
 // owner's explicit choice (2026-11-07). Never the billed API: on REASON_BACKEND=api, or when the CLI
 // cannot be asked, the night is skipped quietly and the same messages are read the next night.
 //
 // PRIVACY. Logs carry counts and outcomes only, never a fact, a rule or a message. Every read is by
 // this person's conversation id; one person's memory never reaches another's prompt.
+import { withoutFinanceReplies } from "./plaid.js";
 import { config, clock } from "./config.js";
 import * as db from "./db.js";
 import * as background from "./background.js";
@@ -38,9 +63,41 @@ import { confirmedZone } from "./zone.js";
 import { rebuildProfile, savedOn } from "./extract.js";
 import { costOf } from "./spend.js";
 
+/** A three-way switch (off | owner | on) for one conversation. */
+function switchFor(value, conversationId) {
+  if (value === "on") return true;
+  if (value !== "owner" || !conversationId) return false;
+  try { return !!db.getAccount(conversationId)?.is_operator; } catch { return false; }
+}
+/** Does their review read what they said on their own calls? */
+export const reviewCallsFor = (conversationId) => switchFor(config.reviewCalls, conversationId);
+/**
+ * May things be noticed across days for them? The switch, and their own word: a no to patterns
+ * (patterns_set off, "stop reading into my texts") always wins; under "on", somebody who is not the
+ * operator must have said yes. Under "owner" the operator turning the switch on is the yes.
+ */
+export function patternsFor(conversationId) {
+  if (!switchFor(config.reviewPatterns, conversationId)) return false;
+  let said = null;
+  try { said = db.noticePrefs(conversationId)?.patterns ?? null; } catch { return false; }
+  if (said === "off") return false;
+  if (said === "on") return true;
+  try { return !!db.getAccount(conversationId)?.is_operator; } catch { return false; }
+}
+
 /** The hour (their clock) the review may start, and how long after it the night still counts. */
 export const DREAM_HOUR = Number(process.env.REASON_DREAM_HOUR || 4);
 const DREAM_WINDOW_H = 3;
+/** Outside the window (a missed night, a backlog, a skipped ask): at most one ask per person this often. */
+export const CATCHUP_GAP_MS = Number(process.env.REASON_DREAM_CATCHUP_GAP_H || 6) * 3600_000;
+/** Inside the window, an ask that never finished (a restart mid-pass) is asked again no sooner than this. */
+export const RETRY_GAP_MS = 30 * 60_000;
+/** Asks of the model per person per day, whatever happens. */
+export const MAX_PASSES_PER_DAY = 3;
+/** A catch-up waits this long after boot: in a run of deploys the process is about to go away again. */
+export const CATCHUP_SETTLE_MS = 3 * 60_000;
+/** Catch-ups started per sweep, so a morning after an outage is spread over a few sweeps. */
+const CATCHUP_PER_SWEEP = 2;
 /** Where nobody has told us their zone. */
 export const DEFAULT_ZONE = "America/New_York";
 
@@ -151,6 +208,8 @@ Every change must cite, in "message", the m-number that justifies it. If no mess
 
 Rules are how they want the assistant to behave: timing, tone, what to show first, things to stop doing. Add one only when THEY corrected or asked for a change in how the assistant behaves; cite their message. A fact about them is not a rule. Retire a rule when a later message of theirs takes it back or contradicts it; merge overlapping rules marked "review" (never one they set themselves), citing their message. There may be at most {CAP} active rules: when there would be more, merge the overlapping review rules and keep what matters most.
 
+Some lines may be marked as said on a phone call. What the person said on their own call counts exactly like a message of theirs, and you may cite it. A line marked "not the person" is a caller who was not verified, or the other side of a call the assistant made for them (a business, somebody else): it is never the person speaking. Never cite one to correct or retire a fact or to make or change a rule, and never treat what it says as something the person said or wants.
+
 Answer only with the schema.`;
 
 // ---------------------------------------------------------------- when
@@ -174,6 +233,13 @@ export function inDreamHour(at, tz) {
   return h >= DREAM_HOUR && h < DREAM_HOUR + DREAM_WINDOW_H;
 }
 
+/** When today's window closed where they are (only asked after it has: no clock change falls between). */
+function windowClosedAt(at, tz) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", second: "numeric", hour12: false })
+    .formatToParts(new Date(at)).map(x => [x.type, Number(x.value)]));
+  return at - (((p.hour % 24) - (DREAM_HOUR + DREAM_WINDOW_H)) * 3600_000 + p.minute * 60_000 + p.second * 1000);
+}
+
 /** Why the review cannot ask a model right now, or null when it can. Never the API. */
 export function whyNot() {
   if (!onCli()) return "not_on_cli";
@@ -189,8 +255,8 @@ let sweeping = false;
  * a background-lane job only for somebody at their quiet hour, not yet reviewed tonight, with
  * something new said. Never throws, never waits on the model.
  */
-export function sweepDreams({ now = clock.now(), log = () => {}, queue = background.enqueue } = {}) {
-  const out = { queued: 0 };
+export function sweepDreams({ now = clock.now(), log = () => {}, queue = background.enqueue, uptimeMs = process.uptime() * 1000 } = {}) {
+  const out = { queued: 0, caught_up: 0 };
   const why = whyNot();
   if (why) return { ...out, skipped: why };
   if (sweeping) return { ...out, skipped: "already_sweeping" };
@@ -201,14 +267,32 @@ export function sweepDreams({ now = clock.now(), log = () => {}, queue = backgro
       const c = acct.conversation_id;
       if (reviewing.has(c)) continue;
       const tz = dreamZone(c);
-      if (!inDreamHour(now, tz)) continue;
+      // Not before tonight's hour has come: the day that is due is their own, from DREAM_HOUR on.
+      if (localHour(now, tz) < DREAM_HOUR) continue;
       const day = localDay(now, tz);
       const state = db.memoryReviewState(c);
-      if (state.last_day === day) continue;
-      if (!db.hasEventsSince(c, state.last_event_id)) continue;
+      const doneToday = state.last_day === day;
+      // Today's pass ran and finished: nothing more, unless it left a backlog or could not ask.
+      const unfinished = doneToday && (state.last_outcome === "reviewed_more" || String(state.last_outcome).startsWith("skipped:"));
+      if (doneToday && !unfinished) continue;
+      const sinceAsk = now - (Number(state.attempted_at) || 0);
+      const late = !inDreamHour(now, tz) || unfinished;
+      if (late) {
+        // The catch-up: a missed window, a backlog, an ask that was skipped. Rate-limited on disk.
+        if (sinceAsk < CATCHUP_GAP_MS || uptimeMs < CATCHUP_SETTLE_MS || out.caught_up >= CATCHUP_PER_SWEEP) continue;
+      } else if (sinceAsk < RETRY_GAP_MS) continue;
+      if (db.memoryReviewPassesOn(c, day) >= MAX_PASSES_PER_DAY) continue;
+      // A night is only "missed" if there was something to read when its window closed. Somebody who
+      // had said nothing by then and texts at noon is read tonight, as always: not one more pass, in
+      // the middle of their day, for every person every day.
+      const before = late && !unfinished ? windowClosedAt(now, tz) : null;
+      if (!db.hasEventsSince(c, state.last_event_id, { calls: reviewCallsFor(c), before })) continue;
+      // Written before the model is asked: a restart mid-pass finds it and waits its turn.
+      try { db.noteMemoryReviewAttempt(c, now); } catch { continue; }
       reviewing.add(c);
       out.queued++;
-      Promise.resolve(queue(`dream:${c}`, () => reviewOne(c, { now: clock.now(), day, log })))
+      if (late) out.caught_up++;
+      Promise.resolve(queue(`dream:${c}`, () => reviewOne(c, { now: clock.now(), day, log, when: late ? "catch_up" : "window" })))
         .catch(e => log({ memory_review: "failed", conversation: c, error_kind: errorKind(e) }))
         .finally(() => reviewing.delete(c));
     }
@@ -248,24 +332,55 @@ const errorKind = (e) => {
 const cut = (s, n) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 const parseIds = (s) => { try { const v = JSON.parse(s || "[]"); return Array.isArray(v) ? v.map(Number).filter(Number.isInteger) : []; } catch { return []; } };
 
-/** The period's messages, capped: oldest first, up to the caps. `lastId` is the last one read. */
-export function periodMessages(conversationId, afterId, { now = clock.now() } = {}) {
+/**
+ * A call line's place in the review. The person's own words on their own verified call are a
+ * message of theirs ("user"); the assistant's side is the assistant. Anything else on a call — a
+ * caller known by caller ID alone, or the other side of a call Reason made for them — is shown,
+ * marked, under a role no citation check accepts as the person's own.
+ */
+function callLine(r) {
+  const own = Number(r.call_owner) === 1;
+  const verified = own && (!!r.call_verified_at || String(r.call_direction ?? "out") !== "in");
+  if (r.role === "call_assistant") return { role: "assistant", where: own ? "on a phone call with them" : "on a call it made for them" };
+  if (verified) return { role: "user", where: "on a phone call" };
+  if (own) return { role: "caller", where: "on a phone call, caller not verified — not the person" };
+  return { role: "other", where: "the other side of a call made for them — not the person" };
+}
+
+/**
+ * The period's messages, capped: oldest first, up to the caps. `lastId` is the last one read.
+ * `calls`: their phone calls' lines are part of the period (REASON_REVIEW_CALLS).
+ */
+export function periodMessages(conversationId, afterId, { now = clock.now(), calls = reviewCallsFor(conversationId) } = {}) {
+  const roles = calls ? "('user', 'assistant', 'call_user', 'call_assistant')" : "('user', 'assistant')";
   let from = Number(afterId) || 0;
   if (!from) {
     const before = db.db.prepare("SELECT MAX(id) AS id FROM event_log WHERE conversation_id = ? AND at < ?").get(conversationId, now - FIRST_LOOKBACK_MS)?.id;
     from = before ?? 0;
+    // Never reviewed, and nothing of theirs inside the lookback: somebody who went quiet more than a
+    // week before their first review was never read at all. Their newest messages instead.
+    if (from && !db.hasEventsSince(conversationId, from, { calls })) {
+      from = db.db.prepare(`SELECT id FROM event_log WHERE conversation_id = ? AND role IN ${roles} ORDER BY id DESC LIMIT 1 OFFSET ?`)
+        .get(conversationId, MAX_MESSAGES)?.id ?? 0;
+    }
   }
   // Never a line they asked Reason to forget (src/db.js forgetFromRecall): those are out of every read.
-  const rows = db.db.prepare(`SELECT e.id, e.role, e.content, e.at FROM event_log e WHERE e.conversation_id = ? AND e.id > ? AND e.role IN ('user', 'assistant')
+  const rows = db.db.prepare(`SELECT e.id, e.role, e.content, e.at, k.is_owner AS call_owner, k.direction AS call_direction, k.verified_at AS call_verified_at
+    FROM event_log e LEFT JOIN calls k ON e.channel = 'call' AND k.id = CAST(e.message_id AS INTEGER) AND k.conversation_id = e.conversation_id
+    WHERE e.conversation_id = ? AND e.id > ? AND e.role IN ${roles}
     AND ${db.eventNotForgotten("e")} ORDER BY e.id LIMIT ?`).all(conversationId, from, MAX_MESSAGES + 1);
   const picked = [];
   let chars = 0;
+  // Reason's replies that answered from their bank are not read (src/plaid.js); their own words are.
+  const readable = new Set(withoutFinanceReplies(conversationId, rows).map(r => r.id));
   for (const r of rows.slice(0, MAX_MESSAGES)) {
+    if (!readable.has(r.id)) continue;
     const text = cut(r.content, MESSAGE_CHARS);
     if (!text) continue;
     if (picked.length && chars + text.length > MAX_TRANSCRIPT_CHARS) break;
     chars += text.length;
-    picked.push({ ...r, text });
+    const line = r.role === "call_user" || r.role === "call_assistant" ? callLine(r) : { role: r.role, where: "" };
+    picked.push({ id: r.id, content: r.content, at: r.at, text, ...line });
   }
   const lastId = picked.length ? picked[picked.length - 1].id : null;
   return { messages: picked, lastId, more: rows.length > picked.length };
@@ -275,6 +390,8 @@ export function periodMessages(conversationId, afterId, { now = clock.now() } = 
 export function reviewPrompt(conversationId, { messages, facts, rules, now = clock.now() }) {
   const shownMessages = new Map(messages.map(m => [m.id, m]));
   const sources = db.eventsByIds(conversationId, facts.flatMap(f => parseIds(f.source_message_ids).slice(-SOURCES_PER_FACT)));
+  // A fact's source that is a call line keeps its raw role (call_user / call_assistant): shown, and
+  // never accepted as the person's own message by a citation check.
   for (const s of sources) if (!shownMessages.has(s.id)) shownMessages.set(s.id, { ...s, text: cut(s.content, SOURCE_CHARS) });
   const name = db.getAccount(conversationId)?.name || "them";
   const factLines = facts.map(f => {
@@ -284,7 +401,7 @@ export function reviewPrompt(conversationId, { messages, facts, rules, now = clo
   });
   const ruleLines = rules.map(r => `R${r.id} (saved ${savedOn(r.created_at)}${r.source === "they_said" ? ", they set it" : ", review"}${r.source_message_id ? `, from m${r.source_message_id}` : ""}) ${cut(r.rule, 300)}${r.why ? ` — why: ${cut(r.why, 200)}` : ""}`);
   const prompt = `Today is ${savedOn(now)}. The person is ${name}.\n\n`
-    + `Messages since the last review, oldest first:\n${messages.map(m => `[m${m.id}] (${m.role}, ${savedOn(m.at)}): ${m.text}`).join("\n") || "(none)"}\n\n`
+    + `Messages since the last review, oldest first:\n${messages.map(m => `[m${m.id}] (${m.role}${m.where ? `, ${m.where}` : ""}, ${savedOn(m.at)}): ${m.text}`).join("\n") || "(none)"}\n\n`
     + `Saved facts:\n${factLines.join("\n") || "(none)"}\n\n`
     + `How-to-treat-me rules (${rules.length} of at most ${db.RULES_CAP}):\n${ruleLines.join("\n") || "(none)"}`;
   return { prompt, shownMessages, shownFacts: new Map(facts.map(f => [f.id, f])), shownRules: new Map(rules.map(r => [r.id, r])) };
@@ -296,7 +413,7 @@ export function reviewPrompt(conversationId, { messages, facts, rules, now = clo
  * Review one person's memory. Returns counts only. `ask` defaults to the CLI (never the API);
  * `rebuild` to the profile rebuild.
  */
-export async function reviewOne(conversationId, { now = clock.now(), day = localDay(now, dreamZone(conversationId)), log = () => {}, ask = null, rebuild = null } = {}) {
+export async function reviewOne(conversationId, { now = clock.now(), day = localDay(now, dreamZone(conversationId)), log = () => {}, ask = null, rebuild = null, when = "" } = {}) {
   const c = conversationId;
   const counts = { kept: 0, corrected: 0, merged: 0, retired: 0, refused: 0, rules_added: 0, rules_merged: 0, rules_retired: 0, rules_capped: 0 };
   const why = ask ? null : whyNot();
@@ -433,12 +550,180 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
     for (const r of drop) if (db.supersedeRule(c, r.id, { at: now }).ok) counts.rules_capped++;
   }
 
-  db.markMemoryReview(c, { day, lastEventId: lastId, outcome: "reviewed", at: now });
+  // "reviewed_more": read, with a backlog left past the caps — the sweep comes back for it today.
+  db.markMemoryReview(c, { day, lastEventId: lastId, outcome: more ? "reviewed_more" : "reviewed", at: now });
   const changed = counts.corrected + counts.merged + counts.retired;
   if (changed || !db.getProfile(c)) {
     try { await (rebuild ?? ((id) => rebuildProfile(id, { log })))(c); } catch (e) { log({ memory_review: "profile_failed", conversation: c, error_kind: errorKind(e) }); }
   }
   record("reviewed", counts);
-  log({ memory_review: "done", conversation: c, ...sizes, more, ...counts, ...tokenLog(cost) });
-  return { ok: true, messages: messages.length, more, ...counts, model: cost.model, cost_usd: cost.costUsd };
+  log({ memory_review: "done", conversation: c, ...(when ? { when } : {}), ...sizes, more, ...counts, ...tokenLog(cost) });
+  // Things that recur across days: its own pass, about once a week, never allowed to cost the review.
+  let patterns = null;
+  if (!more) {
+    try { patterns = await noticePatterns(c, { now, log, ask }); }
+    catch (e) { log({ memory_patterns: "failed", conversation: c, error_kind: errorKind(e) }); }
+  }
+  return { ok: true, messages: messages.length, more, ...counts, model: cost.model, cost_usd: cost.costUsd, ...(patterns ? { patterns } : {}) };
+}
+
+// ---------------------------------------------------------------- patterns across days
+
+/** How far back the patterns pass reads, and how often it runs per person. */
+export const PATTERN_DAYS = 28;
+export const PATTERN_EVERY_MS = 7 * 24 * 3600_000;
+/** A failed ask is tried again the next night, not the next week. */
+const PATTERN_RETRY_MS = 20 * 3600_000;
+const PATTERN_MESSAGES = 400;
+const PATTERN_CHARS = 40_000;
+const PATTERN_LINE = 300;
+/** Kept per person, and added per pass. */
+export const PATTERNS_KEPT = 8;
+const PATTERNS_PER_PASS = 3;
+/** The only kinds kept. Anything else — and anything the reader marks sensitive — is refused by code. */
+export const PATTERN_KINDS = ["repeated_ask", "routine", "assistant_mistake", "preference"];
+
+const PATTERN_SCHEMA = {
+  type: "object",
+  properties: {
+    patterns: {
+      type: "array",
+      description: "Things that recur in what they said, each on at least two DIFFERENT days. Few and certain; an empty list is a good answer.",
+      items: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: PATTERN_KINDS, description: "repeated_ask: they ask for the same kind of thing again and again. routine: something they do on a regular beat. assistant_mistake: the same mistake by the assistant that they had to point out more than once. preference: a like, dislike or way of doing things they showed more than once." },
+          pattern: { type: "string", description: "What you noticed, short, as a thing you THINK, in plain words: 'asks for the weather before leaving for work'." },
+          use: { type: "string", description: "What the assistant should do differently because of it, in a few words." },
+          messages: { type: "array", items: { type: "integer" }, description: "The m-numbers of THEIR messages it rests on: at least two, from at least two different days." },
+          sensitive: { type: "boolean", description: "true if this touches health or mental health, sex or sexuality, religion, politics, race or ethnicity, immigration status, money trouble or debt, crime or legal trouble, or addiction." },
+        },
+        required: ["kind", "pattern", "use", "messages", "sensitive"],
+      },
+    },
+    still: {
+      type: "array",
+      description: "Things already noticed (numbered N) that their messages shown here bear out again.",
+      items: {
+        type: "object",
+        properties: { id: { type: "integer" }, messages: { type: "array", items: { type: "integer" } } },
+        required: ["id", "messages"],
+      },
+    },
+  },
+  required: ["patterns", "still"],
+};
+
+const PATTERN_SYSTEM = `You are reading several weeks of what one person said to their personal assistant, looking for things that RECUR across days.
+
+You are shown only their own messages (numbered m123, with the day each was said) and the things already noticed about them (numbered N4).
+
+Look for four kinds only: an ask they repeat, a routine, a mistake of the assistant's they had to point out more than once, a preference they showed more than once. Each must rest on their own messages from at least two DIFFERENT days; cite them. One day is something that happened, not a pattern. Do not restate something already noticed: list it under "still" with the messages that bear it out again.
+
+Never notice anything about health or mental health, sex or sexuality, religion, politics, race or ethnicity, immigration status, money trouble or debt, crime or legal trouble, or addiction — if the only patterns you see are of that kind, return none. Mark "sensitive" honestly; code drops those.
+
+These are guesses, not facts: word each as something you think, and prefer none to a weak one. Answer only with the schema.`;
+
+/** Their own lines of the last PATTERN_DAYS, oldest first, newest kept when over the caps. Never a forgotten line. */
+export function patternMessages(conversationId, { now = clock.now(), calls = reviewCallsFor(conversationId) } = {}) {
+  const said = calls
+    ? `(e.role = 'user' OR (e.role = 'call_user' AND e.channel = 'call' AND EXISTS (SELECT 1 FROM calls k WHERE k.id = CAST(e.message_id AS INTEGER)
+        AND k.conversation_id = e.conversation_id AND k.is_owner = 1 AND (k.verified_at IS NOT NULL OR COALESCE(k.direction, 'out') != 'in'))))`
+    : "e.role = 'user'";
+  const rows = db.db.prepare(`SELECT e.id, e.content, e.at FROM event_log e WHERE e.conversation_id = ? AND e.at >= ? AND ${said}
+    AND ${db.eventNotForgotten("e")} ORDER BY e.id DESC LIMIT ?`).all(conversationId, now - PATTERN_DAYS * 24 * 3600_000, PATTERN_MESSAGES);
+  const picked = [];
+  let chars = 0;
+  for (const r of rows) {
+    const text = cut(r.content, PATTERN_LINE);
+    if (!text) continue;
+    if (chars + text.length > PATTERN_CHARS) break;
+    chars += text.length;
+    picked.push({ id: r.id, at: r.at, text });
+  }
+  return picked.reverse();
+}
+
+/**
+ * The patterns pass for one person. Returns counts only, or `{ skipped }`. Same lane as the review
+ * (the CLI on the subscription, never the API). Everything it keeps is a guess (db.NOTICED_SOURCE).
+ */
+export async function noticePatterns(conversationId, { now = clock.now(), log = () => {}, ask = null, force = false } = {}) {
+  const c = conversationId;
+  if (!patternsFor(c)) return { skipped: "off" };
+  const why = ask ? null : whyNot();
+  if (why) return { skipped: why };
+  const last = Number(db.memoryReviewState(c).patterns_at) || 0;
+  if (!force && last && now - last < PATTERN_EVERY_MS) return { skipped: "not_due" };
+
+  // Whatever was noticed and nothing has borne out since is dropped: a pattern is a claim about now.
+  let expired = 0;
+  for (const row of db.listNoticed(c, { limit: 100 })) {
+    if ((row.last_supported_at ?? row.noted_at) < now - PATTERN_DAYS * 24 * 3600_000) { if (db.dropGuess(c, row.id).ok) expired++; }
+  }
+
+  const tz = dreamZone(c);
+  const messages = patternMessages(c, { now });
+  const dayOf = new Map(messages.map(m => [m.id, localDay(m.at, tz)]));
+  if (new Set(dayOf.values()).size < 2) {
+    db.markPatternPass(c, now);
+    if (expired) log({ memory_patterns: "done", conversation: c, messages: messages.length, noticed: 0, supported: 0, refused: 0, expired });
+    return { skipped: "too_little", expired };
+  }
+  const had = db.listNoticed(c, { limit: PATTERNS_KEPT * 2 });
+  const name = db.getAccount(c)?.name || "them";
+  const prompt = `Today is ${savedOn(now)}. The person is ${name}.\n\n`
+    + `Their own messages over the last ${PATTERN_DAYS} days, oldest first:\n${messages.map(m => `[m${m.id}] (${dayOf.get(m.id)}): ${m.text}`).join("\n")}\n\n`
+    + `Already noticed:\n${had.map(g => `N${g.id} ${cut(g.guess, 200)}`).join("\n") || "(nothing)"}`;
+
+  // Marked before the ask, so a restart in the middle does not ask again tonight.
+  db.markPatternPass(c, now);
+  const model = MODEL();
+  let answer;
+  try {
+    answer = await (ask ?? testAsk ?? askStructuredViaCli)({
+      prompt, system: PATTERN_SYSTEM, schema: PATTERN_SCHEMA, model, timeoutMs: TIMEOUT_MS(), feature: "memory_patterns",
+    });
+  } catch (e) { answer = { error: e }; }
+  const cost = passCost(answer, model);
+  // A pattern pass answers on its own schema; a review answer handed to it by mistake is not one.
+  if (!answer?.value || !Array.isArray(answer.value.patterns)) {
+    const kind = answer?.value ? "bad_answer" : answer?.refusal ? "refused" : errorKind(answer?.error);
+    db.markPatternPass(c, now - PATTERN_EVERY_MS + PATTERN_RETRY_MS);
+    log({ memory_patterns: "skipped", conversation: c, why: kind, ...tokenLog(cost) });
+    return { skipped: kind, expired };
+  }
+
+  const counts = { noticed: 0, supported: 0, refused: 0, expired };
+  const shown = new Map(messages.map(m => [m.id, m]));
+  /** Their own messages among the cited ones, as receipts — and on how many different days. */
+  const receipts = (ids) => {
+    const own = [...new Set((Array.isArray(ids) ? ids : []).map(Number))].filter(id => shown.has(id)).sort((a, b) => a - b);
+    return { own, days: new Set(own.map(id => dayOf.get(id))).size, evidence: own.map(id => ({ ref: `m${id}`, at: shown.get(id).at, day: dayOf.get(id) })) };
+  };
+  const mine = new Map(had.map(g => [g.id, g]));
+  for (const x of Array.isArray(answer.value.still) ? answer.value.still : []) {
+    const r = receipts(x?.messages);
+    if (!mine.has(Number(x?.id)) || !r.own.length) { counts.refused++; continue; }
+    if (db.supportNoticed(c, Number(x.id), now, { evidence: r.evidence })) counts.supported++; else counts.refused++;
+  }
+  let active = db.listNoticed(c, { limit: 100 }).length;
+  for (const x of answer.value.patterns) {
+    const text = cut(x?.pattern, 240);
+    const r = receipts(x?.messages);
+    // Code's bar: a known kind, not sensitive, their own messages on two different days, room left.
+    if (!text || !PATTERN_KINDS.includes(x?.kind) || x?.sensitive !== false || r.own.length < 2 || r.days < 2
+      || counts.noticed >= PATTERNS_PER_PASS) { counts.refused++; continue; }
+    const before = db.db.prepare("SELECT * FROM guesses WHERE conversation_id = ? AND pt(about) = ? AND pt(guess) = ?").get(c, name, text);
+    if (before) {
+      // The same words again. One they dismissed or confirmed is never noticed a second time.
+      if (before.how === db.NOTICED_SOURCE && db.supportNoticed(c, before.id, now, { evidence: r.evidence })) counts.supported++; else counts.refused++;
+      continue;
+    }
+    if (active >= PATTERNS_KEPT) { counts.refused++; continue; }
+    const made = db.noteGuess(c, { about: name, guess: text, how: db.NOTICED_SOURCE, evidence: r.evidence, use: cut(x?.use, 200) });
+    if (made && !made.already_guessed) { counts.noticed++; active++; } else counts.refused++;
+  }
+  log({ memory_patterns: "done", conversation: c, messages: messages.length, days: new Set(dayOf.values()).size, ...counts, ...tokenLog(cost) });
+  return { ok: true, ...counts };
 }

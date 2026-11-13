@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
+import { holdProfile, releaseProfile } from "./browser.js";
 
 const CLI = fileURLToPath(new URL("./signin-cli.js", import.meta.url));
 
@@ -66,18 +67,31 @@ export async function openSigninWindow({
     return { ok: false, already_open: already.site, error: `A sign-in window is already open on the Mac, on ${already.site}. One at a time: it has to be closed before another can open.` };
   }
 
-  // The profile can be in one browser at a time, and the window needs it.
-  await closeBrowser(conversationId);
+  // The profile can be in one browser at a time, and the window needs it: it is the window's until the
+  // window's process has gone, however it goes (src/browser.js holdProfile).
+  const holder = Symbol("signin_window");
+  if (!holdProfile(conversationId, holder)) {
+    return { ok: false, busy: "signing_in", error: "A sign-in is already open on their saved profile. Let it finish first." };
+  }
+  try {
+    await closeBrowser(conversationId);
+  } catch (e) {
+    releaseProfile(conversationId, holder);
+    throw e;
+  }
 
   let child;
   try {
     // `provider` (google/apple/facebook/microsoft, src/socialsignin.js): the window presses that
     // button on the sign-in page for them, and the site's "signed in" afterwards records which
     // button it was. The CLI reads it from its environment so the argument list stays one site name.
-    const env = provider ? { ...process.env, REASON_SIGNIN_PROVIDER: provider } : process.env;
+    // Never Google (src/socialsignin.js NEVER_PRESSED).
+    const pressable = provider && provider !== "google" ? provider : "";
+    const env = pressable ? { ...process.env, REASON_SIGNIN_PROVIDER: pressable } : process.env;
     // A site known only by its address goes as its sign-in page, so the window opens there.
     child = spawnImpl(process.execPath, [CLI, entry.generic ? entry.signin_url : entry.site], { env, stdio: "ignore" });
   } catch (e) {
+    releaseProfile(conversationId, holder);
     return { ok: false, error: `The sign-in window could not be opened: ${(e?.message ?? String(e)).split("\n")[0]}` };
   }
   const startedAt = clock.now();
@@ -94,6 +108,7 @@ export async function openSigninWindow({
   const finish = (how) => {
     if (windows.get(conversationId) !== w) return; // 'error' and 'exit' can both fire
     windows.delete(conversationId);
+    releaseProfile(conversationId, holder);
     timers.clear(w.timer);
     const note = how === "failed"
       ? `the ${entry.label} sign-in window could not be opened on the Mac (the browser would not start). Tell them that in one short line, and that running "npm run signin -- ${entry.site}" in a terminal on the Mac does the same thing.`

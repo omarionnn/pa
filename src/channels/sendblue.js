@@ -730,6 +730,9 @@ export class SendblueChannel extends Channel {
    * "Reactions can be sent to messages received within the last few days. Very old messages may not
    * accept reactions" — so a stale handle failing is expected, and says so rather than looking broken.
    */
+  /** Sendblue reports what became of a message after taking it (the outbound status webhook). */
+  get reportsDelivery() { return true; }
+
   async react({ messageHandle, reaction, partIndex = null }) {
     if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
     const handle = String(messageHandle ?? "").trim();
@@ -1035,11 +1038,17 @@ export class SendblueChannel extends Channel {
     if (event.event_type) return { status: 200, body: { ok: true, ignored: String(event.event_type) }, inbound: [] };
     if (typeof event.is_typing === "boolean") return { status: 200, body: { ok: true, ignored: "typing_indicator" }, inbound: [] };
 
-    // Ours, coming back to us.
-    if (event.is_outbound === true) return { status: 200, body: { ok: true, ignored: "outbound echo" }, inbound: [] };
+    // Ours, coming back to us. Still no turn — but the carrier's later word on a message it took
+    // (SENT, DELIVERED, ERROR with error_message) rides back as `delivery`, for the outbox to read
+    // under REASON_DELIVERY_GATED (src/outbox.js noteDelivery). Without the switch it is ignored as before.
     const status = String(event.status ?? "");
-    if (status && status !== "RECEIVED" && OUTBOUND_STATUSES.has(status)) {
-      return { status: 200, body: { ok: true, ignored: `status ${status}` }, inbound: [] };
+    if (event.is_outbound === true || (status && status !== "RECEIVED" && OUTBOUND_STATUSES.has(status))) {
+      const handle = String(event.message_handle ?? "").trim();
+      const delivery = handle && status ? {
+        channel: this.name, messageId: handle, status,
+        error: [event.error_message, event.error_reason, event.error_code != null ? `code ${event.error_code}` : ""].filter(Boolean).join("; ") || null,
+      } : null;
+      return { status: 200, body: { ok: true, ignored: event.is_outbound === true ? "outbound echo" : `status ${status}` }, inbound: [], ...(delivery ? { delivery } : {}) };
     }
 
     // Several people, not one person's Reason.

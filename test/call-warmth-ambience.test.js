@@ -379,6 +379,30 @@ test("mix and fill: the room goes under every frame and keeps the line topped up
   assert.equal(bed.mix(silence, 5000), silence, "off: the voice untouched");
 });
 
+test("the room is never put between two pieces of a word: mid-sentence it waits until the line has run dry (2026-11-12)", async () => {
+  const bed = new amb.Bed("cafe");
+  const piece = Buffer.alloc(800, 0x00).toString("base64");
+  bed.mix(piece, 1000);
+  assert.equal(bed.fill(1070, { talking: true }), null, "30 ms still queued and the next piece due: no top-up in the middle of the word");
+  assert.notEqual(bed.fill(1070), null, "between lines the same moment is topped up as before");
+  const bed2 = new amb.Bed("cafe");
+  bed2.mix(piece, 1000);
+  const dry = Buffer.from(bed2.fill(1100, { talking: true }), "base64");
+  assert.equal(dry.length, amb.TICK_MS * 8, "the line has run dry (a late piece): one tick of room, not 80 ms");
+  // On a live call: a held end means mid-sentence.
+  config.callAmbience = "owner";
+  const { c, twilio, timers, live } = startCall();
+  live.emit({ type: "session.started", session: { id: "s5" } });
+  await timers.advance(300);
+  const media = () => twilio.sent.filter(m => m.event === "media");
+  for (let i = 0; i < 3; i++) { live.emit({ type: "session.output_audio.delta", delta: piece }); await timers.advance(100); }
+  const before = media().length;
+  assert.ok(c.voiceTail, "mid-sentence");
+  await timers.advance(40);
+  assert.equal(media().length, before, "the next piece is 40 ms late: nothing is put in front of it");
+  void c.end("test").catch(() => {});
+});
+
 test("a live own call with ambience on: café frames flow from the start, under the voice, and stop at the end", async () => {
   config.callAmbience = "owner";
   const { c, twilio, timers, live } = startCall();

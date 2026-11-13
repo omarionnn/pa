@@ -1956,6 +1956,9 @@ export function storedAsAsked({ asked = {}, stored = null, timeZone = "" } = {})
 export const READ_TOOLS = [
   "gmail_search", "gmail_read", "gmail_attachment", "gmail_labels", "gmail_draft",
   "calendar_events", "calendar_event",
+  // food_order past_orders (src/food.js) answers with the subjects of their receipts: a copy of
+  // their mail like any search result, so it goes when the account does.
+  "food_order",
   // `drive_send` is on it for the same reason: its result names one of their files, says which
   // account it is in and quotes the title, and that is a copy of something out of their Drive.
   "drive_search", "drive_read", "drive_create", "drive_send",

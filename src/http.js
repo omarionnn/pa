@@ -89,7 +89,7 @@ import * as x from "./x.js";
 import { connectStartRequest, refuseForeignBrowser, START_PATH as CONNECT_START_PATH } from "./connectgate.js";
 import { renderNotice, renderConnected, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
-import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN, PAPER_GLOW, NIGHT_GLOW, GLOW_OFF, SHEET_BG } from "./pages/brand.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard, shootWithChromium } from "./pages/card.js";
 import { madeKind, renderMadePage, callAudio, notYoursFor, archivedFor, privateHead, privateOgPng, PRIVATE_OG_VERSION } from "./pages/madedata.js";
@@ -115,12 +115,23 @@ import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 import * as stamps from "./stamps.js";
 // The free trial and the subscription (REASON_PAYWALL): Stripe's webhook and the two pages it sends people back to.
 import * as plan from "./plan.js";
+import * as plaid from "./plaid.js";
 import * as stripeapi from "./stripe.js";
 import * as eventpay from "./eventpay.js";
 import { config, stamp, clock } from "./config.js";
 import { readPlain } from "./restfiles.js";
 
 const MAX_BODY = 1_000_000;
+
+/**
+ * A promise that rejects with nobody catching it is written to the log and the process carries
+ * on. Node's default ends the process, which loses every reply in flight. Returns the remover.
+ */
+export function logUnhandledRejections(log) {
+  const onRejection = (e) => log({ unhandled_rejection: (e?.stack ?? String(e)).split("\n").slice(0, 4).join(" | ") });
+  process.on("unhandledRejection", onRejection);
+  return () => process.off("unhandledRejection", onRejection);
+}
 
 export function createServer({ router, runtime, log = () => {} }) {
   // A new stamp is mentioned in the thread through the runtime's own send, and only while REASON_WEB_DAILY is on (never at REASON_STAMPS_ALL alone).
@@ -154,7 +165,15 @@ export function createServer({ router, runtime, log = () => {} }) {
   }
   return server;
   async function handleRequest(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+    // A URL or Host header that will not parse (scanners send `//%2e%2e%2f%2eenv`) is a 400, never a throw.
+    let url;
+    try {
+      url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+    } catch {
+      guardResponse(res);
+      res.writeHead(400, { "Content-Type": "text/plain", "Connection": "close" });
+      return void res.end("Bad request");
+    }
     // The status page's key goes out on the status page only: never on Web, a page, or anything else (src/opsredact.js).
     if (url.pathname !== "/ops" && url.pathname !== "/ops.json") guardResponse(res);
     const send = (status, body) => {
@@ -285,7 +304,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- an event's pages ----------
       // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
       // link arriving through the files domain, which Caddy rewrites under /p.
-      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|paid|pay-back|payouts|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|answers|paid|pay-back|payouts|refund|seats|seat\/[A-Za-z0-9_-]{32}|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
       if (eventRoute) {
         const out = await eventRequestFor({
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
@@ -377,7 +396,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           out = await webMediaRoute({ path: url.pathname, method: req.method, headers: req.headers, readBody: (max) => readRaw(req, max), log });
         } catch (e) {
           // An approval link's token is a bearer secret: never in the journal.
-      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…").replace(/(\/e\/[^/]+\/seat\/)[^/]+/, "$1…").replace(/^(\/s\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
           return send(500, { ok: false, error: "server error" });
         }
         res.writeHead(out.status, out.headers);
@@ -462,7 +481,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           // A page asks for the calm one (9B: "Something went wrong. Nothing was lost."); the page's own
           // script asking for JSON gets JSON, which it already knows how to treat as a missed beat.
           // An approval link's token is a bearer secret: never in the journal.
-      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…").replace(/(\/e\/[^/]+\/seat\/)[^/]+/, "$1…").replace(/^(\/s\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
           if (String(req.headers.accept ?? "").includes("application/json")) return send(500, { error: "server error" });
           const body = (await import("./pages/webconvo.js")).renderError();
           res.writeHead(500, { "Content-Type": "text/html; charset=utf-8", ...WEB_SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) });
@@ -843,6 +862,23 @@ export function createServer({ router, runtime, log = () => {} }) {
             : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>`));
       }
 
+      // ---------- Plaid pushing back: a bank was connected, transactions changed, a login expired (src/plaid.js) ----------
+      if (req.method === "POST" && url.pathname === "/plaid/webhook") {
+        if (plaid.plaidMode() === "off") return send(404, { error: "not found" });
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await plaidWebhookRequest({ rawBody, headers: req.headers, log });
+        return send(out.status, out.body);
+      }
+      // Where Plaid's Hosted Link sends them when they are done, or backed out (it opens this either
+      // way). Signed-out by nature: it says connected or not and never a bank, a balance or a transaction.
+      if (req.method === "GET" && url.pathname === "/bank/done") {
+        if (plaid.plaidMode() === "off") { res.writeHead(302, { Location: `${(config.siteUrl || "https://heyreason.com").replace(/\/+$/, "")}/` }); return res.end(); }
+        const page = await bankDonePage(url.searchParams.get("s") ?? "", { log });
+        res.writeHead(200, HTML({ "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" }));
+        return res.end(brandedPage(page.title, page.body));
+      }
+
       // ---------- AgentCard pushing back: a card landed, a payment was approved ----------
       if (req.method === "POST" && url.pathname === "/agentcard/webhook") {
         const rawBody = await readBody(req);
@@ -895,7 +931,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       return send(404, { error: "not found" });
     } catch (e) {
       // An approval link's token is a bearer secret: never in the journal.
-      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…").replace(/(\/e\/[^/]+\/seat\/)[^/]+/, "$1…").replace(/^(\/s\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
       return send(500, { error: "server error" });
     }
   }
@@ -910,13 +946,14 @@ ${iconLinks()}
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <script>${THEME.head}</script>
 <style>
-:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--line:${PAPER.line};--mark:${BRAND_PEN}}
-${dark([["", `--grain:none;--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:${BRAND_PEN_DARK}`]])}
+:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--glow:${PAPER_GLOW};--line:${PAPER.line};--mark:${BRAND_PEN}}
+${dark([["", `--grain:none;--glow:${NIGHT_GLOW};--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:${BRAND_PEN_DARK}`]])}
+${GLOW_OFF}
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--grain) var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 ${WORDMARK_CSS}
 ${THEME.css}
-.sheet{background:var(--grain) var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+.sheet{background:${SHEET_BG};border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 main{max-width:32rem;margin:0 auto;padding:2rem 1.5rem}
 h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);font-size:.9rem}
 </style></head><body>
@@ -1363,6 +1400,49 @@ export async function stripeWebhookRequest({ rawBody, headers = {}, runtime = nu
   // A 500 is the one answer that makes Stripe try again, which is what an event nothing acted on needs.
   if (out.ok === false) return { status: 500, body: { error: "not handled; try again" } };
   return { status: 200, body: { ok: true, ...(out.duplicate ? { duplicate: true } : {}), ...(out.matched === false ? { matched: false } : {}) } };
+}
+
+/**
+ * POST /plaid/webhook. The signature first (Plaid-Verification, an ES256 JWT over the raw body's
+ * hash, src/plaid.js verifyWebhook), then the event. 401 for a bad signature, 400 for a body that
+ * will not read, 200 for everything else: the log line says what was done, never whose or how much.
+ */
+export async function plaidWebhookRequest({ rawBody, headers = {}, log = () => {} } = {}) {
+  const v = await plaid.verifyWebhook({ rawBody, headers, nowMs: clock.now() });
+  if (!v.ok) {
+    log({ plaid_webhook_rejected: v.why });
+    return { status: 401, body: { error: `rejected: ${v.why}` } };
+  }
+  let event;
+  try { event = JSON.parse(rawBody); } catch { return { status: 400, body: { error: "bad json" } }; }
+  if (!event?.webhook_type || !event?.webhook_code) return { status: 400, body: { error: "no webhook type or code" } };
+  let out;
+  try { out = await plaid.handleWebhook(event); }
+  catch (e) { log({ plaid_webhook_failed: `${event.webhook_type}/${event.webhook_code}`, why: plaid.errorCode(e) }); return { status: 500, body: { error: "not handled; try again" } }; }
+  log({ plaid_webhook: `${event.webhook_type}/${event.webhook_code}`, handled: !!out.handled });
+  return { status: 200, body: { ok: true, handled: !!out.handled } };
+}
+
+/**
+ * The page behind a finished Hosted Link. Plaid opens it whether they connected or backed out, so
+ * it asks (the webhook may not have landed yet: finishLink reads the session from Plaid itself, with
+ * a few seconds' patience) and says which. Nothing on it but that: no bank, no balance, no name.
+ */
+export async function bankDonePage(state, { log = () => {}, waitMs = 8000 } = {}) {
+  let outcome = plaid.linkOutcome(state);
+  if (outcome === "open") {
+    try {
+      await Promise.race([plaid.finishLink({ state }), new Promise(r => setTimeout(r, waitMs).unref?.())]);
+    } catch (e) { log({ plaid_done_page_failed: plaid.errorCode(e) }); }
+    outcome = plaid.linkOutcome(state);
+  }
+  if (outcome === "connected" || outcome === "reconnected") {
+    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Head back to Messages: Reason will text you there in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. You can ask Reason to disconnect it any time.</p>` };
+  }
+  if (outcome === "open") {
+    return { title: "Almost there", body: `<h1>Not connected yet.</h1><p>If you finished signing in, give it a moment: Reason will text you when it's through. If you backed out, the link in your messages still works for a little while.</p>` };
+  }
+  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Ask Reason in Messages and it will send a fresh one.</p>` };
 }
 
 export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {

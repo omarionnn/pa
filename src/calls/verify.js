@@ -95,7 +95,9 @@ function eventWrite(name, input) {
  * and a spending limit decides what needs one. A voice on a caller-ID-only call must never set either
  * (security audit 2026-11-06, lead 11), so these wait for the check like anything consequential.
  */
-const CHANGES_THE_GATE = new Set(["permission_grant", "caps_set", "spend_limit_set", "spend_limit_confirm"]);
+// call_hours_set: it moves or removes the no-call hours every later call of theirs is held by, so a voice
+// on a spoofed number must not be able to switch them off.
+const CHANGES_THE_GATE = new Set(["permission_grant", "caps_set", "spend_limit_set", "spend_limit_confirm", "call_hours_set"]);
 
 /** Sends whose `to` may be the owner themself: those are not gated when it is. */
 const SELF_SENDS = new Set(["message_send"]);

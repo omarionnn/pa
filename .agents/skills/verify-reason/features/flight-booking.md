@@ -1,23 +1,31 @@
-# Flight booking — through AgentCard, behind the owner's approval, never "booked" without a ticket
+# Flight booking — through Crossmint on the airline's own site; DARK; never "booked" without a ticket
 
-Somebody picks a flight from a flight search and asks Reason to book it. Reason re-checks the fare
-through Fli, reads the travelers back and gets a "those are right", builds the booking with
-AgentCard, shows the cart's own numbers (and names what the cart does not itemize), asks for a yes
-pinned to that exact cart and those exact travelers, sends AgentCard's approval link on its own, and
-afterwards says exactly which state the booking is in. **It is DARK**: `REASON_FLIGHT_BOOKING` is off
-on live, and off means no booking tool is shown or runs and a search offers the Google Flights link
-alone. `REASON_FLIGHT_BOOKING=owner` is on in the owner's conversation only (`accounts.ownerOf(c).isOperator`,
-the invites check) and exactly off for everyone else; `1/true/on/yes` is everyone. `bookingEnabled(c)`
-takes the conversation; with none it is false under `owner`.
+Somebody picks a flight from a flight search and asks Reason to book it. `flight_book` re-checks the
+fare, checks the travelers were read back and confirmed, and starts a Crossmint Agent Checkout on the
+airline's own website for exactly those flights. From there it is the shopping path
+([shop-connect.md](shop-connect.md)): the passenger form answered from the sealed traveler record,
+Crossmint's one exact total, a yes pinned to that payment AND those travelers, the daily cap, Face ID.
+An order the airline took is "not a ticket yet"; the e-ticket check makes it booked.
+Design and the recorded real run: `docs/flight-booking.md`. AgentCard's flight route was removed
+2026-11-11.
 
-Search is [flight-search.md](flight-search.md) (src/flightsearch.js over src/flightproviders.js —
-SerpApi, then Duffel, since 2026-11-06; Fli is out of the path). Payment is the AgentCard purchase path
-([agentcard.md](agentcard.md)) — `purchase_confirm`, the confirm gate, the caps, the passkey pause —
-with no parallel payment path. **Where Shop Connect is on (live: everyone since 2026-10-31)
-`flight_book` and the four `flight_traveler_*` tools are `AGENTCARD_BUY_TOOLS`** (`src/shoptools.js:28`):
-hidden by `toolsFor` and refused in `runTool` with "Buying here goes through store_checkout…", whatever
-`REASON_FLIGHT_BOOKING` says (cage 2026-11-07, `REASON_SHOP_CONNECT=owner`: owner 0 booking tools,
-`flight_book`/`flight_travelers` → that refusal). So on live this feature is doubly dark.
+**It is DARK.** On for a person only with `REASON_FLIGHT_BOOKING` (off | owner | on; off on live)
+AND the shopping path on for them (`REASON_SHOP_CONNECT` + Crossmint keys): `flightbook.bookingEnabled(c)`.
+Tests may force a route with `flightbook._setRoute("test")`; `_setRoute(undefined)` is the real rule.
+
+Offline proof: `node --test test/flight-crossmint.test.js test/flight-booking.test.js test/ticket-check.test.js`.
+What they pin: tools shown only with flag + shopping path; the checkout's start URL and instruction
+(no passenger detail in it); the recorded JetBlue passenger form auto-answered; the recorded exact
+$118.40 payment with `travelers [fp]` in its target; a corrected traveler or a switched-off flag
+refuses the payment before any order intent; a "maximum" declined; a placed order is
+`ticketing_pending`, not booked (CONSTRUCTED result — no flight has been bought); a ticket for every
+passenger before `issued`.
+
+Never drive a real `flight_book` on live without the owner: it starts a real checkout on an airline's
+site (free, but it enters the traveler's details there), and approving its payment buys a ticket.
+
+**Below this line: notes written for the AgentCard route.** Still true for travelers, states and the
+e-ticket check; anything about AgentCard's cart, hash, approval link or sandbox no longer exists.
 
 Source: `src/flightbook.js` (price view, finality, itinerary match, traveler fingerprint,
 `BOOKING_STATES` / `bookingState`, `TICKETING_FIELDS`), `src/tools.js` (`flight_traveler_save`,

@@ -1,58 +1,102 @@
-# Flight booking through AgentCard
+# Flight booking through Crossmint
 
-Booking is the second half of the flight feature: search is Fli ([flight-search.md](flight-search.md)),
-and a flight the person picks and asks Reason to book goes through AgentCard's hosted purchase API —
-the same `POST /buy` loop, cart hash, `purchase_confirm`, confirm gate, caps and passkey approval
-as every other purchase. There is no second payment path.
+Search is [flight-search.md](flight-search.md). A flight the person picks and asks
+Reason to book is a **Crossmint Agent Checkout on the airline's own website** — the shopping path
+whole (`src/shopconnect.js`): Crossmint's exact total, the confirm gate (`shop_pay`), the per-person
+daily cap, the Face ID approval, the order intent. There is no second payment path.
+`src/flightcheckout.js` is what a flight adds to it.
 
-**Dark by default.** `REASON_FLIGHT_BOOKING` is off on live. Off: no booking tool is shown to any
-model or runs, `purchase_confirm` refuses a flight row, `purchase` refuses a flight cart, and a search
-offers the Google Flights link alone. `REASON_FLIGHT_BOOKING=owner` turns it on in the owner's own
-conversation only (the operator check the dark invites use) and is exactly off for everyone else —
-tools, refusals, search words and the e-ticket watch; `1/true/on/yes` is everyone. The first live
-booking is the owner's decision (below).
+AgentCard's flight route was removed on 2026-11-11 (the owner's decision: Reason does not use
+AgentCard; Crossmint is the only buy route).
 
-## The path chosen
+**Dark by default.** `REASON_FLIGHT_BOOKING` (off | owner | on) is off on live. Booking is on for a
+person only with the flag **and** the shopping path on for them (`REASON_SHOP_CONNECT`, Crossmint
+keys in place): `bookingEnabled` in `src/flightbook.js`. Off: no booking or traveler tool is shown or
+runs, a search says "SEARCH ONLY" and hands over the Google Flights link, no flight payment goes out,
+and the e-ticket check reads no mail. `owner` is the owner's own conversation only.
 
-Reason's own AgentCard client (`src/agentcard.js`) is extended, not replaced. The official Node
-Commerce SDK (`@agent-cards/commerce-sdk` 0.13.0, read 2026-10-24) wraps the same `/buy` endpoint;
-adopting it would replace the audited shopping path (the cart-hash gate, the reconcile reads, the
-webhook dedupe) for no capability Reason lacks, so it was read for field names and not installed.
-The SDK's `BuyCart`, `BuyTurn`, `BuyFlightItinerary` and `BuyNextAction` types are where every new
-field name came from, and each one was then seen on a real sandbox answer.
+## What a real run showed (2026-11-11, no purchase)
 
-## What AgentCard's flight flow really does (sandbox, 2026-10-25)
+One checkout, production Crossmint, run from the live host with the key live already uses, as a
+throwaway Crossmint user with no saved card and no browser profile. Stopped at the payment request,
+which was **never answered**, and cancelled. Recorded in
+`test/fixtures/crossmint-flights/jetblue-pricecheck.json`.
 
-Recorded in `test/fixtures/agentcard-flights/`.
+- **Asked for:** jetblue.com, one adult, one way New York → Boston on Wed 2 Dec 2026, cheapest
+  nonstop, lowest standard fare, no extras, guest, pay by card.
+- **93 s — a question:** which of three $119 nonstop departures (a choice field). The route names
+  the exact flight number and time in the instruction, so this is not normally asked.
+- **135 s — one passenger form:** title, first name and last name as on the ID, email, gender as on
+  the ID, date of birth (MM/DD/YYYY), street, city, state, ZIP, phone. All standard fields; nothing
+  protected, no sign-in, no CAPTCHA.
+- **226 s — the payment request:** card, **exact 118.40 USD**, merchant "JetBlue". One number: no
+  fare, tax or fee lines (the agent's prose mentioned a $119 fare and a declined +$35 upsell).
+- **Not seen:** what a placed order returns. Crossmint documents `receipt.total` and, "when
+  available", `receipt.merchantOrderId` — never a ticket number. The test of a placed order in
+  `test/flight-crossmint.test.js` is built to that documented shape and labelled CONSTRUCTED.
+- **Not tried:** any other airline, a travel site, a round trip, two passengers. A second checkout,
+  started first, was abandoned at its first question by a bug in the test script; it had no card and
+  expired on its own.
 
-| Cited in the spec or the docs | Seen |
-|---|---|
-| Flights are a bookable merchant kind with an itinerary and a "book" action | Held. Direct merchant `flights`, "Agentcard Flights", US/USD. Capabilities `checkout, clear_cart, clear_unbooked_cart, cancel_order, vault_payment` — **no `track_order`** (classes, hotels and reservations have it). Catalog items carry `flight.legs` (origin, destination, wall-clock `departureAt`/`arrivalAt`, `cabinClasses`); no flight numbers; ids look like Duffel offer ids (`off_…`). |
-| What a flight cart itemizes | One cart line, the fare, as one number. `serviceFeesCents` — 2.5% of the fare both times ($4.33 on $173.14; $3.97 on $158.69) — with `merchantFeeLines: null`, so the fee has no label. AgentCard's own reply calls it "the service fee for booking through here", not refunded on cancellation. **No tax line**; asked, AgentCard said the listing does not say whether the fare includes taxes. |
-| Whether the total can be final | `approvedCeilingCents == totalCents` (the card is held for exactly the total, as the SDK docs say for flights), and **no `totalIsEstimate` key at all**. Reason calls a total final only when the estimate flag is not set AND the ceiling equals the total. |
-| Fare rules | **None** in the cart; AgentCard said it has none for the fare. Reason says "not verified" every time. |
-| Traveler details | `next_action: guest_details` after the pick. Giving the passenger **does not change the cart hash**. AgentCard **saves the passenger on its side** — a second run skipped `guest_details` and went straight to `confirm` with the saved one. So Reason always sends the travelers the person just confirmed and pins them in the confirm target (`travelerFingerprint`). |
-| The approval page with a device passkey; 15-minute expiry | **Not seen**: sandbox stops before payment. `approval_expires_at` is read off each paused confirm (field from the SDK's `BuyTurn`) and stored; an expired approval is refused before the gate and sent back for a fresh quote. |
-| What a confirmed flight order carries (ticketing status, PNR, e-ticket numbers) | **Not seen, and not documented.** The `flights` merchant has no `track_order`. `TICKETING_FIELDS` in `src/flightbook.js` is empty, so a placed flight order is always "ticketing not confirmed" — never "booked". The first live order's record and every order.* body are kept whole in `agentcard_purchases.order_raw_json`; field names are added only from that. |
-| Sandbox stops before payment | Held: `declined`, `decline_code: sandbox_mode`, `charge_status: none`; the conversation read says `last_checkout.status: "denied"` with `total_cents` 17314 (the fare without the fee). |
+## How a booking runs
 
-## The states, kept apart
+1. **`flight_book`** (`src/tools.js`) — only on the person's own message, for one option of their own
+   search, with travelers they confirmed in the last hour, adults only, one traveler per seat. The
+   option must be on one airline Reason books with (`AIRLINES` in `src/flightcheckout.js`: only
+   JetBlue has been run; the others are the same kind of site and may answer with a block). It
+   re-runs the search: unchecked, gone or moved prices stop here. One flight checkout at a time.
+   Then `startCheckout` on the airline's site with an instruction naming exactly those flights by
+   number and time, and a cost ceiling above the searched price. **No passenger detail is in the
+   instruction** or kept with the run.
+2. **The passenger form** is answered by code from the sealed traveler record (`fill`), with the
+   contact address from their shipping record; for one traveler, and only when every required field
+   has an answer. Otherwise the model is woken and answers with `shop_answer`.
+3. **The payment request** is the shopping path's: one exact total, texted for approval. A "maximum"
+   is a ceiling, declined, never asked as a price. The yes is pinned to the travelers too
+   (`payTarget` ends `travelers [fingerprint]`), and `payRefusal` stops the payment — before the cap,
+   the order intent or anything else — if a traveler changed since, or booking was switched off.
+4. **After the airline takes the order** it is kept as a flight order (`agentcard_purchases`,
+   `kind = flight`, key `crossmint:<runId>`), in state `ticketing_pending`, and the person is told
+   "took the order … that is not a ticket yet". The e-ticket check below watches their mail.
+   **"Booked" only when a ticket number has been seen for every passenger.**
 
-`quoted` → `approval_pending` → `payment_approved` → `ticketing_pending` → `issued`, plus `reserved`,
-`declined`, `expired` (the approval ran out), `outcome_unknown` and `cancelled` (`src/flightbook.js`
-`bookingState`). Only `issued` — ticket numbers, from AgentCard's known fields or from the e-ticket
-email below — is "booked". A charge, `order_placed`, and a confirmation code (`retailer_order_id`) are
-each said as what they are, with "check with the airline". An expired or declined cart, like an
-unknown outcome, is never confirmed again; only a fresh `flight_book` and a new yes can.
+## Not done, and the owner's decision
 
-AgentCard keeps one set of passenger details per person on its side, and every `flight_book` sends
-the confirmed travelers explicitly. So an older cart is refused (`travelers_superseded`) once a newer
-one was priced for different passengers. Passenger details are sealed at rest (`flight_travelers`)
-and sealed out of the action ledger, the decision log and the data export (`privacy.sealTravelers`).
+- **The first real booking.** `REASON_FLIGHT_BOOKING=owner` on live, the owner's own card, one cheap
+  fare. It spends real money; refunds are the airline's rules, which were not read. Afterwards: record
+  the `succeeded` result as a fixture and replace the CONSTRUCTED test.
+- Travel sites (Expedia and the like), round trips and multi-passenger forms are unproven.
+- A flight's status after the order is said by the e-ticket check's own texts; `shop_status` shows
+  the checkout's stage, not the booking state.
+
+## The parts that do not depend on the route
+
+Nothing below talks to a provider or spends money.
+
+- **Travelers** (`flight_traveler_save`, `flight_traveler_confirm`, `flight_travelers`,
+  `flight_traveler_forget`; table `flight_travelers`). Legal name as on the ID, date of birth, gender
+  as on the ID, contact email and phone; kept unconfirmed until the person says the read-back is right
+  in their own words on a later message; a correction makes them unconfirmed again; a confirmation
+  covers one hour. Sealed at rest and sealed out of the action ledger, the decision log and the data
+  export (`privacy.sealTravelers`); never visible from another person's conversation.
+  `travelerFingerprint` goes in the confirm target, so a yes for one set of travelers cannot be spent
+  on another.
+- **The states**, kept apart in the record and in the words: `quoted` → `approval_pending` →
+  `payment_approved` → `ticketing_pending` → `issued`, plus `reserved`, `declined`, `expired`,
+  `outcome_unknown` and `cancelled` (`bookingState`). Only `issued` — ticket numbers — is "booked". A
+  charge, an order placed and a confirmation code are each said as what they are, with "check with the
+  airline". `TICKETING_FIELDS` is empty on purpose: no provider's order record is read as a ticket
+  until a real placed order has shown which fields carry one.
+- **The approval window and the quote's age** (`approvalExpired`, `quoteFresh`,
+  `REASON_FLIGHT_QUOTE_MAX_AGE_MS`): an expired approval or a stale price is a fresh quote and a new
+  yes, never a retry.
+- **The e-ticket check**, next.
 
 ## The e-ticket check (Gmail)
 
-`src/ticketcheck.js`, in the sweep (`runtime.ticketChecks`). Inert while `REASON_FLIGHT_BOOKING` is off.
+`src/ticketcheck.js`, in the sweep (`runtime.ticketChecks`). Inert while booking is off. It reads the
+flight order record (`agentcard_purchases`, `kind = flight` — the table AgentCard's route left, which
+the Crossmint route writes its placed orders to).
 
 - **When.** A flight order in `payment_approved`, `ticketing_pending` or `reserved`, for a person with
   Gmail connected. Not connected: the watch closes as `no_gmail`, nothing is read, and they hear the
@@ -68,7 +112,9 @@ and sealed out of the action ledger, the decision log and the data export (`priv
   printed passengers, locator, carrier, airports, date. Code then keeps a ticket only if it's 13
   digits, for one of the order's passengers (family name, plus the given name when one is printed),
   on the order's route and day. A locator counts only when one of their passengers is on the email.
-- **Evidence.** A ticket number is a ticket once AgentCard has placed the order: the watch is
+- **Every passenger.** The order is `issued` only when tickets have been seen for every passenger on
+  it, in one email or several; a ticket for some of them is kept in hand and the watch goes on.
+- **Evidence.** A ticket number is a ticket once the order is placed: the watch is
   `issued` and `bookingState` says booked. While the order is only `payment_approved`, a matching
   e-ticket may be one they bought themselves on Google Flights (Reason hands them that link too), so
   it proves nothing yet; the watch goes on and the same email counts once the order is placed. A
@@ -85,20 +131,16 @@ and sealed out of the action ledger, the decision log and the data export (`priv
 
 Pinned in `test/ticket-check.test.js`: issued, issued-before-placed held, a failed issued text
 retried, an owed line dropped on cancel, PNR only, no email, another passenger's e-ticket
-(with an instruction planted in it), Gmail not connected, per-conversation scope, flag off. The
+(with an instruction planted in it), Gmail not connected, per-conversation scope, flag off, no route. The
 fixtures are Gmail message resources built to the documented shape. Each one's `read` was recorded
 through the real reader, and `REASON_TICKET_EVAL=1` re-checks it live.
 
-## The first live booking — the owner's decision
+## Left in the tree, on purpose
 
-Not done. It needs: `REASON_FLIGHT_BOOKING=owner` on live (the owner only), a real card in the
-owner's vault, and one cheap real fare. It spends real money, the 2.5% booking fee is not refunded,
-AgentCard charges Reason's org its 1% commerce fee from the prefunded Balance, and on AgentCard's free
-plan it may use up the account's only live order (support has not said whether that is lifetime or
-one at a time). Afterwards: read `order_raw_json` and the order.* bodies, fill `TICKETING_FIELDS`
-from what is really there, and pin it with a recorded fixture.
-
-## Smoke test
-
-By hand, after an install or upgrade; never scheduled. Sandbox credentials only:
-`REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env`
+- AgentCard's general (non-flight) code: `src/agentcard.js`, the `purchase` / `purchase_confirm` /
+  `purchase_track` / `vault_enroll` tools, its webhooks and tests. Dormant on live, where Crossmint is
+  on for everyone. `purchase` and `purchase_confirm` refuse any AgentCard flight cart or flight row
+  (`flight_not_here`).
+- The flight order record is still the table named `agentcard_purchases`; renaming it is a migration
+  of its own.
+- PR #417 (a Duffel booking route) is separate and untouched.

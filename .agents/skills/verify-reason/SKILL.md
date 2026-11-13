@@ -227,6 +227,11 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    process. The process now writes what it holds to `data/busy.json` (src/busy.js, its own pid; kind +
    site + a one-way id, nothing personal), and idle.sh reads it — or, on code from before it, the
    running pid's journal. A `shop_runs` row `running` touched in the last 30 minutes is busy too.
+   So is a timer: a try claimed and not finished (`attempts` > 0, `fired_at` and `cancelled_at`
+   NULL), or one not tried yet that is due within 60 s or due and not picked up. On 2026-11-12 at
+   22:26 ET a restart that passed the gate cut timer 537 mid-turn (retried, out 44 s late). Anything
+   about a timer older than 10 minutes is ignored (a turn gets 5 on the CLI; `sweepStuckMs` is 10),
+   so a dead process's claim or a held timer cannot keep a deploy waiting for ever.
    **Every deploy kit restarts through `/root/reason-restart.sh`** (scripts/safe-restart.sh; it runs
    `/root/reason-idle.sh` = this idle.sh with `REASON_LIVE_SSH=local`, waits up to 20 min, restarts,
    checks health). Never `systemctl restart reason` by hand in a deploy; `--force` is for a rollback
@@ -526,6 +531,28 @@ body. `event_refund` added to `GATED_ACTIONS` + `NEVER_STANDING` (trustline test
 added to `test/fixtures/unscoped-sql-baseline.json`. **Not provable here:** Connect — the Stripe account answered
 "You can only create new accounts if you've signed up for Connect" (test mode, 2026-11-11); real Checkout, Apple Pay,
 real webhooks, the Express onboarding page.
+
+### Baseline — buy for friends (2026-11-11, PR event-buy-friends, stacked on event-refund-sales, not merged)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Buy for friends". Offline: `test/event-buy-friends.test.js`
+12/12 (fake Stripe; quantity Checkout, seats + links, claim on page and by text, capacity, per-seat partial refunds,
+cancel, the friend text, organizer pages); `event-paid` 18/18 ("WHO PAID" → "WHO HAS A TICKET"), `event-refund-sales`
+13/13. `bin/events-drive.mjs` under a temp DB: all ok, 132 steps, 28 `pay:` (7 new). Offline suite 6,497 / 6,357 pass /
+0 fail / 140 skipped. New tool `event_seats` (refund + send in CONDITIONALLY_GATED + GATED_ACTIONS + NEVER_STANDING);
+table `event_seats` KEPT_ON_DELETE with `claim_token` a secret column; unscoped-sql baseline +22 (seat/payment id lookups,
+event-wide counts). Same flag `REASON_PAID_EVENTS`. **Not provable here:** a real partial refund with reverse_transfer on
+a live connected account, Messages' card for a seat link, a real friend text.
+
+### Baseline — paid events round two: refund policy + sales summary (2026-11-11, PR event-refund-sales, not merged)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Refund policy + sales summary". Offline:
+`test/event-refund-sales.test.js` 10/10 and `test/event-paid.test.js` 18/18 against a fake Stripe (now also
+`GET /v1/balance` + `/v1/payouts`, recording the `stripe-account` header). `bin/events-drive.mjs` under `env -i` + temp
+DB: all ok, 124 steps, 21 `pay:` (4 new: policy on Stripe's page + receipt; "how are ticket sales" with the payout asked
+on the connected account; tightening to no refunds spares a sold ticket; no ticket → no guest refund).
+`event_ticket_refund` added to `ALWAYS_NEEDS_CONFIRMATION` + `GATED_ACTIONS` + `NEVER_STANDING`. Same flag as paid events
+(`REASON_PAID_EVENTS`), no new one. **Not provable here:** Stripe's real rendering of `custom_text`, a live connected
+account's balance/payouts, a real refund.
 
 ### Baseline — table pictures (render_table, PR #463, 2026-11-10, not merged, flag off)
 

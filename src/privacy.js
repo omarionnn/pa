@@ -32,7 +32,8 @@
 import * as strangerCalls from "./strangercalls.js";
 import { rmSync } from "node:fs";
 import { forgetPlayable, sweepPlayable } from "./webaudio.js";
-import { db } from "./db.js";
+import { db, scrubConversationText } from "./db.js";
+import { scrubPageSecrets, HIDDEN, TYPED_SECRET_ARGS } from "./pagesecrets.js";
 import { config, clock } from "./config.js";
 import { fromOutside } from "./outside.js";
 
@@ -414,18 +415,42 @@ function sealWalk(value) {
   return out;
 }
 
-export const TRAVELER_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
+export const TRAVELER_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget"]);
 const TRAVELER_KEYS = new Set(["given_name", "family_name", "born_on", "gender", "email", "phone", "known_traveler_number", "redress_number", "read_back", "travelers", "error", "note", "say", "said", "ask"]);
-export function sealTravelers(tool, value, depth = 0) {
+/**
+ * A tool's input or result as a record may keep it (the tool log, the action ledger, the decision
+ * log): the named fields below sealed, and what a secret box of a page held cut out
+ * (scrubPageSecrets, src/pagesecrets.js: the one scrubber, for every tool). Every record of a tool
+ * call goes through here.
+ */
+export function sealTravelers(tool, value) {
+  return scrubPageSecrets(sealFields(tool, value));
+}
+
+/**
+ * One tool call as the tool log keeps it. Besides the sealing above: what `browser_type` put into
+ * a password, code or card box is not logged (the result says `secret_box`), and neither is typed
+ * text that is itself a card number or a "password is ..." line, whatever box it went into.
+ */
+export function sealCall(tool, input, out) {
+  let kept = sealTravelers(tool, input);
+  if (tool === "browser_type" && kept && typeof kept === "object" && typeof kept.text === "string"
+    && (out?.secret_box === true || looksLikeACredential(kept.text))) kept = { ...kept, text: HIDDEN };
+  return { input: kept, out: sealTravelers(tool, out) };
+}
+
+function sealFields(tool, value, depth = 0) {
   if (value === null || typeof value !== "object" || depth > 6) return value;
   if (tool === "directions" && depth === 0 && !Array.isArray(value)) return sealWalk(value);
   // A checkout's answers (shop_answer: their address, phone, email) never reach a log or ledger row.
   if (tool === "shop_answer" && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
+  // An account job's answers (their email, a one-time code they sent, a bill's lookup details) neither.
+  if ((tool === "account_job_answer" || tool === "account_cancel_confirm") && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
   const travelers = TRAVELER_TOOLS.has(tool);
   if (!travelers && !SECRET_TOOLS.has(tool)) return value;
-  if (Array.isArray(value)) return value.map(v => sealTravelers(tool, v, depth + 1));
+  if (Array.isArray(value)) return value.map(v => sealFields(tool, v, depth + 1));
   const out = {};
-  for (const [k, v] of Object.entries(value)) out[k] = (travelers && TRAVELER_KEYS.has(k)) || SECRET_KEYS.has(k) ? "[sealed]" : sealTravelers(tool, v, depth + 1);
+  for (const [k, v] of Object.entries(value)) out[k] = (travelers && TRAVELER_KEYS.has(k)) || SECRET_KEYS.has(k) ? "[sealed]" : sealFields(tool, v, depth + 1);
   return out;
 }
 
@@ -433,8 +458,28 @@ export function sealTravelers(tool, value, depth = 0) {
  * An event's password goes into a tool as typed, and must reach no log, ledger or analytics row
  * (src/events.js). Sealed by the same pass as passenger details, for every tool that takes one.
  */
-export const SECRET_TOOLS = new Set(["event_create", "event_join", "event_password_rotate"]);
+export const SECRET_TOOLS = new Set(["event_create", "event_join", "event_password_rotate", ...Object.keys(TYPED_SECRET_ARGS)]);
 const SECRET_KEYS = new Set(["password", "new_password", "share_text"]);
+
+/**
+ * A credential typed into the chat for a tool (an Apple app password, until it has a screen of its
+ * own) is taken out of every copy Reason keeps of that conversation: its history, the memory log
+ * the extractor and the nightly review read, the stored inbound text and the outbox. Written with
+ * or without its spaces and dashes, in any case. Now, and twice more once the turn's own rows have
+ * been written (the same passes an event password gets, src/events.js scrubSoon).
+ */
+export function scrubTypedSecret(conversationId, secret, { label = "[app password]", since = clock.now() - 2 * 60 * 60_000 } = {}) {
+  const chars = [...String(secret ?? "").replace(/[\s\u2010-\u2015-]+/g, "")];
+  if (!conversationId || chars.length < 8) return 0;
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${chars.map(ch => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s\\u2010-\\u2015-]*")}(?![\\p{L}\\p{N}])`, "giu");
+  const pass = () => scrubConversationText(conversationId, since, (t) => t.replace(re, label));
+  const n = pass();
+  for (const ms of [45_000, 5 * 60_000]) {
+    const t = setTimeout(() => { try { pass(); } catch { /* best-effort */ } }, ms);
+    t?.unref?.();
+  }
+  return n;
+}
 
 export function forLog(value, { max = LOG_MAX, full = LOG_CONTENT, depth = 0 } = {}) {
   if (full) return value;

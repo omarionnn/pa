@@ -4,10 +4,26 @@
 // Both are free and keyless — Nominatim asks for a user-agent and 1 req/sec.
 
 const NOMINATIM = "https://nominatim.openstreetmap.org";
-const OVERPASS_SERVERS = [
+import { clock } from "./config.js";
+
+// The same four servers src/walk.js uses.
+export const OVERPASS_SERVERS = [
   "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
 ];
+// One search gets this long in all, however many servers it tries. When every server fails, the
+// next searches skip them for BREAKER_MS and answer at once, so the reply does not wait on them.
+const BUDGET_MS = 8_000;
+const BREAKER_MS = 5 * 60_000;
+let overpassDownUntil = 0;
+const DOWN = {
+  ok: false,
+  down: true,
+  error: "Couldn't load nearby places: the map service isn't answering right now.",
+  next: "Do not call nearby_places again for this ask. Use web_search for the places instead, and say the list comes from a search.",
+};
 const UA = "Reason/1.0 (personal-assistant)";
 
 export async function reverseGeocode(lat, lng, { fetchImpl = fetch, timeoutMs = 3000 } = {}) {
@@ -86,7 +102,9 @@ const TYPE_MAP = {
   pub:         { key: "amenity",  value: "pub" },
 };
 
-export async function nearbyPlaces(lat, lng, type, { cuisine, name, radius = 1500, limit = 10, fetchImpl = fetch, timeoutMs = 8_000 } = {}) {
+export async function nearbyPlaces(lat, lng, type, { cuisine, name, radius = 1500, limit = 10, fetchImpl = fetch, timeoutMs = 4_000 } = {}) {
+  if (clock.now() < overpassDownUntil) return { ...DOWN };
+  const deadline = clock.now() + BUDGET_MS;
   const mapping = TYPE_MAP[type] || { key: "amenity", value: type };
 
   let filters = `["${mapping.key}"="${mapping.value}"]`;
@@ -122,7 +140,7 @@ export async function nearbyPlaces(lat, lng, type, { cuisine, name, radius = 150
 
   async function run(server, query) {
     const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), timeoutMs);
+    const t = setTimeout(() => ac.abort(), Math.min(timeoutMs, deadline - clock.now()));
     try {
       const res = await fetchImpl(server, {
         method: "POST",
@@ -137,21 +155,22 @@ export async function nearbyPlaces(lat, lng, type, { cuisine, name, radius = 150
     } finally { clearTimeout(t); }
   }
 
-  // Try node-only on each server (fast), then full query as a last resort.
-  const attempts = [
-    ...OVERPASS_SERVERS.map(s => [s, nodeQuery]),
-    [OVERPASS_SERVERS[0], fullQuery],
-  ];
-
-  let lastErr;
-  for (const [server, query] of attempts) {
-    const out = await run(server, query);
-    if (!out.ok) { lastErr = out.error; continue; }
-    const results = parse(out.data);
-    if (results.length === 0 && query === nodeQuery) continue;
+  // Node-only on each server in turn (fast) until one answers; if it found none, the full query
+  // on that same server, which is up.
+  for (const server of OVERPASS_SERVERS) {
+    if (clock.now() >= deadline) break;
+    const out = await run(server, nodeQuery);
+    if (!out.ok) continue;
+    let results = parse(out.data);
+    if (results.length === 0 && clock.now() < deadline) {
+      const full = await run(server, fullQuery);
+      if (full.ok) results = parse(full.data);
+    }
+    overpassDownUntil = 0;
     return { ok: true, results, count: results.length };
   }
-  return { ok: false, error: lastErr || "all Overpass servers failed" };
+  overpassDownUntil = clock.now() + BREAKER_MS;
+  return { ...DOWN };
 }
 
 function escapeSafe(s) { return s.replace(/[\\"|[\](){}]/g, ""); }

@@ -1,0 +1,107 @@
+{
+  "probed_at": "2026-11-12T14:45:00Z",
+  "how": "One GET per page in headless Chromium from a scratch profile, signed out, no stealth plugins, 8 s wait; once from the live server (OVH, the service's own Playwright Chromium) and once from a home connection with the same Playwright build. Read-only.",
+  "finding": "Where both columns are a Cloudflare challenge the block is the automated browser itself, not the server's address: a residential address would not change it.",
+  "pages": [
+    {
+      "site": "doordash.com (home, sign-in, orders)",
+      "from_server": "403 Cloudflare challenge, never clears",
+      "from_home": "403 Cloudflare challenge, never clears",
+      "blocked_by": "the automated browser"
+    },
+    {
+      "site": "auth.uber.com (Uber Eats sign-in)",
+      "from_server": "403 Cloudflare challenge",
+      "from_home": "403 Cloudflare challenge",
+      "blocked_by": "the automated browser"
+    },
+    {
+      "site": "ubereats.com (home, signed out)",
+      "from_server": "200 loads",
+      "from_home": "200 loads",
+      "blocked_by": "not blocked"
+    },
+    {
+      "site": "grubhub.com (home, /login form)",
+      "from_server": "200 loads, email + password fields",
+      "from_home": "200 loads",
+      "blocked_by": "not blocked"
+    },
+    {
+      "site": "toasttab.com, order.toasttab.com",
+      "from_server": "403 Cloudflare challenge",
+      "from_home": "403 Cloudflare challenge",
+      "blocked_by": "the automated browser"
+    },
+    {
+      "site": "order.online (DoorDash storefront)",
+      "from_server": "403 Cloudflare challenge",
+      "from_home": "403 Cloudflare challenge",
+      "blocked_by": "the automated browser"
+    },
+    {
+      "site": "chownow.com, ordering.chownow.com",
+      "from_server": "403 Cloudflare error 1005 (network banned)",
+      "from_home": "200 loads",
+      "blocked_by": "the server's network (OVH)"
+    },
+    {
+      "site": "square.site (feelithsny)",
+      "from_server": "200 loads",
+      "from_home": "200 loads",
+      "blocked_by": "not blocked"
+    },
+    {
+      "site": "slicelife.com",
+      "from_server": "200 loads",
+      "from_home": "200 loads",
+      "blocked_by": "not blocked"
+    }
+  ],
+  "crossmint_checkouts": {
+    "how": "Crossmint Agent Checkouts with a throwaway user (no card, no profile), one cheap item, delivery to 350 W 50th St, New York; stopped at the payment request, never answered, cancelled.",
+    "runs": [
+      {
+        "site": "Toast",
+        "restaurant": "Nizza, 630 9th Ave, New York",
+        "result": "reached payment",
+        "amount": "22.87 USD exact",
+        "seconds": 171,
+        "run": "ebaae3e4 (first try failed reconciliation_required), retry reached payment"
+      },
+      {
+        "site": "DoorDash",
+        "restaurant": "Joe's Pizza",
+        "result": "got past the check, set the address, built the cart (1 Plain Cheese Pie, $30.00), then DoorDash required an account sign-in: no guest checkout",
+        "seconds": 122,
+        "run": "second run; first try failed reconciliation_required"
+      },
+      {
+        "site": "Square Online",
+        "restaurant": "Feel it Healthy Spot, Bronx",
+        "result": "reached payment (2026-11-10 dry run)",
+        "amount": "10.83 USD exact"
+      },
+      {
+        "site": "Slice",
+        "restaurant": "Roma Pizza",
+        "result": "reached payment as a guest",
+        "amount": "17.45 USD exact",
+        "seconds": 151
+      },
+      {
+        "site": "Grubhub",
+        "restaurant": "Amore Pizza Cafe",
+        "result": "got in and built the bag (1 cheese slice, $3.99), then Grubhub required creating an account: no guest checkout",
+        "seconds": 485
+      },
+      {
+        "site": "Uber Eats",
+        "restaurant": "$1.50 Fresh Pizza, 1723 Broadway",
+        "result": "guest cart built and the page showed a $10.49 total, but Uber Eats' own add-card form failed to load (400), so no payment request was made: blocked, merchant.checkout_error",
+        "seconds": 185
+      }
+    ],
+    "note": "Three runs started in the same second all ended failed/reconciliation_required within 3 minutes, mid-browse, before any payment step; each run alone afterwards went through. Nothing was ordered: none had a card."
+  }
+}

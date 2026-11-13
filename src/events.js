@@ -213,7 +213,7 @@ export function publicView(ev) {
 /** The price as anybody may see it (src/eventpay.js), or nothing for a free event. */
 export function priceView(ev) {
   if (!eventpay.priced(ev)) return {};
-  return { price_per_person: eventpay.dollars(ev.price_cents), price: eventpay.guestPriceLine(ev), paid_event: true };
+  return { price_per_person: eventpay.dollars(ev.price_cents), price: eventpay.guestPriceLine(ev), refund_policy: eventpay.policyWithMoney(eventpay.policyOf(ev), eventpay.ticketAt(ev)), paid_event: true };
 }
 
 /** What a joined guest may know: the released details, and nothing that is still the organizer's. */
@@ -239,9 +239,20 @@ export function guestView(ev, att) {
 
 /** What this guest paid, when the event costs something. */
 function paidLine(ev, att) {
-  if (!eventpay.priced(ev) || !att?.conversation_id) return {};
+  if (!att?.conversation_id) return {};
   const row = eventpay.paidRow(ev.id, att.conversation_id);
-  return row ? { paid: eventpay.dollars(row.total_cents) } : {};
+  // Tickets they got for friends (src/eventpay.js seats): each link, and who claimed which.
+  const friends = eventpay.seatsView(ev, att.conversation_id);
+  const seats = friends.length ? { tickets_for_friends: friends } : {};
+  if (!row) return seats;
+  // Their own ticket's policy (the one bought under, or looser now), and whether they can ask now.
+  const w = eventpay.refundWindow(ev, row);
+  const gift = row.buyer_conversation_id && row.buyer_conversation_id !== att.conversation_id;
+  // Whether they can ask now is left out while the time is hidden: watched over time it would tell the start.
+  return {
+    ...(gift ? { ticket_from: eventpay.buyerName(ev, { conversation_id: row.buyer_conversation_id }), ticket_value: eventpay.dollars(row.total_cents) } : { paid: eventpay.dollars(row.total_cents) }),
+    your_refund_policy: eventpay.refundPolicyLine(w.policy), if_you_cancel: eventpay.selfRefundWords(row), ...(ev.time_released ? { can_ask_for_refund_now: w.allowed } : {}), ...seats,
+  };
 }
 
 /** The organizer's view: all of it, except the password, which nobody can read back. */
@@ -279,9 +290,11 @@ export function organizerView(ev) {
 export function ticketView(ev) {
   const s = eventpay.summary(ev);
   return {
-    price_per_person: eventpay.dollars(ev.price_cents), paid: s.paid_count, gross: eventpay.dollars(s.gross_cents), you_get: eventpay.dollars(s.organizer_net_cents),
-    refunded: s.refunded_count, spots_held_for_payment: s.open_holds, ...(s.failed_refunds ? { refunds_that_failed: s.failed_refunds } : {}),
-    per_person: eventpay.organizerPriceLine(ev.price_cents),
+    price_per_person: eventpay.dollars(ev.price_cents), sold: s.sold_count, paid: s.paid_count, gross: eventpay.dollars(s.gross_cents),
+    refunded: s.refunded_count, refunded_amount: eventpay.dollars(s.refunded_cents), reason_fee: eventpay.dollars(s.reason_fee_cents), you_get: eventpay.dollars(s.organizer_net_cents),
+    spots_held_for_payment: s.open_holds, ...(s.failed_refunds ? { refunds_that_failed: s.failed_refunds } : {}),
+    ...(s.unclaimed_count ? { bought_for_friends_not_claimed_yet: s.unclaimed_count } : {}), max_tickets_per_buyer: eventpay.ticketMax(ev),
+    ...(ev.price_cents ? { per_person: eventpay.organizerPriceLine(ev.price_cents) } : {}), refund_policy: eventpay.policyLabel(eventpay.policyOf(ev)),
   };
 }
 
@@ -917,7 +930,9 @@ export function setCapacity(ev, capacity) {
 export function capacityState(ev) {
   const going = db.joinedCount(ev.id);
   const cap = ev.capacity ?? null;
-  return { capacity: cap, going, full: cap != null && going >= cap, over: cap != null && going > cap ? going - cap : 0 };
+  // Tickets bought for friends and not claimed yet hold their places (src/eventpay.js seats).
+  const held = db.reservedPlaces(ev.id);
+  return { capacity: cap, going, ...(held ? { held_for_friends: held } : {}), full: cap != null && going + held >= cap, over: cap != null && going > cap ? going - cap : 0 };
 }
 
 /**
@@ -1106,14 +1121,15 @@ export const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
  * The page's join, after the password: a claim, holding what the page collected and the code the
  * guest's own text will carry. Nothing is joined yet — a phone has not been proved.
  */
-export function makeClaim({ ev, displayName, instagram = null, inDirectory = false, answers = null }) {
-  return db.insertEventClaim({ eventId: ev.id, passwordVersion: ev.password_version, displayName, instagram: instagramHandle(instagram), inDirectory, answers, ttlMs: CLAIM_TTL_MS });
+export function makeClaim({ ev, displayName, instagram = null, inDirectory = false, answers = null, tickets = null, seat = null }) {
+  return db.insertEventClaim({ eventId: ev.id, passwordVersion: ev.password_version, displayName, instagram: instagramHandle(instagram), inDirectory, answers, ttlMs: CLAIM_TTL_MS,
+    tickets: tickets && tickets > 1 ? tickets : null, seatId: seat?.id ?? null, seatVersion: seat?.version ?? null });
 }
 
 /** The text the page's button prefills. Says what it is, with the code a lookup key in it. */
-export function claimText(ev, code) {
+export function claimText(ev, code, { ticket = false } = {}) {
   const c = String(code).toUpperCase();
-  return `Hi Reason, I'm joining ${ev.name.slice(0, 60)} with code ${c.slice(0, 4)}-${c.slice(4)}`;
+  return `Hi Reason, I'm ${ticket ? "claiming my ticket to" : "joining"} ${ev.name.slice(0, 60)} with code ${c.slice(0, 4)}-${c.slice(4)}`;
 }
 
 // ---------- telling guests ----------

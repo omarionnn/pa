@@ -26,6 +26,10 @@ process.env.REASON_CALL_MAX_RETRIES = "1";
 
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
+// This file drives the disclosure machinery (said first by code, re-said to a new person or in a new
+// language), which since 2026-11-12 exists only on a call that IS recorded: REASON_THIRDPARTY_RECORDING=on.
+// The default — a normal opening, no notice, no audio — is test/call-plain-open.test.js.
+config.thirdPartyRecording = true;
 const hold = await import("../src/calls/hold.js");
 const commit = await import("../src/calls/commit.js");
 const errand = await import("../src/calls/errand.js");

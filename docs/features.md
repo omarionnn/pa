@@ -110,11 +110,31 @@ later wave gets started while an earlier one is unfinished.
 ### Wave 1 — the assistant you text
 
 - **Texting.** Reason lives in a text thread. That is the whole interface.
-- **Calls, with the recording.** Reason rings a real phone with a goal and comes back with what was
-  said. **Every call is recorded**, every call announces at the start that it is an AI assistant
-  calling on someone's behalf and that the call is recorded, and **the recording is sent to the
-  owner after the call**, with the summary. No switch, no exceptions: a provider that cannot record
-  cannot be used, and a recording that goes missing is reported as a fault.
+- **Calls.** Reason rings a real phone with a goal and comes back with what was said.
+  - **A call to a business or another person starts normally** (owner, 2026-11-12, every account): a
+    hello and then what the call is about — "Hi, I'd like to book a table for two tonight at eight".
+    Nothing up front about who or what is calling. **If they ask** who is calling, or whether it is a
+    person, a robot or an AI, it says at once that it is an AI assistant calling for the user (first
+    name) and carries on. It never says or implies it is human, never makes up a name, never dodges. A
+    place ringing back is answered the same way. (This replaces the 2026-11-11 opening line "this is
+    Reason, an AI assistant calling for <name> … this call may be recorded".)
+  - **Those calls are not audio-recorded.** No notice is given at the start, so no audio is kept: not
+    by Reason (the call's audio is never held or written) and not at the phone carrier (Twilio call
+    recording was never switched on; the audio only streams through). What is kept is the text: what
+    each side said as the voice model heard it (the transcript on the call row), the summary and the
+    outcome the user is told. `REASON_THIRDPARTY_RECORDING=on` turns the recording back on and, with
+    it, a notice at the start ("just so you know, this call may be recorded") and stopping the
+    recording when they object. The two only ever come together.
+  - **The user's own calls with Reason are recorded**, they are told once by text, and the recording
+    is sent to them after the call with the summary. A recording that goes missing is reported as a
+    fault.
+  - **No-call hours.** Calls to other people are held 9pm-8am on the clock of the person being
+    called. When that holds a call Reason says why in plain words ("it's 6:10am in Los Angeles, they're
+    likely not open yet; I'll call at 8 their time, or say call now") and offers to place it at the
+    first allowed time. "Call now anyway", in the user's own words, places that one call (code checks
+    the words are in what they just said; it is never inferred, and never on a turn Reason started).
+    They can also set their own hours, or turn them off, by saying so (`call_hours_set`, kept on their
+    account with their sentence). Their own phone is never held.
 - **Research that ends in a real pick.** Not a list of options and a shrug — go and look, then come
   back with one answer and the reason for it.
 - **Places and weather.** Where things are, whether they are open, what it will be like out.
@@ -159,7 +179,8 @@ all of these come *after* saved logins exist:
   of making a link. The route that cannot be bot-checked — Uber's own sign-in on the person's
   phone, with Reason holding a token — is being built as a separate connector. Lyft was removed on
   2026-10-15: no web ride flow, no developer programme, no sign-in page reachable from here.
-- **DoorDash** and **Uber Eats** — food, delivered.
+- **DoorDash** and **Uber Eats** — food, delivered. Not through this browser: see "Food ordering"
+  just below.
 - **Amazon** — find something and order it.
 - **Airlines** — flights, on the airline's own site.
 - **Ticketmaster** — event tickets.
@@ -169,6 +190,147 @@ None of this is built. Every one of them is in the connected-accounts registry t
 connected**, with what it would do and what the owner has to supply, so asking Reason what it can
 reach gets an honest answer now rather than a guess. Nothing about any of their APIs has been
 assumed: where the credentials are not known yet, the registry says that instead of naming one.
+
+
+### Their bank, read-only (`REASON_PLAID`, `src/plaid.js`) (added 2026-11-12)
+
+A person connects a bank through Plaid and asks Reason about their own money by text. Reason reads
+balances and transactions. It cannot move money: the only Plaid products used are Transactions and
+Balance, and no endpoint that pays, transfers or returns an account or routing number is called.
+**Off by default** (`REASON_PLAID=off | owner | on`), Sandbox by default (`PLAID_ENV`).
+**Run against Plaid's real Sandbox on 2026-11-13** (`scripts/plaid-sandbox-proof.mjs`, the
+integration's own functions, a throwaway database, a made-up person; the record is
+`docs/plaid-sandbox-proof-2026-11-13.json` and the real response shapes are `test/fixtures/plaid/`):
+Hosted Link creation, connecting, syncing, a fresh balance, recurring, two banks combined, the
+60-day rule, an expired login and update mode, and disconnecting all behaved as written below.
+**Not proven:** a real webhook arriving and its signature being checked (Plaid could not reach the
+machine it ran on; a forged one is refused), a person going through Hosted Link in a browser
+(`scripts/plaid-sandbox-link.mjs` makes a link for that), and anything in production.
+
+- **Connecting.** "connect my bank" (or a money question with no bank connected) → the `bank` tool
+  makes a Plaid Hosted Link at that moment (it lasts 30 minutes) and Reason sends one short heads-up
+  (they connect through Plaid; read-only, can't move money) with the link on its own line. Plaid's
+  `SESSION_FINISHED` webhook brings the public token; it is exchanged server-side, the bank and its
+  accounts (name, type, last four) are saved, the first `/transactions/sync` runs, and Reason texts
+  "<bank> is connected...". Plaid opens `/bank/done` whether they finished or backed out, so that
+  page asks Plaid which it was (it also covers a lost webhook) and shows only connected / not yet /
+  closed. No bank name, balance or transaction is on it.
+- **Several banks and cards.** Each connection is its own Plaid Item: its own sealed token, sync
+  cursor, webhooks and update-mode link. Spending, categories and subscriptions cover all of them
+  together. Nothing is counted twice: Plaid's `TRANSFER_IN` / `TRANSFER_OUT` and
+  `LOAN_PAYMENTS_CREDIT_CARD_PAYMENT` are not spending, and a move whose two sides are both visible
+  (the same amount out of one of their accounts and into another within three days, where Plaid
+  called at least one side a transfer or loan payment) is left out even when Plaid mislabelled the
+  other side. With only one side connected there is nothing to match, so Plaid's category decides:
+  a card payment or transfer it labelled is left out and the answer carries `not_counted` (how much
+  went to a card Reason cannot see, whose purchases are therefore not in the total, and how much was
+  transferred out); one it labelled as something else counts as spending. Accounts are named by
+  bank, account name and last four (`by_account`, and on each listed transaction); a run of five or
+  more digits in a bank's account name is taken out.
+- **60 days.** Raw transactions are kept for 60 days. A sync never stores an older one (the first
+  sync brings months), and a sweep at start and every hour deletes what has aged past it
+  (`purgeOld`). Asked about a stretch wholly older, Reason says "i only keep the last 60 days" and
+  gives no number; partly older, it answers from the cutoff and says so. A monthly subscription is
+  spotted from two charges inside the window or from Plaid's recurring data; a yearly one is named
+  only when Plaid's recurring data reports it. Plaid itself is still asked for 180 days of history
+  (`days_requested`), because that is what its recurring detection works from; none of it older than
+  60 days is stored here.
+- **Disconnecting with more than one.** "disconnect my bank" lists them (bank, account name, last
+  four) and asks which; a last four or an unambiguous bank name picks one; "disconnect all" removes
+  each Item at Plaid and deletes each token and its data.
+- **Answers.** `bank` actions: `spending` (a period or two days, optional category or word; the
+  total first, by category; card payments, transfers between accounts and income are not counted;
+  nothing on a loan account is, so interest accruing on a mortgage is not "spending", while what
+  they pay toward a loan from a cash account is, whether or not the loan is connected),
+  `transactions`, `subscriptions` (Plaid's `/transactions/recurring/get` when the plan has that
+  add-on, otherwise worked out from their synced rows and said to be so; each with last charge, next
+  expected and `gone_out_this_month`, which is what "has rent gone out yet" reads), `balance`
+  (always `/accounts/balance/get`, never a kept number: there is no column for one), `status`,
+  `disconnect`. Categories come from Plaid's `personal_finance_category`. No bank connected → the
+  link is offered, never a guess. No investment, tax or insurance advice (the tool's description; nothing is added to the system prompt).
+- **Up to date before any answer, webhook or not** (`freshen`). In the real Sandbox the first sync
+  after a connection always came back empty (`NOT_READY`, no cursor); the transactions arrived 3 to
+  8 seconds later; and twice Plaid said `HISTORICAL_UPDATE_COMPLETE` with nothing delivered yet.
+  Plaid also never re-sends a webhook that was answered 401 or 404. So `spending`, `transactions`
+  and `subscriptions` sync each bank first unless it was synced in the last 30 seconds with its
+  history in, and a bank connected in the last ten minutes with nothing stored is asked every time.
+  While nothing has arrived the answer is `still_loading` and carries no number ("$0" would be
+  wrong); with one bank loading and another in, the total is given and the missing bank is named.
+  `/transactions/sync` is not billed per call.
+- **Names.** A charge is called by Plaid's merchant name. Where Plaid has none, the bank's own
+  line is used with every run of five or more digits taken out (real lines carry 14-digit
+  references and card fragments), before it is stored.
+- **Kept fresh.** `POST /plaid/webhook`, verified the documented way (ES256 JWT in
+  `Plaid-Verification`, key by `kid`, five-minute `iat`, SHA-256 of the raw body, constant-time).
+  `SYNC_UPDATES_AVAILABLE` syncs from the saved cursor. `ITEM_LOGIN_REQUIRED` (webhook or met on a
+  call), `PENDING_EXPIRATION`, `PENDING_DISCONNECT` → one text a day at most with a fresh update-mode
+  link; `LOGIN_REPAIRED` clears it. `USER_PERMISSION_REVOKED` → the same as a disconnect.
+- **Before paying.** The one real pay step today is `shop_pay` (a Crossmint checkout, paid by their
+  saved card). With a bank connected it first fetches a fresh balance; if no linked checking or
+  savings account covers the amount, nothing is paid on the yes already given, Reason says what the
+  account has and asks, and only a text sent after that warning lets the payment through. Plaid not
+  answering never blocks a payment. **There is no bill pay in Reason**, and Reason cannot tell which
+  account a card draws on, so this is a heads-up, not a guarantee. Proactive nudges ("rent hasn't
+  gone out", "spotify renews tomorrow") are not sent on their own yet: the data is there when asked.
+- **Privacy.** The access token is sealed with `REASON_TOKEN_KEY` before it is stored and, with
+  `REASON_ENCRYPT_REST2=on`, again under the person's own key, along with the bank's name, account
+  names and last fours, and every transaction; it is never logged, never returned to the model and
+  never exported (`SECRET_COLUMNS`). Every read is by conversation id. Reason's replies that answered
+  from the bank are kept out of the memory extractor and the nightly review (`plaid_reads`); what
+  the person says themselves is still read. "disconnect my bank" → `/item/remove`, then the token
+  and everything synced from that bank are deleted (if Plaid cannot be reached the data still goes
+  at once and the removal is retried). A full delete of somebody's data removes their Items at Plaid
+  first. Plaid is given a hash as the user id, never their number.
+- **To turn on:** `PLAID_CLIENT_ID`, `PLAID_SECRET`, `REASON_PLAID=owner`, and `REASON_PUBLIC_URL`
+  reachable by Plaid (the webhook is `<public url>/plaid/webhook`, passed on each link token; nothing
+  to register in the dashboard for Hosted Link's completion page). **Needs Plaid's approval:**
+  production access for Transactions and Balance (application, company profile, security
+  questionnaire), the Recurring Transactions add-on (a product access request), and OAuth
+  institution registration (Chase, Capital One and others need it and can take weeks). Balance is
+  billed per call in production; Transactions per connected Item per month, and Recurring
+  Transactions is a second monthly fee per Item once `/transactions/recurring/get` is called on it.
+  In Sandbox recurring answers with no access request (200, real streams; `PRODUCT_NOT_READY` if
+  asked in the first seconds), so whether production has it is only known once Plaid grants it.
+- Tests: `test/plaid.test.js` (36), against `test/fixture-plaid.js`, which answers the way the real
+  Sandbox did and is held to the recordings in `test/fixtures/plaid/` field for field.
+- By hand, with Sandbox keys: `REASON_PLAID_SANDBOX=1 node scripts/plaid-sandbox-proof.mjs
+  --env-file .env` (the whole flow against sandbox.plaid.com, about a minute, every Item removed at
+  the end; `--save test/fixtures/plaid` re-records the shapes) and `node
+  scripts/plaid-sandbox-link.mjs --env-file .env` (prints a fresh Sandbox Hosted Link and its
+  expiry for a person to open: First Platypus Bank, `user_good` / `pass_good`; `--check` then
+  connects it through the integration and says what came in; `--disconnect` cleans up).
+
+### Food ordering (`REASON_FOOD`, `src/food.js`)
+
+What was seen to work and what was not, as of 2026-11-12. No food order has yet been paid for
+through Reason; every run below was stopped at the payment request and cancelled.
+
+- **Reason's own browser is not the route.** DoorDash, Uber's sign-in page, Toast and order.online
+  answer it with Cloudflare's check (HTTP 403, "Performing security verification", never clearing),
+  and they answer the same headless browser the same way from a home connection, so it is the
+  automated browser and not the server's address. ChowNow refuses the server's network outright
+  (error 1005) and loads from a home connection. Grubhub, Uber Eats' signed-out home page, Square
+  Online and Slice load. The run is `docs/site-probe-2026-11-12-food.json`. Nothing is done to get
+  around a check (the no-stealth rule).
+- **The checkout is Crossmint's** (`store_checkout`), which runs on Crossmint's browser. It reached an
+  exact total, stopped at payment, at: Feel it Healthy Spot on Square Online ($10.83, pickup,
+  2026-11-10), Nizza on Toast ($22.87, one Margherita, delivery, 2026-11-12, about 3 minutes) and
+  Roma Pizza on Slice ($17.45, one 12" cheese pizza, delivery, 2026-11-12, as a guest).
+  On DoorDash and on Grubhub it got in, set the address and built the cart, then the app asked for
+  an account: neither has a guest checkout, so an order there needs the person's own sign-in, given
+  on the link Reason sends (the password goes to Crossmint, never to Reason). That signed-in step
+  has not been seen through to a total. On Uber Eats the guest cart was built and priced, and Uber
+  Eats' own card form then failed to load, so no payment request was made.
+- **Past orders come from their mail** (`food_order` `past_orders`): the receipts every app and
+  ordering system sends, newest first, for "what did I last order" and "get that again". It needs
+  their mail connected and the receipts to be in a connected mailbox. Only an order's own mail
+  counts: a confirmation or a receipt (by the sender's address and the subject's form, then by an
+  order number, itemised lines or a charged total in the mail itself). Adverts, offers, cart
+  reminders and "rate your order" from the same apps are left out. The restaurant, the dishes and
+  the total are read from the receipt where it has them; where it does not (DoorDash's and Uber
+  Eats' receipts list no dishes in their text), the answer says the receipt does not list them.
+- **Money** is the shopping gate unchanged: Crossmint's exact amount, their yes to that amount, Face
+  ID where set up, the daily cap.
 
 ### Wave 3 — the assistant that makes things
 
@@ -476,6 +638,88 @@ sign-in link, and Reason keeps the session the site gives the saved profile. Wha
   Uber sign-in page (`test/fixtures/uber-login.html`) in real Chromium is what showed it; the finder
   presses the visible "Continue with Google" there and not the phone box, the hidden copy or the
   footer's "Google Privacy Policy" link (`test/social-signin-uber.test.js`, 7 tests).
+
+**Sign-in probe fixes (2026-11-12, after a probe of 44 sites; `docs/site-probe-2026-11-12-signin.json`):**
+
+- **A bot rejection is not a wrong email.** "Something went wrong", "try again", "too many attempts",
+  a captcha or challenge page, or the site's own 403/429 to the press that asks for the code is the
+  site refusing Reason's browser (`src/signinemail.js` `failureKind`, state `blocked`). Reason never
+  asks "which email do you use" over it and never tries another address. The person hears one line —
+  "Spotify blocks automated sign-in, so I can't sign you in there myself" — and gets the best route
+  left: an answer from their mail, or their own sign-in on the secure link where the page itself loads.
+- **One log line per attempt**, always printed (`src/signinlog.js`): the site's host, the route
+  (`emailed_code` / `emailed_link` / `provider` / `password_link`), the outcome class (`signed_in`,
+  `blocked_by_site`, `code_not_found`, `wrong_code`, `abandoned`, plus `email_rejected`,
+  `no_email_route`, `failed`) and the time it took. Never an email, a code, a number or a conversation.
+- **A footer link is not a sign-in button** (`src/providerbutton.js`): a control is a provider button
+  only on the sign-in form or dialog, or when it goes to the provider's sign-in endpoint. Marriott's
+  footer "Facebook" link to its social page is neither.
+- **Whether a site can be signed in to is a dated finding** (`src/sitefindings.js`): the probe's walls
+  are believed for 14 days, a wall the service meets itself for a day, then the site is asked again;
+  a 403/429 on the sign-in or account page writes a new one. `signin_status` gives each site a
+  `signin_here` (blocked / open / unknown) with its date; the old top-level `can_sign_in_here`, which
+  was about the person being at the Mac, is now `window_on_this_mac`.
+- **The live ask is short and never guesses** (`src/socialsignin.js` `signinWall`, review of #521):
+  at most 2.5 s for everybody's `signin_link` / `signin_open` / `signin_email`, through the network
+  guard, one fetch per page at a time, 400 KB of body at most. Only a 403, a 429 or a challenge page
+  served as an error is a wall. A timeout, a failed lookup, a redirect loop, a bare 503 or a 404 is
+  "unknown": nothing is stored and the link is still made. A finding speaks only for the sign-in page
+  it was seen on (a one-way mark, never the address), a refusal seen on one person's run lasts a day,
+  "too many attempts" is never stored, and the table is capped at 2,000 sites
+  (`test/signin-live-check.test.js`, 13 tests).
+- **Google, as it is.** Google refuses Reason's browser on its own sign-in page after the email is
+  typed, whoever types it (proved on Notion 2026-11-10), so there is no Google route: not pressed for
+  the person, and not completable by the person on the secure link either. A site that offers Google
+  plus its own email sign-in is signed in to by its emailed code. A site that offers ONLY Google
+  cannot be signed in to; Reason says so in one line and sends no link. No wording promises to press
+  or use a Google login.
+- **The right page, no phantom steps, no link loops (2026-11-12, after the owner's Stripe Link
+  attempt; `src/signinpage.js`, `test/signin-flow-1112.test.js`, 25 tests).** What went wrong that
+  night, from the attempt log: the emailed-code route read app.link.com once, 1.1 s after it loaded,
+  and said "no email box" (the page draws it 1.3 s in); the fallback named the bare site
+  "link.com", so the link opened Link's marketing home page under "finish this step on the page
+  below"; the session ran out after ten minutes and a third identical link went out. Now:
+  - *The emailed code waits for the form.* The email box is polled for, about ten seconds
+    (`REASON_SIGNIN_FORM_WAIT_MS`), stopping the moment it is there, in the page and its same-origin
+    frames. Another origin's frame is never read. The wait also stops early on a clear negative
+    (`signinpage.settleWatch`): a page that has finished loading, has words on it, is fetching
+    nothing and has not changed for two seconds (`QUIET_MS`) has no form coming, so a home page or a
+    password-only form is said in about two seconds, not ten. A blank app shell, a page still
+    fetching or still changing, and a bot check get the whole bound.
+  - *A hand-off lands on the page the sign-in was on.* The page (origin + path, never a query
+    string) is kept per person and site in `signin_pages` and read back in code
+    (`signin.entryOnItsPage`), so a bare name resolves to it whatever the model types; each
+    instruction names the page whole. With only a bare name, the site's own "Sign in" / "Log in"
+    link is followed once before anybody is shown anything (`browser.locateSigninPage`, a throwaway
+    guarded browser); when no sign-in page is found, no link is made and Reason says it cannot find
+    where to sign in.
+  - *No phantom steps.* Every picture is classed (`pageKind`: sign-in form, challenge, provider
+    prompt, not a sign-in page). "Finish this step on the page below" is said only over the first
+    three. A page that is not a sign-in page is "looking for the sign-in page", then the session
+    ends plainly; mid-way it is "a page with nothing to fill in".
+  - *No link loops.* An ending without progress (timed out, closed, expired unopened, no sign-in
+    page) gets one plain line and the next best route; the note no longer says "offer a fresh
+    link", and `signin_link` refuses a second identical link in a turn the person did not start. At
+    most one retry on its own, and only when the link would open a different page; the retry is
+    counted per run of endings (an hour apart starts over). A sign-in the person asks for
+    themselves (`signin_link` or `signin_email` in their own turn) starts the count over, so the
+    hand-off link of an attempt they asked for is never refused over an older ending. An ending is
+    kept against both the page the link named and the page its sign-in form was shown on (a link
+    that opened a home page and went through the site's own "Log in" link): a next link to either
+    is the same page again.
+  - *"Signed in" needs positive evidence on a site with no playbook*: a log-out or account control
+    in the document, or the site's own sign-in page passing the browser straight on to an inside
+    page. An absent "Sign in" is not proof: the answer is then "unknown", said as "I can't tell",
+    and nothing is retried because of it. Sites with a playbook read as before.
+  - *A step log.* One line per step (`signinlog.logStep`): link opened, Start pressed, the kind of
+    page each time it changes, the site's own link followed, submitted, signed in, expired or
+    ended. Fields: the site's host, the step, the kind, timing, a short session tag. Never a path, a
+    query string, an email, a number, a code or a conversation.
+
+  **Not proved:** a real person's sign-in to Link end to end (nothing may be submitted in a test:
+  Link's page carries hCaptcha and may refuse Reason's browser after the email goes in), and a site
+  whose "Log in" is a button that opens a box on the same page (the link is then not followed to
+  another page, and the session ends as "no sign-in page").
 
 **Not proved:** no real site has been signed in to through a real provider button here, and Uber's
 real sign-in page still bot-walls Reason's browser from the live box (2026-11-10), so the Google
@@ -2615,6 +2859,47 @@ offer coming back.
 
 Not added to the announceable list, by that list's own rule: nothing here has been watched working on
 a real phone yet.
+
+## It thinks a step ahead when life comes up (added 2026-11-11)
+
+Behind `REASON_CUES` (`off` | `owner` | `on`), **off by default**. Code: `src/cues.js`. Tests: `test/cues.test.js`, `test/flow-cues.test.js`.
+
+```
+Omari:  i'm flying to miami on the 20th
+Reason: nice. want me to find u a place to stay?
+        ...
+(the 19th, 9:30am)
+Reason: want a nudge when check-in opens for miami?
+```
+
+When somebody says something is coming up, Reason offers ONE thing that helps in the reply they are already reading, and holds the rest for the moment each is useful. Never a menu.
+
+**The cues and their offers** (data in `CUES`; adding one is an entry, not code):
+
+| Cue | Offers, in priority order (when a held one goes) |
+| --- | --- |
+| trip (flight, train, drive) | a place to stay (2 days after it was mentioned) · check-in reminder, flights only (24h before) · a ride to the airport or station (6pm the evening before) · weather and packing (6pm two days before) · a table for the first night (3 days before) |
+| move | change-of-address checklist · a few movers to get quotes from (3 weeks before) · utilities and internet reminders (10 days before) |
+| birthday | a reminder and a gift idea, for somebody else's (7 and 10 days before) · a table (5 days before) · an event page (2 weeks before) |
+| interview | a calendar hold · a prep reminder the evening before · directions and a leave-by time, in person only (3 hours before) |
+| guest visiting | a plan for the days · a table for one night · a reminder of when to leave for the pickup (the evening before) |
+
+**Who decides what.** The model hears the cue (`cue_note`; there is no word list anywhere) and picks which one offer suits, or none. Code decides everything else:
+
+- **Only what they said.** A cue needs their own sentence on the row. Never one worked out from a calendar, mail or a booking.
+- **Nothing sensitive.** The kinds are a closed list, and a cue that rests on health, money trouble, a relationship, a loss or anything legal writes nothing.
+- **Only what they can get.** Each offer names the tools it needs; one whose tools this person is not shown is never offered. An account not connected (Uber for the ride, Google for the calendar hold) is offered as a connect once per person, ever, and only inside a reply.
+- **One offer now.** `cue_offer` refuses a second while the first is unanswered, anything not on the list it was handed, and any offer on a turn they did not start. After a call nothing is texted: one offer waits and rides on their next reply.
+- **The rest are rows with a moment**, on the unprompted path that already exists: a `notice_seen` row (kind `cue_offer`) on a one-off timer, said only through `notice_send`. So the daily budget and hard cap, quiet hours, digest, snooze, "off", the daily proactive ceiling and one-nudge-per-thing apply unchanged. At most 3 are held per cue; a moment in their night moves to their morning; every offer of one cue shares one `thing`, so if the last one went unanswered the next waits until they speak.
+- **A no is kept.** Never again for that cue; "never" (`i always drive myself`) mutes that offer on every later cue; two noes on one cue drop what was still held.
+- **It ends** when its date passes, when they say it is off (`cue_end`), or after a few weeks with no date. Checked again when a held offer comes due, along with whether they can still get it.
+- **They can turn it off** by text (`cues_setting`) or in Settings → Thinking ahead. Off deletes what was held.
+- **A yes is only a yes to the offer.** Booking, buying, calling and texting other people still need the confirmations they always needed.
+
+Rows: `cues`, `cue_offers`, `cue_prefs`, `cue_mutes`; all four are in the data export and removed by a delete.
+
+Not built: hearing a cue live during a call (it is noted from the call's words afterwards, by the after-call turn); a cue from a booking Reason itself made (those already get the follow-on offer above).
+
 
 ## The meeting moved to 3, your calendar still says 2 (added 2026-10-08)
 

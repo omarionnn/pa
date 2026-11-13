@@ -45,12 +45,17 @@
 // **What it cannot do.** Face ID, a passkey or a security key belong to the device doing the
 // signing in, and that device is the machine, not the phone — so those will not work here and the
 // page says so. A password, a code by text or email, and "is this you" taps all do.
+import * as findings from "./sitefindings.js";
+import { logAttempt, logStep } from "./signinlog.js";
+import * as signinPage from "./signinpage.js";
+import { FRAME_JS, fieldKind } from "./signinpage.js";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
+import * as emailRoute from "./signinemail.js";
 import { readSignedInState } from "./sites.js";
-import { profileDirFor, guardContext } from "./browser.js";
+import { profileDirFor, guardContext, launchOptions, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser } from "./browser.js";
 import * as restartGate from "./busy.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
@@ -58,7 +63,7 @@ import { config, clock } from "./config.js";
 import { backToReasonHref, dark, THEME, iconLinks } from "./pages/render.js";
 import { securedCardTags } from "./pages/securedcard.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
-import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN, PAPER_GLOW, NIGHT_GLOW, GLOW_OFF, SHEET_BG } from "./pages/brand.js";
 import { setupStartPage, setupLivePage, setupNativePage, nativeStepPanel, STEP_NEEDS_PAGE, setupResultPage, setupCodePage, setupGonePage, setupNoticePage, setupBackPage } from "./pages/setupsignin.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
@@ -78,6 +83,8 @@ const MOVING_QUALITY = 40;
 const SIGNED_IN_RUN = 2;
 /** Nothing finishes itself in the first few seconds, when the site's own page is still settling. */
 const EARLIEST_AUTO_FINISH_MS = 8_000;
+/** How long a page that is not a sign-in page is left alone before the site's own "Log in" link is looked for. */
+const LOOK_FIRST_MS = 2_500;
 
 /** token → session. In memory on purpose: a restart ends every session, which is the safe way to fail. */
 const sessions = new Map();
@@ -90,16 +97,37 @@ const same = (a, b) => {
   return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
 };
 
-/** The real browser: the person's own saved profile, headless, at the size the page shows. */
+/**
+ * The real browser: the person's own saved profile, headless, at the size the page shows. The profile
+ * is this browser's until `close` (src/browser.js holdProfile): the errand browser opens nothing on it
+ * meanwhile, and one still starting is waited for and closed first. With REASON_STABLE_BROWSER on for
+ * them it opens with the one launch setting, and `view` says what size the picture is.
+ */
 async function realLaunch({ conversationId, url }) {
+  const holder = Symbol("signin_browser");
+  if (!holdProfile(conversationId, holder)) throw new Error("A sign-in is already open on their saved profile. Let it finish first.");
+  let context = null;
+  try {
+    await closeErrandBrowser(conversationId);
+    return await openHeld({ conversationId, url, holder, opened: (c) => { context = c; } });
+  } catch (e) {
+    await context?.close().catch(() => {});
+    releaseProfile(conversationId, holder);
+    throw e;
+  }
+}
+
+async function openHeld({ conversationId, url, holder, opened }) {
   const { chromium } = await import("playwright");
-  const context = await chromium.launchPersistentContext(profileDirFor(conversationId), {
+  const options = launchOptions(conversationId, {
     headless: true, viewport: VIEW, deviceScaleFactor: 2,
     // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
     // Smooth scrolling off, and only that: a wheel otherwise animates for ~300 ms, so the picture
     // taken after a scroll showed the page before it had moved (measured 2026-11-10).
     args: ["--disable-smooth-scrolling"],
   });
+  const context = await chromium.launchPersistentContext(profileDirFor(conversationId), options);
+  opened(context);
   // Never this machine's own network, on every request — a link can name any site by its address.
   await guardContext(context);
   const page = context.pages()[0] ?? await context.newPage();
@@ -117,8 +145,17 @@ async function realLaunch({ conversationId, url }) {
     return pg.screenshot({ type: "jpeg", quality });
   };
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
-  return { page, shot, close: () => context.close().catch(() => {}) };
+  const close = async () => {
+    try { await context.close().catch(() => {}); } finally { releaseProfile(conversationId, holder); }
+  };
+  return { page, shot, close, view: options.viewport ?? VIEW };
 }
+
+/** The size of the picture this session's browser takes: its launch's, else the phone frame. */
+const viewOf = (s) => s?.browser?.view ?? VIEW;
+
+/** The same browser for the email sign-in (src/signinemail.js): their saved profile, headless, guarded. */
+export const launchProfileBrowser = (args) => realLaunch(args);
 
 export function remoteSigninStatus() {
   // The link a person taps lives on the website (heyreason.com/s/* is proxied to this server), else
@@ -155,15 +192,22 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
   // `provider`: which button this site's account signs in through (google/apple/facebook/microsoft,
   // src/socialsignin.js). Only where that flag reaches this person: the button is pressed for them
   // when the page opens, and the provider goes on the saved-login row once the site says signed in.
-  const prov = social.socialAllowedFor(conversationId) ? social.providerKey(provider) : "";
+  // Never Google (src/socialsignin.js NEVER_PRESSED): a link asked for Google opens on the site's email route.
+  const prov = social.socialAllowedFor(conversationId) ? social.usableProvider(provider) : "";
   const s = {
     token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
     provider: prov, pressProvider, pressed: "", lastFields: [],
     // The "Continue with" choices the intro page shows (src/socialsignin.js offeredFor); the one
     // tapped replaces `provider` at Start, and the email button clears it. None without the flag.
-    offered: social.socialAllowedFor(conversationId) ? [...new Set([prov, ...(offered ?? []).map(social.providerKey)].filter(Boolean))] : [],
+    offered: social.socialAllowedFor(conversationId) ? [...new Set([prov, ...(offered ?? []).map(social.usableProvider)].filter(Boolean))] : [],
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
     ended: null, startedAt: null, timer: null, signedInRun: 0,
+    // What the page's honesty and the step log hang off (src/signinpage.js): whether a real step
+    // has been seen yet, the kind of page last seen, whether they have submitted anything, and
+    // whether the site's own sign-in link has been tried. `tag` tells two sessions' log lines
+    // apart: a hash, never the link.
+    sawStep: false, kind: "", submitted: false, typed: false, opened: false, doorTried: false, lookSince: null, submits: 0, formPage: "",
+    tag: createHash("sha256").update(`steplog:${token}`).digest("hex").slice(0, 8),
   };
   sessions.set(token, s);
   byConversation.set(conversationId, token);
@@ -180,6 +224,45 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
     reachable_from_a_phone: st.reachable_from_a_phone, ...(st.why ? { why: st.why } : {}),
   };
 }
+
+/**
+ * One line for one step of this session (src/signinlog.js): the site's host, the step, the kind of
+ * page, timing since the link was made. Nothing typed, no address past its host, no conversation.
+ * On 2026-11-12 a ten-minute session left only its summary line, and what the owner had been shown
+ * had to be worked out afterwards.
+ */
+function step(s, name, extra = {}) {
+  try { logStep(s.entry, { step: name, route: s.provider ? "provider" : "password_link", startedAt: s.createdAt, session: s.tag, ...extra }); } catch { /* a log line never breaks a sign-in */ }
+}
+/** They pressed something that sends the form on: Enter, Reason's own Continue, or a tap off the boxes after typing. */
+function markSubmitted(s, how) {
+  s.submitted = true;
+  s.typed = false;
+  s.submits += 1;
+  if (s.submits <= 12) step(s, "submitted", { detail: how });
+}
+/**
+ * What kind of page the browser is on (src/signinpage.js pageKind), noted on the session: the first
+ * real step, the page a sign-in form was first seen on (so a later link opens there), and one log
+ * line each time the kind changes.
+ */
+function noteKind(s, raw) {
+  const kind = signinPage.pageKind(raw, { provider: s.provider, midFlow: s.sawStep });
+  if (kind === "loading") return kind;
+  if (signinPage.isStep(kind)) {
+    // `formPage`: where this session's sign-in form really was. A session that opened on a home page
+    // and went through the site's own "Log in" link ends on THAT page, not on the one its link named.
+    if (!s.sawStep && kind === "signin_form" && s.entry.generic) { try { s.formPage = signinPage.rememberSigninPage(s.conversationId, s.entry, raw?.url) || s.formPage; } catch { /* remembering is a help, never a requirement */ } }
+    s.sawStep = true;
+  }
+  if (kind !== s.kind) {
+    s.kind = kind;
+    if (kind !== "signed_in") step(s, "page_kind", { kind, pageUrl: raw?.url });
+  }
+  return kind;
+}
+/** A link preview fetches the page without anybody having opened it. */
+const PREVIEW_UA = /bot\b|facebookexternalhit|preview|crawler|spider|slurp|whatsapp|telegram|discord|skype|embedly/i;
 
 /**
  * A site that opens its provider's page in a popup (Notion's "Continue with Google", seen live
@@ -255,7 +338,8 @@ async function end(s, how) {
     note = `the ${entry.label} sign-in link you sent never got past ${entry.label}'s bot check: ${entry.label} blocks Reason's browser from its sign-in page, so nothing could be typed and nothing was saved, and a fresh link would hit the same wall. Say that plainly in one short line — it is ${entry.label}'s choice, not something they did — and offer what works instead${entry.deep_link ? ` (for a ride, uber_link opens Uber on their phone with the destination filled in)` : ""}${social.socialAllowedFor(c) ? ` — ${social.wallInstead(entry).tool}` : ""}.`;
   } else if (s.browser) {
     try {
-      const out = await inTurn(s, () => s.check(s.browser.page, c, entry.site, { provider: s.provider }));
+      // Asked on the page this session's sign-in was on (the entry in hand), never a page rebuilt from the site's bare name.
+      const out = await inTurn(s, () => s.check(s.browser.page, c, entry.site, { provider: s.provider, ...(entry.generic ? { entry } : {}) }));
       s.ended.state = out?.ok === false ? "unknown" : out.state;
       s.ended.why = out?.why ?? out?.error ?? "";
     } catch (e) {
@@ -267,22 +351,62 @@ async function end(s, how) {
     const tail = how === "done" || how === "finished" ? ""
       : how === "cancelled" ? " (they closed it without finishing)"
         : how === "replaced" ? " (a newer link replaced that one)"
-          : " (the link timed out before they finished)";
+          : how === "no_signin_page" ? " (no sign-in page was found)"
+            : " (the link timed out before they finished)";
+    // No link loops (owner, 2026-11-12: the session ran out and a third identical link went out).
+    // An ending without progress gets ONE plain line and the next best route, and no new link made
+    // by itself; src/tools.js signin_link refuses an identical one in a turn they did not start.
+    const noProgress = signinPage.NO_PROGRESS.has(how);
+    const mins = Math.max(1, Math.round((clock.now() - (s.startedAt ?? s.createdAt)) / 60_000));
+    const route = `the next best route, in a few words: they can ask you for a fresh link when they have a couple of minutes, or do this part themselves in ${entry.label}'s own app or site and tell you when it is done`;
+    const noLink = `Do NOT make another sign-in link now (no signin_link): a second identical link is not help, and none is made unless THEY ask for one.`;
     // A sign-in that went through a provider button: the row now says which, so the same login can
     // open the person's other sites through that provider (src/socialsignin.js RULES: say so once).
     const unlocked = s.ended.state === "signed_in" && s.provider
-      ? ` Their ${entry.label} login is saved as a ${social.LABELS[s.provider]} sign-in${s.pressed ? "" : " (the site's own form had no such button, so this is what you were told rather than what was pressed)"}.`
+      ? ` Their ${entry.label} login is saved as ${s.provider === "apple" ? "an" : "a"} ${social.LABELS[s.provider]} sign-in${s.pressed ? "" : " (the site's own form had no such button, so this is what you were told rather than what was pressed)"}.`
         + ` After the task is done, say once what else that unlocks: any site of theirs that signs in with ${social.LABELS[s.provider]} can be opened the same way now without asking again.`
       : "";
     note = s.ended.state === "signed_in"
       ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}${unlocked}`
-      : s.ended.state === "signed_out"
-        ? `the ${entry.label} sign-in through the link you sent has ended${tail}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Say that plainly in one short line and offer a fresh link.`
-        : `the ${entry.label} sign-in through the link you sent has ended${tail}, but whether they are signed in could not be read (${s.ended.why}). Nothing is recorded either way. Say that in one short line; signin_status with recheck asks the site again.`;
+      : how === "no_signin_page"
+        ? `the ${entry.label} sign-in link you sent opened a page of ${entry.label}'s that is not a sign-in page, and Reason could not find a sign-in page from it, so they were shown no step and nothing was saved (${s.ended.why}). ${noLink} Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page they can send it, and signin_link takes that address as the site.`
+        // Replaced by a newer link and not signed in: the newer link is the one they have. There is
+        // nothing to say about the old one, so the model is not woken for it at all.
+        : how === "replaced"
+          ? ""
+          : noProgress && s.ended.state === "signed_out"
+            ? `the ${entry.label} sign-in link you sent ended after about ${mins} minute${mins === 1 ? "" : "s"}${tail}${s.submitted ? "" : " with nothing submitted on it"}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Nothing was saved. ${noLink} Say ONE plain line that says what happened, like: "That ${entry.label} sign-in link ${how === "cancelled" ? "was closed" : "timed out"} before anything went through." Then ${route}. Or stop there.`
+            : noProgress
+              ? `the ${entry.label} sign-in link you sent ended after about ${mins} minute${mins === 1 ? "" : "s"}${tail}, and whether they are signed in is UNKNOWN: ${entry.label}'s page showed nothing that proves it either way (${s.ended.why}). Nothing is recorded either way. ${noLink} Say ONE plain line, like: "That ${entry.label} link ended and I can't tell whether you're signed in." signin_status with recheck asks the site again when they want it checked.`
+              : s.ended.state === "signed_out"
+                ? `the ${entry.label} sign-in through the link you sent has ended${tail}, and ${entry.label} says they are still NOT signed in (${s.ended.why}). Say that plainly in one short line and offer a fresh link in words; make one (signin_link) only once they say yes.`
+                : `the ${entry.label} sign-in through the link you sent has ended${tail}, but whether they are signed in is UNKNOWN: it could not be read (${s.ended.why}). Nothing is recorded either way. Say that in one short line, as "I can't tell", not as signed out; signin_status with recheck asks the site again. Do not send another link on your own.`;
   } else if (how === "link_expired") {
     note = `the ${entry.label} sign-in link you sent was never opened and has expired. Do not chase them about it; if they bring it up, offer a fresh one.`;
   }
   s.log({ signin_remote: "ended", how, site: entry.site, conversation: c, state: s.ended.state });
+  // The step log's last line, and what is remembered for the next link (src/signinpage.js): an
+  // ending without progress is written down, so no second identical link goes out on its own.
+  const expired = how === "timed_out" || how === "link_expired";
+  step(s, s.ended.state === "signed_in" ? "signed_in" : expired ? "expired" : "ended", { detail: s.ended.state === "signed_in" ? "" : how === "link_expired" ? "never_opened" : String(how) });
+  try {
+    // Both pages are written down: the one the link named and the one the sign-in was shown on. A
+    // next link to either is "the same page again" (live replay, 2026-11-13: a session begun on
+    // Link's home page had shown the sign-in page for ten minutes, and a link to it counted as new).
+    signinPage.noteEnding(c, entry, { how, state: s.ended.state ?? "", page: entry.signin_url, seen: s.formPage ?? "" });
+    // A page that turned out not to be a sign-in page is not kept as "the page this sign-in is on".
+    if (how === "no_signin_page" && signinPage.signinPageFor(c, entry) === signinPage.pageOf(entry.signin_url)) signinPage.forgetSigninPage(c, entry);
+  } catch { /* the ending still stands */ }
+  // A wall met by the link's own browser is a dated finding (src/sitefindings.js): no fresh link is
+  // made into it until it is old enough to ask again.
+  if (s.ended.state === "blocked") { try { findings.recordFinding(entry, { kind: "walled", why: s.ended.why }); } catch { /* the note still goes */ } }
+  // One line per attempt that reached a browser (src/signinlog.js): host, route, outcome, timing.
+  if (s.startedAt || s.ended.state) {
+    const st = s.ended.state;
+    const outcome = st === "signed_in" ? "signed_in" : st === "blocked" || st === "refused" ? "blocked_by_site"
+      : how === "done" || how === "finished" || how === "no_signin_page" ? "failed" : "abandoned";
+    logAttempt(entry, { route: s.provider ? "provider" : "password_link", outcome, startedAt: s.startedAt ?? s.createdAt, detail: st === "refused" ? "provider_refused" : st === "blocked" ? "wall_before_form" : how === "done" || how === "finished" ? "" : String(how) });
+  }
   // Only news is worth a message. A link that was replaced unopened, or that simply lapsed, is not.
   // A web setup's sign-in (src/websetup.js) has no thread to wake: how it ended goes on the setup.
   if (s.onEnd) { try { s.onEnd(s.ended); } catch { /* the page reads the site's own check anyway */ } }
@@ -296,75 +420,10 @@ async function end(s, how) {
 
 // ---------- reading the site's own page ----------
 
-/**
- * What the page needs to know about the site's form, read out of the site's own document.
- *
- * Where each box is, what kind it is, what the site calls it, and how many characters are in it.
- * Never a character OF it: `len` is a count, and there is no field anywhere in this object that
- * carries a value. That is what makes it safe to hand to the phone every second.
- */
-const FRAME_JS = `(() => {
-  var W = window.innerWidth || 1, H = window.innerHeight || 1;
-  var skip = ['hidden','submit','button','reset','image','checkbox','radio','file','range','color'];
-  var out = [];
-  var els = document.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]');
-  for (var i = 0; i < els.length && out.length < 24; i++) {
-    var el = els[i], tag = (el.tagName || '').toLowerCase(), type = (el.type || '').toLowerCase();
-    if (tag === 'input' && skip.indexOf(type) >= 0) continue;
-    if (el.disabled || el.readOnly) continue;
-    var r = el.getBoundingClientRect();
-    if (r.width < 24 || r.height < 14) continue;
-    if (r.bottom <= 0 || r.top >= H || r.right <= 0 || r.left >= W) continue;
-    var cs = window.getComputedStyle(el);
-    if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) < 0.05) continue;
-    var label = el.getAttribute('aria-label') || el.placeholder || '';
-    if (!label && el.id) { try { var l = document.querySelector('label[for="' + el.id.replace(/["\\\\]/g, '') + '"]'); if (l) label = l.innerText; } catch (e) {} }
-    if (!label && el.closest) { var w = el.closest('label'); if (w) label = w.innerText; }
-    out.push({
-      x: r.left / W, y: r.top / H, w: r.width / W, h: r.height / H,
-      tag: tag, type: type,
-      ac: el.getAttribute('autocomplete') || '', name: el.name || '', id: el.id || '',
-      label: String(label || '').replace(/\\s+/g, ' ').trim().slice(0, 80),
-      im: el.getAttribute('inputmode') || '',
-      ml: Number(el.getAttribute('maxlength')) || 0,
-      len: String(el.value == null ? (el.textContent || '') : el.value).length,
-      focused: el === document.activeElement
-    });
-  }
-  // The labels of the visible buttons (a site's bare "Google" button), for the native chooser. Words
-  // the site drew on its buttons, never anything in a box.
-  var bl = [], bs = document.querySelectorAll('button,a[href],[role="button"]');
-  for (var j = 0; j < bs.length && bl.length < 24; j++) {
-    var b = bs[j], br = b.getBoundingClientRect();
-    if (br.width < 20 || br.height < 14 || br.bottom <= 0 || br.top >= H) continue;
-    var bt = String((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).replace(/\\s+/g, ' ').trim();
-    if (bt && bt.length <= 60) bl.push(bt);
-  }
-  return { fields: out, buttons: bl, url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
-})()`;
-
-/**
- * Which kind of box this is, from what the site says about it.
- *
- * Pure, and exported, because the hints the phone is given hang entirely off this answer and a
- * wrong answer is the difference between the keyboard offering a saved login and offering nothing.
- * Order matters: a password is a password whatever else it is called, and a verification code is
- * checked before "email" so that "email code" is read as a code.
- */
-export function fieldKind(f = {}) {
-  const hay = `${f.ac ?? ""} ${f.name ?? ""} ${f.id ?? ""} ${f.label ?? ""}`.toLowerCase();
-  const type = String(f.type ?? "").toLowerCase();
-  if (type === "password" || /password|passwd|\bpwd\b/.test(hay)) return "password";
-  if (/one-time-code|onetime|one time code|\botp\b|verification code|security code|\bpasscode\b|\bpin\b|sms code|email code|\bcode\b/.test(hay)) return "otp";
-  // A short numbers-only box is a code too, whatever it is called. Amazon's is `maxlength=6`.
-  if ((type === "tel" || type === "number" || f.im === "numeric") && f.ml > 0 && f.ml <= 8) return "otp";
-  if (type === "email" || /\be-?mail\b/.test(hay)) return "email";
-  if (type === "tel" || /\bphone\b|\bmobile\b|\btel\b/.test(hay)) return "tel";
-  if (/username|user name|\buserid\b|\buser id\b|\blogin\b|sign.?in/.test(hay)) return "username";
-  if (type === "number" || f.im === "numeric") return "number";
-  if (type === "search" || f.im === "search") return "search";
-  return "text";
-}
+// What the page is told about the site's form (FRAME_JS) and which kind each box is (fieldKind) live
+// in src/signinpage.js now, with what kind of page it is: the email sign-in and the check after a
+// sign-in read pages the same way. Re-exported so nothing that imported them from here changes.
+export { fieldKind };
 
 /**
  * The hints the native box over that field is given.
@@ -449,12 +508,20 @@ export function cleanCodeFor(s, text, tapped = false) {
  * `end()` asking the site properly, on its own account page, after the browser stops being theirs.
  */
 function looksSignedIn(s, raw) {
-  const read = readSignedInState(s.entry, { url: raw.url, text: raw.text, status: null, error: null });
-  if (read.state !== "signed_in") return false;
   // A page still showing somewhere to put a password or a name is a page mid-sign-in, whatever
   // else is written on it.
   const kinds = (raw.fields ?? []).map(fieldKind);
-  return !kinds.some(k => k === "password" || k === "username" || k === "email" || k === "otp");
+  const typing = kinds.some(k => k === "password" || k === "username" || k === "email" || k === "otp");
+  if (s.entry.generic) {
+    // A site with no playbook stops the session by itself only on positive evidence: they submitted
+    // something, the browser has left the page the sign-in was on, and the page it is on now has a
+    // log-out or account control. A page that merely lacks the words "sign in" (a marketing page,
+    // an app's blank shell) is not that; then the session waits for them, or for the clock.
+    if (typing || !s.submitted || !raw.acct) return false;
+    return signinPage.isFrontPage(s.entry.signin_url) ? s.sawStep : signinPage.leftSigninPage(raw.url, s.entry);
+  }
+  const read = readSignedInState(s.entry, { url: raw.url, text: raw.text, status: null, error: null });
+  return read.state === "signed_in" && !typing;
 }
 
 /**
@@ -557,6 +624,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
 
   // ---------- the page ----------
   if (method === "GET" && action === "") {
+    if (!s.opened && !s.ended && !PREVIEW_UA.test(String(headers?.["user-agent"] ?? ""))) { s.opened = true; step(s, "link_opened"); }
     if (s.ended) return { status: 200, headers: HTML(), body: await resultPage(s) };
     if (isSetup(s) && !s.secret && !provedOwner(s, headers)) return toSetup(200);
     if (!s.secret) return { status: 200, headers: HTML(), body: startPage(s) };
@@ -614,6 +682,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       if (blocked) return { status: 409, headers: HTML(), body: setupNoticePage({ entry: s.entry, h1: "Not right now.", why: blocked, card: cardKind(s.entry) }) };
       s.secret = newToken();
       s.startedAt = clock.now();
+      step(s, "start_pressed");
       s.timers.clear(s.timer);
       s.timer = s.timers.set(() => { end(s, "timed_out").catch(() => {}); }, config.remoteSigninSessionMs);
       s.timer?.unref?.();
@@ -681,13 +750,16 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     const point = (p) => {
       const x = Number(p?.x), y = Number(p?.y);
       if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return null;
-      return [Math.round(x * VIEW.width), Math.round(y * VIEW.height)];
+      const view = viewOf(s);
+      return [Math.round(x * view.width), Math.round(y * view.height)];
     };
 
     if (action === "tap") {
       const at = point(input);
       if (!at) return json(400, { error: "tap needs x and y between 0 and 1" });
       await inTurn(s, async () => { await page.mouse.click(at[0], at[1]); await settle(); });
+      // A tap that is not on one of the site's boxes, after something was typed: its own button.
+      if (s.typed && !(s.lastFields ?? []).some(f => input.x >= f.x - 0.01 && input.x <= f.x + f.w + 0.01 && input.y >= f.y - 0.01 && input.y <= f.y + f.h + 0.01)) markSubmitted(s, "tap");
       return json(200, { ok: true });
     }
     /**
@@ -757,22 +829,39 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         if (at) await page.mouse.click(at[0], at[1]);
         if (all) { await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace"); }
         for (let i = 0; i < del; i++) await page.keyboard.press("Backspace");
-        if (text) await page.keyboard.type(text);
+        if (text) await typeUnseen(page, text);
         await settle();
       });
+      // That something was typed is kept (a yes or no); what was typed never is.
+      if (text) s.typed = true;
       return json(200, { ok: true });
     }
     if (action === "key") {
       if (!KEYS.has(input.key)) return json(400, { error: "that key is not one of the few this sends" });
       await inTurn(s, async () => { await page.keyboard.press(input.key); await settle(); });
+      if (input.key === "Enter" && s.typed) markSubmitted(s, "enter");
       return json(200, { ok: true });
     }
     if (action === "provider") {
       // The native chooser: press the site's own "Continue with <provider>" for them. Only the four
       // providers, only on a page that is theirs (checked above), only while the real page is still
       // the chooser, and nothing else is pressed.
-      const p = social.providerKey(input.p);
-      if (!p || !nativeOn(s)) return json(400, { error: "not a provider" });
+      if (!nativeOn(s)) return json(400, { error: "not a provider" });
+      // "Use my <site> email": the site's own email route (its "Continue with email" pressed, or its
+      // email box already there). Google is never pressed.
+      if (String(input.p ?? "") === "") {
+        const { pressed, moved } = await inTurn(s, async () => {
+          if (stepNow(s, await readRaw(page)).step !== "chooser") return { pressed: "", moved: true };
+          const f = await page.evaluate(emailRoute.emailPage, "route").catch(() => ({ did: "", email: false }));
+          return { pressed: f.did || (f.email ? "email box" : "") };
+        }).catch(() => ({ pressed: "" }));
+        if (moved) return json(409, { moved: true });
+        if (pressed) { s.provider = ""; s.pressed = ""; s.emailRoute = true; }
+        s.log({ signin_remote: "email_route", site: s.entry.site, pressed: !!pressed, native: true });
+        return json(200, { ok: true, pressed: !!pressed });
+      }
+      const p = social.usableProvider(input.p);
+      if (!p) return json(400, { error: "not a provider" });
       const { pressed, moved } = await inTurn(s, async () => {
         if (stepNow(s, await readRaw(page)).step !== "chooser") return { pressed: "", moved: true };
         return s.pressProvider(page, p);
@@ -798,9 +887,9 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         const f = (raw.fields ?? []).find(x => RELAY_KINDS[want].includes(fieldKind(x)));
         if (!f) return { nobox: true };
         if (want === "code") { s.lastFields = [{ ...f, focused: true }]; text = cleanCodeFor(s, text, true); }
-        await page.mouse.click(Math.round((f.x + f.w / 2) * VIEW.width), Math.round((f.y + f.h / 2) * VIEW.height));
+        await page.mouse.click(Math.round((f.x + f.w / 2) * viewOf(s).width), Math.round((f.y + f.h / 2) * viewOf(s).height));
         await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
-        await page.keyboard.type(text);
+        await typeUnseen(page, text);
         text = "";
         await new Promise(r => setTimeout(r, Math.min(config.remoteSigninSettleMs, 400)));
         if (stepNow(s, await readRaw(page)).step !== want) return { sent: true, entered: false };
@@ -810,6 +899,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       });
       if (out.moved) return json(409, { moved: true });
       if (out.nobox) return json(409, { nobox: true });
+      if (out.entered) markSubmitted(s, "enter"); else if (out.sent) s.typed = true;
       return json(200, { ok: true, entered: out.entered });
     }
     if (action === "back") {
@@ -838,14 +928,77 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
   // once, nothing saved, nothing pressed again (src/socialsignin.js providerRefused).
   if (s.provider || social.socialAllowedFor(s.conversationId)) {
     const no = social.providerRefused(got.raw);
+    // Google's "This browser or app may not be secure" (owner, 2026-11-11: the person never sees it):
+    // backed out of — its popup closed, the site's sign-in page opened again on its email route — and
+    // the fresh page is what goes back. Recorded as a refusal, so Google is not tried here again.
+    // Apple's / Microsoft's refusal ends the link as before, once a back-out has already been tried.
+    // At most twice: a site that keeps sending the browser back to Google ends as refused rather than
+    // looping (cold review, 2026-11-11).
+    if (no.refused && (s.backOuts ?? 0) < 2 && (no.provider === "google" || !s.backedOut) && social.socialAllowedFor(s.conversationId) && !s.backingOut) {
+      s.backOuts = (s.backOuts ?? 0) + 1;
+      s.backingOut = true;
+      try {
+        social.recordRefusal(s.conversationId, s.entry.site, no.provider);
+        s.log({ signin_remote: "backed_out", site: s.entry.site, provider: no.provider });
+        await inTurn(s, async () => {
+          for (const p of s.pages ?? []) if (p !== s.pages[0]) await p.close?.().catch?.(() => {});
+          s.pages = (s.pages ?? []).slice(0, 1);
+          if (s.pages[0]) s.browser.page = s.pages[0];
+          const pg = s.browser.page;
+          await pg.goto?.(s.entry.signin_url, { waitUntil: "domcontentloaded", timeout: 45_000 })?.catch?.(() => {});
+          await pg.waitForTimeout?.(1500)?.catch?.(() => {});
+          await pg.evaluate(emailRoute.emailPage, "route").catch(() => null);
+        });
+        s.provider = ""; s.pressed = ""; s.backedOut = true; s.emailRoute = true;
+        s.npKey = "";
+      } finally { s.backingOut = false; }
+      // The refusal picture never goes out: the fresh page (the site's email route) is read and sent
+      // instead; if even that cannot be read, an empty answer and the next /view tries again.
+      const fresh = await readView(s).catch(() => null);
+      if (fresh && !social.providerRefused(fresh.raw).refused) return viewAnswer(s, fresh, h, extra, { judge });
+      return json(200, { moved: true, backed_out: true });
+    }
     if (no.refused) {
       s.refusal = no;
       const ended = await end(s, "refused");
       return json(200, { over: true, state: ended.state });
     }
   }
+  // What kind of page this is, before anything is said about it: a real step, or not a sign-in page.
+  const kind = noteKind(s, got.raw);
+  // A site named only by its address, and the page that opened is not a sign-in page (a home page,
+  // a marketing page): the person is never asked to "finish a step" on it. The page is given the
+  // same bounded time to draw a form the emailed-code route gives; then the site's own "Log in" link
+  // is followed ONCE; then the session ends and says plainly that no sign-in page was found.
+  if (judge && s.entry.generic && !s.sawStep && kind === "not_signin") {
+    s.lookSince ??= s.startedAt ?? clock.now();
+    const waited = clock.now() - s.lookSince, bound = signinPage.formWaitMs();
+    if (waited >= Math.min(bound, LOOK_FIRST_MS)) {
+      // Already signed in on their saved profile: the page's own account control says so; the site is asked properly in end().
+      if (got.raw?.acct) { const ended = await end(s, "finished"); return json(200, { over: true, state: ended.state }); }
+      if (!s.doorTried) {
+        const door = await inTurn(s, () => signinPage.followSigninDoor(s.browser.page, s.entry, { allowCurrentSite: true })).catch(() => ({ followed: false }));
+        if (door.followed || waited >= bound) {
+          s.doorTried = true;
+          step(s, "signin_link_followed", { detail: door.followed ? "followed" : "none_found", pageUrl: got.raw?.url });
+          s.log({ signin_remote: "signin_link_followed", site: s.entry.site, followed: !!door.followed });
+        }
+        if (door.followed) {
+          s.lookSince = clock.now();
+          s.npKey = "";
+          const fresh = await readView(s).catch(() => null);
+          if (fresh) return viewAnswer(s, fresh, h, extra, { judge });
+          return json(200, { moved: true });
+        }
+      }
+      if (waited >= bound) {
+        const ended = await end(s, "no_signin_page");
+        return json(200, { over: true, state: ended.state });
+      }
+    }
+  }
   // Reason's own page: the step the real page is on and its panel ride along with every picture.
-  extra = { ...extra, ...npFor(s, got.raw) };
+  extra = { ...extra, ...npFor(s, got.raw, kind) };
   // Only a picture of the page at rest says it is signed in or walled; a scroll's leaves the counts as they are.
   if (!judge) return frameAnswer(got, h, extra);
   const walled = looksBlocked(got.raw);
@@ -872,16 +1025,28 @@ async function viewAnswer(s, got, h, extra = {}, { judge = true } = {}) {
  * never from anything typed: no field value is ever read (FRAME_JS carries none). The panel's HTML
  * travels only when the step changes.
  */
-function npFor(s, raw) {
+function npFor(s, raw, kind = signinPage.pageKind(raw, { provider: s.provider, midFlow: s.sawStep })) {
   if (!nativeOn(s)) return {};
   // A page still drawing is "opening", not a step to hand over to the picture.
   const blank = frameFor(raw).blank;
-  const st = blank ? { step: "loading", provider: "", number: "", say: s.npSeen ? "Loading the next page…" : `Opening ${s.entry.label}…` } : stepNow(s, raw);
+  let st = blank ? { step: "loading", provider: "", number: "", say: s.npSeen ? "Loading the next page…" : `Opening ${s.entry.label}…` } : stepNow(s, raw);
+  // No phantom steps (owner, 2026-11-12: Link's marketing home page under "finish this step on the
+  // page below"). A page with no form, no challenge and no provider prompt is not a step, whatever
+  // its words read as. Before any step has been seen on a site named by its address, Reason is
+  // still LOOKING for the sign-in page; anywhere else it is a page with nothing to fill in, shown
+  // as exactly that.
+  if (!blank && kind === "not_signin") {
+    st = s.entry.generic && !s.sawStep
+      ? { step: "looking", provider: "", number: "", say: `Looking for ${s.entry.label}'s sign-in page…` }
+      : { step: "between", provider: "", number: "", say: `${s.entry.label} is showing a page with nothing to fill in.` };
+  }
   if (!blank) s.npSeen = true;
   // Off a provider's page the machine says "The site"; the person knows it by its name.
   st.say = String(st.say ?? "").replace(/\bThe site\b/g, s.entry.label);
   const key = `${st.step}:${st.provider}:${st.number}:${(st.offered ?? []).join(",")}`;
-  const np = { step: st.step, key, page: STEP_NEEDS_PAGE.has(st.step), say: st.say,
+  // `sum`: what the fold over the picture says when it is open. Only a real step says "finish this step".
+  const np = { step: st.step, key, page: STEP_NEEDS_PAGE.has(st.step) || st.step === "between", say: st.say,
+    ...(st.step === "between" ? { sum: "The page as it is now" } : {}),
     ...(key === s.npKey ? {} : { html: nativeStepPanel(st, { entry: s.entry }) }) };
   if (key !== s.npKey) s.log({ signin_remote: "step", site: s.entry.site, step: st.step, provider: st.provider || "" });
   s.npKey = key;
@@ -925,13 +1090,14 @@ ${securedCardTags(card)}
 <title>${esc(title)}</title>
 <script>${THEME.head}</script>
 <style>
-:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--card:${PAPER.card};--line:${PAPER.line};--soft:${PAPER.soft};--go:${PAPER.ink};--gofg:${PAPER.bg};--mark:${BRAND_PEN}}
-${dark([["", `--grain:none;--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:${BRAND_PEN_DARK}`]])}
+:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--glow:${PAPER_GLOW};--card:${PAPER.card};--line:${PAPER.line};--soft:${PAPER.soft};--go:${PAPER.ink};--gofg:${PAPER.bg};--mark:${BRAND_PEN}}
+${dark([["", `--grain:none;--glow:${NIGHT_GLOW};--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:${BRAND_PEN_DARK}`]])}
+${GLOW_OFF}
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--grain) var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;color:var(--fg);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 ${WORDMARK_CSS}
 ${THEME.css}
-.sheet{background:var(--grain) var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+.sheet{background:${SHEET_BG};border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 main{max-width:460px;margin:0 auto;padding:20px 16px}h1{font-size:20px;margin:8px 0 6px}.lead{color:var(--mute);margin:0 0 14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
 ul{margin:0;padding-left:18px}li{margin:6px 0}
@@ -1032,6 +1198,16 @@ async function resultPage(s) {
  * These inputs are a window onto the site's form, never a form of Reason's own: they only ever
  * appear on top of a box the site itself drew, they have no action, and they submit nowhere.
  */
+/**
+ * What the person typed, into the page. A failure is reported by a fixed word: the browser's own
+ * error text is never let out of here, so nothing that could repeat what was typed can reach the
+ * request's error line in the service log (src/http.js) or anything else.
+ */
+async function typeUnseen(page, text) {
+  try { await page.keyboard.type(text); }
+  catch { throw new Error("typing_failed"); }
+}
+
 /** The panel's relay steps → the kinds of box (fieldKind) each one types into. */
 const RELAY_KINDS = { email: ["email", "username", "tel"], password: ["password"], code: ["otp"] };
 /** The real page's shape and words, read in the browser's turn (no picture). Carries no field value. */
@@ -1045,8 +1221,8 @@ const nativeOn = (s) => social.socialAllowedFor(s.conversationId);
 function livePage(s) {
   // A fresh page load starts the panel over (the first /view sends its HTML again).
   s.npKey = "";
-  if (nativeOn(s)) return setupNativePage({ entry: s.entry, view: VIEW, step: { step: "loading", say: `Opening ${s.entry.label}…` }, script: liveScript(s) + nativeScript(), card: cardKind(s.entry) });
-  return setupLivePage({ entry: s.entry, view: VIEW, script: liveScript(s), card: cardKind(s.entry) });
+  if (nativeOn(s)) return setupNativePage({ entry: s.entry, view: viewOf(s), step: { step: "loading", say: `Opening ${s.entry.label}…` }, script: liveScript(s) + nativeScript(), card: cardKind(s.entry) });
+  return setupLivePage({ entry: s.entry, view: viewOf(s), script: liveScript(s), card: cardKind(s.entry) });
 }
 
 /**
@@ -1089,7 +1265,7 @@ function wire(){
 }
 window.npStep=function(np,fl){
   fields=fl||[];
-  if(np.html!==undefined&&np.key!==key){key=np.key;step=np.step;panel.innerHTML=np.html;wire();msg.textContent='';openPage(np.page)}
+  if(np.html!==undefined&&np.key!==key){key=np.key;step=np.step;panel.innerHTML=np.html;wire();msg.textContent='';openPage(np.page,np.sum)}
   var say=document.getElementById('np-say');if(say&&np.say)say.textContent=np.say;
 };
 })();`;
@@ -1100,7 +1276,7 @@ function liveScript(s) {
   const base = `${PATH}/${s.token}`;
   const label = esc(s.entry.label);
   return `(function(){
-var B=${JSON.stringify(base)},V=${JSON.stringify(VIEW)};
+var B=${JSON.stringify(base)},V=${JSON.stringify(viewOf(s))};
 var v=document.getElementById('v'),stage=document.getElementById('stage'),veil=document.getElementById('veil'),
     msg=document.getElementById('msg'),tip=document.getElementById('tip'),dead=false;
 var slots={u:document.getElementById('in-u'),p:document.getElementById('in-p'),o:document.getElementById('in-o'),g:document.getElementById('in-g')};

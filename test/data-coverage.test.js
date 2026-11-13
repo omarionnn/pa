@@ -31,7 +31,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 
 const data = await import("../src/data.js");
 // Every module that makes its own tables, so the database here has all of them.
-for (const m of ["actioncards", "actionengine", "connectafter", "daily", "eventpay", "passkey", "plan", "saved", "shipping", "shopconnect", "socialsignin", "spendcap", "stamps", "strangercalls", "ownfiles", "tooldiet", "websetupstore"]) {
+for (const m of ["plaid", "actioncards", "actionengine", "connectafter", "daily", "eventpay", "passkey", "plan", "saved", "shipping", "shopconnect", "socialsignin", "spendcap", "stamps", "strangercalls", "ownfiles", "tooldiet", "websetupstore", "verifications"]) {
   await import(`../src/${m}.js`);
 }
 const db = await import("../src/db.js");
@@ -47,7 +47,7 @@ const PERSON_COLS = /(^|_)conversation_id$/;
 const coverage = () => data.COVERAGE ?? { deleted: [], global: [], kept: {}, installWide: {} };
 const kept = () => coverage().kept ?? {};
 
-test("every CREATE TABLE in src/ exists here, so the checks below see every table", () => {
+test("every CREATE TABLE in src/ exists here, so the checks below see every table", async () => {
   const made = new Set();
   const walk = (d) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
@@ -63,9 +63,79 @@ test("every CREATE TABLE in src/ exists here, so the checks below see every tabl
   made.delete("oauth_tokens_per_account");
   // The keystore's own tables live in data/keys.db (src/restcrypt.js), deliberately not in reason.db.
   for (const t of ["install_key", "user_keys", "shredded"]) made.delete(t);
+  // The vault's tables live in data/logins.db (src/savedlogins.js), deliberately not in reason.db: a copy of
+  // reason.db must never carry a saved login. Only the tables in its LOGINS_COVERAGE are let off here, and
+  // the next test requires each of them to be exported (or kept out with a reason) and deleted.
+  const { LOGINS_COVERAGE: LC } = await import("../src/savedlogins.js");
+  for (const t of [...LC.exported, ...Object.keys(LC.notExported)]) made.delete(t);
   const have = new Set(tables());
   const missing = [...made].filter(t => !have.has(t));
   assert.deepEqual(missing, [], `tables made in src/ that this test never loaded — import their module above: ${missing.join(", ")}`);
+});
+
+test("the vault cannot be forgotten: every logins.db table is in LOGINS_COVERAGE, exported or kept out with a reason, and deleted by deleteAllFor, which deleteData calls before the key goes", async () => {
+  const vault = readFileSync(new URL("../src/savedlogins.js", import.meta.url), "utf8");
+  const sl = await import("../src/savedlogins.js");
+  const LC = sl.LOGINS_COVERAGE;
+  // The real file, built from the vault's own DDL, enumerated: no table is named by hand here.
+  const { DatabaseSync } = await import("node:sqlite");
+  const file = sl.loginsDbPath();
+  assert.ok(file.startsWith(dir), "logins.db is in this test's directory");
+  const ld = new DatabaseSync(file);
+  ld.exec(sl.LOGINS_SCHEMA);
+  const own = ld.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
+  const fromSource = [...vault.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*) *\(/g)].map(m => m[1]).sort();
+  assert.deepEqual(own, fromSource, "every CREATE TABLE in savedlogins.js is in logins.db");
+  const notExp = Object.keys(LC.notExported);
+  for (const t of own) {
+    assert.equal(LC.exported.includes(t) + notExp.includes(t), 1, `${t}: exported by exportFor, or kept out of an export with a reason (exactly one)`);
+    assert.ok(LC.deleted.includes(t), `${t}: deleted by deleteAllFor and deleteEveryLogin`);
+    assert.ok(!tables().includes(t), `${t} lives in logins.db, never in reason.db`);
+  }
+  for (const [t, why] of Object.entries(LC.notExported)) assert.ok(typeof why === "string" && why.length > 10, `${t}: a reason`);
+  assert.deepEqual([...LC.exported, ...notExp, ...LC.deleted].filter(t => !own.includes(t)), [], "LOGINS_COVERAGE names no table that does not exist");
+  // Rows for two people in every table; the export shows the saved login (no ciphertext, no key), the
+  // scoped delete takes every row of one person and none of the other's.
+  const row = (c, id) => {
+    ld.prepare("INSERT INTO vault_people (conversation_id, handle) VALUES (?, ?)").run(c, `handle-${id}`);
+    ld.prepare(`INSERT INTO saved_logins (id, conversation_id, site, label, signin_origin, signin_path, username_ct, password_ct, wrapped_key,
+      kms_key, permission, consent_version, consent_at, consent_credential, created_at) VALUES (?, ?, 'example.test', 'Example',
+      'https://example.test', '/signin', x'00', x'00', 'wrapped-${id}', 'stand-in', 'each_time', 'v1', 1, 'cred', 1)`).run(id, c);
+  };
+  row(GONE, 1); row(STAYS, 2);
+  const shown = sl.exportFor(GONE);
+  assert.deepEqual(shown.map(r => [r.site, r.label]), [["example.test", "Example"]]);
+  for (const k of ["username_ct", "password_ct", "totp_ct", "wrapped_key", "kms_key", "consent_credential", "handle"]) assert.ok(!(k in shown[0]), `export has no ${k}`);
+  const personCols = t => ld.prepare(`PRAGMA table_info(${t})`).all().filter(c => PERSON_COLS.test(c.name)).map(c => c.name);
+  const rowsOf = (t, c) => personCols(t).reduce((n, col) => n + ld.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE ${col} = ?`).get(c).n, 0);
+  for (const t of own) assert.ok(personCols(t).length, `${t} names whose rows they are`);
+  sl.deleteAllFor(GONE);
+  for (const t of own) {
+    assert.equal(rowsOf(t, GONE), 0, `deleteAllFor leaves nothing of the person in ${t}`);
+    assert.equal(rowsOf(t, STAYS), 1, `deleteAllFor leaves somebody else's row in ${t}`);
+  }
+  sl.deleteEveryLogin();
+  for (const t of own) assert.equal(ld.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n, 0, `deleteEveryLogin empties ${t}`);
+  ld.close();
+  const body = (src, name) => {
+    const at = src.indexOf(`export function ${name}(`) >= 0 ? src.indexOf(`export function ${name}(`) : src.indexOf(`export async function ${name}(`);
+    assert.ok(at >= 0, `${name} exists`);
+    const next = src.indexOf("\nexport ", at + 1);
+    return src.slice(at, next < 0 ? undefined : next);
+  };
+  for (const fn of ["deleteAllFor", "deleteEveryLogin"]) {
+    const b = body(vault, fn);
+    for (const t of LC.deleted) assert.match(b, new RegExp(`DELETE FROM ${t}\\b`), `${fn} deletes from ${t}`);
+  }
+  const src = readFileSync(new URL("../src/data.js", import.meta.url), "utf8");
+  const del = body(src, "deleteData");
+  const call = del.indexOf("deleteAllFor(conversation");
+  assert.ok(call >= 0, "deleteData calls deleteAllFor for a scoped delete");
+  assert.ok(del.indexOf("deleteEveryLogin()") >= 0, "and deleteEveryLogin for the whole install");
+  for (const later of ["rotatePersonKey(", "destroyAllKeys(", "for (const t of CHILDREN_FIRST)"]) {
+    assert.ok(del.indexOf(later) > call, `deleteAllFor runs before ${later}`);
+  }
+  assert.match(body(src, "exportData"), /exportFor\(conversation\)\.map\(r => \(\{ \.\.\.r, login: REDACTED \}\)\)/);
 });
 
 test("every table in the database is classified in src/data.js", () => {

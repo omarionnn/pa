@@ -172,9 +172,13 @@ test("signin_open opens the window and tells the model exactly what it does not 
 });
 
 test("a site that refuses the browser still opens, with a warning that the page may not load", async () => {
-  const out = await runTool("signin_open", { site: "doordash" }, { conversationId: CONV, channels: null, openSigninWindow: async (a) => ({ ok: true, site: a.entry.site }) });
+  const out = await runTool("signin_open", { site: "delta" }, { conversationId: CONV, channels: null, openSigninWindow: async (a) => ({ ok: true, site: a.entry.site }) });
   assert.equal(out.ok, true);
-  assert.match(out.warning, /DoorDash refuses an automated browser/);
+  assert.match(out.warning, /Delta Air Lines refuses an automated browser/);
+  // A site with a dated wall on record (DoorDash, probe 2026-11-12) gets no window at all.
+  const walled = await runTool("signin_open", { site: "doordash" }, { conversationId: CONV, channels: null, openSigninWindow: async () => { throw new Error("no window into a wall"); } });
+  assert.equal(walled.blocked, true);
+  assert.match(walled.say, /DoorDash blocks automated sign-in/);
 });
 
 test("somebody who is not at the machine cannot open a window on it", async () => {

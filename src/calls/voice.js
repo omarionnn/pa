@@ -32,7 +32,7 @@ import * as harm from "../harm.js";
 import { ledgerWrite } from "../trust.js";
 import { config, clock, stamp } from "../config.js";
 import { callRulesFor } from "./provider.js";
-import { mannerFor } from "./manner.js";
+import { mannerFor, callRecorded } from "./manner.js";
 import {
   VOICE_RULES, voiceRules, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame, callIdentityFor,
 } from "./voice-prompt.js";
@@ -44,6 +44,7 @@ import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
 import * as errand from "./errand.js";
 import { QUOTE_TOOL } from "./errand.js";
 import { briefLines, buildBrief, todaySoFarNote } from "./brief.js";
+import { earlierCallsNote, CARRY_TURN_LINE, CARRY_TURN_GOODBYE, carryoverFor, calendarNote, recentMemoryNote, prepareCarry, setCalendarReader, brokeLine, turnWorked } from "./carryover.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
 import { rulesNote } from "../rules.js";
@@ -319,6 +320,15 @@ const blindWhereCall = (t) => NEEDS_WHERE.has(String(t.name))
   && !t.input?.place && !t.input?.near && !t.input?.address;
 const BROKE_MID = "Something broke on my end there.";
 const BROKE_FIRST = "Something broke on my end. Say that again?";
+/** Said when the model's API refuses the account (credit, billing, key): the call ends and Reason texts. */
+export const API_REFUSED_LINE = "I'm having trouble on my end, so I'll text you instead. Talk soon.";
+/** The same on somebody else's call, where texting them is not Reason's to offer. */
+export const API_REFUSED_LINE_THEIRS = "I'm sorry, I have to go. Thanks for your time.";
+/** An error no retry will fix: the API refusing the account itself, not one request. Exported for the tests. */
+export function isApiRefusal(e) {
+  const s = String(e?.message ?? e ?? "");
+  return /credit balance is too low|purchase credits|plans & billing|insufficient_quota|exceeded your current quota|invalid x-api-key|authentication_error|permission_error/i.test(s);
+}
 /**
  * What the turn meter counts as not-yet-real content. Exported for the tests. The fillers are matched
  * exactly, trailing space and all: the code's "... " is filler, while a model piece of just "..." has
@@ -551,6 +561,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const { systemFor } = contextDeps;
 
   const lang = callLanguage(call);
+  const earlier = earlierCallsNote(call);
   const parts = [
     // `onCall`: the text-thread rules (src/threading.js) are about bubbles and pins, not a call.
     systemFor({ ...me, onCall: true }),
@@ -592,6 +603,14 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
     todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }),
+    // Their own earlier calls: a call is written to the thread one line per fragment and this turn
+    // reads only its newest few, so the morning's call is gone by the afternoon (call 85 -> 86).
+    ...(earlier ? [earlier, CARRY_TURN_LINE] : []),
+    // What memory saved lately and what is on their calendar today and tomorrow (./carryover.js), so the
+    // first answer does not wait on a lookup; anything further out is still calendar_events.
+    recentMemoryNote(call),
+    calendarNote(call),
+    carryoverFor(conversationId) ? CARRY_TURN_GOODBYE : "",
   ];
   return {
     kind: "owner",
@@ -636,7 +655,9 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
   const facts = Array.isArray(call.facts) ? call.facts : [];
   // The language the disclosure still owes being said in, claimed as it is read so it is asked for
   // exactly once. Empty on a call that never changed language, which is almost all of them.
-  const owed = announcementOwedIn(call);
+  // Only a call that is recorded has a disclosure at all (./manner.js `callRecorded`, Omari 2026-11-12).
+  const recorded = callRecorded(call);
+  const owed = recorded ? announcementOwedIn(call) : "";
   // What this call may agree to, and the questions it has to come back with. Off the row, so a call
   // placed an hour ago is still held to the brief it was placed under rather than to a default.
   const brief = callBrief(call);
@@ -657,8 +678,9 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
       announcement: call.announcement ?? "",
       openingOwed,
       manner: mannerFor(call.conversation_id),
-      // Code stops the recording on an objection only on a GPT-Live business call that talks (./gptlive.js).
-      recordingOff: call.provider === "gptlive" && !!config.lineTalk && call.direction !== "in",
+      // Code stops the recording on an objection on a GPT-Live business call that talks, and on a place ringing back (./gptlive.js).
+      recordingOff: recorded && call.provider === "gptlive" && (call.direction === "in" || !!config.lineTalk),
+      recorded,
     }),
     `--- you are ON A PHONE CALL right now ---`,
     // The own-call swaps (task_start, "my bad", texting them) are not for a business (cold review 11-11).
@@ -994,7 +1016,9 @@ export function runCallTool(name, input = {}, { call, context, log = () => {}, t
         return {
           ok: true, alreadyDone: true,
           say: `You have already done that for the person now on the line. Do NOT call this again this turn.`
-            + ` Say it out loud now: who you are, that the call is recorded, then one sentence on what you`
+            + (callRecorded(call)
+              ? ` Say it out loud now: who you are, that the call is recorded, then one sentence on what you`
+              : ` Say it out loud now: one sentence on what you`)
             + ` are calling about and what is already settled.`,
         };
       }
@@ -1857,6 +1881,7 @@ export async function* voiceTurn({
       .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }))
     : null;
 
+  let threw = false;
   try {
     for (let round = 0; round <= MAX_VOICE_TOOL_ROUNDS; round++) {
       const splitter = sentenceSplitter();
@@ -2523,12 +2548,34 @@ export async function* voiceTurn({
       yield* endSuperseded("model");
       return;
     }
+    threw = true;
     log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0], ...timing() });
+    // The model's API said no to the account itself (credit ran out, 11-11 00:22). Every later turn
+    // will be refused the same way, so "say that again" only loops. One line, a hang-up, and a text
+    // that carries the conversation on where it stopped.
+    if (isApiRefusal(e)) {
+      const theirWords = latestSpoken(context.messages);
+      const text = context.kind === "owner"
+        ? `Sorry, I had to drop the call on my end. Let's carry on by text${theirWords ? `: you'd said "${theirWords.slice(0, 200)}"` : ""}.`
+        : `The call${call.to_number ? ` to ${call.to_number}` : ""} had to end early on my side before it was done. I'll pick it up by text.`;
+      queueMidCall({ call, text, kind: "api_refused", log });
+      log({ voice_api_refused: call.id, kind: context.kind });
+      yield* openingIfOwed();
+      const line = context.kind === "owner" ? API_REFUSED_LINE : API_REFUSED_LINE_THEIRS;
+      yield chunk({ content: said ? ` ${line}` : line });
+      yield* endCallChunks(chunk, "the model refused the request; carrying on by text");
+      return;
+    }
     const before = said;
     yield* openingIfOwed();
     const lead = said !== before ? " " : "";
-    yield chunk({ content: before ? ` ${BROKE_MID}` : `${lead}${BROKE_FIRST}` });
+    // A second failure in a row never repeats the first one's words (call 89; ./carryover.js).
+    const again = context?.kind === "owner" ? brokeLine(call) : "";
+    yield chunk({ content: again ? `${before || lead ? " " : ""}${again}` : before ? ` ${BROKE_MID}` : `${lead}${BROKE_FIRST}` });
     yield chunk({}, "stop");
+  } finally {
+    // A turn that said something and did not fall over: the next failure is a first one again.
+    if (!threw && said.trim() && !superseded()) turnWorked(call);
   }
   yield SSE_DONE;
 }
@@ -2630,7 +2677,7 @@ export async function llmRequest({
   try {
     await prime();
     // Where they usually are (./callmemory.js): read while it rang, so this is normally already done.
-    if (kind === "owner") await Promise.race([prepareCallMemory(call, { log }), new Promise(r => setTimeout(r, CALL_MEMORY_WAIT_MS).unref?.())]);
+    if (kind === "owner") await Promise.race([Promise.all([prepareCallMemory(call, { log }), prepareCarry(call, { log })]), new Promise(r => setTimeout(r, CALL_MEMORY_WAIT_MS).unref?.())]);
     context = contextFor({ call, kind, callMessages: body.messages, now });
   } catch (e) {
     const why = (e?.message ?? String(e)).split("\n")[0];
@@ -3274,3 +3321,15 @@ export function cliLineStream() {
     end() { const out = []; if (mode !== "text") lineEnd(out); return out.filter(e => e.type !== "text" || e.text.trim()); },
   };
 }
+
+// Their calendar for a call's opening brief (./carryover.js): read through the same tool a turn uses,
+// so which accounts are read, each in its own zone, is decided in one place. Reading needs no yes.
+// Call 95 (2026-11-11): the first call after a restart rang before any turn had run `prime()`, so there
+// was no tool to read with and that call's opening had no calendar ("no tools"). The read loads them itself.
+export async function readCallCalendar(call, input, { ready = prime } = {}) {
+  if (typeof contextDeps.runTool !== "function") await Promise.resolve().then(ready).catch(() => {});
+  return typeof contextDeps.runTool === "function"
+    ? contextDeps.runTool("calendar_events", input, { conversationId: call.conversation_id, kind: "user" })
+    : { ok: false, error: "no tools" };
+}
+setCalendarReader(readCallCalendar);

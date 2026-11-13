@@ -30,18 +30,21 @@ import { config, clock, normalizeNumber } from "../config.js";
 import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
+import * as carryover from "./carryover.js";
+import * as turngate from "./turngate.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
 import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voice-prompt.js";
 import * as hold from "./hold.js";
 import * as callOutcome from "./outcome.js";
 import { makerLine } from "../maker.js";
-import { CallProvider, announcementFor, callRulesFor } from "./provider.js";
+import { CallProvider, callRulesFor } from "./provider.js";
 import { briefLines, todaySoFar } from "./brief.js";
 import { rulesNote, RULES_HEADING } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory, onScheduleRead } from "./callmemory.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
+import { cartesiaTrialFor, passableSocket } from "./calltrial.js";
 import { ulawToPcm, pcmToUlaw } from "./ulaw.js";
 import { Hearing } from "./hearing.js";
 import * as opener from "./opener.js";
@@ -137,7 +140,10 @@ export function whoFor(call) {
   return {
     name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
     manner: manner.mannerFor(call.conversation_id),
+    carry: own && carryover.carryoverFor(call.conversation_id),
     ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
+    // The turn gate (./turngate.js, REASON_CALL_TURN_GATE): absent unless it is on for this call.
+    ...(turngate.turnGateFor(call) ? { turnGate: turngate.turnGateFor(call) } : {}),
   };
 }
 
@@ -151,13 +157,13 @@ export function whoFor(call) {
  * (`lineTalkInstructions` for one Reason placed with REASON_LINE_TALK on, else `lineInstructions`). Strangers ringing Reason's
  * number are not calls of an account and are not covered here.
  */
-export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1 } = {}) {
-  const who = whoFor(call);
+export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1, turnGate = true } = {}) {
+  const who = turnGate ? whoFor(call) : { ...whoFor(call), turnGate: "" };
   if (!line) return liveInstructions(who);
   // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
   if (config.lineTalk && call?.direction !== "in") {
     const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: recordingNoticeFor(call.to_number).notice });
+    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, disclose: manner.callRecorded(call) });
   }
   return lineInstructions(who);
 }
@@ -216,6 +222,9 @@ export function recentChatLines(conversationId, { max = 6, chars = 700 } = {}) {
 export function preCallBrief(call, { place = "" } = {}) {
   if (Number(call?.is_owner) !== 1) return "";
   const lines = [];
+  // What day and time it is (call 94: "you're off at 8, yeah?" from a Thursday-to-Sunday fact, on a Wednesday).
+  const nowIs = carryover.nowLine(call);
+  if (nowIs) lines.push(nowIs);
   if (call.direction !== "in") {
     const goal = clip(call.goal, 300);
     if (goal) lines.push(`Why you rang them: ${goal}`);
@@ -227,9 +236,18 @@ export function preCallBrief(call, { place = "" } = {}) {
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
   const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  // What memory saved lately, from texts and calls alike (the profile below is rebuilt rarely).
+  const lately = carryover.recentMemoryNote(call);
+  if (lately) lines.push(lately);
   // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
   if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
+  // Their own earlier calls (call 85 -> 86: a call is never in "today so far", which reads texts), and
+  // what is due or still open (./carryover.js, REASON_CALL_CARRYOVER).
+  const earlier = carryover.earlierCallsNote(call);
+  if (earlier) lines.push(earlier);
+  const comingUp = carryover.comingUpNote(call);
+  if (comingUp) lines.push(comingUp);
   if (place) lines.push(placeLine(place));
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
@@ -240,6 +258,9 @@ export function preCallBrief(call, { place = "" } = {}) {
   if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
   const rules = rulesNote(call.conversation_id);
   if (rules) lines.push(rules);
+  // Where they are based, said outright (./carryover.js): an unclear place name is heard as a local one.
+  const area = carryover.areaNote(call);
+  if (area) lines.push(area);
   const where = whereaboutsNote(call);
   if (where) lines.push(where);
   if (!lines.length) return "";
@@ -347,14 +368,23 @@ export const OWN_CALL56_LINES = CALL56_LINES.map(l => l === NO_HOLDING_LINE ? OW
  * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", manner: mannered = false } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", manner: mannered = false, carry = false, turnGate = "" } = {}) {
   const own = owner;
+  // The turn gate on their own call (./turngate.js): brief acknowledgements at a mid-thought pause are
+  // welcome, and code keeps their timing; the line that forbade them all gives way.
+  const acks = own && turnGate === "own";
   // The call manner (./manner.js) on their own call: its persona, filler and wrap-up lines stand in for
   // the older ones they cover, and its spoken-out-loud, wit, bad-news and never lines are added.
   const mm = own && mannered;
   const swap = (l) => !mm ? l
     : l === OWN_NO_FILLER || l === NO_FILLER ? manner.MANNER_FILLER
       : l === "When you both say goodbye, sign off warmly and briefly." ? manner.MANNER_WRAP_UP : l;
+  // A warmer goodbye (./carryover.js), with the manner off: the same line swapped.
+  const bye = (l) => own && carry && !mm && l === "When you both say goodbye, sign off warmly and briefly." ? carryover.CARRY_GOODBYE : l;
+  // Two lines reworded (./carryover.js, call 95): small talk, and "never a therapist" without the phrases it bans.
+  const reword = (l) => !(own && carry) ? l
+    : l === "Small talk is yours: if they ask how you are, answer warmly and ask them back." ? carryover.CARRY_SMALL_TALK
+      : l === OWN_CALL_LINES[1] ? carryover.CARRY_NO_PROBING : l;
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -382,11 +412,13 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
     ...split,
     "While the backend works, do not fill the silence with guesses.",
-    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap),
+    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap).map(bye).map(reword),
     PIECES_LINE,
     ...HEARING_LINES,
-    ...(own ? OWN_CALL_LINES : []),
+    ...(own ? OWN_CALL_LINES.map(reword) : []),
     ...(mm ? manner.OWN_MANNER_LINES : []),
+    ...(own && carry ? carryover.CARRY_VOICE_LINES.filter(l => !(acks && l.startsWith("When they are thinking out loud"))) : []),
+    ...(acks ? turngate.ackVoiceLines({ repeatRule: !carry }) : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     mm ? "Never read out links, internal IDs or anything in square brackets, and never say the words NO_REPLY. A code they asked for is said in small groups, as Reason gives it."
@@ -449,8 +481,7 @@ export function strangerInstructions() {
  * menu (phase 3, 2026-10-31). Here the voice never decides anything, not even when to speak: Reason's
  * call turn hears every word on the line (the third-party context: brief, rules, hold, menus, machines,
  * the commit gate) and hands over the exact words to say, and code drops any audio it did not ask for
- * (`GptLiveCall#gateOpen`). So the line opens silent, a menu or hold music hears nothing, and the
- * recorded-call disclosure is said word for word.
+ * (`GptLiveCall#gateOpen`). So the line opens silent and a menu or hold music hears nothing.
  */
 export function lineInstructions({ name = "them", named = name !== "them", identity = false } = {}) {
   const them = named ? name : "the person you work for";
@@ -477,10 +508,18 @@ export function lineInstructions({ name = "them", named = name !== "them", ident
  * cut the last one off, and they hung up at 39 s. Here the voice talks with a person itself, the way
  * it does on an own call (call 57), from the brief Reason's turn has, and hands Reason anything it
  * would have to decide. Code still keeps it silent until somebody is there (`ownOpener`), presses keys,
- * waits on hold and keeps the honesty guard. Openers sound like a person calling: no "I'm an AI calling
- * for…" unless they ask, and the recording line only where the law wants it (./consent.js).
+ * waits on hold and keeps the honesty guard.
+ *
+ * Omari 2026-11-12, every account: the call starts normally — hello, then what it is calling about, no
+ * word about who or what is calling. Asked who it is, or whether it is a person / a robot / an AI, it
+ * says at once it is an AI assistant calling for <first name> (`manner.askedLine`). The call is not
+ * audio-recorded, so nothing is said about recording.
+ *
+ * `disclose` (only a call that IS recorded: REASON_THIRDPARTY_RECORDING=on): the first reply says the
+ * call may be recorded, and an objection is met with "that's fine, I'll turn it off" (code stops it:
+ * `readObjection`). `manner` adds the cancelled call manner's tone lines on top and is separate.
  */
-export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], notice = false, manner: mannered = false } = {}) {
+export function lineTalkInstructions({ name = "them", named = name !== "them", brief = null, goal = "", facts = [], manner: mannered = false, disclose = false } = {}) {
   const first = named ? String(name).trim().split(/\s+/)[0] : "the person you work for";
   const b = brief ?? {};
   const told = (facts ?? []).map(f => String(f).trim()).filter(Boolean);
@@ -497,19 +536,15 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     "Until a live person speaks to you, say nothing at all: not to a ringing line, a recording, a phone menu, hold music or a voicemail greeting. Reason handles those.",
     "When a person answers — a live greeting like \"…, can I help you?\", \"hello?\" or \"speaking\" — answer straight away, like a normal person calling: a quick warm hello, then what you're calling about, in one natural breath."
       + " For example: \"Oh hey, hi! I'm calling to find out what kind of service you'd recommend for someone with low back pain… and how much would an hour be?\"",
-    ...(mannered
-      // Omari 11-11: a business always hears who is calling, that it's an AI, and that it may be recorded.
-      ? [`In that first reply, right after hello, say who you are and that the call may be recorded: "${manner.disclosureLine(named ? first : "")}" — then carry straight on with what you're calling about. If code already said it for you at pickup, don't say it again. If they ask whether you're a robot or an AI, say plainly yes, you're an AI assistant calling for ${first}. If they ask your name, it's Reason; never make up a person's name.`]
-      : [
-        notice
-          ? "This call is recorded, and where they are the law says they must be told: in that first reply, right after hello, say \"just so you know, this call's recorded\" — lightly, then carry straight on."
-          : "Don't bring up that the call is recorded; if they ask, say yes, it is.",
-      ]),
+    manner.plainOpenLine(),
+    manner.askedLine(first),
+    `Say who you're calling for only when it matters — a booking or a name they need — or when they ask.`,
+    ...(disclose
+      // Only a call that is recorded (REASON_THIRDPARTY_RECORDING=on): the notice, and their objection honoured.
+      ? ["This call is recorded, so they are told: in that first reply, right after hello, say \"just so you know, this call may be recorded\" — lightly, then carry straight on with what you're calling about. If code already said it for you at pickup, don't say it again.",
+        manner.RECORDING_OBJECTION_LINE]
+      : [manner.NOT_RECORDED_LINE]),
     "If they say \"hello?\" again while you're starting, don't start over: carry on with what you were saying.",
-    ...(mannered ? [] : [
-      `Don't open by saying you're an AI or who you're calling for. If they ask whether you're a robot, an AI, a recording or automated, say plainly: "yes, I'm an AI assistant calling for ${first}." Never deny it and never dodge it.`,
-      `Say who you're calling for only when it matters — a booking or a name they need, or they ask who's calling: "I'm calling for ${first}." If they ask your name, it's Reason; never make up a person's name, and never say you are ${first}.`,
-    ]),
     "Then talk with them yourself, the way a person would: short replies, one thing at a time, and let them finish. If they start talking while you're speaking, stop at once and listen."
       + " A small sound — \"mm\", \"uh\", a breath, line noise — is not their turn: don't answer it and don't restart.",
     "No listening sounds: never \"mm\", \"mhm\" or \"uh-huh\" while they talk or after you've finished speaking. Say nothing until it's your turn.",
@@ -519,7 +554,7 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     `Hand it to Reason (delegate) whenever they ask something you weren't given above (a name, number, email, address, a preference), they offer to book, hold, reserve, charge or sign ${first} up for anything, they want payment details, a phone menu wants a key pressed, or you aren't sure what to say.`
       + " While Reason works, a few words like \"let me check\" are fine. When Reason's result comes, say it naturally and briefly, keeping every fact, number and name exactly.",
     "Never invent a fact, time, name, number or price, and never agree to anything you weren't told you may.",
-    ...(mannered ? manner.lineMannerLines(first) : []),
+    ...(mannered ? manner.lineMannerLines(first, { recordingOff: false }) : []),
     mannered
       ? "Once you have what the call is for, thank them, say in a few words what happens next if anything does, and say bye. Don't stay on."
       : "Once you have what the call is for, thank them and say bye. Don't stay on.",
@@ -535,23 +570,22 @@ function briefOf(call) {
 }
 
 /**
- * The disclosure a GPT-Live third-party call opens with: the provider's own line
- * (`announcementFor` in ./provider.js), naming Reason and the person by first name — "this is Reason,
- * an AI assistant calling for Omari. Just so you know, this call is recorded."
+ * The line code says first on a GPT-Live call with somebody else (the call row's `announcement`): nothing
+ * — the call starts normally (Omari 2026-11-12) — unless the call is recorded, and then the notice.
+ * The older provider's "this is an AI assistant calling for …, this call is recorded" is never used here.
  */
-export function lineAnnouncement(ann) {
-  return String(ann ?? "").replace(/this is an AI assistant calling for ([^.]+)\./,
-    (_, who) => `this is Reason, an AI assistant calling for ${who.trim().split(/\s+/)[0]}.`);
+export function lineAnnouncement() {
+  return config.thirdPartyRecording ? manner.RECORDING_NOTICE_LINE : "";
 }
 
 /** How long GPT-Live holds its automatic acknowledgement of a hand-off, so code can cancel it first. */
 export const ACK_DELAY_MS = 800;
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false, manner: mannered = false, carry = false, turnGate = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered }),
+    instructions: instructions || liveInstructions({ name, named, owner, identity, brief, manner: mannered, carry, turnGate }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     // Room to cancel the voice's automatic "one moment" before it is generated: a line call never has
     // one, and on every other call code decides whether a wait gets a line at all (call 79, `holdLine`).
@@ -560,6 +594,9 @@ export function sessionConfig({ name, named, owner = false, identity = false, br
   if (greeting) {
     session.input = [{ type: "message", role: "developer", content: [{ type: "input_text", text: greetingInstruction(greeting, purpose) }] }];
   }
+  // The turn gate: Live asks Decisions about their words as they are transcribed (./turngate.js).
+  const triggers = turngate.turnTriggers(turnGate);
+  if (triggers.length) session.triggers = triggers;
   return session;
 }
 
@@ -1023,10 +1060,31 @@ const SILENCE_100MS = Buffer.alloc(800, 0xff).toString("base64");
 
 /** The end of a spoken line: faded over this many samples (30 ms at 8 kHz) up to where its sound stops. */
 export const FADE_SAMPLES = 240;
-/** A held piece with nothing after it this long is faded and sent. */
-export const FADE_FLUSH_MS = 60;
+/**
+ * A held end with nothing after it this long is faded and sent. Well over the gap between two pieces:
+ * GPT-Live sends 100 ms of audio every 100 ms (measured from the live host, 2026-11-12: 800 bytes a
+ * piece, 93–105 ms apart, one 175). At 60 ms — written for 20 ms pieces — this ran out before every
+ * next piece, so every piece of a sentence was faded to silence: the voice dipped ten times a second.
+ */
+export const FADE_FLUSH_MS = 250;
 /** Below this a sample is the quiet after the words, not the words. */
 const FADE_FLOOR = 300;
+/** A piece that opens with this much quiet (5 ms) does not carry on the sound before it. */
+const QUIET_START = 40;
+
+/** A μ-law buffer's last sound faded out, in place (see `fadeOut`). */
+function fadeBuf(buf) {
+  let end = buf.length - 1;
+  while (end >= 0 && Math.abs(ulawToPcm(buf[end])) <= FADE_FLOOR) end--;
+  if (end < 0) return buf;
+  const from = Math.max(0, end - FADE_SAMPLES + 1);
+  const n = end - from + 1;
+  for (let i = from; i <= end; i++) {
+    const g = 0.5 * (1 + Math.cos(Math.PI * (i - from + 1) / n));
+    buf[i] = pcmToUlaw(Math.round(ulawToPcm(buf[i]) * g));
+  }
+  return buf;
+}
 
 /**
  * A μ-law piece with its last sound faded out: a raised-cosine ramp over the FADE_SAMPLES before the
@@ -1034,16 +1092,19 @@ const FADE_FLOOR = 300;
  */
 export function fadeOut(b64) {
   const buf = Buffer.from(String(b64 ?? ""), "base64");
-  let end = buf.length - 1;
-  while (end >= 0 && Math.abs(ulawToPcm(buf[end])) <= FADE_FLOOR) end--;
-  if (end < 0) return b64;
-  const from = Math.max(0, end - FADE_SAMPLES + 1);
-  const n = end - from + 1;
-  for (let i = from; i <= end; i++) {
-    const g = 0.5 * (1 + Math.cos(Math.PI * (i - from + 1) / n));
-    buf[i] = pcmToUlaw(Math.round(ulawToPcm(buf[i]) * g));
-  }
-  return buf.toString("base64");
+  return buf.some(u => Math.abs(ulawToPcm(u)) > FADE_FLOOR) ? fadeBuf(buf).toString("base64") : b64;
+}
+
+/** How many samples of quiet a μ-law buffer opens with (`max` at most) and ends with. */
+function quietLead(buf, max = buf.length) {
+  let n = 0;
+  while (n < buf.length && n < max && Math.abs(ulawToPcm(buf[n])) <= FADE_FLOOR) n++;
+  return n;
+}
+function quietTail(buf) {
+  let n = 0;
+  while (n < buf.length && Math.abs(ulawToPcm(buf[buf.length - 1 - n])) <= FADE_FLOOR) n++;
+  return n;
 }
 /** The greeting is over once the voice has been quiet this long after speaking; the session is then paused. */
 export const WARM_QUIET_MS = 700;
@@ -1133,7 +1194,9 @@ export class WarmSession {
       // the longest possible; through #406's `voiceInstructionsFor` where that exists.
       const start = () => {
         if (this.closed) return;
-        const instructions = preopenInstructions(row);
+        this.startSent = true;
+        // Refused before it was even sent (`startPlain`): it goes without the trigger the first time.
+        const instructions = this.noTurnGate ? plainInstructions(row) : preopenInstructions(row);
         this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
       };
       if (this.memory) void this.memory.then(start, start); else start();
@@ -1184,7 +1247,27 @@ export class WarmSession {
       this.seconds = e.usage.seconds;
     } else if (e.type === "error") {
       this.log({ gptlive_error: this.row.id, warm: true, code: e.error?.code ?? "", message: String(e.error?.message ?? "").slice(0, 200) });
+      // The turn gate fails open: a start refused with its trigger in it is sent again without it.
+      if (!this.started) this.startPlain();
     }
+  }
+
+  /**
+   * The session's start was refused and it carried the turn gate's trigger: sent again without it (and
+   * without the prompt lines that go with it). Also called by the call that adopted this session before
+   * it started — the refusal then arrives there, and with no second start the call would stay silent.
+   * Returns true when the trigger was taken out (once).
+   */
+  startPlain() {
+    if (!this.who?.turnGate || this.closed) return false;
+    this.who = { ...this.who, turnGate: "" };
+    this.noTurnGate = true;
+    if (this.startSent) {
+      const instructions = plainInstructions(this.row);
+      this.live.send({ type: "session.start", event_id: `start_${this.row.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
+    }
+    this.log({ gptlive_turn_gate_off: this.row.id, why: "start refused", warm: true });
+    return true;
   }
 
   /** 100 ms of silence in, every 100 ms, until the greeting is said (or it is plainly not coming). */
@@ -1251,6 +1334,11 @@ export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, t
   }
 }
 
+/** The same with the turn gate's lines left out (a start refused with its trigger in it, `startPlain`). */
+function plainInstructions(row) {
+  try { return String(self.voiceInstructionsFor(row, { turnGate: false }) ?? ""); } catch { return ""; }
+}
+
 /** The pre-opened session's instructions: `voiceInstructionsFor(row)` when this build has it, else "" (the default). */
 export function preopenInstructions(row) {
   const build = self.voiceInstructionsFor;
@@ -1268,7 +1356,7 @@ export function awaitCallMemory(row, capMs, { log = () => {} } = {}) {
   let timer = null;
   const t0 = Date.now();
   return Promise.race([
-    Promise.resolve().then(() => prep(row, { log })).then(() => true, () => false),
+    Promise.resolve().then(() => Promise.all([prep(row, { log }), carryover.prepareCarry(row, { log })])).then(() => true, () => false),
     new Promise((r) => { timer = setTimeout(() => r(false), capMs); }),
   ]).then((done) => { clearTimeout(timer); log({ gptlive_prering_memory: row.id, ms: Date.now() - t0, done }); return done; });
 }
@@ -1355,6 +1443,11 @@ export const TALKOVER_QUIET_MS = 300;
 export const FIRST_EXCHANGE_QUIET_MS = 700;
 /** Still talking this long after the voice began: what it began was an answer to half a sentence. */
 export const TALKOVER_MAX_MS = 2000;
+// A long turn of theirs (./carryover.js, call 85): this much unbroken talking — pauses under the gap
+// stay inside it — and the voice waits this much quiet, not TALKOVER_QUIET_MS, before it comes in.
+export const LONG_TURN_MS = 8000;
+export const LONG_TURN_GAP_MS = 2500;
+export const LONG_TURN_QUIET_MS = 1500;
 /** With no words of theirs through by the limit, it waits this much longer for quiet, then plays anyway (a noisy line). */
 export const TALKOVER_NOISE_MS = 1500;
 /**
@@ -1389,11 +1482,11 @@ export function pressTwiml(digits, row, base = config.publicUrl) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Play digits="${xml(`w${digits}`)}"/><Connect><Stream url="${xml(`${wss}${STREAM_PATH}${row.webhook_token}`)}"/></Connect></Response>`;
 }
 
-/** What a place ringing back hears first: the disclosure, word for word, then what it is about. */
+/** What a place ringing back hears first: a plain hello and what it is about (and the recording notice first, only when it is recorded). */
 export function ringBackLine(row) {
   const about = String(row.goal ?? "").replace(/^They are ringing back about:\s*/, "").trim();
-  const ann = String(row.announcement ?? "").trim();
-  return about ? `${ann} You're calling back about ${about} — thanks for ringing back.` : ann;
+  const ann = String(row.announcement ?? "").trim() || "Hi there!";
+  return about ? `${ann} You're calling back about ${about} — thanks for ringing back.` : `${ann} Thanks for ringing back.`;
 }
 
 export class GptLiveCall {
@@ -1437,6 +1530,8 @@ export class GptLiveCall {
     this.callerSpeechFrom = 0;
     // Their last frame of speech over the line's own floor (./hearing.js), for talk-over and holding lines.
     this.theirSpeechAt = -Infinity;
+    // When the stretch of talking their last speech belongs to began (`longTurn`).
+    this.theirStretchFrom = -Infinity;
     // Holding lines said by code (call 79).
     this.holdLines = 0;
     this.quickHolds = 0;
@@ -1449,6 +1544,26 @@ export class GptLiveCall {
     this.runsAfterThem = 0;
     this.talkOvers = 0;
     this.talkOverDrops = 0;
+    // The turn gate (./turngate.js, REASON_CALL_TURN_GATE): null unless it is on for this call (set below).
+    this.turnGate = null;
+    this.tg = null;
+    this.gateOpenUntil = 0;
+    this.gateMisses = 0;
+    // Their audio given to the session so far, in ms: the session's own timeline (transcript pieces are timed on it).
+    this.fedMs = 0;
+    this.fedSkew = 0;
+    this.theirSpeechFedMs = null;
+    // Acknowledgements: how long they have talked since Reason last really spoke, and since the last one.
+    this.talkSinceVoice = 0;
+    this.talkSinceAck = turngate.ACK_EVERY_TALK_MS;
+    this.lastAck = "";
+    this.acks = 0;
+    this.ackPlay = null;
+    this.ackPromptedFor = -Infinity;
+    this.ackPromptedAt = -Infinity;
+    this.quietNudgedFor = -Infinity;
+    this.lastReplyAt = -Infinity;
+    this.askedAt = -Infinity;
     this.log = log;
     this.now = now;
     this.finishCall = finish;
@@ -1466,20 +1581,26 @@ export class GptLiveCall {
     this.bargeIns = 0;
     // The call manner (./manner.js) for this call's account; never on a stranger's call.
     this.manner = !persona && !!this.who?.manner && (!!this.who?.owner || this.line);
+    // Omari 2026-11-12: a call with a business or another person (placed, or a place ringing back) starts
+    // normally and its audio is NOT kept, for every account. Only REASON_THIRDPARTY_RECORDING=on records
+    // it, and then they are told at the start and an objection stops it (`readObjection`).
+    this.recorded = !this.line || manner.callRecorded({ ...call, provider: PROVIDER });
     if (this.talk) {
-      this.notice = recordingNoticeFor(call.to_number);
-      // Omari 11-11: with the call manner on, every business hears it's Reason, an AI, and that it may be recorded.
-      if (this.manner) this.notice = { ...this.notice, notice: true, disclose: true, why: "call manner: always said" };
+      this.notice = this.recorded
+        ? { ...recordingNoticeFor(call.to_number), notice: true, disclose: true, why: "recorded: always said" }
+        : { notice: false, disclose: false, state: "", why: "not recorded: nothing to say" };
       const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
-      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, notice: this.notice.notice }) };
-      // Reason's own turns put the row's opening line in front of their first words to a person: on
-      // this call that is no "this is Reason, an AI assistant…", only the recording line where the law
-      // wants it (and nothing at all elsewhere).
-      const opening = this.notice.disclose ? manner.disclosureLine(this.who?.named ? this.who.name : "")
-        : this.notice.notice ? "Hi there — just so you know, this call's recorded." : "";
+      this.who = { ...this.who, instructions: lineTalkInstructions({ ...this.who, brief: briefOf(call), goal: call.goal, facts, disclose: this.recorded }) };
+      // Reason's own turns put the row's opening line in front of their first words to a person: none
+      // on a call that is not recorded, the recording notice on one that is.
+      const opening = lineAnnouncement();
       try { db.updateCall(call.conversation_id, call.id, { announcement: opening }); } catch { /* the row's own line stands */ }
       this.call = { ...call, announcement: opening };
     }
+    // A recorded ring-back hears the notice first, by code (`ringBackLine`), so its objection to the
+    // recording is honoured the same way: read by meaning, the tape cut back to before their words
+    // (`readObjection`). No "said yet?" check here (`notice: false`): code says the line itself.
+    else if (this.line && call.direction === "in") this.notice = { notice: false, disclose: this.recorded, state: "", why: this.recorded ? "ring-back: said first by code" : "not recorded: nothing to say" };
     this.name = this.who.name;
     // The pickup opener (./opener.js): a clip made while it rang, played as soon as their hello ends
     // (or into a silent line) while the live voice connects. `state`: waiting → playing → played, or
@@ -1504,7 +1625,11 @@ export class GptLiveCall {
     if (!persona && !this.line && warm?.hold && warm.greeting) this.greeting = warm.greeting;
     // On a line call the greeting is not seeded: what was said comes from what was really played.
     this.turns = this.greeting && !this.line ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
+    // The turn gate: their own call, or a business call Reason talks on (a puppet line has no turns of its own to gate).
+    if (this.who?.turnGate && (this.who.turnGate === "own" ? !this.line : this.talk)) this.turnGate = new turngate.TurnGate({ mode: this.who.turnGate });
     this.tape = new CallTape();
+    // Not recorded: the tape keeps the call's clock and not one byte of audio, from the first frame.
+    if (!this.recorded) this.tape.stopAt(0);
     // Their side as the model hears it: quiet speech lifted (call 76). REASON_CALL_HEARING=off sends it raw.
     this.hearing = config.callHearing ? new Hearing() : null;
     this.pending = new Map();
@@ -1525,6 +1650,8 @@ export class GptLiveCall {
     this.lastOutTextAt = 0;
     this.utter = "";
     this.playheadAt = 0;
+    /** Samples of silence sent ahead of a held end and not yet taken back (`voiceOut`). */
+    this.voiceLead = 0;
     this.mute = null;
     this.guardTrips = 0;
     this.seconds = 0;
@@ -1599,7 +1726,21 @@ export class GptLiveCall {
       // What the model hears: their side evened out (./hearing.js), quiet words lifted, silence left
       // alone. The recording and every loudness check above keep the line as it came.
       const heard = this.hearing ? this.hearing.frame(m.media.payload, this.now(), { reasonTalking: this.now() < this.playheadAt + ECHO_TAIL_MS }) : m.media.payload;
-      if (this.hearing ? this.hearing.speech : hasSpeech(m.media.payload)) this.theirSpeechAt = this.now();
+      if (this.hearing ? this.hearing.speech : hasSpeech(m.media.payload)) {
+        const st = this.now();
+        // A new stretch of theirs begins after a real gap; pauses for breath or thought stay inside one.
+        if (st - this.theirSpeechAt > LONG_TURN_GAP_MS) this.theirStretchFrom = st;
+        if (this.turnGate) {
+          this.theirSpeechFedMs = this.fedMs + buf.length / 8;
+          // Their talking, the gaps between syllables included (a pause is not talking).
+          const since = st - this.theirSpeechAt;
+          const talked = since > 0 && since <= TALKOVER_QUIET_MS ? since : buf.length / 8;
+          this.talkSinceVoice += talked;
+          this.talkSinceAck += talked;
+        }
+        this.theirSpeechAt = st;
+      }
+      if (this.turnGate?.mode === "own") { if (this.ackPlay) this.ackHeard(this.now(), hasSpeech(m.media.payload)); this.ackTick(this.now()); }
       // A made greeting waiting for its moment: their hello is not sent (the greeting answers it); kept
       // in case they talk on and the greeting is dropped instead (`skipPregreet`).
       if (this.pregreet?.state === "played") this.pregreetOverlap(this.now(), hasSpeech(m.media.payload));
@@ -1624,42 +1765,79 @@ export class GptLiveCall {
   }
 
   /**
-   * The voice's audio to Twilio, one piece behind (call 80): GPT-Live often stops a line at full level
-   * and drops to digital silence in 5–10 ms, which on the phone sounds like the line going dead. A piece
-   * with speech in it is held until the next arrives — the session streams silence between words, so
-   * that is a frame or so — and when the next has no speech, or none comes within FADE_FLUSH_MS, the
-   * held piece's last FADE_SAMPLES before its sound ends are faded out (`fadeOut`).
+   * The voice's audio to Twilio, with the end of a line faded (call 80): GPT-Live often stops a line at
+   * full level and drops to digital silence in 5–10 ms, which on the phone sounds like the line going
+   * dead. Whether a piece is the end of a line is only known when the next arrives, so the last
+   * FADE_SAMPLES of a piece whose sound runs to its end wait for it: more sound after them and they go
+   * out as they came; quiet after them, or nothing within FADE_FLUSH_MS, and they are faded
+   * (`fadeOut`). A sound that stops inside a piece is faded there and then.
+   *
+   * Only that end is held, never the whole piece (2026-11-12): pieces are 100 ms long and 100 ms apart,
+   * so a whole piece held "until the next, or 60 ms" was always sent by the timer — faded. What is sent
+   * ahead of a held end is 30 ms short of real time, which Twilio would play as a gap inside the word,
+   * so that much silence goes out before a run's first piece (`voiceLead`) and is taken back out of the
+   * quiet after it.
    */
   voiceOut(b64, speech) {
     // A business line's audio is gated word by word (`gateOpen`, `ownOpener`): it goes as it is.
     if (this.line) return this.toTwilio({ event: "media", media: { payload: b64 } });
+    const send = (payload) => { if (payload) this.toTwilio({ event: "media", media: { payload } }); };
     const held = this.voiceTail;
     this.voiceTail = null;
     if (this.tailTimer) { this.timers.clearTimeout(this.tailTimer); this.tailTimer = null; }
-    if (held) this.toTwilio({ event: "media", media: { payload: speech ? held : fadeOut(held) } });
-    if (!speech) return this.toTwilio({ event: "media", media: { payload: b64 } });
-    this.voiceTail = b64;
+    const piece = Buffer.from(String(b64 ?? ""), "base64");
+    if (!speech) {
+      // Quiet after the held end: that was the end of the line. A piece that opens with sound carries it on.
+      if (held) send(quietLead(piece, QUIET_START) >= Math.min(QUIET_START, piece.length) ? fadeOut(held) : held);
+      // The silence put in ahead of the run comes back out of the quiet after it.
+      const cut = Math.min(this.voiceLead, quietLead(piece, this.voiceLead));
+      this.voiceLead -= cut;
+      return send(cut ? piece.subarray(cut).toString("base64") : b64);
+    }
+    if (quietTail(piece) >= FADE_SAMPLES) {
+      // Its sound stops inside it: faded where it stops (the ramp may reach back into the held end).
+      const was = held ? Buffer.from(held, "base64") : Buffer.alloc(0);
+      const all = fadeBuf(Buffer.concat([was, piece]));
+      send(all.subarray(0, was.length).toString("base64"));
+      return send(all.subarray(was.length).toString("base64"));
+    }
+    const keep = Math.min(FADE_SAMPLES, piece.length);
+    const head = piece.subarray(0, piece.length - keep);
+    const was = held ? Buffer.from(held, "base64").length : 0;
+    // Something goes out now and its end does not: the line must be that far ahead, or it runs dry.
+    const short = head.length || was ? keep - was - Math.max(0, this.voiceLead - was) : 0;
+    if (short > 0) {
+      send(Buffer.alloc(short, 0xff).toString("base64"));
+      this.voiceLead += short;
+    }
+    send(held);
+    send(head.toString("base64"));
+    this.voiceTail = head.length ? piece.subarray(piece.length - keep).toString("base64") : b64;
     this.tailTimer = this.timers.setTimeout(() => this.flushTail(), FADE_FLUSH_MS);
   }
 
-  /** The held piece, faded, now (nothing came after it). */
+  /** The held end, faded, now (nothing came after it). */
   flushTail() {
     this.tailTimer = null;
     const held = this.voiceTail;
     this.voiceTail = null;
+    // Nothing came for FADE_FLUSH_MS: the line has run dry and the silence sent ahead has been played.
+    // Left counted, the next line would send no lead and run 30 ms short behind its first piece.
+    this.voiceLead = 0;
     if (held && !this.done) this.toTwilio({ event: "media", media: { payload: fadeOut(held) } });
   }
 
-  /** The held piece thrown away with everything else unplayed (a clear). */
+  /** The held end thrown away with everything else unplayed (a clear). */
   dropTail() {
     this.voiceTail = null;
+    this.voiceLead = 0;
     if (this.tailTimer) { this.timers.clearTimeout(this.tailTimer); this.tailTimer = null; }
   }
 
   /** The room under the call (src/calls/ambience.js): topped up every TICK_MS while the call is up. */
   roomTick() {
     if (!this.bed || this.done) return;
-    const frames = this.streamSid && !this.rejoining ? this.bed.fill(this.now()) : null;
+    const frames = this.streamSid && !this.rejoining ? this.bed.fill(this.now(), { talking: !!this.voiceTail }) : null;
     if (frames) this.twilio.send(JSON.stringify({ event: "media", streamSid: this.streamSid, media: { payload: frames } }));
     this.roomTimer = this.timers.setTimeout(() => this.roomTick(), ambience.TICK_MS);
   }
@@ -1670,7 +1848,7 @@ export class GptLiveCall {
   clearPlayback(why) {
     // A run held back for talk-over goes with everything else unplayed when the guard stops a claim. A
     // barge-in leaves it alone: it is already waiting for them to finish (`overTalk`).
-    if (why === "guard") this.overDiscard();
+    if (why === "guard") { this.gateDiscard(); this.overDiscard(); }
     this.dropTail();
     this.toTwilio({ event: "clear" });
     this.tape.cut();
@@ -1700,13 +1878,30 @@ export class GptLiveCall {
     this.openFresh();
   }
 
+  /** The turn gate's clock: every piece of audio given to the session moves its timeline on by that much. */
+  countFed() {
+    if (!this.turnGate) return;
+    const live = this.live;
+    this.live = {
+      send: (o) => { if (o?.type === "session.input_audio.append") this.fedMs += Buffer.from(String(o.audio ?? ""), "base64").length / 8; live.send(o); },
+      close: () => live.close(),
+      on: (name, fn) => live.on(name, fn),
+    };
+  }
+
   /** A session of the call's own, opened on the stream (no warm one, or a pre-opened one that died). */
   openFresh() {
     this.live = this.openLive();
+    // A new session's timeline starts at zero, and nothing heard or decided on the old one is about it.
+    this.fedMs = 0;
+    this.fedSkew = 0;
+    this.theirSpeechFedMs = null;
+    if (this.turnGate) this.turnGate = new turngate.TurnGate({ mode: this.turnGate.mode });
+    this.countFed();
     const openedAt = this.now();
     this.live.on("open", () => {
       this.log({ gptlive_live_open: this.call.id, ms: this.now() - openedAt });
-      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line }) });
+      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: this.turnGate?.mode ?? "" }) });
     });
     this.live.on("event", (e) => this.fromLive(e));
     this.live.on("close", (code) => this.liveClosed(code));
@@ -1721,6 +1916,11 @@ export class GptLiveCall {
     w.handOver(this);
     this.live = w.live;
     this.adopted = true;
+    // Its start went out without the trigger (refused with it): no decisions will come.
+    if (w.noTurnGate) this.turnGate = null;
+    this.warmFrom = w;
+    this.fedMs = w.fedMs ?? 0;
+    this.countFed();
     // A held session (REASON_GPTLIVE_PRERING) has said nothing: it greets now, as a cold one would.
     // A gated session not started by pickup has not been asked to greet either: it is asked when it starts.
     this.adoptedHold = (!!w.hold && !w.holdGreetEarly) || (!!w.gate && !w.started);
@@ -1748,6 +1948,15 @@ export class GptLiveCall {
       this.adopted = false;
       this.pregreet = null;
       this.log({ gptlive_prering_fallback: this.call.id, code });
+      return this.openFresh();
+    }
+    // The turn gate fails open: a session of the call's own that closed before it started, its start
+    // carrying the trigger (a refusal can be a close, not an error), is opened once more without it.
+    if (this.turnGate && !this.adopted && !this.started && !this.done && !this.gateReopened) {
+      this.gateReopened = true;
+      this.turnGate = null;
+      this.who = { ...this.who, turnGate: "" };
+      this.log({ gptlive_turn_gate_off: this.call.id, why: "closed before start" });
       return this.openFresh();
     }
     if (!this.done) this.end(this.endWhy || `voice session closed (${code})`).catch(() => {});
@@ -1801,7 +2010,16 @@ export class GptLiveCall {
         return this.timeTurn("reason", e);
       case "session.input_transcript.delta":
         this.textIn(String(e.delta ?? ""));
+        // The turn gate: the words its next verdict will be about.
+        if (this.turnGate && String(e.delta ?? "").trim()) {
+          // A piece cannot end past the audio the session has been given: if it does, our count is behind.
+          if (Number.isFinite(e.end_ms) && e.end_ms > this.fedMs + this.fedSkew) this.fedSkew = e.end_ms - this.fedMs;
+          this.turnGate.heard(e.event_id ?? e.id, this.now(), e.end_ms);
+        }
         return this.timeTurn("them", e);
+      case "decision.event":
+        if (this.turnGate) this.gateDecision(e);
+        return;
       case "session.delegation.created":
         return void this.delegate(e.delegation?.id).catch((err) => this.log({ gptlive_delegation_failed: this.call.id, why: (err?.message ?? String(err)).split("\n")[0] }));
       case "session.instructions.appended":
@@ -1820,6 +2038,16 @@ export class GptLiveCall {
         return;
       case "error":
         this.log({ gptlive_error: this.call.id, code: e.error?.code ?? "", message: String(e.error?.message ?? "").slice(0, 200) });
+        // The turn gate fails open: a start refused with its trigger in it is sent again without it.
+        if (!this.started && !this.done && this.adopted) {
+          // A pre-opened session taken over before it started: its start is the warm session's to send again.
+          if (this.warmFrom?.startPlain()) { this.turnGate = null; this.who = { ...this.who, turnGate: "" }; }
+        } else if (this.turnGate && !this.started && !this.done) {
+          this.turnGate = null;
+          this.who = { ...this.who, turnGate: "" };
+          this.live.send({ type: "session.start", event_id: `start_${this.call.id}_plain`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line, turnGate: "" }) });
+          this.log({ gptlive_turn_gate_off: this.call.id, why: "start refused" });
+        }
         return;
       default:
     }
@@ -1852,6 +2080,8 @@ export class GptLiveCall {
         this.voiceRunFrom = t;
         // Begun while they were speaking: not a reply to them (a reply waits for their pause).
         this.voiceRunOverThem = t - this.callerSpeechAt < VOICE_RUN_GAP_MS;
+        // The turn gate on a business call only watches: what it would have said about this reply.
+        if (this.turnGate?.mode === "line" && this.talking) this.gateLog(this.gateRead(t), { observe: true });
       }
       this.voiceSpeechAt = t;
     }
@@ -1875,13 +2105,20 @@ export class GptLiveCall {
     // The session streams silence between words, so "quiet" for a hang-up is no SPEECH arriving.
     const speech = hasSpeech(b64);
     if (speech) { this.lastVoiceAt = t; this.voiceEndsAt = this.playheadAt; }
+    // A real reply reaching the phone (not an acknowledgement): their talking is counted from here.
+    if (speech && this.turnGate && !this.ackFlushing) { this.talkSinceVoice = 0; this.lastReplyAt = t; }
     this.voiceOut(b64, speech);
     for (const turn of this.pending.values()) if (turn.firstAudioMs == null) turn.firstAudioMs = t - turn.startedAt;
+    // Log only (docs/calls-cartesia.md section 5): the first audio WITH SPEECH after a hand-back —
+    // `first_real_ms` is any audio, silence included — the number the Cartesia trial is set beside.
+    if (speech && this.handbackSpeech) { const h = this.handbackSpeech; this.handbackSpeech = null; this.log({ gptlive_handback_speech: this.call.id, ms: t - h.resultAt, from_ask_ms: t - h.startedAt }); }
     for (const turn of this.answered ?? []) {
       if (turn.firstRealMs == null && t >= turn.resultAt) {
         turn.firstRealMs = t - turn.startedAt;
         if (turn.firstAudioMs == null) turn.firstAudioMs = turn.firstRealMs;
         this.heard(turn);
+        if (speech) this.log({ gptlive_handback_speech: this.call.id, ms: t - turn.resultAt, from_ask_ms: t - turn.startedAt });
+        else this.handbackSpeech = { resultAt: turn.resultAt, startedAt: turn.startedAt };
       }
     }
   }
@@ -2122,7 +2359,7 @@ export class GptLiveCall {
       const onContent = this.line ? null : (piece) => this.speakPiece(id, turn, piece);
       reply = await this.brain(messages, { onTool, onContent });
     } catch (e) {
-      reply = { text: "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
+      reply = { text: carryover.brokeLine(this.call) || "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
     this.timers.clearTimeout(late);
     if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer);
@@ -2346,7 +2583,8 @@ export class GptLiveCall {
     this.recordingDeclinedAt = this.now();
     this.recordingStopWhy = v === true ? "objected" : over ? "read cap" : "read failed";
     this.log({ gptlive_recording_declined: this.call.id, why: this.recordingStopWhy, kept_s: Math.round(this.tape.seconds()) });
-    if (v === true && this.live && !this.done) this.live.send({ type: "session.instructions.append", event_id: `rec_off_${this.call.id}`, delegation_id: null, content: manner.RECORDING_OFF_NOTE });
+    // The voice that talks is told; on a ring-back the voice only says Reason's words, and Reason's turn has the line (thirdPartyFrame `recordingOff`).
+    if (v === true && this.talk && this.live && !this.done) this.live.send({ type: "session.instructions.append", event_id: `rec_off_${this.call.id}`, delegation_id: null, content: manner.RECORDING_OFF_NOTE });
     return true;
   }
 
@@ -2973,6 +3211,9 @@ export class GptLiveCall {
    */
   overTalk(t, b64) {
     if (this.overFlushing) return false;
+    // The turn gate is holding this run for its verdict (`gateRun`): the rest of it waits with it.
+    if (this.tg) { this.gateFrame(t, b64); return true; }
+    if (this.ackPlay?.live && this.ackMore(t, b64)) return true;
     const o = this.over;
     const speech = hasSpeech(b64);
     if (o?.dropped) {
@@ -2987,18 +3228,40 @@ export class GptLiveCall {
       return true;
     }
     if (!speech || this.voiceRunFrom !== t) return false;
+    // The acknowledgement code asked for, arriving after they have carried on: its moment has passed.
+    if (this.turnGate && t - this.ackPromptedAt >= 250 && t - this.ackPromptedAt < 2500 && this.theirSpeechAt > this.ackPromptedAt && this.gateApplies(t)) {
+      this.ackPromptedAt = -Infinity;
+      this.over = { dropped: true, lastAt: t, frames: [] };
+      this.log({ gptlive_turn_gate: this.call.id, verdict: "unfinished", dropped: true, ack: "they carried on", prompted: true, decision_ms: null, transcript_ms: null, lead_ms: null, waited_ms: 0 });
+      return true;
+    }
     // They have spoken since the voice's last run began (not the echo of that run): this run answers them.
     const afterThem = this.theirSpeechAt > this.lastRunAt && this.theirSpeechAt >= this.voiceEndsAt + ECHO_TAIL_MS;
     const first = afterThem && this.lastRunAt > 0 && this.runsAfterThem === 0;
-    const wait = first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
+    // They have been talking a long while (thinking out loud): a breath is not the end of it, so the
+    // quiet that lets the voice in is longer — and a "Go on." that starts into a pause is dropped when
+    // they carry on, like any answer to half a sentence (call 85).
+    // With a verdict on their latest words the gate decides, at once; the long wait is the fallback without one.
+    const long = this.longTurn() && !this.gateFresh(t);
+    const wait = long ? LONG_TURN_QUIET_MS : first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
     // Never while the call is ending: a goodbye is said, and the hang-up waits on it.
-    if (!afterThem || this.ending || t - this.theirSpeechAt >= wait) { this.noteRun(t, afterThem); return false; }
+    if (!afterThem || this.ending || t - this.theirSpeechAt >= wait) {
+      // They have stopped making sound — but have they finished? (the turn gate, ./turngate.js)
+      if (this.turnGate && afterThem && this.gateRun(t, [b64], t)) return true;
+      this.noteRun(t, afterThem);
+      return false;
+    }
     // Where the voice's words stood when this run began, so a drop takes back only this run's words.
     const last = this.turns.findLast(x => x.who === "reason" && !x.seeded) ?? null;
     const mark = last ? { turn: last, len: last.text.length } : null;
-    this.over = { since: t, frames: [b64], lastAt: t, wait, first, mark };
+    this.over = { since: t, frames: [b64], lastAt: t, wait, first, mark, long };
     this.overTimer = this.timers.setTimeout(() => this.overCheck(), OVER_TICK_MS);
     return true;
+  }
+
+  /** Their own call, carry-over on: have they been talking for a long stretch (thinking out loud)? */
+  longTurn() {
+    return this.ownTalk() && !!this.who?.carry && this.theirSpeechAt - this.theirStretchFrom >= LONG_TURN_MS;
   }
 
   /** A run of the voice's has started down the line. */
@@ -3012,8 +3275,9 @@ export class GptLiveCall {
     const o = this.over;
     if (!o || o.dropped || this.done) return;
     const t = this.now();
+    if (o.long && this.gateFresh(t)) { o.long = false; o.wait = TALKOVER_QUIET_MS; }
     if (t - this.theirSpeechAt >= o.wait) return this.overRelease();
-    if (t - o.since >= TALKOVER_WORDLESS_MS && this.lastCallerAt < o.since) return this.overRelease();
+    if (t - o.since >= (o.long ? LONG_TURN_QUIET_MS : TALKOVER_WORDLESS_MS) && this.lastCallerAt < o.since) return this.overRelease();
     // Still "talking" at the limit: if words of theirs have come through since, it was half their
     // sentence and is dropped; if none have, it is the line (a noisy room) and the run goes out — never
     // dead air for noise.
@@ -3036,6 +3300,8 @@ export class GptLiveCall {
     // "I'm —" and nothing more: the voice stopped when they went on, so playing it now is call 79 again.
     const words = this.overText(o).trim();
     if (words && words.split(/\s+/).length <= 2 && !/[.!?…]["”’)]*$/.test(words) && this.now() - o.lastAt > 300) return this.overDrop("a fragment");
+    // Quiet now — but mid-thought? The turn gate takes the held run from here (`gateRun`).
+    if (this.turnGate && !o.gated && this.gateRun(this.now(), o.frames, o.since, o)) return;
     this.over = null;
     if (this.overTimer) { this.timers.clearTimeout(this.overTimer); this.overTimer = null; }
     const t = this.now();
@@ -3068,7 +3334,10 @@ export class GptLiveCall {
       if (o.mark?.turn === last) last.text = last.text.slice(0, o.mark.len);
       else if ((last.from ?? last.at) >= o.since - 1500) this.turns.splice(this.turns.lastIndexOf(last), 1);
     }
-    this.live.send({ type: "session.thinking.append", event_id: `over_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: OVER_NOTE });
+    // Held by the turn gate: told to stop and stay silent (an instruction can stop speech in progress; a quiet note cannot).
+    if (o.gate) this.live.send({ type: "session.instructions.append", event_id: `turn_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: turngate.heldNote(o.ackWord) });
+    else this.live.send({ type: "session.thinking.append", event_id: `over_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: OVER_NOTE });
+    this.overNudgeGate = !!o.gate;
     this.log({ gptlive_talkover_dropped: this.call.id, why, held_ms: t - o.since, first: o.first });
     if (this.overNudgeTimer) this.timers.clearTimeout(this.overNudgeTimer);
     this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(t), OVER_TICK_MS);
@@ -3079,7 +3348,9 @@ export class GptLiveCall {
     this.overNudgeTimer = null;
     if (this.done || this.ending) return;
     const t = this.now();
-    if (this.lastVoiceAt > droppedAt || this.pending.size) return;
+    // After a reply the gate held, an acknowledgement is not the answer: only a real reply closes it.
+    if ((this.overNudgeGate ? this.lastReplyAt : this.lastVoiceAt) > droppedAt || this.pending.size) return;
+    if (this.overNudgeGate) return this.gateNudge(droppedAt);
     // A newer run is being held (it goes out when they stop), or they are still talking: look again soon.
     if ((this.over && !this.over.dropped) || t - this.theirSpeechAt < OVER_NUDGE_QUIET_MS) {
       if (t - droppedAt < OVER_NUDGE_GIVE_UP_MS) this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(droppedAt), OVER_TICK_MS * 5);
@@ -3087,6 +3358,385 @@ export class GptLiveCall {
     }
     this.live.send({ type: "session.commentary.append", event_id: `overnudge_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: OVER_NUDGE });
     this.log({ gptlive_talkover_nudged: this.call.id, ms: t - droppedAt });
+  }
+
+  // --- the turn gate (./turngate.js, REASON_CALL_TURN_GATE) ---
+
+  /** Is a run of the voice's own, starting now in answer to them, the gate's to judge? */
+  gateApplies(t) {
+    // Their own call only. Never Reason's answer being said (a hand-off running or just answered), a
+    // goodbye, a claim the guard is correcting, or the reply the gate itself has just asked for.
+    return this.turnGate?.mode === "own" && this.ownTalk() && !this.pending.size && t - this.lastResultAt > 4000
+      && !this.ending && !this.mute && t >= this.gateOpenUntil;
+  }
+
+  /** The gate's read of their latest words, against where their last sound sits on the session's timeline. */
+  gateRead(t) {
+    return this.turnGate.read(t, { speechAt: this.theirSpeechAt, speechMs: this.theirSpeechFedMs == null ? null : this.theirSpeechFedMs + this.fedSkew });
+  }
+
+  /** "finished" or "unfinished" when there is a verdict on their latest words right now; "" otherwise. */
+  gateFresh(t) {
+    if (!this.turnGate || !this.gateApplies(t)) return "";
+    const s = this.gateRead(t).state;
+    return s === "finished" || s === "unfinished" ? s : "";
+  }
+
+  /** Speech and trailing quiet in a held run, a frame at a time. */
+  gateCount(g, t, b64) {
+    const ms = Buffer.from(b64, "base64").length / 8;
+    if (hasSpeech(b64)) { g.speechMs += ms; g.quietMs = 0; g.lastAt = t; } else g.quietMs += ms;
+  }
+
+  /** More of a run the gate holds. */
+  gateFrame(t, b64) {
+    const g = this.tg;
+    g.frames.push(b64);
+    this.gateCount(g, t, b64);
+    if (g.mode === "ack") this.gateAck();
+  }
+
+  /**
+   * A run of the voice's is about to reach the phone (straight away, or after the talk-over hold `from`
+   * has let it go). Returns true when the gate takes it.
+   *   finished thought   false at once: the reply goes out with nothing added (`answerWatch` checks it is one)
+   *   mid-thought        taken: a short run is an acknowledgement and is placed in the pause (`gateAck`);
+   *                      a long one is a reply to half a thought and is not played (`gateReplyHeld`)
+   *   no verdict yet     taken for TURN_GATE_BUDGET_MS at most (`gateCheck`), then out as it would have gone
+   *   nothing to go on   false at once (a failed decision, decisions not answering, a long silence)
+   */
+  gateRun(t, frames, since, from = null) {
+    if (!this.gateApplies(t)) return false;
+    const r = this.gateRead(t);
+    // Decisions not answering (never yet, or not in time three replies running): no more waiting on them.
+    if (r.state === "wait" && (!this.turnGate.verdict || this.gateMisses >= 3)) { this.gateLog({ ...r, state: "open", why: "decisions quiet" }); return false; }
+    // Quiet this long, finished or not, and whatever it says is welcome.
+    if (r.state === "unfinished" && t - this.theirSpeechAt >= turngate.TURN_GATE_QUIET_MS) { this.gateLog({ ...r, state: "open", why: "long quiet" }); return false; }
+    let mark = from?.mark;
+    if (mark === undefined) {
+      // Where the voice's words stood when this run began, so a drop takes back only this run's words.
+      const last = this.turns.findLast(x => x.who === "reason" && !x.seeded) ?? null;
+      mark = last ? { turn: last, len: last.text.length } : null;
+    }
+    if (r.state === "finished" || r.state === "open") {
+      if (r.state === "finished") { this.gateMisses = 0; this.answerWatch(t, r.seq, mark); }
+      this.gateLog(r);
+      return false;
+    }
+    if (from) { this.over = null; if (this.overTimer) { this.timers.clearTimeout(this.overTimer); this.overTimer = null; } }
+    const g = this.tg = { since, waitFrom: t, frames: [], lastAt: from?.lastAt ?? t, mark, timer: null, mode: "wait", speechMs: 0, quietMs: 0 };
+    for (const f of frames) { g.frames.push(f); this.gateCount(g, g.lastAt, f); }
+    if (r.state === "unfinished") { this.gateMisses = 0; g.mode = "ack"; g.r = r; this.gateAck(); return true; }
+    g.timer = this.timers.setTimeout(() => this.gateCheck(), OVER_TICK_MS);
+    return true;
+  }
+
+  /** A verdict has arrived (`decision.event`). */
+  gateDecision(e) {
+    const t = this.now();
+    const v = this.turnGate.decided(e, t);
+    if (!v) return;
+    if (this.turnGate.mode === "line") return this.gateAsked(v, t);
+    if (this.tg?.mode === "wait") this.gateCheck();
+    else if (this.tg) this.gateAck();
+  }
+
+  /**
+   * A run waiting for a verdict: played the moment their latest words are judged finished (or the
+   * decision failed), handed to `gateAck` the moment they are judged mid-thought, and played exactly
+   * as it would have been when the budget runs out with no verdict (fail open).
+   */
+  gateCheck() {
+    const g = this.tg;
+    if (!g || this.done || g.mode !== "wait") return;
+    if (g.timer) { this.timers.clearTimeout(g.timer); g.timer = null; }
+    const t = this.now();
+    const r = this.gateRead(t);
+    if (r.state === "unfinished") { this.gateMisses = 0; g.mode = "ack"; g.r = r; return this.gateAck(); }
+    if (r.state === "wait" && t - g.waitFrom < this.turnGate.budgetMs) {
+      g.timer = this.timers.setTimeout(() => this.gateCheck(), OVER_TICK_MS);
+      return;
+    }
+    if (r.state === "wait") this.gateMisses++; else this.gateMisses = 0;
+    if (r.state === "finished") this.answerWatch(t, r.seq, g.mark);
+    this.gateLog(r.state === "wait" ? { ...r, state: "none" } : r, { waited: t - g.waitFrom });
+    this.gatePlay();
+  }
+
+  /**
+   * A run of the voice's into a mid-thought pause. Short (ACK_MAX_SPEECH_MS of speech at most, a few
+   * words, no question) it is an acknowledgement: played once they have been quiet ACK_PAUSE_MS — a
+   * real pause, not a breath — if one is due (`ackAllowed`) and it is not the last one again; never
+   * if they have carried on. Longer, it is a reply to half a thought (`gateReplyHeld`).
+   */
+  gateAck() {
+    const g = this.tg;
+    if (!g || this.done || g.mode !== "ack") return;
+    if (g.timer) { this.timers.clearTimeout(g.timer); g.timer = null; }
+    const t = this.now();
+    // The call began ending while this was held: it is the goodbye (or part of it), and a goodbye is said.
+    if (this.ending) { this.gateLog({ ...g.r, state: "open", why: "ending" }, { waited: t - g.waitFrom }); return this.gatePlay(); }
+    // A reply, not an acknowledgement: too much speech, or — sooner — its own words say so (more than a few, or a question).
+    const long = g.speechMs > turngate.ACK_MAX_SPEECH_MS || !turngate.looksLikeAck(this.gateWords(g));
+    // They have carried on: none of it is heard.
+    if (this.theirSpeechAt > g.waitFrom) return long ? this.gateReplyHeld(g, t, "they carried on") : this.gateAckDrop(g, t, "they carried on");
+    const r = this.gateRead(t);
+    // Newer words of theirs, judged finished meanwhile (or nothing to go on): it is a reply after all.
+    if (r.state === "finished" || r.state === "open") {
+      if (r.state === "finished") this.answerWatch(t, r.seq, g.mark);
+      this.gateLog(r, { waited: t - g.waitFrom });
+      return this.gatePlay();
+    }
+    if (long) return this.gateReplyHeld(g, t, "mid-thought");
+    // The one code asked for a moment ago: known to be an acknowledgement, so it is not kept waiting to be sure.
+    if (this.ackPromptedFor === this.theirSpeechAt && g.since - this.ackPromptedAt >= 250 && t - this.theirSpeechAt >= turngate.ACK_PAUSE_MS) return this.gateAckPlay(g, t, this.gateWords(g), { live: true });
+    const again = () => { g.timer = this.timers.setTimeout(() => this.gateAck(), OVER_TICK_MS); };
+    // Still coming: an acknowledgement is whole before it is played (never the first second of a reply).
+    if (g.quietMs < turngate.ACK_END_QUIET_MS && t - g.lastAt < turngate.ACK_WAIT_MS) return again();
+    const words = this.gateWords(g);
+    const why = !this.ackAllowed() ? "not due" : turngate.sameAck(words, this.lastAck) ? "same as the last" : !turngate.looksLikeAck(words) ? "not an acknowledgement" : "";
+    if (why) return this.gateAckDrop(g, t, why);
+    if (t - this.theirSpeechAt < turngate.ACK_PAUSE_MS) return again();
+    this.gateAckPlay(g, t, words);
+  }
+
+  /** Now and then, like a listener: they have talked a while since Reason last spoke, and since the last acknowledgement. */
+  ackAllowed() {
+    return !this.ending && this.talkSinceVoice >= turngate.ACK_FIRST_TALK_MS && this.talkSinceAck >= turngate.ACK_EVERY_TALK_MS;
+  }
+
+  /** The words of a held run so far (its transcript, which may trail its audio). */
+  gateWords(g) {
+    const last = this.turns.findLast(x => x.who === "reason" && !x.seeded);
+    if (!last) return "";
+    if (g.mark?.turn === last) return last.text.slice(g.mark.len).trim();
+    return (last.from ?? last.at) >= g.since - 1500 ? last.text.trim() : "";
+  }
+
+  /** The acknowledgement goes out, in the pause. If they speak while it plays it is cut (`ackHeard`). */
+  gateAckPlay(g, t, words, { live = false } = {}) {
+    this.tg = null;
+    this.lastAck = words || this.lastAck;
+    this.acks++;
+    this.talkSinceAck = 0;
+    const prompted = this.ackPromptedFor === this.theirSpeechAt;
+    this.overFlushing = true;
+    this.ackFlushing = true;
+    try { for (const f of g.frames) this.audioOut(f); } finally { this.overFlushing = false; this.ackFlushing = false; }
+    // Played as it comes (`live`): the rest of it follows through `ackMore`, to ACK_MAX_SPEECH_MS of speech at most.
+    this.ackPlay = { until: this.playheadAt, loud: 0, ...(live ? { live: true, speechMs: g.speechMs, lastAt: g.lastAt } : {}) };
+    this.gateLog(g.r, { waited: t - g.waitFrom, ack: "played", pause: t - this.theirSpeechAt, speech: g.speechMs, prompted });
+  }
+
+  /**
+   * More of an acknowledgement that is playing as it comes. Returns true when the frame is not to be
+   * played: it has run past what an acknowledgement is, so what is left is cut and the rest dropped.
+   */
+  ackMore(t, b64) {
+    const a = this.ackPlay;
+    const speech = hasSpeech(b64);
+    if (speech && t - a.lastAt > VOICE_RUN_GAP_MS) { a.live = false; return false; } // a new run: judged on its own
+    if (speech) { a.speechMs += Buffer.from(b64, "base64").length / 8; a.lastAt = t; }
+    if (a.speechMs <= turngate.ACK_MAX_SPEECH_MS) {
+      this.ackFlushing = true;
+      this.overFlushing = true;
+      try { this.audioOut(b64); } finally { this.ackFlushing = false; this.overFlushing = false; }
+      a.until = this.playheadAt;
+      return true;
+    }
+    this.ackPlay = null;
+    this.clearPlayback("ack_too_long");
+    this.over = { dropped: true, lastAt: t, frames: [] };
+    this.log({ gptlive_turn_gate_ack_cut: this.call.id, why: "too long" });
+    return true;
+  }
+
+  /** An acknowledgement nobody hears (not due, the same one again, or they carried on): dropped without a word about it. */
+  gateAckDrop(g, t, why) {
+    this.tg = null;
+    this.gateTakeBack(g);
+    // The rest of the run, if any is still coming, goes the same way.
+    this.over = { dropped: true, lastAt: g.lastAt, frames: [] };
+    this.gateLog(g.r, { waited: t - g.waitFrom, dropped: true, ack: why, speech: g.speechMs });
+  }
+
+  /** A held run's words were never said: off the transcript. */
+  gateTakeBack(g) {
+    const last = this.turns.findLast(x => x.who === "reason" && !x.seeded);
+    if (!last) return;
+    if (g.mark?.turn === last) last.text = last.text.slice(0, g.mark.len);
+    else if ((last.from ?? last.at) >= g.since - 1500) this.turns.splice(this.turns.lastIndexOf(last), 1);
+  }
+
+  /**
+   * A full reply into a mid-thought pause: not played, its words off the record, and the voice told —
+   * with the short acknowledgement to say instead when one is due. A second reply to the same words is
+   * not held (if the verdict was wrong, they are waiting). When they have carried on over it, it is the
+   * ordinary talk-over drop.
+   */
+  gateReplyHeld(g, t, why) {
+    if (why === "mid-thought" && g.r.heldOnce) {
+      this.gateLog({ ...g.r, state: "open", why: "held once" }, { waited: t - g.waitFrom });
+      return this.gatePlay();
+    }
+    this.tg = null;
+    const gate = why === "mid-thought";
+    const ackWord = gate && this.ackAllowed() ? turngate.nextAckWord(this.acks, this.lastAck) : "";
+    if (gate) this.turnGate.dropped(g.r.seq);
+    if (ackWord) { this.ackPromptedFor = this.theirSpeechAt; this.ackPromptedAt = t; }
+    this.gateLog(g.r, { waited: t - g.waitFrom, dropped: true, speech: g.speechMs, ...(ackWord ? { prompted: true } : {}) });
+    // The talk-over drop does the rest: the rest of the run dropped as it arrives, the words taken back.
+    this.over = { since: g.since, frames: [], lastAt: g.lastAt, mark: g.mark, first: false, gate, ackWord };
+    this.overDrop(why);
+  }
+
+  /** The held run goes out now, whole, as a reply — or, if they have started again meanwhile, to the talk-over hold. */
+  gatePlay() {
+    const g = this.tg;
+    this.tg = null;
+    if (g.timer) this.timers.clearTimeout(g.timer);
+    const t = this.now();
+    if (t - this.theirSpeechAt < TALKOVER_QUIET_MS && !this.ending) {
+      this.over = { since: g.since, frames: g.frames, lastAt: g.lastAt, wait: TALKOVER_QUIET_MS, first: false, mark: g.mark, long: false, gated: true };
+      this.overTimer = this.timers.setTimeout(() => this.overCheck(), OVER_TICK_MS);
+      return;
+    }
+    this.noteRun(t, true);
+    this.overFlushing = true;
+    try { for (const f of g.frames) this.audioOut(f); } finally { this.overFlushing = false; }
+  }
+
+  /** The guard cleared everything unplayed: a run the gate holds goes with it. */
+  gateDiscard() {
+    const g = this.tg;
+    if (!g) return;
+    this.tg = null;
+    if (g.timer) this.timers.clearTimeout(g.timer);
+    this.over = { dropped: true, discarded: true, lastAt: this.now(), frames: [] };
+  }
+
+  /** Their side while an acknowledgement plays: two frames of speech and it is cut, at once, and never said again. */
+  ackHeard(t, speech) {
+    const a = this.ackPlay;
+    if (t >= a.until + (a.live ? turngate.ACK_WAIT_MS : 0)) { this.ackPlay = null; return; }
+    a.loud = speech ? a.loud + 1 : 0;
+    if (a.loud < 2) return;
+    this.ackPlay = null;
+    const left = Math.round(a.until - t);
+    this.clearPlayback("ack_cut");
+    // Whatever is still coming of it is not played either, and it is never said again.
+    this.over = { dropped: true, lastAt: t, frames: [] };
+    this.log({ gptlive_turn_gate_ack_cut: this.call.id, left_ms: left });
+  }
+
+  /**
+   * Every frame of theirs on their own call. A mid-thought pause with no sign from the voice by
+   * ACK_PROMPT_AFTER_MS: it is asked for one, when one is due. And a pause that has run to
+   * TURN_GATE_QUIET_MS with no reply: a few words are welcome now (never dead air for good).
+   */
+  ackTick(t) {
+    if (this.tg || (this.over && !this.over.dropped) || this.ackPlay || this.done) return;
+    const pause = t - this.theirSpeechAt;
+    if (pause < turngate.ACK_PROMPT_AFTER_MS || !Number.isFinite(pause)) return;
+    const asked = this.ackPromptedFor === this.theirSpeechAt;
+    const nudged = this.quietNudgedFor === this.theirSpeechAt;
+    if ((asked || pause >= turngate.ACK_PROMPT_BEFORE_MS) && (nudged || pause < turngate.TURN_GATE_QUIET_MS)) return;
+    // The voice is saying, or has just said, something of its own: nothing to add.
+    if (this.queuedMs() > 0 || t - (this.voiceSpeechAt ?? -Infinity) < turngate.ACK_PROMPT_AFTER_MS || this.lastReplyAt > this.theirSpeechAt) return;
+    if (!this.gateApplies(t) || this.gateRead(t).state !== "unfinished") return;
+    if (pause >= turngate.TURN_GATE_QUIET_MS) {
+      // A reply the gate held is followed up by its own nudge (`gateNudge`).
+      if (nudged || this.overNudgeTimer) return;
+      this.quietNudgedFor = this.theirSpeechAt;
+      this.gateOpenUntil = t + 4000;
+      this.live.send({ type: "session.commentary.append", event_id: `turnquiet_${this.call.id}_${Math.round(t)}`, delegation_id: null, content: turngate.TURN_GATE_QUIET_NUDGE });
+      this.log({ gptlive_turn_gate_nudged: this.call.id, why: "quiet", ms: Math.round(pause) });
+      return;
+    }
+    if (asked || !this.ackAllowed()) return;
+    this.ackPromptedFor = this.theirSpeechAt;
+    this.ackPromptedAt = t;
+    this.live.send({ type: "session.instructions.append", event_id: `ack_${this.call.id}_${Math.round(t)}`, delegation_id: null, content: turngate.ackPromptNote(turngate.nextAckWord(this.acks, this.lastAck)) });
+    this.log({ gptlive_turn_gate_ack_asked: this.call.id, pause_ms: Math.round(pause) });
+  }
+
+  /**
+   * A reply to a finished thought has gone out. If all it turns out to say is "go on" (a continuer and
+   * nothing else), that is not an answer: the voice is told so, once, and to answer.
+   */
+  answerWatch(t, seq, mark) {
+    if (this.answerNudged === seq) return;
+    if (this.answerTimer) this.timers.clearTimeout(this.answerTimer);
+    const w = { from: t, seq, mark, since: t, tries: 0 };
+    this.answerTimer = this.timers.setTimeout(() => this.answerCheck(w), 1300);
+  }
+
+  answerCheck(w) {
+    this.answerTimer = null;
+    if (this.done || this.ending || this.pending.size || !this.turnGate) return;
+    const t = this.now();
+    // They have spoken since: a new turn of theirs, judged on its own.
+    if (this.theirSpeechAt > w.from) return;
+    const words = this.gateWords(w);
+    const again = () => { if (w.tries++ < 4) this.answerTimer = this.timers.setTimeout(() => this.answerCheck(w), 400); };
+    // The transcript trails the audio, and the voice may still be going.
+    if (!words || t - (this.voiceSpeechAt ?? -Infinity) < 400) return again();
+    if (!turngate.CONTINUER.test(words)) return;
+    this.answerNudged = w.seq;
+    this.gateOpenUntil = t + 4000;
+    this.live.send({ type: "session.commentary.append", event_id: `answer_${this.call.id}_${w.seq}`, delegation_id: null, content: turngate.ANSWER_NUDGE });
+    this.log({ gptlive_turn_gate_nudged: this.call.id, why: "go on to a finished thought", ms: Math.round(t - w.from) });
+  }
+
+  /**
+   * After a reply held back mid-thought, with no real reply since: once newer words of theirs are a
+   * finished thought and they have stopped, the voice is asked to answer; or, when they have simply
+   * gone quiet for TURN_GATE_QUIET_MS, told a few words are welcome now. Never dead air for good.
+   */
+  gateNudge(droppedAt) {
+    const t = this.now();
+    const again = () => { if (t - droppedAt < OVER_NUDGE_GIVE_UP_MS) this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(droppedAt), OVER_TICK_MS * 5); };
+    if ((this.over && !this.over.dropped) || this.tg || !this.turnGate) return again();
+    const quiet = t - this.theirSpeechAt;
+    const finished = this.gateRead(t).state === "finished" && quiet >= OVER_NUDGE_QUIET_MS;
+    // A noisy line never reads as quiet: no words of theirs for that long (plus the transcript's lag) counts too.
+    const wordless = t - Math.max(this.lastCallerAt, droppedAt) >= turngate.TURN_GATE_QUIET_MS + TALKOVER_NOISE_MS;
+    if (!finished && quiet < turngate.TURN_GATE_QUIET_MS && !wordless) return again();
+    // What it says next was asked for: not held a second time.
+    this.gateOpenUntil = t + 4000;
+    this.quietNudgedFor = this.theirSpeechAt;
+    this.live.send({ type: "session.commentary.append", event_id: `turnnudge_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: finished ? OVER_NUDGE : turngate.TURN_GATE_QUIET_NUDGE });
+    this.log({ gptlive_turn_gate_nudged: this.call.id, why: finished ? "finished" : "quiet", ms: t - droppedAt });
+  }
+
+  /** A business call: they asked whether this is a machine, or who is calling — the truth, at once. */
+  gateAsked(v, t) {
+    if (!this.talking || this.done || this.ending || (v.asks !== "asks_ai" && v.asks !== "asks_who")) return;
+    // One answer per question: the same question's later pieces are not a second one.
+    if (t - this.askedAt < turngate.ASKED_AGAIN_MS) return;
+    this.askedAt = t;
+    this.askedN = (this.askedN ?? 0) + 1;
+    this.live.send({ type: "session.instructions.append", event_id: `asked_${this.call.id}_${this.askedN}`, delegation_id: null, content: turngate.honestAnswerNote(v.asks, this.who?.named ? this.who.name : "") });
+    this.log({ gptlive_turn_gate_asked: this.call.id, asks: v.asks, decision_ms: Math.round(v.latencyMs) });
+  }
+
+  /**
+   * One line per gated run of the voice's, and never a word of the call: the verdict (finished /
+   * unfinished / none = no verdict inside the budget / open = nothing to go on), how long the decision
+   * took from the transcript piece it was about, how long that piece trailed their voice, how long
+   * before the voice's first audio the verdict was in (`lead_ms`), how long the audio waited, whether
+   * it was dropped, and for an acknowledgement what became of it (`ack`: played, or why not), how far
+   * into their pause it began (`pause_ms`) and whether code asked for it.
+   */
+  gateLog(r, { waited = 0, dropped = false, observe = false, ack = "", pause = null, speech = null, prompted = false } = {}) {
+    this.log({
+      gptlive_turn_gate: this.call.id, verdict: r.state, ...(r.why ? { why: r.why } : {}),
+      decision_ms: r.decisionMs ?? null, transcript_ms: r.transcriptMs ?? null, lead_ms: r.leadMs ?? null,
+      waited_ms: Math.round(waited), dropped, ...(r.p != null ? { p: Math.round(r.p * 100) / 100 } : {}),
+      ...(ack ? { ack } : {}), ...(pause != null ? { pause_ms: Math.round(pause) } : {}), ...(speech != null ? { speech_ms: Math.round(speech) } : {}),
+      ...(prompted ? { prompted: true } : {}),
+      ...(r.matched === false ? { matched: false } : {}), ...(observe ? { observe: true } : {}),
+    });
   }
 
   /** No more audio came for a held sound: it was short (dropped) unless it already ran long. */
@@ -3174,11 +3824,10 @@ export class GptLiveCall {
     this.noticeTimer = null;
     if (this.done) return;
     const mine = this.turns.filter(x => x.who === "reason").map(x => x.text).join(" ");
-    const said = /\brecord/i.test(mine) && (!this.notice?.disclose || /\bAI\b/i.test(mine));
+    const said = /\brecord/i.test(mine);
     this.log({ gptlive_notice: this.call.id, said, state: this.notice?.state ?? "" });
-    if (!said) this.live.send({ type: "session.instructions.append", event_id: `notice_${this.call.id}`, delegation_id: null, content: this.notice?.disclose
-      ? `You have not yet told them who is calling and that the call may be recorded, and you must: in your next reply, say lightly "${manner.disclosureLine(this.who?.named ? this.who.name : "")}", then carry on.`
-      : "You have not yet told them this call is recorded, and you must: in your next reply, say lightly \"just so you know, this call's recorded\"." });
+    if (!said) this.live.send({ type: "session.instructions.append", event_id: `notice_${this.call.id}`, delegation_id: null,
+      content: "You have not yet told them this call may be recorded, and you must: in your next reply, say lightly \"just so you know, this call may be recorded\", then carry on." });
   }
 
   /**
@@ -3616,6 +4265,11 @@ export class GptLiveCall {
     if (this.byeReader) { const r = this.byeReader; this.byeReader = null; void r.ready.then(w => w?.cancel()); }
     for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer", "openTimer", "noticeTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     if (this.pickup?.pumpTimer) this.timers.clearTimeout(this.pickup.pumpTimer);
+    // The turn gate's own: a run it holds is never played into a call that has ended.
+    if (this.tg?.timer) this.timers.clearTimeout(this.tg.timer);
+    this.tg = null;
+    this.ackPlay = null;
+    for (const k of ["answerTimer", "overTimer", "overNudgeTimer"]) if (this[k]) { this.timers.clearTimeout(this[k]); this[k] = null; }
     // Reason's turn wrote the voicemail down as left when it wrote the words; if the line went before
     // a word of it played (held for the beep, or never started), nothing was left (hold.noteVoicemail).
     if (this.line && (this.heldVoicemail || (this.voicemailGate && !this.voicemailGate.heard))) {
@@ -3655,6 +4309,7 @@ export class GptLiveCall {
       // A caller with no account is told the call is recorded, so it is (2026-10-31): onto their
       // stranger row, under the same retention as their words (src/strangercalls.js).
       if (this.persona && !this.persona.recordingPath) recordingWhy = "a caller with no account and no row to keep it on";
+      else if (!this.recorded) recordingWhy = manner.NOT_RECORDED_WHY;
       else if (this.tape.seconds() >= 1) {
         const path = this.persona ? this.persona.recordingPath : recordingFileFor(this.call.id, "wav");
         // Sealed for its owner (REASON_ENCRYPT_REST2): the account, or the stranger's own key.
@@ -3674,6 +4329,8 @@ export class GptLiveCall {
       cutOff,
       costRaw: JSON.stringify({ voice_seconds: seconds, cents_per_minute: CENTS_PER_MINUTE, session: this.sessionId ?? "", guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted }),
       recording, recordingWhy,
+      // Not a lost recording: none was made (`fileRecording` in src/tools.js files it as not applicable).
+      ...(this.recorded ? {} : { notRecorded: true }),
       ...(this.line ? { howItWent: this.howItWent(seconds) } : {}),
     };
     // Pickup → first word they heard, on the row for /ops (src/ops.js `pickupCheck`).
@@ -3708,7 +4365,7 @@ export async function reasonTurn({ call, messages, log = () => {}, extras = {}, 
 export const GOAL_WAIT_MS = 30_000;
 
 /** The settle path every finished call takes (the steps in ./postcall.js). */
-export async function settleGptLive({ row, live, settle, runtime = null, log = () => {} }) {
+export async function settleGptLive({ row, live, settle, runtime = null, log = () => {}, carryAsk = null }) {
   const fresh = db.getCall(row.conversation_id, row.id) ?? row;
   if (!["placing", "ringing", "in_progress"].includes(fresh.state) && fresh.recording_state !== "pending") return fresh;
   const settled = settle ? await settle(fresh.conversation_id, fresh, live, { log }) : fresh;
@@ -3720,13 +4377,18 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   fromcall.onCallEnded(settled, { log });
   // How the call went is the model's read (./goalmet.js, started by the settle): waited for, briefly,
   // so the owner is told what really happened — a mailbox that isn't set up is one text of its own.
-  const judging = goalPending(settled.id);
-  if (judging) {
+  // Their own call is read for what it carries over (./carryover.js) in the same wait: the turn after
+  // the call is handed what Reason said it would do, and the next call starts with it.
+  const reads = [goalPending(settled.id), carryover.settleCarry(settled, { log, ...(carryAsk ? { ask: carryAsk } : {}) })].filter(Boolean);
+  if (reads.length) {
     let wait;
-    try { await Promise.race([judging, new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
+    try { await Promise.race([Promise.allSettled(reads), new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
     finally { clearTimeout(wait); }
   }
   const read = db.getCall(settled.conversation_id, settled.id) ?? settled;
+  // A call they asked for at a time that turned out to be an answering machine (that is only known
+  // now): the phone rings once more, or — it was the second ring — the one text goes (./carryover.js).
+  carryover.afterScheduledCall(read, { log });
   const told = await tellTheOwner({ row: read, live, runtime, log });
   db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
   log({ post_call: settled.id, provider: PROVIDER, state: settled.state, recording: settled.recording_state, turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null });
@@ -3797,6 +4459,8 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
   // Where they usually are (./callmemory.js) is read while it rings too, for the voice's brief and
   // Claude's turn alike — whatever backend the turns run on.
   if (row?.id && Number(row.is_owner) === 1) void prepareCallMemory(row, { log: log ?? (() => {}) }).catch(() => {});
+  // Their calendar for today and the next day (./carryover.js), read while it rings too.
+  if (row?.id && Number(row.is_owner) === 1) void carryover.prepareCarry(row, { log: log ?? (() => {}) });
   if (!config.callCacheWarm || !row?.id) return null;
   try {
     return Promise.resolve(warm({ call: row, log: log ?? (() => {}) })).catch(() => null);
@@ -3809,6 +4473,16 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
  * the voice, which answers "where am I / my week" itself, has what Claude's turn has (cold review, call 80).
  */
 onScheduleRead((row) => lateWhereabouts(row));
+// Their calendar arrived after the voice's session was set up: handed over the same way.
+carryover.onCalendarRead((row) => lateCalendar(row));
+export function lateCalendar(row) {
+  const live = running.get(row?.id);
+  if (!live || live.done || !live.who?.owner) return false;
+  const note = carryover.calendarNote(row);
+  if (!note || String(live.who.brief ?? "").includes(note) || live.calendarTold === note) return false;
+  live.calendarTold = note;
+  return tellLive(row.id, note);
+}
 export function lateWhereabouts(row) {
   const live = running.get(row?.id);
   if (!live || live.done || !live.who?.owner) return false;
@@ -3829,17 +4503,15 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   if (!row?.webhook_token) return { ok: false, error: "there is no call row to place" };
   const thirdParty = args?.kind !== "owner";
   if (thirdParty) {
-    // The disclosure it will open with, naming Reason (the turn says it verbatim off the row).
-    const ann = lineAnnouncement(row.announcement || args.announcement);
-    if (ann && ann !== row.announcement) db.updateCall(row.conversation_id, row.id, { announcement: ann });
+    // What code says first (the turn says it verbatim off the row): nothing, or the recording notice on a recorded call.
+    const ann = lineAnnouncement();
+    if (ann !== String(row.announcement ?? "")) { db.updateCall(row.conversation_id, row.id, { announcement: ann }); row.announcement = ann; }
   }
   // The pickup opener, made while it rings (./opener.js): never waited on here.
   if (thirdParty && opener.openerFor(row)) {
     try {
-      // The call manner: the clip says who is calling, that it's an AI and that it may be recorded.
-      const who = manner.mannerFor(row.conversation_id) ? whoFor(row) : null;
-      const disclose = who ? manner.disclosureLine(who.named ? who.name : "") : "";
-      void opener.prepare(row, { notice: recordingNoticeFor(row.to_number).notice, disclose, log: args?.log ?? (() => {}) });
+      // The clip is "Hi there! I'm calling …" — and the recording notice in front only on a recorded call.
+      void opener.prepare(row, { disclose: lineAnnouncement(), log: args?.log ?? (() => {}) });
     } catch { /* the call opens the old way */ }
   }
   // No warm-up of the VOICE while it rings (2026-10-31): calls 54–55 with it were "confused and
@@ -3851,7 +4523,8 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   // REASON_GPTLIVE_PRERING: the voice's socket and session.start while it rings, held silent (`WarmSession` hold).
   // The dial waits for it, up to REASON_GPTLIVE_PRERING_WAIT_MS, so even an instant pickup finds it up;
   // a session that is slow or fails never stops the call (it opens the old way on the stream).
-  if (!thirdParty && preopenOn(config.gptlivePrering, row.conversation_id)) {
+  // A Cartesia trial call opens no GPT-Live session ahead of the stream (./calltrial.js).
+  if (!thirdParty && preopenOn(config.gptlivePrering, row.conversation_id) && !cartesiaTrialFor(row)) {
     const t0 = Date.now();
     const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: config.gptlivePreringWaitMs, memoryMs: config.gptlivePreringMemoryMs });
     if (w && config.gptlivePreringWaitMs > 0) {
@@ -3880,7 +4553,7 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
     ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}`,
     profile: thirdParty ? "third_party" : "owner",
     // The line opens silent and the disclosure is owed to the first person heard (#232).
-    ...(thirdParty ? { openingWaits: true } : {}),
+    ...(thirdParty ? { openingWaits: true, recorded: config.thirdPartyRecording === true, announced: lineAnnouncement() } : {}),
   };
 }
 
@@ -3918,7 +4591,7 @@ export class GptLiveCallProvider extends CallProvider {
       name: this.name,
       status: missing.length ? "not_connected" : "live",
       missing,
-      what: "be Reason itself on a real phone call, both directions, with GPT-Live as the voice on a Twilio number — recorded, with the audio afterwards",
+      what: "be Reason itself on a real phone call, both directions, with GPT-Live as the voice on a Twilio number — their own calls recorded, with the audio afterwards; calls to businesses and other people are not audio-recorded",
       records: true,
       directions: { out: !missing.length, in: !missing.length, missingIn: missing },
     };
@@ -4102,7 +4775,7 @@ function routeInbound({ params, router, log, away, openLive = openLiveSocket }) 
   // REASON_GPTLIVE_INBOUND_PREOPEN: their voice session opened and started now, held silent until the
   // stream — after every check above (blocked, stranger, cap), with exactly the session the stream would
   // open (same instructions, brief and greeting), so nothing is known or said earlier than before.
-  if (preopenOn(config.gptliveInboundPreopen, who.conversationId)) {
+  if (preopenOn(config.gptliveInboundPreopen, who.conversationId) && !cartesiaTrialFor(row)) {
     const { w, wait } = preopen(row, { log, openLive, waitMs: config.gptliveInboundWaitMs, memoryMs: config.gptlivePreringMemoryMs, greeting: openingLineFor({ person: accounts.ownerOf(who.conversationId), conversationId: who.conversationId }) });
     // REASON_GPTLIVE_INBOUND_WAIT_MS: the TwiML (the answer) waits for it, far inside Twilio's 15 s webhook timeout.
     if (w && config.gptliveInboundWaitMs > 0) return { ...twiml(streamTwiml(row)), preopen: wait };
@@ -4139,13 +4812,12 @@ export async function inboundTwimlReady(opts) {
  */
 function ringBackRow({ who, address, callSid, log }) {
   const about = who.aboutCall;
-  const person = accounts.ownerOf(who.conversationId);
   const row = db.createCall(who.conversationId, {
     provider: PROVIDER, toNumber: address, isOwner: false,
     goal: `They are ringing back about: ${about.goal}`,
     facts: Array.isArray(about.facts) ? about.facts : [],
     direction: "in", externalId: `${EXT}${callSid || randomUUID()}`, state: "in_progress",
-    announcement: lineAnnouncement(announcementFor({ ownerName: person.name })),
+    announcement: lineAnnouncement(),
   });
   db.updateCall(who.conversationId, row.id, { brief: about.brief || "{}", errand_id: about.errand_id ?? null, hold_budget_s: about.hold_budget_s ?? null });
   accounts.countUse(who.conversationId, "call");
@@ -4196,7 +4868,7 @@ export function toldNote({ goal = "", facts = [] } = {}) {
  * Twilio's media stream for one call, upgraded. The token in the path is the call row's own; anything
  * else is closed at once.
  */
-export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket, generate = null, twilioApi = null }) {
+export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket, generate = null, twilioApi = null, openCartesia = null, cartesiaOpts = null }) {
   const stranger = rowless.get(token);
   if (stranger) {
     rowless.delete(token);
@@ -4217,18 +4889,51 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
     return null;
   }
   db.updateCall(row.conversation_id, row.id, { state: "in_progress" });
-  const call = new GptLiveCall({
-    call: db.getCall(row.conversation_id, row.id) ?? row, twilio: socket, openLive, log, warm: takeWarm(row.id), twilioApi,
-    brain: (messages, hooks = {}) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {}, onTool: hooks.onTool, onContent: hooks.onContent }),
-    warmTurn: (r) => warmTheTurn(r, log),
-    finish: async (live) => {
-      try { await settleGptLive({ row, live, settle, runtime, log }); } finally { streams.delete(row.id); }
-    },
-  });
-  streams.set(row.id, call);
-  const early = amdEarly.get(row.id);
-  if (early) { amdEarly.delete(row.id); call.amd(early); }
-  return call;
+  const brain = (messages, hooks = {}) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {}, onTool: hooks.onTool, onContent: hooks.onContent });
+  const finish = async (live) => {
+    try { await settleGptLive({ row, live, settle, runtime, log }); } finally { streams.delete(row.id); }
+  };
+  const gptLive = (twilio, warmed) => {
+    const call = new GptLiveCall({
+      call: db.getCall(row.conversation_id, row.id) ?? row, twilio, openLive, log, warm: warmed, twilioApi, brain,
+      warmTurn: (r) => warmTheTurn(r, log),
+      finish,
+    });
+    streams.set(row.id, call);
+    const early = amdEarly.get(row.id);
+    if (early) { amdEarly.delete(row.id); call.amd(early); }
+    return call;
+  };
+  // The Cartesia voice trial (./calltrial.js, docs/calls-cartesia.md section 5): the operator's own call,
+  // with REASON_CALL_CARTESIA=owner and his choice on, and nothing else. Its relay is imported only here.
+  // Not ready in 1.5 s, or broken before it is: this same call carries on with GPT-Live, no warm session.
+  if (cartesiaTrialFor(row)) {
+    const line = passableSocket(socket);
+    // `holder`: whichever relay has the call now (the Cartesia one, or GPT-Live after a fall-back).
+    const slot = { done: false, rejoining: null, cartesia: true, holder: null, amd: () => {} };
+    const back = (why, said = []) => {
+      const twilio = line.pass();
+      const c = gptLive(twilio, null);
+      // Fallen back mid-call: what he and the Cartesia voice said goes first in the call's turns.
+      if (said.length) c.turns.unshift(...said);
+      slot.holder = c;
+      twilio.flush();
+      return c;
+    };
+    streams.set(row.id, slot);
+    void (openCartesia ?? (() => import("./cartesia.js")))().then((m) => {
+      if (streams.get(row.id) !== slot) return;
+      const call = new m.CartesiaAgentCall({ call: db.getCall(row.conversation_id, row.id) ?? row, twilio: line.pass(), brain, finish, log, fallBack: back, ...(cartesiaOpts ?? {}) });
+      streams.set(row.id, call);
+      slot.holder = call;
+      call.begin();
+    }, (e) => {
+      log({ cartesia_fell_back: row.id, why: `not loaded: ${(e?.message ?? String(e)).split("\n")[0]}`.slice(0, 120), ms: 0 });
+      if (streams.get(row.id) === slot) back("not loaded");
+    });
+    return slot;
+  }
+  return gptLive(socket, takeWarm(row.id));
 }
 
 /** AMD verdicts that came in before the call's stream was up, by call id. */

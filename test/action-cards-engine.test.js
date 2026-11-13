@@ -68,6 +68,7 @@ beforeEach(() => {
   engine.resetEngine();
   // Under the test runner the engine refuses the real CLI (whyNot "test_runner") unless a scripted answer is set.
   engine.setCardsAsk(async () => ({ value: { cards: [], skipped: [] } }));
+  engine.setRouteDeps(ALL_ROUTES_OPEN);
   background.resetLane({ gapMs: 0 });
   db.db.exec(`DELETE FROM action_digests; DELETE FROM action_cards; DELETE FROM action_card_dismissed; DELETE FROM action_card_events;
     DELETE FROM action_card_days; DELETE FROM action_card_sources; DELETE FROM card_skip_rules; DELETE FROM treat_rules;
@@ -79,10 +80,25 @@ beforeEach(() => {
 
 // ---------------------------------------------------------------- a fake Google
 
+// Every fixture mail carries Gmail's own verdict for its sender, passing and aligned, unless a test
+// hands in another (the sender check: src/cardroutes.js senderCheck; test/action-cards-finish.test.js).
+const authPass = (From) => { const d = (/@([^>\s]+)/.exec(From)?.[1] ?? "example.com").toLowerCase(); return `mx.google.com; dkim=pass header.i=@${d} header.s=s1 header.b=abc; spf=pass (google.com: domain of bounce@${d} designates 192.0.2.1 as permitted sender) smtp.mailfrom=bounce@${d}; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=${d}`; };
 const hdr = (From, Subject, Date, extra = {}) => [{ name: "From", value: From }, { name: "Subject", value: Subject }, { name: "Date", value: Date }, { name: "To", value: "kofi@example.com" },
+  ...("Authentication-Results" in extra ? [] : [{ name: "Authentication-Results", value: authPass(From) }]),
   ...Object.entries(extra).map(([name, value]) => ({ name, value }))];
-const msg = ({ id, thread = id, from, subject, date = "Mon, 16 Nov 2026 09:00:00 -0500", snippet = "", unread = true, extra = {} }) =>
-  ({ id, threadId: thread, labelIds: unread ? ["INBOX", "UNREAD"] : ["INBOX"], snippet, payload: { headers: hdr(from, subject, date, extra) } });
+// A person for whom every route is really there (the grants, a card on file, the line, a session that
+// checks out): what these tests are about is everything AROUND the gate. The gate itself, route by
+// route, is test/action-cards-finish.test.js.
+const ALL_ROUTES_OPEN = {
+  scopes: () => ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/calendar.calendars.readonly"],
+  missingScope: () => null,
+  shop: () => ({ allowed: true, card: { paymentMethodId: "pm_1", registered: 1 }, capCents: 50_000 }),
+  storeKey: (site) => String(site).split(".")[0], checkoutPlan: () => "guest", reachedATotal: () => true,
+  callsLive: () => true, callHours: () => ({ ok: true }),
+  siteEntry: (site) => ({ site }), blocked: () => false, savedSession: () => true, liveSession: async () => ({ state: "signed_in" }),
+};
+const msg = ({ id, thread = id, from, subject, date = "Mon, 16 Nov 2026 09:00:00 -0500", snippet = "", unread = true, extra = {}, labels = [] }) =>
+  ({ id, threadId: thread, labelIds: [...(unread ? ["INBOX", "UNREAD"] : ["INBOX"]), ...labels], snippet, payload: { headers: hdr(from, subject, date, extra) } });
 const mine = (id, thread, snippet, date = "Mon, 16 Nov 2026 12:00:00 -0500") => msg({ id, thread, from: "Kofi Mensah <kofi@example.com>", subject: "Re:", date, snippet, unread: false });
 const ev = ({ id, summary, start, location = "", status = "confirmed", self = "accepted", organizer = "ana@example.com", description = "" }) => ({
   id, summary, status, description, ...(location ? { location } : {}), organizer: { email: organizer },
@@ -100,6 +116,13 @@ function fakeGoogle({ mail = [], threads = {}, events = [] } = {}) {
       calls.push(`${method} ${path}`);
       const q = String(opts.query?.q ?? "");
       if (path === "/gmail/v1/users/me/messages") {
+        const subjOf = (m) => m.payload.headers.find(h => h.name === "Subject")?.value ?? "";
+        // The account-notice pull: read or not, 30 days, Gmail's own tabs left out, its subject words.
+        if (/newer_than:30d/.test(q)) {
+          const hit = mail.filter(m => !m.labelIds.some(l => /^CATEGORY_(PROMOTIONS|SOCIAL|FORUMS)$/.test(l))
+            && /expir|suspen|on hold|action required|action needed|response required|payment failed|failed payment|unsuccessful|declined|process your payment|past due|overdue|final notice|renew|turned off|deactivated|plan ends|trial ends/i.test(subjOf(m)));
+          return { ok: true, status: 200, body: { messages: hit.slice(0, Number(opts.query?.maxResults ?? 25)).map(m => ({ id: m.id, threadId: m.threadId })) } };
+        }
         const due = /subject:\(/.test(q);
         const pick = mail.filter(m => m.labelIds.includes("UNREAD") && (!due || /invoice|bill|statement|payment|due|receipt|appointment|reminder|confirmation/i.test(m.payload.headers.find(h => h.name === "Subject")?.value ?? "")));
         return { ok: true, status: 200, body: { messages: pick.slice(0, Number(opts.query?.maxResults ?? 25)).map(m => ({ id: m.id, threadId: m.threadId })) } };
@@ -132,10 +155,14 @@ function scriptedAsk(custom = null) {
     if (custom) return custom({ prompt, asked });
     const keys = [...prompt.matchAll(/^- \[([^\]]+)\]/gm)].map(m => m[1]).filter(k => !k.startsWith("chat:") || /cancel|need to/i.test(prompt.split(`[${k}]`)[1]?.split("\n")[0] ?? ""));
     const made = keys.map((key, i) => {
-      const verb = key.startsWith("cal:") ? "PLAN" : key.startsWith("chat:") ? "CANCEL" : key.startsWith("own:flights") ? "CONFIRM" : key.startsWith("own:") ? "RENEW" : /alert|×/.test(prompt.split(`[${key}]`)[1]?.split("\n")[0] ?? "") ? "DIAGNOSE" : "REPLY";
-      return { candidate_key: key, verb, title: `${verb[0]}${verb.slice(1).toLowerCase()} your thing number ${i + 1} by Nov 20`, why_now: `It is due soon and nothing is booked yet.`,
+      const lineOf = prompt.split(`[${key}]`)[1]?.split("\n")[0] ?? "";
+      // The route by what the candidate is: an event → their calendar; a person's mail → a reply; a
+      // machine's mail, a chat line, one of Reason's own rows → the site it is done on.
+      const route = key.startsWith("cal:") ? "calendar" : key.startsWith("mail:") && !/sent by a machine/.test(lineOf.split(")")[0] ?? "") ? "email" : "site";
+      const verb = key.startsWith("cal:") ? "ACCEPT" : key.startsWith("chat:") ? "CANCEL" : key.startsWith("own:flights") ? "CONFIRM" : key.startsWith("own:") ? "RENEW" : route === "site" ? "REPLACE" : "REPLY";
+      return { candidate_key: key, route, job: `do thing number ${i + 1} through to the end`, site: route === "site" ? "thing.example" : "", phone: "", verb, title: `${verb[0]}${verb.slice(1).toLowerCase()} your thing number ${i + 1} by Nov 20`, why_now: `It is due soon and nothing is booked yet.`,
         lead: `your thing number ${i + 1} is due Nov 20`, prefill: `${verb[0]}${verb.slice(1).toLowerCase()} my thing number ${i + 1} by Nov 20`, offer: "want me to sort it?",
-        drawing: ["key", "cake", "server", "calendar", "mail", "phone", "bag", "tooth", "note"][i % 9], urgency: 5 - (i % 5), effort_saved: 3, can_do: "most" };
+        drawing: ["key", "cake", "server", "calendar", "mail", "phone", "bag", "tooth", "note"][i % 9], urgency: 5 - (i % 5), effort_saved: 3 };
     });
     return { value: { cards: made, skipped: [] }, usage: { input_tokens: 4200, output_tokens: 650 }, models: ["claude-sonnet-5-5"] };
   };
@@ -233,8 +260,21 @@ test("eval: the ten that should card reach the model and the ten that should not
 
 test("Stage 2's answer is re-validated: bad key, long title, second-person prefill, unknown drawing are dropped; the titles pass the spec's bar", async () => {
   const known = new Set(["mail:a:1", "cal:a:2@x"]);
-  const good = { candidate_key: "mail:a:1", verb: "REPLACE", title: "Replace your Anthropic key before it expires Nov 18", why_now: "It stops working next week.", lead: "your Anthropic key expires Nov 18", prefill: "Replace my Anthropic key before it expires Nov 18", drawing: "key", urgency: 4, effort_saved: 3, can_do: "most" };
+  const good = { candidate_key: "mail:a:1", route: "site", job: "make a new key in the console and retire the old one; done when the new key is saved", site: "console.anthropic.com", verb: "REPLACE", title: "Replace your Anthropic key before it expires Nov 18", why_now: "It stops working next week.", lead: "your Anthropic key expires Nov 18", prefill: "Replace my Anthropic key before it expires Nov 18", drawing: "key", urgency: 4, effort_saved: 3 };
   assert.ok(engine.validCard(good, known));
+  // The route is part of the answer: one code does not know, a verb the route cannot promise, a job handed back.
+  assert.equal(engine.validCard({ ...good, route: "magic" }, known), null, "a route that is not one");
+  assert.equal(engine.validCard({ ...good, route: undefined }, known), null, "no route at all");
+  assert.equal(engine.validCard({ ...good, route: "email" }, known), null, "REPLACE is not something a sent reply finishes");
+  assert.equal(engine.validCard({ ...good, job: "" }, known), null, "no job");
+  for (const title of ["Draft a reply to Dana about Friday", "Remind you to renew the lease Nov 30", "Look into your server going down", "Plan Mom's birthday dinner for Nov 24"]) {
+    assert.equal(engine.validCard({ ...good, title }, known), null, `"${title}" hands the job back`);
+  }
+  assert.equal(engine.validCard({ ...good, prefill: "Remind me to replace my Anthropic key" }, known), null, "a reminder is not a job done");
+  assert.ok(!engine.VERBS.includes("PLAN") && !engine.VERBS.includes("DIAGNOSE"), "nothing Reason only starts");
+  // "none": it matters and Reason cannot finish it. Only the line has to hold; it is never a card.
+  const none = engine.validCard({ candidate_key: "mail:a:1", route: "none", lead: "your Anthropic key expires Nov 18", urgency: 4, effort_saved: 2 }, known);
+  assert.equal(none.route, "none"); assert.equal(none.lead, "your Anthropic key expires Nov 18"); assert.equal(none.prefill, undefined);
   assert.equal(engine.validCard({ ...good, candidate_key: "mail:a:9" }, known), null, "a key the model made up");
   assert.equal(engine.validCard({ ...good, title: "One two three four five six seven eight nine ten eleven twelve thirteen" }, known), null, "13 words");
   assert.equal(engine.validCard({ ...good, prefill: "Replace your key" }, known), null, "second person");
@@ -324,7 +364,7 @@ test("the copy for one, two and three cards; a capped person gets the page but n
   assert.ok(cards.openCards(C).length >= 1, "the page still exists for when they ask");
 });
 
-test("the scheduler: 7:30–9:30 their clock, once a day, never two at once, the lane parked past 9:30 writes the day off, never on the API", async () => {
+test("the scheduler: 7:30–9:30 their clock, once a day, never two at once, the lane parked past the noon cutoff writes the day off, never on the API", async () => {
   db.setNoticeWindow(OTHER, { tz: "Asia/Tokyo" });
   const queued = [];
   const queue = (key, fn) => { queued.push(key); return new Promise(() => {}); }; // never settles: still running
@@ -343,16 +383,17 @@ test("the scheduler: 7:30–9:30 their clock, once a day, never two at once, the
   // Tokyo's own 7:30 (22:30 UTC the day before): queued for them on their day.
   const r = engine.sweepCards({ now: at("2026-11-17T22:30:00Z"), queue });
   assert.equal(r.queued, 1); assert.equal(queued.at(-1), `cards:${OTHER}`);
-  // The lane never ran it and 9:30 came: the day is written off as lane_unavailable, once.
+  // The lane never ran it and noon came: the day is written off as lane_unavailable, once.
   fresh();
   db.db.exec("DELETE FROM action_card_days");
   const parked = (key, fn) => new Promise(() => {});
   engine.sweepCards({ now: at("2026-11-17T12:30:00Z"), queue: parked });
   assert.equal(engine.sweepCards({ now: at("2026-11-17T14:00:00Z"), queue: parked }).queued, 0, "still waiting in the lane: not queued twice");
-  const late = engine.sweepCards({ now: at("2026-11-17T14:31:00Z"), queue: parked });
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T14:31:00Z"), queue: parked }).skipped_days, 0, "9:31: the morning is not over, nothing is written off");
+  const late = engine.sweepCards({ now: at("2026-11-17T17:01:00Z"), queue: parked });
   assert.equal(late.skipped_days, 1);
   assert.equal(engine.dayRow(C, "2026-11-17").why, "lane_unavailable");
-  assert.equal(engine.sweepCards({ now: at("2026-11-17T14:32:00Z"), queue: parked }).skipped_days, 0, "once");
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T17:02:00Z"), queue: parked }).skipped_days, 0, "once");
   // The job the lane finally runs at noon finds the row and does nothing; one that lands late with no row is "late".
   assert.equal((await engine.runMorning(C, { now: at("2026-11-17T17:00:00Z"), tz: TZ, tokensFor: noGoogle })).skipped, "already_ran");
   db.db.exec("DELETE FROM action_card_days");
@@ -363,14 +404,14 @@ test("the scheduler: 7:30–9:30 their clock, once a day, never two at once, the
   db.db.exec("DELETE FROM action_card_days");
   fresh(); queued.length = 0;
   db.setNoticeWindow(C, { start: 9, end: 22, askedAt: NOW - DAY, answeredAt: NOW - DAY });
-  assert.deepEqual(engine.runWindowFor(C), { start: 9 * 60, end: 11 * 60 });
+  assert.deepEqual(engine.runWindowFor(C), { start: 9 * 60, end: 11 * 60, until: 12 * 60 });
   assert.equal(engine.sweepCards({ now: at("2026-11-17T12:30:00Z"), queue }).queued, 0, "7:30 is inside the hours they set");
   assert.equal(engine.sweepCards({ now: at("2026-11-17T14:00:00Z"), queue }).queued, 1, "9:00 their time");
   db.setNoticeWindow(C, { start: null, end: null, askedAt: null, answeredAt: null });
   db.db.exec("DELETE FROM action_card_days");
   // The process was down through the whole window: written off as missed, once, with no job.
   fresh();
-  assert.equal(engine.sweepCards({ now: at("2026-11-17T15:00:00Z"), queue: parked }).skipped_days, 1);
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T17:05:00Z"), queue: parked }).skipped_days, 1);
   assert.equal(engine.dayRow(C, "2026-11-17").why, "missed");
   db.db.exec("DELETE FROM action_card_days");
   // The API backend: never.
@@ -499,4 +540,210 @@ test("with cards on, the sweep's own texts are limited to time-critical calendar
   const out2 = await rt.notice({ gatherWith: gatherCal, readWith: async () => ({ ok: true, status: 200, body: { status: "confirmed", start: { dateTime: soon } } }), now: later });
   assert.equal(out2.urgent_cards, 1, "a meeting inside two hours becomes an urgent single card");
   assert.equal(out2.turns, 0, "and the sweep's own turn does not text the same thing a second time");
+});
+
+// ---------------------------------------------------------------- 9. account notices, noise, catch-up, retry
+//
+// The morning of 2026-11-12: 74 candidates, one survivor, no note, with a suspended account, an
+// expiring key and a failed payment sitting in the inbox. Every notice came from a no-reply address
+// with list headers (the bulk rule), most had been opened (the unread pull), and one thing said
+// about a mailbox had made the rest of it "already seen".
+
+const NOISY = () => {
+  const list = { "List-Unsubscribe": "<mailto:u@example.com>", Precedence: "bulk" };
+  const mail = [
+    // dated, consequential account notices: all from machines, most already opened
+    msg({ id: "n1", from: "Amazon Web Services <no-reply-aws@amazon.com>", subject: "AWS Account Suspended: Response Required", snippet: "Your AWS account has been suspended. Respond to the case to restore it.", date: "Sat, 14 Nov 2026 09:00:00 -0500", unread: false, extra: list }),
+    msg({ id: "n1b", from: "Amazon Web Services <no-reply-aws@amazon.com>", subject: "Action Required: AWS Account On Hold", snippet: "We need to verify your account.", date: "Tue, 10 Nov 2026 09:00:00 -0500", unread: false, extra: list }),
+    msg({ id: "n2", from: "Anthropic <no-reply@mail.anthropic.com>", subject: "Action required: Your API key “Helper” expires in 7 days", snippet: "API key expiring soon. The key Helper expires in 7 days.", date: "Mon, 16 Nov 2026 08:00:00 -0500", unread: false }),
+    msg({ id: "n3", from: "Spotify <no-reply@spotify.com>", subject: "We can’t process your payment", snippet: "Update your payment details to keep Premium.", date: "Wed, 28 Oct 2026 08:00:00 -0400", unread: false, extra: list }),
+    msg({ id: "n4", from: "GoDaddy <renewals@e.godaddy.com>", subject: "Renewal Alert: Review your upcoming auto-renewal.", snippet: "Your domain renews on Nov 25.", date: "Sun, 15 Nov 2026 08:00:00 -0500", unread: false, extra: list }),
+    msg({ id: "n5", from: "Anthropic <no-reply@mail.anthropic.com>", subject: "$10.00 payment to Anthropic, PBC was unsuccessful", snippet: "We weren't able to charge the credit card you provided.", date: "Fri, 13 Nov 2026 08:00:00 -0500", unread: false }),
+    msg({ id: "n5b", from: "Anthropic <no-reply@mail.anthropic.com>", subject: "$25.00 payment to Anthropic, PBC was unsuccessful", snippet: "We weren't able to charge the credit card you provided.", date: "Sun, 15 Nov 2026 08:00:00 -0500", unread: false }),
+    // noise: uptime checks, job alerts, newsletters, promos in a notice's words, codes, old news
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(i => msg({ id: `h${i}`, from: "Healthchecks.io <noreply@healthchecks.io>", subject: `${i % 2 ? "DOWN" : "UP"} | backup-job-${i % 3}`, snippet: `The check backup-job-${i % 3} has gone ${i % 2 ? "down" : "up"}.`, date: `Tue, 17 Nov 2026 0${i % 8}:1${i % 10}:00 -0500`, extra: list })),
+    ...[1, 2, 3, 4, 5, 6].map(i => msg({ id: `j${i}`, from: "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>", subject: `“software engineer”: ${10 + i} new jobs`, snippet: "Apply now. Your job alert has new matches.", labels: ["CATEGORY_SOCIAL"], extra: list })),
+    msg({ id: "j7", from: "LinkedIn <messages-noreply@linkedin.com>", subject: "Your job alert expires soon, renew it", snippet: "Keep getting matches.", labels: ["CATEGORY_SOCIAL"], extra: list }),
+    msg({ id: "p1", from: "Card Club <offers@cardclub.example>", subject: "Your bonus offer expires tomorrow", snippet: "Earn 50,000 points.", extra: list }),
+    msg({ id: "p2", from: "Meal Box <hello@news.mealbox.example>", subject: "Renew your love of cooking: 20% off", snippet: "Limited time.", extra: list }),
+    msg({ id: "p3", from: "Stream Co <no-reply@streamco.example>", subject: "Last chance to renew and save", snippet: "Come back for less.", labels: ["CATEGORY_PROMOTIONS"], extra: list }),
+    msg({ id: "p4", from: "The Weekly <hello@theweekly.example>", subject: "This week: when renewals go wrong", snippet: "Our newsletter on subscriptions.", extra: list }),
+    msg({ id: "p5", from: "Chip Maker <events@chipmaker.example>", subject: "Webinar Nov 18: what is new", snippet: "Register now.", extra: list }),
+    msg({ id: "c1", from: "Bank <no-reply@bank.example>", subject: "Your verification code", snippet: "Your code is 123456. This code expires in 10 minutes." }),
+    msg({ id: "c2", from: "Dev Host <no-reply@devhost.example>", subject: "Your sign-in code expires soon", snippet: "Use 991122 to sign in." }),
+    msg({ id: "o1", from: "Anthropic <no-reply@mail.anthropic.com>", subject: "Action required: Your API key “Old” expires tomorrow", snippet: "API key expiring soon.", date: "Sat, 07 Nov 2026 08:00:00 -0500", unread: false }),
+    msg({ id: "r1", from: "Anthropic <no-reply@mail.anthropic.com>", subject: "Your receipt from Anthropic, PBC #1234", snippet: "Receipt for your payment.", unread: false }),
+  ];
+  return { mail, threads: {}, events: [] };
+};
+
+test("account notices from no-reply senders with list headers reach the model, read or not; uptime checks, job alerts, promos, codes and old news do not", async () => {
+  db.db.prepare("INSERT INTO timers (conversation_id, fire_at, note) VALUES (?, ?, ?)").run(C, NOW + 11 * DAY, "Remind Kofi to cancel Prime for Young Adults before it renews Nov 30");
+  db.db.prepare("INSERT INTO timers (conversation_id, fire_at, note) VALUES (?, ?, ?)").run(C, NOW + 10 * HOUR, "call dad");
+  const g = fakeGoogle(NOISY());
+  const bundle = await engine.gather({ conversationId: C, now: NOW, tz: TZ, read: g.read, tokensFor });
+  assert.equal(bundle.failed.length, 0);
+  const s1 = await engine.stage1(C, bundle, { now: NOW, api: g.read, accounts: [ACCT] });
+  const kept = s1.keep.map(k => k.key.split(":").at(-1));
+  const why = (id) => s1.trail.find(t => t.key.endsWith(`:${id}`))?.why ?? null;
+  // The notices: the suspended account (its older "on hold" kept too: the model folds them), the key
+  // with its date counted from the day the mail was SENT, the failed payments as one, the renewal.
+  for (const id of ["n1", "n2", "n3", "n4", "n5b"]) assert.ok(kept.includes(id), `${id} reaches the model (dropped as ${why(id)})`);
+  assert.equal(why("n5"), "repeat", "the same failed-payment notice twice is one: the newest");
+  const key = s1.keep.find(k => k.key.endsWith(":n2"));
+  assert.equal(new Date(key.due_at).toISOString().slice(0, 10), "2026-11-23", "'expires in 7 days', sent Nov 16");
+  assert.equal(key.notice, true);
+  // The deadline they set themselves, with the date in the note; a plain "call dad" timer is not a card.
+  const prime = s1.keep.find(k => k.kind === "reminder");
+  assert.ok(prime && /Prime/.test(prime.line));
+  assert.equal(new Date(prime.due_at).toISOString().slice(5, 10), "11-30");
+  assert.equal(s1.keep.filter(k => k.kind === "reminder").length, 1);
+  // The noise: none of it, each for a counted reason.
+  const noise = [...Array.from({ length: 12 }, (_, i) => `h${i + 1}`), ...Array.from({ length: 7 }, (_, i) => `j${i + 1}`), "p1", "p2", "p3", "p4", "p5", "c1", "c2", "o1", "r1"]; // r1: a receipt, opened: never even gathered
+  assert.deepEqual(noise.filter(id => kept.includes(id)), [], "no noise reaches the model");
+  assert.equal(why("o1"), "past", "a key that already expired is old news");
+  assert.equal(s1.keep.length, 7, `six notices and one reminder, got ${kept.join(",")}`);
+  // What the model is shown says which is which.
+  const prompt = engine.stage2Prompt({ candidates: s1.keep, chat: [] });
+  assert.match(prompt, /\(account notice, sent by a machine: nobody reads a reply, due 2026-11-23\) Anthropic/);
+  assert.match(prompt, /\(reminder, due 2026-11-30\)/);
+  assert.doesNotMatch(prompt, /healthchecks|linkedin|bonus|webinar|verification/i);
+  const system = engine.systemPrompt({ name: "Kofi", day: "Tuesday", tz: TZ });
+  assert.match(system, /One great catch beats five generic ones/);
+  assert.match(system, /A card is an offer to do the WHOLE job/);
+  assert.doesNotMatch(system, /start cancelling|look into a problem|set a reminder/, "the old list of things Reason only starts is gone");
+});
+
+test("isNotice: the subject decides; a promo, a code or Gmail's Promotions tab never is one", () => {
+  const yes = ["AWS Account Suspended: Response Required", "[Action needed] Your Claude API access is turned off", "We can't process your payment", "Your card ending 4242 was declined",
+    "Your subscription will be deactivated soon", "Renewal Alert: Review your upcoming auto-renewal.", "Your domain expires on Nov 25", "$6.00 payment to Acme was unsuccessful"];
+  const no = ["Your bonus offer expires tomorrow", "Last chance to renew and save", "Your verification code", "New sign-in to your account", "This week in product", "DOWN | backup-job", "12 new jobs for you", "Your order has shipped"];
+  for (const subject of yes) assert.equal(engine.isNotice({ subject }), true, subject);
+  for (const subject of no) assert.equal(engine.isNotice({ subject }), false, subject);
+  assert.equal(engine.isNotice({ subject: "Your plan expires soon", labels: ["CATEGORY_PROMOTIONS"] }), false);
+  assert.equal(engine.isNotice({ subject: "Your code expires soon", snippet: "Your login code is 1234" }), false);
+});
+
+test("already seen: one thing said about a mailbox does not make the rest of that mailbox seen (the address has an @ of its own)", () => {
+  const ins = (key, said, resolved = null, why = "") => db.db.prepare("INSERT INTO notice_seen (conversation_id, kind, key, first_seen, said_at, resolved_at, resolved_why) VALUES (?, 'mail', ?, ?, ?, ?, ?)").run(C, key, NOW - DAY, said, resolved, why);
+  ins("mail:kofi@example.com:t1@3d", NOW - HOUR);
+  assert.equal(engine.alreadySeen(C, "mail:kofi@example.com:t1"), true, "the thread that was said");
+  assert.equal(engine.alreadySeen(C, "mail:kofi@example.com:t2"), false, "another thread in the same mailbox");
+  assert.equal(engine.alreadySeen(C, "mail:kofi@example.com:t"), false, "not a prefix of it either");
+  // Handed to an open job on a word match: settled for ordinary mail, still a candidate for a notice.
+  ins("due:kofi@example.com:t3", null, NOW - HOUR, "task:7");
+  assert.equal(engine.alreadySeen(C, "mail:kofi@example.com:t3"), true);
+  assert.equal(engine.alreadySeen(C, "mail:kofi@example.com:t3", { notice: true }), false);
+});
+
+test("a missed morning is caught up once, later the same morning, and never in the afternoon; a restart does not skip it", async () => {
+  const at = (iso) => Date.parse(iso);
+  process.env.REASON_ACTION_CARDS = "owner";
+  const queued = [], logs = [];
+  const hold = (key) => { queued.push(key); return new Promise(() => {}); };
+  // The process was restarting through 7:30–9:30 and comes back at 10:45: no row, so it runs, and says why it is late.
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T15:45:00Z"), queue: hold, log: (l) => logs.push(l) }).queued, 1);
+  assert.ok(logs.some(l => l.catch_up === 1));
+  // A deploy restarts it again a minute later (memory gone, still no row): it is asked for again, not written off.
+  engine.resetEngine(); engine.setCardsAsk(async () => ({ value: { cards: [], skipped: [] } }));
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T15:46:00Z"), queue: hold }).queued, 1);
+  assert.equal(engine.dayRow(C, "2026-11-17"), null);
+  // The catch-up really runs and writes the day: once.
+  engine.resetEngine(); engine.setCardsAsk(async () => ({ value: { cards: [], skipped: [] } }));
+  const r = await engine.runMorning(C, { now: at("2026-11-17T15:47:00Z"), tz: TZ, tokensFor: noGoogle });
+  assert.equal(r.outcome, "empty");
+  assert.equal(engine.sweepCards({ now: at("2026-11-17T16:10:00Z"), queue: hold }).queued, 0, "caught up once");
+  // First up at 12:05: the morning is over. Written off as missed, nothing sent.
+  db.db.exec("DELETE FROM action_card_days");
+  engine.resetEngine(); engine.setCardsAsk(async () => ({ value: { cards: [], skipped: [] } }));
+  const late = engine.sweepCards({ now: at("2026-11-17T17:05:00Z"), queue: hold });
+  assert.equal(late.queued, 0); assert.equal(late.skipped_days, 1);
+  assert.equal(engine.dayRow(C, "2026-11-17").why, "missed");
+});
+
+test("nothing today means nothing: a run the model or a mailbox did not answer is tried again, three times at most, then written off with the reason", async () => {
+  const at = (iso) => Date.parse(iso);
+  const g = fakeGoogle(NOISY());
+  process.env.REASON_ACTION_CARDS = "owner";
+  const dead = async () => ({ error: "could not run: timed out" });
+  const t0 = at("2026-11-17T12:30:00Z");
+  const first = await engine.runMorning(C, { now: t0, tz: TZ, read: g.read, tokensFor, ask: dead });
+  assert.equal(first.outcome, "retry");
+  assert.equal(engine.ranToday(C, "2026-11-17"), false, "not the day's answer");
+  const runs = [];
+  const queue = (key, fn) => { runs.push(key); return Promise.resolve(); };
+  assert.equal(engine.sweepCards({ now: t0 + 5 * MIN, queue }).queued, 0, "inside the gap");
+  assert.equal(engine.sweepCards({ now: t0 + 11 * MIN, queue }).queued, 1, "after the gap");
+  await new Promise(r => setImmediate(r));
+  // The second try gets an answer: the note goes out, late and whole.
+  const rt = fakeRuntime();
+  const { ask } = scriptedAsk();
+  const second = await engine.runMorning(C, { now: t0 + 11 * MIN, tz: TZ, read: g.read, tokensFor, ask, runtime: rt });
+  assert.equal(second.outcome, "cards");
+  assert.equal(engine.dayRow(C, "2026-11-17").attempts, 2);
+  assert.equal(rt.sent.length, 1);
+  // Three unanswered tries: written off, and the reason is the model's, not "nothing worth a card".
+  db.db.exec("DELETE FROM action_card_days; DELETE FROM action_digests; DELETE FROM action_cards; DELETE FROM action_card_sources");
+  engine.resetEngine();
+  let out;
+  for (let i = 0; i < 3; i++) out = await engine.runMorning(C, { now: t0 + i * 11 * MIN, tz: TZ, read: g.read, tokensFor, ask: dead });
+  assert.equal(out.outcome, "skipped");
+  const row = engine.dayRow(C, "2026-11-17");
+  assert.equal(row.outcome, "skipped"); assert.equal(row.attempts, 3); assert.notEqual(row.why, "nothing_worth_a_card");
+  assert.equal(engine.sweepCards({ now: t0 + 40 * MIN, queue }).queued, 0, "no fourth try");
+  // A mailbox that did not answer and nothing else to show: not an empty morning either.
+  db.db.exec("DELETE FROM action_card_days");
+  engine.resetEngine();
+  const down = async (acct, method, path, opts) => (path === "/gmail/v1/users/me/messages" ? { ok: false, status: 503 } : g.read(acct, method, path, opts));
+  const blind = await engine.runMorning(C, { now: t0, tz: TZ, read: down, tokensFor, ask: async () => ({ value: { cards: [], skipped: [] } }) });
+  assert.equal(blind.outcome, "retry"); assert.equal(blind.why, "source_failed");
+});
+
+test("a run that throws is an attempt, not a 15-second loop; a rate-limited mailbox is asked no further; a queued urgent single re-counts the day's texts", async () => {
+  const at = (iso) => Date.parse(iso);
+  process.env.REASON_ACTION_CARDS = "owner";
+  engine.setCardsAsk(async () => ({ value: { cards: [], skipped: [] } }));
+  const t0 = at("2026-11-17T12:30:00Z");
+  const now0 = clock.now;
+  let t = t0;
+  clock.now = () => t;
+  try {
+    const queue = (key, fn) => fn();
+    let ran = 0;
+    const boom = async () => { ran++; throw new Error("database is locked"); };
+    // Every sweep (15 s apart) for 45 minutes: three runs, 10 minutes apart, then the day is written off.
+    for (; t < t0 + 45 * MIN; t += 15_000) { engine.sweepCards({ now: t, queue, run: boom }); await new Promise(r => setImmediate(r)); }
+    assert.equal(ran, 3);
+    const row = engine.dayRow(C, "2026-11-17");
+    assert.equal(row.outcome, "skipped"); assert.equal(row.why, "error"); assert.equal(row.attempts, 3);
+  } finally { clock.now = now0; }
+
+  // Gmail says 429 on the first message: no further call for that account, and the morning is not "empty".
+  db.db.exec("DELETE FROM action_card_days");
+  engine.resetEngine();
+  const g = fakeGoogle(NOISY());
+  let asked = 0;
+  const limited = async (acct, method, path, opts) => {
+    if (/^\/gmail\/v1\/users\/me\/messages\/./.test(path)) { asked++; return { ok: false, status: 429 }; }
+    return g.read(acct, method, path, opts);
+  };
+  const r = await engine.runMorning(C, { now: t0, tz: TZ, read: limited, tokensFor, ask: async () => ({ value: { cards: [], skipped: [] } }) });
+  assert.equal(asked, 1, "one 429 and it stops asking");
+  assert.equal(r.outcome, "retry"); assert.equal(r.why, "source_failed");
+
+  // An urgent single queued while one text was sent, started after the morning text took the second: no third.
+  db.db.exec("DELETE FROM action_card_days");
+  engine.resetEngine();
+  const rt = fakeRuntime();
+  const { ask } = scriptedAsk();
+  const cand = { kind: "calendar_moved", key: "k:9", what: "Board call moved from 9:00 to 9:30", starts: new Date(NOW + 90 * MIN).toISOString(), account: ACCT.account, event_id: "e99" };
+  let start;
+  const later = (key, fn) => new Promise((res, rej) => { start = () => fn().then(res, rej); });
+  db.db.prepare("INSERT INTO action_card_days (conversation_id, day, run_at, outcome, urgent_sent) VALUES (?, '2026-11-17', ?, 'urgent', 1)").run(C, NOW);
+  assert.ok(engine.urgentFrom(C, [cand], { now: NOW, tz: TZ, ask, queue: later, runtime: rt }).queued);
+  db.db.prepare("UPDATE action_card_days SET texts_sent = 1 WHERE conversation_id = ? AND day = '2026-11-17'").run(C);
+  start();
+  await new Promise(res => setTimeout(res, 20));
+  assert.equal(rt.sent.length, 0);
+  assert.equal(engine.textsToday(C, "2026-11-17"), 2);
 });

@@ -34,6 +34,10 @@ for (const [i, k] of (out.ranked?.cards ?? []).entries()) {
   console.log(`  ${String(i + 1).padStart(2, "0")} ${k.verb.padEnd(9)} ${k.title}  [${k.drawing}, urgency ${k.urgency}, effort ${k.effort}, from ${k.candidate?.source ?? "?"}]`);
   console.log(`     why: ${k.whyNow}`);
   console.log(`     prefill: ${k.prefill}`);
+  console.log(`     route: ${k.routed?.route ?? "?"}${k.routed?.site ? ` @ ${k.routed.site}` : ""} · job: ${k.routed?.job ?? ""}`);
 }
+// What code's gate (src/cardroutes.js) dropped, by reason word, and what is only worth knowing.
+if (out.gate) console.log(`gate: ${out.gate.cards.length} finishable of ${out.stage2?.cards?.length ?? 0} · not finishable: ${JSON.stringify(out.gate.why)}`);
+for (const k of out.known ?? []) console.log(`  also worth knowing: ${k.line}`);
 if (out.text) console.log(`text that would go: ${out.text}`);
 process.exit(0);

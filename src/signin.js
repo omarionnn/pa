@@ -33,6 +33,8 @@ import { profileDirFor, settle as settleBrowser } from "./browser.js";
 import { SITES, site as findSite, siteFor, readSignedInState, siteNames } from "./sites.js";
 import * as cancelRoutes from "./cancel-routes.js";
 import * as airlines from "./airlines.js";
+import * as signinPage from "./signinpage.js";
+import { withoutQueries } from "./pagesecrets.js";
 
 /**
  * The registry entry for a name, from any of the three registries.
@@ -72,8 +74,12 @@ export function entryFor(name) {
  * `raw` is a domain ("notion.so") or a URL ("https://www.notion.so/login"); a bare word, an IP, a
  * port, credentials in the URL or anything but https gives null. The key is the domain without
  * "www.", so the same site is one row however it was written. A path is kept as the sign-in page;
- * without one the link opens the site's front page. Signed in is read from the front page no longer
- * asking for a sign-in — inferred, and said so, because nobody has seen this site's signed-in page.
+ * without one the entry points at the site's front page, and a caller that is about to show that
+ * page to a person finds the site's own sign-in page first (src/signinpage.js, entryOnItsPage).
+ * Signed in needs POSITIVE evidence (src/sites.js readUnknownSite): a log-out or account control, or
+ * the site's own sign-in page passing the browser straight through. Until 2026-11-12 it was read
+ * from the front page no longer saying "sign in", which a marketing page never satisfies and an
+ * app's blank shell always does. Without evidence the answer is "unknown".
  * Callers that navigate must still ask src/netguard.js publicUrl: a name that resolves to this
  * machine's own network is never opened.
  */
@@ -115,15 +121,33 @@ export function genericEntry(raw) {
     urls_verified: false,
     needs_signin: "always",
     signed_in: {
-      url: front,
+      // Asked on the sign-in page itself when one is known: a site shows its form there to anybody
+      // not signed in and sends a signed-in browser on. A marketing front page says neither.
+      url: page,
       when_in: [],
       when_out: ["log in", "sign in", "sign up", "create an account", "create account"],
       when_out_url: "/login",
     },
     commit_labels: [],
-    limits: [`${label} is not one of the sites Reason has a playbook for: nobody has seen its signed-in pages here, so "signed in" is read from its front page no longer asking for a sign-in.`],
+    limits: [`${label} is not one of the sites Reason has a playbook for: nobody has seen its signed-in pages here, so "signed in" is only said on positive evidence (a log-out or account control, or its own sign-in page passing the browser straight through). Without that the answer is "unknown".`],
     generic: true,
   };
+}
+
+/**
+ * The entry on the page the person's sign-in is really on. A site named only by its bare domain
+ * ("link.com") resolves to its front page; when an attempt for this person was on a specific sign-in
+ * page (https://app.link.com/login), that page is what every later link, window, emailed-code run
+ * and check opens. Carried here, in code, from src/signinpage.js: on 2026-11-12 it was left to the
+ * model to retype, and the link opened a marketing home page.
+ * An entry that already names a page, and any registry entry, comes back untouched.
+ */
+export function entryOnItsPage(conversationId, entry) {
+  if (!entry?.generic || !signinPage.isFrontPage(entry.signin_url)) return entry;
+  const page = signinPage.signinPageFor(conversationId, entry);
+  if (!page) return entry;
+  const there = genericEntry(page);
+  return there && there.site === entry.site ? there : entry;
 }
 
 /**
@@ -171,7 +195,8 @@ export function savedGenericSignins(conversationId) {
       checked_minutes_ago: row.checked_at ? Math.round((clock.now() - row.checked_at) / 60_000) : null,
       evidence: row.evidence || "",
       ...(live && row.provider ? { provider: row.provider } : {}),
-      ...(live ? {} : { how_to_sign_in: `signin_link with site '${e.site}', which they open on their phone` }),
+      // The page their last sign-in there was on, when one is known: never the bare name alone.
+      ...(live ? {} : { how_to_sign_in: `signin_link with site '${signinPage.signinPageFor(conversationId, e) || e.site}', which they open on their phone` }),
       by_address: true,
     });
   }
@@ -257,7 +282,7 @@ export function linkSignin() {
  * browser, the visible sign-in window and the probe script. It navigates — there is no way to ask
  * a site whether a cookie is still good without asking it.
  */
-export async function probeSignedIn(page, siteName, { entry: given = null } = {}) {
+export async function probeSignedIn(page, siteName, { entry: given = null, waitMs = null } = {}) {
   // `given` is the registry entry already in hand, for the one caller that has one: the cancel rail
   // resolves a service through its own registry (which a test can stand a fixture in) and then asks
   // this to read the page. Everything else passes a name and this looks it up.
@@ -280,24 +305,74 @@ export async function probeSignedIn(page, siteName, { entry: given = null } = {}
     status = null;
     let error = null;
     let text = "";
+    let acct = "", form = false;
     landed = entry.signed_in.url;
     try {
       const res = await page.goto(entry.signed_in.url, { waitUntil: "domcontentloaded" });
       status = res?.status() ?? null;
       await page.waitForTimeout(1500);
-      text = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+      if (entry.generic) {
+        // A site with no playbook: the page is read for POSITIVE evidence (its shape, a log-out or
+        // account control), and given the same bounded time to draw itself a sign-in form gets
+        // (src/signinpage.js) — a page still blank at 1.5 s is not "no sign-in prompt".
+        // A page the site itself answered with an error is not waited on: nothing is read off it.
+        const seen = await readUnknownSitePage(page, entry, { waitMs: status && status >= 400 ? 0 : waitMs ?? Math.max(0, signinPage.formWaitMs() - 1500) });
+        text = seen.text; acct = seen.acct; form = seen.form;
+      } else {
+        text = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+      }
       landed = page.url();
     } catch (e) {
       error = (e?.message ?? String(e)).split("\n")[0];
     }
-    read = readSignedInState(entry, { url: landed, text, status, error });
+    read = readSignedInState(entry, { url: landed, text, status, error, acct, form });
     if (read.state !== "unknown") break;
+    // A page that loaded and simply proves nothing is not a failed load: asking again changes nothing.
+    if (read.no_evidence) break;
     // A load that threw can leave the tab on an error page with a navigation still in flight, so
     // it is parked before the second try. `settle` waits for its own blank page to land, so the
     // park cannot be what interrupts the retry.
     if (attempt === 0 && error) await settleBrowser(page);
   }
-  return { ok: true, site: entry.site, checked_url: entry.signed_in.url, landed, status, ...read };
+  // Only a bare name is known, and its front page proves nothing either way: the site's
+  // conventional sign-in page is asked once. A site passes a signed-in browser straight through that
+  // page to an inside one; only that POSITIVE answer is taken from a guessed address (a form there,
+  // a 404, or a bounce back to the front page leave the answer "unknown").
+  if (entry.generic && read.state === "unknown" && read.no_evidence && signinPage.isFrontPage(entry.signed_in.url)) {
+    const atLogin = genericEntry(`${entry.entry}login`);
+    if (atLogin && atLogin.site === entry.site) {
+      const second = await probeSignedIn(page, siteName, { entry: atLogin, waitMs });
+      const inside = (() => { try { return !signinPage.isFrontPage(second.landed); } catch { return false; } })();
+      if (second.ok && second.state === "signed_in" && inside) return { ...second, via_signin_page: true };
+    }
+  }
+  // Where it landed and why, without any query string: both are kept as evidence, returned to the
+  // model and written to the ledger, and a sign-in address can carry an email, a token, or (a form
+  // sent with GET) what was typed into it.
+  return { ok: true, site: entry.site, checked_url: entry.signed_in.url, landed: withoutQueries(landed), status, ...read, why: withoutQueries(read.why) };
+}
+
+/**
+ * One reading of a page on a site with no playbook, for the probe: its words, whether a sign-in form
+ * is in view, and whether the document has a log-out or account control. Waited for (bounded) until
+ * the page shows what it is: a real step, an account control, or — having left the sign-in page —
+ * something drawn. Never reads what is in a box.
+ */
+async function readUnknownSitePage(page, entry, { waitMs = 0 } = {}) {
+  let last = null;
+  // A page that has finished and stopped changing has shown all it will (src/signinpage.js settleWatch).
+  const watch = signinPage.settleWatch(page, { forMs: waitMs });
+  try {
+  await signinPage.waitFor(page, async () => {
+    last = await signinPage.readPage(page);
+    if (signinPage.isStep(last.kind) || last.raw.acct) return last;
+    let url = last.raw.url;
+    try { url = page.url() || url; } catch { /* the reading's own address stands */ }
+    const drawn = String(last.raw.text ?? "").trim().length >= 50;
+    return drawn && (signinPage.isFrontPage(entry.signed_in.url) || signinPage.leftSigninPage(url, { signin_url: entry.signed_in.url })) ? last : null;
+  }, { waitMs, stop: () => watch.settled() });
+  } finally { watch.stop(); }
+  return { text: String(last?.raw?.text ?? ""), acct: String(last?.raw?.acct ?? ""), form: last?.kind === "signin_form" };
 }
 
 /**
@@ -306,10 +381,11 @@ export async function probeSignedIn(page, siteName, { entry: given = null } = {}
  * `provider` is which button the sign-in went through (google/apple/facebook/microsoft,
  * src/socialsignin.js), when the caller knows; it reaches the row only with a signed-in reading.
  */
-export async function checkAndRecord(page, conversationId, siteName, { entry = null, provider = "" } = {}) {
-  const out = await probeSignedIn(page, siteName, { entry });
+export async function checkAndRecord(page, conversationId, siteName, { entry = null, provider = "", waitMs = null } = {}) {
+  // A site named by its bare domain is asked on the page this person's sign-in there was on.
+  const out = await probeSignedIn(page, siteName, { entry: entry ?? entryOnItsPage(conversationId, anyEntryFor(siteName)), waitMs });
   if (!out.ok) return out;
-  const row = db.recordSiteSignin(conversationId, out.site, { state: out.state, evidence: out.why, provider });
+  const row = db.recordSiteSignin(conversationId, out.site, { state: out.state, evidence: withoutQueries(out.why), provider });
   if (row?.provider && out.state === "signed_in") out.provider = row.provider;
   return out;
 }

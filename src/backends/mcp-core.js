@@ -8,7 +8,7 @@ import { tools, toolsFor, runTool, playbookExtra } from "../tools.js";
 import { crossmintWords } from "../shoptools.js";
 import { connectAllowedFor } from "../shopconnect.js";
 import { loadConversation } from "../db.js";
-import { sealTravelers } from "../privacy.js";
+import { sealCall } from "../privacy.js";
 import { CORE, dietOn, loadedFor, noteModelCall } from "../tooldiet.js";
 
 export const PROTOCOL_VERSION = "2024-11-05";
@@ -34,6 +34,10 @@ export const ALWAYS_LOAD = new Set([
   // Choice cards (src/choicecards.js), only while their switch is on: a deferred tool is a name the
   // model never thinks to search for, so a shopping turn wrote a list instead (cage, 2026-10-30).
   ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_CHOICE_CARDS ?? "").trim().toLowerCase()) ? [] : ["show_choices"]),
+  // Cues (src/cues.js), while their switch is on anywhere: hearing one happens in passing, on a turn
+  // about something else, so a deferred cue_note is never searched for (real-model run, 2026-11-11:
+  // "im flying to miami on the 20th" was answered and not noted). Shown only where REASON_CUES reaches.
+  ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_CUES ?? "").trim().toLowerCase()) ? [] : ["cue_note", "cue_offer"]),
   // Table pictures (src/tableimage.js), the same way and for the same reason.
   ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_TABLE_IMAGES ?? "").trim().toLowerCase()) ? [] : ["render_table"]),
 ]);
@@ -138,7 +142,7 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
       // the model as an MCP image block, and never into the JSON or the log: a base64 photo in a
       // terminal's scrollback is somebody's photo in plain text.
       const { image, shown } = splitImage(out);
-      onTool({ tool: name, input: sealTravelers(name, input), out: sealTravelers(name, shown) });
+      onTool({ tool: name, ...sealCall(name, input, shown) });
       return reply({
         content: [
           ...(image ? [{ type: "image", data: image.data, mimeType: image.media_type }] : []),

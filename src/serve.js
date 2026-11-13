@@ -21,7 +21,7 @@ import { LinqChannel } from "./channels/linq.js";
 import { WebChannel } from "./channels/web.js";
 import { webOn } from "./web.js";
 import { chooseCallProvider } from "./calls/choose.js";
-import { createServer } from "./http.js";
+import { createServer, logUnhandledRejections } from "./http.js";
 import { withGptLive } from "./calls/gptlive.js";
 import { makeDeliver, ORDER_CARD_FAILED } from "./deliver.js";
 import { backfillContactCards } from "./contact.js";
@@ -39,6 +39,8 @@ watchFetch();
 
 const verbose = process.argv.includes("--log");
 const log = (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); };
+// Always printed, verbose or not: one stray rejection is a bug to find, not a reason to exit.
+logUnhandledRejections((e) => console.error("   ·", JSON.stringify(e)));
 
 // Before anything binds a port or opens the database: the subscription backend may not be the
 // thing answering other people's texts. One person's Claude plan is not a service.
@@ -122,9 +124,38 @@ startOps({ runtime, router, log });
         log,
       });
     }
+    // Account jobs (src/accountjobs.js, REASON_ACCOUNT_JOBS): a subscription cancelled or a bill paid inside
+    // their own account. Its runs are checkout runs, so they are followed and resumed with the rest.
+    const acct = await import("./accountjobs.js");
+    if (acct.jobsMode() !== "off") {
+      acct.attach({
+        say: (c, text) => runtime.say(c, text),
+        wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
+        log,
+      });
+    }
     await shop.foodReady;
+    await shop.flightReady;   // a resumed flight checkout meets its traveler form and its payment checks (src/flightcheckout.js)
+    await shop.acctReady;     // a resumed account job's run is never followed as a shopping run
     const resumed = shop.resumeFollowing();
     if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });
+    if (acct.jobsMode() !== "off") { const n = acct.resume(); if (n) log({ account_job_mail_watches_resumed: n }); }
+  }
+}
+
+// Their bank through Plaid (src/plaid.js, REASON_PLAID): how the webhook and the done page text somebody.
+{
+  const plaid = await import("./plaid.js");
+  if (plaid.plaidMode() !== "off") {
+    plaid.attach({ say: (c, text) => runtime.say(c, text), log });
+    // A disconnect Plaid could not confirm at the time (their data is already gone here): tried again hourly.
+    // And the 60-day rule (plaid.purgeOld): transactions older than that are deleted, at start and every hour.
+    const sweep = () => {
+      try { const n = plaid.purgeOld(); if (n) log({ plaid_old_transactions_deleted: n }); } catch (e) { log({ plaid_purge_failed: String(e?.message ?? e).split("\n")[0].slice(0, 120) }); }
+      plaid.retryRemovals().then(n => { if (n) log({ plaid_removals_retried: n }); }).catch(() => {});
+    };
+    sweep();
+    setInterval(sweep, 3600_000).unref();
   }
 }
 

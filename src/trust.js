@@ -6,7 +6,7 @@
 import * as db from "./db.js";
 import * as incidents from "./incidents.js";
 import { clock, config, stamp, normalizeNumber, normalizeHandle } from "./config.js";
-import { sealTravelers } from "./privacy.js";
+import { sealCall } from "./privacy.js";
 import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
@@ -602,15 +602,20 @@ export const PROVIDERS = {
  * `npm run probe:sites` should be changing one list and not hunting through two.
  */
 export const SITE_REACHABLE = {
-  opentable: { loads: false, why: "drops the connection on an automated browser (ERR_HTTP2_PROTOCOL_ERROR), and answers plain curl with 403" },
-  uber: { loads: true, why: "m.uber.com loads; the ride form is visible signed out, prices and cars are not" },
-  doordash: { loads: false, why: "answers 403 on every page" },
-  uber_eats: { loads: false, why: "answers 403 on every page" },
-  amazon: { loads: true, why: "loads, and the order-history page redirects to Amazon's sign-in exactly as the probe expects" },
-  delta: { loads: false, why: "answers Access Denied (HTTP 444) on every page" },
-  united: { loads: false, why: "drops the connection on an automated browser and on plain curl too" },
-  ticketmaster: { loads: false, why: "answers 403 on every page" },
-  fandango: { loads: true, why: "loads, and the account page redirects to Fandango's sign-in exactly as the probe expects" },
+  opentable: { seen: "2026-11-12", loads: false, why: "drops the connection on an automated browser (ERR_HTTP2_PROTOCOL_ERROR), and answers plain curl with 403" },
+  uber: { seen: "2026-10-05", loads: true, why: "m.uber.com loads; the ride form is visible signed out, prices and cars are not" },
+  // `seen` is the day of the probe run the line comes from. OpenTable, DoorDash, Uber Eats and
+  // Ticketmaster were probed again 2026-11-12 (docs/site-probe-2026-11-12-signin.json); whether a
+  // SIGN-IN may be offered is src/sitefindings.js, which expires and re-asks.
+  // Probed again 2026-11-12 (docs/site-probe-2026-11-12-food.json): Cloudflare's check, never clearing,
+  // in the same headless browser from a home connection too. It is the automated browser, not the server's address.
+  doordash: { seen: "2026-11-12", loads: false, why: "answers 403 on every page" },
+  uber_eats: { seen: "2026-11-12", loads: false, why: "its sign-in page answers 403; only the signed-out home page loads" },
+  amazon: { seen: "2026-10-05", loads: true, why: "loads, and the order-history page redirects to Amazon's sign-in exactly as the probe expects" },
+  delta: { seen: "2026-10-05", loads: false, why: "answers Access Denied (HTTP 444) on every page" },
+  united: { seen: "2026-10-05", loads: false, why: "drops the connection on an automated browser and on plain curl too" },
+  ticketmaster: { seen: "2026-11-12", loads: false, why: "answers 403 on every page" },
+  fandango: { seen: "2026-10-05", loads: true, why: "loads, and the account page redirects to Fandango's sign-in exactly as the probe expects" },
 };
 
 export function missingCredentials(name) {
@@ -1391,8 +1396,8 @@ export function receiptFor(action, input, out) {
         : `Shopped for "${input.ask}". AgentCard asked for more detail (${out.status}); no cart yet, nothing charged.`;
     case "flight_book":
       return ok
-        ? `Priced a flight for booking through AgentCard: ${out.flight ?? "a flight"} at ${out.total ?? "an unknown total"}. NOTHING WAS BOOKED OR CHARGED.`
-        : `Did not price a flight for booking${tail}`;
+        ? `Started booking a flight on ${out.airline ?? "the airline"}'s site: ${out.flight ?? "a flight"} (searched at ${out.searched_price ?? "an unknown price"}). NOTHING WAS BOOKED OR CHARGED.`
+        : `Did not start booking a flight${tail}`;
     case "purchase_confirm":
       if (out?.booking_state) return `Confirmed the flight ${out.cart_line ?? input.cart_hash}: AgentCard placed the order (${out.order_id || "no id"}, charge ${out.charge_status || "unreported"}). Booking state: ${out.booking_state}${out.booked ? "" : " — NOT ticketed"}.`;
       if (out?.blocked === "vault_approval_required") {
@@ -1460,8 +1465,11 @@ function ledgerResult(action, out) {
  */
 export function ledgerWrite({ conversationId, action, input, out: given, target = "", confirmationId = null, permission = null }) {
   // A passenger's details stay sealed in flight_travelers; the ledger keeps that a call happened.
-  const out = sealTravelers(action, given);
-  input = sealTravelers(action, input);
+  // So does what was typed into a password, code or card box, and what a secret box of a page held
+  // (privacy.sealCall: the same rule the tool log uses).
+  const sealed = sealCall(action, input, given);
+  const out = sealed.out;
+  input = sealed.input;
   // `unknown` is its own outcome and not a kind of error. "It failed" and "nobody knows whether it
   // went through" lead to opposite next moves — one is safe to retry and the other is the one thing
   // that can charge somebody twice — so the row has to be able to say which.

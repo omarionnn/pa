@@ -14,6 +14,7 @@
 // fails if one of them stops calling `rulesNote`, or if a new builder of a person's prompt appears
 // without being listed (or listed as exempt, with why).
 import * as db from "./db.js";
+import { identityNote } from "./identity.js";
 
 /** The heading the rules ride under, the same words everywhere. */
 export const RULES_HEADING = "HOW THEY WANT YOU TO TREAT THEM (their own corrections of how you behave — follow these; a newer one wins):";
@@ -28,10 +29,17 @@ export function rulesFor(conversationId, { limit = db.RULES_CAP } = {}) {
   }
 }
 
-/** The rules block for a prompt, or "" when they have none. */
+/**
+ * The rules block for a prompt, or "" when they have none. The name they gave their Reason
+ * (src/identity.js, REASON_ONE_IDENTITY) rides at its head: this is the one block every surface
+ * reads — texts, Web, reminders, Claude's turn on a call, the live voice's brief — so the name is
+ * the same on all of them, and a builder that carries their rules carries who Reason is to them.
+ */
 export function rulesNote(conversationId, opts = {}) {
   const rules = rulesFor(conversationId, opts);
-  return rules.length ? `${RULES_HEADING}\n${rules.map(r => `- ${r}`).join("\n")}` : "";
+  let who = "";
+  try { who = identityNote(conversationId); } catch { who = ""; }
+  return [who, rules.length ? `${RULES_HEADING}\n${rules.map(r => `- ${r}`).join("\n")}` : ""].filter(Boolean).join("\n");
 }
 
 /**

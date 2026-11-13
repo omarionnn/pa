@@ -398,12 +398,11 @@ export const config = {
   // and the links he mints still open, claim and tell him who joined. Allowances are backfilled
   // either way, invisibly. Switching it on shows the same tools to everybody with no code change.
   invitesOpen: ["1", "true", "on", "yes"].includes(String(process.env.REASON_INVITES_OPEN ?? "").trim().toLowerCase()),
-  // Booking flights through AgentCard (src/flightbook.js). OFF by default and off on live: the first
-  // live flight booking is the owner's own decision, made once with one cheap fare before anybody
-  // else is shown it. Off, nobody's model is told booking exists and every flight search hands over
-  // the Google Flights link alone — exactly the search-only feature.
-  // `owner` switches it on in the owner's own conversation only (the first real booking); 1/true/on/yes
-  // is everyone; anything else is off. See bookingEnabled in src/flightbook.js.
+  // Booking flights (src/flightbook.js): off | owner | on, OFF by default and off on live. The route is
+  // Crossmint's Agent Checkouts on the airline's own site (src/flightcheckout.js), so it also needs the
+  // shopping path on for that person (REASON_SHOP_CONNECT). Off, nobody's model is told booking exists
+  // and a flight search hands over the Google Flights link alone. `owner` is the owner's own
+  // conversation only (the first real booking is theirs); 1/true/on/yes is everyone.
   flightBooking: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_FLIGHT_BOOKING ?? "").trim().toLowerCase()),
   // Events (src/events.js). `owner`: only the owner may make one; 1/true/on/yes: anybody with a
   // Reason; anything else: off, and nobody's model is told events exist. Joining is open to anybody
@@ -559,6 +558,12 @@ export const config = {
   ttsModel: process.env.REASON_TTS_MODEL || "gemini-3.8-flash-tts",
   ttsVoice: process.env.REASON_TTS_VOICE || "Puck",
   ttsTimeoutMs: Number(process.env.REASON_TTS_TIMEOUT_MS || 60_000),
+  // One identity (src/identity.js): the name they gave their Reason is used on every surface, and a
+  // texted voice note is spoken in the voice their calls use. off (default) | owner | on.
+  oneIdentity: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_ONE_IDENTITY ?? "").trim().toLowerCase()),
+  // The Gemini voice closest to the call voice, for a voice note when OpenAI's speech cannot make it
+  // (one identity only). Chosen by ear against "marin": a light, easy-going woman's voice.
+  ttsCloseVoice: process.env.REASON_TTS_CLOSE_VOICE || "Aoede",
   // How long a voice note has to be before the transcript keeps timestamps. Under it, a note is a
   // sentence or two and [0:00] markers are noise in the middle of what should read as their own
   // message; over it, "where did they say that" is a real question somebody might want checked.
@@ -579,6 +584,10 @@ export const config = {
   remoteSigninLinkTtlMs: Number(process.env.REASON_SIGNIN_LINK_TTL_MS || 10 * 60_000),
   remoteSigninSessionMs: Number(process.env.REASON_SIGNIN_SESSION_MS || 10 * 60_000),
   remoteSigninSettleMs: Number(process.env.REASON_SIGNIN_SETTLE_MS || 250),
+  // How long a site's sign-in page is given to draw its form before anything concludes it has none
+  // (src/signinpage.js). Stripe Link's email box appears 1.3 s after the page loads; the one read at
+  // 1.1 s on 2026-11-12 called that "no email box". Polled, and it stops the moment the form is there.
+  signinFormWaitMs: Number(process.env.REASON_SIGNIN_FORM_WAIT_MS || 10_000),
   signinWindowMaxMs: Number(process.env.REASON_SIGNIN_WINDOW_MAX_MS || 15 * 60_000),
   // Voice notes have their own model order, apart from videos (videoModel): the small model listens
   // first and the big one is the fallback. Owner's call 2026-11-09: gemini-3.8-flash kept answering
@@ -659,8 +668,29 @@ export const config = {
   // (or on) for every account's own calls, =owner for the operator's only. With REASON_CALL_PROVIDER=gptlive
   // every call is GPT-Live already and this changes nothing.
   callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
+  // The Cartesia voice on the operator's own calls (src/calls/cartesia.js, docs/calls-cartesia.md section 5):
+  // off | owner; unset or anything else is off. There is no "on": owner by itself changes nothing, it only
+  // offers the operator the call_voice_trial tool, and his own choice (accounts.call_trial) turns it on.
+  callCartesia: String(process.env.REASON_CALL_CARTESIA ?? "").trim().toLowerCase() === "owner" ? "owner" : "off",
+  cartesiaKey: process.env.CARTESIA_API_KEY || "",
+  // The agent made once by scripts/cartesia-agent-setup.mjs; the voice is set on it (Gemma, en-GB).
+  cartesiaAgentId: String(process.env.REASON_CARTESIA_AGENT_ID ?? "").trim(),
+  cartesiaVoice: String(process.env.REASON_CARTESIA_VOICE ?? "").trim() || "62ae83ad-4f6a-430b-af41-a9bede9286ca",
   // How Reason sounds on calls (Omari's call voice spec 11-11, src/calls/manner.js): owner | on | off (unset = off).
   callManner: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_MANNER ?? "").trim().toLowerCase()),
+  // What a call carries into the next call and the text after it (call audit 11-11, src/calls/carryover.js): owner | on | off (unset = off).
+  callCarryover: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_CARRYOVER ?? "").trim().toLowerCase()),
+  // The nightly memory review (src/dream.js) reads what they said on their own phone calls, cited
+  // like their texts: off (default) | owner | on.
+  reviewCalls: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_REVIEW_CALLS ?? "").trim().toLowerCase()),
+  // Things that recur in what they said across days (repeated asks, routines, Reason's repeated
+  // mistakes, preferences), kept as guesses with the messages they rest on (src/dream.js
+  // noticePatterns): off (default) | owner | on. "on" still needs their own yes to patterns.
+  reviewPatterns: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_REVIEW_PATTERNS ?? "").trim().toLowerCase()),
+  // The turn gate (src/calls/turngate.js, Omari 11-12): on their own call a short acknowledgement in a
+  // mid-thought pause and a prompt real answer to a finished thought, told apart by GPT-Live's native
+  // Decisions trigger on their transcript: owner | on | off (unset = off).
+  callTurnGate: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_TURN_GATE ?? "").trim().toLowerCase()),
   // Calls Reason makes to businesses and other people, and places ringing back about them, on GPT-Live
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
   // Unset, those calls are the provider's.
@@ -770,6 +800,11 @@ export const config = {
   // rather than silently dropped, so "I didn't call because it's half eleven at night" is a thing
   // they hear.
   callQuietHours: process.env.REASON_CALL_QUIET_HOURS ?? "21:00-08:00",
+  // Audio of calls with businesses and other people (placed, and ring-backs). OFF by default (Omari
+  // 2026-11-12): those calls open like a normal caller, with no "this call may be recorded" line, so no
+  // audio of them is kept. =on brings back the notice at the start, the recording, and stopping it when
+  // they object (src/calls/manner.js). A person's own calls with Reason are not touched by this.
+  thirdPartyRecording: ["1", "true", "on", "yes"].includes(String(process.env.REASON_THIRDPARTY_RECORDING ?? "").trim().toLowerCase()),
 
   // The languages a call may switch into. What the owner's spec named, and no more. 
   callLanguages: (process.env.REASON_CALL_LANGUAGES || "en,es").split(",").map(s => s.trim().toLowerCase()).filter(Boolean),

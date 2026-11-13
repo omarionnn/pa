@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 import { config, clock } from "./config.js";
 import * as zonescope from "./zonescope.js";
 import * as turnlink from "./turnlink.js";
+import { keepableMessages } from "./pagesecrets.js";
 import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
@@ -1664,6 +1665,9 @@ addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 // a session was last used from, for the signed-in browsers list.
 addColumnIfMissing("accounts", "web_reach", "TEXT");
 addColumnIfMissing("accounts", "web_theme", "TEXT");
+// The voice on the operator's own calls (src/calls/cartesia.js): "" is today's voice, "cartesia" the trial.
+// Only read with REASON_CALL_CARTESIA=owner, and only on the operator's account.
+addColumnIfMissing("accounts", "call_trial", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("page_sessions", "user_agent", "TEXT");
 // Which client a session was issued to: NULL for a browser, 'ios' for the app (src/ios/session.js).
 // The iPhone API only accepts sessions it issued, so a Web cookie is never a bearer token there.
@@ -1881,6 +1885,11 @@ addColumnIfMissing("accounts", "patterns", "TEXT");
 addColumnIfMissing("accounts", "patterns_said", "TEXT");
 addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "patterns_set_at", "INTEGER");
+// Their own no-call hours for calls Reason places to other people (src/calls/brief.js `callHoursFor`):
+// NULL = the install's default (REASON_CALL_QUIET_HOURS), "off", or "HH:MM-HH:MM"; with the sentence they said.
+addColumnIfMissing("accounts", "call_hours", "TEXT");
+addColumnIfMissing("accounts", "call_hours_said", "TEXT");
+addColumnIfMissing("accounts", "call_hours_set_at", "INTEGER");
 // A candidate's identity WITHOUT its state, so "one nudge per thing" can be asked of the table.
 // 'key' is the thing and its state (a thread with how long it has waited), which is what makes the
 // same meeting moving twice two things to say. 'thing' is just the thread or the event, which is
@@ -2119,9 +2128,11 @@ export function loadConversation(id) {
   return row ? JSON.parse(row.messages || "[]") : [];
 }
 export function saveConversation(id, messages) {
+  // The thread never keeps what a secret box of a page held, or a credential typed into the chat
+  // for a tool (src/pagesecrets.js keepableMessages). Here because this is the thread's one writer.
   db.prepare(`INSERT INTO conversations (id, messages, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET messages = excluded.messages, updated_at = excluded.updated_at`)
-    .run(id, restcrypt.sealFor(id, JSON.stringify(messages)), clock.now());
+    .run(id, restcrypt.sealFor(id, JSON.stringify(keepableMessages(messages))), clock.now());
 }
 export function clearConversation(id) {
   db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
@@ -2240,7 +2251,7 @@ export function setItemBlurb(kind, conversationId, id, blurb) {
 }
 export function listTimers(conversationId) {
   // Not the onboarding's nudge (src/onboarding.js): that one is code's, not a reminder of theirs.
-  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after') ORDER BY fire_at").all(conversationId);
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after', 'cue:offer') ORDER BY fire_at").all(conversationId);
 }
 export function cancelTimer(conversationId, id) {
   const t = getTimer(conversationId, id);
@@ -3321,6 +3332,26 @@ export function listActions(conversationId, { since = null, limit = 50 } = {}) {
   }));
 }
 
+// ---------- saved-login log (src/savedlogins.js) ----------
+// One row per save, open or removal of a saved login, written by savedlogins.js recordLoginEvent
+// beside its action_ledger row. The logins themselves live in data/logins.db; this is the person's
+// own record of their use. Never a username, a code or an address with a query string. `event` and
+// `outcome` come from fixed lists in savedlogins.js (not a CHECK, so a later event needs no rebuild).
+// `purpose` is sealed under the person's key (restcrypt SENSITIVE).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS login_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL DEFAULT '',
+    event TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT '',
+    kms_calls INTEGER NOT NULL DEFAULT 0,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS login_log_by_conversation ON login_log (conversation_id, at);
+`);
+
 // ---------- confirmations ----------
 export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null, amount = null, threadKey = null }) {
   const cents = Number.isFinite(Number(amount)) && amount !== null && amount !== "" ? Math.round(Number(amount) * 100) : null;
@@ -3409,7 +3440,7 @@ export function unexecutedGatesFor(conversationId, task) {
 // Calls and texts to somebody else: about "now". See config.askTtlReachH.
 const REACH_ASKS = new Set(["call_place", "message_send", "voice_note_send", "x_dm"]);
 // Spending, or committing to something priced. See config.askTtlMoneyH.
-const MONEY_ASKS = new Set(["purchase", "purchase_confirm", "uber_request", "flight_book", "browser_submit", "subscription_cancel_commit"]);
+const MONEY_ASKS = new Set(["purchase", "purchase_confirm", "uber_request", "browser_submit", "subscription_cancel_commit"]);
 
 /** How long this ask stays answerable, in ms, by what it is for. */
 export function askTtlMs(row) {
@@ -4997,6 +5028,26 @@ export function claimOutbound(id) {
   return r.changes === 1 ? getOutbound(id) : null;
 }
 
+// REASON_DELIVERY_GATED (src/outbox.js noteDelivery): what the carrier said AFTER taking a message.
+// `sent` is "the provider accepted it"; delivery_status is its later word (SENT, DELIVERED, ERROR).
+addColumnIfMissing("outbox", "delivery_status", "TEXT");
+addColumnIfMissing("outbox", "delivered_at", "INTEGER");
+
+/** The row the provider is talking about, by the handle it gave back when the message was accepted. */
+export function outboundByMessageId(channel, messageId) {
+  const id = String(messageId ?? "").trim();
+  if (!id) return null;
+  return rowToOut(db.prepare("SELECT * FROM outbox WHERE channel = ? AND message_id = ? ORDER BY id DESC LIMIT 1").get(channel, id));
+}
+
+/** The carrier's later word on a sent row (named with its person, so a wrong handle changes nobody else's row). A delivered one gets its stamp; any word is kept. */
+export function markOutboundDelivery(id, { conversationId, status, delivered = false }) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET delivery_status = ?, delivered_at = CASE WHEN ? THEN ? ELSE delivered_at END, updated_at = ? WHERE id = ? AND conversation_id = ?`)
+    .run(String(status ?? ""), delivered ? 1 : 0, now, now, id, conversationId);
+  return getOutbound(id);
+}
+
 /** It went. */
 export function markOutboundSent(id, { messageId = null } = {}) {
   const now = clock.now();
@@ -5137,6 +5188,16 @@ export function strandedOutbound() {
 export function undeliveredFor(conversationId) {
   return db.prepare(`SELECT * FROM outbox WHERE conversation_id = ? AND state = 'failed' AND told_at IS NULL
     ORDER BY id ASC`).all(conversationId).map(rowToOut);
+}
+
+/**
+ * A person's OWN text that the carrier accepted and later reported undelivered (REASON_DELIVERY_GATED,
+ * src/outbox.js noteDelivery), not yet told. The sweep says it in one line rather than waiting for
+ * their next turn.
+ */
+export function ownUndeliveredUntold() {
+  return db.prepare(`SELECT * FROM outbox WHERE state = 'failed' AND to_owner = 1 AND told_at IS NULL
+    AND last_error_key = 'DELIVERY_ERROR' ORDER BY id ASC`).all().map(rowToOut);
 }
 
 /** Said once. Returns false when somebody else got there first. */
@@ -5556,6 +5617,16 @@ export function callsToNumber(conversationId, { errandId = null, toNumber = "" }
     : "SELECT * FROM calls WHERE conversation_id = ? AND pt(to_number) = ? ORDER BY id ASC";
   const args = errandId ? [conversationId, toNumber, errandId] : [conversationId, toNumber];
   return db.prepare(sql).all(...args).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
+/**
+ * Every call to or from this number since `since`, on anybody's conversation, oldest first. For a place
+ * ringing back (src/calls/inbound.js): the errand it is returning may be any person's, not only the
+ * operator's. Only ever read by number, for a call that number is making now.
+ */
+export function callsWithNumber({ toNumber = "", since = 0 } = {}) {
+  return db.prepare("SELECT * FROM calls WHERE created_at >= ? AND pt(to_number) = ? ORDER BY id ASC")
+    .all(since, toNumber).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
 }
 
 // ---------- quotes ----------
@@ -6610,6 +6681,16 @@ export function setWebTheme(conversationId, value) {
   return db.prepare("UPDATE accounts SET web_theme = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
 }
 
+/** The call voice trial this account chose ("cartesia"), or "" for today's voice. */
+export function callTrial(conversationId) {
+  const t = db.prepare("SELECT call_trial FROM accounts WHERE conversation_id = ?").get(conversationId)?.call_trial;
+  return t === "cartesia" ? "cartesia" : "";
+}
+export function setCallTrial(conversationId, value) {
+  if (!["", "cartesia"].includes(value)) throw new Error(`call_trial must be "" or cartesia, not ${value}`);
+  return db.prepare("UPDATE accounts SET call_trial = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
+}
+
 /** How many browsers one person is signed in on. */
 export function pageSessionCount(conversationId, maxAgeMs) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE conversation_id = ? AND created_at >= ?").get(conversationId, clock.now() - maxAgeMs).n);
@@ -6678,6 +6759,15 @@ export function rememberSeenUrls(conversationId, urls, { kind = "", from = "" } 
 db.exec("CREATE TABLE IF NOT EXISTS place_photos (key TEXT PRIMARY KEY, url TEXT NOT NULL, shows TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL)");
 export function placePhotoFor(key, since) {
   return db.prepare("SELECT url, shows, at FROM place_photos WHERE key = ? AND at >= ?").get(key, since) ?? null;
+}
+// A place a lookup returned, by its phone number: the zone it is in, so a call to it is timed by its own
+// clock after a restart too (src/zone.js `calleeZone`). Public facts about a business; nobody's rows.
+db.exec("CREATE TABLE IF NOT EXISTS place_zones (phone TEXT PRIMARY KEY, zone TEXT NOT NULL, at INTEGER NOT NULL)");
+export function placeZone(phone) {
+  return db.prepare("SELECT zone FROM place_zones WHERE phone = ?").get(String(phone ?? ""))?.zone ?? "";
+}
+export function rememberPlaceZone(phone, zone, at = clock.now()) {
+  db.prepare("INSERT INTO place_zones (phone, zone, at) VALUES (?, ?, ?) ON CONFLICT(phone) DO UPDATE SET zone = excluded.zone, at = excluded.at").run(String(phone), String(zone), at);
 }
 export function rememberPlacePhoto(key, { url, shows = "", at = clock.now() }) {
   db.prepare("INSERT INTO place_photos (key, url, shows, at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET url = excluded.url, shows = excluded.shows, at = excluded.at").run(key, url, shows ?? "", at);
@@ -9070,6 +9160,18 @@ export function setNoticePrefs(conversationId, { perDay, everyMin, mode, snoozeU
   return noticePrefs(conversationId);
 }
 
+/** Their own no-call hours for calls to other people: `{ hours: null | "off" | "HH:MM-HH:MM", said, setAt }`. */
+export function callHours(conversationId) {
+  const row = db.prepare("SELECT call_hours, call_hours_said, call_hours_set_at FROM accounts WHERE conversation_id = ?").get(conversationId);
+  return { hours: row?.call_hours ?? null, said: row?.call_hours_said || "", setAt: row?.call_hours_set_at ?? null };
+}
+
+export function setCallHours(conversationId, { hours = null, said = "", at = Date.now() } = {}) {
+  db.prepare("UPDATE accounts SET call_hours = ?, call_hours_said = ?, call_hours_set_at = ? WHERE conversation_id = ?")
+    .run(hours, String(said ?? "").trim().slice(0, 300), at, conversationId);
+  return callHours(conversationId);
+}
+
 export function setPatterns(conversationId, { patterns, said, askedAt, setAt } = {}) {
   const set = (col, v) => db.prepare(`UPDATE accounts SET ${col} = ? WHERE conversation_id = ?`).run(v, conversationId);
   if (patterns !== undefined) set("patterns", patterns);
@@ -9704,8 +9806,15 @@ addColumnIfMissing("guesses", "last_supported_at", "INTEGER");
 addColumnIfMissing("guesses", "dismissed_at", "INTEGER");
 
 /** Where a guess came from. Both are things `remember` refuses to save as facts. */
-export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo", "i_noticed_a_pattern"];
+export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo", "i_noticed_a_pattern", "i_noticed_it_across_days"];
 export const PATTERN_SOURCE = "i_noticed_a_pattern";
+/**
+ * Something that recurred in what they SAID, on at least two different days (src/dream.js
+ * noticePatterns): a repeated ask, a routine, a mistake Reason keeps making, a preference shown more
+ * than once. A guess like the others — never a fact — with the messages it rests on as its evidence.
+ * Not PATTERN_SOURCE: that one is a rhythm in message TIMES and moves when a nudge lands (src/notice.js).
+ */
+export const NOTICED_SOURCE = "i_noticed_it_across_days";
 
 /** Note one, or hand back the one already there. The same guess twice is one guess. */
 export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out", evidence = null, use = "" } = {}) {
@@ -9722,7 +9831,7 @@ export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, seal2(conversationId, who), seal2(conversationId, what), source, clock.now(),
       seal2(conversationId, receipts), seal2(conversationId, changes),
-      source === PATTERN_SOURCE ? clock.now() : null);
+      source === PATTERN_SOURCE || source === NOTICED_SOURCE ? clock.now() : null);
   return { ...getGuess(conversationId, Number(r.lastInsertRowid)), already_guessed: false };
 }
 
@@ -9835,8 +9944,28 @@ export function patternsUnsupportedSince(conversationId, before) {
 
 export function dropPatterns(conversationId) {
   const rows = listPatterns(conversationId, { limit: 500 });
-  db.prepare("DELETE FROM guesses WHERE conversation_id = ? AND how = ?").run(conversationId, PATTERN_SOURCE);
+  // "Stop reading into my texts" means the things noticed across days too (src/dream.js), not only rhythms.
+  db.prepare("DELETE FROM guesses WHERE conversation_id = ? AND how IN (?, ?)").run(conversationId, PATTERN_SOURCE, NOTICED_SOURCE);
   return rows;
+}
+
+/** What the review noticed across days and they have not confirmed or dismissed, newest first. */
+export function listNoticed(conversationId, { limit = 20 } = {}) {
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL AND dismissed_at IS NULL
+    ORDER BY noted_at DESC, id DESC LIMIT ?`).all(conversationId, NOTICED_SOURCE, limit)
+    .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
+}
+
+/** A noticed thing was borne out again: fresh receipts, and the clock that expires it starts over. */
+export function supportNoticed(conversationId, id, at = clock.now(), { evidence = null } = {}) {
+  const row = getGuess(conversationId, id);
+  if (!row || row.how !== NOTICED_SOURCE || row.confirmed_at || row.dismissed_at) return null;
+  if (Array.isArray(evidence) && evidence.length) {
+    db.prepare("UPDATE guesses SET last_supported_at = ?, evidence = ? WHERE id = ? AND conversation_id = ?").run(at, seal2(conversationId, JSON.stringify(evidence)), id, conversationId);
+  } else {
+    db.prepare("UPDATE guesses SET last_supported_at = ? WHERE id = ? AND conversation_id = ?").run(at, id, conversationId);
+  }
+  return getGuess(conversationId, id);
 }
 
 // ---------- pattern_asks: the example parked between the consent question and the answer ----------
@@ -12687,6 +12816,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS event_answers_event ON event_answers(event_id, question_id);
 `);
 addColumnIfMissing("event_claims", "answers", "TEXT");
+// Buy for friends (src/eventpay.js, owner 2026-11-11): how many tickets the page asked for (the
+// finishing text's Checkout is for that many), and — for a friend claiming a ticket somebody bought
+// them — which seat, at which version of its link (a link changed since makes the claim fail).
+addColumnIfMissing("event_claims", "tickets", "INTEGER");
+addColumnIfMissing("event_claims", "seat_id", "INTEGER");
+addColumnIfMissing("event_claims", "seat_version", "INTEGER");
 // event_questions.required  1 when the organizer asks everyone this one (owner decision 2026-11-11): the
 //                  join page does not go through without an answer, and a text join is not finished until
 //                  it is answered. Only set while nobody has answered (an answer was given to an optional
@@ -12885,6 +13020,13 @@ addColumnIfMissing("events", "rides_enabled", "INTEGER NOT NULL DEFAULT 0");
 // a priced event goes through a Checkout Session and lands from the webhook (eventpay.settlePaid).
 addColumnIfMissing("events", "price_cents", "INTEGER");
 addColumnIfMissing("events", "currency", "TEXT NOT NULL DEFAULT 'usd'");
+// The refund policy on a priced event (src/eventpay.js refundWindow): 'none' | 'until' | 'anytime',
+// null = the default ('until', 48 hours before it starts); `refund_hours` is the N of 'until'.
+addColumnIfMissing("events", "refund_policy", "TEXT");
+addColumnIfMissing("events", "refund_hours", "INTEGER");
+// Tickets one buyer may get at once on a priced event (src/eventpay.js ticketMax): null = the default
+// (4), 1 = no extra tickets for friends.
+addColumnIfMissing("events", "ticket_max", "INTEGER");
 // The link preview card (spec §14, src/eventcover.js). The live cover is an uploaded picture the
 // organizer approved after seeing the card it makes (`cover_file`, under data/event-covers, with who
 // approved it and when); with none, the card is Reason's own drawing of the name. `cover_pending` is
@@ -13267,7 +13409,7 @@ export function allEvents({ limit = 50 } = {}) {
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
   "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled",
   "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask",
-  "remind_day_before", "remind_soon", "price_cents", "currency"]);
+  "remind_day_before", "remind_soon", "price_cents", "currency", "refund_policy", "refund_hours", "ticket_max"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);
@@ -13294,6 +13436,12 @@ export function joinedCount(eventId) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE event_id = ? AND state = 'joined' AND role = 'guest'").get(Number(eventId)).n);
 }
 
+// Places under the cap that are spoken for without anybody on the list yet: tickets bought for
+// friends who have not claimed them (src/eventpay.js registers the count; it owns event_seats).
+let reservedCount = () => 0;
+export function setReservedPlaces(fn) { reservedCount = typeof fn === "function" ? fn : () => 0; }
+export function reservedPlaces(eventId) { return Number(reservedCount(Number(eventId)) || 0); }
+
 /**
  * Put one person on an event, all or nothing, inside a transaction the caller may already hold.
  *
@@ -13301,14 +13449,16 @@ export function joinedCount(eventId) {
  * place between them. Somebody who left (not somebody removed) may come back, with a fresh token.
  * Returns `{ ok: true, attendee, already }` or `{ ok: false, reason }` — `full`, `removed`.
  */
-export function addAttendeeTx({ eventId, conversationId, displayName, instagram = null, inDirectory = false, via, newAccount = false }) {
+export function addAttendeeTx({ eventId, conversationId, displayName, instagram = null, inDirectory = false, via, newAccount = false, onSeat = false }) {
   const ev = getEventRow(eventId);
   if (!ev) return { ok: false, reason: "not_found" };
   const prior = attendeeRow(eventId, conversationId);
   if (prior?.role === "organizer") return { ok: false, reason: "organizer" };
   if (prior?.state === "joined") return { ok: true, attendee: prior, already: true };
   if (prior?.state === "removed") return { ok: false, reason: "removed" };
-  if (ev.capacity != null && joinedCount(eventId) >= ev.capacity) return { ok: false, reason: "full" };
+  // A friend claiming a ticket somebody bought them (`onSeat`) takes a place already counted as theirs;
+  // everybody else needs one left over once those tickets are counted.
+  if (!onSeat && ev.capacity != null && joinedCount(eventId) + reservedPlaces(eventId) >= ev.capacity) return { ok: false, reason: "full" };
   const now = clock.now();
   // On the list by choice only when guests can see the list as they join (see list_chosen).
   const chosen = inDirectory && ev.guest_list_visible ? 1 : 0;
@@ -13511,15 +13661,16 @@ export function scrubConversationText(conversationId, since, fn) {
   return changed;
 }
 
-export function insertEventClaim({ eventId, passwordVersion, displayName, instagram = null, inDirectory = false, answers = null, ttlMs }) {
+export function insertEventClaim({ eventId, passwordVersion, displayName, instagram = null, inDirectory = false, answers = null, ttlMs, tickets = null, seatId = null, seatVersion = null }) {
   const now = clock.now();
   for (let i = 0; i < 5; i++) {
     try {
       // Answers on a claim nobody finished are not kept past its life: cleared as new claims are made.
       if (i === 0) db.prepare("UPDATE event_claims SET answers = NULL WHERE answers IS NOT NULL AND state = 'open' AND expires_at <= ?").run(now);
       const shown = getEventRow(eventId)?.guest_list_visible ? 1 : 0;
-      const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, list_shown, answers, state, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, shown, answers?.length ? JSON.stringify(answers) : null, now, now + ttlMs).lastInsertRowid);
+      const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, list_shown, answers, tickets, seat_id, seat_version, state, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, shown, answers?.length ? JSON.stringify(answers) : null,
+          tickets ?? null, seatId ?? null, seatVersion ?? null, now, now + ttlMs).lastInsertRowid);
       return db.prepare("SELECT * FROM event_claims WHERE id = ?").get(id);
     } catch (e) {
       if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
@@ -13579,7 +13730,8 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
     const ev = getEventRow(claim.event_id);
     if (!ev) return fail("not_found");
     if (ev.status !== "active") return fail(ev.status);
-    if (ev.password_version !== claim.password_version) return fail("password_changed");
+    // A friend's ticket link stands in for the password (the buyer handed them the place), so a new password doesn't undo it.
+    if (!claim.seat_id && ev.password_version !== claim.password_version) return fail("password_changed");
     let conversationId = existingConversationId;
     let newAccount = false;
     if (!conversationId) {
@@ -13598,6 +13750,18 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
     if (conversationId === ev.organizer_conversation_id) return fail("organizer");
     // Ticked while the list was private, used after it was shown: that tick was never a choice.
     const inDirectory = !!claim.in_directory && !(claim.list_shown === 0 && ev.guest_list_visible);
+    // A friend's ticket (src/eventpay.js claimSeat): the text proved the phone and made the account;
+    // the claim is spent here and the seat is claimed by the caller, under its own checks (still
+    // open, the same link). Somebody already in is refused before anything is spent.
+    if (claim.seat_id) {
+      const prior = attendeeRow(ev.id, conversationId);
+      if (prior?.state === "joined") return fail("already");
+      if (prior?.state === "removed") return fail("removed");
+      const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ?, answers = NULL WHERE id = ? AND state = 'open'").run(clock.now(), conversationId, claim.id);
+      if (won.changes !== 1) return fail("used");
+      db.exec("COMMIT");
+      return { ok: true, seat_claim: true, seat_id: claim.seat_id, seat_version: claim.seat_version, claim: eventClaimByCode(code), answers: claim.answers ?? null, event: getEventRow(ev.id), inDirectory, attendee: null, already: false, account: getAccount(conversationId), newAccount };
+    }
     // A priced event (src/eventpay.js): the text proved the phone and made the account, and the
     // claim is spent — but nobody is on the event until Stripe says the payment landed. The caller
     // sends the payment link; eventpay.settlePaid does the join from the webhook.
@@ -13610,7 +13774,7 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
       const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ?, answers = NULL WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
       if (won.changes !== 1) return fail("used");
       db.exec("COMMIT");
-      return { ok: true, pending_payment: true, claim: eventClaimByCode(code), answers: claim.answers ?? null, event: getEventRow(ev.id), inDirectory, attendee: null, already: false, account: getAccount(conversationId), newAccount };
+      return { ok: true, pending_payment: true, tickets: claim.tickets ?? 1, claim: eventClaimByCode(code), answers: claim.answers ?? null, event: getEventRow(ev.id), inDirectory, attendee: null, already: false, account: getAccount(conversationId), newAccount };
     }
     const added = addAttendeeTx({ eventId: ev.id, conversationId, displayName: claim.display_name, instagram: claim.instagram, inDirectory, via: "web_text", newAccount });
     if (!added.ok) return fail(added.reason);
@@ -14116,7 +14280,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS memory_review_passes_day ON memory_review_passes (day, conversation_id);
 `);
 // The last pass's model and $ on the watermark row too, for a glance (the history is the table above).
-for (const col of ["last_model TEXT NOT NULL DEFAULT ''", "last_cost_usd REAL"]) {
+// attempted_at: when a pass was last queued (kept on disk so a restart storm cannot re-ask the model);
+// patterns_at: when the patterns-across-days pass last ran for them.
+for (const col of ["last_model TEXT NOT NULL DEFAULT ''", "last_cost_usd REAL", "attempted_at INTEGER", "patterns_at INTEGER"]) {
   try { db.exec(`ALTER TABLE memory_reviews ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 
@@ -14222,9 +14388,39 @@ export function markMemoryReview(conversationId, { day, lastEventId = null, outc
       reviewed_at = excluded.reviewed_at, last_outcome = excluded.last_outcome`).run(conversationId, last, String(day ?? ""), at, String(outcome).slice(0, 40));
 }
 
-/** Has anything been said since `afterId`? One indexed query. */
-export function hasEventsSince(conversationId, afterId = 0) {
-  return !!db.prepare("SELECT 1 FROM event_log WHERE conversation_id = ? AND id > ? AND role = 'user' LIMIT 1").get(conversationId, Number(afterId) || 0);
+/**
+ * A pass is about to be asked for (queued): written before the model is, so a restart in the middle
+ * of it does not ask again the moment the process is back (src/dream.js, the catch-up's rate limit).
+ */
+export function noteMemoryReviewAttempt(conversationId, at = clock.now()) {
+  db.prepare(`INSERT INTO memory_reviews (conversation_id, attempted_at) VALUES (?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET attempted_at = excluded.attempted_at`).run(conversationId, at);
+}
+
+/** How many passes asked the model for them on this (their own) day. */
+export function memoryReviewPassesOn(conversationId, day) {
+  return db.prepare("SELECT COUNT(*) AS n FROM memory_review_passes WHERE conversation_id = ? AND day = ?").get(conversationId, String(day ?? ""))?.n ?? 0;
+}
+
+/** The patterns-across-days pass ran (or was tried) for them at `at`. */
+export function markPatternPass(conversationId, at = clock.now()) {
+  db.prepare(`INSERT INTO memory_reviews (conversation_id, patterns_at) VALUES (?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET patterns_at = excluded.patterns_at`).run(conversationId, at);
+}
+
+/**
+ * What they said on their OWN phone calls, as SQL on an event_log alias: a call line (role
+ * call_user) whose call row is theirs. The other side of a call Reason made for them (a business,
+ * another person) is never the person speaking, so it never counts as "they said something".
+ */
+export const saidOnOwnCall = (alias) => `(${alias}.role = 'call_user' AND ${alias}.channel = 'call' AND EXISTS (SELECT 1 FROM calls k
+  WHERE k.id = CAST(${alias}.message_id AS INTEGER) AND k.conversation_id = ${alias}.conversation_id AND k.is_owner = 1))`;
+
+/** Has anything been said since `afterId`? One indexed query. `calls`: what they said on their own calls counts too. `before`: only what was said before that time. */
+export function hasEventsSince(conversationId, afterId = 0, { calls = false, before = null } = {}) {
+  const until = Number.isFinite(before) ? " AND e.at < ?" : "";
+  return !!db.prepare(`SELECT 1 FROM event_log e WHERE e.conversation_id = ? AND e.id > ?${until} AND (e.role = 'user'${calls ? ` OR ${saidOnOwnCall("e")}` : ""}) LIMIT 1`)
+    .get(...[conversationId, Number(afterId) || 0, ...(until ? [before] : [])]);
 }
 
 /**

@@ -47,6 +47,33 @@ const START_FOLLOWUP = /\b(?:when it (?:gets|reaches|hits)|once it (?:gets|reach
 // A denial about STARTING only: "didn't go through" is a true line about a run that ran and failed.
 const NEVER_STARTED = /\b(?:never (?:actually |really )?(?:started|ran|began|got going|kicked off)|didn'?t (?:actually |really )?(?:start|run|kick off)|did not (?:actually |really )?(?:start|run)|wasn'?t (?:actually |really )?(?:started|running)|nothing (?:was|is|'s) running|no checkout (?:was|is) running|hadn'?t (?:actually )?started)\b/i;
 const SELF_BUY_HEDGE = /\b(?:if you(?:'d| would) rather(?: just)? (?:buy|order|finish|place|check out|checkout) (?:it|this|the order|that)(?: yourself| on your own)?|if you(?:'d| would) rather(?: just)? (?:get|grab|do) (?:it|this|that) yourself|(?:buy|order|finish|place|check out) (?:it|this|the order) (?:yourself|on your own)|here'?s the (?:page|link) (?:if|in case) you(?:'d| would)? (?:rather|want to|prefer to) (?:buy|order|finish|place|do|get) (?:it|this|that|the order))\b/i;
+// The record against the draft (audit 11-11): the newest run of the last two hours decides. "Nothing's
+// charged" after a payment went out (10-31 14:10, Walmart), "started / running" about a run that ended
+// failed or cancelled (10-31 10:58), "declined" about a payment Reason called off itself (10-30 20:00).
+const NOTHING_CHARGED = /\b(?:nothing(?:'s| is| has| was| got| gets| will be)?(?: been)? (?:charged|paid|gone (?:out|through))|nothing goes (?:out|through)|(?:you )?(?:haven'?t|hasn'?t|have not|has not|weren'?t|wasn'?t|were not|was not|aren'?t|are not|won'?t be|not) (?:been |yet been |be )?charged|no charge (?:yet|has|went)|(?:you )?(?:haven'?t|have not) paid)\b/i;
+const SAYS_DECLINED = /\b(?:was|got|been|were|is|it|they|card|payment|store|merchant)\s+(?:\w+\s+){0,2}?declined\b|\bdeclined (?:it|the (?:card|payment|order|charge))\b/i;
+const recordLine = (run) => `Actually, checking my record: the ${shop.storeName(run.store) || "store"} checkout${run.item ? ` for ${run.item}` : ""}: ${shop.stageLine(run)}.`;
+/** Sentences that say the opposite of the newest run's record go; one line from the record goes first. */
+function againstRecord(conversationId, text) {
+  const latest = shop.runsOf(conversationId, { sinceMs: 2 * 3600_000, limit: 1 })[0];
+  if (!latest) return null;
+  const charged = shop.chargedOf(latest);
+  const all = sentencesOf(text).filter((p) => typeof p !== "string").flat();
+  const about = aboutCheckout(turnOf(conversationId).own, latest);
+  const tests = [];
+  if (/^(?:yes|unknown|being paid)/.test(charged) && about) tests.push(["charged_contradicts_record", (s) => NOTHING_CHARGED.test(s)]);
+  if (["failed", "cancelled"].includes(latest.stage) && !shop.runsOf(conversationId, { sinceMs: 2 * 3600_000 }).some((r) => r.status === "running"))
+    tests.push(["running_contradicts_record", (s, i) => isStartClaim(s, `${all[i - 1] ?? ""} ${all[i + 1] ?? ""}`)]);
+  if (shop.stoppedByReason(latest) && about) tests.push(["declined_contradicts_record", (s) => SAYS_DECLINED.test(s) && !/\?\s*$/.test(s)]);
+  for (const [rule, hit] of tests) {
+    const drop = new Set(all.filter((s, i) => hit(s, i)));
+    if (!drop.size) continue;
+    if (rule === "charged_contradicts_record") for (const s of all) if (START_FOLLOWUP.test(s)) drop.add(s);
+    const kept = sentencesOf(text).map((p) => (typeof p === "string" ? p : p.filter((s) => !drop.has(s)))).filter((p) => typeof p === "string" || p.length);
+    return { text: [recordLine(latest), joinBack(kept)].filter(Boolean).join("\n"), flag: { rule, run_id: latest.run_id } };
+  }
+  return null;
+}
 const HONEST_NOT_STARTED ="I haven't actually started a checkout: nothing is running and nothing has been charged. Want me to start it now?";
 const isStartClaim = (s, near) => !NOT_A_START.test(s) && !/\?\s*$/.test(s) && (I_STARTED.test(s) || CHECKOUT_IS.test(s) || (START_IT.test(s) && CHECKOUT_WORD.test(near)));
 const ABOUT_BUYING = /\b(?:checkout|check-?out|order(?:s|ed)?|purchase[sd]?|buy|bought|buying|cart|shop(?:ping)?|pay(?:ment|ing)?|paid|charge[sd]?|store)\b/i;
@@ -96,6 +123,7 @@ export function checkoutClaims(conversationId, text) {
       text = [line, joinBack(kept)].filter(Boolean).join("\n");
       flag = { rule: "never_started_with_run", run_id: ran.run_id };
     }
+    if (!flag) { const r = againstRecord(conversationId, text); if (r) ({ text, flag } = r); }
     // A checkout Reason started is Reason's to finish (owner, 2026-10-31 12:17): "Here's the page if
     // you'd rather just buy it yourself" — and the bare store link under it — goes, while a run of theirs is open or just ran.
     if (behind || half.length) {

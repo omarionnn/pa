@@ -28,6 +28,7 @@
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { db, recordingFiles, documentFiles, rawPrepare, restcrypt } from "./db.js";
+import { keepableMessages } from "./pagesecrets.js";
 import { config } from "./config.js";
 // Creates stranger_calls if this runs before anything else has (npm run data:*).
 import "./strangercalls.js";
@@ -37,6 +38,9 @@ import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
 import * as google from "./google.js";
+// Saved logins live in data/logins.db (their own file): exported as a list with the login REDACTED,
+// deleted before the person's key goes. Loading it creates no file.
+import { deleteAllFor, deleteEveryLogin, exportFor } from "./savedlogins.js";
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
@@ -55,6 +59,9 @@ const TABLES = [
   "documents",
   // Which files on disk were made for them (src/ownfiles.js): paths only, no bytes.
   "conversation_files",
+  // Their record of each saved-login save, open and removal (src/savedlogins.js); `purpose` sealed.
+  // The logins themselves are in data/logins.db: see exportFor / deleteAllFor below.
+  "login_log",
   // Which new features this person has been told about. Theirs like anything else keyed by
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.
@@ -136,7 +143,8 @@ const TABLES = [
   // passengers they saved, and the e-ticket watch (ticket numbers and record locator read off their
   // own mail). Theirs, so in an export and taken by a delete. The passenger details themselves are
   // sealed and stay out of the file — see SECRET_COLUMNS.
-  "agentcard_purchases", "flight_travelers", "flight_ticket_watch",
+  // flight_runs: which checkout was a flight, for which search option and which traveler ids — no passenger detail.
+  "agentcard_purchases", "flight_travelers", "flight_ticket_watch", "flight_runs",
   // Standing check-ins. The row holds what Reason agreed to keep asking about and, in `last_report`,
   // the last thing they said back to it — their own words, so an export without it would not be a copy
   // of their data, and a delete that left it behind would leave Reason still asking every Monday about
@@ -156,6 +164,11 @@ const TABLES = [
   // morning to somebody who wiped it, off criteria they thought they had deleted. The firings are
   // `series` and `timers` rows, above.
   "goals", "goal_matches",
+  // Something they said is coming up (a trip, a move, a birthday), in their own sentence, the offers
+  // held for it, their own on/off answer and the offers they never want (src/cues.js). Where somebody
+  // will be and when is theirs; a delete that left these behind would leave Reason still offering a
+  // ride to a flight belonging to somebody who wiped it.
+  "cues", "cue_offers", "cue_prefs", "cue_mutes",
   // The flights they are on, with the confirmation code, the passenger name, the seat and the
   // boarding pass. Among the most personal rows in here — where somebody will be, and when — so an
   // export without it would not be a copy of their data, and a delete that left it behind would
@@ -200,10 +213,15 @@ const TABLES = [
   "daily_caps", "cap_changes", "offers", "uber_rides", "spotify_join_requests",
   // The Crossmint user a card saved on the web setup was saved under (src/shopconnect.js adoptSetupCard).
   "shop_crossmint_subjects",
+  // Account jobs (src/accountjobs.js): each cancellation or bill they asked for, what the site said and
+  // which proof was seen. Theirs alone, keyed by conversation: exported with the rest, gone on a delete.
+  "account_jobs",
   // Their no to "want me to use your Google login?", held 30 days per provider (src/socialsignin.js).
   "social_declines",
   // Google/Apple/Microsoft refusing Reason's browser for one of their sites, kept 7 days (src/socialsignin.js).
   "social_refusals",
+  // The sign-in page their last attempt on a site was on, and a link that ended without progress (src/signinpage.js).
+  "signin_pages",
   // Their food orders and food notes (src/food.js): what they ordered, where it went, places turned down.
   "food_orders", "food_notes", "food_places", "food_told",
   // The daily edition and their stamps (src/daily.js, src/stamps.js).
@@ -212,6 +230,8 @@ const TABLES = [
   "call_errands", "call_quotes", "call_commitments", "call_requests",
   // What they asked, what Reason claimed back, and the bookkeeping around it.
   "requests", "request_messages", "open_questions", "sent_claims", "choice_sets", "held_actions",
+  // Checks left after an outward action, for the "quick correction:" line (src/verifications.js).
+  "verifications",
   "capability_misses", "parallel_runs", "pattern_asks", "line_change_cards",
   // Their own lists: what they spent, what they ate, what they need from the shop.
   "expenses", "meal_entries", "grocery_items",
@@ -243,6 +263,11 @@ const TABLES = [
   // The engine behind them (src/actionengine.js): each day's run and what it cost, where each card
   // came from (sealed), and their standing "stop showing me X" rules.
   "action_card_days", "action_card_sources", "card_skip_rules",
+  // Their bank through Plaid (src/plaid.js): the connected banks (the access token is sealed out of
+  // an export, see SECRET_COLUMNS, and removed at Plaid before a delete), each account's name and
+  // last four, every synced transaction, the links texted, when a bank read was answered, and the
+  // "that looks short" warnings before a payment.
+  "plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks",
 ];
 
 /**
@@ -269,6 +294,7 @@ export const KEPT_ON_DELETE = {
   // what was charged and refunded; the organizer's Stripe account id is what refunds their guests.
   event_payments: "a ticket payment is shared with the event's organizer and is what a refund reads; deleting it would strand money",
   event_payout_accounts: "the organizer's Stripe account id; deleting it would leave their paid guests unrefundable",
+  event_seats: "one row per ticket on a payment (the buyer's and each friend's): what a per-ticket refund reads and who paid for whose spot; deleting it would strand money",
 };
 
 /**
@@ -276,6 +302,7 @@ export const KEPT_ON_DELETE = {
  * coverage test can tell "nobody's" from "forgotten". A whole-install delete leaves them, as before.
  */
 export const INSTALL_WIDE = {
+  site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain, with a short one-way mark of which sign-in page was asked (never the address itself); nothing in it says who asked.",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
   channel_limits: "what each channel refused, learned once for everyone",
   flight_provider_usage: "monthly search counts per flight provider",
@@ -286,6 +313,7 @@ export const INSTALL_WIDE = {
   ops_digest: "the operator's digest lines",
   ops_state: "operator state; the one per-person key in it is removed by deleteData",
   place_photos: "photo cache by place",
+  place_zones: "time zone of a looked-up business, by its phone number (no person's data)",
   provider_calls: "per-provider call counts",
   provider_calls_hourly: "per-provider call counts",
   provider_state: "per-provider health",
@@ -314,9 +342,10 @@ export const INSTALL_WIDE = {
 // approval, a guest's directory key, a join claim's code, a public stamp page, the saved card's
 // and shopping profile's handles at Crossmint.
 const SECRET_COLUMNS = {
+  plaid_items: ["access_token"], plaid_links: ["id", "link_token", "token_hash"],
   oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
   shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"], connect_after_links: ["id"], shop_crossmint_subjects: ["sub", "from_conversation"],
-  pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
+  pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], event_seats: ["claim_token"], stamp_shares: ["share_id"], web_setups: ["secret_hash", "code"],
 };
 // What a redacted column says instead, when it is not a credential.
 const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger details stay sealed on this machine; ask Reason for flight_travelers to read them]" };
@@ -328,8 +357,19 @@ const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger deta
 const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings", "pay_passkey_regs"];
 const REDACTED = "[not exported: this is a live credential]";
 
+function keepableThreadRow(r) {
+  if (typeof r?.messages !== "string") return r;
+  let msgs;
+  try { msgs = JSON.parse(r.messages); } catch { return r; }
+  const kept = keepableMessages(msgs);
+  return kept === msgs ? r : { ...r, messages: JSON.stringify(kept) };
+}
+
 function redactSecrets(table, rows) {
   if (table === "trips") return rows.map(scrubTrip);
+  // A thread kept before secret boxes were withheld leaves the same way a new one is kept: no secret
+  // box's contents, no credential typed for a tool (src/pagesecrets.js keepableMessages).
+  if (table === "conversations") return rows.map(keepableThreadRow);
   const cols = SECRET_COLUMNS[table];
   if (!cols) return rows;
   return rows.map(r => {
@@ -492,6 +532,8 @@ export function exportData({ conversation = null, audio = true, files = true } =
     tables: {},
     recordings: [],
     documents: [],
+    // data/logins.db: which sites, the username hint, dates, permission and state. Never the login.
+    saved_logins: [],
   };
 
   for (const t of TABLES) {
@@ -510,6 +552,7 @@ export function exportData({ conversation = null, audio = true, files = true } =
     out.redacted = `${Object.entries(SECRET_COLUMNS).map(([t, c]) => `${t}.${c.join("/")}`).join(", ")} — the rows are here, the credential values are not. ${DROP_FROM_EXPORT.join(", ")} is left out entirely.`;
   }
   for (const t of GLOBAL_TABLES) out.tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
+  out.saved_logins = exportFor(conversation).map(r => ({ ...r, login: REDACTED }));
 
   // A page is only half of itself without the browsers signed in to it and the answers on it.
   // Plus the person's own event sign-in key (src/events.js signinKey), which no page row carries,
@@ -594,6 +637,11 @@ async function revokeGoogleGrants(conversation, { fetchImpl = null } = {}) {
 export async function deleteData({ conversation = null, fetchImpl = null } = {}) {
   // Google first, while the refresh tokens are still here to revoke with.
   const googleGrants = await revokeGoogleGrants(conversation, { fetchImpl });
+  // Plaid too (src/plaid.js): /item/remove for each connected bank while its token is still here.
+  let plaidItems = null;
+  if (present("plaid_items")) {
+    try { plaidItems = await (await import("./plaid.js")).removeAllAtPlaid(conversation); } catch { plaidItems = { removed: 0, failed: -1 }; }
+  }
 
   // The files are read before the rows go, or there is nothing left pointing at them.
   const files = recordingFiles(conversation);
@@ -625,6 +673,17 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     try { db.prepare("UPDATE events SET remind_day_before = 0, remind_soon = 0 WHERE organizer_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
   }
 
+  // A ticket somebody else bought stays (KEPT_ON_DELETE: money), but the one text Reason owed this
+  // person about it is dropped and the row no longer points at them (src/eventpay.js oweSeatInvite).
+  if (conversation && present("event_seats")) {
+    try { db.prepare("UPDATE event_seats SET invite_conversation_id = NULL, invite_state = CASE WHEN invite_state = 'owed' THEN 'dropped' ELSE invite_state END WHERE invite_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
+  }
+
+  // Saved logins (data/logins.db) before anything else goes: before the person's key is destroyed
+  // below (the username hint is sealed under it), and before the rows below, so the record
+  // deleteAllFor writes goes with the rest of theirs.
+  const savedLogins = { deleted: conversation ? deleteAllFor(conversation, { purpose: "their data was deleted" }) : deleteEveryLogin() };
+
   const rows = {};
   const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {
@@ -654,7 +713,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   if (!conversation) {
     for (const t of GLOBAL_TABLES) rows[t] = Number(db.prepare(`DELETE FROM ${t}`).run().changes);
   } else {
-    // A hash of the last passengers sent to AgentCard for them (src/tools.js flight_book).
+    // A hash of the last passengers sent to AgentCard for them (AgentCard's flight route, removed 2026-11-11; older installs may still hold one).
     db.prepare("DELETE FROM ops_state WHERE k = ?").run(`flight:passengers_sent:${conversation}`);
   }
 
@@ -707,7 +766,11 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
 
   return {
     deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds, event_photos: eventPhotos,
+    saved_logins: savedLogins,
     key_destroyed: !!sealedKey.shredded,
+    // Banks let go of at Plaid (/item/remove). A failure is said: the token is deleted here either
+    // way, so Reason cannot read the account, but the connection may still be listed at the bank.
+    ...(plaidItems && (plaidItems.removed || plaidItems.failed) ? { plaid: plaidItems } : {}),
     google: {
       ...googleGrants,
       // Said out loud rather than quietly dropped: whoever runs a delete is entitled to know whether

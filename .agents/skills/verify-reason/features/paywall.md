@@ -2,8 +2,8 @@
 
 Shipped 2026-10-31 (PR #323). **ON on live since 2026-11-07 23:37 UTC (`REASON_PAYWALL=on`, owner's
 go; `paywall_on_since` = 1794094636519 = the flip is the cut-off).** In one line, what a person gets:
-everybody who had an account before the flip (14 on live), anybody who joined through an invite or a
-member's event, the operator and test numbers = free forever, never counted toward an ask; anybody new
+everybody who had an account before the flip (14 on live), anybody who joined through an invite or (before
+REASON_EVENT_PAYWALL_TS, see the last section) a member's event, the operator and test numbers = free forever, never counted toward an ask; anybody new
 = 25 free sessions, asked at the 25th only with a win on the record, otherwise the trial runs on to the
 30th (`trial 25/30 (no win yet)` on /ops), then the pay link (a Stripe Checkout Session, success →
 `/pay/done` "You're all set", cancel → `/pay/back` "No charge"). (2026-11-05 to 11-07 the switch was
@@ -164,3 +164,35 @@ refused over the 20 tells the model the reset date before the price, and the sec
 is only "can't do that part right now".
 Prove: `node --test test/free-tier-monthly.test.js` (15) + `bin/free-tier-drive.mjs` (muted, real router +
 inbound TwiML, prints the texts; 7 ok + all ok on 11-09).
+
+## Event joiners pay like walk-ins (REASON_EVENT_PAYWALL_TS; pa #491, owner 2026-11-11)
+
+An account that came in through an EVENT (`joined_via_event`, no `invited_by`) and was created at or after
+`REASON_EVENT_PAYWALL_TS` (ms; `plan.eventPaywallTs`) is NOT free for good — monthly free tier like a walk-in,
+nothing said up front. Before the cut-off: still free for good. Invites untouched. Unset = old rule. The
+event's own lines never count and are never held by the ceiling: join-code text (no turn), welcome, join
+line, host messages/reminders (`events.deliver` → `_tell`, no paywall check), the morning-after `event:after`
+timer (exempt from `plan.blocked` in `_fireTimer` and `mayInterrupt(c, { paywall: false })`). ONE reply to
+each Reason onboarding line ("how was X?", the call offer) is uncounted and skips the over-ceiling line
+(`eventonb.claimFreeReply`, one-shot ops key `eventonb:free:<conv>:<state>:<at>`). Their own asks count.
+Prove: `node --test test/event-paywall.test.js` (8). Live read-only: `grep REASON_EVENT_PAYWALL_TS .env`;
+`SELECT conversation_id, created_at FROM accounts WHERE joined_via_event IS NOT NULL AND invited_by IS NULL
+AND created_at >= <ts>` = the people now on the free tier through an event.
+
+### Two follow-ups (owner 2026-11-11, same day)
+
+1. **Event business is free.** A guest over the month's 20 who texts about the event itself ("can't make it",
+   an RSVP change, leaving, muting, an answer to the host's question, a reply to the host's message) gets a
+   normal turn: not counted, never the pay line. Only a real ask of Reason counts. `src/eventbusiness.js`
+   `free()` is asked by the router before the count, and only when it can matter (`plan.overNext` + a guest at
+   an event that started under 3 days ago; a host is not a guest). It is a side read by meaning (haiku,
+   12 s, `REASON_EVENT_BUSINESS_TIMEOUT_MS`); with no read, only a text inside a day of the event's own last
+   message to them passes. In that turn `plan.waive` lets a guest's event tools (`eventbusiness.GUEST_TOOLS`)
+   past the lapsed gate; everything else that acts is still refused. Log: `{event_business, free, how}`.
+2. **The surprise call is on Reason.** Anything but a plain no to the call offer sets one call aside
+   (`plan.giftCall`, 2 days like the offer). `call_place` goes ahead with the 2 calls used and with the
+   conversations over, and spends it (`plan.useGiftCall`) instead of `plan.noteCall`, so the month's 2 are
+   untouched. A guest over the ceiling gets up to 3 uncounted texts to say who and what for
+   (`eventonb.claimCallSetup`). The 5-minute cap on a free-tier call still applies.
+
+Prove: `node --test test/event-paywall-tweaks.test.js` (14).

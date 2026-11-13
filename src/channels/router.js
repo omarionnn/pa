@@ -48,13 +48,16 @@ import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
 import * as eventonb from "../eventonboarding.js";
+import * as eventbiz from "../eventbusiness.js";
 import * as actioncards from "../actioncards.js";
 import * as connectafter from "../connectafter.js";
 import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
+import * as signinEmail from "../signinemail.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
+import * as timing from "../replytiming.js";
 
 /** What somebody whose event code did not work is told, by why. */
 const EVENT_CLAIM_LINES = {
@@ -67,6 +70,18 @@ const EVENT_CLAIM_LINES = {
   removed: "the organizer took you off that event, so you can't rejoin it.",
   organizer: "you're organizing that one — nothing to join.",
   not_found: "that event code didn't work. open the event link again to get a fresh one.",
+  already: "you're already on that event, so the ticket stays for somebody else — let the friend who sent it know.",
+};
+/** A friend's ticket that couldn't be claimed after the code text (src/eventpay.js claimSeat): what they're told. */
+const SEAT_CLAIM_LINES = {
+  not_found: "that ticket link doesn't work any more — it may have been refunded. ask the friend who sent it.",
+  used: "that ticket has already been claimed. each link works once — ask the friend who sent it for another.",
+  changed: "the friend who bought that ticket changed its link, so that one doesn't work any more. ask them for the new one.",
+  already: "you're already on that event, so the ticket stays for somebody else — let the friend who sent it know.",
+  removed: "the organizer took you off that event, so that ticket can't be used by you.",
+  paused: "joining that event is paused right now. the same ticket link works again later.",
+  cancelled: "that event was cancelled by its organizer.",
+  organizer: "you're organizing that one — nothing to claim.",
 };
 /** The card line a new guest gets, after the welcome. */
 export const EVENT_CARD_LINE = "save me as Reason so you can find me for event updates — and anything else you need.";
@@ -274,6 +289,18 @@ export class Router {
     // (#offerCardIfNamed, below the turn); the master's yes sends it after "you're in"; the startup
     // pass reaches accounts from before the card existed. Somebody in the first-chat onboarding gets
     // the card from it, after their name, with its own line.
+    // A sign-in waiting on the code they were asked for (src/signinemail.js, no Gmail connected): the
+    // code goes straight to the site HERE, at intake, and everything after — the dedupe row, the held
+    // queue, a mid-turn read, the history, the memory pass and the turn — sees a placeholder instead,
+    // so it is never written down anywhere Reason keeps words (cold review, 2026-11-11).
+    if (typeof inbound.text === "string") {
+      const handed = signinEmail.takeCodeReply(conversationId, inbound.text);
+      if (handed) {
+        inbound.text = handed;
+        if (typeof inbound.said === "string") inbound.said = handed;
+        this.log({ inbound: inbound.externalId, signin_email: "code_reply_taken" });
+      }
+    }
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
     // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
@@ -714,10 +741,27 @@ export class Router {
   async #turn(conversationId, held, last, turn) {
     // One turn, so one turn off the day's allowance, however many texts it was. Counted before anything
     // else so the monthly free tier (src/plan.js) knows whether this is their 21st conversation.
-    accounts.countUse(conversationId, "turn");
+    // A reply to Reason's own event onboarding line ("how was it?", the call offer; src/eventonboarding.js)
+    // is Reason's conversation, not theirs (owner, 2026-11-11): not counted, and never met by the ceiling.
+    let onbReply = false;
+    try { onbReply = last.channel !== web.WEB && (eventonb.claimFreeReply(conversationId) || eventonb.claimCallSetup(conversationId)); } catch { onbReply = false; }
+    // Event business from a guest who would otherwise meet the ceiling ("can't make it", an RSVP change,
+    // an answer for the host; src/eventbusiness.js, owner 2026-11-11): free, uncounted, never the pay
+    // line. Only a real ask of Reason counts.
+    let eventBiz = false;
+    plan.unwaive(conversationId);
+    if (!onbReply && last.channel !== web.WEB) {
+      try { eventBiz = await eventbiz.free({ conversationId, texts: held.map(h => h.text), ask: this.onboard?.ask, log: this.log }); } catch { eventBiz = false; }
+    }
+    if (eventBiz) { onbReply = true; plan.waive(conversationId, eventbiz.GUEST_TOOLS); }
+    accounts.countUse(conversationId, "turn", 1, { visit: !onbReply });
+    // The reply's timing line (src/replytiming.js) starts at the last text's arrival: everything
+    // from here to the send is one stage or another of it. Numbers only.
+    timing.begin(conversationId, { at: last.arrived_at ?? Date.now(), now: last.arrived_at ?? Date.now() });
+    timing.mark(conversationId, "hold");
     // Over this month's free conversations (REASON_FREE_TIER=monthly): no turn at all — one line and the
     // pay link, once a conversation; anything else they text in it is kept in their history and left.
-    try {
+    if (!onbReply) try {
       const over = await plan.answerOverCeiling({ conversationId, texts: held.map(h => h.text), router: this, log: this.log });
       if (over) {
         this.log({ free_tier_over: conversationId, did: over.did, messages: held.length });
@@ -751,7 +795,8 @@ export class Router {
     let eventNoCard = false;
     // An open Action Card this text answers (src/actioncards.js matchInbound): the words of a tap's
     // prefill, or near enough. The turn runs on the text as it is — it already IS the request, in
-    // their own voice — and the card is checked off once that turn has replied.
+    // their own voice — told what the card promised (src/actionengine.js cardFrame); and how it ended
+    // is then read back by code (settleRun), never taken from the reply having been sent.
     let cardHit = null;
     try {
       // A voice note is listened to here, with the bubble already up, so the turn reads what was
@@ -766,6 +811,7 @@ export class Router {
         catch (e) { this.log({ contact_read_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         texts.push(t);
       }
+      timing.mark(conversationId, "hear");
       // Which text the reply answers, for a thread that can carry an inline reply: if the thread
       // has moved on by the time the reply is ready, it is pinned under this one (replies.js).
       const inline = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
@@ -777,7 +823,12 @@ export class Router {
       if (last.channel !== web.WEB) {
         try {
           cardHit = actioncards.matchInbound(conversationId, said);
-          if (cardHit) { cardHit.at = clock.now(); actioncards.replied(cardHit.card); this.log({ action_card_reply: cardHit.card.id, score: Math.round(cardHit.score * 100) / 100 }); }
+          if (cardHit) {
+            cardHit.at = clock.now();
+            actioncards.replied(cardHit.card);
+            cardHit.run = actionengine.beginRun(cardHit.card, { now: cardHit.at });
+            this.log({ action_card_reply: cardHit.card.id, score: Math.round(cardHit.score * 100) / 100, route: cardHit.run.route || "none" });
+          }
         } catch (e) { this.log({ action_card_match_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       // REASON_THREADING (src/threading.js): parts of one send are one text, their attachments are
@@ -822,6 +873,7 @@ export class Router {
           screen: thread ? ({ text }) => this.runtime.screen?.({ text, messages: thread, who: who === "the person I work for" ? "them" : who }) ?? { verdict: "clear" } : null,
         }).catch(e => { this.log({ event_onboarding_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); return null; });
         if (eo?.frame) onboardFrame = eo.frame;
+        if (eventBiz) onboardFrame = [onboardFrame, eventbiz.FRAME].filter(Boolean).join("\n");
         if (eo?.noCard) eventNoCard = true;
         if (eo?.after) eventAfter = { channel: last.channel, to: last.address, chatId: last.chat_id ?? null };
       }
@@ -863,7 +915,9 @@ export class Router {
       const gap = downSince ? leftWhileDownLine({ since: downSince, count: said.length }) : "";
 
       // Event log: record what the user said (after voice-note transcription) and enqueue extraction.
-      const userText = [gap, onboardFrame, several, ...numbered, jobs, ...said].filter(Boolean).join("\n");
+      // A card's tap: what the card promised, and what failing honestly looks like, read above their words.
+      const cardNote = cardHit?.run ? actionengine.cardFrame(cardHit.run) : "";
+      const userText = [gap, onboardFrame, cardNote, several, ...numbered, jobs, ...said].filter(Boolean).join("\n");
       let evId = null;
       try {
         evId = db.writeEvent({
@@ -874,6 +928,7 @@ export class Router {
         db.enqueueExtraction(conversationId, evId);
       } catch { /* best-effort */ }
 
+      timing.mark(conversationId, "prep");
       try {
         reply = await this.runtime.inbound(conversationId, userText, {
           channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
@@ -901,6 +956,8 @@ export class Router {
           text: downLine({ until: e.until, resetAt: e.resetAt, known: e.known }),
           idempotencyKey: `down:${conversationId}:${held[0].arrived_at}`,
         }).catch(() => {});
+        // The card's text went back to wait with the rest: its run has not happened yet.
+        if (cardHit) { try { actionengine.resetRun(cardHit.card.id, conversationId); } catch { /* the sweep settles it */ } }
         return {
           ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
           messages: held.length, replied: false, down: true, until: back.readyAt,
@@ -912,6 +969,7 @@ export class Router {
       // the next process's sweep answers it, and drop the request rows it had opened so nobody is
       // asked the same thing twice. Nothing is said to them: a restart costs a wait, not a reply.
       this.#handBack(conversationId, [...held, ...(e.foldedRows ?? [])], requests);
+      if (cardHit) { try { actionengine.resetRun(cardHit.card.id, conversationId); } catch { /* the sweep settles it */ } }
       this.log({
         drain_interrupted: conversationId, messages: held.length,
         why: (e?.message ?? String(e)).split("\n")[0],
@@ -927,17 +985,29 @@ export class Router {
         try { db.reholdInbound(fold.added.map(a => a.row).filter(Boolean).map(r => ({ ...r, held_times: Math.max(0, (r.held_times ?? 0) - 1) })), { readyAt: clock.now(), downSince: null }); }
         catch (e) { this.log({ fold_hand_back_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
       }
+      // The free event-business turn is over: the lapsed gate is whole again (src/eventbusiness.js).
+      if (eventBiz) plan.unwaive(conversationId);
       onethought.end(fold);
       await bubble.stop();
       this.bubbles.delete(conversationId);
+      // A turn that never sent (an outage, a refusal, onboarding's own bubbles) leaves no timing line.
+      timing.drop(conversationId);
     }
-    // The Action Card this text answered is done once its turn has replied (src/actioncards.js): the
-    // page sinks it below the open ones and the link's picture is drawn again.
-    if (cardHit && reply !== null) {
+    // How the Action Card this text answered really ended, read by code (src/actionengine.js
+    // settleRun): done only when its route's proof is on record (the ledger, the payment, the call),
+    // never because a reply went out. Still waiting on their yes → it waits and the sweep settles it.
+    // Could not be finished → the card comes off the note; the turn has said so, once.
+    if (cardHit) {
       try {
-        // The stall line is a reply too; a turn that died is not the task done (runtime.turnFailedSince).
-        if (this.runtime?.turnFailedSince?.(conversationId, cardHit.at)) this.log({ action_card_turn_failed: cardHit.card.id });
-        else { actioncards.markDone(cardHit.card.id, conversationId); actionengine.noteDoneVia(cardHit.card.id, conversationId, "tap"); this.log({ action_card_done: cardHit.card.id }); }
+        // No reply at all: nothing was said and nothing ran to an end. The card stays as it was.
+        if (reply === null) actionengine.resetRun(cardHit.card.id, conversationId);
+        else {
+          // The stall line is a reply too; a turn that died is not the task done or failed (runtime.turnFailedSince).
+          const turnFailed = !!this.runtime?.turnFailedSince?.(conversationId, cardHit.at);
+          const out = actionengine.settleRun(cardHit.card.id, conversationId, { since: cardHit.at, turnFailed, log: this.log });
+          if (out.state === "done") this.log({ action_card_done: cardHit.card.id });
+          else if (turnFailed) this.log({ action_card_turn_failed: cardHit.card.id });
+        }
       } catch (e) { this.log({ action_card_done_failed: cardHit.card.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
     }
     // After the turn: somebody in the first-chat onboarding who asked for something real gets the
@@ -1147,14 +1217,29 @@ export class Router {
     // the payment link — their words first, the link as its own message. They are in once Stripe says
     // so (eventpay.settlePaid sends the welcome then); nothing else is said now.
     if (out.pending_payment) {
-      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", answers: out.answers ?? null, log: this.log });
+      const tickets = Number(out.tickets ?? 1) || 1;
+      const pay = await eventpay.startCheckout({ ev: out.event, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "web_text", answers: out.answers ?? null, quantity: tickets, log: this.log });
       if (pay.ok) eventonb.onPendingPay({ conversationId: conv, address, ev: out.event, newAccount: out.newAccount });
-      const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote), pay.url]
-        : [{ full: "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one." }[pay.reason]
+      const lines = pay.ok ? [eventpay.payLinkText(out.event, pay.quote, tickets), pay.url]
+        : [{ full: pay.left ? `that event only has ${pay.left} spot${pay.left === 1 ? "" : "s"} left, not ${tickets}. nothing was charged — open the event link again and pick ${pay.left === 1 ? "1 ticket" : `up to ${pay.left}`}.` : "that event is full right now — it filled up before you got to pay. nothing was charged. if a spot opens up, the same link and password will work.", already: "you're already in that one.", too_many: `that event takes up to ${pay.max} tickets per person. nothing was charged — open the event link again and pick fewer.` }[pay.reason]
           ?? "i couldn't start the payment for that event just now. nothing was charged — open the event link again in a minute to try again."];
       for (const text of lines) await this.send({ channel: inbound.channel, to: address, text, chatId, conversationId: conv, toOwner: true }).catch(() => {});
       this.#eventHistory(conv, inbound, [pay.ok ? `[sent them the payment link for the event "${out.event.name.slice(0, 80)}"; they're not in until the payment goes through]` : lines[0]]);
       return { ok: true, conversationId: conv, event: "payment_required", newAccount: out.newAccount, replied: true, paid_link: pay.ok };
+    }
+    // A friend's ticket (src/eventpay.js): the code text proved the phone; now the seat itself, under its own checks.
+    if (out.seat_claim) {
+      const got = eventpay.claimSeat({ ev: out.event, seatId: out.seat_id, version: out.seat_version, conversationId: conv, displayName: out.claim?.display_name || out.account?.name || "Guest", instagram: out.claim?.instagram ?? null, inDirectory: !!out.inDirectory, via: "seat", answers: out.answers ?? null });
+      this.log({ inbound: inbound.externalId, event_seat_claim: out.event.id, ok: got.ok, why: got.ok ? null : got.reason });
+      if (!got.ok) {
+        const line = SEAT_CLAIM_LINES[got.reason] ?? SEAT_CLAIM_LINES.used;
+        await this.send({ channel: inbound.channel, to: address, text: line, chatId, conversationId: conv, toOwner: true }).catch(() => {});
+        this.#eventHistory(conv, inbound, [line]);
+        return { ok: true, conversationId: conv, event: `seat_${got.reason}`, newAccount: out.newAccount, replied: true };
+      }
+      out.attendee = got.attendee;
+      out.already = false;
+      eventpay.tellBuyerClaimed({ runtime: this.runtime, log: this.log }, out.event, got.seat, got.attendee);
     }
     if (!out.already) {
       // A handle typed on the page is kept for their next events; somebody who already had Reason
@@ -1626,10 +1711,17 @@ export class Router {
     // Refused deliveries (a rotated secret, a missing header) raise an alert after a few; an
     // accepted one closes it (src/webhookalert.js). Never in the way of the answer.
     try { webhookAlert.note({ channel, status: parsed.status, error: parsed.body?.error ?? "", request: { headers, rawBody: rawBody ?? rawBytes?.toString?.("utf8") ?? "" } }); } catch { /* never blocks */ }
+    // The carrier's later word on a message it took (REASON_DELIVERY_GATED): read by the outbox,
+    // never a turn. Best-effort, and never in the way of the 200 the provider is waiting for.
+    let delivery = null;
+    if (parsed.delivery) {
+      try { delivery = outbox.noteDelivery({ ...parsed.delivery, log: this.log }); }
+      catch (e) { this.log({ delivery_note_failed: channel, why: (e?.message ?? String(e)).split("\n")[0] }); }
+    }
     const delivered = [];
     for (const inbound of parsed.inbound ?? []) {
       delivered.push(await this.deliver({ ...inbound, channel, arrivedAt }));
     }
-    return { status: parsed.status, body: { ...parsed.body, delivered: delivered.length }, results: delivered };
+    return { status: parsed.status, body: { ...parsed.body, delivered: delivered.length }, results: delivered, ...(delivery ? { delivery } : {}) };
   }
 }

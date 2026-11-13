@@ -11,7 +11,10 @@
 // "~> tap one and I'll start", the wordmark. A tap opens Messages with the request typed in the
 // person's own voice; press-and-hold lifts the card and shows the why-now as a margin note with
 // Reply / Dismiss; dismiss draws a pen line through it and it fades out, the others renumber;
-// done is a pen check and "done", and done cards sit below the open ones.
+// done is a pen check and "done", and done cards sit below the open ones. A card Reason could not
+// finish is off the note (the thread says so). At the very bottom, when there is one, a single plain
+// line, "also worth knowing": up to two things that matter and that Reason cannot finish, with their
+// dates and nothing to tap.
 //
 // Nothing is drawn without a good token (src/actioncards.js viewByToken): a bad or spent address gets
 // the paper "gone" page, in the same frame as a spent sign-in link (src/pages/setupsignin.js).
@@ -22,7 +25,7 @@ import { config } from "../config.js";
 import * as cards from "../actioncards.js";
 import { settleHandled } from "../actionengine.js";
 import { zoneFor } from "../zone.js";
-import { PAPER, PAPER_GRAIN, BRAND_PEN } from "./brand.js";
+import { PAPER, PAPER_GRAIN, PAPER_GLOW, BRAND_PEN } from "./brand.js";
 import { art } from "./actionart.js";
 import { webPage, BUBBLE_PATH } from "./webkit.js";
 import { PAPER_CSS, header, frame, headline, lede, label, para } from "./paperkit.js";
@@ -31,7 +34,7 @@ const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").
 const INK = PAPER.ink, DIM = PAPER.dim, PEN = BRAND_PEN, BG = PAPER.bg, LIFT = PAPER.card, RULE = PAPER.line;
 
 /** Bump when the page's or the picture's drawing changes: part of every cached picture's name. */
-export const ACTION_CARDS_VERSION = 1;
+export const ACTION_CARDS_VERSION = 2;
 
 export const OG_TITLE = "Ready for you";
 export const OG_DESCRIPTION = "A few things Reason can take off your plate today.";
@@ -61,6 +64,14 @@ export function shorten(title, max = 56) {
   return `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s,;:.]+$/, "")}…`;
 }
 
+/** The cards the note shows: open ones and done ones. Struck-out and could-not-finish cards are off it. */
+export const onNote = (d) => d.cards.filter(c => c.status === "open" || c.status === "done");
+/** The one line at the bottom: "also worth knowing: … · …". "" when there is nothing. */
+export function alsoLine(d) {
+  const lines = (d.also ?? []).map(a => String(a.line ?? "").replace(/[.!]+$/, "").trim()).filter(Boolean).slice(0, cards.MAX_ALSO);
+  return lines.length ? `also worth knowing: ${lines.join(" · ")}` : "";
+}
+
 const BUBBLE = (px, col = PEN) => `<svg aria-hidden="true" width="${px}" height="${px}" viewBox="0 0 40 40" style="transform:skewX(-10deg);overflow:visible"><path d="${BUBBLE_PATH}" fill="none" stroke="${col}" stroke-width="3.2" stroke-linejoin="round"/></svg>`;
 const WORDMARK = (px = 22) => `<span class="wm" role="img" aria-label="reason" style="font-size:${px}px">reas<span class="wmb">${BUBBLE(Math.round(px * 0.64))}</span>n</span>`;
 const STRIKE = `<svg class="strike" viewBox="0 0 320 60" preserveAspectRatio="none" aria-hidden="true"><path d="M4 34 C 60 26, 120 40, 170 30 S 270 22, 316 32" fill="none" stroke="${PEN}" stroke-width="3.4" stroke-linecap="round"/><path d="M10 40 C 70 46, 140 30, 200 38 S 280 44, 312 36" fill="none" stroke="${PEN}" stroke-width="2.2" stroke-linecap="round" opacity=".7"/></svg>`;
@@ -74,7 +85,7 @@ export const ogImageUrl = (d) => `${cards.siteOrigin()}${ogImagePath(d.token)}?v
 /** The head lines: the action's words only, no og:url, so the token is never repeated in the card. */
 export function actionCardTags(d) {
   const image = esc(ogImageUrl(d));
-  const alt = `Ready for you. ${headline1(d.cards.filter(c => c.status !== "dismissed").length)}`;
+  const alt = `Ready for you. ${headline1(onNote(d).length)}`;
   return [
     `<meta name="description" content="${esc(OG_DESCRIPTION)}">`,
     `<meta property="og:type" content="website">`,
@@ -104,8 +115,9 @@ const CSS = `${FONTS}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;min-height:100vh;color:${INK};font-family:"Reason Sans",Inter,-apple-system,system-ui,sans-serif;
-  background:${PAPER_GRAIN},radial-gradient(520px 360px at 0% 0%, rgba(246,206,160,.42), transparent 65%),${BG};
+  background:${PAPER_GRAIN},${PAPER_GLOW},${BG};
   -webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+@media (prefers-contrast:more){body{background:${PAPER_GRAIN},${BG}}}
 .note{padding:max(26px,env(safe-area-inset-top)) 26px 60px;max-width:600px;margin:0 auto}
 @media (min-width:700px){.note{padding-top:64px}}
 .eb{font-family:"Courier New",Courier,monospace;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:${DIM};margin:0}
@@ -142,6 +154,7 @@ ol{list-style:none;margin:0;padding:0}
 .card.done .check{position:absolute;right:-6px;top:10px;width:46px;height:46px}
 .card.done h2{color:${DIM}}
 .card.done .donew{font-family:"Reason Hand",Caveat,cursive;font-weight:600;font-size:22px;color:${PEN};position:absolute;right:46px;top:16px;transform:rotate(-6deg)}
+.also{margin:22px 0 0;font-size:14px;line-height:1.45;color:${DIM}}
 .sign{margin-top:26px}
 .sign .hand{font-family:"Reason Hand",Caveat,cursive;font-weight:600;font-size:25px;color:${PEN};line-height:1.05}
 .sign .by{margin-top:10px;display:flex;align-items:center;gap:8px;color:${DIM};font-size:13px}
@@ -195,17 +208,19 @@ ${done ? `${CHECK}<span class="donew">done</span>` : `<div class="more">${c.whyN
 
 /** The note for one digest: open cards first, then done ones; dismissed ones are not on it. */
 export function actionCardsPage(d, { now = Date.now(), tz = null } = {}) {
-  const live = d.cards.filter(c => c.status !== "dismissed");
+  const live = onNote(d);
   const ordered = [...live.filter(c => c.status === "open"), ...live.filter(c => c.status === "done")];
   const n = ordered.length, open = ordered.filter(c => c.status === "open").length;
   const sms = (body) => cards.smsHref(body);
   const zone = tz || zoneFor(d.conversationId);
+  const also = alsoLine(d);
   const body = `<main class="note" id="main">
 <p class="eb">${dateEyebrow(now, zone)}<span id="openct">${n > 0 && open < n ? ` · <b>${open} OPEN</b>` : ""}</span></p>
 <h1 id="h1">${esc(headline1(n))}</h1>
 <div class="rule"></div>
 <ol id="cards">${ordered.map((c, i) => cardLi(c, i + 1, n, sms)).join("\n")}</ol>
 <div class="sign" id="sign"${open ? "" : ` style="visibility:hidden"`}><p class="hand">~&gt; tap one and I'll start</p><p class="by">${WORDMARK(22)}</p></div>
+${also ? `<p class="also" id="also">${esc(also)}</p>` : ""}
 </main>`;
   return `<!doctype html>
 <html lang="en"><head>
@@ -242,7 +257,7 @@ function ogFontCss() {
 
 /** The preview: the eyebrow and headline on the left, the open cards (≤4, titles shortened) stacked on the right. */
 export function actionCardsOgHtml(d, { now = Date.now(), tz = null } = {}) {
-  const live = d.cards.filter(c => c.status !== "dismissed");
+  const live = onNote(d);
   const show = [...live.filter(c => c.status === "open"), ...live.filter(c => c.status === "done")].slice(0, 4);
   const n = live.length, open = live.filter(c => c.status === "open").length;
   const four = show.length >= 4, three = show.length === 3;

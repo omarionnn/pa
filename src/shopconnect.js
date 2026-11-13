@@ -302,6 +302,9 @@ if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().
 // intent's card rail read when the checkout got it ('ready' / 'unlisted'; '' = paid before 2026-11-08).
 if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "cvc_link")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN cvc_link TEXT NOT NULL DEFAULT ''");
 if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "rail_at_pay")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN rail_at_pay TEXT NOT NULL DEFAULT ''");
+// Who stopped a declined payment (audit 11-11): 'them' (their no) or 'reason' (Reason called it off: a
+// run switch, a ceiling, a corrected address). On 10-30 a self-cancel was told as "declined"; '' = before.
+if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "stopped_by")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN stopped_by TEXT NOT NULL DEFAULT ''");
 function siteRow(key) { return q("SELECT * FROM shop_sites WHERE store = ?").get(key) ?? null; }
 /** What Reason learned about a store it was asked to shop at: its site and the name it was called by. */
 export function noteStore({ store, name = "", url = "" }) {
@@ -769,7 +772,7 @@ export async function cancelAtCrossmint(run) {
 async function endQuietly(run, result) {
   tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
   const open = q("SELECT id FROM shop_payments WHERE run_id = ? AND status = 'asked'").get(run.run_id);
-  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id }); } catch { /* it expires on its own */ } }
+  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id, by: "reason" }); } catch { /* it expires on its own */ } }
   if (runRow(run.run_id)?.status === "running") await cancelAtCrossmint(run);
   const now = clock.now();
   q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, progress_at = ?, result = ? WHERE run_id = ? AND status = 'running'").run(now, now, now, String(result).slice(0, 300), run.run_id);
@@ -822,13 +825,17 @@ const isCodeField = (f) => isProtected(f) && (f.input?.autoComplete === "one-tim
  */
 export function linkView(link) {
   if (!link) return { state: "expired" };
-  if (link.state === "connected") return { state: "connected", store: link.store, kind: link.kind };
   const run = link.run_id ? runRow(link.run_id) : null;
-  if (link.state === "failed") return { state: "failed", store: link.store, kind: link.kind, reason: failReason(run) };
+  // An account job's sign-in (src/accountjobs.js): the page says what it is for, never a checkout's words.
+  let job = null;
+  try { job = run && isJobRun(run) ? acctMod?.linkWords(run) ?? null : null; } catch { job = null; }
+  const forJob = job ? { job } : {};
+  if (link.state === "connected") return { state: "connected", store: link.store, kind: link.kind, ...forJob };
+  if (link.state === "failed") return { state: "failed", store: link.store, kind: link.kind, reason: failReason(run), ...forJob };
   // The checkout itself is over while the link still says open (the run died between two polls, or the
   // process was down when it did — 2026-10-31): the page says so, never "checking" for good.
   if (run && TERMINAL.has(run.status) && link.kind === "signin" && link.state === "open") {
-    return run.status === "succeeded" ? { state: "connected", store: link.store, kind: link.kind } : { state: "failed", store: link.store, kind: link.kind, reason: failReason(run) };
+    return run.status === "succeeded" ? { state: "connected", store: link.store, kind: link.kind, ...forJob } : { state: "failed", store: link.store, kind: link.kind, reason: failReason(run), ...forJob };
   }
   if (link.state !== "open" || clock.now() > link.expires_at) return { state: "expired", store: link.store, kind: link.kind };
   if (link.kind === "card") return { state: "card", kind: "card" };
@@ -836,7 +843,7 @@ export function linkView(link) {
   if (!rq || link.answered_request_id === link.request_id) {
     // Waiting on the store: since when (the answer, else the link), and how far the checkout has got.
     const since = link.answered_at ?? link.created_at;
-    return { state: "checking", store: link.store, kind: link.kind, since, waited: Math.max(0, clock.now() - since), stage: run?.stage || "", answered: !!link.answered_at };
+    return { state: "checking", store: link.store, kind: link.kind, since, waited: Math.max(0, clock.now() - since), stage: run?.stage || "", answered: !!link.answered_at, ...forJob };
   }
   const answered = new Set(link.answered_keys ? link.answered_keys.split(",") : []);
   const secret = rq.fields.filter(isProtected);
@@ -845,7 +852,7 @@ export function linkView(link) {
   if (secret.length && secret.every(isCodeField)) state = again ? "wrongcode" : "code";
   else if (again) state = "retry";
   return {
-    state, store: link.store, kind: link.kind, request: rq, answered: answered.size > 0,
+    state, store: link.store, kind: link.kind, request: rq, answered: answered.size > 0, ...forJob,
     ...(state === "signin" && run?.mode === "signed" ? { again: true, item: run.item || "" } : {}),
   };
 }
@@ -1063,14 +1070,18 @@ export function paymentAsk(row, { allIn = false } = {}) {
   const upTo = row.amount_kind === "exact" ? "" : "up to ";
   // No breakdown to show (owner 2026-10-31): the one number is said to be the whole of it.
   const whole = allIn && row.amount_kind === "exact" ? " (total incl. shipping and tax)" : "";
+  // A bill (src/accountjobs.js) is paid TO someone, and its one number is the payment page's own total.
+  if (runRow(row.run_id)?.mode === "job_bill") return `OK to pay ${upTo}${amountText(row)}${allIn && row.amount_kind === "exact" ? " (the payment page's total)" : ""} to ${where}${row.item ? ` for ${row.item}` : ""}?`;
   return `OK to pay ${upTo}${amountText(row)}${whole} at ${where}${row.item ? ` for ${row.item}` : ""}?`;
 }
 /** What a yes is pinned to (src/tools.js confirmTargetFor): the row, its run and request, and the amount. */
 export function payTarget(row) {
-  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]${foodMod?.payTargetTail(row) ?? ""}` : "";
+  return row ? `shop:#${row.id} ${row.amount_kind} ${row.amount} ${row.currency} at ${row.merchant_name || "?"} [${row.run_id}/${row.request_id}]${foodMod?.payTargetTail(row) ?? ""}${flightMod?.payTargetTail(row) ?? ""}` : "";
 }
 /** A payment request from Crossmint: kept as given, once per request id. */
 export function recordPayment({ conversationId, runId, request, item = "" }) {
+  // A cancellation never pays (src/accountjobs.js): its run gets no payment row, so nothing can approve one.
+  if (runRow(runId)?.mode === "job_cancel") return null;
   const it = request.request?.interaction ?? request.interaction ?? {};
   const amount = it.amount ?? {};
   if (it.kind !== "payment" || it.method !== "card" || !/^\d+(\.\d{1,4})?$/.test(String(amount.value ?? ""))) return null;
@@ -1121,6 +1132,9 @@ const crossmintError = (j) => short(j?.error?.code ?? j?.code ?? j?.error?.messa
 async function payRow(row, { confirmationId = null } = {}) {
   const conversationId = row.conversation_id;
   if (row.status !== "asked") return { ok: false, error: `payment_${row.status}` };
+  if (runRow(row.run_id)?.mode === "job_cancel") return { ok: false, error: "never_pays", say: "That run only cancels a subscription and can never pay. Nothing was charged." };
+  // A flight's payment goes out only for the travelers it was built for, where booking is on (src/flightcheckout.js).
+  { const no = await flightPayRefusal(row); if (no) { logFn({ flight_pay_refused: no.error, payment_id: row.id }); return no; } }
   // Only Crossmint's exact total is ever paid: a "maximum" is a ceiling nobody agreed to as a price.
   if (row.amount_kind !== "exact") return { ok: false, error: "not_exact_amount" };
   // An expiry that doesn't read counts as passed.
@@ -1559,13 +1573,13 @@ export async function declineByLink(token) {
   return out;
 }
 
-/** A no (or a change of mind): Crossmint is told to decline, nothing is charged. */
-export async function declinePayment({ conversationId, paymentId }) {
+/** A no (or a change of mind): Crossmint is told to decline, nothing is charged. `by`: whose call it was ('them' or 'reason'). */
+export async function declinePayment({ conversationId, paymentId, by = "them" }) {
   const row = paymentRow(paymentId);
   if (!row || row.conversation_id !== conversationId || row.status !== "asked") return { ok: false, error: "not_open" };
   const part = { type: "input_response", requestId: row.request_id, action: "decline" };
   await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
-  q("UPDATE shop_payments SET status = 'declined', answered_at = ? WHERE id = ?").run(clock.now(), row.id);
+  q("UPDATE shop_payments SET status = 'declined', answered_at = ?, stopped_by = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), by === "reason" ? "reason" : "them", row.id, conversationId);
   return { ok: true };
 }
 
@@ -1747,6 +1761,82 @@ function foodFor(run) {
 let foodMod = null;
 /** Resolves once the food module is loaded (a cycle-free late import: food.js reads this module at call time). */
 export const foodReady = import("./food.js").then((m) => { foodMod = m; }).catch(() => { foodMod = null; });
+// A flight is a checkout on the airline's own site, with a flight's rules on it (src/flightcheckout.js).
+let flightMod = null;
+export const flightReady = import("./flightcheckout.js").then((m) => { flightMod = m; }).catch(() => { flightMod = null; });
+// An account job (src/accountjobs.js, REASON_ACCOUNT_JOBS): a subscription cancelled or a bill paid inside
+// their own account. Its run is marked on the row (mode job_cancel / job_bill), so the mark does not depend
+// on the module having loaded; its questions, waits and ending are its own (step), and only a bill's card
+// payment goes on through the pay path here.
+let acctMod = null;
+export const acctReady = import("./accountjobs.js").then((m) => { acctMod = m; }).catch(() => { acctMod = null; });
+export const isJobRun = (run) => String(run?.mode ?? "").startsWith("job_");
+/**
+ * An account job's run: the task as written, the cap as the string Crossmint's schema takes (never
+ * rounded here: a cancellation's cap is the smallest amount it accepts), always in the person's own
+ * browser profile. No run it supersedes, nothing asked again by code: one run per job.
+ */
+export async function startJobRun({ conversationId, store, startUrl, task, item = "", cap, kind }) {
+  if (!["cancel", "bill"].includes(kind)) return { ok: false, error: "bad_kind" };
+  const body = {
+    request: { startUrl, task: String(task) },
+    browser: { profileId: await ensureProfile(conversationId) },
+    constraints: { maxCost: { amount: String(cap), currency: "USD" } },
+  };
+  const r = await server(conversationId, CHECKOUTS, { method: "POST", body });
+  const runId = r.json?.runId ?? r.json?.id;
+  if (!r.ok || !runId) return { ok: false, status: r.status, error: short(r.json?.message ?? r.json?.error ?? "", 160) };
+  const now = clock.now();
+  q("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at, stage, stage_at, progress_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, 'started', ?, ?)")
+    .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), `job_${kind}`, now, now, now, now);
+  return { ok: true, runId };
+}
+/**
+ * An account job's run that Crossmint no longer answers about: the row is ended like any lost run, and
+ * the job module says the job's own ending (never "the checkout", never "want me to start it again").
+ */
+async function loseJob(run, say, { cancel = true } = {}) {
+  const now = clock.now();
+  failingSince.delete(run.run_id);
+  q("UPDATE shop_runs SET status = 'failed', result = 'lost: Crossmint stopped answering about this run', stage = 'failed', stage_at = ?, updated_at = ? WHERE run_id = ? AND conversation_id = ? AND status = 'running'").run(now, now, run.run_id, run.conversation_id);
+  q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND conversation_id = ? AND status = 'asked'").run(run.run_id, run.conversation_id);
+  if (cancel) await cancelAtCrossmint(run);
+  await acctReady;
+  try { await acctMod?.onLost(run, jobKit(say)); } catch { /* the row is ended either way */ }
+}
+/** One message part into a run (an account job's decline, alternative or answer). The part's values are never logged or stored. */
+export async function sendPart(run, part) {
+  try {
+    const r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(run.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
+    return { ok: r.ok, status: r.status };
+  } catch { return { ok: false, status: null }; }
+}
+/** What src/accountjobs.js runs on, handed to it at each look (it imports this module; this one never imports it by name). */
+const jobKit = (say) => ({
+  say, publicRequest, isProtected, isCodeField, openSigninLink, createLink, finishSignin, tellOnce, setStage, sendPart, cancelAtCrossmint,
+  linkUrl: (token) => `${linkBase()}/${token}`,
+  wake: (c, text, key) => wake(c, text, key),
+  log: (o) => logFn(o),
+  /** The row's ending, written once: status, stage and Crossmint's code or summary. */
+  endRow: (run, status, result) => {
+    const now = clock.now();
+    q("UPDATE shop_runs SET status = ?, result = ?, stage = ?, stage_at = ?, updated_at = ?, progress_at = ? WHERE run_id = ? AND conversation_id = ?")
+      .run(status, String(result?.code ?? result?.summary ?? "").slice(0, 300), status === "succeeded" ? "placed" : status === "cancelled" ? "cancelled" : "failed", now, now, now, run.run_id, run.conversation_id);
+    q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND conversation_id = ? AND status = 'asked'").run(run.run_id, run.conversation_id);
+  },
+});
+export const _jobKit = jobKit;
+/**
+ * A flight's reasons not to pay, never skipped: the module is waited for, and if it did not load, a
+ * run on record as a flight is refused outright — its traveler and switch checks cannot be made.
+ */
+async function flightPayRefusal(row) {
+  await flightReady;
+  if (flightMod) return flightMod.payRefusal(row) ?? null;
+  let isFlight = false;
+  try { isFlight = !!q("SELECT 1 FROM flight_runs WHERE run_id = ? AND conversation_id = ?").get(row.run_id, row.conversation_id); } catch { isFlight = false; }
+  return isFlight ? { ok: false, error: "not_available", say: "Reason can't book flights right now, so nothing was paid. Hand over the Google Flights link from the search instead." } : null;
+}
 
 /** "12:25 PM" in their zone: when the store stops holding the cart, said as a clock time, never as a countdown. */
 function clockTime(ms, conversationId) {
@@ -1793,14 +1883,58 @@ async function postAnswer(run, rq, answers) {
   q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(now, now, now, run.run_id);
   return { ok: true };
 }
-/** A choice answered in words ("NY") becomes the option's value; anything else is left as given. */
-function shapeAnswers(rq, answers) {
+/**
+ * A choice answered in words ("NY", "leave at door", "$2 tip") becomes the option's value; anything else is
+ * left as given. Exported for the tests.
+ */
+export function shapeAnswers(rq, answers) {
   const out = {};
   const fields = new Map((rq.fields ?? []).map((f) => [f.key, f]));
   for (const [k, v] of Object.entries(answers ?? {})) {
     const f = fields.get(k);
-    if (f && f.input?.kind === "choice" && typeof v === "string") { const m = shipping.matchOption(f.input.options, v); out[k] = m === null ? v : m; }
-    else out[k] = v;
+    if (f && f.input?.kind === "choice" && (typeof v === "string" || typeof v === "number")) {
+      const m = shipping.matchOption(f.input.options, String(v)) ?? looseOption(f.input.options, String(v));
+      out[k] = m === null ? v : m;
+    } else out[k] = v;
+  }
+  return out;
+}
+const optLabel = (o) => String(typeof o === "string" ? o : o?.label ?? o?.value ?? "");
+const optValue = (o) => (typeof o === "string" ? o : o?.value);
+const usableOptions = (options) => (Array.isArray(options) ? options : []).filter((o) => o && !o.disabled && !o.placeholder && optValue(o) !== undefined && optValue(o) !== null);
+// Words that carry no choice ("leave IT at MY door", "$2 TIP").
+const FILLER = new Set(["a", "an", "the", "it", "my", "me", "at", "to", "on", "by", "in", "of", "for", "please", "just", "tip", "dollar", "dollars", "bucks"]);
+const wordsOf = (s) => String(s).toLowerCase().replace(/[^a-z0-9%.$]+/g, " ").split(" ").filter((w) => w && !FILLER.has(w));
+const moneyOf = (s) => {
+  if (/%/.test(s)) return null;
+  const m = /(?:^|[^\d.])\$?\s*(\d+(?:\.\d{1,2})?)(?![\d%])/.exec(` ${s}`);
+  return m ? Math.round(Number(m[1]) * 100) : null;
+};
+/**
+ * The one option the words mean when they are not its exact label (Chipotle 11-10: "leave at door" for
+ * "Leave it at my door", "$2 tip" for "$2.00"): the same amount of money, else every word given is in
+ * its label. A tie or no hit is null, and the caller re-asks rather than send what the store refuses.
+ */
+function looseOption(options, v) {
+  const opts = usableOptions(options);
+  const cents = moneyOf(v);
+  if (cents !== null) {
+    const same = opts.filter((o) => moneyOf(optLabel(o)) === cents);
+    if (same.length === 1) return optValue(same[0]);
+  }
+  const want = wordsOf(v).filter((w) => !/^\$?[\d.]+$/.test(w));
+  if (!want.length) return null;
+  const hits = opts.filter((o) => { const have = new Set(wordsOf(optLabel(o))); return want.every((w) => have.has(w)); });
+  return hits.length === 1 ? optValue(hits[0]) : null;
+}
+/** The choice fields whose answer is none of the store's options: { key: [labels] }, empty when all match. */
+function unmatchedChoices(rq, answers) {
+  const out = {};
+  for (const f of rq.fields ?? []) {
+    if (f?.input?.kind !== "choice" || !(f.key in (answers ?? {}))) continue;
+    const opts = usableOptions(f.input.options);
+    if (!opts.length || typeof answers[f.key] === "object") continue;
+    if (!opts.some((o) => String(optValue(o)) === String(answers[f.key]))) out[f.key] = opts.map(optLabel);
   }
   return out;
 }
@@ -2085,6 +2219,7 @@ export async function step(runId) {
     if (r.status === 404) {
       if (!failingSince.has(runId)) failingSince.set(runId, clock.now());
       if (clock.now() - failingSince.get(runId) >= LOST_MS) {
+        if (isJobRun(run)) { await loseJob(run, say); return { done: true, status: "failed", said, lost: true }; }
         await lose(run, say, "Crossmint stopped answering about this run");
         return { done: true, status: "failed", said, lost: true };
       }
@@ -2094,10 +2229,12 @@ export async function step(runId) {
     // Crossmint down or refusing: the run may still be going there. Given up only after OUTAGE_MS, not cancelled.
     failingSince.delete(runId);
     if (clock.now() - (run.last_ok_at ?? run.created_at) > OUTAGE_MS) {
+      if (isJobRun(run)) { await loseJob(run, say, { cancel: false }); return { done: true, status: "failed", said, lost: true }; }
       await lose(run, say, "Crossmint stopped answering about this run", { cancel: false });
       return { done: true, status: "failed", said, lost: true };
     }
-    return { done: false, said, ...(await stalled(run, say)) };
+    // An account job says its own one waiting line (src/accountjobs.js), never a checkout's.
+    return { done: false, said, ...(isJobRun(run) ? {} : await stalled(run, say)) };
   }
   failingSince.delete(runId);
   const cur = r.json;
@@ -2108,6 +2245,14 @@ export async function step(runId) {
   // Progress is Crossmint's revision moving, a new request, or the end.
   const rev = Number(cur.revision ?? 0);
   if (rev !== Number(run.revision ?? 0)) q("UPDATE shop_runs SET revision = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(rev, now, now, runId);
+  // An account job's run (src/accountjobs.js): its own questions, waits and ending. Its rules cannot be
+  // applied without the module, so a job run with no module is ended safely, never treated as shopping.
+  if (isJobRun(run)) {
+    await acctReady;
+    if (!acctMod) { await endQuietly(run, "account job: its module did not load"); return { done: true, status: "cancelled", said }; }
+    const out = await acctMod.onRun(runRow(runId), cur, jobKit(say));
+    if (out) return { said, ...out };
+  }
   const ra = cur.requiredAction;
   const requestId = ra?.requestId ?? "";
   let woke = null;
@@ -2128,12 +2273,12 @@ export async function step(runId) {
       const row = recordPayment({ conversationId: run.conversation_id, runId, request: rq, item: run.item });
       if (row && told.has("superseded")) {
         // Started over with a corrected address: this one's payment is declined, quietly. Nothing charged.
-        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
+        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id, by: "reason" });
         q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, result = 'superseded' WHERE run_id = ?").run(now, now, runId);
         return { done: true, status: "cancelled", said };
       } else if (row && row.amount_kind !== "exact") {
         // A ceiling, not a total: nothing to say yes to. Declined, so nothing is charged.
-        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
+        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id, by: "reason" });
         setStage(runId, "in_progress");
         await say(`${row.merchant_name || storeName(run.store) || "The store"} only gave me a ceiling (${amountText(row)}), not the real total, so I stopped before paying. Nothing was charged.`);
       } else if (row && it.method === "card") {
@@ -2186,13 +2331,14 @@ export async function step(runId) {
         const moved = await moveOn(runRow(runId), refused.reason, say, { stopAnswer: stop, rq: pub });
         return { done: true, status: "cancelled", said, ...moved };
       }
-      const filling = autoFill(run, pub);
+      // A flight's passenger form is answered from the sealed traveler record (src/flightcheckout.js).
+      const filling = flightMod?.isFlightRun(runId, run.conversation_id) ? flightMod.fill(run, pub, autoFill(run, pub)) : autoFill(run, pub);
       if (filling.covered) {
         const posted = await postAnswer(run, pub, filling.answers);
         if (posted.ok) {
           tellOnce(runId, `auto:${requestId}`);
-          await say(autoAnsweredText(run, filling.row, pub, filling));
-          if (filling.own !== false) shipping.markUsed(run.conversation_id);
+          await say(filling.say ?? autoAnsweredText(run, filling.row, pub, filling));
+          if (!filling.say && filling.own !== false) shipping.markUsed(run.conversation_id);
           return { done: false, status, said, answered: requestId, ...(await stalled(runRow(runId), say)) };
         }
         // Refused: the model gets the whole question (the record is not merged in again for this request) and decides.
@@ -2234,7 +2380,7 @@ export async function step(runId) {
       }
       setStage(runId, "failed");
       const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: true });
-      if (again.ok) { tellOnce(runId, "end"); q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`sign-in wall; started again signed in as ${again.runId}`, runId); foodMod?.relinkRun(runId, again.runId); follow(again.runId); }
+      if (again.ok) { tellOnce(runId, "end"); q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`sign-in wall; started again signed in as ${again.runId}`, runId); foodMod?.relinkRun(runId, again.runId); flightMod?.relinkRun(runId, again.runId, run.conversation_id); follow(again.runId); }
       else if (tellOnce(runId, "end")) await say(`${storeName(run.store) || "The store"} wants an account to check out, and I couldn't start the signed-in checkout. Nothing was charged.`);
       return { done: true, status, said, retried: again.ok ? again.runId : null };
     }
@@ -2249,12 +2395,19 @@ export async function step(runId) {
       const ref = orderRef(result);
       if (ref) q("UPDATE shop_runs SET order_ref = ? WHERE run_id = ?").run(ref, runId);
       setStage(runId, "placed");
+      const isFlight = !!flightMod?.isFlightRun(runId, run.conversation_id);
       if (!runRow(runId).mail_until) { q("UPDATE shop_runs SET mail_until = ? WHERE run_id = ?").run(now + MAIL_WATCH_MS, runId); watchMail(runId); }
       // An order placed is a finished errand (src/stamps.js: the "orders" seal). Told after the write; never costs the text.
       try { db.completionBus.emit("order", { conversationId: run.conversation_id, runId, store: storeOf(run) }); } catch { /* a listener's failure is its own */ }
       const food = foodFor(run);
       const foodPlaced = food ? await food.placed(run).catch(() => null) : null;
-      if (tellOnce(runId, "end")) await say(foodPlaced ?? placedText(run, result));
+      let flightPlaced = null;
+      if (isFlight) {
+        const paidRow = q("SELECT amount FROM shop_payments WHERE conversation_id = ? AND run_id = ? AND status = 'paid' ORDER BY id DESC LIMIT 1").get(run.conversation_id, runId);
+        const cents = Math.round(Number(result?.purchase?.receipt?.total?.amount ?? paidRow?.amount ?? 0) * 100) || 0;
+        try { flightPlaced = flightMod.placed(run, { orderRef: ref || String(result?.purchase?.receipt?.merchantOrderId ?? "").slice(0, 40), amountCents: cents }); } catch (e) { logFn({ flight_placed_failed: (e?.message ?? String(e)).slice(0, 160), run_id: runId }); }
+      }
+      if (tellOnce(runId, "end")) await say(foodPlaced ?? flightPlaced ?? placedText(run, result));
     } else {
       setStage(runId, status === "cancelled" ? "cancelled" : "failed");
       // Walled off or blocked, nothing paid: the next store they were shown, by code, rather than
@@ -2303,6 +2456,7 @@ async function renewHold(run, ask, result, say) {
   q("UPDATE shop_runs SET ask_since = ?, renewals = ?, told = ? WHERE run_id = ?").run(since, (run.renewals ?? 0) + 1, [...new Set(carried)].join(","), again.runId);
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`renewed: store hold ran out; asked again as ${again.runId}`, run.run_id);
   foodMod?.relinkRun(run.run_id, again.runId);
+  flightMod?.relinkRun(run.run_id, again.runId, run.conversation_id);
   // The link they hold for the old payment can't pay it any more: closed, so its page says a newer one is coming.
   for (const p of q("SELECT id FROM shop_payments WHERE run_id = ?").all(run.run_id)) {
     const a = passkey.openApprovalFor(p.id);
@@ -2361,6 +2515,7 @@ export async function answerRun(runId, { conversationId, answers }) {
   const run = runRow(runId);
   if (!run || run.conversation_id !== conversationId) return { ok: false, error: "no_such_run" };
   if (TERMINAL.has(run.status)) return { ok: false, error: "run_over", stage: run.stage, say: `That checkout is over (${run.stage}); nothing is waiting on an answer.` };
+  if (isJobRun(run)) return { ok: false, error: "account_job", say: "That run is an account job (a cancellation or a bill): its questions are answered with account_job_answer, and a cancellation's last step only with account_cancel_confirm." };
   let rq = null;
   try { rq = run.request_json ? JSON.parse(run.request_json) : null; } catch { rq = null; }
   // A form the record answered already, and they say part of it was wrong: the record is corrected and the
@@ -2378,6 +2533,14 @@ export async function answerRun(runId, { conversationId, answers }) {
   // What the model gives wins; what it leaves out comes from the record (2026-10-31); a choice in words
   // becomes the option's value (Ulta's state dropdown refused "NY" twice on 12:17).
   const given = shapeAnswers(rq, answers ?? {});
+  // A choice that is none of the store's options is refused by Crossmint ("Answer does not match the
+  // requested form"); Chipotle refused ~7 of them on 11-10 and the order restarted. Re-ask instead.
+  const unmatched = unmatchedChoices(rq, given);
+  if (Object.keys(unmatched).length) {
+    const lines = Object.entries(unmatched).map(([k, labels]) => `${fieldWords((rq.fields ?? []).find((f) => f.key === k)) || k}: ${labels.join(" / ")}`);
+    return { ok: false, error: "no_matching_option", options: unmatched,
+      say: `Nothing was sent: that answer is not one of the store's options. Ask them to pick one (${lines.join("; ")}), then shop_answer with that option's exact wording.` };
+  }
   // The record's answer to this very request was refused: not merged in again; the model gives it all.
   const fromRecord = toldOf(run).has(`refused:${rq.requestId}`) ? {} : autoFill(run, rq).answers;
   const merged = { ...fromRecord, ...given };
@@ -2416,7 +2579,7 @@ async function correctAndRestart(run, rq, answers) {
   tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
   // A payment this run is asking for goes with the old address: declined, nothing charged.
   const open = q("SELECT id FROM shop_payments WHERE run_id = ? AND status = 'asked'").get(run.run_id);
-  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id }); } catch { /* it expires on its own */ } }
+  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id, by: "reason" }); } catch { /* it expires on its own */ } }
   // The instruction carries the address as it was (startCheckout wrote the old record into it): the old one
   // — the one with the record's previous ZIP — is replaced whole, so a corrected ZIP is not read as a gift.
   let what = String(ask.what ?? "").replace(/\s+/g, " ").trim();
@@ -2426,19 +2589,20 @@ async function correctAndRestart(run, rq, answers) {
   if (!again.ok) return { ok: false, error: "restart_failed", status: again.status, say: "The record is corrected, but the store would not start the checkout again. Nothing was charged." };
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`corrected address; started again as ${again.runId}`, run.run_id);
   foodMod?.relinkRun(run.run_id, again.runId, { address: shipping.shortAddress(row) });
+  flightMod?.relinkRun(run.run_id, again.runId, run.conversation_id);
   follow(again.runId);
   return { ok: true, run_id: again.runId, corrected: Object.keys(given), superseded: run.run_id,
     say: `Fixed on the record (now ${shipping.shortAddress(row) || "as they said"}); I started ${storeOf(run)}'s checkout over with it. Say that in one line; nothing is charged until they approve the total.` };
 }
 
 // ---------------------------------------------------------------- the record, for the model
-/** This person's runs: every open one, and the ones that started in the window. Newest first. */
+/** This person's runs: every open one, and the ones that started in the window. Newest first. Never an account job's run: that is not a checkout, and has its own record (src/accountjobs.js). */
 export function runsOf(conversationId, { sinceMs = 48 * 3600_000, limit = 10 } = {}) {
-  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT ?").all(conversationId, clock.now() - sinceMs, limit);
+  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND substr(mode, 1, 4) <> 'job_' AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT ?").all(conversationId, clock.now() - sinceMs, limit);
 }
 /** A run most recently started, within `withinMs`, or still open: what a "started" claim has to have behind it. */
 export function recentRun(conversationId, { withinMs = 15 * 60_000 } = {}) {
-  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT 1").get(conversationId, clock.now() - withinMs) ?? null;
+  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND substr(mode, 1, 4) <> 'job_' AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT 1").get(conversationId, clock.now() - withinMs) ?? null;
 }
 const payOf = (run) => q("SELECT * FROM shop_payments WHERE run_id = ? ORDER BY id DESC").get(run.run_id) ?? null;
 /** Where a run stands, in one line, from the row. */
@@ -2465,7 +2629,7 @@ export function stageLine(run) {
     case "approved": return `paying ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} now`;
     case "paid": return `paid ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} ${ago(run.paid_at)}; ${store} still has to place it`;
     case "placed": return `placed ${ago(run.stage_at)}${run.order_ref ? `, order ${run.order_ref}` : ""}${pay ? `, ${amountText(pay)} paid` : ""}`;
-    case "cancelled": return `cancelled ${ago(run.stage_at)}; nothing charged`;
+    case "cancelled": return stoppedByReason(run) ? `cancelled ${ago(run.stage_at)}: I called it off myself, the store and the card had no part in it; nothing charged` : `cancelled ${ago(run.stage_at)}; nothing charged`;
     case "failed": {
       const expired = /input_expired|expired while waiting/i.test(run.result);
       const why = expired ? ` (${store} was waiting for ${askedFor(run)} and it expired after 10 minutes)` : result;
@@ -2489,6 +2653,17 @@ function approvalHint(run) {
   if (open) return { approval: `their Face ID link from the payment text still works for ${minutes(open.expires_at - clock.now())} more minutes; nothing is paid until they approve there. If they say they have no link, call shop_pay with payment_id ${pay.id} for a fresh one.` };
   return { approve_url: approvalUrl(pay), approval: "their earlier Face ID link was used up without paying or ran out. Send this fresh url ON ITS OWN LINE as the last thing, untouched; it works once, until the half hour from the first ask is up. Don't say it's paid." };
 }
+/** Reason called off this run's payment itself (never a decline, in anything said about it). */
+export const stoppedByReason = (run) => payOf(run)?.stopped_by === "reason";
+/** Whether money went out for a run, from its payment row: the line a status answer must agree with. */
+export function chargedOf(run) {
+  const pay = payOf(run);
+  if (!pay) return "no";
+  if (pay.status === "paid") return `yes: ${amountText(pay)} at ${pay.merchant_name || storeOf(run)}`;
+  if (pay.status === "unknown") return `unknown: a payment of ${amountText(pay)} went out and the outcome isn't confirmed`;
+  if (pay.status === "paying") return `being paid now: ${amountText(pay)}`;
+  return "no";
+}
 /** shop_status: the record the model answers from. */
 export function statusView(conversationId) {
   const runs = runsOf(conversationId).map((run) => ({
@@ -2498,6 +2673,10 @@ export function statusView(conversationId) {
     // called the figure unverified).
     ...(run.question ? { last_question: run.question } : {}),
     ...(run.order_ref ? { order_ref: run.order_ref } : {}),
+    charged: chargedOf(run),
+    ...(stoppedByReason(run) ? { stopped_by: "reason" } : {}),
+    // The store's own words on a placed order: the delivery estimate is in them (11-09: "no date yet" when there was one).
+    ...(run.stage === "placed" && run.result ? { result: run.result } : {}),
     ...(run.stage === "needs_approval" ? approvalHint(run) : {}),
   }));
   // Today's money, the real figures (src/spendcap.js): spent, their daily limit, what is left.
@@ -2514,13 +2693,16 @@ export function checkoutNote(conversationId) {
   try {
     if (!connectAllowedFor(conversationId)) return "";
     const runs = runsOf(conversationId, { sinceMs: 24 * 3600_000, limit: 5 });
-    if (!runs.length) return "";
+    // Their account jobs (a cancellation, a bill), from that module's own record.
+    let jobsNote = "";
+    try { jobsNote = acctMod?.noteFor(conversationId) ?? ""; } catch { jobsNote = ""; }
+    if (!runs.length) return jobsNote;
     const lines = runs.map((run) => `- ${storeOf(run)}${run.item ? `, ${run.item}` : ""}: ${stageLine(run)}.`);
     const card = cardOf(conversationId);
     const onFile = card ? `\nCard on file for paying: ${card.brand ? `${card.brand[0].toUpperCase()}${card.brand.slice(1)} ` : ""}••••${card.last4}. Never ask whether they have a card or which; the payment ask is texted for you with the total.` : "";
     return `Checkout record (code's own, from the database; it overrides anything the chat says about these orders):\n${lines.join("\n")}\n`
       + "Answer anything about an order or checkout from this (shop_status has the same). Never say a checkout started unless store_checkout returned a run_id this turn, and never say one never ran when it is listed here."
-      + " A checkout you started is yours to finish: never offer them the store's page to buy it themselves instead." + onFile;
+      + " A checkout you started is yours to finish: never offer them the store's page to buy it themselves instead." + onFile + (jobsNote ? `\n${jobsNote}` : "");
   } catch { return ""; }
 }
 
@@ -2567,6 +2749,8 @@ export const MAIL_WAKES_MAX = 5;
 export async function checkMail(runId, { ending = false, defer = false } = {}) {
   const run = runRow(runId);
   if (!run || !run.mail_until) return { done: true };
+  // An account job reads their mail for its own proof (src/accountjobs.js), with its own words.
+  if (isJobRun(run)) return { done: true };
   // A watch that already stopped (told "mail": capped, no host, no mail) gets one more look at the
   // end of a run, so the end text says what is really there; nothing restarts it (review 11-08).
   let stopped = toldOf(run).has("mail");
@@ -2641,7 +2825,7 @@ export function follow(runId, { everyMs = 3000 } = {}) {
 }
 /** Orders placed (the row's own record): what the stamps book counts. Oldest first. */
 export function ordersPlaced(conversationId) {
-  return q("SELECT run_id, conversation_id, store, item, order_ref, stage_at, updated_at, created_at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed' ORDER BY stage_at, created_at").all(conversationId);
+  return q("SELECT run_id, conversation_id, store, item, order_ref, stage_at, updated_at, created_at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed' AND substr(mode, 1, 4) <> 'job_' ORDER BY stage_at, created_at").all(conversationId);
 }
 /**
  * The checkout record as a source for the figures a reply may name (src/offers.js guardReply): every

@@ -29,6 +29,9 @@ import { flightProviders } from "./flightproviders.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
+import * as findings from "./sitefindings.js";
+import * as signinEmail from "./signinemail.js";
+import * as signinPage from "./signinpage.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
 import * as uber from "./uber.js";
@@ -54,39 +57,51 @@ import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
+import { NOT_RECORDED_WHY } from "./calls/manner.js";
+import * as callTrial from "./calls/calltrial.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
 import { checkCallForPaymentDetails, checkBriefForPaymentDetails } from "./calls/payments.js";
-import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
+import { buildBrief, requireBrief, withinCallingHours, callHoursFor, callNowSaid, parseCallHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
+import * as carryover from "./calls/carryover.js";
 import * as callOutcome from "./calls/outcome.js";
 import { settleGoal, goalPending } from "./calls/goalmet.js";
 import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
+import * as tapbackack from "./tapbackack.js";
+import * as verifications from "./verifications.js";
+import { deliveryGatedOn } from "./trustflags.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal, ticketRefundTarget, ticketRefundRefusal, seatsNeedYes, seatsTarget, seatsRefusal } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "./tableimage.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
-import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool } from "./food.js";
+import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
+import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool } from "./plaid.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
+import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords, ACCOUNT_CANCEL_GATE } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as actioncards from "./actioncards.js";
 import * as actionengine from "./actionengine.js";
+import * as cardroutes from "./cardroutes.js";
 import * as rhythms from "./rhythms.js";
+import * as identity from "./identity.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
 import * as goals from "./goals.js";
+import { CUE_TOOL_DEFS, CUE_SCHEMAS, CUE_TOOLS, cueToolVisible, runCueTool } from "./cues.js";
 import * as memory from "./memory.js";
 import { deleteData as dataDelete } from "./data.js";
-import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
+import { retentionSays, markOutside, looksLikeACredential, refuseCredential, scrubTypedSecret } from "./privacy.js";
+import { scrubPageSecrets } from "./pagesecrets.js";
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { generateIllustration } from "./pages/card.js";
@@ -149,7 +164,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "account_cancel_confirm", "account_bill_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -314,6 +329,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "ac
 export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge", "uber_request",
   // A Crossmint checkout's payment (src/shoptools.js): the yes is pinned to Crossmint's own amount.
   "shop_pay",
+  // A cancellation's last step inside their account (src/accountjobtools.js): pinned to the job's plan, site and open question.
+  "account_cancel_confirm",
   // The one yes to a whole to-do list's plan (src/todo.js), pinned to the plan's fingerprint.
   "todo_approve",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
@@ -326,7 +343,9 @@ export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_su
   // The same words to every guest, at a time they chose (src/eventschedule.js): a blast with a clock on it.
   "event_schedule",
   // Money back to one guest, who then leaves the event (src/eventpay.js): the yes is pinned to the guest and the amount.
-  "event_refund"]);
+  "event_refund",
+  // A guest's own money back under the event's refund policy (src/eventpay.js guestRefund): the yes is pinned to their ticket.
+  "event_ticket_refund"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -372,6 +391,9 @@ export const CONDITIONALLY_GATED = new Set([
   // Adding or rewording a question every guest is asked when they join (src/eventquestions.js):
   // the organizer's yes to exactly those words. Listing the answers, or removing one, asks nothing.
   "event_questions",
+  // A buyer's tickets for friends (src/eventpay.js): giving one back is money, texting one to a
+  // friend's number is words in front of somebody else. Listing them, or a new link, asks nothing.
+  "event_seats",
 ]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
@@ -393,9 +415,10 @@ export function toolsFor(conversationId) {
   const remoteOk = remoteOpen(conversationId).ok;
   const isMaster = accounts.ownerOf(conversationId).isOperator;
   const invitesOk = invitesOpenFor(conversationId);
-  // Crossmint on: it is the only way to buy here, so AgentCard's buying tools and flight_book go (src/shoptools.js).
+  // Crossmint on: it is the only way to buy here, so AgentCard's buying tools go (src/shoptools.js).
   const crossmint = shopConnect.connectAllowedFor(conversationId);
-  const bookingOk = flightbook.bookingEnabled(conversationId) && !crossmint;
+  const bookingOk = flightbook.bookingEnabled(conversationId);
+  const namingOk = identity.oneIdentityFor(conversationId);
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
@@ -406,18 +429,44 @@ export function toolsFor(conversationId) {
     && choiceToolVisible(t.name, conversationId)
     && tableToolVisible(t.name, conversationId)
     && shopToolVisible(t.name, conversationId)
+    && accountJobToolVisible(t.name, conversationId)
+    && browserCancelToolVisible(t.name, conversationId)
     && socialToolVisible(t.name, conversationId)
     && foodToolVisible(t.name, conversationId)
+    && plaidToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
+    && cueToolVisible(t.name, conversationId)
     && cardsToolVisible(t.name, conversationId)
+    && callTrialToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
+    .map(t => (t.name === "remember" && namingOk ? rememberWithName(t) : t))
+    .map(t => (t.name === "signin_link" && !social.socialAllowedFor(conversationId) ? plainSigninLink(t) : t))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
-    .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+    .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t))
+    // Account jobs on for them: the cancelling rules on cancel_route name account_cancel, not the browser walk.
+    .map(t => (t.name === "cancel_route" && accountJobToolVisible("account_cancel", conversationId) ? { ...t, description: accountJobWords(t.description) } : t));
+}
+
+// One identity (src/identity.js, REASON_ONE_IDENTITY): only a person the switch covers is told that
+// `remember` can keep a name for Reason. Everybody else is shown the tool exactly as it was before
+// (their prompt is cached on those bytes), and the dispatch refuses the kind for them too.
+const REMEMBER_KIND_NAMED = Object.freeze({ type: "string", enum: ["fact", "how_to_treat_me", "your_name"], description: "'fact' (default); 'how_to_treat_me' for a rule about how you behave with them, from their correction; 'your_name' when they give YOU a name or rename you ('call yourself Huey', 'i'm going to call you Huey'): the name alone in 'fact'." });
+function rememberWithName(t) {
+  const schema = t.input_schema;
+  if (!schema?.properties?.kind) return t;
+  return { ...t, input_schema: { ...schema, properties: { ...schema.properties, kind: REMEMBER_KIND_NAMED } } };
 }
 
 // Action Cards (src/actioncards.js, src/actionengine.js, REASON_ACTION_CARDS): the two card tools are
 // only shown where the flag reaches this person; nobody else's model hears that cards exist.
+// The Cartesia voice trial on the operator's own calls (src/calls/calltrial.js, REASON_CALL_CARTESIA=owner):
+// only the operator, and only with the switch at owner, is shown call_voice_trial; the dispatch refuses it for anyone else.
+export const CALL_TRIAL_TOOLS = new Set(["call_voice_trial"]);
+export function callTrialToolVisible(name, conversationId) {
+  return !CALL_TRIAL_TOOLS.has(name) || callTrial.trialOffered(conversationId);
+}
+
 export const CARD_TOOLS = new Set(["action_card_source", "action_card_forget"]);
 export function cardsToolVisible(name, conversationId) {
   return !CARD_TOOLS.has(name) || actioncards.allowedFor(conversationId);
@@ -426,7 +475,7 @@ export function cardsToolVisible(name, conversationId) {
 // Signing in through a Google/Apple/Facebook/Microsoft account (src/socialsignin.js,
 // REASON_SOCIAL_SIGNIN): the provider tool is only shown where the flag reaches this person. The
 // `provider` argument on signin_link / signin_open is ignored for everybody else.
-export const SOCIAL_TOOLS = new Set(["signin_provider"]);
+export const SOCIAL_TOOLS = new Set(["signin_provider", "signin_email"]);
 export function socialToolVisible(name, conversationId) {
   return !SOCIAL_TOOLS.has(name) || social.socialAllowedFor(conversationId);
 }
@@ -446,7 +495,38 @@ export function socialToolVisible(name, conversationId) {
 const renderedSigninText = (_c, entry) => browser.readPageLabels(entry.signin_url);
 
 function signinSite(c, site) {
-  return social.socialAllowedFor(c) ? signin.anyEntryFor(site) : signin.entryFor(site);
+  // On the page this person's sign-in there was on, when the site was named by its bare domain
+  // (src/signin.js entryOnItsPage): carried in code, never left to a retyped address.
+  return signin.entryOnItsPage(c, social.socialAllowedFor(c) ? signin.anyEntryFor(site) : signin.entryFor(site));
+}
+/**
+ * A site known only by its bare name, about to be shown to a person: its real sign-in page, found
+ * first (src/browser.js locateSigninPage follows the site's own "Log in" link once). Under test only
+ * a handed-in locator runs: tests never touch the real network.
+ *   → { entry } (the same entry, or the one on the page found) | { answer } (no link: said plainly)
+ */
+async function onItsSigninPage(c, entry, ctx) {
+  if (!entry?.generic || !signinPage.isFrontPage(entry.signin_url)) return { entry };
+  const locate = ctx.locateSigninPage ?? (process.env.NODE_TEST_CONTEXT ? null : browser.locateSigninPage);
+  if (!locate) return { entry };
+  let at = null;
+  try { at = await locate(entry); } catch (e) { at = { found: false, error: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) }; }
+  if (at?.found) {
+    const there = at.url && !signinPage.isFrontPage(at.url) && signinPage.onSite(at.url, entry) ? signin.genericEntry(at.url) : null;
+    if (there && there.site === entry.site) { signinPage.rememberSigninPage(c, there, there.signin_url); return { entry: there }; }
+    // The front page itself is the sign-in page (an app whose first page is its form).
+    return { entry };
+  }
+  if (at?.error) {
+    return { answer: { ok: false, could_not_open: true, site: entry.site, error: `${entry.label}'s site could not be opened just now (${at.error}), so no sign-in link was made.`, say: `Say ONE plain line, like: "I couldn't open ${entry.label} just now, so I haven't sent you anything. Want me to try again in a bit?" Do not send a link.` } };
+  }
+  return {
+    answer: {
+      ok: false, no_signin_page: true, site: entry.site,
+      error: `Reason cannot find where to sign in on ${entry.label}: the page at ${entry.site} has no sign-in form${at?.followed ? ", and neither does the page its own sign-in link leads to" : ", and no sign-in link Reason could follow"}. No link was made: it would only show them a page with nothing to sign in to.`,
+      say: `Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page, call again with that address as \`site\`. Do not send a link.`,
+    },
+  };
 }
 function noSigninSite(c, site) {
   const known = `Known by name: ${signin.signinNames().join(", ")}.`;
@@ -492,16 +572,25 @@ export function lapsedBlocked(name) {
     || /^event_/.test(n) || /^(shop_|store_|browser_)/.test(n);
 }
 
-// How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
-// way to book. On: two ways, and which one is the person's choice and the provider's proven capability
-// — Reason offers both and pushes neither (the owner's spec, Step 5).
-const FLIGHT_SEARCH_ONLY = "SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves.";
-const FLIGHT_SEARCH_BOTH = "Two ways to finish, and which one is THEIR choice: the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves; or, only when they ask you to book it, flight_book — Reason books it through AgentCard with their approval before any money moves. Keep the link on every option and offer both without pushing either. Never say a flight is booked unless a tool says the ticket was issued.";
+// signin_link's `provider` argument, as its schema words it. Where REASON_SOCIAL_SIGNIN reaches the
+// person: never Google, signin_email instead. Everybody else keeps the words they had before
+// signin_email existed (the argument is ignored for them, and they have no such tool to be sent to).
+const SIGNIN_LINK_PROVIDER_SOCIAL = "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Apple's (or Facebook's, Microsoft's) own page. Never google: Google refuses this browser, so a Google account is signin_email instead (google here is ignored and the site's own email route opens). Only when they said so or signin_provider found it; omit for the site's own form.";
+const SIGNIN_LINK_PROVIDER_PLAIN = "Which button their account on this site signs in through, when it is one of these. It is recorded only; nothing is pressed for them, and the link opens the site's own sign-in form. Never promise to press or use their Google login: Google refuses this browser, so a Google-only site cannot be signed in to here. Only when they said so; omit for the site's own form.";
+/** signin_link with its `provider` argument worded for somebody the social sign-in flag does not reach. */
+function plainSigninLink(t) {
+  return { ...t, input_schema: { ...t.input_schema, properties: { ...t.input_schema.properties, provider: { ...t.input_schema.properties.provider, description: SIGNIN_LINK_PROVIDER_PLAIN } } } };
+}
 
-// Booking flights, dark until REASON_FLIGHT_BOOKING is on (src/flightbook.js; `owner` = the owner's
-// conversation only, off for everyone else). Off, nobody's model is
-// told these exist and the dispatch refuses them, so a flight search hands over the Google Flights
-// link and nothing else — the search-only feature exactly.
+// How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
+// way to book. On: two ways, and which one is the person's choice — Reason offers both and pushes neither.
+const FLIGHT_SEARCH_ONLY = "SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves.";
+const FLIGHT_SEARCH_BOTH = "Two ways to finish, and which one is THEIR choice: the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves; or, only when they ask you to book it, flight_book — Reason books it on the airline's own site, and nothing is charged until they approve the airline's exact total. Keep the link on every option and offer both without pushing either. Never say a flight is booked until a tool tells you a ticket was issued.";
+
+// Booking flights, dark until REASON_FLIGHT_BOOKING is on AND there is a route for this person (the
+// shopping path: src/flightbook.js bookingEnabled; `owner` = the owner's conversation only). Off,
+// nobody's model is told these exist and the dispatch refuses them, so a flight search hands over the
+// Google Flights link and nothing else — the search-only feature exactly.
 export const FLIGHT_BOOKING_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
 
 // Every invite tool, and the ones only the master decides with. Named once, here, for the same
@@ -620,6 +709,7 @@ function needsConfirmation(name, input, conversationId) {
   if (name === "drive_share") return !!String(input.with_email ?? "").trim();
   if (name === "event_settings") return settingsNeedYes(conversationId, input);
   if (name === "event_questions") return questionsNeedYes(conversationId, input);
+  if (name === "event_seats") return seatsNeedYes(input);
   return false;
 }
 
@@ -1351,99 +1441,17 @@ export async function reconcileOrder({ buyConversationId, orderId, say = null, e
  * undefined when there is no offer record to build it from — nothing is made up to fill one.
  */
 /**
- * Everything a flight's confirm has to be refused on before anything goes to AgentCard — or null.
+ * A flight is never bought through AgentCard — or null when the cart is not one.
  *
- * Runs inside purchase_confirm, after the gate. A refusal here sends nothing, so the yes survives
- * where that is honest; where the price or the people have moved, a new quote is a new cart, and the
- * gate refuses the old yes on its own.
+ * AgentCard's flight route was removed 2026-11-11 (Crossmint is the only buy route). Runs before the
+ * gate and again inside purchase_confirm, so neither a flight row an older build left behind nor a
+ * flight cart AgentCard built on its own is ever confirmed. Nothing is sent, so nothing is charged.
  */
 function flightConfirmRefusal(c, row) {
   let cart = null;
   try { cart = row.cart_json ? JSON.parse(row.cart_json) : null; } catch { cart = null; }
-  if (row.kind !== "flight") {
-    // A flight cart that did not come through flight_book has none of a flight's checks behind it.
-    return flightbook.isFlightCart(cart)
-      ? { ok: false, blocked: "flight_not_here", error: "That cart is a flight that was not priced through flight_book, so it cannot be bought. Nothing was charged." }
-      : null;
-  }
-  if (!flightbook.bookingEnabled(c)) {
-    return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Nothing was charged. Hand over the Google Flights link from the search instead." };
-  }
-  // A cart that is already spent comes first: none of these is a stale price, and none is sent back to
-  // flight_book as one — a fresh quote after an unknown outcome could book the same flight twice.
-  if (row.status === "outcome_unknown") {
-    return { ok: false, blocked: "outcome_unknown", error: `That booking was already sent to AgentCard once and no answer came back, so nobody knows whether it went through. It is never sent again and never re-priced. Nothing new was charged. Read AgentCard's record with purchase_track (conversation_id ${row.buy_conversation_id}), tell them it is not known whether it was booked, and point them to their card statement and the airline.` };
-  }
-  if (row.status === "placed" || row.status === "partially_placed") {
-    return { ok: false, blocked: "already_placed", error: `AgentCard already placed that order (${row.order_id || "no id on it"}). It is never confirmed again. Use purchase_track (conversation_id ${row.buy_conversation_id}) to say where it is — ticketing is not confirmed until a tool says so.` };
-  }
-  if (row.status === "cancelled") {
-    return { ok: false, blocked: "order_cancelled", error: `That order was already placed once and then cancelled (${row.order_id || "no id on it"}). It is not confirmed again. Nothing was charged by this call.` };
-  }
-  // An approval that ran out or was turned down is the end of that cart. The same confirm sent again
-  // would ask AgentCard for the same charge a second time; only a fresh flight_book and a new yes can.
-  if (row.status === "failed" || row.status === "declined") {
-    const expired = row.decline_code === "approval_expired";
-    return { ok: false, blocked: expired ? "approval_expired" : "declined", error: `${expired ? "The approval ran out" : `AgentCard declined that booking${row.decline_code ? ` (${row.decline_code})` : ""}`}, so nothing was booked and nothing was charged. That cart is done and is never confirmed again. If they still want the flight, call flight_book for a fresh price and ask again.` };
-  }
-  // Already paused for a passkey, and the link has run out: a fresh price and a new approval, never a retry.
-  if (row.status === "awaiting_approval" && row.authorization_state !== "approved" && flightbook.approvalExpired(row)) {
-    db.markAgentcardPurchase(row.buy_conversation_id, { status: "failed", declineCode: "approval_expired", ticketingState: "expired" });
-    return { ok: false, blocked: "approval_expired", error: "The approval link ran out, so nothing was booked and nothing was charged. That cart is done: an expired approval is never retried. If they still want the flight, call flight_book again for a fresh price, show it, and ask again." };
-  }
-  // AgentCard keeps one set of passenger details per person on its own side, and the last flight_book
-  // sent them. A later quote for different people has overwritten what this cart would fly, so this
-  // cart is never confirmed: a fresh flight_book sends these travelers again.
-  const newer = db.listAgentcardPurchases(c, 20).find(r => r.kind === "flight" && r.id !== row.id && r.created_at >= row.created_at && r.id > row.id && r.traveler_fp && r.traveler_fp !== row.traveler_fp);
-  // And whatever flight_book sent AgentCard last, even when that call went no further (a timeout, a
-  // cart that didn't match) and left no row: AgentCard holds those passengers now.
-  const sent = db.opsGet(`flight:passengers_sent:${c}`);
-  if (newer || (sent && sent !== row.traveler_fp)) {
-    return { ok: false, blocked: "travelers_superseded", error: "A newer flight was priced for different passengers after this one, and AgentCard keeps only the last passengers it was sent — confirming this cart could fly the wrong people. Nothing was charged. Call flight_book again for this flight so its passengers are sent again, then ask for a new yes." };
-  }
-  // A passkey pause is resumed by the same confirm; every other confirm needs a quote taken just now.
-  if (row.status !== "awaiting_approval" && !flightbook.quoteFresh(row)) {
-    return { ok: false, blocked: "quote_stale", error: `That price was taken more than ${Math.round(config.flightQuoteMaxAgeMs / 60_000)} minutes ago, and fares move. Nothing was charged. Call flight_book again for a fresh price, show it, and ask again.` };
-  }
-  const finality = flightbook.totalFinality(cart ? { ...cart } : null);
-  if (!finality.final) {
-    return { ok: false, blocked: "total_not_final", error: `Not booked: ${finality.why}. Nothing was charged. A booking is never approved against a total that is not final.` };
-  }
-  let ids = [];
-  try { ids = JSON.parse(row.traveler_ids || "[]"); } catch { ids = []; }
-  const travelers = ids.map(id => db.getFlightTraveler(c, id));
-  if (!ids.length || travelers.some(t => !t)) {
-    return { ok: false, blocked: "travelers_gone", error: "A traveler on that booking is no longer on record. Nothing was charged. Start again with flight_book." };
-  }
-  if (flightbook.travelerFingerprint(travelers) !== row.traveler_fp) {
-    return { ok: false, blocked: "travelers_changed", error: "A traveler's details changed after this price was built, so this cart is not what they agreed to. Nothing was charged. Call flight_book again with the corrected travelers and ask again." };
-  }
-  return null;
-}
-
-/**
- * A flight confirm that came back with an order, said as what it is: never "booked" until a ticket is.
- *
- * The spend, the caps and the reconcile have already run in purchase_confirm. This reads the state
- * the order is in (src/flightbook.js bookingState, with ticketing evidence from the order's own record
- * only) and hands back words that keep payment, ticketing pending and ticket issued apart.
- */
-function flightPlacedAnswer(c, buyConversationId, { out, line, card, known, chargeKnown, cents }) {
-  const row = db.getAgentcardPurchase(buyConversationId);
-  if (known?.order) db.keepAgentcardOrderRaw(buyConversationId, known.order_raw ?? null);
-  const ticketing = ticketcheck.ticketingFor(row, flightbook.ticketingFrom(known?.order_raw ?? null));
-  const st = flightbook.bookingState(row, { ticketing });
-  db.markAgentcardPurchase(buyConversationId, { ticketingState: st.state });
-  return {
-    ok: true, status: out.status, booking_state: st.state, booked: st.booked,
-    order_id: out.order_id, charge_status: out.charge_status,
-    amount: trust.money(cents), cart_line: line, card,
-    ...(row.retailer_order_id ? { confirmation_code: row.retailer_order_id } : {}),
-    note: `What is true right now: ${st.words}`
-      + (chargeKnown ? ` AgentCard reports charge_status 'unknown': whether the card was charged is NOT known. ${chargeKnown.line} Say that, do not retry anything, then look in their mail yourself for the charge (gmail_search for the card's charge alert or the shop's receipt, gmail_read) and say what you found; only if nothing is there, say their card statement is the one place you can't see.` : "")
-      + (st.booked ? "" : ` Do NOT say it is booked or ticketed, and do not call a confirmation code a ticket. Say exactly which state it is in, in those words, and point them to the airline to check.`)
-      + ` purchase_track with conversation_id ${buyConversationId} reads AgentCard's record again.`,
-  };
+  if (row.kind !== "flight" && !flightbook.isFlightCart(cart)) return null;
+  return { ok: false, blocked: "flight_not_here", error: "That cart is a flight, and Reason doesn't book flights here. Nothing was charged. Hand over the Google Flights link from the search so they can book it themselves." };
 }
 
 function handoffOf(c, { offer = null, buyConversationId = "", why = "" } = {}) {
@@ -1552,7 +1560,7 @@ function placementGaveUp(buyConversationId, row, me) {
     cart_line: `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Number(row.amount_cents) || 0)})`,
     error: `Not ${flight ? "booked" : "bought"}, and not sent again — ${why.words}, twice: each time ${me.name} approved the payment, ${who} refused to place the order (${why.given}). Nothing was charged, and any hold on the card drops off on its own.`
       + ` Tell them plainly: ${who} turned it down twice after their approval — never that an approval didn't count — nothing was charged, and it is worth checking ${flight ? "the travelers' details and the flight itself" : "the delivery address and the item, since an address the store can't use is the usual cause"}.`
-      + ` Do not offer a third try on this cart. If they would rather try again later, that is a NEW ${flight ? "booking (flight_book, a fresh quote, a new yes)" : "purchase (purchase, a fresh cart, a new yes)"}, and only if they want it.`,
+      + ` Do not offer a third try on this cart. If they would rather try again later, that is a NEW purchase (purchase, a fresh cart, a new yes), and only if they want it.`,
   };
 }
 
@@ -3113,7 +3121,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     const anySite = social.socialAllowedFor(conversationId);
     const savedAny = anySite ? [...saved, ...signin.savedGenericSignins(conversationId).filter(s => s.state === "signed_in")] : saved;
     signins.what = anySite
-      ? `sign in to ANY site for a real task, Notion and Airbnb included, not only a listed one: signin_link makes a private secure link they open on their phone, on the site's own sign-in page (by its web address when it is not on signin_link's list), with their Google, Apple, Facebook or Microsoft button pressed when that is how they sign in; they sign in themselves and Reason keeps the session in their own browser profile for later errands. Ask in one line first, per the sign-in rules.`
+      ? `sign in to ANY site for a real task, Notion and Airbnb included, not only a listed one: signin_email signs them in with the site's own emailed code, which Reason reads from their Gmail itself (by the site's web address when it is not on signin_link's list) — never through Google; signin_link makes a private secure link they open on their phone, with their Apple, Facebook or Microsoft button pressed when that is how they sign in. Reason keeps the session in their own browser profile for later errands. Per the sign-in rules.`
         + ` Signed in right now: ${savedAny.length ? savedAny.map(s => s.site).join(", ") : "nothing"}.`
         + ` Reason never takes a password — not in a message, not anywhere — and says so rather than storing one`
       : (route.can_sign_in
@@ -3213,8 +3221,11 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     phone.status = "live";
     phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}).`
       + ` Calling anyone but ${who} needs an explicit yes first, with the exact number and goal shown.`
-      + ` Every call to anyone but ${who} opens by saying it is an AI assistant for ${who} and that it is recorded,`
-      + ` and ${who} gets the audio along with the summary`
+      + (provider.name === "gptlive" && !config.thirdPartyRecording
+        ? ` A call to anyone but ${who} starts like a normal caller and says it is an AI assistant calling for ${who} the moment they ask who or what is calling;`
+          + ` those calls are not audio-recorded, so ${who} gets the summary and what was said, never audio (their own calls with you are recorded and that audio does come to them)`
+        : ` Every call to anyone but ${who} opens by saying it is an AI assistant for ${who} and that it is recorded,`
+          + ` and ${who} gets the audio along with the summary`)
       // The second direction, and only when it is really set up. A provider that can place calls
       // but has no signed post-call webhook cannot answer one, and Reason telling somebody they
       // can ring it when they cannot is the exact thing this whole tool exists to prevent — so it
@@ -4240,7 +4251,7 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in anything the call is given (goal, facts, ask, requirements, approved_terms) — the call is refused before it is dialled.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. A call to anyone but the owner starts the way a capable person would: hello, then what it is calling about, with nothing said about who or what is calling; if they ask who it is or whether it is a person, a robot or an AI, it says at once that it is an AI assistant calling for the owner (by first name) — never that it is human. Those calls are NOT audio-recorded: you get the summary and what was said, never audio, so never promise the owner a recording of one (the result's `recorded` says which). A call to the owner opens with a plain greeting; their own calls are recorded, they are told once by text, and that recording is sent to them with your summary automatically. No-call hours: a call to anyone but the owner is held at night on the CALLEE's clock; the refusal says what time it is there and the first time it can be placed — tell them that plainly and offer to place it then. Only if they then say, in their own words, to call now anyway, place it with call_now_said. They can change their own hours with call_hours_set. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in anything the call is given (goal, facts, ask, requirements, approved_terms) — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {
@@ -4251,6 +4262,7 @@ export const tools = [
         opening: { type: "string", description: "Only when ringing the owner: why you're ringing, in a few words you'd say to them as the call opens, after 'hey <name> —'. 'got your two screenshots, wanted to talk them through'. Omit when they just asked you to ring." },
         about: { type: "string", description: "Only when ringing anyone else: what you're calling about, in a few casual words that finish the sentence 'Hi there! I'm calling …' — 'to ask about a massage for low back pain', 'to see if you've got a table for two tonight', 'about the Man United game'. Said the instant they pick up, before anything else, so no names, numbers or anything private, and nothing about being an AI." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
+        call_now_said: { type: "string", description: "ONLY after a quiet_hours refusal that you have told them about, and ONLY when they then said in their own words to call now anyway: those exact words, word for word ('call now anyway', 'ring them now, it's fine'). Code checks they are in what they just said and refuses if not. Never set it yourself because you think they would want it, never from an earlier 'yes' to something else, and never on a turn they did not start. It covers this one call." },
         task_id: { type: "integer", description: "The job this call is a step of, when it is one. Name it: what the call comes back with is then written onto that job's log, so the job knows what was said without you having to remember it hours later." },
         may_book: {
           type: "boolean",
@@ -4544,8 +4556,12 @@ export const tools = [
   // A comparison table as a picture (src/tableimage.js), behind REASON_TABLE_IMAGES.
   ...TABLE_TOOL_DEFS,
   ...SHOP_TOOL_DEFS,
+  ...ACCOUNT_JOB_TOOL_DEFS,
   ...FOOD_TOOL_DEFS,
+  ...PLAID_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
+  // Thinking a step ahead when a trip, a move, a birthday comes up (src/cues.js), behind REASON_CUES.
+  ...CUE_TOOL_DEFS,
   {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
@@ -4902,7 +4918,7 @@ export const tools = [
       },
     },
   },
-  // ---------- booking a flight through AgentCard (dark until REASON_FLIGHT_BOOKING is on) ----------
+  // ---------- travelers for a flight booking (dark: REASON_FLIGHT_BOOKING and a booking route, src/flightbook.js) ----------
   {
     name: "flight_traveler_save",
     description: "Write down one traveler's details for a flight booking — new, or corrected with traveler_id — and get back the READ-BACK. Nothing is booked, sent or agreed by this: the details are kept UNCONFIRMED. Collect each traveler's full legal name exactly as on their government ID (given and family name separately), date of birth, gender as on the ID (m/f, an airline security requirement), and the contact email and phone the booking needs; a known traveler number or redress number only if they have one. Then send them the read_back exactly and ask whether it is exactly right — a misspelled name can void a ticket. Their answer comes on a LATER message and goes to flight_traveler_confirm. Never fill a field from memory or guess one: ask.",
@@ -4946,7 +4962,7 @@ export const tools = [
   },
   {
     name: "flight_book",
-    description: "Get a bookable, itemized price for ONE flight they picked from a flight search and asked you to book — through AgentCard. NOTHING IS BOOKED OR CHARGED BY THIS TOOL. Only when THEY asked you to book it: a suggestion or a watched route is never a reason to call this. It first re-runs that exact search through Fli and checks the same flights are still there at the price you quoted; then it builds the booking with AgentCard for the confirmed travelers and compares AgentCard's itinerary to the one they picked. It comes back with the cart's own numbers — fare, every fee and tax line the cart actually itemizes, what it leaves unitemized, the all-in total and whether that total is final — and the fare rules it could (not) verify. Show them exactly those numbers and those gaps, the flights and the travelers, and ask whether to book: the yes goes through confirm_request (with the use_target purchase_confirm hands back) and then purchase_confirm, exactly like any purchase. If the price moved on the re-check, say what it is now and ask whether to continue before anything else. If it refuses, the Google Flights link from the search is always the other way to book — offer it plainly.",
+    description: "Start booking ONE flight they picked from a flight search and asked you to book, on the airline's own website. NOTHING IS BOOKED OR CHARGED BY THIS TOOL. Only when THEY asked you to book it: a suggestion or a watched route is never a reason to call this. It first re-runs that exact search and checks the same flights are still there at the price you quoted; then it starts the checkout for exactly those flights and the travelers they confirmed (flight_traveler_confirm). The checkout then runs on its own, like any store_checkout: it answers the airline's passenger form from the confirmed details, it may ask you something (shop_answer), and when it reaches payment they get the airline's exact total to approve — that approval is the only thing that pays. The total is ONE number; never invent a fare, tax or fee breakdown. Afterwards an order the airline took is NOT a ticket: say booked only when you are told a ticket was issued.",
     input_schema: {
       type: "object",
       properties: {
@@ -5057,6 +5073,18 @@ export const tools = [
     },
   },
   {
+    name: "call_voice_trial",
+    description: "Which voice Reason uses on their own phone calls with you. 'Try the Cartesia voice on my calls' is on; 'go back to my usual call voice' is off; 'which voice are my calls on?' is status."
+      + " Only their own calls with you change; calls to businesses or other people never do. Say back in one short line which voice their next call will use.",
+    input_schema: {
+      type: "object",
+      properties: {
+        choice: { type: "string", enum: ["on", "off", "status"], description: "on: the Cartesia voice on their own calls; off: the usual call voice; status: just say which." },
+      },
+      required: ["choice"],
+    },
+  },
+  {
     name: "time_zone",
     description: "Keep the time zone they confirmed or named. Call it when they answer your zone question (yes to your guess → that zone; \"no, I'm in Denver\" → America/Denver),"
       + " when they tell you their zone changed (they moved, or said yes to switching while travelling), or any time they correct it."
@@ -5082,6 +5110,22 @@ export const tools = [
         per_day: { type: "integer", description: "How many unprompted texts a day at most. 0 for none at all. Omit to leave it alone." },
         every_minutes: { type: "integer", description: "How often to go and look at their mail and calendar. Omit to leave it alone." },
       },
+    },
+  },
+  {
+    name: "call_hours_set",
+    description: "Their own no-call hours for calls you place to businesses and other people, when they tell you to change them: 'you can call places until 10pm', 'don't call anyone before 9', 'turn off the no-call hours', 'go back to the normal hours'."
+      + " By default nobody is rung between 9pm and 8am on the clock of the person being called; this changes that for THIS person's calls only, and it is saved on their account."
+      + " hours is a window on the callee's clock during which calls are HELD, like '22:00-07:00'; 'off' for no hold at all; 'default' to go back to the standard hours."
+      + " 'said' is REQUIRED and must be their own sentence word for word: this is only ever set from something they really said, never because you think they would prefer it, and never as a way round a quiet_hours refusal on one call (that is call_place's call_now_said)."
+      + " Calls to their own phone are never held and are not affected.",
+    input_schema: {
+      type: "object",
+      properties: {
+        hours: { type: "string", description: "The hours calls are held, on the callee's clock: 'HH:MM-HH:MM' in 24-hour time ('22:00-07:00'), or 'off', or 'default'." },
+        said: { type: "string", description: "Their own words asking for this, word for word." },
+      },
+      required: ["hours", "said"],
     },
   },
   {
@@ -5352,7 +5396,19 @@ export const tools = [
       type: "object",
       properties: {
         site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango, or a subscription service cancel_route knows. Where your instructions carry the Google/Apple/Facebook/Microsoft sign-in rules: ANY other site too, by its web address — its sign-in page if you know it (https://www.notion.so/login), else its domain (airbnb.com)." },
-        provider: { type: "string", enum: social.PROVIDERS, description: "Which button their account on this site signs in through, when it is one of these: the page opens with that button already pressed, so they land on Google's (or Apple's, Facebook's, Microsoft's) own page. Only when they said so or signin_provider found it; omit for the site's own form." },
+        provider: { type: "string", enum: social.PROVIDERS, description: SIGNIN_LINK_PROVIDER_SOCIAL },
+      },
+      required: ["site"],
+    },
+  },
+  {
+    name: "signin_email",
+    description: "Sign them in to a site with the site's OWN emailed code or link — the way to do \"sign me into notion\", and the way for any site whose account uses Google (Google is never used). Runs in your browser in the background: it opens the site's sign-in page, types their email, asks the site for a code, reads the code from their connected Gmail itself (only that site's mail, only mail that arrived after the ask) and enters it. Returns at once; you are told how it ends — never say they are signed in before that. Without their Gmail connected you are told to ask them for the code in ONE plain line; their reply goes to the site without you. The code never reaches you. Never say \"check your email\".",
+    input_schema: {
+      type: "object",
+      properties: {
+        site: { type: "string", description: "A name signin_link knows, or any site's web address — its sign-in page if you know it (https://www.notion.so/login), else its domain." },
+        email: { type: "string", description: "The email their account on this site uses, when they said it. Omit to use the one Reason knows for them." },
       },
       required: ["site"],
     },
@@ -6989,7 +7045,7 @@ const S = {
     about: z.string().min(1).max(100),
     fact: z.string().min(1).max(500),
     source: z.enum(["they_said", "i_saw_it_in_a_photo", "i_worked_it_out"]).optional(),
-    kind: z.enum(["fact", "how_to_treat_me"]).optional(),
+    kind: z.enum(["fact", "how_to_treat_me", "your_name"]).optional(),
     why: z.string().max(300).optional(),
   }),
   recall: z.object({ about: z.string().max(100).optional() }),
@@ -7072,6 +7128,7 @@ const S = {
     about: z.string().max(200).optional(),
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
+    call_now_said: z.string().max(300).optional(),
     task_id: z.number().int().optional(),
     // The brief (2026-10-07): what this call may agree to, what it has to ask, and what it may wait for.
     // `may_book` is optional and its absence means NO, which is the cautious direction and the whole
@@ -7130,8 +7187,11 @@ const S = {
   ...CHOICE_SCHEMAS,
   ...TABLE_SCHEMAS,
   ...SHOP_SCHEMAS,
+  ...ACCOUNT_JOB_SCHEMAS,
   ...FOOD_SCHEMAS,
+  ...PLAID_SCHEMAS,
   ...TODO_SCHEMAS,
+  ...CUE_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
   invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
@@ -7309,7 +7369,9 @@ const S = {
     stop_value: z.string().max(120).optional(),
     their_words: z.string().max(500).optional(),
   }),
+  call_voice_trial: z.object({ choice: z.enum(["on", "off", "status"]) }),
   time_zone: z.object({ zone: z.string().min(1).max(64), their_words: z.string().min(1).max(500) }),
+  call_hours_set: z.object({ hours: z.string().min(1).max(40), said: z.string().min(1).max(300) }),
   notice_settings: z.object({
     per_day: z.number().int().min(0).max(20).optional(),
     every_minutes: z.number().int().min(5).max(60 * 24).optional(),
@@ -7380,6 +7442,7 @@ const S = {
   signin_status: z.object({ site: z.string().max(300).optional(), recheck: z.boolean().optional() }),
   signin_open: z.object({ site: z.string().min(1).max(300), provider: z.enum(social.PROVIDERS).optional() }),
   signin_link: z.object({ site: z.string().min(1).max(300), provider: z.enum(social.PROVIDERS).optional() }),
+  signin_email: z.object({ site: z.string().min(1).max(300), email: z.string().email().max(200).optional() }),
   signin_provider: z.object({
     action: z.enum(["ask_check", "declined", "infer", "unlocks"]),
     provider: z.enum(social.PROVIDERS).optional(),
@@ -8187,7 +8250,7 @@ async function captureWalk({ c, ctx = {}, page, stopped, because, oneAction = ""
     const last = (snap.elements ?? []).find(e => e.tag === "button" && clickCommits({ tag: "button", type: e.type ?? "", name: e.name ?? "", href: "", inForm: true, isSubmit: true }).commits);
     return last?.name ? `press '${last.name}'` : "";
   })();
-  const record = fromWalk({ url: snap.url ?? page.url(), elements: snap.elements, oneAction: action, stopped, because });
+  const record = fromWalk({ url: snap.url ?? await browser.pageUrl(page), elements: snap.elements, oneAction: action, stopped, because });
   if (!record) return null;
   const { link, ...row } = record;
   const task = walkTask(c, ctx);
@@ -8242,6 +8305,11 @@ export async function fileRecording(conversationId, row, live, ctx = {}) {
     return updated;
   };
 
+  // A call with a business or another person is not audio-recorded (Omari 2026-11-12; src/calls/manner.js
+  // `callRecorded`): no audio is the design, not a lost recording, so no fault is written.
+  if (live.notRecorded) {
+    return db.updateCall(conversationId, row.id, { recording_state: "not_applicable", recording_why: live.recordingWhy || NOT_RECORDED_WHY });
+  }
   if (!live.recording) {
     return absent(live.recordingWhy || "the provider did not return any audio for this call");
   }
@@ -8364,21 +8432,27 @@ export function callEndFields(row, live) {
  */
 export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
   if (LIVE_STATES.includes(row.state)) return { queued: false, why: "still going" };
-  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail";
+  // Carry-over on for them: an answering machine is nobody too, and the phone rings once more before any text.
+  const carry = carryover.carryoverFor(conversationId);
+  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail" && !(carry && carryover.missedScheduled(row));
   if (reached) return { queued: false, why: "they picked up" };
+  const again = carryover.reringIfMissed(row, { log });
+  if (again) return { queued: false, why: "ringing once more", rering: again.timerId };
+  const twice = carry && carryover.isRering(row);
   const who = db.getAccount(conversationId);
   const address = who?.address && who.address !== "console" ? who.address : "";
   const channel = who?.channel && who.channel !== "console" ? who.channel : "";
   if (!address || !channel) return { queued: false, why: "no texting channel on this conversation" };
   if (!db.markMissedCallTold(row.id)) return { queued: false, why: "already told" };
-  const how = row.state === "voicemail" ? "it went to voicemail"
+  const how = carry && row.outcome_kind === "line_silent" ? "nobody came on the line"
+    : row.state === "voicemail" || (carry && SPOKE_TO_SOMETHING.includes(row.state)) ? "it went to voicemail"
     : row.state === "busy" ? "the line was busy"
       : ["no_answer", "declined"].includes(row.state) ? "you didn't pick up"
         : "the call didn't connect";
   const { row: queued } = db.enqueueOutbound({
     idemKey: `timer:${row.timer_id}:call_missed`,
     conversationId, channel, address,
-    body: `tried calling u just now — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}. so this is the text instead.`,
+    body: `tried calling u ${twice ? "twice" : "just now"} — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}${twice ? " both times" : ""}. so this is the text instead.`,
     toOwner: true, maxAttempts: config.outboxMaxAttempts,
   });
   log({ scheduled_call_missed: row.id, timer: row.timer_id, state: row.state, outbox: queued.id });
@@ -8909,15 +8983,34 @@ async function handOverDocument({ doc, to, say = "", ctx, c, me, name = "documen
 
   // It really went. Only now.
   db.markDocumentSent(doc.id);
+  const gatedDoc = deliveryNote(c, router, channelName, r);
   return {
     ok: true,
     out: {
       sent: true, sent_to: toOwner ? "owner" : address, delivered: r.delivered,
-      note: toOwner
-        ? `That is in this thread now, as a real ${doc.filename.split(".").pop()} file they can open. Say in ONE line what it is and that it is in the thread — nothing about links, codes or downloads, and do not repeat what is inside it.`
-        : `The ${what} went to ${address} as an attachment. Tell ${me.name} it went, and to whom.`,
+      ...(gatedDoc ? { delivery: "pending" } : {}),
+      note: gatedDoc
+        ? `The ${what} is on its way${toOwner ? " into this thread" : ` to ${address}`} as an attachment, and ${gatedDoc}`
+        : toOwner
+          ? `That is in this thread now, as a real ${doc.filename.split(".").pop()} file they can open. Say in ONE line what it is and that it is in the thread — nothing about links, codes or downloads, and do not repeat what is inside it.`
+          : `The ${what} went to ${address} as an attachment. Tell ${me.name} it went, and to whom.`,
     },
   };
+}
+
+/**
+ * REASON_DELIVERY_GATED: a carrier that reports delivery later (Sendblue's outbound status webhook)
+ * has ACCEPTED the message, which is not the same as it having arrived. The result says so, in the
+ * words the model is to use, until the carrier says DELIVERED. Null when the switch is off for this
+ * person or the channel never reports delivery (the console, Linq) — then accepted is all there is.
+ */
+function deliveryNote(c, router, channelName, r) {
+  if (!deliveryGatedOn(c)) return null;
+  if (!router?.get?.(channelName)?.reportsDelivery) return null;
+  const status = String(r?.delivered?.status ?? "").toUpperCase();
+  if (status === "DELIVERED") return null;
+  return `${channelName} has accepted it but has NOT confirmed delivery yet${status ? ` (status ${status})` : ""}.`
+    + ` Say it is on its way / sending — do not say "sent" or "delivered". You will be told if it does not get there.`;
 }
 
 /**
@@ -8958,6 +9051,7 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
 
   const batch = `${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
   let went = 0;
+  let lastSend = null;
   for (let i = 0; i < n; i++) {
     const img = images[i];
     let r;
@@ -8970,6 +9064,7 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
     } catch (e) {
       r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
+    lastSend = r;
     if (r?.ok && !r.queued) { went++; continue; }
 
     if (r?.queued) {
@@ -8985,9 +9080,14 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
       note: `Only ${went} of the ${n} pictures arrived in their thread; the rest could not be sent (${why}). Say exactly that — do not say they all went, and do not give a link for the missing ones.`,
     };
   }
+  // REASON_DELIVERY_GATED: the carrier took them; "in their thread" waits for its word.
+  const gatedPics = deliveryNote(c, router, thread.channel, lastSend);
   return {
     ok: true, sent: true, sent_count: n, made: n, model, ...(line ? { said: line } : {}),
-    note: `${n > 1 ? `All ${n} pictures are` : "The picture is"} in their thread now, as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}. You may say you sent ${n > 1 ? "them" : "it"}. Do not also send a link, and never call it a photo: it is a generated picture. If you have nothing to add, reply NO_REPLY.`,
+    ...(gatedPics ? { delivery: "pending" } : {}),
+    note: gatedPics
+      ? `${n > 1 ? `All ${n} pictures are` : "The picture is"} on the way into their thread as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}, and ${gatedPics} Do not also send a link, and never call it a photo: it is a generated picture.`
+      : `${n > 1 ? `All ${n} pictures are` : "The picture is"} in their thread now, as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}. You may say you sent ${n > 1 ? "them" : "it"}. Do not also send a link, and never call it a photo: it is a generated picture. If you have nothing to add, reply NO_REPLY.`,
   };
 }
 
@@ -9067,7 +9167,9 @@ function callView(r, who) {
           ? `The audio is gone: ${r.recording_why || "it passed the retention window"}. Say so plainly if ${who} asks for it — it cannot be got back, and nothing went wrong.`
           : r.recording_state === "missing"
             ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${who} that the recording is missing. Do not imply one exists or is on the way.`
-            : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
+            : r.recording_why === NOT_RECORDED_WHY
+              ? `No audio recording was made of this call: ${NOT_RECORDED_WHY}. That is how it works, not a fault. What you have is the summary and what was said; if ${who} asks for the audio, say plainly that calls to other people aren't recorded.`
+              : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
   };
 }
 
@@ -9136,6 +9238,7 @@ function targetOf(name, input) {
     case "signin_status": return input.site ? `site:${input.site}` : "";
     case "signin_open": return `site:${input.site}`;
     case "signin_link": return `site:${input.site}`;
+    case "signin_email": return `site:${input.site}`;
     case "subscriptions_scan": return `subscriptions:scan:${input.months ?? 12}m${input.account ? `:${input.account}` : ""}`;
     case "subscription_cancel_start": return `subscription:${input.merchant}`;
     case "subscription_cancel_commit": return input.what ?? `subscription:${input.merchant}`;
@@ -9152,6 +9255,9 @@ function targetOf(name, input) {
     case "purchase_confirm": return `buy:${input.conversation_id}:cart:${input.cart_hash}`;
     case "store_checkout": return `shop:${input.store}`;
     case "shop_pay": case "shop_decline": return `shop:payment:#${input.payment_id}`;
+    case "account_cancel": return `account:cancel:${input.site}`;
+    case "account_bill_pay": return `account:bill:${input.site}`;
+    case "account_cancel_confirm": case "account_job_stop": case "account_job_answer": return `account:job:#${input.job_id}`;
     case "purchase_track": return input.order_id ? `order:${input.order_id}` : `buy:${input.conversation_id}`;
     case "uber_connect": return "uber";
     case "uber_request": return `uber:ride:${input.quote_id ?? "?"}`;
@@ -9273,6 +9379,8 @@ function confirmTargetFor(name, input, c = null) {
      */
     // A Crossmint payment, pinned to the row: Crossmint's amount, the merchant, the run and request.
     case "shop_pay": return shopPayTarget(input, c);
+    // A cancellation's last step, pinned to the job row: the plan, the site, the run and its open question.
+    case "account_cancel_confirm": return accountCancelTarget(input, c);
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
       // Someone else's cart reads as unknown, the same as shop_pay: its merchant, items and amount
@@ -9326,6 +9434,8 @@ function confirmTargetFor(name, input, c = null) {
     case "event_settings": return settingsTarget(c, input);
     case "event_questions": return questionsTarget(c, input);
     case "event_refund": return refundTarget(c, input);
+    case "event_ticket_refund": return ticketRefundTarget(c, input);
+    case "event_seats": return seatsTarget(c, input);
     case "github_issue_create": return github.issueTarget(input);
     case "github_issue_comment": return github.commentTarget(input);
     default: return null;
@@ -9361,6 +9471,34 @@ function signinBlockedAnswer(entry) {
   };
 }
 
+/** The live ask about a site's sign-in page: handed in by a test, never the real network under test. */
+/** The most the live ask may add to a sign-in tool. No answer in that time is "unknown", never "blocked". */
+export const SIGNIN_LIVE_CHECK_MS = 2500;
+const quickWall = (entry) => social.signinWall(entry, { timeoutMs: SIGNIN_LIVE_CHECK_MS });
+const liveWallFn = (ctx) => ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? null : quickWall);
+/**
+ * Where a site's sign-in stands for Reason's browser (src/sitefindings.js): a dated finding that is
+ * still fresh, else the site asked now and the answer written down. Never a finding trusted forever.
+ */
+const signinAccessFor = (entry, ctx) => findings.signinAccess(entry, { live: liveWallFn(ctx) });
+/**
+ * The answer when a site refuses Reason's browser: no link, no window, no emailed code. One honest
+ * line, the date it was seen, the best route left, and never another email address.
+ */
+function siteBlockedAnswer(c, entry, access) {
+  if (entry.signin_blocked && access.kind === "walled") return { ...signinBlockedAnswer(entry), seen: access.seen, ...(access.checked_live ? { checked_live: true } : {}), ...(access.stale ? { stale: `Last seen ${access.seen}; it could not be asked again just now.` } : {}) };
+  const alt = social.wallInstead(entry);
+  const w = findings.blockedWords(entry, access, { instead: (social.isFoodApp(entry.site) ? (foodOn(c) || social.socialAllowedFor(c)) : !!alt.say) ? alt : null });
+  return {
+    ok: false, blocked: true, site: entry.site, kind: access.kind, seen: access.seen,
+    ...(access.checked_live ? { checked_live: true } : {}),
+    ...(access.stale ? { stale: `Last seen ${access.seen}; it could not be asked again just now, so say it as of that date.` } : {}),
+    error: `${entry.label} blocks automated sign-in (${access.checked_live ? "asked just now" : `seen ${access.seen}`}): ${access.why || "its sign-in page refuses Reason's browser"}. Nothing was tried and nothing was sent to ${entry.label}.`,
+    say: w.say, instead: w.instead, never: w.never,
+    never_a_password: signin.refuseAPassword(),
+  };
+}
+
 /**
  * A blocked site asked for with a provider button, where the social flag reaches this person: ask
  * the site live (src/socialsignin.js signinWall) instead of trusting the dated finding. `in` when
@@ -9368,8 +9506,14 @@ function signinBlockedAnswer(entry) {
  * and for Uber, the connect card named instead.
  */
 async function socialWallFor(c, entry, provider, ctx) {
-  const prov = social.socialAllowedFor(c) ? social.providerKey(provider) : "";
-  if (!prov) return { in: false, answer: signinBlockedAnswer(entry) };
+  const prov = social.socialAllowedFor(c) ? social.usableProvider(provider) : "";
+  if (!prov) {
+    // The registry's note has a date on it: once it is old the site is asked again, and a wall that
+    // has come down lets the link be made.
+    const access = await signinAccessFor(entry, ctx);
+    if (access.state === "open" && access.checked_live) return { in: true, wall: access.wall };
+    return { in: false, answer: { ...signinBlockedAnswer(entry), seen: access.seen || entry.signin_blocked.seen, ...(access.checked_live ? { checked_live: true } : {}) } };
+  }
   let wall;
   try { wall = await (ctx.signinWall ?? social.signinWall)(entry); } catch (e) { wall = { in: false, why: (e?.message ?? String(e)).split("\n")[0] }; }
   if (wall?.in) return { in: true, wall };
@@ -9391,8 +9535,8 @@ async function socialWallFor(c, entry, provider, ctx) {
  * echoes what the model itself wrote — an ask, a page it composed, a message it sent, a note — are
  * not sources, or a figure the model typed could vouch for itself.
  */
-const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track", "flight_book"]);
-const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc|todo)/;
+const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track"]);
+const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc|todo|cue)/;
 /** Tools that put words in front of somebody: held while a text of theirs is waiting to be read. */
 const SPEAKS = new Set(["message_send", "voice_note_send", "voice_note_say"]);
 
@@ -9436,7 +9580,9 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   const fit = fitLongText(S[name], rawInput, name);
   rawInput = fit.input;
   const startedAt = Date.now();
-  let out = await runToolInner(name, rawInput, ctx);
+  // What a secret box of a page holds reaches nobody: not the model, the thread, the log or the
+  // ledger (src/pagesecrets.js). The page reading already withholds it; this is the net under it.
+  let out = scrubPageSecrets(await runToolInner(name, rawInput, ctx));
   if (fit.shortened.length && out && typeof out === "object" && !Array.isArray(out)) out = { ...out, input_shortened: shortenedNote(fit.shortened) };
   // A file this call wrote is this person's, for the tools that take a path later (src/ownfiles.js).
   if (ctx?.conversationId) ownfiles.noteMade(ctx.conversationId, out, startedAt, rawInput);
@@ -9460,6 +9606,8 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   if (ctx?.turnTasks) { const t = taskOfCall(name, rawInput, out); if (t) ctx.turnTasks.add(t); }
   // What this call came to, for the check in front of the reply (src/said.js): no "done" without it.
   if (ctx?.turnActs) said.noteAct(ctx.turnActs, name, out, { acting: lapsedBlocked(name) && !CLAIM_CHECK_READS.has(String(name)) });
+  // REASON_TAPBACK_ACK (src/tapbackack.js): a lookup is 🔍, a timer set is ⏰, a job finished is ✅. Never throws, never waited on.
+  if (ctx?.conversationId) { try { tapbackack.noteTool(ctx, name, out); } catch {} }
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
   // Anything they texted since the last tool call rides on this result, first, so the turn has it
   // while it can still change the work.
@@ -9593,11 +9741,29 @@ async function runToolInner(name, rawInput, ctx) {
   if (INVITE_TOOLS.has(name) && !invitesOpenFor(c)) {
     return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
   }
+  // A card's own job (src/actionengine.js runBlocksHandoff): a card promised Reason would finish it
+  // without them, so nothing here may hand it back as a sign-in link or a page. The turn is told to
+  // say once that it could not be finished. (2026-11-12: one tapped card, three sign-in links.)
+  if (cardroutes.HANDOFF_TOOLS.has(name)) {
+    if (actionengine.runBlocksHandoff(c, { kind: ctx.kind ?? "event" })) {
+      const refusal = { ...cardroutes.HANDOFF_REFUSAL };
+      (ctx.log ?? (() => {}))({ action_card_handoff_refused: name });
+      // On the ledger, so the card's outcome can say WHY it failed (it needed a sign-in Reason did not have).
+      try { trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) }); } catch { /* the refusal stands either way */ }
+      return refusal;
+    }
+    // Not refused, and asked for in a turn of their own: what follows is their job, not a card's.
+    if ((ctx.kind ?? "event") === "user") { try { actionengine.noteOwnHandoff(c); } catch { /* the tool runs either way */ } }
+  }
   // Crossmint on: AgentCard's buying tools are not shown, and one named anyway does nothing.
   if (AGENTCARD_BUY_TOOLS.has(name) && !agentcardToolVisible(name, c)) return AGENTCARD_REFUSAL;
   // The to-do list while REASON_TODO does not reach this conversation: refused before the gate, so
   // nobody is ever asked to approve a plan that cannot exist here.
   if (TODO_TOOLS.has(name) && !todoToolVisible(name, c)) {
+    return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
+  }
+  // Cues while REASON_CUES does not reach this conversation, or they turned them off (src/cues.js).
+  if (CUE_TOOLS.has(name) && !cueToolVisible(name, c)) {
     return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
   }
   // Reason's own plan tools where the paywall does not reach this person: nothing to show or cancel.
@@ -9613,6 +9779,10 @@ async function runToolInner(name, rawInput, ctx) {
       return refusal;
     }
   }
+  // Account jobs (src/accountjobtools.js, REASON_ACCOUNT_JOBS): dark unless on for this person; where they
+  // are on, the browser-walking cancel route is refused (it ends in Reason's browser shown as a picture).
+  if (ACCOUNT_JOB_TOOLS.has(name) && !accountJobToolVisible(name, c)) return ACCOUNT_JOB_REFUSAL;
+  if (BROWSER_CANCEL_TOOLS.has(name) && !browserCancelToolVisible(name, c)) return BROWSER_CANCEL_REFUSAL;
   if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c)) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
   }
@@ -9655,6 +9825,18 @@ async function runToolInner(name, rawInput, ctx) {
   if (name === "event_blast") {
     if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
     const refusal = organizerRefusal(c, input, name) ?? audienceRefusal(c, input);
+    if (refusal) return refusal;
+  }
+  // And a guest's own refund: no ticket, or the policy says no now, is said before any yes is asked.
+  if (name === "event_ticket_refund") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = ticketRefundRefusal(c, input);
+    if (refusal) return refusal;
+  }
+  // And a buyer's ticket for a friend: not theirs, already claimed, or the policy says no now — before any yes.
+  if (name === "event_seats") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = seatsRefusal(c, input);
     if (refusal) return refusal;
   }
   // And for a refund: somebody else's event, or a guest who never paid, is refused before any yes.
@@ -9796,7 +9978,15 @@ async function runToolInner(name, rawInput, ctx) {
     }
   }
 
-  const out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
+  let out;
+  try {
+    out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
+  } catch (e) {
+    // A sign-in holds their saved profile (src/browser.js holdProfile): every browser tool gets the
+    // same fixed answer, nothing was opened or read, and a yes for the step is not spent.
+    if (e instanceof browser.ProfileBusy) return { ...browser.BUSY };
+    throw e;
+  }
 
   // Held, not done: the handler got all the way to the irreversible step, refused nothing, and
   // parked it for its undo window instead (parkHeld). Straight back, with none of what follows —
@@ -10657,6 +10847,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const credential = looksLikeACredential(`${input.about} ${input.fact}`);
       if (credential) return refuseCredential(credential, { what: "that", ownerName: me.name });
 
+      // The name they gave their Reason (src/identity.js): kept on their account on their own word,
+      // and — where REASON_ONE_IDENTITY covers them — said on every surface from the next turn on.
+      if (input.kind === "your_name") {
+        // Off for this person: nothing is written, exactly as before the switch existed.
+        if (!identity.oneIdentityFor(c)) return { ok: false, refused: "not_saved", error: "Nothing was saved: 'kind' is 'fact' or 'how_to_treat_me' here." };
+        const set = identity.setGivenName(c, input.fact);
+        if (!set.ok) return { ok: false, refused: "not_saved", error: set.error };
+        return {
+          ok: true, kind: "your_name", name: set.name, ...(set.was && set.was !== set.name ? { was: set.was } : {}),
+          note: set.used
+            ? `Saved: with them you are ${set.name} from now on — in texts, on the web and on calls. To anybody else you are still Reason, their assistant.`
+            : `Saved as the name they gave you. Use ${set.name} with them in this conversation.`,
+        };
+      }
+
       // A rule about how Reason behaves with them, from their own correction (src/dream.js reviews
       // these nightly). Rides on every later turn (src/memorynote.js), sealed to this conversation.
       if (input.kind === "how_to_treat_me") {
@@ -10764,13 +10969,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "meal_query": {
       const period = input.period ?? "today";
       const now = clock.now();
-      const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+      // Their day, not the machine's: live runs in UTC, where midnight is 7pm in New York, so an evening
+      // "today" had lost lunch and a morning one still held last night's dinner (2026-11-11).
+      const tz = zone.zoneFor(c);
+      const midnight = (ms) => zone.wallToInstant(`${zone.isoIn(ms, tz).slice(0, 10)}T00:00:00`, tz);
+      const today = midnight(now);
+      // Noon that many days back, then that day's own midnight: right across a clock change too.
+      const daysBack = (n) => midnight(today + 12 * 3_600_000 - n * 86_400_000);
       let sinceMs;
-      if (period === "today") sinceMs = dayStart.getTime();
-      else if (period === "yesterday") sinceMs = dayStart.getTime() - 86_400_000;
-      else if (period === "week") sinceMs = dayStart.getTime() - 7 * 86_400_000;
+      if (period === "today") sinceMs = today;
+      else if (period === "yesterday") sinceMs = daysBack(1);
+      else if (period === "week") sinceMs = daysBack(7);
       else sinceMs = 0;
-      const cutoff = period === "yesterday" ? dayStart.getTime() : undefined;
+      const cutoff = period === "yesterday" ? today : undefined;
       let entries = db.mealEntriesSince(c, sinceMs);
       if (cutoff) entries = entries.filter(e => e.created_at < cutoff);
       const totals = nutrition.sumMeals(entries);
@@ -11135,11 +11346,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
+      // A text to somebody else is checked later (REASON_QUICK_CORRECTION): the carrier's word on it.
+      if (!toOwner) verifications.schedule(c, "text", { outbox_id: r.outbox_id ?? null, to });
+      const gated = deliveryNote(c, router, channelName, r);
       return {
         ok: true, sent_to: to, text, delivered: r.delivered,
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
-        note: "This actually went out. You may say you sent it.",
+        ...(gated ? { delivery: "pending", note: gated } : { note: "This actually went out. You may say you sent it." }),
       };
     }
 
@@ -11400,10 +11614,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (thread.service && !/^imessage$/i.test(thread.service)) {
         return { ok: false, supported: false, error: `this thread is ${thread.service}, and a voice note only plays as one on iMessage. ${asText}` };
       }
-      const st = voiceIO.speakingStatus();
+      // One voice (src/identity.js): the voice their calls use, where the switch covers them.
+      const as = identity.noteVoiceFor(c);
+      const st = voiceIO.speakingStatus({ as });
       if (!st.ok) return { ok: false, supported: false, missing: st.missing, error: `${st.why}. ${asText}` };
 
-      const spoken = await (ctx.speak ?? voiceIO.speak)({ text: input.text });
+      const spoken = await (ctx.speak ?? voiceIO.speak)({ text: input.text, ...(as ? { as } : {}) });
+      if (as) ctx.log?.({ voice_note_voice: spoken.voice ?? null, provider: spoken.provider ?? null, matched_call_voice: !!spoken.matched, ...(spoken.fell_back ? { fell_back: spoken.fell_back } : {}) });
       if (!spoken.ok) return { ok: false, ...(spoken.missing ? { missing: spoken.missing } : {}), error: spoken.error, note: "Nothing was sent." };
 
       // The thread's own address and nothing the model supplied: this only ever goes back to the
@@ -11479,9 +11696,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       if (!r.ok) return { ...r, note: "Nothing was sent. Tell them exactly that, and what it said." };
+      const gatedVoice = deliveryNote(c, router, channelName, r);
       return {
         ok: true, sent_to: to, file: picked.file, converted: picked.converted, delivered: r.delivered,
-        note: "That went as a real voice note — it will play inline on an iPhone. You may say you sent it.",
+        ...(gatedVoice
+          ? { delivery: "pending", note: `A real voice note (it plays inline on an iPhone), and ${gatedVoice}` }
+          : { note: "That went as a real voice note — it will play inline on an iPhone. You may say you sent it." }),
       };
     }
 
@@ -11506,9 +11726,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
       if (!r.ok) return { ...r, note: "The picture did not go. Say that plainly." };
+      const gatedUrl = deliveryNote(c, router, channelName, r);
       return {
         ok: true, sent_to: to, url, delivered: r.delivered,
-        note: "That went as a picture in their iMessage thread. You may say you sent it.",
+        ...(gatedUrl
+          ? { delivery: "pending", note: `A picture, on its way into their iMessage thread, and ${gatedUrl}` }
+          : { note: "That went as a picture in their iMessage thread. You may say you sent it." }),
       };
     }
 
@@ -11602,6 +11825,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // "hey Omari, what's up?" on a call Reason placed about his photos).
       const because = toOwner ? String(input.opening ?? "").trim() || (scheduled ? input.goal : "") : "";
       let announcement = announcementFor({ ownerName: me.name, toOwner, because });
+      // No reason of its own to say: the plain greeting, fitted to the time of day (src/calls/carryover.js).
+      if (toOwner && !because) announcement = carryover.greetingFor({ conversationId: c, name: me.name, direction: "out" }) || announcement;
       // The goal is the model's words, and the provider refuses an owner greeting that reads like
       // the stranger line ("...a call for the airport" trips "call for"). The plain greeting then,
       // and the voice turn still knows why it rang (placedCallNote in src/calls/voice.js).
@@ -11613,8 +11838,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
       // skipped: "I didn't ring them because of the hour" is a useful sentence; a call that silently
       // did not happen is the false-progress failure.
-      const hours = withinCallingHours({ toOwner });
-      if (!hours.ok) return { ok: false, status: "quiet_hours", error: hours.error };
+      // The hour is the callee's (the place's zone from a lookup, else the number's area code), else the
+      // account holder's — never the server's.
+      // The window is this person's own when they set one (call_hours_set), else the install's.
+      // "Call now anyway" places this one call — only on their own words, found in what they just said
+      // (`callNowSaid`), never on the model's reading of what they would want (Omari 2026-11-12).
+      const callee = toOwner ? null : zone.calleeZone(to, c);
+      const myHours = callHoursFor(c);
+      const hours = withinCallingHours({ toOwner, window: myHours.window, own: myHours.own, userTz: zone.zoneFor(c), ...(callee ? { tz: callee.zones ?? callee.zone, whose: callee.source } : {}) });
+      let hoursOverride = null;
+      if (!hours.ok) {
+        const { error: why, ok: _no, ...when } = hours;
+        if (String(input.call_now_said ?? "").trim()) {
+          const said = callNowSaid({ said: input.call_now_said, words: askedCall.theirWords(ctx.messages ?? []), kind: ctx.kind ?? "event" });
+          if (!said.ok) {
+            return {
+              ok: false, status: "quiet_hours", ...when,
+              error: `${why} The call-now override was NOT accepted: ${said.why}. It only ever comes from their own explicit words for this call; ask them, do not decide it for them.`,
+            };
+          }
+          hoursOverride = { said: said.said, local_time: hours.local_time, zone: hours.zone };
+          (ctx.log ?? (() => {}))({ call_hours_override: c, to, local_time: hours.local_time, zone: hours.zone });
+        } else return { ok: false, status: "quiet_hours", ...when, error: why };
+      }
 
       // Did this already happen? The owner's rule — never book twice, never leave two voicemails — and
       // the one case worth naming: a call that dropped right after somebody said "you're booked" comes
@@ -11810,12 +12056,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");
-      try { plan.noteCall(c); } catch { /* the call is placed either way */ }
+      // The call that is on Reason (a yes to the event onboarding's surprise-call offer) is spent here
+      // and is not one of the month's free calls.
+      try { if (!plan.useGiftCall(c)) plan.noteCall(c); } catch { /* the call is placed either way */ }
       return {
         ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
-        announced: announcement,
-        recorded: true,
+        // A GPT-Live call to somebody else starts normally and is not audio-recorded (src/calls/manner.js).
+        ...(hoursOverride ? { placed_outside_call_hours: `It is ${hoursOverride.local_time} where they are (${hoursOverride.zone}); placed anyway because ${me.name} said: "${hoursOverride.said}". This one call only.` } : {}),
+        announced: placed.announced ?? announcement,
+        recorded: placed.recorded ?? true,
         rules,
         may_agree: brief.approved.book,
         asking: brief.questions,
@@ -11824,8 +12074,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
           + (toOwner
             ? ` It opened with a plain greeting — nothing about being an AI or the recording is recited at ${me.name}; they are told once by text.`
-            : ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded.`)
-          + ` The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
+            : placed.recorded === false
+              ? ` It starts like a normal caller: hello and what it is about. It says it is an AI assistant calling for ${me.name} only if they ask who or what is calling, and then at once.`
+              : ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded.`)
+          + (placed.recorded === false
+            ? ` This call is NOT audio-recorded (calls to businesses and other people are not): there will be no audio to send, only what was said and the outcome, so never tell ${me.name} a recording is coming.`
+            : ` The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`)
           + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${me.name} about.`
           + (brief.approved.book
             ? ` This call MAY agree to the thing it was approved for, and nothing beyond it: a fee or condition ${me.name} did not approve stops it and texts them.`
@@ -12162,7 +12416,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel": case "browsers_sign_out":
     case "event_ride": case "event_rides_setting": case "event_cover": case "event_detail_public":
     case "event_schedule": case "event_scheduled":
-    case "event_price": case "event_payouts": case "event_refund":
+    case "event_price": case "event_payouts": case "event_refund": case "event_ticket_refund": case "event_seats":
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- an event's photo album (src/albumtools.js) ----------
@@ -12172,6 +12426,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- walking directions (src/directionstools.js) ----------
     case "directions":
       return await runDirectionsTool(name, input, { ...ctx, conversationId: c });
+
+    // ---------- cues: one offer when something comes up (src/cues.js) ----------
+    case "cue_note": case "cue_offer": case "cue_answer": case "cue_end": case "cues_setting":
+      return await runCueTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- to-do lists (src/todo.js) ----------
     case "todo_plan": case "todo_approve": case "todo_item_update": case "todo_list_get":
@@ -12193,9 +12451,39 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return out;
     }
 
+    // ---------- account jobs: a subscription cancelled, a bill paid (src/accountjobtools.js) ----------
+    case "account_cancel": case "account_bill_pay": {
+      // A suggestion never starts one. A turn a timer, a watch or Reason itself started is not them asking.
+      if (offers.turnState(c).kind !== "user") {
+        return { ok: false, blocked: "not_their_turn", error: "This is only started when they asked for it, on their own message. Nothing was started." };
+      }
+      return await runAccountJobTool(name, input, { ...ctx, conversationId: c });
+    }
+    case "account_cancel_confirm": case "account_job_answer": case "account_job_status": case "account_job_stop":
+      return await runAccountJobTool(name, input, { ...ctx, conversationId: c });
+
     // ---------- food orders (src/food.js, REASON_FOOD) ----------
     case "food_order":
-      return await runFoodTool(name, input, { ...ctx, conversationId: c });
+      return await runFoodTool(name, input, {
+        ...ctx, conversationId: c,
+        // Past orders are read from their receipts (src/food.js pastOrders): the mail search is the
+        // same gmail_search the model has, every connected account, headers only.
+        mailSearch: ctx.mailSearch ?? (async (query, limit) => {
+          const out = await dispatch("gmail_search", { query, limit }, ctx, c, me);
+          return out?.ok ? { ok: true, messages: out.content?.messages ?? out.messages ?? [] } : out;
+        }),
+        // The dishes and the total are in the receipt, not in its subject: the same gmail_read the
+        // model has, one message, its text only. A search handed in (a test) brings its own reader.
+        mailRead: ctx.mailRead ?? (ctx.mailSearch ? null : (async (m) => {
+          const out = await dispatch("gmail_read", { message_id: m.id, account: m.account, max_chars: 8000 }, ctx, c, me);
+          const v = out?.content?.message ?? out?.message ?? null;
+          return out?.ok && v ? { ok: true, text: String(v.text ?? v.body ?? "") } : { ok: false };
+        })),
+      });
+
+    // ---------- their bank, read-only (src/plaid.js, REASON_PLAID) ----------
+    case "bank":
+      return await runPlaidTool(name, input, { conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
@@ -13256,14 +13544,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       const cart = turn.cart;
-      // A flight is never bought down this road: it has no traveler read-back, no fresh quote and no
-      // ticketing honesty. AgentCard's merchant slug says which it is — a field, never the words.
+      // A flight is never bought through AgentCard (its flight route was removed 2026-11-11). AgentCard's merchant slug says which it is — a field, never the words.
       if (flightbook.isFlightCart(cart) || flightbook.isFlightCart(turn.catalog)) {
         return {
           ok: false, blocked: "flight_not_here", conversation_id: turn.conversation_id,
-          error: flightbook.bookingEnabled(c)
-            ? "That's a flight, and flights are not bought with this tool. Search it with flight_search, and if they ask you to book one, use flight_book. Nothing was carted or charged."
-            : "That's a flight. Reason doesn't book flights here: search it with flight_search and hand over the Google Flights link so they can book it themselves. Nothing was carted or charged.",
+          error: "That's a flight. Reason doesn't book flights here: search it with flight_search and hand over the Google Flights link so they can book it themselves. Nothing was carted or charged.",
         };
       }
       const line = cart ? agentcard.cartLine(cart) : "";
@@ -13395,8 +13680,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return placementGaveUp(input.conversation_id, row, me);
       }
 
-      // A flight carries more than a cart: who flies, how fresh the price is, and whether the total is
-      // final. Every one of those is checked here, before anything is sent (src/flightbook.js).
+      // A flight is never confirmed through AgentCard: refused here, before anything is sent.
       const flightRefusal = flightConfirmRefusal(c, row);
       if (flightRefusal) return flightRefusal;
 
@@ -13474,16 +13758,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // gate enforces by itself, because a new cart means a new hash means a different target.
       if (!out.ok && out.httpStatus === 409 && out.code !== "turn_in_progress") {
         const fresh = out.cart ?? out.carts?.[0] ?? null;
-        // A flight's new cart is not just a new total: its finality, its line and its quote time all
-        // belong to the cart flight_book read. So a flight goes back through flight_book, whole.
-        if (row.kind === "flight") {
-          db.markAgentcardPurchase(input.conversation_id, { quoteCheckedAt: 0 });
-          return {
-            ok: false, blocked: "cart_changed", was: line, code: out.code || undefined,
-            error: `Not booked: ${out.error}. Nothing was charged. The fare moved between the yes and the confirm${fresh ? ` (AgentCard now says ${fresh.total})` : ""}.`
-              + ` Their yes was for ${trust.money(cents)} and cannot cover a new price. Call flight_book again for a fresh quote, show them the new numbers, and ask again.`,
-          };
-        }
         if (fresh?.hash) {
           db.recordAgentcardPurchase({
             conversationId: c, buyConversationId: input.conversation_id, status: "cart_shown",
@@ -13554,28 +13828,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           // The old approval is spent; the new link is unapproved until its own event says otherwise.
           ...(newAuth ? { authorizationState: "" } : {}),
           ...(Number.isFinite(expiresMs) ? { approvalExpiresAt: expiresMs } : {}),
-          ...(row.kind === "flight" ? { ticketingState: "approval_pending" } : {}),
         });
         // Every approval text — the first and every re-ask — carries the total AND the hold ceiling,
         // the two numbers AgentCard's approval card shows (2026-10-26: $16.78 in the texts, $26.14 on
         // the card, and the owner was surprised).
         const hold = holdLineFor(row, cents);
         const sameAgain = `call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}), the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that call comes back with an order.`;
-        if (row.kind === "flight") {
-          return {
-            ok: false, blocked: "vault_approval_required",
-            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents), hold: hold.line, hold_ceiling: hold.ceiling,
-            approval_expires_at: out.approval_expires_at || undefined,
-            ...(rejected ? { store_rejected: true, placement_failures: failures, placement_fail_code: fresh.placement_fail_code || undefined, placement_fail_reason: fresh.placement_fail_reason || undefined } : {}),
-            error: (rejected
-              ? `Not booked — ${placementWhy(fresh).words} after ${me.name} approved the payment (${placementWhy(fresh).given}). Nothing was charged. That attempt used up the approval, so AgentCard needs a fresh one to try again. Tell them exactly that — the airline side refused it, never that their approval didn't count — and that nothing was charged. Then the link below.`
-              : `Nothing has been charged and nothing is booked — AgentCard wants ${me.name} to approve the payment on their own device.`)
-              + ` Send the approval link as its OWN message — the link alone, nothing before it, nothing after it, no punctuation touching it — and say in a separate message that it opens AgentCard's page showing the merchant and the numbers (${hold.line}), approved with their passkey: Face ID or Touch ID on iPhone, face or fingerprint unlock on Android, or their master password.`
-              + ` ${out.approval_expires_at ? `It stops working at ${stamp(Date.parse(out.approval_expires_at))}.` : "It stops working after about 15 minutes."} An expired approval means a fresh price and a new approval, never a retry.`
-              + ` Link: ${out.approval_url}`
-              + ` Once they approve, ${sameAgain} An approval is not a booking, and a booking is not a ticket.`,
-          };
-        }
         if (rejected) {
           const why = placementWhy(fresh);
           return {
@@ -13676,7 +13934,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       const chargeKnown = out.charge_status === "unknown" ? known : null;
-      if (row.kind === "flight") return flightPlacedAnswer(c, input.conversation_id, { out, line, card, known, chargeKnown, cents });
       return {
         ok: true,
         status: out.status,
@@ -13693,10 +13950,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
-    // ---------- flights: travelers, and a bookable price (src/flightbook.js) ----------
+    // ---------- flights: travelers, and the start of a booking (src/flightbook.js, src/flightcheckout.js) ----------
     //
-    // The money is NOT here. flight_book ends at a cart and a target; the yes, the caps, the passkey
-    // approval, the decline and unknown-outcome rules are purchase_confirm's, the one payment path.
+    // The money is NOT here. flight_book starts a checkout on the airline's site; the exact total, the
+    // yes, the daily cap and the Face ID approval are the shopping path's (shop_pay), the one payment path.
     case "flight_traveler_save": {
       const t = {
         given_name: input.given_name, family_name: input.family_name, born_on: input.born_on, gender: input.gender,
@@ -13766,132 +14023,82 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A suggestion never books. A turn a timer, a watch or Reason itself started is not them asking.
       const turn = offers.turnState(c);
       if (turn.kind !== "user") {
-        return { ok: false, blocked: "not_their_turn", error: "A flight is only priced for booking when they asked to book it, on their own message. Watching a route or suggesting a fare is never a reason to. Nothing was done." };
+        return { ok: false, blocked: "not_their_turn", error: "A flight is only booked when they asked to book it, on their own message. Watching a route or suggesting a fare is never a reason to. Nothing was done." };
       }
       const search = db.getFlightSearch(c, input.search_id);
       const opt = search?.kind === "flights" ? search.options?.find(o => o.option === input.option) ?? null : null;
       if (!opt) return { ok: false, error: `There is no option ${input.option} in flight search ${input.search_id} for ${me.name}. Run the search again and use what it returns.` };
       const link = opt.link || "";
-      const handover = link ? ` The Google Flights link is still the other way to book it themselves: ${link}` : "";
-      if (!agentcard.isConfigured()) return agentcard.notConfigured(link ? { link, note: `Hand over the Google Flights link instead: ${link}` } : {});
-      // An earlier flight confirm whose answer never came back may already be a booking. Nothing new is
-      // priced until AgentCard's record says what happened to it — never a second booking on a guess.
-      const unsure = db.listAgentcardPurchases(c, 50).find(p => p.kind === "flight" && p.status === "outcome_unknown");
-      if (unsure) {
-        return {
-          ok: false, blocked: "outcome_unknown", conversation_id: unsure.buy_conversation_id,
-          error: `An earlier flight booking (${unsure.what || "a flight"}) went to AgentCard and no answer came back, so it may already be booked. Nothing new was priced. Read it with purchase_track (conversation_id ${unsure.buy_conversation_id}) and tell them it is not known yet; do not price another flight until that record says it was not booked.${handover}`,
-        };
-      }
+      const handover = link ? ` The Google Flights link is the way to book it themselves: ${link}` : "";
 
       // Who is flying: every traveler theirs, complete, and confirmed in their words for this trip.
       const travelers = input.traveler_ids.map(id => db.getFlightTraveler(c, id));
       const missing = input.traveler_ids.filter((id, i) => !travelers[i]);
-      if (missing.length) return { ok: false, error: `No traveler ${missing.join(", ")} on ${me.name}'s record. Nothing was priced.` };
+      if (missing.length) return { ok: false, error: `No traveler ${missing.join(", ")} on ${me.name}'s record. Nothing was started.` };
       const unconfirmed = travelers.filter(t => !t.confirmed_at || clock.now() - t.confirmed_at > flightbook.TRAVELER_CONFIRM_MS);
       if (unconfirmed.length) {
         return {
           ok: false, blocked: "travelers_not_confirmed",
-          error: `Not yet: ${unconfirmed.map(t => t.label).join(", ")} ${unconfirmed.length > 1 ? "have" : "has"} not been confirmed for this trip. Read the details back — ${unconfirmed.map(t => `"${flightbook.readBack(t)}"`).join("; ")} — ask whether they are exactly right, and call flight_traveler_confirm with their answer.`,
+          error: `Not yet: ${unconfirmed.map(t => t.label).join(", ")} ${unconfirmed.length > 1 ? "have" : "has"} not been confirmed for this trip. Read the details back — ${unconfirmed.map(t => `"${flightbook.readBack(t)}"`).join("; ")} — ask whether they are exactly right, and call flight_traveler_confirm with their answer on their next message. Nothing was started.`,
         };
       }
       const party = search.params?.sent ?? {};
       const extra = Number(party.children ?? 0) + Number(party.infants_in_seat ?? 0) + Number(party.infants_on_lap ?? 0);
-      if (extra) return { ok: false, blocked: "party_not_supported", error: `Reason only books adults through AgentCard, and this search has children or infants in it. Nothing was priced.${handover}` };
+      if (extra) return { ok: false, blocked: "party_not_supported", error: `Reason only books adults, and this search has children or infants in it. Nothing was started.${handover}` };
       const seats = Number(party.adults ?? 1);
       if (seats !== travelers.length) {
-        return { ok: false, blocked: "traveler_count", error: `The search was for ${seats} traveler${seats === 1 ? "" : "s"} and ${travelers.length} ${travelers.length === 1 ? "was" : "were"} given. Every seat needs its own confirmed traveler. Nothing was priced.` };
+        return { ok: false, blocked: "traveler_count", error: `The search was for ${seats} traveler${seats === 1 ? "" : "s"} and ${travelers.length} ${travelers.length === 1 ? "was" : "were"} given. Every seat needs its own confirmed traveler. Nothing was started.` };
       }
-      const legs = flightbook.optionLegs(opt);
-      if (!legs.length) return { ok: false, error: `That search option carries no legs to book against. Nothing was priced.${handover}` };
+      const flightCheckout = await import("./flightcheckout.js");
+      const airline = flightCheckout.airlineFor(opt);
+      if (!airline) {
+        return { ok: false, blocked: "not_offered", error: `Reason can't book that one: it books a flight on the airline's own site, and this option is on more than one airline or one it doesn't book with. Nothing was started. Say so plainly.${handover}` };
+      }
+      // One flight checkout at a time: a second would be a second ticket.
+      const open = shopConnect.runsOf(c, { sinceMs: 2 * 3600_000, limit: 10 }).find(r => r.status === "running" && flightCheckout.isFlightRun(r.run_id, c));
+      if (open) return { ok: false, blocked: "booking_in_progress", run_id: open.run_id, error: "A flight booking is already running for them. Nothing new was started. shop_status says where it is; if they want a different flight, shop_decline its payment or wait for it to end first." };
 
-      // 6a — the fresh quote: the same search again, the same flights, the price now.
+      // The fresh quote: the same search again, the same flights, the price now.
       let v;
       const verify = ctx.flightVerify ?? ((cc, inp) => flightSearch.runVerify(cc, inp, { sidecar: flightProviders(), db, today: flightToday(cc), now: () => clock.now() }));
       try { v = await verify(c, { search_id: input.search_id, option: input.option }); }
       catch (e) { v = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
       if (!v?.ok || v.stale) {
-        return { ok: false, blocked: "quote_unverified", error: `Could not re-check that flight just now (${v?.error || "the search did not answer"}), and a booking is never built on an unchecked price. Say so.${handover}` };
+        return { ok: false, blocked: "quote_unverified", error: `Could not re-check that flight just now (${v?.error || "the search did not answer"}), and a booking is never started on an unchecked price. Say so.${handover}` };
       }
       if (!v.still_there) {
-        return { ok: false, blocked: "flight_gone", fresh_options: v.fresh_options, error: "That exact flight didn't come back on the re-check — it may have sold out. Nothing was priced. Say so and offer what the fresh search shows." };
+        return { ok: false, blocked: "flight_gone", fresh_options: v.fresh_options, error: "That exact flight didn't come back on the re-check — it may have sold out. Nothing was started. Say so and offer what the fresh search shows." };
       }
       if (v.moved && !input.continue_at_new_price) {
         return {
           ok: false, blocked: "price_moved", price_then: v.price_then, price_now: v.price_now, change: v.change,
-          error: `The price moved on the re-check: it's ${v.price_now} now (was ${v.price_then}). Nothing was priced with AgentCard. Tell them the new number and ask whether to continue; only if they say yes, call flight_book again with continue_at_new_price true.`,
+          error: `The price moved on the re-check: it's ${v.price_now} now (was ${v.price_then}). Nothing was started. Tell them the new number and ask whether to continue; only if they say yes, call flight_book again with continue_at_new_price true.`,
         };
       }
-
-      const who = await agentcardUserFor(c);
-      if (!who.ok) return { ...who, ...(link ? { link } : {}) };
+      const priceNow = String(v.price_now ?? opt.price ?? "");
+      const dollars = Number(priceNow.replace(/[^0-9.]/g, ""));
+      if (!Number.isFinite(dollars) || dollars <= 0) {
+        return { ok: false, blocked: "quote_unverified", error: `The search shows no price for that flight, and a booking is never started without one. Nothing was started.${handover}` };
+      }
+      // The most the checkout may reach, enforced by the provider: the searched price and a margin for
+      // what a search leaves out. Never a price anyone agreed to — the yes is for the exact total.
+      const maxUsd = Math.ceil(dollars * 1.25 + 30);
       const cabin = String(party.cabin ?? "ECONOMY").toLowerCase().replace(/_/g, " ");
-      const legWords = legs.map(l => `${l.from} to ${l.to} departing ${String(l.depart).replace("T", " ")}`).join(", then ");
-      const ask = `Book a ${cabin} flight for ${seats} adult${seats === 1 ? "" : "s"}: ${legWords}${opt.flights ? ` (${opt.flights})` : ""}. Exactly these flights, nothing else.`;
-
-      // The AgentCard conversation, driven here and not by the model: search → pick → passengers.
-      const t1 = await agentcard.buyConversation(who.token, ask);
-      if (!t1.ok) return { ok: false, error: `AgentCard could not be reached: ${t1.error}. Nothing was priced or booked.${handover}`, ...(link ? { link } : {}) };
-      const pick = flightbook.catalogMatch(t1.catalog?.items ?? [], opt);
-      if (!pick) {
-        return {
-          ok: false, blocked: "not_offered", conversation_id: t1.conversation_id,
-          error: `AgentCard doesn't offer that exact flight (none of its options flies the same legs at the same times). Nothing was priced or booked. Say so plainly.${handover}`,
-        };
-      }
-      const t2 = await agentcard.buyConversation(who.token, "This one.", { conversationId: t1.conversation_id, productId: pick.product_id });
-      if (!t2.ok) return { ok: false, error: `AgentCard could not cart that flight: ${t2.error}. Nothing was booked.${handover}` };
-      if (!t2.cart || !flightbook.isFlightCart(t2.cart)) {
-        return { ok: false, blocked: "no_cart", conversation_id: t2.conversation_id, error: `AgentCard did not come back with a flight cart ('${t2.status}'). Nothing was booked. Say it could not be priced for booking.${handover}` };
-      }
-      // Always the passengers they just confirmed, explicitly: AgentCard keeps passengers from earlier
-      // bookings on its own side and would otherwise fly whoever it remembers.
-      // Written down BEFORE they go, so a call that fails after AgentCard kept them still stops an
-      // older cart for other passengers (flightConfirmRefusal).
-      db.opsSet(`flight:passengers_sent:${c}`, flightbook.travelerFingerprint(travelers));
-      const t3 = await agentcard.buyConversation(who.token, flightbook.travelerAsk(travelers), { conversationId: t1.conversation_id });
-      if (!t3.ok) return { ok: false, error: `AgentCard did not take the passenger details: ${t3.error}. Nothing was booked.${handover}` };
-      const cart = t3.cart ?? null;
-      if (!cart || !flightbook.isFlightCart(cart) || t3.next_action !== "confirm") {
-        return {
-          ok: false, blocked: "provider_needs_more", conversation_id: t3.conversation_id, next_action: t3.next_action || undefined,
-          error: `AgentCard is not ready to book (it wants '${t3.next_action || t3.status}'). Nothing was booked or charged. Say that it could not be readied for booking here.${handover}`,
-        };
-      }
-      const line = cart.items.length === 1 ? cart.items.find(i => (pick.link && i.product_id === pick.link) || (pick.product_id && (i.ref === pick.product_id || i.product_id === pick.product_id))) : null;
-      if (!line) {
-        return { ok: false, blocked: "cart_mismatch", error: `The cart AgentCard built is not just the flight they picked. Nothing was booked. Say so.${handover}` };
-      }
-
-      const view = flightbook.priceView(cart);
-      db.recordAgentcardPurchase({
-        conversationId: c, buyConversationId: t3.conversation_id, status: "cart_shown",
-        cartHash: cart.hash, amountCents: cart.total_cents, merchant: cart.merchant_name || "Agentcard Flights",
-        what: `${line.name}, for ${travelers.map(t => t.label).join(" & ")}`,
-      });
-      db.markAgentcardPurchase(t3.conversation_id, {
-        kind: "flight", cartJson: JSON.stringify(cart), travelerIds: JSON.stringify(input.traveler_ids),
-        travelerFp: flightbook.travelerFingerprint(travelers), quoteCheckedAt: clock.now(), ticketingState: "quoted",
-        flightJson: JSON.stringify({ search_id: input.search_id, option: input.option, legs: pick.flight.legs, flights: opt.flights ?? "", fli_price_now: v.price_now ?? "", link }),
-      });
-      if (!view.final) {
-        return {
-          ok: false, blocked: "total_not_final", conversation_id: t3.conversation_id, price: view,
-          error: `AgentCard's total is not final: ${view.finality}. Do NOT ask them to approve it. Tell them the total isn't final and why; calling flight_book again re-checks, and if it is still not final, say you could not get a final price and stop.${handover}`,
-        };
-      }
-      const lines = flightbook.priceLines(view);
+      const fp = flightbook.travelerFingerprint(travelers);
+      const item = flightCheckout.itemFor(opt, travelers);
+      shopConnect.noteStore({ store: airline.key, name: airline.name, url: airline.url });
+      const out = await shopConnect.startCheckout({ conversationId: c, store: airline.key, startUrl: airline.url, what: flightCheckout.taskFor(opt, { seats, cabin, price: priceNow }), item, maxUsd });
+      if (!out.ok) return { ok: false, error: `The booking could not be started (${out.error || "no answer"}). Nothing was booked or charged.${handover}`, ...(link ? { link } : {}) };
+      flightCheckout.linkRun({ conversationId: c, runId: out.runId, searchId: input.search_id, option: input.option, travelerIds: input.traveler_ids, travelerFp: fp, carrier: airline.code, what: item });
+      shopConnect.follow(out.runId);
       return {
-        ok: true, conversation_id: t3.conversation_id, cart_hash: cart.hash,
-        flight: line.name, legs: pick.flight.legs, travelers: travelers.map(t => flightbook.readBack(t)),
-        price: view, price_lines: lines, total: view.total,
-        fli_price_now: v.price_now ?? undefined,
+        ok: true, run_id: out.runId, airline: airline.name, flight: opt.flights ?? item,
+        travelers: travelers.map(t => flightbook.readBack(t)), searched_price: priceNow,
         ...(link ? { google_flights_link: link } : {}),
-        note: `Nothing is booked, held or charged. Show them, from these fields and never from memory: the flight, each traveler exactly as read back, and every price line — ${lines.join("; ")}.`
-          + ` Say what the cart does NOT itemize as not itemized (${view.unknown.join("; ")}) and never invent a tax or fee line. Fare rules were not verified: say so, and that they can check the airline's own rules before approving. Never promise free 24-hour cancellation or any rule nobody saw.`
-          + (v.price_now && v.price_now !== view.total ? ` The search showed ${v.price_now}; AgentCard's all-in total is ${view.total}, and the total is what would be charged.` : "")
-          + ` Then ask whether to book exactly this. Get the target by calling purchase_confirm with conversation_id ${t3.conversation_id} and cart_hash ${cart.hash} and no confirmation_id — nothing is charged — then confirm_request with its use_target, their answer, confirm_record, and purchase_confirm again.`
-          + (link ? ` They can also book it themselves on Google Flights (${link}); offer both without pushing either.` : ""),
+        note: `Started on ${airline.name}'s own site. Nothing is booked, held or charged. Tell them in one line you're on it; don't promise a time (it takes a few minutes).`
+          + ` When it reaches payment they get ${airline.name}'s exact total to approve — ONE number; never break it into fare, tax or fees yourself, and never quote the searched price as the total.`
+          + ` Fare rules (changes, cancellation, bags) were not verified: say so if they ask, and never promise free cancellation.`
+          + ` If the checkout asks something, answer with shop_answer from what they said or by asking them. After they pay, an order ${airline.name} took is not a ticket: say booked only when you are told a ticket was issued.`,
       };
     }
 
@@ -14026,9 +14233,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let url = String(input.url ?? "").trim();
       let via = "fetch";
       if (input.from_browser) {
+        if (browser.profileBusy(c)) return { ...browser.BUSY };
         const page = browser.openPage(c);
         if (!page) return { ok: false, error: "No page is open in the browser. Open the product page with browser_open first, or pass its url." };
-        try { html = await page.content(); url = page.url(); via = "browser"; }
+        try { html = await page.content(); url = await browser.pageUrl(page); via = "browser"; }
         catch (e) { return { ok: false, error: `Could not read the open page: ${(e?.message ?? String(e)).split("\n")[0]}` }; }
       } else {
         const got = await offers.fetchOfferPage(url, { fetchImpl: ctx.fetchImpl ?? fetch });
@@ -14135,6 +14343,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           : `Say only: "${src.from}". No subject line, no address, no company unless the card already names it.`,
       };
     }
+    case "call_voice_trial": {
+      if (!callTrial.trialOffered(c)) return { ok: false, error: "There is no call voice choice on this account." };
+      const choice = String(input.choice ?? "status");
+      if (choice === "on") db.setCallTrial(c, "cartesia");
+      else if (choice === "off") db.setCallTrial(c, "");
+      else if (choice !== "status") return { ok: false, error: "choice is on, off or status." };
+      const now = db.callTrial(c) === "cartesia" ? "cartesia" : "usual";
+      const ready = !!(config.cartesiaKey && config.cartesiaAgentId);
+      return {
+        ok: true, voice: now,
+        say: now === "cartesia"
+          ? (ready ? "Say their next call with you will be in the Cartesia voice, and it drops back to the usual voice by itself if Cartesia has trouble." : "Say it is set, but the Cartesia voice is not connected on this server yet, so their calls stay on the usual voice for now.")
+          : "Say their calls with you are on the usual voice.",
+      };
+    }
     case "action_card_forget": {
       const out = { ok: true };
       if (String(input.words ?? "").trim()) {
@@ -14181,6 +14404,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: failed.length
           ? `Their zone is saved, but ${failed.length === done.length ? "what was held" : "part of what was held"} (${failed.map(d => d.tool).join(", ")}) did not go through — see \`done\`. Deal with that as you would any refusal; whatever did go through, do not do again.`
           : `Their zone is saved AND what they asked for before the question is now done (${done.map(d => d.tool).join(", ")}, result in \`done\`). Do not call it again. Tell them in one line what is set, in their time.`,
+      };
+    }
+    // Their own no-call hours for calls to other people (src/calls/brief.js `callHoursFor`). Only from
+    // their own words, on a turn they started: the sentence is checked against what they just said.
+    case "call_hours_set": {
+      const spec = String(input.hours ?? "").trim().toLowerCase();
+      const hours = spec === "default" ? "default" : parseCallHours(spec);
+      if (!hours) return { ok: false, error: `'${input.hours}' is not a window. Pass the hours calls are HELD as 'HH:MM-HH:MM' in 24-hour time (like '22:00-07:00'), or 'off', or 'default'.` };
+      const mine = callNowSaid({ said: input.said, words: askedCall.theirWords(ctx.messages ?? [], { last: 5 }), kind: ctx.kind ?? "event" });
+      if (!mine.ok) return { ok: false, error: `Not changed: ${mine.why}. Their call hours are only ever set from their own words — pass their sentence word for word in 'said', or ask them.` };
+      db.setCallHours(c, { hours: hours === "default" ? null : hours, said: hours === "default" ? "" : mine.said, at: clock.now() });
+      const now = callHoursFor(c);
+      // Nothing was saved (no account row to keep it on): never say it was.
+      if (hours !== "default" && !now.own) return { ok: false, error: "Not changed: there is no account to save their call hours on. Say plainly that it could not be saved." };
+      return {
+        ok: true, hours: now.off ? "off" : now.window, theirs: now.own,
+        note: now.off
+          ? `Saved: no no-call hours for their calls to other people any more — a call they ask for is placed at any hour. Say that back in one plain line, including that it means a place could be rung in the middle of its night.`
+          : now.own
+            ? `Saved: their calls to other people are now held between ${now.window.replace("-", " and ")} on the clock of the person being called. Say it back in one line.`
+            : `Saved: back to the standard hours — calls to other people are held between ${String(now.window).replace("-", " and ")} on the clock of the person being called. Say it back in one line.`,
       };
     }
     case "notice_settings": {
@@ -14727,6 +14971,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (entry.signin_blocked) {
         const wall = await socialWallFor(c, entry, input.provider, ctx);
         if (!wall.in) return wall.answer;
+      } else {
+        const access = await signinAccessFor(entry, ctx);
+        if (access.state === "blocked" && access.kind === "walled") return siteBlockedAnswer(c, entry, access);
       }
       const route = signin.signinRoute(c);
       if (!route.can_sign_in) {
@@ -14737,11 +14984,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           remote: signin.remoteSigninAnswer(entry.site), never_a_password: signin.refuseAPassword(),
         };
       }
+      if (signinEmail.emailSigninFor(c)) return { ok: false, busy: true, error: "Reason is signing them in to a site by email right now, on the same saved profile. Wait for that to finish." };
       if (signinRemote.remoteSessionFor(c)) {
         return { ok: false, error: "They are in the middle of signing in through a link, and their saved profile can be in one browser at a time. Wait for that to finish." };
       }
       const reach = trust.SITE_REACHABLE[entry.site];
-      const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
+      const provider = social.socialAllowedFor(c) ? social.usableProvider(input.provider) : "";
       if (provider && social.refusedRecently(c, entry.site, provider)) {
         return { ok: false, refused: provider, ...social.refusalAnswer(entry, provider), error: `${social.LABELS[provider]} refused Reason's browser for ${entry.label} recently; not tried again.` };
       }
@@ -14764,13 +15012,55 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * A link that shows the person Reason's own browser so they can sign in from their phone.
      * Nothing is launched here; the browser starts when they tap Start on the page.
      */
+    case "signin_email": {
+      // The site's own emailed code, read from their Gmail by Reason (src/signinemail.js). Only where
+      // the social sign-in flag reaches them; the tool is not even shown to anybody else.
+      if (!social.socialAllowedFor(c)) return { ok: false, error: "Not available." };
+      const entry = signinSite(c, input.site);
+      if (!entry) return noSigninSite(c, input.site);
+      const offNet = await genericSiteRefused(entry, ctx);
+      if (offNet) return offNet;
+      // A site that refuses Reason's browser — at the page, or after the email goes in — is never
+      // sent an email address: each try there is one more failed sign-in against their account.
+      const access = await signinAccessFor(entry, ctx);
+      if (access.state === "blocked") return siteBlockedAnswer(c, entry, access);
+      if (!me.known && c !== config.ownerConversation) return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
+      if (signinRemote.remoteSessionFor(c) || signinWindow.openWindowFor(c)) return { ok: false, busy: true, error: "A sign-in is already open on their saved profile. Let it finish first." };
+      // Their email: the one they named, else their Google account's address (the default one).
+      const named = String(input.email ?? "").trim();
+      const known = named || (() => { const r = google.resolveAccount(c); return r.ok ? r.account : ""; })();
+      if (!known || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(known)) {
+        return { ok: false, needs_email: true, site: entry.site, ask: `Ask them ONCE, in one plain line, which email their ${entry.label} account uses (like "Which email do you use for ${entry.label}?"), then call signin_email again with it as \`email\`.` };
+      }
+      // They asked for this sign-in themselves: an older link that ended without progress no longer
+      // stands in the way of the hand-off link this attempt may end in (src/signinpage.js). A turn
+      // they did not start clears nothing.
+      if ((ctx.kind ?? "event") === "user") signinPage.clearNoProgress(c, entry);
+      const out = (ctx.startEmailSignin ?? signinEmail.startEmailSignin)({
+        conversationId: c, entry, email: known, log: ctx.log ?? (() => {}),
+        launch: ctx.launchSigninBrowser ?? signinRemote.launchProfileBrowser,
+        closeBrowser: browser.closeBrowser,
+      });
+      trust.ledgerWrite({ conversationId: c, action: "signin_email", input: { site: input.site }, out: { ok: out.ok, site: entry.site }, target: `site:${entry.site}` });
+      if (!out.ok) return out;
+      return {
+        ok: true, started: true, site: entry.site, email: known,
+        say: `Say ONE short line like "Signing you in to ${entry.label} with your email, one sec." — nothing about codes, never "check your email". You are told how it ends; do not say it worked before that.`,
+      };
+    }
+
     case "signin_link": {
       // Both registries: the ten errand sites and the services whose subscriptions cancel on the
       // web. Signing in is the same act either way — the person does it themselves on the site's
       // own page and the session lands in their own profile — so there is one door, not two.
       // Where the social flag reaches them, any site by its web address too (signinSite).
+      // Account jobs on for them: no link while a job is open, for a job's site, or on a turn that asks to
+      // cancel a subscription or pay a bill (src/accountjobtools.js). Asked first, whatever the site turns out to be.
+      { const held = signinLinkRefusal(c, input.site, offers.turnState(c)); if (held) return held; }
       let entry = signinSite(c, input.site);
       if (!entry) return noSigninSite(c, input.site);
+      // A site an account job is working on signs in inside the job (src/accountjobtools.js): no link.
+      { const held = signinLinkRefusal(c, entry.signin_url || entry.site || input.site, offers.turnState(c)); if (held) return held; }
       const offNet = await genericSiteRefused(entry, ctx);
       if (offNet) return offNet;
       // A site that bot-checks this browser off its sign-in page gets no link: the owner opened one
@@ -14783,10 +15073,44 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const wall = await socialWallFor(c, entry, input.provider, ctx);
         if (!wall.in) return wall.answer;
         liveWall = wall.wall ?? null;
+      } else {
+        // Everybody, flag or not: a wall on record (dated, still fresh) or seen just now means no link.
+        const access = await signinAccessFor(entry, ctx);
+        if (access.state === "blocked" && access.kind === "walled") return siteBlockedAnswer(c, entry, access);
+        if (access.checked_live) liveWall = access.wall ?? null;
       }
       if (!me.known && c !== config.ownerConversation) {
         return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
       }
+      // The email sign-in (src/signinemail.js) holds their saved profile while it runs.
+      if (signinEmail.emailSigninFor(c)) return { ok: false, busy: true, error: "Reason is signing them in to a site by email right now, on the same saved profile. Wait for that to finish; you are told how it ends." };
+      // Only a bare name is known: the site's real sign-in page is found BEFORE anything is shown to
+      // them, and when there is none no link is made (owner, 2026-11-12: a link for "link.com"
+      // opened Link's marketing home page under "finish this step on the page below").
+      const placed = await onItsSigninPage(c, entry, ctx);
+      if (placed.answer) {
+        trust.ledgerWrite({ conversationId: c, action: "signin_link", input, out: { ok: false, site: entry.site, ...(placed.answer.no_signin_page ? { no_signin_page: true } : { could_not_open: true }) }, target: `site:${entry.site}` });
+        return placed.answer;
+      }
+      entry = placed.entry;
+      // No link loops (owner, 2026-11-12: the session timed out and a third identical link went out
+      // by itself). After a link ended without progress, a turn they did not start makes no second
+      // link to the same page; at most one more, and only when it would open a different page.
+      const again = signinPage.mayLinkAgain(c, entry, { asked: (ctx.kind ?? "event") === "user" });
+      if (!again.ok) {
+        const ago = again.last.minutes_ago;
+        const what = again.last.how === "cancelled" ? "was closed" : again.last.how === "no_signin_page" ? "found no sign-in page" : again.last.how === "link_expired" ? "expired unopened" : "timed out";
+        return {
+          ok: false, not_sent_again: true, site: entry.site,
+          error: `No new link: the last ${entry.label} sign-in link ${what} ${ago <= 1 ? "a minute ago" : `${ago} minutes ago`} without them signing in, and this one would open the same page. A second identical link is not sent unless they ask for one.`,
+          say: `Say ONE plain line that says what happened, like: "That ${entry.label} sign-in link ${what === "found no sign-in page" ? "didn't reach a sign-in page" : what} before anything went through." Then the next best route in a few words (they can ask for a fresh link when they have a couple of minutes, or do this part in ${entry.label}'s own app or site), or stop.`,
+        };
+      }
+      if (again.retry) signinPage.markRetried(c, entry);
+      // A link they asked for themselves starts the count over.
+      if (again.asked) signinPage.clearNoProgress(c, entry);
+      // The page this link opens is the page later links for this attempt open too.
+      if (entry.generic) signinPage.rememberSigninPage(c, entry, entry.signin_url);
       const by = signin.linkSignin();
       const reach = trust.SITE_REACHABLE[entry.site];
       // Where the social flag reaches them, the site's sign-in page is asked live before a link is
@@ -14794,26 +15118,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // for the link's own page to offer the same choices; and, for a site the probe found walled
       // (DoorDash, Uber Eats…), whether it still is — then no link, one plain line, and what works.
       // Under test only a handed-in probe runs: tests never touch the real network (src/netguard.js).
-      const probe = ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? null : social.signinWall);
+      const probe = liveWallFn(ctx);
       if (social.socialAllowedFor(c) && !liveWall && probe) {
         try { liveWall = await probe(entry); } catch (e) { liveWall = { in: false, why: (e?.message ?? String(e)).split("\n")[0], providers_offered: [] }; }
-        // Only a real wall refuses the link: a 403/503 or a challenge page. A 404, an outage or no
+        // Only a real wall refuses the link: a 403/429/503 or a challenge page. A 404, an outage or no
         // answer at all is not "blocking", and the link's own page still reads the wall live.
-        const walledNow = liveWall && !liveWall.in && (liveWall.status === 403 || liveWall.status === 503 || /bot check/.test(liveWall.why ?? ""));
-        if (reach && !reach.loads && walledNow) {
-          const instead = social.wallInstead(entry);
-          return {
-            ok: false, blocked: true, site: entry.site, checked_live: true,
-            error: `${entry.label}'s sign-in page refuses Reason's browser from here right now, so no link is made: it would only show the wall. ${liveWall.why ?? ""}`,
-            say: `${entry.label} is blocking my browser from its sign-in page right now, so I can't sign you in there. That's ${entry.label}'s choice, not something you did.${instead.say ? ` ${instead.say}` : ""}`,
-            instead: instead.tool,
-          };
+        if (findings.isWall(liveWall)) {
+          const got = findings.recordWall(entry, liveWall);
+          return siteBlockedAnswer(c, entry, { state: "blocked", kind: "walled", seen: got?.seen ?? "", why: liveWall.why ?? "", checked_live: true, stale: false });
         }
       }
       // Which button their account signs in through (src/socialsignin.js): the page opens with it
       // pressed, and the saved login records it once the site says signed in. Dropped where the flag
       // does not reach this person.
-      const provider = social.socialAllowedFor(c) ? social.providerKey(input.provider) : "";
+      // Never Google (src/socialsignin.js NEVER_PRESSED): asked for it, the link opens on the site's email route.
+      const provider = social.socialAllowedFor(c) ? social.usableProvider(input.provider) : "";
       if (provider && social.refusedRecently(c, entry.site, provider)) {
         return { ok: false, refused: provider, ...social.refusalAnswer(entry, provider), error: `${social.LABELS[provider]} refused Reason's browser for ${entry.label} recently; no ${social.LABELS[provider]} link is made again.` };
       }
@@ -14881,7 +15200,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // reading revokes the row, and the provider on it is what a sign-in-again presses.
         const before = social.socialAllowedFor(c) ? social.providerOf(c, entry.site) : "";
         const page = await (ctx.pageFor ?? browser.pageFor)(c);
-        let out = await (ctx.checkAndRecord ?? signin.checkAndRecord)(page, c, entry.site, { provider: before });
+        // The entry in hand: for a site named by its address, the page their sign-in there was on.
+        let out = await (ctx.checkAndRecord ?? signin.checkAndRecord)(page, c, entry.site, { provider: before, ...(entry.generic ? { entry } : {}) });
         // A session that lapsed on a site whose login goes through a provider: sign back in yourself
         // first — open the sign-in page, press that button, ask the site again — and only involve the
         // person when that lands on a page waiting for them (src/socialsignin.js signInAgain).
@@ -14891,11 +15211,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           if (again?.tried && again.state) out = { ...out, state: again.state, why: again.why || out.why, signed_in_again: again.state === "signed_in" };
           if (again?.refused) out = { ...out, state: "signed_out", why: again.why };
         }
+        // The account page itself answered 403 / 429: that is the site refusing the browser, not a
+        // page that failed to load. It is written down with today's date and said as a block.
+        const walledNow = out.ok && out.state === "unknown" && [403, 429].includes(Number(out.status));
+        if (walledNow) findings.recordFinding(entry, { kind: "walled", status: out.status, why: `its account page answered Reason's browser with HTTP ${out.status}` });
+        const blockedNow = walledNow ? siteBlockedAnswer(c, entry, { state: "blocked", kind: "walled", seen: findings.signinFinding(entry)?.seen ?? "", why: `its account page answered HTTP ${out.status}`, checked_live: true, stale: false }) : null;
         trust.ledgerWrite({ conversationId: c, action: "signin_status", input, out: { ...out, ...(again ? { signin_again: { provider: again.provider, pressed: !!again.pressed, state: again.state ?? null } } : {}) }, target: `site:${entry.site}` });
         return {
           ok: true, site: entry.site, state: out.state, why: out.why,
           checked: out.checked_url, landed: out.landed, just_checked: true,
           ...(out.provider ? { provider: out.provider } : {}),
+          ...(again?.email_route && out.state !== "signed_in" ? { sign_back_in: `Their ${entry.label} login was a Google one, and Google is never pressed: sign them back in yourself with signin_email (${entry.label}'s own emailed code).` } : {}),
           ...(again?.refused ? { provider_refused: again.provider, ...social.refusalAnswer(entry, again.provider) } : again?.tried ? {
             signed_in_again: again.state === "signed_in",
             signin_again: again.state === "signed_in"
@@ -14903,9 +15229,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               : `The session lapsed and pressing the ${social.LABELS[again.provider]} button did not get back in on its own (${again.why || "the page is waiting for them"}): ${social.LABELS[again.provider]} wants them. Send a fresh signin_link with provider '${again.provider}' and say in one line what to expect: "${social.expectLine(again.provider)}"`,
           } : {}),
           ...(out.inferred ? { inferred: "Read from the absence of a sign-in prompt rather than from anything positive on the page. Nobody has loaded a signed-in page on this site here to learn what one looks like." } : {}),
+          ...(out.no_evidence ? { no_evidence: "Nothing on the page proves it either way: no sign-in form, but no log-out or account control either. That is UNKNOWN, not signed in and not signed out." } : {}),
           ...(reach ? { site_loads_for_reason: reach.loads, site_note: reach.why } : {}),
           ...(entry.ride_access ? { ride_access: entry.ride_access } : {}),
-          ...(out.state === "unknown" ? { could_not_check: true, say: `Reason could not read ${entry.label}'s account page just now (${out.why}), so whether they are signed in is not known. Say you could not check right now and can try again in a bit. Do not say they are signed out and do not ask them to sign in.` } : {}),
+          ...(blockedNow ? { blocked: true, signin_here: "blocked", seen: blockedNow.seen, say: blockedNow.say, instead: blockedNow.instead, never: blockedNow.never }
+            : out.state === "unknown" && out.no_evidence ? { could_not_tell: true, say: `${entry.label}'s page loaded, but nothing on it shows whether they are signed in (${out.why}). Say plainly that you can't tell, in one line. Do not say they are signed in, do not say they are signed out, and do not send a sign-in link unless they ask for one.` }
+            : out.state === "unknown" ? { could_not_check: true, say: `Reason could not read ${entry.label}'s account page just now (${out.why}), so whether they are signed in is not known. Say you could not check right now and can try again in a bit. Do not say they are signed out and do not ask them to sign in.` } : {}),
           ...(out.state === "signed_in" || out.state === "unknown" ? {} : { how_to_sign_in: route.can_sign_in ? signin.signinCommand(entry.site) : null, remote: route.can_sign_in ? null : signin.remoteSigninAnswer(entry.site) }),
           never_a_password: never,
         };
@@ -14928,12 +15257,24 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           last_checked: last?.checked_at ? stamp(last.checked_at) : null,
           evidence: last?.evidence || "",
           ...(also.generic ? { by_address: true } : { for_cancelling_a_subscription: true }),
-          ...(live ? {} : { how_to_sign_in: `signin_link with site '${also.site}', which they open on their phone` }),
+          ...(live ? {} : { how_to_sign_in: `signin_link with site '${also.generic && !signinPage.isFrontPage(also.signin_url) ? also.signin_url : also.site}', which they open on their phone` }),
         }];
+      }
+      // Whether each SITE lets Reason's browser sign in, from a dated finding (src/sitefindings.js).
+      // One site asked about by name is asked live when its finding is old or missing; a list is
+      // answered from what is stored, and says so.
+      const hereFor = new Map();
+      for (const r of rows) {
+        const e = signinSite(c, r.site);
+        if (!e) continue;
+        hereFor.set(r.site, { entry: e, access: input.site ? await signinAccessFor(e, ctx) : findings.signinAccessStored(e) });
       }
       return {
         ok: true,
-        can_sign_in_here: route.can_sign_in,
+        // About the PERSON, not about any site: are they at the Mac a sign-in window would open on.
+        // It was called can_sign_in_here until 2026-11-12, and was read as "DoorDash can be signed in
+        // to here" while DoorDash answered 403 on every page. Each site's own answer is `signin_here`.
+        window_on_this_mac: route.can_sign_in,
         by_link: route.by_link,
         how: route.can_sign_in ? route.how : null,
         ...(route.can_sign_in ? {} : { remote: signin.remoteSigninAnswer("") }),
@@ -14942,14 +15283,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           // even when its row here says never_signed_in; say so, so "not signed in here" is never
           // repeated to the person as "not connected" (and no sign-in link is offered for it).
           const viaStore = r.state === "signed_in" ? null : trust.storeConnected(c, r.site);
+          const here = hereFor.get(r.site);
+          const a = here?.access;
+          const blocked = a?.state === "blocked" && r.state !== "signed_in";
+          const told = blocked ? siteBlockedAnswer(c, here.entry, a) : null;
           return {
             ...r,
+            // blocked: the site refuses Reason's browser (dated). open: its sign-in page loaded when
+            // last asked. unknown: nobody has asked, or the answer is too old to repeat.
+            ...(a ? { signin_here: a.state, ...(a.seen ? { signin_here_seen: a.seen } : {}), ...(a.checked_live ? { signin_here_checked_now: true } : {}), ...(a.stale ? { signin_here_stale: true } : {}) } : {}),
+            ...(blocked ? {
+              how_to_sign_in: undefined,
+              ...(a.kind === "walled" ? {} : { signin_link_may_work: true }),
+              blocked_say: told.say, instead: told.instead ?? told.handoff, never: told.never,
+            } : {}),
             ...(viaStore ? { connected_via_crossmint: true, connected_at: stamp(viaStore.connectedAt), how_to_sign_in: undefined, note: `${viaStore.name} is connected through Crossmint (orders use the saved sign-in). This row only describes Reason's own browser; do not tell them it is not connected.` } : {}),
             ...(trust.SITE_REACHABLE[r.site] ? { site_loads_for_reason: trust.SITE_REACHABLE[r.site].loads } : {}),
           };
         }),
         never_a_password: never,
-        note: "These are from the last check, not from right now — `last_checked` says when. A session can expire quietly, so before an errand that depends on being signed in, call this again with recheck: true.",
+        note: "These are from the last check, not from right now — `last_checked` says when. A session can expire quietly, so before an errand that depends on being signed in, call this again with recheck: true. `signin_here` is whether the SITE lets your browser sign in at all, as of `signin_here_seen`: blocked means do not offer a sign-in there, say the site blocks automated sign-in and go to `instead`; unknown means nobody has checked lately, so ask with the site named before promising anything.",
       };
     }
 
@@ -14983,7 +15336,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const blocked = list.filter(p => !providers[p].ask_allowed);
         return {
           ok: true, providers,
-          rule: `Ask only the first time a real task needs a site whose account uses one of these — tied to that task, one line, "${social.loginWords(provider || "google")}" — never during onboarding, mid-vent, late at night unless they are asking you to do something right then, or when the task can be done without signing in.`,
+          rule: `Ask only the first time a real task needs a site whose account uses one of these — tied to that task, one line, "${social.loginWords(provider || "apple")}" — never during onboarding, mid-vent, late at night unless they are asking you to do something right then, or when the task can be done without signing in.`,
           ...(blocked.length ? { do_not_ask: `They said no to ${blocked.map(p => social.LABELS[p]).join(" and ")} inside the last ${social.DECLINE_DAYS} days: do not ask; finish another way.` } : {}),
           collecting: "Never a password, code or card number in the chat: signin_link with the provider makes the secure page they sign in on. The login is saved only once the site says signed in.",
         };
@@ -15001,7 +15354,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (input.action === "infer") {
         if (input.text) {
           const offered = social.providersOffered(input.text);
-          return { ok: true, read: "the text you gave", providers_offered: offered, ...(offered.length ? { say: `Confirm in one line before using it: "looks like you sign in to that with ${social.loginWords(offered[0])} — want me to use it?"` } : { say: "Nothing in that text names a provider. Read the site's sign-in page (infer with site) or ask them." }) };
+          const usable = offered.filter(social.usableProvider);
+          return { ok: true, read: "the text you gave", providers_offered: offered, ...(usable.length ? { say: `Confirm in one line before using it: "looks like you sign in to that with ${social.loginWords(usable[0])} — want me to use it?"` } : offered.length ? { say: "That account uses Google, which is never used: sign them in with signin_email (the site's own emailed code)." } : { say: "Nothing in that text names a provider. Read the site's sign-in page (infer with site) or ask them." }) };
         }
         const entry = input.site ? signinSite(c, input.site) : null;
         if (!entry) return input.site ? noSigninSite(c, input.site) : { ok: false, error: `infer needs a site (or text). Known: ${signin.signinNames().join(", ")}.` };
@@ -15015,12 +15369,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         }
         const offered = social.providersOnPage(text);
         const known = social.providerOf(c, entry.site);
+        const google = offered.includes("google") || known === "google";
+        const usable = offered.filter(social.usableProvider);
         return {
           ok: true, site: entry.site, read: entry.signin_url, providers_offered: offered,
           ...(known ? { saved_login_uses: known } : {}),
-          say: offered.length
-            ? `${entry.label} offers ${offered.map(p => social.LABELS[p]).join(", ")} sign-in${offered.length > 1 ? "s" : ""} as well as its own form. Which one THEIR account uses is not on the page: a welcome or receipt email from ${entry.label} in their mail (gmail_search) usually says, and then confirm in one line — "looks like you sign in to ${entry.label} with ${social.loginWords(offered[0])}, want me to use it?"`
-            : `${entry.label}'s sign-in page offers no Google, Apple, Facebook or Microsoft button that could be read, so their account there uses the site's own form. signin_link without a provider.`,
+          ...(google ? { google: `Google is never used (it refuses Reason's browser): if their ${entry.label} account is a Google one, sign them in with signin_email — ${entry.label}'s own emailed code — and never offer Google.` } : {}),
+          say: usable.length
+            ? `${entry.label} offers ${usable.map(p => social.LABELS[p]).join(", ")} sign-in as well as its own email sign-in. Which one THEIR account uses is not on the page: a welcome or receipt email from ${entry.label} in their mail (gmail_search) usually says; then confirm in one line. Their own email, or a Google account: signin_email.`
+            : `${entry.label}'s sign-in page offers no Apple, Facebook or Microsoft button that could be read, so their account there is signed in to through its own email route: signin_email.`,
         };
       }
       return { ok: false, error: "action is ask_check | declined | infer | unlocks" };
@@ -15031,13 +15388,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const p = sites.playbook(name);
         const reach = trust.SITE_REACHABLE[name];
         const row = db.lastSigninCheck(c, name);
+        const f = findings.signinAccessStored(sites.site(name));
         return {
           ...p,
           site_loads: reach?.loads ?? null,
           site_note: reach?.why ?? "",
+          ...(reach?.seen ? { site_note_seen: reach.seen } : {}),
+          ...(f.state !== "unknown" ? { signin_here: f.state, signin_here_seen: f.seen, ...(f.stale ? { signin_here_stale: "Old: signin_status with this site asks it again before you repeat it." } : {}) } : {}),
           signed_in: !row?.revoked_at && row?.state === "signed_in",
           ...(reach?.loads === false
-            ? { cannot_be_used: `${p.label} refuses Reason's browser (${reach.why}). The errand cannot be done this way. Say that the site blocks it — not that Reason is broken — and do not try to get around it.` }
+            ? {
+              cannot_be_used: `${p.label} refuses Reason's browser (${reach.why}). The errand cannot be done this way. Say that the site blocks it — not that Reason is broken — and do not try to get around it.`,
+              // A food app's wall is not the end of a food errand (src/food.js): what works is said here,
+              // so the reply is the working route and not the block.
+              ...(foodOn(c) && social.isFoodApp(p.site) ? { instead: social.wallInstead(p).tool } : {}),
+            }
             : {}),
         };
       };
@@ -15049,7 +15414,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true,
         sites: sites.siteNames().map(one),
         gate: "Browsing, searching and filling a form are ordinary clicks and need no yes. The one click that commits goes through browser_submit, and on these sites it will not go through unless the details you approved name the total the page shows.",
-        probed: "The site_loads field is from npm run probe:sites on 2026-10-05, headless and signed out. docs/site-probe-2026-10-05.json is the run.",
+        probed: "site_loads is from the probe run on each row's site_note_seen date (docs/site-probe-*.json), headless and signed out. A finding is a fact about that day: say the date when it is old, and signin_status with the site named asks it again.",
       };
     }
 
@@ -15882,7 +16247,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "apple_calendar_connect": {
       const result = await icloud.connect(c, input.email, input.password);
-      if (!result.ok) return result;
+      // The app password was typed into the chat (there is no screen for it yet): once it has been
+      // used, no copy of the conversation keeps it (src/privacy.js scrubTypedSecret), whether or
+      // not Apple took it.
+      try { scrubTypedSecret(c, input.password); } catch { /* the connect's own answer still stands */ }
+      if (!result.ok) return { ...result, note: "The app password they typed is no longer in this conversation: it is taken out of every copy once used. To try again, ask them to type it again (a new one from account.apple.com if Apple rejected it)." };
       return {
         ...result,
         say: `apple calendar's connected ✅ (${result.calendars.join(", ")}). ask me anything about it`,
@@ -16383,6 +16752,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         body: { raw, ...(threadId ? { threadId } : {}) },
       });
       if (!sent.ok) return gmailError(sent, "send that email");
+      // Gmail took it; a bounce comes later, into the same thread. Checked in a few minutes
+      // (REASON_QUICK_CORRECTION, src/verifications.js) and said in one line if it bounced.
+      verifications.schedule(c, "email", {
+        account: tok.account, message_id: sent.body?.id ?? null, thread_id: sent.body?.threadId ?? null,
+        to: input.to?.length ? input.to : (replying ? [replying.to] : []), subject: replying ? replying.subject : (input.subject ?? ""),
+      });
       return {
         ok: true, status: "sent", account: tok.account, from: tok.account,
         message_id: sent.body?.id ?? null, thread_id: sent.body?.threadId ?? null,
@@ -16631,6 +17006,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         eventId: made.body?.id,
         asked: { summary: input.summary, start: when.start.value, end: when.end.value, time_zone: when.zone || undefined },
       });
+      // Read back now; read again in a couple of minutes (REASON_QUICK_CORRECTION, src/verifications.js),
+      // because an event that is gone or cancelled later is news the person would otherwise never get.
+      verifications.schedule(c, "calendar", { account: cal.account, event_id: made.body?.id ?? null, summary: input.summary, start: when.start.value });
       return {
         ok: true, status: "created", account: cal.account, time_zone: cal.timeZone,
         ...(cal.zoneFrom ? { time_zone_from: cal.zoneFrom } : {}),
@@ -17591,6 +17969,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "cancel_route": {
+      // Account jobs on for them: this turn is a cancellation (no sign-in link is made on it), and the last press is account_cancel_confirm's.
+      const jobsOn = accountJobToolVisible("account_cancel", c);
+      if (jobsOn) offers.turnState(c).cancelling = true;
       const routes = ctx.cancelRoutes ?? cancelRoutes;
       if (input.service) {
         const p = routes.playbook(input.service);
@@ -17599,7 +17980,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ok: true,
           route: p,
           ...(subs.WALKABLE.has(p.route) ? {} : { cannot: routes.cannotDo(p.route, p.label) }),
-          gate: "Opening the page and clicking through it are ordinary clicks. The last press — the one that ends the subscription — goes through subscription_cancel_commit and needs their yes, whatever the button is called.",
+          gate: jobsOn ? ACCOUNT_CANCEL_GATE : "Opening the page and clicking through it are ordinary clicks. The last press — the one that ends the subscription — goes through subscription_cancel_commit and needs their yes, whatever the button is called.",
         };
       }
       return {
@@ -17751,7 +18132,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try {
         const res = await page.goto(url, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
-        db.rememberSeenUrls(c, [page.url(), url]);
+        db.rememberSeenUrls(c, [snap.url, url]);
         opened = { status: res?.status() ?? null, ...snap };
       } catch (e) {
         return {
@@ -17797,7 +18178,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (label === null) {
         return { ok: false, error: `No element ${input.ref} on this page. Nothing was pressed and ${me.name}'s yes still stands — call browser_read for fresh refs and try again with the same confirmation_id.` };
       }
-      const before = page.url();
+      const before = await browser.pageUrl(page);
       ctx.spend?.(); // past this line the service may already have been told something
       let snap;
       try {
@@ -18158,7 +18539,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try {
         const res = await page.goto(url, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
-        db.rememberSeenUrls(c, [page.url(), url]);
+        db.rememberSeenUrls(c, [snap.url, url]);
         opened = { status: res?.status() ?? null, ...snap };
       } catch (e) {
         // The site refusing is the site's decision and a finding worth telling them, which is what
@@ -18237,7 +18618,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       let before;
       try { before = await browser.snapshot(page, SNAPSHOT_CHARS); }
-      catch { before = { url: page.url(), title: "", text: "", elements: [] }; }
+      catch { before = { url: await browser.pageUrl(page), title: "", text: "", elements: [] }; }
 
       // The hard scope limit, checked BEFORE the press and therefore before the yes is spent: Reason
       // never buys a seat, a bag, an upgrade or a fare change. An airline that wants paying to carry
@@ -18312,7 +18693,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const shot = await (async () => {
         try {
           mkdirSync(dirname(shotPath), { recursive: true });
-          await page.screenshot({ path: shotPath });
+          await page.screenshot({ path: shotPath, mask: await browser.secretBoxesToMask(page), maskColor: "#888888" });
           sealInPlace(shotPath, c); // a boarding pass is theirs: sealed (REASON_ENCRYPT_REST2)
           return shotPath;
         } catch { return ""; }
@@ -18515,9 +18896,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "nearby_places": {
       const { nearbyPlaces } = await import("./places.js");
       const out = await nearbyPlaces(input.latitude, input.longitude, input.type, {
-        cuisine: input.cuisine, name: input.name, radius: input.radius,
+        cuisine: input.cuisine, name: input.name, radius: input.radius, fetchImpl: ctx.fetchImpl,
       });
       if (!out.ok) return out;
+      // A place's number is timed by the place's own clock if it is rung later (zone.calleeZone).
+      for (const r of out.results ?? []) if (r?.phone) try { zone.notePlace(r); } catch { /* the area code still answers */ }
       return markOutside(out, {
         source: "OpenStreetMap nearby-places results",
         text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),
@@ -18953,7 +19336,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try {
         const res = await page.goto(url.href, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
-        db.rememberSeenUrls(c, [page.url(), url.href]);
+        db.rememberSeenUrls(c, [snap.url, url.href]);
         // A page in the browser is the same thing a fetched page is: somebody else's words, with a
         // source. It was the one reading path that said nothing about that, which mattered more here
         // than anywhere — this is the snapshot a model is about to click around inside.
@@ -18992,7 +19375,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           error: `Not pressing that: ${verdict.why}. A click that commits something goes through the gate — confirm_request with the exact details, wait for ${me.name} to answer, confirm_record, then browser_submit with that confirmation_id.`
             + (got ? ` Everything up to that click is done and it is written down, so whatever ${me.name} says, this is not lost — and if they never answer, that is what you hand back rather than "couldn't do it".` : ""),
         };
-        trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${page.url()} → ${label || el.tag}` });
+        trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${await browser.pageUrl(page)} → ${label || el.tag}` });
         return blocked;
       }
       try {
@@ -19019,6 +19402,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const label = await browser.refName(page, input.ref);
       if (label === null) return { ok: false, error: `No element ${input.ref} on this page. Call browser_read for fresh refs.` };
       const el = browser.locate(page, input.ref);
+      // What goes into a password, code or card box is never repeated back: not in this result and
+      // not in the tool log line (privacy.sealCall reads `secret_box`). A box that could not be
+      // looked at counts as one.
+      const secretBox = !!(await browser.secretRef(page, input.ref).catch(() => "unknown"));
+      const hidden = secretBox ? { secret_box: true, note: "This is a password, code or card box: what was typed is not repeated back and cannot be read from the page." } : {};
       try {
         const tag = await el.evaluate(n => n.tagName.toLowerCase());
         if (tag === "select") await el.selectOption(input.text);
@@ -19028,9 +19416,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           await page.waitForLoadState("domcontentloaded").catch(() => {});
         }
         const typed = await browser.snapshot(page, SNAPSHOT_CHARS);
-        return markOutside({ ok: true, filled: label || input.ref, value: input.text, ...typed }, { source: sourceName(typed.url ?? page.url()), text: typed.text });
+        return markOutside({ ok: true, filled: label || input.ref, ...(secretBox ? hidden : { value: input.text }), ...typed }, { source: sourceName(typed.url ?? page.url()), text: typed.text });
       } catch (e) {
-        return { ok: false, error: `Could not fill ${input.ref} ('${label}'): ${e.message.split("\n")[0]}` };
+        // The browser's own words about a failed fill are not trusted to leave out what was typed.
+        const line = secretBox ? "the box would not take it" : String(e.message.split("\n")[0]).split(input.text.length >= 4 ? input.text : "\u0000").join("[what was typed]");
+        return { ok: false, ...hidden, error: `Could not fill ${input.ref} ('${label}'): ${line}` };
       }
     }
     case "browser_submit": {
@@ -19044,7 +19434,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             ? ` — call browser_read for fresh refs and submit again; "${ctx.permission.said}" still covers it.`
             : ` and ${me.name}'s yes still stands — call browser_read for fresh refs and submit again with the same confirmation_id.`) };
       }
-      const before = page.url();
+      const before = await browser.pageUrl(page);
 
       // Every guard below this line stops the walk with the form still filled and the button still
       // unpressed — the owner's own limit, the install's daily net, a total the yes does not cover.
@@ -19072,7 +19462,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const site = sites.siteFor(before, ctx.siteHosts);
       let charge = null;
       if (site) {
-        const pageText = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+        const pageText = await browser.pageText(page).catch(() => "");
         const onPage = trust.largestAmount(pageText);
         const approved = trust.largestAmount(input.what);
         if (onPage && !approved) {
@@ -19202,18 +19592,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // server can write, the shared database included.
       const path = join(config.shotRoot, `${ownfiles.shotPrefix(c)}${Date.now()}.png`);
       mkdirSync(dirname(resolve(path)), { recursive: true });
-      await page.screenshot({ path: resolve(path), fullPage: !!input.full_page });
+      // A password box draws dots, but one switched to "show" draws the password: every secret box
+      // is covered in the picture (src/pagesecrets.js).
+      await page.screenshot({ path: resolve(path), fullPage: !!input.full_page, mask: await browser.secretBoxesToMask(page), maskColor: "#888888" });
       sealInPlace(resolve(path), c); // theirs: sealed (REASON_ENCRYPT_REST2)
-      return { ok: true, path: resolve(path), url: page.url() };
+      return { ok: true, path: resolve(path), url: await browser.pageUrl(page) };
     }
     case "browser_images": {
       const page = await browser.pageFor(c);
       if (page.url() === "about:blank") return { ok: false, error: "No page open yet. Use browser_open first." };
       const images = await browser.pageImages(page);
       // Seen, with the page they are on, so one can go on a Reason page with a "via" line.
-      db.rememberSeenUrls(c, [page.url()], { kind: "page" });
-      db.rememberSeenUrls(c, images, { kind: "page", from: page.url() });
-      return { ok: true, url: page.url(), images, count: images.length, note: images.length ? "These are real image URLs from the page. You can send any of them with send_picture, or put one on a page." : "No photos found on this page." };
+      const at = await browser.pageUrl(page);
+      db.rememberSeenUrls(c, [at], { kind: "page" });
+      db.rememberSeenUrls(c, images, { kind: "page", from: at });
+      return { ok: true, url: at, images, count: images.length, note: images.length ? "These are real image URLs from the page. You can send any of them with send_picture, or put one on a page." : "No photos found on this page." };
     }
     case "browser_close": {
       const open = browser.openConversations().includes(c);
@@ -19274,3 +19667,6 @@ export async function roughPlaceFor(conversationId, ctx = {}, { now = clock.now(
   const geo = await (ctx.reverseGeocode ?? reverseGeocode)(last.latitude, last.longitude, { timeoutMs: 2500 }).catch(() => null);
   return [geo?.neighbourhood, geo?.city].filter(Boolean).join(", ");
 }
+
+// The settle's second look at a scheduled call, once how it went has been read (src/calls/carryover.js).
+carryover.setMissedTeller((conversationId, row, log) => queueMissedScheduledCall(conversationId, row, log));

@@ -4,7 +4,8 @@
 // must be useless on its own, and "delete me" must also kill a person's words in every old backup.
 //
 // Key hierarchy (design: ~/Desktop/reason-encrypt-rest-1109.md):
-//   master key   lives OUTSIDE the box (AWS KMS, REASON_REST_KEK_SOURCE=aws-kms). It never leaves KMS.
+//   master key   lives OUTSIDE the box (AWS KMS, REASON_REST_KEK_SOURCE=aws-kms, or Google Cloud KMS,
+//                REASON_REST_KEK_SOURCE=gcp-kms: key "reason-rest", src/gcpkms.js). It never leaves KMS.
 //     └ install key (IK)   32 random bytes, stored only wrapped by the master key, in the keystore.
 //                           Unwrapped once at boot (one KMS call) and held in memory.
 //         └ person key (DEK)  32 random bytes per conversation, stored wrapped by the IK in the
@@ -23,6 +24,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, createSecretKey } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
+import * as gcpkms from "./gcpkms.js";
 import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, readdirSync, openSync, readSync, writeSync, fsyncSync, closeSync, linkSync } from "node:fs";
 
 export const PREFIX = "enc:u1:";
@@ -35,6 +37,9 @@ export const SENSITIVE = [
   { table: "memories", cols: ["fact"], owner: "conversation_id" },
   { table: "person_facts", cols: ["fact"], owner: "(SELECT p.conversation_id FROM people p WHERE p.id = person_facts.person_id)" },
   { table: "calls", cols: ["transcript", "summary", "turn_log"], owner: "conversation_id" },
+  // Saved logins (src/savedlogins.js): why a login was used, in Reason's words. The login itself is
+  // in data/logins.db under its own KMS key; this is the person's record of using it.
+  { table: "login_log", cols: ["purpose"], owner: "conversation_id" },
 ];
 /**
  * Phase 2 (11-10), behind REASON_ENCRYPT_REST2=on, which needs phase 1 on. Message copies, call
@@ -87,6 +92,13 @@ export const SENSITIVE2 = [
   // name) and the sentence behind a "stop showing me X" rule.
   { table: "action_card_sources", cols: ["refs", "first_name"], owner: "conversation_id" },
   { table: "card_skip_rules", cols: ["value", "said"], owner: "conversation_id" },
+  // Their bank through Plaid (src/plaid.js): the access token (already sealed with REASON_TOKEN_KEY, sealed
+  // again here under their own key), the bank's name, each account's name and last four, and every
+  // transaction (what, how much, which category). Ids and days stay plain so a range can be read.
+  { table: "plaid_items", cols: ["access_token", "institution"], owner: "conversation_id" },
+  { table: "plaid_accounts", cols: ["name", "mask"], owner: "conversation_id" },
+  { table: "plaid_transactions", cols: ["data"], owner: "conversation_id" },
+  { table: "plaid_links", cols: ["link_token"], owner: "conversation_id" },
 ];
 /**
  * Phase 3 (11-10), behind REASON_ENCRYPT_REST3=on, which needs phase 1 on. A person's own name, the
@@ -182,7 +194,14 @@ export function sigv4({ method = "POST", host, path = "/", query = "", headers, 
   return { ...h, authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signed}, Signature=${signature}`, signature };
 }
 
-async function kmsCall(target, payload) {
+/**
+ * One signed AWS KMS JSON call (5 tries). Exported for src/vaultkms.js, the saved-login key source.
+ * Optional `retry(err)` decides whether a failure is tried again; the default retries every failure
+ * (restcrypt's own calls pass nothing and keep that). A KMS answer that is not ok throws an Error with
+ * `kmsStatus` (the HTTP status) and `kmsType` (the exception name, e.g. "ThrottlingException"); a
+ * network error or timeout has neither.
+ */
+export async function kmsCall(target, payload, { retry = null } = {}) {
   const region = process.env.REASON_REST_KMS_REGION || process.env.AWS_REGION || "us-west-2";
   const host = process.env.REASON_REST_KMS_HOST || `kms.${region}.amazonaws.com`;
   const accessKeyId = process.env.AWS_ACCESS_KEY_ID, secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
@@ -198,13 +217,26 @@ async function kmsCall(target, payload) {
     try {
       const r = await fetch(`${scheme}://${host}/`, { method: "POST", headers, body, signal: AbortSignal.timeout(8000) });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(`KMS ${target} ${r.status} ${j.__type ?? ""} ${j.message ?? ""}`.trim());
+      if (!r.ok) {
+        const err = new Error(`KMS ${target} ${r.status} ${j.__type ?? ""} ${j.message ?? ""}`.trim());
+        err.kmsStatus = r.status;
+        err.kmsType = String(j.__type ?? "").split("#").pop();
+        throw err;
+      }
       return j;
-    } catch (e) { last = e; await new Promise(res => setTimeout(res, 500 * 2 ** i)); }
+    } catch (e) {
+      last = e;
+      if (retry && !retry(e)) throw e;
+      await new Promise(res => setTimeout(res, 500 * 2 ** i));
+    }
   }
   throw last;
 }
 const KMS_CONTEXT = { app: "reason", purpose: "install-key" };
+// Google's binding for the same context: additional authenticated data, its canonical JSON (keys sorted).
+const GCP_AAD = Buffer.from(JSON.stringify(Object.fromEntries(Object.keys(KMS_CONTEXT).sort().map(k => [k, KMS_CONTEXT[k]]))), "utf8");
+// REASON_GCP_REST_KEY (default reason-rest) under the key ring of the Google key file (gcpkms.keyName).
+function gcpRestKey() { return gcpkms.keyName("rest"); }
 
 // ---------- "file": the master key in its own root-owned file, outside .env and every backup ----------
 // REASON_REST_KEK_FILE (default /etc/reason/rest/master.key): 64 hex characters, mode 0640, in a directory of
@@ -235,7 +267,8 @@ async function wrapIK(source, raw, { fileKey = null } = {}) {
     const j = await kmsCall("Encrypt", { KeyId: keyId, Plaintext: raw.toString("base64"), EncryptionContext: KMS_CONTEXT });
     return j.CiphertextBlob;
   }
-  throw new Error(`Unknown REASON_REST_KEK_SOURCE "${source}" (file, aws-kms or local).`);
+  if (source === "gcp-kms") return (await gcpkms.encrypt(gcpRestKey(), raw, GCP_AAD)).ciphertext;
+  throw new Error(`Unknown REASON_REST_KEK_SOURCE "${source}" (file, aws-kms, gcp-kms or local).`);
 }
 async function unwrapIK(source, wrapped) {
   if (source === "local") return gcmOpen(localKek(), wrapped, "reason-ik");
@@ -248,6 +281,11 @@ async function unwrapIK(source, wrapped) {
     const j = await kmsCall("Decrypt", { CiphertextBlob: wrapped, EncryptionContext: KMS_CONTEXT, KeyId: process.env.REASON_REST_KMS_KEY_ID });
     return Buffer.from(j.Plaintext, "base64");
   }
+  if (source === "gcp-kms") {
+    const b = await gcpkms.decrypt(gcpRestKey(), wrapped, GCP_AAD);
+    if (b.length !== 32) { b.fill(0); throw new Error("Google KMS did not return a 32-byte install key."); }
+    return b;
+  }
   throw new Error(`Unknown key source "${source}".`);
 }
 
@@ -255,7 +293,7 @@ function sourceName() { return String(process.env.REASON_REST_KEK_SOURCE || "fil
 
 /**
  * Re-wrap every install key under the master key source now configured (REASON_REST_KEK_SOURCE),
- * e.g. file -> aws-kms. No data row and no person key changes. Run with Reason stopped.
+ * e.g. file -> gcp-kms (or aws-kms). No data row and no person key changes. Run with Reason stopped.
  */
 export async function moveMaster() {
   if (!ks || !iks.size) throw new Error("Not active.");

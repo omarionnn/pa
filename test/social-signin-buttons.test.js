@@ -40,7 +40,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   remote.forgetAllRemoteSignins();
-  db.db.exec("DELETE FROM timers; DELETE FROM accounts; DELETE FROM threads; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals;");
+  db.db.exec("DELETE FROM timers; DELETE FROM accounts; DELETE FROM threads; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals; DELETE FROM site_findings;");
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
   config.publicUrl = "https://reason.example";
@@ -87,17 +87,20 @@ const cookieOf = (r) => String(r.headers["Set-Cookie"]).split(",")[0].split(";")
 // ---------- the intro page ----------
 
 test("the intro offers the site's own Continue-with choices in Reason's look, above the email sign-in", async () => {
-  const { token } = makeLink({ offered: ["google", "apple"] });
+  const { token } = makeLink({ offered: ["google", "apple", "microsoft"] });
   const r = await remote.remoteRequest({ token, method: "GET", headers: {}, query: {} });
   assert.equal(r.status, 200);
-  assert.match(r.body, /Continue with Google/);
   assert.match(r.body, /Continue with Apple/);
+  assert.match(r.body, /Continue with Microsoft/);
   assert.ok(!/Continue with Facebook/.test(r.body));
-  assert.match(r.body, /name="via" value="google"/);
+  assert.ok(!/Continue with Google/.test(r.body), "Google is never offered, even when the page has it");
+  assert.ok(!/name="via" value="google"/.test(r.body));
+  assert.ok(!/#4285F4/.test(r.body), "no Google mark");
+  assert.match(r.body, /name="via" value="apple"/);
   assert.match(r.body, /Use my Amazon email/);
-  assert.ok(r.body.indexOf("Continue with Google") < r.body.indexOf("Use my Amazon email"), "providers first, the site's own email below");
-  assert.match(r.body, /#4285F4/, "Google's own mark, its own colours");
-  assert.match(r.body, /Amazon lets you sign in with Google or Apple/);
+  assert.ok(r.body.indexOf("Continue with Apple") < r.body.indexOf("Use my Amazon email"), "providers first, the site's own email below");
+  assert.match(r.body, /#F25022/, "Microsoft's own mark, its own colours");
+  assert.match(r.body, /Amazon lets you sign in with Apple or Microsoft/);
 });
 
 test("no choices without the flag, and none offered → the page is the plain one as before", async () => {
@@ -123,7 +126,7 @@ test("tapping Continue with Apple presses Apple in Reason's browser and records 
 });
 
 test("the email button presses nothing, even on a link made with a provider", async () => {
-  const { token, did, checks } = makeLink({ provider: "google", offered: ["google"] });
+  const { token, did, checks } = makeLink({ provider: "apple", offered: ["apple"] });
   const r = await startWith(token, "via=");
   assert.equal(r.status, 303);
   assert.equal(did.length, 0, "nothing pressed: they chose the site's own email");
@@ -132,15 +135,23 @@ test("the email button presses nothing, even on a link made with a provider", as
 });
 
 test("a provider the page did not offer is not pressed", async () => {
-  const { token, did } = makeLink({ offered: ["google"] });
+  const { token, did } = makeLink({ offered: ["apple"] });
   await startWith(token, "via=facebook");
   assert.equal(did.length, 0);
+  // Google, even when the page shows it and it is posted, is never pressed.
+  const g = makeLink({ offered: ["google", "apple"] });
+  await startWith(g.token, "via=google");
+  assert.equal(g.did.length, 0);
 });
 
 test("a post with no choice keeps the provider the link was made with", async () => {
-  const { token, did } = makeLink({ provider: "google", offered: ["google", "apple"] });
+  const { token, did } = makeLink({ provider: "apple", offered: ["google", "apple"] });
   await startWith(token, "");
-  assert.deepEqual(did[0], ["press", "google"]);
+  assert.deepEqual(did[0], ["press", "apple"]);
+  // A link made with Google has no provider to keep: nothing is pressed.
+  const g = makeLink({ provider: "google", offered: ["google"] });
+  await startWith(g.token, "");
+  assert.equal(g.did.length, 0);
 });
 
 test("the choice survives the code step on a browser not yet proved", async () => {
@@ -155,17 +166,18 @@ test("the choice survives the code step on a browser not yet proved", async () =
   assert.ok(!/name="via"/.test(page), "only a real provider is carried");
 });
 
-test("email chosen on a browser not yet proved stays email after the code (no Google pressed)", async () => {
-  const { token } = makeLink({ provider: "google", offered: ["google"] });
+test("email chosen on a browser not yet proved stays email after the code (no Apple pressed)", async () => {
+  const { token } = makeLink({ provider: "apple", offered: ["apple"] });
   const r = await startWith(token, "via=", "", { tell: async () => {} });
   assert.equal(r.status, 401);
   assert.match(r.body, /<input type="hidden" name="via" value="">/);
 });
 
-test("signin_link: a 404 or an outage on a walled-listed site is not called blocking", async () => {
+test("signin_link: a 404 or an outage is not called blocking", async () => {
   const made = [];
-  const out = await call("signin_link", { site: "doordash" }, CONV, {
-    signinWall: async () => ({ in: false, status: 502, why: "DoorDash's sign-in page answered HTTP 502 from here.", providers_offered: [] }),
+  // Delta: refused at the last probe, with no dated sign-in wall on record.
+  const out = await call("signin_link", { site: "delta" }, CONV, {
+    signinWall: async () => ({ in: false, status: 502, why: "Delta's sign-in page answered HTTP 502 from here.", providers_offered: [] }),
     createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; },
   });
   assert.equal(out.ok, true);
@@ -177,19 +189,25 @@ test("signin_link: a 404 or an outage on a walled-listed site is not called bloc
 test("offeredFor: their saved login's provider first, then the asked one, then the page's; refused ones dropped", () => {
   db.upsertConnectedAccount?.({ conversationId: CONV, name: "amazon", state: "signed_in", provider: "apple" });
   social.recordRefusal(CONV, "amazon", "facebook");
-  const got = social.offeredFor(CONV, amazon, { asked: "google", live: ["facebook", "microsoft", "google"] });
-  assert.deepEqual(got.filter(p => p !== "apple"), ["google", "microsoft"]);
+  const got = social.offeredFor(CONV, amazon, { asked: "microsoft", live: ["facebook", "google", "apple"] });
+  assert.deepEqual(got, ["microsoft", "apple"], "the asked one, then the page's");
   assert.ok(!got.includes("facebook"), "refused in the last 7 days");
+  assert.ok(!got.includes("google"), "Google is never offered");
+  assert.deepEqual(social.offeredFor(CONV, amazon, { asked: "google", live: ["google"] }), [], "not even when asked for");
   delete process.env.REASON_SOCIAL_SIGNIN;
   assert.deepEqual(social.offeredFor(CONV, amazon, { live: ["google"] }), []);
 });
 
 test("the text names the choice in one plain line, no jargon", () => {
-  const two = social.choiceLine(doordash, ["google", "apple"]);
-  assert.equal(two, "DoorDash lets you sign in with Google or Apple, or with your DoorDash email. Pick whichever you use on the page.");
-  const mine = social.choiceLine(doordash, ["google"], "google");
-  assert.match(mine, /^DoorDash signs in through your Google account\. Tap Continue with Google on the page/);
-  for (const l of [two, mine]) assert.ok(!/oauth|provider|social/i.test(l));
+  const two = social.choiceLine(doordash, ["apple", "microsoft"]);
+  assert.equal(two, "DoorDash lets you sign in with Apple or Microsoft, or with your DoorDash email. Pick whichever you use on the page.");
+  const mine = social.choiceLine(doordash, ["apple"], "apple");
+  assert.match(mine, /^DoorDash signs in through your Apple account\. Tap Continue with Apple on the page/);
+  // A Google login on record is never named as the way in: the line falls back to the choices.
+  const g = social.choiceLine(doordash, ["apple"], "google");
+  assert.doesNotMatch(g, /Google/);
+  assert.match(g, /^DoorDash lets you sign in with Apple, or with your DoorDash email/);
+  for (const l of [two, mine, g]) assert.ok(!/oauth|provider|social/i.test(l));
   assert.equal(social.choiceLine(doordash, []), "");
 });
 
@@ -200,9 +218,10 @@ test("signin_link: the page's own buttons are read live and handed to the link, 
     createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; },
   });
   assert.equal(out.ok, true);
-  assert.deepEqual(made[0].offered, ["google", "apple"]);
-  assert.deepEqual(out.offered, ["google", "apple"]);
-  assert.match(out.choice, /Amazon lets you sign in with Google or Apple/);
+  assert.deepEqual(made[0].offered, ["apple"], "the page's Google button is left off");
+  assert.deepEqual(out.offered, ["apple"]);
+  assert.match(out.choice, /Amazon lets you sign in with Apple, or with your Amazon email/);
+  assert.doesNotMatch(out.choice, /Google/);
 });
 
 test("signin_link: a site walling Reason's browser right now gets no link, a plain line, and what works (food: the restaurant's own site)", async () => {
@@ -214,22 +233,25 @@ test("signin_link: a site walling Reason's browser right now gets no link, a pla
   assert.equal(out.ok, false);
   assert.equal(out.blocked, true);
   assert.equal(made.length, 0, "no link to a wall");
-  assert.match(out.say, /DoorDash is blocking my browser from its sign-in page right now/);
+  assert.match(out.say, /DoorDash blocks automated sign-in, so I can't sign you in there myself/);
   assert.match(out.say, /restaurant's own site/);
+  assert.match(out.never, /do NOT try another address/);
   assert.match(out.instead, /food_order/);
 });
 
 test("signin_link: a walled site whose wall has lifted gets its link with the choices", async () => {
   const made = [];
+  // The 2026-11-12 wall is believed for 14 days; after that the site is asked again, and it loads.
+  clock.skip(15 * 86_400_000);
   const out = await call("signin_link", { site: "doordash" }, CONV, {
     signinWall: async () => ({ in: true, status: 200, providers_offered: ["google", "apple", "facebook"] }),
     createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; },
   });
   assert.equal(out.ok, true);
-  assert.deepEqual(made[0].offered, ["google", "apple", "facebook"]);
+  assert.deepEqual(made[0].offered, ["apple", "facebook"], "Google left off");
 });
 
-test("signin_link without the flag: no live check, no choices (as before)", async () => {
+test("signin_link without the flag: the wall is still asked (nobody is sent a link into one), but no choices are read or offered", async () => {
   delete process.env.REASON_SOCIAL_SIGNIN;
   let asked = 0;
   const made = [];
@@ -237,13 +259,13 @@ test("signin_link without the flag: no live check, no choices (as before)", asyn
     signinWall: async () => { asked++; return { in: true, status: 200, providers_offered: ["google"] }; },
     createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/x", good_for_minutes: 10, reachable_from_a_phone: true }; },
   });
-  assert.equal(asked, 0);
+  assert.equal(asked, 1, "one ask: is the sign-in page walled");
   assert.deepEqual(made[0].offered, []);
 });
 
 test("the blocked page says the site is blocking Reason's browser right now and what still works", () => {
   const page = setupResultPage({ entry: doordash, ended: { state: "blocked" }, thread: { reply: () => "sms:+1" }, instead: social.wallInstead(doordash).say });
   assert.match(page, /DoorDash is blocking my browser right now\./);
-  assert.match(page, /restaurant(&#39;|')s own site still works/);
+  assert.match(page, /I can still order for you, from the restaurant(&#39;|')s own site or through my checkout/);
   assert.ok(Object.keys(PROVIDER_MARKS).length === 4);
 });

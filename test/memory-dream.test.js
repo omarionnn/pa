@@ -315,9 +315,10 @@ test("the sweep queues one review per person at their quiet hour, once a night, 
   await new Promise(r => setTimeout(r, 20));
   // Done for tonight.
   assert.equal(dream.sweepDreams({ now: at + 60_000, queue }).queued, 0);
-  // Midday is not the quiet hour.
+  // Midday is not the quiet hour: a process that has only just booted starts no catch-up
+  // (test/dream-coverage.test.js has the catch-up itself).
   db.db.exec("DELETE FROM memory_reviews");
-  assert.equal(dream.sweepDreams({ now: Date.parse("2026-11-07T17:00:00Z"), queue: () => Promise.resolve() }).queued, 0);
+  assert.equal(dream.sweepDreams({ now: Date.parse("2026-11-07T17:00:00Z"), queue: () => Promise.resolve(), uptimeMs: 0 }).queued, 0);
 });
 
 test("the input is capped per person", async () => {

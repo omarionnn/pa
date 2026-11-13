@@ -21,9 +21,12 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
 import { SPOKE_TO_SOMETHING } from "./provider.js";
+import { NOT_RECORDED_WHY } from "./manner.js";
 import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
+import { promisedNote, brokeNote, carryoverFor, missedScheduled } from "./carryover.js";
+import * as cues from "../cues.js";
 
 /**
  * At boot: the calls a restart cut off between the thread and the owner's turn, finished once.
@@ -239,6 +242,8 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   // Their own call. Nothing at all when nobody was on it: Reason ringing them and them not picking
   // up is not news that needs a text.
   if (!SPOKE_TO_SOMETHING.includes(row.state) || row.state === "voicemail") return { sent: false, why: "nobody was on it" };
+  // A scheduled call an answering machine took: code rings once more, then texts (./carryover.js) — one voice, not two.
+  if (carryoverFor(row.conversation_id) && missedScheduled(row)) return { sent: false, why: "nobody was on it" };
   // Not counted against their day. They were on the phone with it thirty seconds ago; a line that
   // finishes that conversation is not Reason starting one.
   // An unverified caller's ask waits for a yes typed on their own phone: nothing standing covers it.
@@ -301,7 +306,9 @@ export function thirdPartyEvent({ row, live }) {
     ? `The recording is saved and goes out attached to this message automatically — you do not attach it and you may say it is there.`
     : row.recording_state === "missing"
       ? `There is NO audio for this call: ${row.recording_why || "the provider never gave it to Reason"}. Every call is meant to be recorded, so say that plainly rather than implying a recording exists.`
-      : `There is no audio, because nobody was on the call.`;
+      : row.recording_why === NOT_RECORDED_WHY
+        ? `No audio recording was made of this call (${NOT_RECORDED_WHY}), and that is not a fault: do not mention a recording or offer one. What was said is below.`
+        : `There is no audio, because nobody was on the call.`;
   // Only a machine answered (2026-10-27, call 45). Said outright, because the transcript's "Them:"
   // lines read like a person, and the next step is whatever the recording offered instead of a person.
   const heard = String(row.machine_heard ?? "").trim();
@@ -360,6 +367,12 @@ export function ownerEvent({ row, live = null }) {
       ? `\nIf on the call they said yes to something you offered to do later (a check before they leave, a reminder) and it is`
         + ` not set up yet, set it up now with your tools and say so in one line; if you can't, say that instead.`
       : "")
+    // Something coming up that they mentioned on the call (src/cues.js). Noted here because nothing on the
+    // call itself can; it is written down and never texted about: one offer waits for their next reply.
+    + (cues.active(row.conversation_id) ? `\n${cues.AFTER_CALL_LINE}` : "")
+    // What the call's own read says Reason said it would do (./carryover.js; call 85's checklist was never made).
+    + promisedNote(row)
+    + brokeNote(row)
     + (String(row.verify_deferred ?? "").trim()
       ? `\nSomething IS owed: on the call they asked for something that could not be done by voice and waits for this text:`
         + ` "${String(row.verify_deferred).replace(/"/g, "'")}". Pick it up now, in one short message: the caller was not verified,`

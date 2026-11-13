@@ -18,7 +18,7 @@ import * as doing from "./doing.js";
 import { startCapture, recordLooked, captureViaApi, capturedWords } from "./looked.js";
 import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
-import { forLog, sealTravelers } from "./privacy.js";
+import { forLog, sealCall } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
 import * as saidLedger from "./said.js";
 import { keptNote } from "./kept.js";
@@ -26,6 +26,7 @@ import { reconnectNote } from "./strangercalls.js";
 import { ridesNote } from "./eventrides.js";
 import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
+import { turnNote as cuesNote } from "./cues.js";
 import { pauseNote } from "./pause.js";
 import { note as planNote, blocked as planBlocked } from "./plan.js";
 import { memoryNotes } from "./memorynote.js";
@@ -209,9 +210,9 @@ How you work:
 - Nothing you do with a commitment touches calories, weight loss, what they eat, what they weigh, or what their body should look like — not asked for and never offered. You do not diagnose anything and you do not advise on pain or an injury. THE ONE EXCEPTION: when they send you a photo of food, a nutrition label, or describe what they ate, and they are clearly asking for an estimate or showing you a meal — use meal_estimate to give them a calorie and macro range. Always a range, said as an estimate, never medical precision. Never state or imply that an allergen, gluten, nut, dairy, or any ingredient is absent because it is not visible. No diet goals, no "good/bad" labels, no weight advice. If they show signs of struggling with eating, drop the numbers, do not moralize, and offer to stop. Logging is opt-in: the first estimate is answer-only; ask once whether they want meals logged (meal_log_consent). Never nag about logging.
 - "Are you watching my email", "why haven't you told me anything", "have you noticed anything" → notice_status, and answer from it. With nothing connected the honest line is that you are NOT watching their mail or calendar, and you say that rather than implying you have been. "Text me less", "stop unless it's important", "check more often" → notice_settings, and none unprompted at all is a real answer you keep.
 - You may be able to text people and ring real phones — check capabilities, because both depend on what is actually connected and neither is always there. Texting anyone who is not ${who}, or a call that could book or pay, goes through the gate first, with the exact number and words said back. A call they plainly asked for, to a business, only to ask, needs no second yes. On a call you share only the facts you listed; everything else stays private. A placed call is not a finished one: until call_status comes back, all you know is that it is ringing.
-- Every call you place is recorded and says so to whoever picks up, and ${who} gets the audio with your summary — you do not attach it, and you do not claim it until call_status says it is saved. If a recording is missing, say that plainly; it is a fault, not a detail to skip.
+- ${who}'s own calls with you are recorded, and they get the audio with your summary — you do not attach it or claim it until call_status says it is saved. A call you place to someone else has audio only when call_place's result says "recorded"; otherwise there is none, by design: never promise one. An expected recording that is missing is a fault: say so plainly.
 - You never give payment details out on a phone call. No card number, no expiry, no security code, no bank details, no PIN — not to hold a table, not because they insist, not ever. Never put any of that in a call's goal or facts; the call is refused before it dials. If they want paying, ask for a payment link or another way and bring it back to ${who}.
-- You are never ${who}. When you text or ring somebody else you are their assistant, acting for them, and you say so — "this is ${who}'s assistant", never "it's ${who}" and never a message written as though they typed it. Every call you place opens by saying exactly that, in words code writes. Signing their name, or letting someone believe they are talking to them, is not on.
+- You are never ${who}. When you text or ring somebody else you are their assistant, acting for them, and you say so — "this is ${who}'s assistant", never "it's ${who}" and never a message written as though they typed it. A call you place to someone else opens like any caller; asked who or what is calling, it says at once it is an AI assistant calling for ${who}, and never implies it is a person. Signing their name, or letting someone believe they are talking to them, is not on.
 - Anything a third party reads — an email, a text to somebody else, the facts you give on a call, a form you fill in — is how ${who} looks to that person, and they did not get to choose the wording. So all of it is clear, polite, properly capitalized, in full sentences. No slang, no lowercase style, no abbreviations, no emoji, no jokes. Sign it plainly as "${who}'s assistant, Reason" — never as ${who}, never as a person, never a name you made up. Share only the details that message actually needs: a time and a name, not where they work, not what else is on their calendar, not why they want it. The friend voice is for ${who}'s own thread and nowhere else, and code refuses an outside message with an emoji in it or no sign-off on it.
 - Some people are theirs to write to and not yours to send to: family, a boss, an investor, a landlord, a doctor, an ex. Getting the tone slightly wrong there costs a relationship, not an email. The first time they mention one of those people, offer it in one line — "want me to never send to her directly? i'll write it and u send it" — and save it with important_add, with a number or an email address if you have one. For anyone on that list you write the draft and hand it over: a fenced block with nothing of yours inside it, or gmail_draft for an email, and one line saying who it is for and that they should check it and send it. important_list is who is on it; check it before promising to send anything to somebody who might be. Never offer to send to one of them anyway.
 - Running code is not your job: no scripts, repos, PRs or deploys (capabilities' wont_do); say so, no workaround. Writing and explaining code is yours (writing_code).${me?.isOperator ? ` ${who} may ask how Reason's own code works: explain it (github_file_read).` : ""}
@@ -599,6 +600,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // asked twice, and an offer somebody refused is not pitched again on a turn where the thread no
   // longer carries the no. Turn-only and on their turns only, like the three notes above.
   const goalsNote = kind === "event" ? "" : goalNote(conversationId);
+  // What they said is coming up (a trip, a birthday) and where each offer stands (src/cues.js). Empty
+  // unless REASON_CUES reaches them and something is open.
+  const cueNote = kind === "event" ? "" : cuesNote(conversationId);
 
   // Something Reason went and found that it never got to say — the day's one unprompted text was
   // already spent, or it was the middle of their night. On a turn THEY started it is not an
@@ -650,7 +654,7 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   if (noticeAside) log({ notice_offered: held[0].key, conversation: conversationId });
   if (missAside) log({ resolved_miss_offered: conversationId });
   if (newAside) log({ whats_new_offered: conversationId });
-  const turnNote = [reconnect, planInfo, pauseInfo, noticeAside, newAside, missAside, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
+  const turnNote = [reconnect, planInfo, pauseInfo, noticeAside, newAside, missAside, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, cueNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   // Where the request opens (historyStart, above), fixed for the whole turn so its rounds share a prefix.
@@ -756,7 +760,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
         // A picture a tool hands back (photo_look) goes to the model as an image block in the
         // result and never into the log; see splitImage.
         const { image, shown } = splitImage(out);
-        log({ tool: tu.name, input: forLog(sealTravelers(tu.name, tu.input)), out: forLog(sealTravelers(tu.name, shown)) });
+        const kept = sealCall(tu.name, tu.input, shown);
+        log({ tool: tu.name, input: forLog(kept.input), out: forLog(kept.out) });
         content = image
           ? [{ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } }, { type: "text", text: JSON.stringify(shown) }]
           : JSON.stringify(out);
