@@ -157,3 +157,19 @@ test("export carries their pictures; a delete unlinks them and takes the rows; a
   assert.ok(existsSync(theirs.file), "somebody else's picture is left alone");
   assert.equal(proof.proofsFor(AMA).length, 1);
 });
+
+test("retention: a picture older than the content window goes, file and row, like a document", async () => {
+  const { config, clock } = await import("../src/config.js");
+  const { sweepRetention } = await import("../src/privacy.js");
+  await serve(page, "https://billing.cardboard.test/settings/billing", BILLING);
+  const out = await proof.captureProof(OMARI, page, { focus: "Your subscription is set to cancel on Nov 27, 2026" });
+  const was = config.keepContentDays;
+  config.keepContentDays = 30;
+  try {
+    assert.equal(sweepRetention({ now: clock.now() + 29 * 86_400_000 }).deleted.proof_pictures, undefined, "inside the window: kept");
+    // Theirs (this one) and the other person's left from the delete test: both past the window.
+    assert.equal(sweepRetention({ now: clock.now() + 31 * 86_400_000 }).deleted.proof_pictures, 2);
+  } finally { config.keepContentDays = was; }
+  assert.equal(existsSync(out.file), false);
+  assert.equal(proof.proofRow(OMARI, out.id), null);
+});

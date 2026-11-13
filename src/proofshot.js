@@ -27,7 +27,7 @@
 //     an export carries it, a delete unlinks it (src/data.js), and nobody else's turn can open it.
 //   - It is evidence for the person: the tool's result carries no page words and no image back to the
 //     model, so nothing on the picture can steer it.
-import { mkdirSync, statSync, unlinkSync, existsSync } from "node:fs";
+import { mkdirSync, statSync, unlinkSync, existsSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
@@ -181,6 +181,17 @@ export function proofFilesFor(conversationId) {
   return (conversationId ? q("SELECT file FROM proof_pictures WHERE conversation_id = ?").all(conversationId) : q("SELECT file FROM proof_pictures").all()).map((r) => r.file);
 }
 
+/** The retention sweep (src/privacy.js, REASON_KEEP_CONTENT_DAYS): pictures older than `before` go, the file first, then its row. */
+export function pruneProofs(before, log = () => {}) {
+  let gone = 0;
+  for (const r of q("SELECT id, conversation_id, file FROM proof_pictures WHERE at < ?").all(before)) {
+    try { rmSync(r.file, { force: true }); } catch (e) { log({ retention_proof_failed: r.id, why: String(e?.message ?? e).split("\n")[0] }); continue; }
+    q("DELETE FROM proof_pictures WHERE conversation_id = ? AND id = ?").run(r.conversation_id, r.id);
+    q("DELETE FROM conversation_files WHERE conversation_id = ? AND path = ?").run(r.conversation_id, r.file);
+    gone++;
+  }
+  return gone;
+}
 /** Why a picture was not taken, in one plain line for the person (never the page's words). */
 export function refusedLine(why) {
   switch (why) {
