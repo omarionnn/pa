@@ -101,6 +101,9 @@ test("the post-call delivery sets the real length and their words", () => {
 });
 
 test("they sign up from the same number: the first turn says it's good to reconnect, once, and it goes into THEIR memory", async () => {
+  // Pinned to midday in the install's zone (REASON_TZ above). On the wall clock, 25 hours back from
+  // a moment between 00:00 and 01:00 is two calendar days ago, and the note said "on Wednesday".
+  clock.skip(Date.parse("2026-11-12T12:00:00-05:00") - Date.now());
   ring(CALLER);
   await pitchTurn(extraFor(), ["Can it book a dentist for me?"]);
   db.db.prepare("UPDATE stranger_calls SET started_at = ?").run(clock.now() - DAY - 3600_000);
