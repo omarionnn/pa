@@ -308,7 +308,22 @@ const num = (x) => (Math.round(Number(x) * 10) / 10).toString();
  */
 export function metersSection(meters, now = Date.now()) {
   if (!Array.isArray(meters) || !meters.length) return "";
+  const bar = (pct, tone) => `<div class="pm ${tone}" role="img" aria-label="${esc(num(pct))}% used"><span style="width:${Math.min(100, pct).toFixed(1)}%"></span></div>`;
+  // A standing count (Plaid banks): how many of how many, the share and the bar. Never which or whose.
+  const standing = (r) => {
+    const pct = Math.max(0, Number(r.pct) || 0);
+    const tone = pct >= 100 ? "bad" : pct >= 80 ? "warn" : "ok";
+    const rows = [
+      ["Connected", `${r.used} of ${r.allowance} ${r.unit} · ${num(pct)}%`],
+      ["Left", r.out ? "none — new connections stop here on this plan" : `${r.left}`],
+      ["Source", "Reason's own count of connections still held at Plaid"],
+    ];
+    const dl = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+    return `<article class="pc ck-${tone}" id="meter-${esc(anchor(r.id))}"><div class="ph"><span class="led" aria-label="${tone}"></span><div class="rm">`
+      + `<div class="rn">${esc(r.name)}</div>${bar(pct, tone)}<dl class="pmg">${dl}</dl></div></div></article>`;
+  };
   const one = (r) => {
+    if (r.standing) return standing(r);
     const pct = Math.max(0, Number(r.pct) || 0);
     const tone = pct >= 100 ? "bad" : pct >= 80 ? "warn" : "ok";
     const rows = [
@@ -329,7 +344,7 @@ export function metersSection(meters, now = Date.now()) {
     const dl = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
     return `<article class="pc ck-${tone}" id="meter-${esc(anchor(r.id))}"><div class="ph"><span class="led" aria-label="${tone}"></span><div class="rm">`
       + `<div class="rn">${esc(r.name)}</div>`
-      + `<div class="pm ${tone}" role="img" aria-label="${esc(num(pct))}% used"><span style="width:${Math.min(100, pct).toFixed(1)}%"></span></div>`
+      + bar(pct, tone)
       + `<dl class="pmg">${dl}</dl></div></div></article>`;
   };
   return `<section class="sec" id="meters"><h2>Plans</h2>${meters.map(one).join("")}</section>`;

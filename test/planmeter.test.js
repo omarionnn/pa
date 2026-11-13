@@ -284,3 +284,88 @@ test("the panel shows the cycle, minutes, dollars, the bar, minutes left, the pr
   assert.equal(metersSection([], now), "");
   assert.equal(metersSection(undefined, now), "");
 });
+
+// ---------- Plaid banks: a standing count, no cycle ----------
+
+const plaid = pm.METERS.find(m => m.id === "plaid");
+let item = 0;
+function bank({ who = C, status = "ok", name = "First Example Bank" } = {}) {
+  item += 1;
+  db.db.prepare("INSERT INTO plaid_items (conversation_id, item_id, access_token, institution, status, connected_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(who, `item-${item}`, "sealed-token", name, status, Date.now());
+  return `item-${item}`;
+}
+const plaidReading = () => pm.readMeter(plaid, { now: Date.now() });
+
+test("Plaid banks counts every connection still held at Plaid, across everyone; a disconnected one does not count", () => {
+  db.db.exec("DELETE FROM plaid_items;");
+  config.plaidPlanItems = 20;
+  bank(); bank({ who: "dm:someone-else" }); bank({ status: "login_required" });
+  const gone = bank({ status: "removing" });
+  const r = plaidReading();
+  assert.equal(r.standing, true);
+  assert.equal(r.used, 3, "ok and login_required count; removing (they disconnected) does not");
+  assert.equal(r.allowance, 20);
+  assert.equal(r.pct, 15);
+  assert.equal(r.left, 17);
+  db.db.prepare("DELETE FROM plaid_items WHERE item_id = ?").run(gone);
+  assert.equal(plaidReading().used, 3);
+  assert.equal(pm.detailOf(r), "3 of 20 bank connections · 15% · 17 left");
+});
+
+test("Plaid shows only when Plaid is set up, and the allowance is one setting (REASON_PLAID_PLAN_ITEMS, default 20)", async () => {
+  delete process.env.PLAID_CLIENT_ID; delete process.env.PLAID_SECRET;
+  assert.equal((await pm.readAll({ now: Date.now(), fetchImpl: async () => { throw new Error("no"); } })).some(r => r.id === "plaid"), false);
+  process.env.PLAID_CLIENT_ID = "test-client"; process.env.PLAID_SECRET = "test-secret";
+  try {
+    assert.equal((await pm.readAll({ now: Date.now(), fetchImpl: async () => { throw new Error("no"); } })).some(r => r.id === "plaid"), true);
+  } finally { delete process.env.PLAID_CLIENT_ID; delete process.env.PLAID_SECRET; }
+  assert.equal(config.plaidPlanItems, 20);
+});
+
+test("Plaid texts once at each of 50%, 80% and 100% on the way up, and re-arms one when the count drops back below", () => {
+  db.db.exec("DELETE FROM plaid_items; DELETE FROM ops_state;");
+  config.plaidPlanItems = 20;
+  const texts = [];
+  const send = sendTo(texts);
+  const pass = () => pm.warnings({ readings: [plaidReading()], send, now: Date.now() });
+  for (let i = 0; i < 9; i++) bank();
+  pass();
+  assert.equal(texts.length, 0, "9 of 20: nothing");
+  bank(); pass(); pass();
+  assert.equal(texts.length, 1, "10 of 20 texts once, and a second pass says nothing");
+  assert.equal(texts[0].text, "Plaid: 10 of 20 bank connections used (50%). New connections stop at 20 on the trial plan.");
+  for (let i = 0; i < 6; i++) bank();
+  pass();
+  assert.equal(texts.length, 2);
+  assert.equal(texts[1].text, "Plaid: 16 of 20 bank connections used (80%). New connections stop at 20 on the trial plan.");
+  // Down to 15: 80% re-arms (50% stays sent); back up to 16 texts 80% again.
+  const one = db.db.prepare("SELECT item_id FROM plaid_items ORDER BY id DESC LIMIT 1").get().item_id;
+  db.db.prepare("DELETE FROM plaid_items WHERE item_id = ?").run(one);
+  pass();
+  assert.equal(texts.length, 2, "dropping says nothing");
+  bank(); pass();
+  assert.equal(texts.length, 3);
+  assert.match(texts[2].text, /^Plaid: 16 of 20 bank connections used \(80%\)/);
+  for (let i = 0; i < 4; i++) bank();
+  pass(); pass();
+  assert.equal(texts.length, 4);
+  assert.equal(texts[3].text, "Plaid: 20 of 20 bank connections used (100%). New connections stop here on the trial plan: 20 is the most it allows.");
+  // A restart: what was sent is in ops_state, nothing is sent again.
+  pass();
+  assert.equal(texts.length, 4);
+  assert.match(pm.warnedWords(plaid, plaidReading()), /^100% text sent /);
+  assert.doesNotMatch(texts.map(t => t.text).join(" "), /Example Bank|dm:/, "never which bank or whose");
+});
+
+test("the Plaid panel shows banks connected of the allowance, the share and the bar — numbers only", () => {
+  db.db.exec("DELETE FROM plaid_items;");
+  config.plaidPlanItems = 20;
+  for (let i = 0; i < 16; i++) bank({ who: `dm:person-${i}`, name: "Second Example Credit Union" });
+  const html = metersSection([plaidReading()], Date.now());
+  assert.match(html, /Plaid banks/);
+  assert.match(html, /16 of 20 bank connections · 80%/);
+  assert.match(html, /class="pm warn"[^>]*><span style="width:80\.0%">/);
+  assert.match(html, /<dd>4<\/dd>/);
+  assert.doesNotMatch(html, /Example|Credit Union|person-|dm:|item-/, "no bank names, accounts or people");
+});

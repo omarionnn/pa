@@ -2,8 +2,14 @@
 // one text to the owner as it crosses 50%, 80% and 100% (owner 2026-11-13: "know the usage and the
 // cost on the ops page, and alert me at like 50%, 80%").
 //
-// A meter is a few lines (METERS below): a name, the allowance in cents, the rate per minute, the day
-// of the month the plan refreshes, the thresholds, and where the usage comes from:
+// A meter is a few lines (METERS below). Two shapes:
+//
+//   - a monthly one (Cartesia): an allowance in cents, a rate per minute, the day of the month the
+//     plan refreshes; each threshold texts once per cycle, and a new cycle starts over.
+//   - a standing one (`standing: true`, Plaid): a count against a cap, with no cycle. Each threshold
+//     texts once as the count crosses it going up, and is re-armed when the count drops back below.
+//
+// And where the usage comes from:
 //
 //   - `own`: Reason's own count, from its call rows. Always there, and always an estimate.
 //   - `remote` (optional): the provider's own figure, read-only, at most every REMOTE_EVERY_MS, from
@@ -17,6 +23,7 @@
 // usage/agents: "Rounded down to the start of the UTC day").
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
+import { configured as plaidConfigured } from "./plaid.js";
 // Cartesia's API, as in src/calls/cartesia.js (not imported: the relay loads only for a Cartesia call).
 const CARTESIA_BASE = "https://api.cartesia.ai";
 const CARTESIA_VERSION = "2026-08-14";
@@ -56,6 +63,7 @@ export function cycleWindow(now, cycleDay) {
  * pace so far. Pure: the usage is handed in.
  */
 export function reading(meter, { now, own, remote = null }) {
+  if (meter.standing) return standingReading(meter, own);
   const w = cycleWindow(now, meter.cycleDay);
   const rate = meter.centsPerMinute;
   const source = remote?.cents != null ? "provider" : "own";
@@ -88,7 +96,29 @@ export function reading(meter, { now, own, remote = null }) {
   };
 }
 
+/** A standing count against a cap: how many, of how many, and the share. No cycle, no pace. */
+export function standingReading(meter, own) {
+  const used = Math.max(0, Math.round(Number(own.count) || 0));
+  const allowance = Math.max(0, Math.round(Number(meter.allowance) || 0));
+  return {
+    id: meter.id, name: meter.name, standing: true, unit: meter.unit, source: "own",
+    used, allowance, left: Math.max(0, allowance - used),
+    pct: allowance > 0 ? Math.round((used / allowance) * 1000) / 10 : 0,
+    out: allowance > 0 && used >= allowance,
+  };
+}
+
 // ---------- the meters ----------
+
+/**
+ * Banks connected through Plaid (Plaid calls each an Item), across everyone: every row still held at
+ * Plaid, healthy or waiting for a re-login. A bank they disconnected is gone from the table or marked
+ * `removing` (src/plaid.js disconnect) and does not count. A count, never which bank or whose.
+ */
+function plaidOwn() {
+  const r = db.db.prepare("SELECT COUNT(*) AS n FROM plaid_items WHERE status != 'removing'").get();
+  return { count: r.n };
+}
 
 /** Reason's own count of the Cartesia voice this cycle, from the call rows the relay writes. */
 function cartesiaOwn({ start, end }) {
@@ -133,6 +163,16 @@ export const METERS = [
     whenOut: "Calls fall back to the old voice when it does.",
     whenOutNow: "Calls are falling back to the old voice until the credits refresh.",
   },
+  {
+    id: "plaid", name: "Plaid banks", standing: true, unit: "bank connections",
+    get allowance() { return config.plaidPlanItems; },
+    thresholds: [50, 80, 100],
+    configured: () => plaidConfigured(),
+    own: plaidOwn,
+    dashboard: "https://dashboard.plaid.com/",
+    whenOut: (r) => `New connections stop at ${r.allowance} on the trial plan.`,
+    whenOutNow: (r) => `New connections stop here on the trial plan: ${r.allowance} is the most it allows.`,
+  },
 ];
 
 // ---------- the provider's figure, cached ----------
@@ -168,6 +208,7 @@ export async function refreshRemote(meter, { now = clock.now(), fetchImpl = glob
 
 /** A meter's reading now, from the cached provider figure (if any) and Reason's own count. */
 export function readMeter(meter, { now = clock.now() } = {}) {
+  if (meter.standing) return standingReading(meter, meter.own());
   const w = cycleWindow(now, meter.cycleDay);
   const own = meter.own(w);
   const cached = meter.remote?.() ? cachedRemote(meter.id) : null;
@@ -199,6 +240,7 @@ const mins = (m) => (Math.round(m) === m ? String(m) : m.toFixed(1)).replace(/\.
 
 /** The ops row's one line. */
 export function detailOf(r) {
+  if (r.standing) return `${r.used} of ${r.allowance} ${r.unit} · ${Math.round(r.pct)}% · ${r.left} left`;
   const parts = [
     `${Math.round(r.pct)}% of ${usd(r.allowance_cents)} · ${mins(r.used_minutes)} of ${r.allowance_minutes} min`,
     `${r.left_minutes} min left`,
@@ -214,15 +256,22 @@ export function detailOf(r) {
 export function due(meter, r) {
   const crossed = meter.thresholds.filter(t => r.pct >= t);
   if (!crossed.length) return null;
-  const keys = crossed.map(t => ({ t, key: `plan_warn:${meter.id}:${r.cycle.startDay}:${t}` }));
+  const keys = crossed.map(t => ({ t, key: warnKey(meter, r, t) }));
   const unsent = keys.filter(k => !db.opsGet(k.key));
   if (!unsent.length) return null;
   const top = Math.max(...unsent.map(k => k.t));
   return { threshold: top, keys: unsent.map(k => k.key), text: textFor(meter, r, top) };
 }
 
+/** Where a threshold's text is marked sent: per cycle for a monthly meter, standing for a count. */
+const warnKey = (meter, r, t) => meter.standing ? `plan_warn:${meter.id}:${t}` : `plan_warn:${meter.id}:${r.cycle.startDay}:${t}`;
+
 /** "Cartesia: 80% of this month's $5 call credit used (132 of 165 minutes). …" */
 export function textFor(meter, r, threshold) {
+  if (meter.standing) {
+    const head = `${meter.name.split(" ")[0]}: ${r.used} of ${r.allowance} ${r.unit} used (${Math.round(r.pct)}%).`;
+    return `${head} ${threshold >= 100 ? meter.whenOutNow(r) : meter.whenOut(r)}`;
+  }
   const name = meter.name.split(" ")[0];
   const head = `${name}: ${threshold}% of this month's ${usd(r.allowance_cents)} call credit used (${Math.round(r.used_minutes)} of ${r.allowance_minutes} minutes).`;
   if (threshold >= 100) return `${head} ${meter.whenOutNow} Credits refresh on the ${dayOf(r.cycle.end)}.`;
@@ -239,12 +288,16 @@ export function warnings({ readings, send, log = () => {}, now = clock.now(), me
   const sent = [];
   for (const r of readings ?? []) {
     const meter = meters.find(m => m.id === r.id);
+    if (!meter) continue;
     // A reading from a cycle that has ended (an old report after a restart) is old news.
-    if (!meter || !(r.cycle?.end > now)) continue;
+    if (!meter.standing && !(r.cycle?.end > now)) continue;
+    // A standing count that has dropped back below a threshold re-arms it: crossing it again texts again.
+    if (meter.standing) for (const t of meter.thresholds) if (r.pct < t) db.opsDelete(warnKey(meter, r, t));
     const d = due(meter, r);
     if (!d) continue;
     for (const k of d.keys) db.opsSet(k, String(now));
-    try { Promise.resolve(send(d.text, `ops:plan_warn:${meter.id}:${r.cycle.startDay}:${d.threshold}`)).catch(e => log({ plan_warn_failed: String(e?.message ?? e).split("\n")[0] })); } catch (e) { log({ plan_warn_failed: String(e?.message ?? e).split("\n")[0] }); }
+    const idem = meter.standing ? `ops:plan_warn:${meter.id}:${d.threshold}:${now}` : `ops:plan_warn:${meter.id}:${r.cycle.startDay}:${d.threshold}`;
+    try { Promise.resolve(send(d.text, idem)).catch(e => log({ plan_warn_failed: String(e?.message ?? e).split("\n")[0] })); } catch (e) { log({ plan_warn_failed: String(e?.message ?? e).split("\n")[0] }); }
     log({ plan_warn_sent: meter.id, threshold: d.threshold });
     sent.push(d);
   }
@@ -253,6 +306,6 @@ export function warnings({ readings, send, log = () => {}, now = clock.now(), me
 
 /** "80% text sent Nov 21" for the row, or "" when none this cycle. */
 export function warnedWords(meter, r) {
-  const at = [...meter.thresholds].reverse().map(t => [t, db.opsGet(`plan_warn:${meter.id}:${r.cycle.startDay}:${t}`)]).find(([, v]) => v);
+  const at = [...meter.thresholds].reverse().map(t => [t, db.opsGet(warnKey(meter, r, t))]).find(([, v]) => v);
   return at ? `${at[0]}% text sent ${shortDay(Number(at[1]))}` : "";
 }
