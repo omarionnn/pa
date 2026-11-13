@@ -14,6 +14,13 @@
 // the finding, not an obstacle. Nothing here spoofs a fingerprint or retries past a refusal.
 //
 // The report goes to stdout as JSON and to docs/site-probe-<date>.json when --save is passed.
+//
+// Browser setups (vault PR 2, design section E; src/probesetups.js): one load per sign-in page per
+// setup, nothing typed, the never list refused by this script itself.
+//   npm run probe:sites -- --setup A0 --list signin-1112 [--save]   # the 11-12 refused pages + controls
+//   npm run probe:sites -- --setup A2 --list medium.com,canva.com
+//   npm run probe:sites -- --merge docs/site-probe-<date>-setup-A0.json ... [--save]
+// A0-A3 run on the server, A4 on the Mac. Without --setup or --merge this script is as it was.
 import { writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +32,48 @@ const want = args.filter(a => !a.startsWith("--"));
 
 process.env.REASON_DATA_DIR = process.env.REASON_DATA_DIR || mkdtempSync(join(tmpdir(), "reason-probe-"));
 const scratch = process.env.REASON_DATA_DIR;
+
+if (args.includes("--setup") || args.includes("--merge")) {
+  try {
+    await setups();
+  } finally {
+    // Only the data directory this script made for itself is removed; one handed in is left alone.
+    if (!process.env.REASON_KEEP_PROBE_PROFILE && scratch.startsWith(join(tmpdir(), "reason-probe-"))) rmSync(scratch, { recursive: true, force: true });
+  }
+  process.exit(0);
+}
+
+async function setups() {
+  const { readFileSync } = await import("node:fs");
+  const probe = await import("../src/probesetups.js");
+  const valueOf = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
+  const day = new Date().toISOString().slice(0, 10);
+  let out, file;
+  if (args.includes("--merge")) {
+    const files = args.slice(args.indexOf("--merge") + 1).filter((a) => !a.startsWith("--"));
+    out = { merged_at: new Date().toISOString(), ...probe.mergeSetups(files.map((f) => JSON.parse(readFileSync(f, "utf8")))) };
+    file = `docs/site-probe-${day}-setups.json`;
+  } else {
+    const setup = valueOf("--setup");
+    const { chromium } = await import("playwright");
+    const { guardContext, stableSetting } = await import("../src/browser.js");
+    const { publicUrl } = await import("../src/netguard.js");
+    const signin = await import("../src/signin.js");
+    const refusedJson = JSON.parse(readFileSync(new URL("../docs/site-probe-2026-11-12-signin.json", import.meta.url), "utf8"));
+    const sites = probe.parseList(valueOf("--list") ?? "signin-1112", { refusedJson, entryFor: (n) => signin.anyEntryFor(n) });
+    // The one launch setting, for no one's account: the install's time zone.
+    out = await probe.runSetups({ setup, sites, launcher: chromium, guard: guardContext, setting: stableSetting(null), publicUrl, scratchDir: tmpdir() });
+    file = `docs/site-probe-${day}-setup-${setup}.json`;
+    for (const l of out.loads) process.stderr.write(`${l.site.padEnd(22)} ${String(l.status ?? "-").padEnd(4)} ${l.page_kind.padEnd(16)} form:${String(l.ms_to_form ?? "-").padEnd(6)} ${l.wall_vendor.join(",")}\n`);
+    for (const k of out.skipped) process.stderr.write(`${k.site.padEnd(22)} skipped: ${k.reason}\n`);
+  }
+  const json = JSON.stringify(out, null, 2);
+  if (save) {
+    writeFileSync(file, json + "\n");
+    process.stderr.write(`\nwrote ${file}\n`);
+  }
+  process.stdout.write(json + "\n");
+}
 
 const { SITES, readSignedInState } = await import("../src/sites.js");
 const { chromium } = await import("playwright");
