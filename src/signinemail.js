@@ -617,7 +617,7 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       log({ signin_email: "mail", site: entry.site, connected: !!mail?.connected, found: !!got, kind: got?.kind ?? "" });
       if (!got) {
         if (mail?.connected) {
-          return finish(`${entry.label} was asked for a sign-in code for ${email}, but no mail from ${entry.label} reached their Gmail within ${Math.round(MAIL_WAIT_MS / 1000)} seconds. Nothing was saved. Say it in ONE plain line: what happened, and that a fresh code needs them to say go (signin_email). Never offer to try again; never say "check your email".`, "no_mail");
+          return finish(`${entry.label} was asked for a sign-in code for ${email}, but no mail from ${entry.label} reached their Gmail within ${Math.round(MAIL_WAIT_MS / 1000)} seconds. Nothing was saved. Say it in ONE plain line: what happened, and that a fresh code needs them to say go (signin_email). Never offer to try again. Never say "check your email".`, "no_mail");
         }
         // No Gmail: they are asked once, and their reply comes straight here (takeCodeReply).
         job.state = "waiting_reply";
