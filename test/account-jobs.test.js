@@ -809,6 +809,36 @@ test("what a question is: sealed fields go to the page, open codes and identity 
   assert.equal(jobs.confirmAnswers({ fields: [{ key: "c", required: true, input: { kind: "choice", options: ["Maybe", "Later"] } }] }), null, "a yes that cannot be told is never guessed");
 });
 
+// ---------------------------------------------------------------- beside the shopping record
+test("a job is not a checkout: it never shows as a store order, the model's record has its own lines, and the cancel rules name account_cancel", async () => {
+  googleOn();
+  const { job_id, run_id } = await cancelStarted();
+  assert.deepEqual(shop.runsOf(OMARI), [], "not in the shopping record");
+  assert.equal(shop.recentRun(OMARI), null);
+  assert.match(shop.checkoutNote(OMARI), /^Account jobs \(code's own record; it overrides anything the chat says about them\):\n- #\d+ cancel Cardboard Starter at Cardboard: working inside the account\.\n/);
+  assert.match(shop.checkoutNote(OMARI), /Never say one is cancelled or paid unless it reads done here/);
+  assert.equal(shop.checkoutNote(AMA), "");
+  ask(run_id, "req_confirm", CONFIRM_Q, [CONFIRM]);
+  await shop.step(run_id);
+  await yesThroughTheGate(job_id);
+  mailbox.hits = [mail("Subscription cancelled")];
+  end(run_id, CANCELLED);
+  await shop.step(run_id);
+  assert.deepEqual(shop.ordersPlaced(OMARI), [], "a cancellation is never counted as an order placed");
+  assert.match(shop.checkoutNote(OMARI), /cancel Cardboard Starter at Cardboard: done \(their page and their email both seen\)\./);
+  // The rules riding on cancel_route: account_cancel for them, today's words for everybody else.
+  const rules = (c) => toolsFor(c).find((t) => t.name === "cancel_route").description;
+  assert.match(rules(OMARI), /goes through account_cancel/);
+  assert.ok(!/send them a sign-in link/.test(rules(OMARI)), "nobody on account jobs is told to send a sign-in link to cancel");
+  assert.match(rules(AMA), /Cancelling has three rails/);
+  assert.ok(!/account_cancel/.test(rules(AMA)));
+  // With the tool diet on, the six tools are loaded whole for them (never left to a search).
+  const diet = await import("../src/tooldiet.js");
+  assert.ok(diet.statePacks(OMARI).includes("account_jobs"));
+  assert.ok(!diet.statePacks(AMA).includes("account_jobs"));
+  assert.equal(diet.packOf("account_cancel"), "account_jobs");
+});
+
 // ---------------------------------------------------------------- the daily note's test
 test("can a job be finished? only with the switch on for them AND what the job needs", async () => {
   const cancel = { kind: "cancel", site: "cardboard.app" };

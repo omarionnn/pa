@@ -2574,13 +2574,13 @@ async function correctAndRestart(run, rq, answers) {
 }
 
 // ---------------------------------------------------------------- the record, for the model
-/** This person's runs: every open one, and the ones that started in the window. Newest first. */
+/** This person's runs: every open one, and the ones that started in the window. Newest first. Never an account job's run: that is not a checkout, and has its own record (src/accountjobs.js). */
 export function runsOf(conversationId, { sinceMs = 48 * 3600_000, limit = 10 } = {}) {
-  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT ?").all(conversationId, clock.now() - sinceMs, limit);
+  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND substr(mode, 1, 4) <> 'job_' AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT ?").all(conversationId, clock.now() - sinceMs, limit);
 }
 /** A run most recently started, within `withinMs`, or still open: what a "started" claim has to have behind it. */
 export function recentRun(conversationId, { withinMs = 15 * 60_000 } = {}) {
-  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT 1").get(conversationId, clock.now() - withinMs) ?? null;
+  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND substr(mode, 1, 4) <> 'job_' AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT 1").get(conversationId, clock.now() - withinMs) ?? null;
 }
 const payOf = (run) => q("SELECT * FROM shop_payments WHERE run_id = ? ORDER BY id DESC").get(run.run_id) ?? null;
 /** Where a run stands, in one line, from the row. */
@@ -2671,13 +2671,16 @@ export function checkoutNote(conversationId) {
   try {
     if (!connectAllowedFor(conversationId)) return "";
     const runs = runsOf(conversationId, { sinceMs: 24 * 3600_000, limit: 5 });
-    if (!runs.length) return "";
+    // Their account jobs (a cancellation, a bill), from that module's own record.
+    let jobsNote = "";
+    try { jobsNote = acctMod?.noteFor(conversationId) ?? ""; } catch { jobsNote = ""; }
+    if (!runs.length) return jobsNote;
     const lines = runs.map((run) => `- ${storeOf(run)}${run.item ? `, ${run.item}` : ""}: ${stageLine(run)}.`);
     const card = cardOf(conversationId);
     const onFile = card ? `\nCard on file for paying: ${card.brand ? `${card.brand[0].toUpperCase()}${card.brand.slice(1)} ` : ""}••••${card.last4}. Never ask whether they have a card or which; the payment ask is texted for you with the total.` : "";
     return `Checkout record (code's own, from the database; it overrides anything the chat says about these orders):\n${lines.join("\n")}\n`
       + "Answer anything about an order or checkout from this (shop_status has the same). Never say a checkout started unless store_checkout returned a run_id this turn, and never say one never ran when it is listed here."
-      + " A checkout you started is yours to finish: never offer them the store's page to buy it themselves instead." + onFile;
+      + " A checkout you started is yours to finish: never offer them the store's page to buy it themselves instead." + onFile + (jobsNote ? `\n${jobsNote}` : "");
   } catch { return ""; }
 }
 
@@ -2800,7 +2803,7 @@ export function follow(runId, { everyMs = 3000 } = {}) {
 }
 /** Orders placed (the row's own record): what the stamps book counts. Oldest first. */
 export function ordersPlaced(conversationId) {
-  return q("SELECT run_id, conversation_id, store, item, order_ref, stage_at, updated_at, created_at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed' ORDER BY stage_at, created_at").all(conversationId);
+  return q("SELECT run_id, conversation_id, store, item, order_ref, stage_at, updated_at, created_at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed' AND substr(mode, 1, 4) <> 'job_' ORDER BY stage_at, created_at").all(conversationId);
 }
 /**
  * The checkout record as a source for the figures a reply may name (src/offers.js guardReply): every

@@ -16,6 +16,7 @@
 // the owner ruled out on 2026-11-12. Everybody else keeps today's tools exactly.
 import { z } from "zod";
 import * as jobs from "./accountjobs.js";
+import { PLAYBOOKS } from "./playbooks.js";
 
 export const ACCOUNT_JOB_TOOLS = new Set(["account_cancel", "account_cancel_confirm", "account_bill_pay", "account_job_answer", "account_job_status", "account_job_stop"]);
 export const accountJobToolVisible = (name, conversationId) => !ACCOUNT_JOB_TOOLS.has(name) || jobs.jobsAllowedFor(conversationId);
@@ -25,6 +26,17 @@ export const ACCOUNT_JOB_REFUSAL = { ok: false, blocked: "not_available", error:
 export const BROWSER_CANCEL_TOOLS = new Set(["subscription_cancel_start", "subscription_cancel_commit"]);
 export const browserCancelToolVisible = (name, conversationId) => !BROWSER_CANCEL_TOOLS.has(name) || !jobs.jobsAllowedFor(conversationId);
 export const BROWSER_CANCEL_REFUSAL = { ok: false, blocked: "not_available", error: "Cancelling a subscription goes through account_cancel here. Use that, and do not mention this." };
+
+/**
+ * The cancelling rules as an account-jobs conversation reads them (they ride on cancel_route's
+ * description, src/playbooks.js): the web rail is account_cancel, and nobody is sent a sign-in link.
+ */
+const OLD_CANCEL_RULES = PLAYBOOKS.find((p) => p.name === "cancelling")?.text ?? "";
+export const CANCEL_RULES = "- Cancelling a subscription that is managed on a website goes through account_cancel: it works inside their own account from start to finish, and comes back with exactly what gets cancelled and when it ends before anything is final. Never walk a cancel page yourself and never send a sign-in link for it; where a result names subscription_cancel_start, that is account_cancel here. cancel_route still says what kind of service it is. An App Store subscription is four taps in Settings on their own phone: say the taps, do not offer to do it. A service that only cancels over the PHONE you cannot do yet: say that plainly. A WRITTEN request is a draft they see whole, and it only goes with gmail_send after a yes.";
+export function accountJobWords(text) {
+  const t = String(text ?? "");
+  return OLD_CANCEL_RULES && t.includes(OLD_CANCEL_RULES) ? t.replace(OLD_CANCEL_RULES, CANCEL_RULES) : t;
+}
 
 /**
  * signin_link for a site an account job is working on (or worked on in the last day): refused. The

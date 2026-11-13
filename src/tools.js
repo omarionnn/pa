@@ -81,7 +81,7 @@ import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
-import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal } from "./accountjobtools.js";
+import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
 import * as whatsnew from "./whatsnew.js";
@@ -434,7 +434,9 @@ export function toolsFor(conversationId) {
     .map(t => (t.name === "remember" && namingOk ? rememberWithName(t) : t))
     .map(t => (t.name === "signin_link" && !social.socialAllowedFor(conversationId) ? plainSigninLink(t) : t))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
-    .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+    .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t))
+    // Account jobs on for them: the cancelling rules on cancel_route name account_cancel, not the browser walk.
+    .map(t => (t.name === "cancel_route" && accountJobToolVisible("account_cancel", conversationId) ? { ...t, description: accountJobWords(t.description) } : t));
 }
 
 // One identity (src/identity.js, REASON_ONE_IDENTITY): only a person the switch covers is told that

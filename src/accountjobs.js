@@ -890,6 +890,15 @@ export function statusView(conversationId, { sinceMs = 48 * 3600_000 } = {}) {
   }));
 }
 
+/** The record in front of the model on their turns (src/shopconnect.js checkoutNote): "" when there is nothing, or the switch is off for them. */
+export function noteFor(conversationId) {
+  if (!jobsAllowedFor(conversationId)) return "";
+  const list = statusView(conversationId, { sinceMs: 24 * 3600_000 });
+  if (!list.length) return "";
+  return `Account jobs (code's own record; it overrides anything the chat says about them):\n${list.map((j) => `- #${j.job_id} ${j.kind === "cancel" ? "cancel" : "pay"} ${j.what}: ${j.line}.`).join("\n")}\n`
+    + "Answer anything about a cancellation or a bill from this (account_job_status has the same). Never say one is cancelled or paid unless it reads done here; a result is texted to them by code the moment it is known.";
+}
+
 // ---------------------------------------------------------------- can a job be finished? (the daily note's test)
 /**
  * Is there a complete route for this job, for this person, right now? What a daily-note card that
