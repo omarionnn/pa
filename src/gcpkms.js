@@ -85,10 +85,17 @@ function inspectKeyFile(file) {
   const tokenUri = j.token_uri ?? GOOGLE_TOKEN_URI;
   out.tokenUri = typeof tokenUri === "string" && allowedBase(tokenUri, GOOGLE_TOKEN_URI);
   const ok = Object.values(out).every(Boolean);
+  const identity = Object.entries(out).every(([k, v]) => v || k === "privateToOwner") ? { projectId: j.project_id, email: j.client_email } : null;
   const creds = ok ? { file, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, mode: st.mode, projectId: j.project_id, email: j.client_email,
     keyId: j.private_key_id, tokenUri, key } : null;
-  return { out, creds };
+  return { out, creds, identity };
 }
+
+/**
+ * The project id and account email of a well-formed key file, even one others can read (the check
+ * script's dry run on a fresh download). Neither is a secret; the private key is not kept.
+ */
+export function fileIdentity(file = keyFilePath()) { return inspectKeyFile(file).identity; }
 
 /** Booleans only: is the key file there, private, and shaped like a Google service-account key. */
 export function checkKeyFile(file = keyFilePath()) { return inspectKeyFile(file).out; }
