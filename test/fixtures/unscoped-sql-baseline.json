@@ -532,6 +532,8 @@
  "src/privacy.js | UPDATE UPDATE series SET last_report = NULL, last_report_at = NULL WHERE last_report IS NOT NULL AND last_report_at < ?": 1,
  "src/remote.js | UPDATE UPDATE remote_jobs SET session_key = ?, run_dir = ? WHERE id = ?": 1,
  "src/restfiles.js | SELECT SELECT * FROM events": 1,
+ "src/savedlogins.js | DELETE DELETE FROM saved_logins": 1,
+ "src/savedlogins.js | DELETE DELETE FROM vault_people": 1,
  "src/shopconnect.js | SELECT SELECT * FROM shop_links WHERE id = ?": 1,
  "src/shopconnect.js | SELECT SELECT * FROM shop_links WHERE run_id = ? AND kind = 'signin' AND state = 'open' ORDER BY created_at DESC": 1,
  "src/shopconnect.js | SELECT SELECT * FROM shop_payments WHERE id = ?": 1,

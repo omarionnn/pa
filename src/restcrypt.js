@@ -35,6 +35,9 @@ export const SENSITIVE = [
   { table: "memories", cols: ["fact"], owner: "conversation_id" },
   { table: "person_facts", cols: ["fact"], owner: "(SELECT p.conversation_id FROM people p WHERE p.id = person_facts.person_id)" },
   { table: "calls", cols: ["transcript", "summary", "turn_log"], owner: "conversation_id" },
+  // Saved logins (src/savedlogins.js): why a login was used, in Reason's words. The login itself is
+  // in data/logins.db under its own KMS key; this is the person's record of using it.
+  { table: "login_log", cols: ["purpose"], owner: "conversation_id" },
 ];
 /**
  * Phase 2 (11-10), behind REASON_ENCRYPT_REST2=on, which needs phase 1 on. Message copies, call
@@ -189,7 +192,14 @@ export function sigv4({ method = "POST", host, path = "/", query = "", headers, 
   return { ...h, authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signed}, Signature=${signature}`, signature };
 }
 
-async function kmsCall(target, payload) {
+/**
+ * One signed AWS KMS JSON call (5 tries). Exported for src/vaultkms.js, the saved-login key source.
+ * Optional `retry(err)` decides whether a failure is tried again; the default retries every failure
+ * (restcrypt's own calls pass nothing and keep that). A KMS answer that is not ok throws an Error with
+ * `kmsStatus` (the HTTP status) and `kmsType` (the exception name, e.g. "ThrottlingException"); a
+ * network error or timeout has neither.
+ */
+export async function kmsCall(target, payload, { retry = null } = {}) {
   const region = process.env.REASON_REST_KMS_REGION || process.env.AWS_REGION || "us-west-2";
   const host = process.env.REASON_REST_KMS_HOST || `kms.${region}.amazonaws.com`;
   const accessKeyId = process.env.AWS_ACCESS_KEY_ID, secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
@@ -205,9 +215,18 @@ async function kmsCall(target, payload) {
     try {
       const r = await fetch(`${scheme}://${host}/`, { method: "POST", headers, body, signal: AbortSignal.timeout(8000) });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(`KMS ${target} ${r.status} ${j.__type ?? ""} ${j.message ?? ""}`.trim());
+      if (!r.ok) {
+        const err = new Error(`KMS ${target} ${r.status} ${j.__type ?? ""} ${j.message ?? ""}`.trim());
+        err.kmsStatus = r.status;
+        err.kmsType = String(j.__type ?? "").split("#").pop();
+        throw err;
+      }
       return j;
-    } catch (e) { last = e; await new Promise(res => setTimeout(res, 500 * 2 ** i)); }
+    } catch (e) {
+      last = e;
+      if (retry && !retry(e)) throw e;
+      await new Promise(res => setTimeout(res, 500 * 2 ** i));
+    }
   }
   throw last;
 }
