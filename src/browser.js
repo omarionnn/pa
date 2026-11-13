@@ -508,13 +508,23 @@ export function locate(page, ref) {
 // load anywhere else, in any tab of this person's browser, is refused until the pin runs out or is
 // taken off. A signed-in session is never carried to another site by a link on a page or in an email.
 export const PIN_TTL_MS = 30 * 60_000;
-const pins = new Map(); // conversationId -> { base, hosts:Set, until }
+const pins = new Map(); // conversationId -> { base, hosts:Set, until, exact, secure }
 
-/** Hold this person's browser to one site (its registrable domain and subdomains, plus `hosts`). */
-export function pinSite(conversationId, base, { hosts = [], until = Date.now() + PIN_TTL_MS } = {}) {
+/**
+ * Hold this person's browser to one site (its registrable domain and subdomains, plus `hosts`).
+ * `exact`: an origin (scheme://host[:port]) the browser is held to exactly, while the filler types a
+ * login (review 2026-11-13): no page of another origin, even of the same site, may load into the tab
+ * between the origin check and the keystroke. `secure`: an https pin refuses http page loads.
+ */
+export function pinSite(conversationId, base, { hosts = [], until = Date.now() + PIN_TTL_MS, exact = null, secure = false } = {}) {
   const b = String(base ?? "").toLowerCase();
   if (!b) return;
-  pins.set(String(conversationId), { base: b, hosts: new Set(hosts.map(h => String(h).toLowerCase())), until });
+  pins.set(String(conversationId), { base: b, hosts: new Set(hosts.map(h => String(h).toLowerCase())), until, exact: exact ? String(exact) : null, secure: !!secure });
+}
+/** Hold an existing pin to one exact origin, or (null) back to the whole site. */
+export function pinExact(conversationId, origin = null) {
+  const p = pins.get(String(conversationId));
+  if (p) p.exact = origin ? String(origin) : null;
 }
 export function unpinSite(conversationId) { pins.delete(String(conversationId)); }
 /** The site this person's browser is held to now, or null. */
@@ -531,6 +541,8 @@ export function offPinnedSite(conversationId, url, now = Date.now()) {
   let u;
   try { u = new URL(String(url)); } catch { return true; }
   if (!/^(https?|wss?):$/.test(u.protocol)) return u.protocol !== "about:" && u.protocol !== "data:" && u.protocol !== "blob:";
+  if (p.exact) return u.origin !== p.exact;
+  if (p.secure && (u.protocol === "http:" || u.protocol === "ws:")) return true;
   const h = u.hostname.toLowerCase();
   return !(h === p.base || h.endsWith(`.${p.base}`) || p.hosts.has(h));
 }

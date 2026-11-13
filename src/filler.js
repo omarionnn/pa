@@ -16,8 +16,9 @@ import {
 } from "./savedlogins.js";
 import {
   profileDirFor, guardContext, launchOptions, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser,
-  pinSite, unpinSite,
+  pinSite, pinExact, unpinSite,
 } from "./browser.js";
+import { dropIntake } from "./loginintake.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { recordFinding } from "./sitefindings.js";
 import { readPage } from "./signinpage.js";
@@ -33,6 +34,12 @@ export const SIGNIN_RESULTS = [
   "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code",
 ];
 const OK_RESULT = new Set(["signed_in"]);
+// The form was found visible a moment ago, so a box that is not fillable within this is not the form.
+const FILL_MS = 5_000;
+// After an attempt that typed the login and did not sign in (a code that failed or never came, an app
+// approval, a page that broke after the submit), the login rests a day: a re-call by the model is
+// `paused`, with no page load and no unwrap (hard rule 4, and the brief's one sign-in per site per day).
+export const RETRY_PAUSE_MS = 24 * 60 * 60_000;
 // A refusal by the site stops the attempt for the day: one wall, CAPTCHA, "suspicious sign-in" or
 // "too many attempts" and the row is refused; the person is told and it is not retried (hard rule 4).
 const REFUSED_BY_SITE = new Set(["blocked"]);
@@ -161,13 +168,22 @@ async function findForm(page) {
  * page to name the outcome but never returns a secret. A redirect off the pinned origin mid-fill
  * throws, which withLogin turns into the fixed code fill_failed and the caller reads as origin_mismatch.
  */
-async function fillAndSubmit(page, pinnedOrigin, form, { username, password }) {
+async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, { typing = () => {}, relax = () => {} } = {}) {
   const here = () => urlParts(page.url()).origin;
   const ensure = () => { if (here() !== pinnedOrigin) { const e = new Error("origin drifted"); e.name = "OriginDrift"; throw e; } };
+  // The browser is held to the exact pinned origin until both boxes are typed (the caller pinned it, and
+  // the browser refuses every page load anywhere else), so the document the keystroke lands in is
+  // this origin's: a script, a meta refresh or a redirect after this check cannot swap in another
+  // origin's page under the locator (review 2026-11-13). The check below is the second line.
   ensure();
-  if (form.user) await username.use(async (b) => { await form.user.fill(b.toString("utf8")); });
+  typing();
+  if (form.user) await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); });
   ensure(); // immediately before the password keystroke (design B5 step 5)
-  await password.use(async (b) => { await form.pass.fill(b.toString("utf8")); });
+  await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); });
+  ensure();
+  // Typed. The submit may go to another origin of the same site (a sign-in host posting to the account
+  // host); the same-site lock still refuses any other site, and http under an https pin.
+  relax();
   // "Remember this device" when the page offers it (design B5 step 5), so the next job need not sign in.
   const remember = page.locator('input[type="checkbox"][name*="remember" i], input[type="checkbox"][id*="remember" i], input[type="checkbox"][name*="trust" i]').first();
   if (await remember.count().catch(() => 0)) await remember.check().catch(() => {});
@@ -189,13 +205,13 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }) {
 // What a sign-in result does to the row, the attempt log and the person's activity line, once it is
 // final (hard rules 4 and 5). A success flips unverified -> working; a wall refuses the site; a wrong
 // password stops it until they save again; a code that failed or never came stops this attempt only.
-function finish(c, row, host, pinned, result, { why = "", again = false, startedAt = null } = {}) {
+function finish(c, row, host, pinned, result, { why = "", again = false, startedAt = null, typed = false, at = null } = {}) {
   if (result === "signed_in") setState(c, row.id, { state: "working", failCount: 0, clearNextTry: true });
   else if (result === "wrong_password") setState(c, row.id, { state: "wrong_password", bumpFail: true });
   else if (REFUSED_BY_SITE.has(result)) {
     recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "a wall after the password" });
     setState(c, row.id, { state: "refused" });
-  }
+  } else if (typed) setState(c, row.id, { nextTryAt: (at ?? clock.now()) + RETRY_PAUSE_MS });
   if (result !== "signed_in") unpinSite(c);
   const outcome = result === "signed_in" ? "signed_in" : result === "blocked" ? "blocked_by_site"
     : result === "wrong_code" ? "wrong_code" : result === "code_not_found" ? "code_not_found" : "failed";
@@ -276,6 +292,7 @@ export async function signIn(conversationId, site, {
   const pinned = `${row.signin_origin}${row.signin_path}`;
   let session = null;
   let handedOff = false; // a texted code is waited for in the background; that wait closes and releases
+  let typed = false; // the login went into the page's boxes (a failure after this rests the login a day)
   try {
     unpinSite(c); // a new sign-in ends any earlier signed-in job
     await closeErrandBrowser(c);
@@ -295,7 +312,8 @@ export async function signIn(conversationId, site, {
     if (at.path !== row.signin_path) { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt }); return say("not_signin_page", host); }
     // From here the browser is held to this site (the same-site lock, src/browser.js): a redirect or a
     // script sending it elsewhere mid-fill is refused by the browser itself.
-    pinSite(c, row.site, { hosts: [new URL(row.signin_origin).hostname] });
+    // Held to the exact origin until the login is typed (fillAndSubmit relaxes it to the site for the submit).
+    pinSite(c, row.site, { hosts: [new URL(row.signin_origin).hostname], exact: row.signin_origin, secure: row.signin_origin.startsWith("https:") });
     const read = await readPage(page).catch(() => null);
     if (read?.kind === "challenge") {
       recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "challenge on the sign-in page" });
@@ -312,7 +330,8 @@ export async function signIn(conversationId, site, {
     // refuses any other origin through the encryption context).
     let result;
     try {
-      result = await withLogin(c, row.id, at.origin, (fields) => fillAndSubmit(page, row.signin_origin, form, fields), { purpose: why });
+      result = await withLogin(c, row.id, at.origin, (fields) => fillAndSubmit(page, row.signin_origin, form, fields,
+        { typing: () => { typed = true; }, relax: () => pinExact(c, null) }), { purpose: why });
     } catch (e) {
       // withLogin's fixed codes, never a value. OriginDrift mid-fill comes back as fill_failed.
       const code = e instanceof VaultError ? e.code : "fill_failed";
@@ -321,7 +340,7 @@ export async function signIn(conversationId, site, {
         : code === "wait" ? "paused"
         : (code === "fill_failed" && /OriginDrift/.test(e?.message ?? "")) ? "origin_mismatch"
         : "not_signin_page";
-      finish(c, row, host, pinned, result, { why, again, startedAt });
+      finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
       return say(result, host);
     }
 
@@ -349,24 +368,28 @@ export async function signIn(conversationId, site, {
         let end = "code_not_found";
         try {
           const code = await awaitReply(c, entry, ...(waitMs != null ? [{ waitMs }] : []));
-          if (code) end = await typeCodeOnce(page, row.signin_origin, String(code), enter);
+          // Forgotten while the code was on its way (review 2026-11-13): the login is gone, so the code
+          // is not typed and the sign-in is not finished after the person asked to forget it.
+          if (!peekForSignin(c, host).some(r => r.id === row.id)) end = null;
+          else if (code) end = await typeCodeOnce(page, row.signin_origin, String(code), enter);
         } catch { end = "not_signin_page"; }
         finally {
           await session?.close?.();
           releaseProfile(c, holder);
         }
-        try { finish(c, row, host, pinned, end, { why, again, startedAt }); } catch { /* a record that cannot be written never breaks the end */ }
+        if (end === null) { unpinSite(c); return; }
+        try { finish(c, row, host, pinned, end, { why, again, startedAt, typed, at: now() }); } catch { /* a record that cannot be written never breaks the end */ }
         try { note(c, `[saved-login sign-in to ${host} ended: ${end}] ${say(end, host).say_exactly}`); } catch { /* best effort */ }
       })();
       recordLoginEvent(c, { site: host, event: "signin", outcome: asked, purpose: why });
       return say(asked, host);
     }
 
-    finish(c, row, host, pinned, result, { why, again, startedAt });
+    finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
     return say(result, host);
   } catch {
     // Never the error's words: a page's or a browser's text does not go back to the model.
-    try { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt }); } catch { /* best effort */ }
+    try { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt, typed, at: now() }); } catch { /* best effort */ }
     return say("not_signin_page", host);
   } finally {
     if (!handedOff) {
@@ -396,6 +419,8 @@ export async function forgetLogin(conversationId, site, { launch = realLaunch, p
   const c = String(conversationId ?? "");
   const host = normSite(site);
   if (!savedLoginsAllowedFor(c) || !host) return { ok: false, removed: 0, say_exactly: "You don't have a saved login for that site." };
+  // Every save link for the site goes too, open or used (review 2026-11-13): no live link, no quoted request.
+  try { dropIntake(c, host); } catch { /* the login itself still goes below */ }
   const rows = peekForSignin(c, host);
   if (!rows.length) return { ok: true, removed: 0, say_exactly: `You don't have a saved login for ${host}.` };
   const base = registrableOf(rows[0].site) || rows[0].site;

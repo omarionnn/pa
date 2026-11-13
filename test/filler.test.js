@@ -87,6 +87,7 @@ function handler(host) {
       req.on("data", (d) => { raw += d; });
       req.on("end", () => {
         const form = new URLSearchParams(raw);
+        if (form.get("password") != null) posted.push({ port: req.socket.localPort, path: u.pathname, password: form.get("password") });
         const code = form.get("code");
         const how = { "/secondstep": "we texted you", "/emailstep": "we emailed you", "/authstep": "from your authenticator app" }[u.pathname];
         if (how && code == null) return send(200, PAGES.secondstep_post(how));
@@ -112,6 +113,19 @@ function handler(host) {
       case "/redir-path": return redirect(`https://acme.test:${PORT}/welcome`);
       case "/redir-port": return redirect(`https://acme.test:${PORT2}/signin`);
       case "/redir-http": return redirect(`http://acme.test:${HTTP_PORT}/signin`);
+      // Review 2026-11-13 (H1): the page passes the origin check, then, as the username is typed, takes its
+      // password box away and sends the tab to another origin of the same site (another port, or http).
+      // If that load is allowed, the filler's next box is the other origin's. If refused, the box comes back here.
+      case "/hop-port": case "/hop-http": {
+        const to = u.pathname === "/hop-port" ? `https://acme.test:${PORT2}/signin` : `http://acme.test:${HTTP_PORT}/signin`;
+        return send(200, FORM("/signin").replace("</body>", `<script>
+          var e = document.querySelector('input[name=email]'), done = false;
+          e.addEventListener('input', function () { if (done) return; done = true;
+            var p = document.querySelector('input[type=password]'), parent = p.parentNode; p.remove();
+            location.href = ${JSON.stringify(to)};
+            setTimeout(function () { parent.appendChild(p); }, 700); });
+        </script></body>`));
+      }
       default: return send(404, "<p>not found</p>");
     }
   };
@@ -120,6 +134,7 @@ function handler(host) {
 let server, server2, httpServer, PORT, PORT2, HTTP_PORT, launch;
 const GOOD_CODE = "482913";
 const codesTyped = [];
+const posted = []; // every password a fixture server received: { port, path, password }
 const skip = { skip: chromium ? false : "playwright/chromium not installed" };
 
 before(async () => {
@@ -194,6 +209,21 @@ test("rule 1: a login is typed only on its exact pinned origin; six wrong-origin
     sl.removeLogin(ME, id);
   }
   assert.equal(g.count("decrypt"), before, "no KMS unwrap on any wrong-origin case");
+});
+
+// Review 2026-11-13 (H1): the check right before the keystroke. A navigation to another origin of the
+// same site between the check and the password box must never get the password typed or sent there.
+test("rule 1 at the keystroke: a page that hops to another port or to http after the check never gets the password", skip, async () => {
+  for (const [why, path, other] of [["another port", "/hop-port", () => PORT2], ["http", "/hop-http", () => HTTP_PORT]]) {
+    const { id } = await save(`hop ${path}`, path);
+    posted.length = 0;
+    const out = await signIn();
+    const elsewhere = posted.filter(p => p.port === other());
+    assert.deepEqual(elsewhere.map(p => p.path), [], `${why}: the password reached the other origin`);
+    assert.ok(posted.every(p => p.port === PORT), `${why}: only the pinned origin ever received a password`);
+    assert.equal(out.ok, out.result === "signed_in");
+    sl.removeLogin(ME, id);
+  }
 });
 
 // ---------------------------------------------------------------- success, and rule 2 (no leak)
@@ -295,7 +325,34 @@ test("a texted code that is wrong: one attempt, then it stops (wrong_code), neve
   assert.match(said, /ended: wrong_code/);
   assert.deepEqual(codesTyped, ["000000"], "exactly one attempt");
   assert.equal(rowState(id), "unverified", "a wrong code does not mark the login bad");
+  // Review 2026-11-13 (M1): the login was typed and the sign-in did not finish, so it rests a day. A
+  // re-call by the model is paused: no page load, no unwrap, no second password, no second code.
+  const decrypts = g.count("decrypt");
+  let launched = 0;
+  const again = await signIn({ launch: async (a) => { launched++; return launch(a); }, awaitReply: r.awaitReply, note: n.note });
+  assert.equal(again.result, "paused");
+  assert.equal(launched, 0, "no browser was opened");
+  assert.equal(g.count("decrypt"), decrypts, "no second unwrap");
+  assert.ok(sl.peekForSignin(ME, "acme.test")[0].next_try_at > Date.now() + 23 * 3600_000, "rests about a day");
   sl.removeLogin(ME, id);
+});
+
+test("forget while a texted code is on its way: the code is never typed and the login does not finish signing in (M2)", skip, async () => {
+  const br = await import("../src/browser.js");
+  const { id } = await save("Acme", "/secondstep");
+  const r = replyLater(), n = noted();
+  codesTyped.length = 0;
+  const out = await signIn({ awaitReply: r.awaitReply, note: n.note });
+  assert.equal(out.result, "needs_code_sms");
+  const gone = await filler.forgetLogin(ME, "acme.test", { launch });
+  assert.equal(gone.removed, 1);
+  r.give(GOOD_CODE);
+  for (let i = 0; i < 100 && br.profileBusy(ME); i++) await new Promise(res => setTimeout(res, 50));
+  assert.equal(br.profileBusy(ME), null, "the wait closed its browser");
+  assert.deepEqual(codesTyped, [], "the code was not typed after the forget");
+  assert.deepEqual(n.lines, [], "no 'ended' line about a login they deleted");
+  assert.equal(br.pinnedSite(ME), null);
+  assert.equal(sl.listLogins(ME).some(l => l.id === id), false);
 });
 
 test("an emailed code is read by the existing emailed-code reader and typed once; not found stops", skip, async () => {
