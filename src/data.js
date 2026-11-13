@@ -28,6 +28,7 @@
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { db, recordingFiles, documentFiles, rawPrepare, restcrypt } from "./db.js";
+import { keepableMessages } from "./pagesecrets.js";
 import { config } from "./config.js";
 // Creates stranger_calls if this runs before anything else has (npm run data:*).
 import "./strangercalls.js";
@@ -341,8 +342,19 @@ const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger deta
 const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings", "pay_passkey_regs"];
 const REDACTED = "[not exported: this is a live credential]";
 
+function keepableThreadRow(r) {
+  if (typeof r?.messages !== "string") return r;
+  let msgs;
+  try { msgs = JSON.parse(r.messages); } catch { return r; }
+  const kept = keepableMessages(msgs);
+  return kept === msgs ? r : { ...r, messages: JSON.stringify(kept) };
+}
+
 function redactSecrets(table, rows) {
   if (table === "trips") return rows.map(scrubTrip);
+  // A thread kept before secret boxes were withheld leaves the same way a new one is kept: no secret
+  // box's contents, no credential typed for a tool (src/pagesecrets.js keepableMessages).
+  if (table === "conversations") return rows.map(keepableThreadRow);
   const cols = SECRET_COLUMNS[table];
   if (!cols) return rows;
   return rows.map(r => {

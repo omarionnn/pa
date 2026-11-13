@@ -444,5 +444,6 @@ export function keepableMessages(messages) {
  */
 export function withoutQueries(text) {
   if (typeof text !== "string" || !text) return text;
-  return text.replace(/(\bhttps?:\/\/[^\s?#'"<>)\]]+)[?#][^\s'"<>)\]]*/gi, "$1");
+  // The sentence's own punctuation after the address stays.
+  return text.replace(/(\bhttps?:\/\/[^\s?#'"<>)\]]+)[?#][^\s'"<>)\]]*?(?=[.,;:!]*(?:[\s'"<>)\]]|$))/gi, "$1");
 }
