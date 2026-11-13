@@ -55,7 +55,7 @@ import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
 import * as emailRoute from "./signinemail.js";
 import { readSignedInState } from "./sites.js";
-import { profileDirFor, guardContext, launchOptions, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser } from "./browser.js";
+import { launchProfile, launchOptions, guardContext, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser } from "./browser.js";
 import * as restartGate from "./busy.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
@@ -119,14 +119,16 @@ async function realLaunch({ conversationId, url }) {
 
 async function openHeld({ conversationId, url, holder, opened }) {
   const { chromium } = await import("playwright");
-  const options = launchOptions(conversationId, {
+  const today = {
     headless: true, viewport: VIEW, deviceScaleFactor: 2,
     // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
     // Smooth scrolling off, and only that: a wheel otherwise animates for ~300 ms, so the picture
     // taken after a scroll showed the page before it had moved (measured 2026-11-10).
     args: ["--disable-smooth-scrolling"],
-  });
-  const context = await chromium.launchPersistentContext(profileDirFor(conversationId), options);
+  };
+  // What a site sees, and the picture's size: the real browser's launch is this same setting with the real build.
+  const options = launchOptions(conversationId, today);
+  const context = await launchProfile(chromium, conversationId, today);
   opened(context);
   // Never this machine's own network, on every request — a link can name any site by its address.
   await guardContext(context);

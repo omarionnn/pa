@@ -40,7 +40,7 @@ import { nameLine } from "./onboarding.js";
 import * as amazon from "./amazonconnect.js";
 import * as google from "./google.js";
 import * as shop from "./shopconnect.js";
-import { profilePath } from "./browser.js";
+import { profilePath, realProfilePath } from "./browser.js";
 import { cookieDomain } from "./pages/siteproxy.js";
 import { clientIp } from "./opspassword.js";
 import * as invites from "./invites.js";
@@ -188,6 +188,12 @@ export function moveConnections(from, to) {
     if (!existsSync(dst)) { try { renameSync(src, dst); } catch { amazonOk = false; } }
     else { rmSync(src, { recursive: true, force: true }); if (amazonOk) { db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ? AND name = 'amazon'").run(to); amazonOk = false; } }
   }
+  // The real browser's profile (src/browser.js realProfilePath) moves the same way, or goes.
+  const rsrc = realProfilePath(from), rdst = realProfilePath(to);
+  if (existsSync(rsrc)) {
+    if (!existsSync(rdst)) { try { renameSync(rsrc, rdst); } catch { rmSync(rsrc, { recursive: true, force: true }); } }
+    else rmSync(rsrc, { recursive: true, force: true });
+  }
   return { email, amazon: amazonOk, uber: uberOk, card, amazonStore: stores.includes("amazon") };
 }
 
@@ -212,6 +218,7 @@ export function dropConnections(c) {
   db.db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ?").run(c);
   db.db.prepare("DELETE FROM oauth_states WHERE conversation_id = ?").run(c);
   rmSync(profilePath(c), { recursive: true, force: true });
+  rmSync(realProfilePath(c), { recursive: true, force: true });
 }
 
 /** Setups past their day: what they connected is let go, and the row with it. */
