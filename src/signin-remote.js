@@ -801,7 +801,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         if (at) await page.mouse.click(at[0], at[1]);
         if (all) { await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace"); }
         for (let i = 0; i < del; i++) await page.keyboard.press("Backspace");
-        if (text) await page.keyboard.type(text);
+        if (text) await typeUnseen(page, text);
         await settle();
       });
       // That something was typed is kept (a yes or no); what was typed never is.
@@ -861,7 +861,7 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         if (want === "code") { s.lastFields = [{ ...f, focused: true }]; text = cleanCodeFor(s, text, true); }
         await page.mouse.click(Math.round((f.x + f.w / 2) * VIEW.width), Math.round((f.y + f.h / 2) * VIEW.height));
         await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
-        await page.keyboard.type(text);
+        await typeUnseen(page, text);
         text = "";
         await new Promise(r => setTimeout(r, Math.min(config.remoteSigninSettleMs, 400)));
         if (stepNow(s, await readRaw(page)).step !== want) return { sent: true, entered: false };
@@ -1170,6 +1170,16 @@ async function resultPage(s) {
  * These inputs are a window onto the site's form, never a form of Reason's own: they only ever
  * appear on top of a box the site itself drew, they have no action, and they submit nowhere.
  */
+/**
+ * What the person typed, into the page. A failure is reported by a fixed word: the browser's own
+ * error text is never let out of here, so nothing that could repeat what was typed can reach the
+ * request's error line in the service log (src/http.js) or anything else.
+ */
+async function typeUnseen(page, text) {
+  try { await page.keyboard.type(text); }
+  catch { throw new Error("typing_failed"); }
+}
+
 /** The panel's relay steps → the kinds of box (fieldKind) each one types into. */
 const RELAY_KINDS = { email: ["email", "username", "tel"], password: ["password"], code: ["otp"] };
 /** The real page's shape and words, read in the browser's turn (no picture). Carries no field value. */

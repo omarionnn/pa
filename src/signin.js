@@ -34,6 +34,7 @@ import { SITES, site as findSite, siteFor, readSignedInState, siteNames } from "
 import * as cancelRoutes from "./cancel-routes.js";
 import * as airlines from "./airlines.js";
 import * as signinPage from "./signinpage.js";
+import { withoutQueries } from "./pagesecrets.js";
 
 /**
  * The registry entry for a name, from any of the three registries.
@@ -345,7 +346,10 @@ export async function probeSignedIn(page, siteName, { entry: given = null, waitM
       if (second.ok && second.state === "signed_in" && inside) return { ...second, via_signin_page: true };
     }
   }
-  return { ok: true, site: entry.site, checked_url: entry.signed_in.url, landed, status, ...read };
+  // Where it landed and why, without any query string: both are kept as evidence, returned to the
+  // model and written to the ledger, and a sign-in address can carry an email, a token, or (a form
+  // sent with GET) what was typed into it.
+  return { ok: true, site: entry.site, checked_url: entry.signed_in.url, landed: withoutQueries(landed), status, ...read, why: withoutQueries(read.why) };
 }
 
 /**
@@ -381,7 +385,7 @@ export async function checkAndRecord(page, conversationId, siteName, { entry = n
   // A site named by its bare domain is asked on the page this person's sign-in there was on.
   const out = await probeSignedIn(page, siteName, { entry: entry ?? entryOnItsPage(conversationId, anyEntryFor(siteName)), waitMs });
   if (!out.ok) return out;
-  const row = db.recordSiteSignin(conversationId, out.site, { state: out.state, evidence: out.why, provider });
+  const row = db.recordSiteSignin(conversationId, out.site, { state: out.state, evidence: withoutQueries(out.why), provider });
   if (row?.provider && out.state === "signed_in") out.provider = row.provider;
   return out;
 }
