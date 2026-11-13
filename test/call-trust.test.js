@@ -135,6 +135,18 @@ test("low risk runs on the own number; the same thing on a mismatched or third-p
   assert.equal(ct.listening(db.getCall(C, third.id)), null);
 });
 
+test("the free Genius Bar booking runs on the call: its yes (confirm_record) and the submit, on the own number", () => {
+  on();
+  const row = inbound();
+  const free = "Genius Bar\nFriday 3:40 PM\nReserve";
+  const id = Number(db.db.prepare(`INSERT INTO confirmations (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs)
+    VALUES (?, 'browser_submit', 'Genius Bar Friday 3:40', '', 'Genius Bar Friday 3:40', 1, 0)`).run(C).lastInsertRowid);
+  assert.equal(ct.decide({ call: row, name: "confirm_record", input: { confirmation_id: id }, page: free, log }).allow, true);
+  assert.equal(ct.decide({ call: row, name: "browser_submit", input: { ref: "e1", what: "Genius Bar Friday 3:40" }, page: free, log }).allow, true);
+  // The same booking on a page that wants a card: never by voice.
+  assert.equal(ct.decide({ call: row, name: "browser_submit", input: { ref: "e1", what: "Genius Bar Friday 3:40" }, page: `${free}\nCard number`, log }).allow, false);
+});
+
 // ---------------------------------------------------------------- matching
 test("matching: normalised, numbers as words, filler in front, one word off only from five words", () => {
   const rec = cp.hashPhrase("Blue heron 7");

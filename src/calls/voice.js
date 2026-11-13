@@ -2497,7 +2497,7 @@ export async function* voiceTurn({
         // and then this is exactly the check it always was.
         const toSelf = (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false;
         const trustGate = call.is_owner && !verify.isVerified(call)
-          ? calltrust.decide({ call, name: t.name, input: t.input, toSelf, page: String(t.name) === "browser_submit" ? await openPageText(context.conversationId) : null, log })
+          ? calltrust.decide({ call, name: t.name, input: t.input, toSelf, page: ["browser_submit", "confirm_record"].includes(String(t.name)) ? await openPageText(context.conversationId) : null, log })
           : null;
         if (trustGate ? !trustGate.allow : (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf }))) {
           out = trustGate?.out ?? verify.gateRefusal({ call, name: t.name, input: t.input, log });
