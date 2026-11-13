@@ -15,6 +15,10 @@ the fake one, which dials nothing.
 > ElevenLabs provider described next was removed from the code on 2026-11-07; the note is kept as the
 > history of how the choice was made.
 >
+> **2026-11-12: Cartesia is being looked at, as an owner-only experiment.** Nothing on the call path
+> changed. What was read and measured, three ways it could be wired in, and two tests the owner can
+> run are in `docs/calls-cartesia.md`.
+>
 > **Decided 2026-10-05, built 2026-10-06: ElevenLabs, which is a third shape this page did not have.**
 > The question below that turned out to matter was not price. It was the one in "The two shapes of
 > provider": whose model is on the phone. ElevenLabs Agents take a **custom LLM** — an endpoint of

@@ -5282,3 +5282,20 @@ not been run against the real model: no live lane exists for it, and none was ru
 - **The Uber sign-in page fixture is hand-made.** `test/fixtures/uber-login.html` is written from how
   Uber's page is laid out, not captured from it (the capture is exactly what the wall refuses). The
   finder pressing "Continue with Google" there is proof about the finder, not about Uber's page.
+
+## 2026-11-12: the Cartesia experiment's scripts — one has never touched Cartesia
+
+`scripts/cartesia-listen.mjs` and `scripts/cartesia-call-feel.mjs` (`docs/calls-cartesia.md`). Neither
+is on the call path.
+
+- **Run for real, once**: the listening script made 8 clips of one line (four voices, both formats)
+  over Cartesia's speech socket, and read voices by id. The request shape, the `chunk` / `done`
+  events and the 8 kHz μ-law output are therefore seen working.
+- **Run only against a stand-in on this machine**: the full set, `--emotion`, `--list-voices`, a
+  refused key, credits running out mid-run.
+- **Never run against Cartesia at all**: everything in the call feel script. Creating a Managed
+  Agent, provisioning a number, listing and deleting calls, releasing the number and deleting the
+  agent are written from their reference pages (read 2026-11-12) and proved only against a stand-in
+  (`test/cartesia-explore.test.js`). Whether a managed agent laughs when its model writes
+  `[laughter]` is not known.
+- **Never run**: `--today` (no OpenAI key on the machine it was written on).
