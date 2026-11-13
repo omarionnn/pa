@@ -374,6 +374,23 @@ test("the spoken phrase is in nothing kept: Cartesia's turns, transcript and Rea
   assert.ok(!JSON.stringify(lines).includes("otter"), "log lines");
 });
 
+test("Cartesia: the turn that asks for the passphrase is said in the fixed words, with no 'can't do it from a call' in front", async () => {
+  on();
+  cp.setActive(C, PHRASE);
+  const row = inbound();
+  const twilio = { send() {}, close() {}, onMessage() {}, onClose() {}, open: () => true };
+  const relay = new cartesia.CartesiaAgentCall({
+    call: db.getCall(C, row.id), twilio, log, now: () => clock.now(), timers: globalThis, deleteCall: async () => ({ ok: true }),
+    // The model's own words for it, while the gate asks (as voice.js's gate does mid-turn).
+    brain: async () => { ct.decide({ call: db.getCall(C, row.id), name: "message_send", input: { to: "+13105550000", text: "hi" }, log }); return { text: "Sure, what's your passphrase?" }; },
+  });
+  const p = { askedAt: clock.now() };
+  const reply = await relay.ask("text Ama hi", p);
+  assert.equal(reply.text, ct.LINES.ask);
+  assert.equal(relay.earArmed, "pass");
+  relay.music?.stop?.();
+});
+
 test("the spoken phrase is in nothing kept: GPT-Live's turns, turn_log and Reason's messages", () => {
   on();
   cp.setActive(C, PHRASE);

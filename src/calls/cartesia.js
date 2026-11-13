@@ -760,10 +760,18 @@ export class CartesiaAgentCall {
   async ask(request, p) {
     let reply;
     const deferredBefore = this.deferredNow();
+    const armedBefore = calltrust.listening(this.call);
     try {
       reply = await this.brain(this.messages(request));
     } catch (err) {
       reply = { text: "", error: (err?.message ?? String(err)).split("\n")[0] };
+    }
+    // REASON_CALL_TRUST: this turn asked for the passphrase (./calltrust.js). The ask is said in its fixed
+    // words, whatever the model wrote; they say the text-after-the-call half too, so no deferral line is added.
+    const armedNow = calltrust.listening(this.call);
+    if (!reply?.error && armedNow === "pass" && armedBefore !== "pass" && !String(reply?.text ?? "").includes(calltrust.LINES.ask)) {
+      reply = { ...(reply ?? {}), text: calltrust.LINES.ask, skip: false };
+      this.log({ cartesia_trust_ask_fixed: this.call.id });
     }
     // This turn put something off until after the call: it is said now, in words, never a skip.
     // verify_deferred only grows on a call (verify.js queueForAfter); a growth another ask already said is not said twice.
@@ -783,7 +791,7 @@ export class CartesiaAgentCall {
     if (!reply?.skip && saysDone(reply?.text)) this.claimedAt = answeredAt;
     p.reply = reply;
     // Reason asked for a passphrase (or a new one) in this answer: their next words are for code.
-    this.earArmed = calltrust.listening(this.call);
+    this.earArmed = armedNow;
     if (p.texting) this.textLate(p);
     return reply;
   }
