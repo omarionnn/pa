@@ -807,8 +807,8 @@ test("progress: the line is built from the real tool and its arguments, never a 
   assert.equal(progress.phraseFor("flight_search", { origin: "JFK", destination: "LAX", depart_date: "2026-11-10" }, o), "Searching flights from JFK to LAX for tomorrow");
   assert.equal(progress.phraseFor("offer_check", { url: "https://www.sephora.com/product/x" }), "Checking the price on Sephora");
   assert.equal(progress.phraseFor("weather", { place: "Accra" }), "Checking the weather in Accra");
-  // Nothing honest to say: nothing at all, not "Reading that…" or "Still working through it."
-  for (const [name, input] of [["task_update", { note: "x" }], ["remember", { fact: "x" }], ["confirm_request", {}], ["message_send", { to: "owner", text: "hi" }], ["no_such_tool", {}]]) {
+  // Bookkeeping: nothing at all, not "Reading that…" or "Still working through it."
+  for (const [name, input] of [["task_update", { note: "x" }], ["remember", { fact: "x" }], ["confirm_request", {}], ["message_send", { to: "owner", text: "hi" }]]) {
     assert.equal(progress.phraseFor(name, input), null, name);
   }
   for (const t of ["web_search", "research", "calendar_events", "gmail_search", "call_place", "nothing"]) {
@@ -978,4 +978,34 @@ test("progress: a long line is cut to 60 characters on a word, with no trailing 
   assert.ok(got.length <= 60, got);
   assert.doesNotMatch(got, /…$|\.\.\.$|\s(and|for|to|at|the)$/, got);
   assert.match(got, /^Checking Ulta, Target and Sephora/);
+});
+
+test("progress: every tool gets a fixed, safe line by default; the bank, account jobs, call voice and saved logins say theirs", async () => {
+  const { tools } = await import("../src/tools.js");
+  const secret = "Kofi Mensah, 12 Elm St, kofi@example.com, +1 415 555 0000";
+  const leak = /kofi|mensah|elm|555|@/i;
+  const fill = (schema) => Object.fromEntries(Object.entries(schema?.properties ?? {}).map(([k, p]) =>
+    [k, p?.type === "array" ? [secret] : p?.type === "number" || p?.type === "integer" ? 5550000 : p?.type === "boolean" ? true : secret]));
+  const silent = [];
+  for (const t of tools) {
+    const input = fill(t.input_schema);
+    const got = progress.phraseFor(t.name, input, { names: ["Kofi Mensah"] });
+    if (got == null) { if (!(["message_send", "voice_note_send", "voice_note_say", "send_picture"].includes(t.name) && !input.to)) silent.push(t.name); continue; }
+    assert.doesNotMatch(got, leak, `${t.name}: ${got}`);
+    assert.ok(got.length <= 60, t.name);
+  }
+  // Silent only by choice: bookkeeping, or (to them) the reply itself; never because a tool is new.
+  for (const n of silent) assert.ok(progress.QUIET.has(n), `${n} has no line`);
+  assert.equal(progress.phraseFor("a_tool_added_next_week", { to: secret }), progress.DEFAULT);
+  assert.equal(progress.phraseFor("account_something_new", { company: secret }), "Working in your account");
+  const want = {
+    bank: "Checking your bank", account_bill_pay: "Paying the bill", account_cancel: "Starting the cancellation",
+    account_cancel_confirm: "Cancelling it", account_connect: "Connecting the account", account_job_status: "Checking on it",
+    account_job_answer: "Passing on your answer", account_job_stop: "Stopping it", account_list: "Checking your accounts", account_revoke: "Disconnecting the account",
+    call_voice_trial: "Changing your call voice",
+    // On the vault branches, not main yet: covered the day they merge.
+    account_signin: "Signing you in", saved_login_offer: "Getting the sign-in page ready", saved_login_forget: "Deleting the saved login",
+  };
+  for (const [name, line] of Object.entries(want)) assert.equal(progress.phraseFor(name, { site: "xfinity.com", company: secret, amount: 5550000 }), line, name);
+  assert.equal(progress.phraseFor("web_search", {}), "Searching the web");
 });

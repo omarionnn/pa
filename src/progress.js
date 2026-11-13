@@ -2,12 +2,14 @@
 // it is answering (docs/ios-api.md, `progress` on /live; 2026-11-09). Said when a tool starts
 // (src/tools.js runToolInner, after the harm screen and the input check), built from that tool and its
 // real arguments — "Checking Ulta and Target for CeraVe", "Looking at Thursday's calendar" — never a
-// filler. A tool with nothing honest to say says nothing.
+// filler. A tool with no line of its own gets a fixed one for its kind (never from its input); only
+// bookkeeping (QUIET, a note to itself, the reply itself) says nothing.
 //
 // Privacy: the line goes to this person's own devices only, and it never carries anyone else's details.
 // Any tool whose arguments can name or reach another person — a text or email to someone, a call, a
 // contact or memory lookup, a guest list, a calendar entry's title or attendees, a mail or Drive search,
-// an address — gets a fixed neutral line for that tool, never its arguments. Free text that does go in
+// an address, their bank, a job in one of their accounts, a saved login — gets a fixed neutral line for
+// that tool, never its arguments. Free text that does go in
 // (a search's words, a store, a product) loses anything shaped like a phone number, an email address or a
 // web address, and is cut short.
 //
@@ -121,7 +123,46 @@ export const NEUTRAL = {
   browser_read: "Reading the page", browser_click: "Working through the page", browser_type: "Filling in the page",
   browser_submit: "Submitting the form", browser_screenshot: "Looking at the page",
   deal_watch_set: "Setting up the price watch", watch_set: "Setting up the watch",
+  // Their bank (Plaid, read-only): never an amount, a merchant or an account.
+  bank: "Checking your bank",
+  // Account jobs: inside their own accounts, never the company, the amount or what was said.
+  account_connect: "Connecting the account", account_list: "Checking your accounts", account_revoke: "Disconnecting the account",
+  account_cancel: "Starting the cancellation", account_cancel_confirm: "Cancelling it", account_bill_pay: "Paying the bill",
+  account_job_answer: "Passing on your answer", account_job_status: "Checking on it", account_job_stop: "Stopping it",
+  // Saved logins (vault branches; listed now so they are covered the day they merge): never the site.
+  account_signin: "Signing you in", saved_login_offer: "Getting the sign-in page ready", saved_login_forget: "Deleting the saved login",
+  call_voice_trial: "Changing your call voice",
+  signin_email: "Signing you in", signin_link: "Signing you in", signin_open: "Signing you in", signin_provider: "Signing you in", signin_status: "Checking the sign-in",
 };
+
+/**
+ * Bookkeeping that is never work they'd watch for (a note to itself, a tapback, a task line): no line.
+ * Every other tool gets one; a tool not named anywhere gets its family's fixed line, else DEFAULT.
+ */
+export const QUIET = new Set([
+  "remember", "react", "reply_to", "task_start", "task_update", "task_finish", "task_list",
+  "confirm_request", "confirm_pending", "confirm_record", "request_classify", "request_done",
+  "why_note", "taste_note", "pattern_note", "mark_moment", "whats_new_said", "cant_do", "cant_do_resolved",
+  "media_reviewed", "undo_window",
+]);
+
+/** Fixed lines by tool family, for tools with no line of their own. Never built from the input. */
+const FAMILY = [
+  [/^account_|^saved_login/, "Working in your account"], [/^gmail_/, "Working in your email"], [/^drive_|^document_/, "Working in your Drive"],
+  [/^(apple_)?calendar_/, "Working on your calendar"], [/^event_|^invite/, "Working on the event"], [/^flight_|^boarding/, "Working on your flight"],
+  [/^uber_/, "Working on the ride"], [/^x_/, "Working on X"], [/^github_/, "Working on GitHub"], [/^spotify_/, "Working in Spotify"],
+  [/^subscription/, "Working on your subscriptions"], [/^(plan|todo|goal)_/, "Working on the plan"], [/^album_/, "Working on the album"],
+  [/^call_/, "Working on the call"], [/^(memory|recall|forget)/, "Checking what I know"], [/^(page|status_page|activity_page)/, "Working on your page"],
+  [/^(shop|purchase|food_order|spend)/, "Working on the order"], [/^(timer|watch|series|notice|commitment)_/, "Setting it up"],
+  [/^signin_/, "Signing you in"], [/^browser/, "Working through the page"], [/^meal_/, "Working out the nutrition"],
+];
+export const DEFAULT = "Working on it";
+
+/** The fixed line a tool gets when nothing more specific applies (never null, never from its input). */
+export function fixedLine(name) {
+  for (const [re, line] of FAMILY) if (re.test(name)) return line;
+  return DEFAULT;
+}
 
 /** The line for one tool call, or null when it has nothing honest to say. Never throws. */
 export function phraseFor(name, input = {}, opts = {}) {
@@ -139,6 +180,7 @@ function phrase(name, i, opts) {
   if (name === "voice_note_send" || name === "voice_note_say") return toThem(i.to) ? null : "Sending the voice note";
   if (name === "send_picture") return toThem(i.to) ? null : "Sending the picture";
   if (Object.hasOwn(NEUTRAL, name)) return NEUTRAL[name];
+  if (QUIET.has(name)) return null;
 
   // Free text that goes in, unless it names someone they know or an address: then null, and the step gets
   // its plain line instead ("Searching the web"), never the words.
@@ -149,10 +191,10 @@ function phrase(name, i, opts) {
       const sites = [...new Set((Array.isArray(i.sites) ? i.sites : []).map(siteName).filter(Boolean))].slice(0, 3);
       if (sites.length && q) return `Checking ${joinAnd(sites)} for ${q}`;
       if (sites.length) return `Checking ${joinAnd(sites)}`;
-      return q ? `Searching for ${q}` : q === null ? "Searching the web" : null;
+      return q ? `Searching for ${q}` : "Searching the web";
     }
     case "research": { const q = free(i.question ?? i.queries?.[0], 45); return q ? `Looking into ${q}` : "Looking into it"; }
-    case "find_all": { const q = free(i.objective, 45); return q ? `Finding ${q}` : q === null ? "Searching the web" : null; }
+    case "find_all": { const q = free(i.objective, 45); return q ? `Finding ${q}` : "Searching the web"; }
     case "web_lookup": case "browser_open": { const s = siteName(i.url); return s ? `Reading ${s}` : "Reading the page"; }
     case "offer_check": { const s = siteName(i.url); return s ? `Checking the price on ${s}` : "Checking the price"; }
     case "store_checkout": {
@@ -196,7 +238,7 @@ function phrase(name, i, opts) {
     case "event_update": case "event_settings": return "Updating the event";
     case "flight_save": return "Saving the flight";
     case "spend_today": case "purchases_recent": return "Checking your spending";
-    default: return null;
+    default: return fixedLine(name); // every tool says something fixed and safe; never its arguments
   }
 }
 
