@@ -1074,6 +1074,8 @@ export function payTarget(row) {
 }
 /** A payment request from Crossmint: kept as given, once per request id. */
 export function recordPayment({ conversationId, runId, request, item = "" }) {
+  // A cancellation never pays (src/accountjobs.js): its run gets no payment row, so nothing can approve one.
+  if (runRow(runId)?.mode === "job_cancel") return null;
   const it = request.request?.interaction ?? request.interaction ?? {};
   const amount = it.amount ?? {};
   if (it.kind !== "payment" || it.method !== "card" || !/^\d+(\.\d{1,4})?$/.test(String(amount.value ?? ""))) return null;
@@ -1124,6 +1126,7 @@ const crossmintError = (j) => short(j?.error?.code ?? j?.code ?? j?.error?.messa
 async function payRow(row, { confirmationId = null } = {}) {
   const conversationId = row.conversation_id;
   if (row.status !== "asked") return { ok: false, error: `payment_${row.status}` };
+  if (runRow(row.run_id)?.mode === "job_cancel") return { ok: false, error: "never_pays", say: "That run only cancels a subscription and can never pay. Nothing was charged." };
   // A flight's payment goes out only for the travelers it was built for, where booking is on (src/flightcheckout.js).
   { const no = await flightPayRefusal(row); if (no) { logFn({ flight_pay_refused: no.error, payment_id: row.id }); return no; } }
   // Only Crossmint's exact total is ever paid: a "maximum" is a ceiling nobody agreed to as a price.
@@ -1755,6 +1758,55 @@ export const foodReady = import("./food.js").then((m) => { foodMod = m; }).catch
 // A flight is a checkout on the airline's own site, with a flight's rules on it (src/flightcheckout.js).
 let flightMod = null;
 export const flightReady = import("./flightcheckout.js").then((m) => { flightMod = m; }).catch(() => { flightMod = null; });
+// An account job (src/accountjobs.js, REASON_ACCOUNT_JOBS): a subscription cancelled or a bill paid inside
+// their own account. Its run is marked on the row (mode job_cancel / job_bill), so the mark does not depend
+// on the module having loaded; its questions, waits and ending are its own (step), and only a bill's card
+// payment goes on through the pay path here.
+let acctMod = null;
+export const acctReady = import("./accountjobs.js").then((m) => { acctMod = m; }).catch(() => { acctMod = null; });
+export const isJobRun = (run) => String(run?.mode ?? "").startsWith("job_");
+/**
+ * An account job's run: the task as written, the cap as the string Crossmint's schema takes (never
+ * rounded here: a cancellation's cap is the smallest amount it accepts), always in the person's own
+ * browser profile. No run it supersedes, nothing asked again by code: one run per job.
+ */
+export async function startJobRun({ conversationId, store, startUrl, task, item = "", cap, kind }) {
+  if (!["cancel", "bill"].includes(kind)) return { ok: false, error: "bad_kind" };
+  const body = {
+    request: { startUrl, task: String(task) },
+    browser: { profileId: await ensureProfile(conversationId) },
+    constraints: { maxCost: { amount: String(cap), currency: "USD" } },
+  };
+  const r = await server(conversationId, CHECKOUTS, { method: "POST", body });
+  const runId = r.json?.runId ?? r.json?.id;
+  if (!r.ok || !runId) return { ok: false, status: r.status, error: short(r.json?.message ?? r.json?.error ?? "", 160) };
+  const now = clock.now();
+  q("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at, stage, stage_at, progress_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, 'started', ?, ?)")
+    .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), `job_${kind}`, now, now, now, now);
+  return { ok: true, runId };
+}
+/** One message part into a run (an account job's decline, alternative or answer). The part's values are never logged or stored. */
+export async function sendPart(run, part) {
+  try {
+    const r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(run.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
+    return { ok: r.ok, status: r.status };
+  } catch { return { ok: false, status: null }; }
+}
+/** What src/accountjobs.js runs on, handed to it at each look (it imports this module; this one never imports it by name). */
+const jobKit = (say) => ({
+  say, publicRequest, isProtected, isCodeField, openSigninLink, createLink, finishSignin, tellOnce, setStage, sendPart, cancelAtCrossmint,
+  linkUrl: (token) => `${linkBase()}/${token}`,
+  wake: (c, text, key) => wake(c, text, key),
+  log: (o) => logFn(o),
+  /** The row's ending, written once: status, stage and Crossmint's code or summary. */
+  endRow: (run, status, result) => {
+    const now = clock.now();
+    q("UPDATE shop_runs SET status = ?, result = ?, stage = ?, stage_at = ?, updated_at = ?, progress_at = ? WHERE run_id = ? AND conversation_id = ?")
+      .run(status, String(result?.code ?? result?.summary ?? "").slice(0, 300), status === "succeeded" ? "placed" : status === "cancelled" ? "cancelled" : "failed", now, now, now, run.run_id, run.conversation_id);
+    q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND conversation_id = ? AND status = 'asked'").run(run.run_id, run.conversation_id);
+  },
+});
+export const _jobKit = jobKit;
 /**
  * A flight's reasons not to pay, never skipped: the module is waited for, and if it did not load, a
  * run on record as a flight is refused outright — its traveler and switch checks cannot be made.
@@ -2171,6 +2223,14 @@ export async function step(runId) {
   // Progress is Crossmint's revision moving, a new request, or the end.
   const rev = Number(cur.revision ?? 0);
   if (rev !== Number(run.revision ?? 0)) q("UPDATE shop_runs SET revision = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(rev, now, now, runId);
+  // An account job's run (src/accountjobs.js): its own questions, waits and ending. Its rules cannot be
+  // applied without the module, so a job run with no module is ended safely, never treated as shopping.
+  if (isJobRun(run)) {
+    await acctReady;
+    if (!acctMod) { await endQuietly(run, "account job: its module did not load"); return { done: true, status: "cancelled", said }; }
+    const out = await acctMod.onRun(runRow(runId), cur, jobKit(say));
+    if (out) return { said, ...out };
+  }
   const ra = cur.requiredAction;
   const requestId = ra?.requestId ?? "";
   let woke = null;
@@ -2433,6 +2493,7 @@ export async function answerRun(runId, { conversationId, answers }) {
   const run = runRow(runId);
   if (!run || run.conversation_id !== conversationId) return { ok: false, error: "no_such_run" };
   if (TERMINAL.has(run.status)) return { ok: false, error: "run_over", stage: run.stage, say: `That checkout is over (${run.stage}); nothing is waiting on an answer.` };
+  if (isJobRun(run)) return { ok: false, error: "account_job", say: "That run is an account job (a cancellation or a bill): its questions are answered with account_job_answer, and a cancellation's last step only with account_cancel_confirm." };
   let rq = null;
   try { rq = run.request_json ? JSON.parse(run.request_json) : null; } catch { rq = null; }
   // A form the record answered already, and they say part of it was wrong: the record is corrected and the
@@ -2663,6 +2724,8 @@ export const MAIL_WAKES_MAX = 5;
 export async function checkMail(runId, { ending = false, defer = false } = {}) {
   const run = runRow(runId);
   if (!run || !run.mail_until) return { done: true };
+  // An account job reads their mail for its own proof (src/accountjobs.js), with its own words.
+  if (isJobRun(run)) return { done: true };
   // A watch that already stopped (told "mail": capped, no host, no mail) gets one more look at the
   // end of a run, so the end text says what is really there; nothing restarts it (review 11-08).
   let stopped = toldOf(run).has("mail");

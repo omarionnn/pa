@@ -81,6 +81,7 @@ import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
+import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
 import * as whatsnew from "./whatsnew.js";
@@ -156,7 +157,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "account_cancel_confirm", "account_bill_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -321,6 +322,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "ac
 export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge", "uber_request",
   // A Crossmint checkout's payment (src/shoptools.js): the yes is pinned to Crossmint's own amount.
   "shop_pay",
+  // A cancellation's last step inside their account (src/accountjobtools.js): pinned to the job's plan, site and open question.
+  "account_cancel_confirm",
   // The one yes to a whole to-do list's plan (src/todo.js), pinned to the plan's fingerprint.
   "todo_approve",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
@@ -419,6 +422,8 @@ export function toolsFor(conversationId) {
     && choiceToolVisible(t.name, conversationId)
     && tableToolVisible(t.name, conversationId)
     && shopToolVisible(t.name, conversationId)
+    && accountJobToolVisible(t.name, conversationId)
+    && browserCancelToolVisible(t.name, conversationId)
     && socialToolVisible(t.name, conversationId)
     && foodToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
@@ -4502,6 +4507,7 @@ export const tools = [
   // A comparison table as a picture (src/tableimage.js), behind REASON_TABLE_IMAGES.
   ...TABLE_TOOL_DEFS,
   ...SHOP_TOOL_DEFS,
+  ...ACCOUNT_JOB_TOOL_DEFS,
   ...FOOD_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
   // Thinking a step ahead when a trip, a move, a birthday comes up (src/cues.js), behind REASON_CUES.
@@ -7119,6 +7125,7 @@ const S = {
   ...CHOICE_SCHEMAS,
   ...TABLE_SCHEMAS,
   ...SHOP_SCHEMAS,
+  ...ACCOUNT_JOB_SCHEMAS,
   ...FOOD_SCHEMAS,
   ...TODO_SCHEMAS,
   ...CUE_SCHEMAS,
@@ -9184,6 +9191,9 @@ function targetOf(name, input) {
     case "purchase_confirm": return `buy:${input.conversation_id}:cart:${input.cart_hash}`;
     case "store_checkout": return `shop:${input.store}`;
     case "shop_pay": case "shop_decline": return `shop:payment:#${input.payment_id}`;
+    case "account_cancel": return `account:cancel:${input.site}`;
+    case "account_bill_pay": return `account:bill:${input.site}`;
+    case "account_cancel_confirm": case "account_job_stop": case "account_job_answer": return `account:job:#${input.job_id}`;
     case "purchase_track": return input.order_id ? `order:${input.order_id}` : `buy:${input.conversation_id}`;
     case "uber_connect": return "uber";
     case "uber_request": return `uber:ride:${input.quote_id ?? "?"}`;
@@ -9305,6 +9315,8 @@ function confirmTargetFor(name, input, c = null) {
      */
     // A Crossmint payment, pinned to the row: Crossmint's amount, the merchant, the run and request.
     case "shop_pay": return shopPayTarget(input, c);
+    // A cancellation's last step, pinned to the job row: the plan, the site, the run and its open question.
+    case "account_cancel_confirm": return accountCancelTarget(input, c);
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
       // Someone else's cart reads as unknown, the same as shop_pay: its merchant, items and amount
@@ -9681,6 +9693,10 @@ async function runToolInner(name, rawInput, ctx) {
       return refusal;
     }
   }
+  // Account jobs (src/accountjobtools.js, REASON_ACCOUNT_JOBS): dark unless on for this person; where they
+  // are on, the browser-walking cancel route is refused (it ends in Reason's browser shown as a picture).
+  if (ACCOUNT_JOB_TOOLS.has(name) && !accountJobToolVisible(name, c)) return ACCOUNT_JOB_REFUSAL;
+  if (BROWSER_CANCEL_TOOLS.has(name) && !browserCancelToolVisible(name, c)) return BROWSER_CANCEL_REFUSAL;
   if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c)) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
   }
@@ -12341,6 +12357,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return out;
     }
 
+    // ---------- account jobs: a subscription cancelled, a bill paid (src/accountjobtools.js) ----------
+    case "account_cancel": case "account_bill_pay": {
+      // A suggestion never starts one. A turn a timer, a watch or Reason itself started is not them asking.
+      if (offers.turnState(c).kind !== "user") {
+        return { ok: false, blocked: "not_their_turn", error: "This is only started when they asked for it, on their own message. Nothing was started." };
+      }
+      return await runAccountJobTool(name, input, { ...ctx, conversationId: c });
+    }
+    case "account_cancel_confirm": case "account_job_answer": case "account_job_status": case "account_job_stop":
+      return await runAccountJobTool(name, input, { ...ctx, conversationId: c });
+
     // ---------- food orders (src/food.js, REASON_FOOD) ----------
     case "food_order":
       return await runFoodTool(name, input, {
@@ -14911,6 +14938,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Where the social flag reaches them, any site by its web address too (signinSite).
       let entry = signinSite(c, input.site);
       if (!entry) return noSigninSite(c, input.site);
+      // A site an account job is working on signs in inside the job (src/accountjobtools.js): no link.
+      { const held = signinLinkRefusal(c, entry.signin_url || entry.site || input.site); if (held) return held; }
       const offNet = await genericSiteRefused(entry, ctx);
       if (offNet) return offNet;
       // A site that bot-checks this browser off its sign-in page gets no link: the owner opened one
