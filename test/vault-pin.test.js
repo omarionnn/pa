@@ -443,15 +443,15 @@ test("front door: a lookalike Sign In link, an open redirect off the site, a lin
   }
 });
 
-test("front door: a walled home page stops as blocked, in honest words, with no offer to try again, and is not retried (own host: the bare page is never tried after the wall; site host: each tried once)", skip, async () => {
-  for (const [site, url, bareLoads] of [["fdwall.test", "https://id.fdwall.test/auth", 0], ["fdwall2.test", "https://fdwall2.test/auth", 1]]) {
+test("front door: a wall stops as blocked, in honest words, with no offer to try again, and is not retried (own host: the walled home page, the bare page never tried after it; site host: the walled pinned page, the front door never walked after it)", skip, async () => {
+  for (const [site, url, bareLoads, homes] of [["fdwall.test", "https://id.fdwall.test/auth", 0, 1], ["fdwall2.test", "https://fdwall2.test/auth", 1, 0]]) {
     posted.length = 0; gets.length = 0;
     await save(site, url);
     const out = await signIn(site);
     assert.equal(out.result, "blocked", out.say_exactly);
     assert.match(out.say_exactly, /turned my browser away/);
     assert.doesNotMatch(out.say_exactly, /try again\?|want me to/i);
-    assert.equal(gets.filter(g => g === `${site}/`).length, 1, `${site}: the front door is tried once, never in a loop`);
+    assert.equal(gets.filter(g => g === `${site}/`).length, homes, `${site}: the front door at most once, never after a wall`);
     assert.equal(gets.filter(g => g === `${new URL(url).host}/auth`).length, bareLoads, `${site}: loads of the bare sign-in page`);
     assert.deepEqual(posted, []);
     assert.equal((await signIn(site)).result, "paused", `${site}: one refusal stops`);
