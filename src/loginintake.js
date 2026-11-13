@@ -27,10 +27,11 @@ import { clock } from "./config.js";
 import * as restcrypt from "./restcrypt.js";
 import * as passkey from "./passkey.js";
 import { typedOnly } from "./trust.js";
-import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
+import { classifySite, refusalFor, registrableOf, GOOGLE_WARNING } from "./sitepolicy.js";
 import { signinFinding, recordFinding } from "./sitefindings.js";
 import {
   savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor, intakePublicKey, saveFromSealed, recordLoginEvent, listLogins, removeLogin,
+  setSigninRoute,
 } from "./savedlogins.js";
 
 export { savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor };
@@ -74,7 +75,10 @@ const hostOf = (s) => { try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) 
 export async function offerSaveLink(conversationId, site, quotedRequest, { locate = null, label = "" } = {}) {
   const c = String(conversationId ?? "");
   if (!intakeReadyFor(c)) return { ok: false, error: "not_available" };
-  const host = hostOf(String(site ?? ""));
+  // "Save my Google login": the one Google host a Google login is ever typed on (owner decision
+  // 2026-11-13; src/federated.js). Gmail, Drive and the rest stay on the never list.
+  const asked = hostOf(String(site ?? ""));
+  const host = asked === "google.com" ? "accounts.google.com" : asked;
   const verdict = classifySite(host);
   const name = oneLine(label, 40) || host;
   // Hard rule 3: the never list refuses, and says why.
@@ -161,7 +165,8 @@ export async function viewFor(token) {
   const base = {
     state, site: row.site, label: row.label, host: new URL(row.signin_origin).host, path: row.signin_path,
     quoted: restcrypt.openAny(row.quoted_request) ?? "", careful: row.permission_offered !== "standing",
-    warning: row.permission_offered !== "standing" ? oneLine(verdict.reason, 200) : "",
+    warning: verdict.category === "google" ? GOOGLE_WARNING : row.permission_offered !== "standing" ? oneLine(verdict.reason, 200) : "",
+    google: verdict.category === "google",
     permissions: permissionsOf(row), consentVersion: row.consent_version, expiresAt: row.expires_at, conversationId: row.conversation_id,
   };
   if (state !== "open") return base;
@@ -314,4 +319,9 @@ export function textedPasswordReply(conversationId) {
   const token = randomBytes(24).toString("base64url");
   if (q("UPDATE login_intake SET token_hash = ? WHERE token_hash = ? AND conversation_id = ? AND claimed_at IS NULL").run(hashToken(token), row.token_hash, row.conversation_id).changes !== 1) return null;
   return `${TEXTED_PASSWORD_WORDS}\n${passkey.ORIGIN()}${LINK_PATH}${token}`;
+}
+
+/** How they sign in to a site with no saved login of its own ("google": Continue with Google). For src/tools.js account_signin. */
+export function rememberSigninRoute(conversationId, site, route) {
+  return setSigninRoute(conversationId, site, route);
 }

@@ -35,9 +35,16 @@ export const CATEGORIES = Object.freeze({
   apple_id: { policy: NEVER, route: "none",
     say: "I don't sign in to Apple accounts. That password unlocks your devices and every password you've saved, so it stays with you.",
     why: "The Apple ID unlocks the person's devices and every password they have saved." },
-  google: { policy: NEVER, route: "google_permission_page",
-    say: "Google only lets me in through its own permission page, so I never need your Google password. Here's that page:",
-    why: "Google stops sign-ins from browsers controlled by software; its own permission page is the way in." },
+  // Owner decision 2026-11-13: the Google login may be kept, and used ONLY on accounts.google.com as the
+  // "Continue with Google" step of signing in to another site the person named (src/federated.js).
+  // Face ID before every use, no standing permission, and the stronger warning on the save page.
+  google: { policy: CAREFUL, route: "continue_with_google",
+    why: "A Google login can reset every account tied to that email; used only for Continue with Google on a site they named, with Face ID each time." },
+  // Everything else Google runs (Gmail, Drive, account settings, YouTube): never. Mail stays on the
+  // official Google connection.
+  google_property: { policy: NEVER, route: "official_connect",
+    say: "I don't sign in to Gmail, Drive or your Google account settings. Your email stays on the official Google connection. I can keep your Google login only to use \"Continue with Google\" on a site you name.",
+    why: "Gmail, Drive and Google account settings: the mailbox resets everything else, and mail has its official connection." },
   email: { policy: NEVER, route: "official_connect",
     say: "I don't keep email passwords. Your email can reset everything else you own.",
     why: "A mailbox resets every other account the person has." },
@@ -87,6 +94,9 @@ const SAFE_LABEL = /[^\p{L}\p{N} .&'+-]/gu;
  * `label` names the site where the words need it (terms); it is cleaned, never trusted.
  * `opts.plaid`: true once the read-only bank connection (PR #520) is live for this person.
  */
+/** The save page's stronger line for the Google login, shown before saving (owner decision 2026-11-13). */
+export const GOOGLE_WARNING = "This is your Google login. It can reset every account tied to that email. I'll use it only to sign you in to a site you ask for, through that site's \"Continue with Google\", with Face ID each time. Never Gmail, Drive or your Google settings.";
+
 export function refusalFor(category, label, opts) {
   const c = typeof category === "string" && Object.hasOwn(CATEGORIES, category) ? CATEGORIES[category] : null;
   if (!c || c.policy !== NEVER) return "I don't keep a login for that site.";
@@ -143,9 +153,14 @@ const RAW = [
   ...byRule("apple_id", "Apple ID: it unlocks the person's devices and every password they have saved.", [
     "appleid.apple.com", "idmsa.apple.com", "apple.com", "icloud.com", "me.com", "mac.com",
   ], { label: "Apple" }),
-  ...byRule("google", "Google account: \"Google might stop sign-ins from browsers that\" ... \"are being controlled through software automation rather than a human\".", [
-    "accounts.google.com", "google.com", "gmail.com", "googlemail.com", "youtube.com",
-  ], { source: "https://support.google.com/accounts/answer/7675428", label: "Google" }),
+  ...byRule("google_property", "Gmail, Drive, Google account settings, YouTube: never signed in to with the saved Google login.", [
+    "google.com", "gmail.com", "googlemail.com", "youtube.com",
+  ], { source: "https://support.google.com/accounts/answer/7675428", label: "Google", read_on: "2026-11-13", reviewer: "owner decision 2026-11-13" }),
+  // The one Google host a saved Google login is typed on, and only inside a Continue-with-Google job for a
+  // named site. `over_never`: this exact host wins over the google.com never row above (and only it).
+  { match: "accounts.google.com", category: "google", policy: CAREFUL, basis: "rule", over_never: true, label: "Google",
+    reason: "Owner decision 2026-11-13: keep the Google login for Continue with Google on a site the person named, Face ID before every use. Google says it \"might stop sign-ins from browsers that\" ... \"are being controlled through software automation\".",
+    source: "https://support.google.com/accounts/answer/7675428", read_on: "2026-11-13", reviewer: "owner decision 2026-11-13" },
   // Every mailbox in src/signinemail.js MAILBOX_DOMAINS (Apple's and Google's sit above), plus a few.
   ...byRule("email", "A main mailbox: it resets everything else.", [
     "outlook.com", "hotmail.com", "live.com", "msn.com", "microsoft.com", "yahoo.com", "ymail.com", "proton.me",
@@ -319,6 +334,9 @@ export function classifySite(hostOrUrl) {
     return answer(NEVER, "not_a_site", c.why, c.route, null, host);
   }
   let best = null;
+  // A reviewed exact-host exception (accounts.google.com) wins over its domain's never row; nothing else does.
+  const over = COMPILED.find(({ entry, kind }) => entry.over_never === true && kind === "host" && entry.match === host);
+  if (over) return answer(over.entry.policy, over.entry.category, over.entry.reason, CATEGORIES[over.entry.category].route, over.entry, host);
   for (const { entry, kind } of COMPILED) {
     if (!covers(entry.match, kind, host)) continue;
     const rank = STRICTNESS[entry.policy] * 1000 + narrowness(kind, entry.match);
@@ -354,6 +372,9 @@ export function problemsIn(list) {
     }
     if (typeof e.read_on === "string" && !/^\d{4}-\d{2}-\d{2}$/.test(e.read_on)) out.push(`${at}: read_on must be YYYY-MM-DD`);
     if (!BASES.has(e.basis)) out.push(`${at}: basis must be rule, review or proposed`);
+    if (e.over_never !== undefined && (e.over_never !== true || matchKind(e.match) !== "host" || e.policy !== CAREFUL || !/^owner decision \d{4}-\d{2}-\d{2}$/.test(String(e.reviewer)))) {
+      out.push(`${at}: over_never is only for one exact host, careful, by an owner decision`);
+    }
     if (e.basis === "review" && !/^https:\/\/\S+$/.test(String(e.source ?? ""))) out.push(`${at}: a review entry needs the https address of what was read`);
   }
   return out;

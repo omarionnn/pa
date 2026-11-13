@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { clock } from "./config.js";
 import * as db from "./db.js";
 import {
-  savedLoginsAllowedFor, peekForSignin, listLogins, setState, withLogin, recordLoginEvent, removeLogin, VaultError,
+  savedLoginsAllowedFor, peekForSignin, listLogins, setState, withLogin, recordLoginEvent, removeLogin, VaultError, signinRouteFor,
 } from "./savedlogins.js";
 import { namedByThem, namesOf } from "./namedsite.js";
 import {
@@ -23,12 +23,14 @@ import {
 import { dropIntake } from "./loginintake.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { recordFinding } from "./sitefindings.js";
-import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs } from "./signinpage.js";
+import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs, signinDoor, followSigninDoor } from "./signinpage.js";
 import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
 import { clearOriginInPage } from "./signin.js";
 import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants, faceIdState } from "./loginuse.js";
 import { requestOf } from "./resume.js";
+import * as federated from "./federated.js";
+import { isGoogleProperty } from "./browser.js";
 import * as restartGate from "./busy.js";
 
 // The words the tool returns, one per outcome (design B5 step 8). `ok` is only a signed-in session.
@@ -94,6 +96,8 @@ function say(result, site, extra = "", { msgClass = "", msg = "", retrying = fal
     needs_approval: `I signed in to ${site}; it wants you to approve the sign-in in an app.`,
     wrong_password: `I couldn't sign you in to ${site}: the saved password wasn't accepted. I've stopped and won't try again until you save it again.`,
     blocked: `${site} blocked the sign-in. That's their choice, not something you did. I stopped and did not retry.`,
+    // A wall before anything was typed (result "blocked"): said as it is, and no offer to try again.
+    walled: `${site} turned my browser away before its sign-in form showed, so I typed nothing and stopped. That's their choice, not something you did.`,
     not_signin_page: `I couldn't sign you in to ${site}: its sign-in page didn't show the sign-in form I expected (it may have changed, or not loaded in time), so I typed nothing. If it keeps happening, the saved login may need saving again.`,
     // The saved page itself has no sign-in form (a login saved before 2026-11-13 could be pinned to a
     // site's home page). Never re-pinned silently: the person forgets it and saves it again, and the
@@ -440,6 +444,153 @@ async function challengeShown(page) {
   try { return (await page.evaluate(CHALLENGE_FRAME_JS)) === true; } catch { return false; }
 }
 export const _test = { CHALLENGE_FRAME_JS };
+/** For tests: the Google step's typist (test/continue-with-google.test.js). */
+export const _testGoogle = { googleCredentials: (c) => googleCredentials(c) };
+
+/** A human-check page or a visible challenge frame, read now; never solved, never pressed. */
+async function walledNow(page) {
+  const r = await readPage(page).catch(() => null);
+  return r?.kind === "challenge" || (await challengeShown(page));
+}
+
+/**
+ * Read the page where it ended up (after ALL redirects), held against the pinned origin + path as
+ * strings. On it, the pin is set (`pin`) and the page is given the normal wait to draw its sign-in
+ * form; a challenge that is still there at the end of the wait is a wall. Nothing is typed here.
+ *   → { verdict: "ok", form } | { verdict: "origin_mismatch" | "not_signin_page" | "wall" | "no_form" }
+ */
+async function arrive(page, row, { pin = () => {}, onToggle = () => {}, need = "form" } = {}) {
+  const at = urlParts(page.url());
+  if (at.origin !== row.signin_origin) return { verdict: "origin_mismatch" };
+  if (at.path !== row.signin_path) return { verdict: "not_signin_page" };
+  pin();
+  // A form the page draws with its own script is waited for (bounded; a finished page that stays
+  // formless ends the wait early). A wall is given the same wait to clear by itself.
+  const watch = settleWatch(page);
+  const got = await waitFor(page, async () => { const r = await readPage(page); return loginFormOf(r.raw) ? r : null; },
+    { waitMs: formWaitMs(), stop: () => watch.settled() }).finally(() => watch.stop());
+  const read = got.found ? got.value : await readPage(page).catch(() => null);
+  if (read?.kind === "challenge" || (await challengeShown(page))) return { verdict: "wall" };
+  // The Google route (src/federated.js) needs the page itself, not its password form: nothing is
+  // pressed or typed here, its own Google button is looked for by the caller.
+  if (need === "page") return { verdict: "ok", form: null };
+  let form = await findForm(page);
+  // The page offers a code first and keeps the password behind its own "Use password instead": press
+  // it before anything is typed, so Enter in the email box never sends a code (2026-11-13).
+  if (!form.ok) {
+    const toggle = await passwordToggle(page);
+    if (toggle) {
+      await toggle.click({ timeout: FILL_MS }).catch(() => {});
+      await page.locator('input[type="password"]:visible').first().waitFor({ timeout: 3_000 }).catch(() => {});
+      onToggle();
+      form = await findForm(page);
+    }
+  }
+  if (!form.ok && loginFormOf(read?.raw) === "email_first") form = await findEmailFirst(page);
+  return form.ok ? { verdict: "ok", form } : { verdict: "no_form" };
+}
+
+/**
+ * The way a person reaches a sign-in page: the saved site's own home page, then its own Sign In link
+ * or button (src/signinpage.js followSigninDoor, the finder the save-time look-up uses: same site
+ * only, https only, provider buttons never). The caller holds the browser to the site (the lock) for
+ * the walk and reads where it lands. Nothing is typed. A wall that does not clear by itself within the
+ * normal wait ends it.
+ *   → { how: "followed" | "walled" | "no_door" | "not_loaded" }
+ */
+async function frontDoor(page, row) {
+  const entry = { site: row.site, label: row.site, signin_url: `https://${row.site}/` };
+  try { await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 30_000 }); } catch { return { how: "not_loaded" }; }
+  const watch = settleWatch(page);
+  const seen = await waitFor(page, async () => ((await walledNow(page)) ? null : (await page.evaluate(signinDoor, "").catch(() => null))),
+    { waitMs: formWaitMs(), stop: () => watch.settled() }).finally(() => watch.stop());
+  if (!seen.found) return { how: (await walledNow(page)) ? "walled" : "no_door" };
+  const went = await followSigninDoor(page, entry);
+  if (!went.followed) return { how: "no_door" };
+  // A pressed button navigates by itself, and a link's own redirects may still be running: the page is
+  // given the normal wait to reach the pinned page; where it is after that is what the caller reads.
+  // Without a pin (the Google route with no sign-in page known), the page it lands on is read by the
+  // caller once the browser has moved off the home page, within the same wait.
+  const home = page.url();
+  await page.waitForURL((u) => {
+    if (!row.signin_origin) return String(u) !== home;
+    const p = urlParts(u); return p.origin === row.signin_origin && p.path === row.signin_path;
+  }, { timeout: Math.max(1, formWaitMs()), waitUntil: "domcontentloaded" }).catch(() => {});
+  return { how: "followed" };
+}
+
+/**
+ * The filler's page-reaching step: the browser onto the pinned sign-in page with its form drawn, held to
+ * the exact pinned origin (the lock) once it is there. Nothing is typed here; exported so a load-only
+ * proof can run this step alone. `mark` is called whenever the navigations seen so far stop counting
+ * against the page (the pin taken; our own click on a "use password" control).
+ *   → { verdict: "ok", form, door } | { verdict: "origin_mismatch"|"not_signin_page"|"wall"|"no_form", door }
+ *     door: "" (not walked) | "followed" | "walled" | "no_door" | "not_loaded"
+ */
+export async function reachPinned(page, row, { conversationId, mark = () => {}, need = "form" } = {}) {
+  const c = String(conversationId ?? "");
+  const pinnedHost = new URL(row.signin_origin).hostname;
+  const secure = row.signin_origin.startsWith("https:");
+  const hold = () => { pinSite(c, row.site, { hosts: [pinnedHost], exact: row.signin_origin, secure }); mark(); };
+  // Code goes to the pinned page itself, in its own tab; never a page the model was on, never a
+  // link from a page or an email (design B5 step 3).
+  const direct = async () => {
+    await page.goto(`${row.signin_origin}${row.signin_path}`, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+    return arrive(page, row, { pin: hold, onToggle: mark, need });
+  };
+  // The front door (2026-11-13, DoorDash): a pinned page may only work when it is reached the way a
+  // person reaches it, from the site's own home page through its own Sign In link, which carries the
+  // page's per-visit address parts (an identity page's client and return address; the pin keeps none
+  // of them). The walk is held to the site by the lock; the page it lands on must be the pinned
+  // origin + path exactly (its query may differ), or nothing is typed there.
+  //   → null when the walk did not land on the pinned page (the caller's other way stands)
+  const walk = async () => {
+    unpinSite(c);
+    pinSite(c, row.site, { hosts: [pinnedHost], secure });
+    const w = await frontDoor(page, row);
+    door = w.how;
+    if (w.how === "walled") return { verdict: "wall" };
+    if (w.how !== "followed") return null;
+    const got = await arrive(page, row, { pin: hold, onToggle: mark, need });
+    // The pinned page reached through the site stands, form or wall; landing anywhere else does not.
+    return got.verdict === "ok" || got.verdict === "wall" || got.verdict === "no_form" ? got : null;
+  };
+  let door = "";
+  let got;
+  if (row.signin_path !== "/" && ownHost(row)) {
+    // A sign-in page on a host of its own (identity.example.com, login.example.com) is an identity
+    // server's page: opened bare it has no client and return address and cannot draw the form, and on
+    // DoorDash the bare load also spoiled the visit (the site's own link after it was walled, where the
+    // same link in a fresh visit drew the form). So the front door first, the bare page only if the
+    // walk did not land on it. A wall on the walk stops it: no second way round a wall.
+    got = (await walk()) ?? (unpinSite(c), await direct());
+  } else {
+    // A sign-in page on the site's own host (www.netflix.com/login): opened directly, as before. When it
+    // shows no form (sent elsewhere, formless) the front door is walked once; never a loop. A wall on the
+    // direct load stops it (review 2026-11-13): the site has turned the browser away, and walking round
+    // by another way would be a second try against a wall.
+    got = await direct();
+    if (got.verdict !== "ok" && got.verdict !== "wall" && row.signin_path !== "/") got = (await walk()) ?? got;
+  }
+  if (got.verdict !== "ok") unpinSite(c);
+  return { ...got, door };
+}
+
+/**
+ * The Google route's way to a site's sign-in page when none is pinned (src/federated.js): the site's own
+ * home page, then its own Sign In link, the way the save flow finds one. The caller holds the browser to
+ * the site and reads where it lands. Nothing is pressed but that link; nothing is typed.
+ *   → { how: "followed" | "walled" | "no_door" | "not_loaded" }
+ */
+export async function frontDoorOf(page, site) {
+  return frontDoor(page, { site: String(site ?? ""), signin_origin: null, signin_path: null });
+}
+
+/** Is the pinned page on a host of its own, not the site's front host (the site itself or www.)? */
+function ownHost(row) {
+  const h = new URL(row.signin_origin).hostname.toLowerCase().replace(/^www\./, "");
+  return h !== String(row.site ?? "").toLowerCase().replace(/^www\./, "");
+}
 
 /** How long the page is given to answer the submit: a script-driven form (Netflix) answers by XHR, not a page load. */
 const ANSWER_MS = 12_000;
@@ -573,7 +724,7 @@ let signIns = 0;
 export async function signIn(conversationId, site, {
   trigger = null, purpose = "", launch = realLaunch, now = () => clock.now(),
   emailCode = codeFromGmail, enter = enterCode, awaitReply = awaitCodeReply, note = defaultNote, waitMs = undefined,
-  answerMs = ANSWER_MS, retryWaitMs = SITE_TROUBLE_RETRY_MS,
+  answerMs = ANSWER_MS, locate = undefined, tapWaitMs = undefined, stepMs = undefined, retryWaitMs = SITE_TROUBLE_RETRY_MS,
 } = {}) {
   const c = String(conversationId ?? "");
   const host = normSite(site);
@@ -588,7 +739,18 @@ export async function signIn(conversationId, site, {
     return { ok: false, result: "blocked", say_exactly: refusalFor(verdict.category, host), refused: true };
   }
 
+  // The saved Google login is never used to sign in to Google itself (Gmail, Drive, settings, or
+  // accounts.google.com on its own): only as the Continue-with-Google step of a site they named.
+  if (isGoogleProperty(host)) {
+    recordLoginEvent(c, { site: registrableOf(host), event: "refused_never_list", outcome: "stopped" });
+    return { ok: false, result: "blocked", say_exactly: refusalFor("google_property"), refused: true };
+  }
   const rows = peekForSignin(c, host);
+  // A site they sign in to with Google (src/savedlogins.js signin_routes): the federated route.
+  if (!rows.length && signinRouteFor(c, host) === "google") {
+    return federated.signInWithGoogle(c, host, { trigger, purpose, launch, now, awaitReply, note, waitMs, credentials: googleCredentials(c),
+      ...(locate ? { locate } : {}), ...(tapWaitMs != null ? { tapWaitMs } : {}), ...(stepMs != null ? { stepMs } : {}), liveAskOk });
+  }
   if (!rows.length) return say("no_login", host);
   if (rows.length > 1) return say("pick_one", host);
   const row = rows[0];
@@ -675,63 +837,47 @@ export async function signIn(conversationId, site, {
     const page = session.context.pages()[0] ?? await session.context.newPage();
     page.setDefaultTimeout(20_000);
 
-    // Code goes to the pinned page itself, in its own tab; never a page the model was on, never a
-    // link from a page or an email (design B5 step 3).
-    await page.goto(pinned, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-
-    // Hard rule 1: the exact origin after ALL redirects, as strings. Anything else: stop, type
-    // nothing, zero KMS calls (the unwrap below never runs).
-    const at = urlParts(page.url());
-    if (at.origin !== row.signin_origin) { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return { out: say("origin_mismatch", host) }; }
-    if (at.path !== row.signin_path) { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt }); return { out: say("not_signin_page", host) }; }
-    // From here the browser is held to this site (the same-site lock, src/browser.js): a redirect or a
-    // script sending it elsewhere mid-fill is refused by the browser itself.
-    // Held to the exact origin until the login is typed (fillAndSubmit relaxes it to the site for the submit).
-    pinSite(c, row.site, { hosts: [new URL(row.signin_origin).hostname], exact: row.signin_origin, secure: row.signin_origin.startsWith("https:") });
-    // Every main-frame navigation from here on is counted: the email-first step is allowed to change
-    // path only after the filler's own submit, so one that happens before it is not ours.
+    // Every main-frame navigation is counted: the email-first step is allowed to change path only
+    // after the filler's own submit, so one that happens before it is not ours. Counted when it STARTS
+    // (the request): a script's navigation still in flight when the filler checks is seen. A
+    // same-document step (pushState, replaceState) is not counted: the path check sees one that changes
+    // the path, and a site that tidies its own address on the same path is not refused for it.
     let navs = 0;
-    // Counted when it STARTS (the request): a script's navigation still in flight when the filler checks is seen.
-    // A same-document step (pushState, replaceState) is not counted: the path check below sees one that
-    // changes the path, and a site that tidies its own address on the same path is not refused for it.
     page.on("request", (q) => { try { if (q.isNavigationRequest() && q.frame() === page.mainFrame()) navs += 1; } catch { /* gone */ } });
     const atPin = () => urlParts(page.url()).path === row.signin_path;
-    let navBase = 0; // navigations our own click on the page's "use password" control caused
+    // Navigations before the pinned page was reached, and the ones our own click on the page's "use
+    // password" control caused: everything after this mark and before our submit is not ours.
+    let navBase = 0;
     const ours = () => navs === navBase && atPin();
-    // A sign-in form the page draws with its own script is waited for (bounded; a finished page that
-    // stays formless ends the wait early). A challenge ends it too.
-    const watch = settleWatch(page);
-    const got = await waitFor(page, async () => { const r = await readPage(page); return r.kind === "challenge" || loginFormOf(r.raw) ? r : null; },
-      { waitMs: formWaitMs(), stop: () => watch.settled() }).finally(() => watch.stop());
-    const read = got.found ? got.value : await readPage(page).catch(() => null);
-    // A human-check that wants a person, showing before anything is typed: stop, never solve it.
-    if (read?.kind === "challenge" || (await challengeShown(page))) {
+    const got = await reachPinned(page, row, { conversationId: c, mark: () => { navBase = navs; } });
+    const door = got.door;
+    // Hard rule 1: the exact origin after ALL redirects, as strings. Anything else: stop, type
+    // nothing, zero KMS calls (the unwrap below never runs).
+    if (got.verdict === "origin_mismatch") { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return { out: say("origin_mismatch", host) }; }
+    if (got.verdict === "not_signin_page") { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt }); return { out: say("not_signin_page", host) }; }
+    // A human-check that wants a person, showing before anything is typed and not clearing by itself
+    // within the wait: stop, never solve it, never offer to try again.
+    if (got.verdict === "wall") {
       recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "challenge on the sign-in page" });
       setState(c, row.id, { state: "refused" });
       unpinSite(c);
-      logAttempt({ signin_url: pinned }, { route: again ? "saved_login_again" : "saved_login", outcome: "blocked_by_site", startedAt, detail: "wall_before_form" });
+      logAttempt({ signin_url: pinned }, { route: again ? "saved_login_again" : "saved_login", outcome: "blocked_by_site", startedAt, detail: door ? "wall_front_door" : "wall_before_form" });
       recordLoginEvent(c, { site: host, event: "signin", outcome: "blocked", purpose: why });
-      return { out: say("blocked", host) };
+      return { out: { ...say("walled", host), result: "blocked" } };
     }
-    let form = await findForm(page);
-    // The page offers a code first and keeps the password behind its own "Use password instead": press
-    // it before anything is typed, so Enter in the email box never sends a code (2026-11-13).
-    if (!form.ok) {
-      const toggle = await passwordToggle(page);
-      if (toggle) {
-        await toggle.click({ timeout: FILL_MS }).catch(() => {});
-        await page.locator('input[type="password"]:visible').first().waitFor({ timeout: 3_000 }).catch(() => {});
-        navBase = navs;
-        form = await findForm(page);
-      }
-    }
-    if (!form.ok && loginFormOf(read?.raw) === "email_first") form = await findEmailFirst(page);
-    if (!form.ok) {
+    if (got.verdict !== "ok") {
       // The saved page itself has no sign-in form: the pin is wrong, not the page's mood. Never re-pinned
       // here; the person is told to save it again (forget, then a new save link pins a page with a form).
       finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt });
       return { out: { ...say("needs_resave", host), result: "not_signin_page", resave: true } };
     }
+    // From here the browser is held to the exact pinned origin (the same-site lock, src/browser.js): a
+    // redirect or a script sending it elsewhere mid-fill is refused by the browser itself; fillAndSubmit
+    // relaxes it to the site for the submit. The path is the pinned one (checked on arrival, and again
+    // by `ours` before every keystroke step).
+    const { form } = got;
+    const at = urlParts(page.url());
+    if (at.origin !== row.signin_origin || at.path !== row.signin_path) { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return { out: say("origin_mismatch", host) }; }
 
     // Unwrap and type, one KMS call, with the origin the browser is on now (design B5 step 5; KMS
     // refuses any other origin through the encryption context).
@@ -867,6 +1013,88 @@ export async function signIn(conversationId, site, {
       restartGate.release(gateId);
     }
   }
+}
+
+// ---------------------------------------------------------------- the Google step (src/federated.js)
+/**
+ * The saved Google login, typed on accounts.google.com (owner decision 2026-11-13), under the same rules
+ * as any saved login: one KMS call; the page's own top frame; the exact origin checked right before
+ * every keystroke; email first (Google's identifier step), then the one real password box. On Google's
+ * account chooser, the row whose identifier is the saved username, else "Use another account". Returns
+ * "typed", "drift" (left accounts.google.com: nothing more typed) or "none".
+ */
+function googleCredentials(conversationId) {
+  return async (gp, row, { diag = { boxes: [] }, typing = () => {}, stepMs = 10_000 } = {}) => {
+    const G = federated.GOOGLE;
+    const here = () => urlParts(gp.url()).origin;
+    const drift = () => { if (gp.isClosed() || here() !== G) { const e = new Error("left Google"); e.name = "OriginDrift"; throw e; } };
+    const hold = () => pinExact(conversationId, G), release = () => pinExact(conversationId, null);
+    const read = async () => federated.googleStep(await gp.evaluate(federated._test.GOOGLE_JS).catch(() => null));
+    try {
+      return await withLogin(conversationId, row.id, here(), async ({ username, password }) => {
+        let pass = null;
+        await username.use(async (b) => {
+          const want = b.toString("utf8");
+          const until = Date.now() + stepMs;
+          let chose = false, typedEmail = false;
+          while (Date.now() < until) {
+            drift();
+            const st = (await read()).kind;
+            if (st === "chooser" && !chose) {
+              chose = true;
+              const rows = gp.locator("[data-identifier]:visible");
+              const n = Math.min(await rows.count().catch(() => 0), 10);
+              let hit = null;
+              for (let i = 0; i < n; i++) {
+                const id = String(await rows.nth(i).getAttribute("data-identifier").catch(() => "") ?? "");
+                if (id.toLowerCase() === want.toLowerCase()) { hit = rows.nth(i); break; }
+              }
+              drift();
+              await (hit ?? gp.getByText(/^\s*Use another account\s*$/i).first()).click({ timeout: FILL_MS }).catch(() => {});
+            } else if (st === "email" && !typedEmail) {
+              typedEmail = true;
+              const box = gp.locator('input[type="email"]:visible').first();
+              // Held to exactly accounts.google.com from the last origin check to the keystroke (review
+              // 2026-11-13): the opener, a redirect or the site's own pages can't swap the tab in between.
+              hold();
+              try {
+                drift(); typing();
+                await box.fill(want, { timeout: FILL_MS });
+                diag.boxes.push({ kind: "email", typed: await lengthIn(box), saved: want.length });
+                drift();
+                await box.press("Enter").catch(() => {});
+              } finally { release(); }
+            } else if (st !== "chooser" && st !== "email" && st !== "unknown") break;
+            await gp.waitForTimeout(300).catch(() => {});
+          }
+        });
+        // The password step: exactly one real password box on accounts.google.com's own frame.
+        const until = Date.now() + stepMs;
+        while (Date.now() < until) {
+          drift();
+          const boxes = gp.locator('input[type="password"]:visible');
+          const k = (await read()).kind;
+          if (k === "password" && (await boxes.count().catch(() => 0)) === 1) { pass = boxes.first(); break; }
+          if (!["unknown", "email", "chooser"].includes(k)) break;
+          await gp.waitForTimeout(300).catch(() => {});
+        }
+        if (!pass) { password.wipe?.(); return "none"; }
+        hold();
+        try {
+          drift(); typing(); // immediately before the password keystroke
+          await password.use(async (b) => { await pass.fill(b.toString("utf8"), { timeout: FILL_MS }); diag.boxes.push({ kind: "password", typed: await lengthIn(pass), saved: b.toString("utf8").length }); });
+          drift();
+          diag.pressed = "enter";
+          await pass.press("Enter").catch(() => {});
+        } finally { release(); }
+        await gp.waitForTimeout(600).catch(() => {});
+        await pass.fill("", { timeout: 800 }).catch(() => {});
+        return "typed";
+      }, { purpose: "the Google step of a sign-in they asked for" });
+    } catch (e) {
+      return /OriginDrift/.test(String(e?.message ?? "")) || e?.code === "origin_mismatch" ? "drift" : "none";
+    }
+  };
 }
 
 // ---------------------------------------------------------------- forgetting (hard rule 6)
