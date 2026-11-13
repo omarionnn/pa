@@ -890,6 +890,14 @@ const TOTAL = /(?<![a-z])(?:(?:order|grand|estimated)\s+)?total(?:\s+(?:charged|
 const CHARGED = /\b(?:amount\s+(?:charged|paid)|you\s+paid|charged(?:\s+to\s+your\s+\w+)?|payment\s+total)\s*:?\s*\$\s?(\d{1,4}\.\d{2})(?!\d)/i;
 const flat = (s) => String(s ?? "").replace(/[͏​-‏⁠﻿­]/g, "").replace(/\s+/g, " ");
 const moneyIn = (s) => { const t = flat(s); const m = t.match(TOTAL) ?? t.match(CHARGED); return m ? `$${m[1]}` : ""; };
+// A time of day said as a greeting or a when ("Tuesday evening", "Good morning,", "this evening"), not a
+// name: Uber's "Your Tuesday evening order" names no restaurant. A bare time of day is one too; one that
+// begins a name without a comma or a stop after it ("Morning Ritual", "Night Owl Cafe") is the name and stays.
+const WHEN_WORDS = "(?:good|this|today(?:'|’)?s|tonight(?:'|’)?s|yesterday(?:'|’)?s|late|early|(?:mon|tues|wednes|thurs|fri|satur|sun)day(?:'|’)?s?)";
+const DAYPART = "(?:morning|afternoon|evening|night|late[- ]night)";
+const DAYPART_HEAD = new RegExp(`^${WHEN_WORDS}(?:\\s+${WHEN_WORDS})*\\s+${DAYPART}(?:\\s*[,!.:–—-]+\\s*|\\s*$)`, "i");
+const DAYPART_TAIL = new RegExp(`[\\s,]+(?:${WHEN_WORDS}\\s+)+${DAYPART}[\\s!.]*$`, "i");
+const dropDaypart = (s) => { const t = s.replace(DAYPART_HEAD, "").replace(DAYPART_TAIL, "").trim(); return new RegExp(`^${DAYPART}$`, "i").test(t) ? "" : t; };
 /**
  * One mail header read as a food order: { platform, app, restaurant, total, when, subject }, or null
  * when it is not an order's own mail (a code, an advert, a cart reminder, a rating ask). A restaurant
@@ -905,9 +913,9 @@ export function readReceipt({ from = "", subject = "", date = "", snippet = "" }
   let restaurant = "";
   const named = subj.match(/\b(?:order|receipt|confirmation)\b.*?\b(?:from|at)\s+(.+)$/i) ?? subj.match(/^(?:your\s+)?(.+?)\s+(?:order|receipt)\b/i);
   if (named) {
-    restaurant = named[1].replace(ORDER_TAIL, "").trim();
+    restaurant = dropDaypart(named[1].replace(ORDER_TAIL, "").trim());
     // "Order Confirmation for Omari from Joe's Pizza" reads from "from"; a bare app name is not a restaurant.
-    if (/^(?:your|the|new|online|recent|uber eats|doordash|grubhub|seamless|toast|slice|thanks for your|thank you for your)?$/i.test(restaurant) || /\border\b|\bwith uber eats\b|\b(?:morning|afternoon|evening|night)\b/i.test(restaurant)) restaurant = "";
+    if (/^(?:your|the|new|online|recent|uber eats|doordash|grubhub|seamless|toast|slice|thanks for your|thank you for your)?$/i.test(restaurant) || /\border\b|\bwith uber eats\b/i.test(restaurant)) restaurant = "";
   }
   const t = Date.parse(String(date ?? ""));
   return { platform: sender.platform, app: sender.name, restaurant: clean(restaurant, 80), total: moneyIn(snippet), when: Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : "", at: Number.isFinite(t) ? t : 0, subject: subj };
