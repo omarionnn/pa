@@ -126,6 +126,31 @@ export const LOGINS_SCHEMA = `
     set_at INTEGER NOT NULL,
     PRIMARY KEY (conversation_id, site)
   );
+  -- A person's call passphrase (src/callpass.js, REASON_CALL_TRUST): a salted scrypt hash of the
+  -- normalised phrase, never the phrase. pending_* is one set on a call, waiting for a typed yes.
+  CREATE TABLE IF NOT EXISTS call_passphrases (
+    conversation_id TEXT PRIMARY KEY,
+    active_hash TEXT,
+    active_set_how TEXT CHECK (active_set_how IN ('text', 'call')),
+    active_set_at INTEGER,
+    active_words INTEGER,
+    pending_hash TEXT,
+    pending_set_at INTEGER,
+    pending_call_id INTEGER,
+    pending_asked_outbox INTEGER,
+    removal_asked_outbox INTEGER,
+    told_count INTEGER NOT NULL DEFAULT 0,
+    misses INTEGER NOT NULL DEFAULT 0,
+    misses_since INTEGER
+  );
+  -- The set-up page's one-use links: only a hash of the token.
+  CREATE TABLE IF NOT EXISTS call_passphrase_links (
+    token_hash TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('set', 'change')),
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
 `;
 
 /**
@@ -134,9 +159,13 @@ export const LOGINS_SCHEMA = `
  * read by exportFor or kept out of an export with a reason, and deleted by deleteAllFor and deleteEveryLogin.
  */
 export const LOGINS_COVERAGE = {
-  exported: ["saved_logins", "signin_routes"], // exportFor (never the login, data.js REDACTED); exportRoutesFor: site + route
-  notExported: { vault_people: "a random handle that goes into the KMS context; it holds nothing of the person" },
-  deleted: ["saved_logins", "vault_people", "signin_routes"],
+  // exportFor (never the login, data.js REDACTED); exportRoutesFor: site + route; callpass.exportFor: set, how, when (never the hash)
+  exported: ["saved_logins", "signin_routes", "call_passphrases"],
+  notExported: {
+    vault_people: "a random handle that goes into the KMS context; it holds nothing of the person",
+    call_passphrase_links: "the hash of a one-use set-up link and when it expires; nothing they typed",
+  },
+  deleted: ["saved_logins", "vault_people", "signin_routes", "call_passphrases", "call_passphrase_links"],
 };
 
 // Opened on first use, not at load: loading this module with the switch off must not create the file.
@@ -156,6 +185,9 @@ function open({ create }) {
   ldb = d; ldbPath = p;
   return d;
 }
+
+/** The logins.db handle for src/callpass.js (the call passphrase lives in this file too). Null when there is no file and `create` is false. */
+export function loginsDb({ create = false } = {}) { return open({ create }); }
 
 function handleFor(d, c, create) {
   const get = () => d.prepare("SELECT handle FROM vault_people WHERE conversation_id = ?").get(c)?.handle ?? null;
@@ -530,6 +562,8 @@ export function deleteAllFor(conversationId, { purpose = "" } = {}) {
     n = Number(d.prepare("DELETE FROM saved_logins WHERE conversation_id = ?").run(c).changes);
     had = Number(d.prepare("DELETE FROM vault_people WHERE conversation_id = ?").run(c).changes) > 0 || n > 0;
     had = Number(d.prepare("DELETE FROM signin_routes WHERE conversation_id = ?").run(c).changes) > 0 || had;
+    had = Number(d.prepare("DELETE FROM call_passphrases WHERE conversation_id = ?").run(c).changes) > 0 || had;
+    d.prepare("DELETE FROM call_passphrase_links WHERE conversation_id = ?").run(c);
     d.exec("COMMIT");
   } catch (e) { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
   if (had) logEvent(c, { site: "", event: "removed_all", outcome: "ok", purpose, kmsCalls: 0, count: n });
@@ -545,6 +579,8 @@ export function deleteEveryLogin() {
     const n = Number(d.prepare("DELETE FROM saved_logins").run().changes);
     d.prepare("DELETE FROM vault_people").run();
     d.prepare("DELETE FROM signin_routes").run();
+    d.prepare("DELETE FROM call_passphrases").run();
+    d.prepare("DELETE FROM call_passphrase_links").run();
     d.exec("COMMIT");
     return n;
   } catch { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }

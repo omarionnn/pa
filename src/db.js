@@ -1391,6 +1391,18 @@ addColumnIfMissing("calls", "verified_at", "INTEGER");
 addColumnIfMissing("calls", "verified_how", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "verify_tries", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("calls", "verify_sent_at", "INTEGER");
+// Who Reason trusts on a call (src/calls/calltrust.js, REASON_CALL_TRUST): the one action a spoken
+// passphrase is being asked for, the one it unlocked and until when, the call's tries, the line code
+// owes next, a passphrase being set on the call, and how the caller's number arrived (Twilio's
+// ForwardedFrom and StirVerstat). Never a passphrase or a word of one.
+addColumnIfMissing("calls", "trust_ask", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "trust_grant", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "trust_tries", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "trust_told", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "trust_owed", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "trust_setup", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "caller_forwarded", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "caller_attest", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "verify_sent_after_msgs", "INTEGER");
 // What an unverified caller asked for that waits for the call to end, picked up by text after it
 // (src/calls/verify.js; owner 2026-11-06: no "reply yes" during a live call).
@@ -5826,6 +5838,8 @@ export function updateCall(conversationId, id, fields) {
     "errand_id", "voicemail_left", "attempt", "told_at",
     // The 2026-10-07 addendum: the second check on an owner call, and what the call ran under.
     "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs", "verify_deferred",
+    // Who Reason trusts on the call (src/calls/calltrust.js).
+    "trust_ask", "trust_grant", "trust_tries", "trust_told", "trust_owed", "trust_setup", "caller_forwarded", "caller_attest",
     "profile", "tts_model",
     "opening_waits", "machine_heard",
     // A GPT-Live third-party call names Reason in its disclosure (src/calls/gptlive.js lineAnnouncement).

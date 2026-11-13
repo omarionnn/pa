@@ -23,6 +23,7 @@ import { queueMidCall } from "./voice.js";
 import { openingLineFor } from "./inbound.js";
 import { todaySoFar } from "./brief.js";
 import { NO_NAME } from "./voice-prompt.js";
+import * as calltrust from "./calltrust.js";
 import * as zonescope from "../zonescope.js";
 import { zoneFor } from "../zone.js";
 
@@ -40,6 +41,8 @@ export const ASK_REASON = "ask_reason";
 export const RESULT_MAX = 12_000;
 /** Per-call keyterm slots on the agent (scripts/cartesia-agent-setup.mjs `KEYTERM_SLOTS`). */
 export const KEYTERM_SLOTS = 8;
+/** How long an ask_reason waits for the caller's passphrase answer to be screened (./calltrust.js). */
+export const EAR_WAIT_MS = 1500;
 /** A dynamic variable's text, kept inside a size their docs do not state (docs/unverified.md). */
 export const VARIABLE_MAX = 12_000;
 
@@ -316,6 +319,11 @@ export class CartesiaAgentCall {
     this.tape = new CallTape();
     if (!this.recorded) this.tape.stopAt(0);
     this.turns = [];
+    // REASON_CALL_TRUST (./calltrust.js): what the caller's next words are for ("pass" | "setup" | null),
+    // whether the latest ones were a screened passphrase, and asks waiting on that screen.
+    this.earArmed = null;
+    this.earJust = false;
+    this.earWaiters = [];
     this.streamSid = null;
     this.agentCallId = "";
     this.ready = false;
@@ -493,8 +501,17 @@ export class CartesiaAgentCall {
   }
 
   turnEnded(e) {
-    const text = String(e.text ?? "").replace(/\s+/g, " ").trim();
+    let text = String(e.text ?? "").replace(/\s+/g, " ").trim();
     const who = e.role === "user" ? "them" : "reason";
+    // REASON_CALL_TRUST: their words right after Reason asked for a passphrase are checked in code and
+    // kept only as a marker (./calltrust.js), before they reach the turns, the transcript or Reason.
+    if (who === "them" && this.earArmed && text) {
+      const heard = calltrust.hear(this.call, text, { log: this.log });
+      if (heard) { text = heard.text; this.earJust = true; }
+      this.earArmed = null;
+      this.earWaiters.splice(0).forEach(f => f());
+    }
+    if (who === "reason" && text) text = calltrust.scrubSaid(text);
     if (text) this.turns.push({ who, text, at: this.now(), ...(e.interrupted ? { interrupted: true } : {}) });
     // The honesty guard (GPT-Live's `claimsDone`, on this line too): the agent said something is done and
     // no answer of Reason's in the last minute said so. The words are already spoken (their socket takes
@@ -542,7 +559,11 @@ export class CartesiaAgentCall {
       this.agent.send({ type: "client_tool_result", tool_call_id: id, result: String(result).slice(0, RESULT_MAX), is_error: !!isError });
     };
     if (e.tool_name !== ASK_REASON) return answer(`No tool called ${String(e.tool_name ?? "")}.`, true);
-    const request = e.parameters?.request ?? e.parameters?.question ?? "";
+    let request = e.parameters?.request ?? e.parameters?.question ?? "";
+    // Their passphrase answer may reach this tool before its own turn_ended: waited for, briefly, so it is
+    // screened first; then the agent's copy of it is never passed on.
+    if (this.earArmed) await new Promise(r => { this.earWaiters.push(r); this.timers.setTimeout(r, EAR_WAIT_MS); });
+    if (this.earJust) { this.earJust = false; request = calltrust.SCREENED_REQUEST; }
     this.replyKind = "ask_reason";
     const askedAt = this.now();
     const p = { askedAt, texting: false, texted: false, reply: undefined, done: null };
@@ -584,6 +605,8 @@ export class CartesiaAgentCall {
     this.askAnsweredAt = answeredAt;
     if (!reply?.skip && saysDone(reply?.text)) this.claimedAt = answeredAt;
     p.reply = reply;
+    // Reason asked for a passphrase (or a new one) in this answer: their next words are for code.
+    this.earArmed = calltrust.listening(this.call);
     if (p.texting) this.textLate(p);
     return reply;
   }
