@@ -55,7 +55,7 @@ after(async () => {
 });
 
 test("a person types a login on the page, taps Save with Face ID, and one unverified login is stored; the requests carry ciphertext only", async () => {
-  const out = await intake.offerSaveLink(ME, "example.test", "pay my example bill", { locate: async () => ({ found: true, url: "https://login.example.test/signin" }) });
+  const out = await intake.offerSaveLink(ME, "example.test", "pay my example bill", { locate: async () => ({ found: true, url: "https://login.example.test/signin", form: "password" }) });
   assert.equal(out.ok, true, out.error);
   const path = new URL(out.link).pathname;
 
