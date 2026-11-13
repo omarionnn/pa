@@ -1,0 +1,818 @@
+{
+  "probed_at": "2026-11-13",
+  "from": "the server (OVH datacenter address), signed out, throwaway profiles deleted after each setup",
+  "how": "Load-only: one page load per site per setup through src/probesetups.js runSetups (readOnlyPage refuses every typing/clicking call; typed_characters 0), guardContext on, nothing typed, nothing clicked, no challenge touched. Sign-in pages loaded at the runtime's own sign-in address (src/signin.js anyEntryFor). Wall vendors from response header and cookie NAMES only. reCAPTCHA: counts of responses whose address names recaptcha, per page load (script and frame documents); nothing on the page was read beyond that.",
+  "setups": {
+    "H": {
+      "label": "Playwright Chromium headless (today)",
+      "launch": {
+        "channel": "bundled",
+        "headless": true
+      },
+      "browser_peak_pss_mb": 853,
+      "typed_characters": 0,
+      "refused_calls": 0,
+      "scratch_profile_deleted": true
+    },
+    "C": {
+      "label": "real Google Chrome, headed on Xvfb :99",
+      "launch": {
+        "channel": "chrome",
+        "headless": false
+      },
+      "browser_peak_pss_mb": 1096,
+      "typed_characters": 0,
+      "refused_calls": 0,
+      "scratch_profile_deleted": true
+    },
+    "N": {
+      "label": "Playwright chromium new-headless (stableSetting today)",
+      "launch": {
+        "channel": "chromium",
+        "headless": true
+      },
+      "browser_peak_pss_mb": 1087,
+      "typed_characters": 0,
+      "refused_calls": 0,
+      "scratch_profile_deleted": true
+    }
+  },
+  "skipped": [
+    {
+      "site": "ubereats home",
+      "reason": "never list: sitepolicy never (terms)"
+    },
+    {
+      "site": "uber sign-in",
+      "reason": "never list: sitepolicy never (terms)"
+    },
+    {
+      "site": "LinkedIn",
+      "reason": "never list: social networks"
+    },
+    {
+      "site": "GoDaddy",
+      "reason": "never list: sitepolicy never (own_infra)"
+    },
+    {
+      "site": "Ticketmaster",
+      "reason": "never list: ticket buying"
+    },
+    {
+      "site": "X",
+      "reason": "never list: social networks"
+    },
+    {
+      "site": "Reddit",
+      "reason": "never list: social networks"
+    }
+  ],
+  "sites": [
+    {
+      "site": "doordash home",
+      "group": "key",
+      "url": "https://www.doordash.com/",
+      "policy": "careful",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "www.doordash.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "www.doordash.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.doordash.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ],
+          "recaptcha": {
+            "scripts": 4,
+            "scripts_ok": 4,
+            "frames": 1,
+            "frames_ok": 1,
+            "enterprise": true
+          }
+        }
+      },
+      "opens_in_C_not_H": true
+    },
+    {
+      "site": "doordash sign-in",
+      "group": "key",
+      "url": "https://identity.doordash.com",
+      "policy": "careful",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "identity.doordash.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "identity.doordash.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "identity.doordash.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        }
+      },
+      "opens_in_C_not_H": true
+    },
+    {
+      "site": "netflix login",
+      "group": "key",
+      "url": "https://www.netflix.com/login",
+      "policy": "careful",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "www.netflix.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 955,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "N": {
+          "status": 200,
+          "final_host": "www.netflix.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 2234,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.netflix.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 1896,
+          "walled": false,
+          "wall_vendor": []
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "order.online store",
+      "group": "key",
+      "url": "https://order.online/store/chiapparelli-159816",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "order.online",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "order.online",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "order.online",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ],
+          "recaptcha": {
+            "scripts": 4,
+            "scripts_ok": 4,
+            "frames": 1,
+            "frames_ok": 1,
+            "enterprise": true
+          }
+        }
+      },
+      "opens_in_C_not_H": true
+    },
+    {
+      "site": "toast order page",
+      "group": "key",
+      "url": "https://www.toasttab.com/local/order/habibi-halal-bronx",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "www.toasttab.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "www.toasttab.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 403,
+          "final_host": "www.toasttab.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "amazon sign-in",
+      "group": "key",
+      "url": "https://www.amazon.com/gp/css/order-history",
+      "policy": "careful",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "www.amazon.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 970,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "N": {
+          "status": 200,
+          "final_host": "www.amazon.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 1420,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.amazon.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 1325,
+          "walled": false,
+          "wall_vendor": []
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Medium",
+      "group": "refused",
+      "url": "https://medium.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "medium.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "medium.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "medium.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ],
+          "recaptcha": {
+            "scripts": 4,
+            "scripts_ok": 4,
+            "frames": 1,
+            "frames_ok": 1,
+            "enterprise": true
+          }
+        }
+      },
+      "opens_in_C_not_H": true
+    },
+    {
+      "site": "Cloudflare dashboard",
+      "group": "refused",
+      "url": "https://cloudflare.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "www.cloudflare.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 200,
+          "final_host": "www.cloudflare.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.cloudflare.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "claude.ai",
+      "group": "refused",
+      "url": "https://claude.ai/login",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "claude.ai",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "claude.ai",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "claude.ai",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 2730,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ],
+          "recaptcha": {
+            "scripts": 1,
+            "scripts_ok": 1,
+            "frames": 0,
+            "frames_ok": 0,
+            "enterprise": false
+          }
+        }
+      },
+      "opens_in_C_not_H": true
+    },
+    {
+      "site": "AMC",
+      "group": "refused",
+      "url": "https://amctheatres.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "amctheatres.com",
+          "page_kind": "challenge",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "amctheatres.com",
+          "page_kind": "challenge",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 403,
+          "final_host": "amctheatres.com",
+          "page_kind": "challenge",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Canva",
+      "group": "refused",
+      "url": "https://canva.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "www.canva.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "www.canva.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.canva.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        }
+      },
+      "opens_in_C_not_H": true
+    },
+    {
+      "site": "OpenAI platform",
+      "group": "refused",
+      "url": "https://auth.openai.com/log-in",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "auth.openai.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "auth.openai.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 403,
+          "final_host": "auth.openai.com",
+          "page_kind": "loading",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Indeed",
+      "group": "refused",
+      "url": "https://indeed.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 403,
+          "final_host": "indeed.com",
+          "page_kind": "challenge",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "N": {
+          "status": 403,
+          "final_host": "indeed.com",
+          "page_kind": "challenge",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        },
+        "C": {
+          "status": 403,
+          "final_host": "indeed.com",
+          "page_kind": "challenge",
+          "signin_form": false,
+          "walled": true,
+          "wall_vendor": [
+            "cloudflare"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Walmart",
+      "group": "refused",
+      "url": "https://walmart.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "www.walmart.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "perimeterx"
+          ]
+        },
+        "N": {
+          "status": 200,
+          "final_host": "www.walmart.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "perimeterx"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.walmart.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "akamai",
+            "perimeterx"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Target",
+      "group": "refused",
+      "url": "https://target.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "www.target.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "perimeterx"
+          ]
+        },
+        "N": {
+          "status": 200,
+          "final_host": "www.target.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "perimeterx"
+          ]
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.target.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "perimeterx"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Eventbrite",
+      "group": "refused",
+      "url": "https://eventbrite.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "www.eventbrite.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "N": {
+          "status": 200,
+          "final_host": "www.eventbrite.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.eventbrite.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": []
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "OpenTable",
+      "group": "refused",
+      "url": "https://www.opentable.com/my/account/signin",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "final_host": "",
+          "page_kind": "error",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [],
+          "error": "page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.opentable.com/my/account/signin"
+        },
+        "N": {
+          "final_host": "",
+          "page_kind": "error",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [],
+          "error": "page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.opentable.com/my/account/signin"
+        },
+        "C": {
+          "status": 404,
+          "final_host": "www.opentable.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": [
+            "akamai"
+          ]
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Hetzner",
+      "group": "refused",
+      "url": "https://hetzner.com/",
+      "policy": "allowed",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "www.hetzner.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "N": {
+          "status": 200,
+          "final_host": "www.hetzner.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "C": {
+          "status": 200,
+          "final_host": "www.hetzner.com",
+          "page_kind": "not_signin",
+          "signin_form": false,
+          "walled": false,
+          "wall_vendor": []
+        }
+      },
+      "opens_in_C_not_H": false
+    },
+    {
+      "site": "Spotify",
+      "group": "refused",
+      "url": "https://accounts.spotify.com/login",
+      "policy": "careful",
+      "by_setup": {
+        "H": {
+          "status": 200,
+          "final_host": "accounts.spotify.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 1168,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "N": {
+          "status": 200,
+          "final_host": "accounts.spotify.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 670,
+          "walled": false,
+          "wall_vendor": []
+        },
+        "C": {
+          "status": 200,
+          "final_host": "accounts.spotify.com",
+          "page_kind": "signin_form",
+          "signin_form": true,
+          "ms_to_form": 732,
+          "walled": false,
+          "wall_vendor": []
+        }
+      },
+      "opens_in_C_not_H": false
+    }
+  ]
+}

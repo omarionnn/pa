@@ -16,7 +16,7 @@ import {
 } from "./savedlogins.js";
 import { namedByThem, namesOf } from "./namedsite.js";
 import {
-  profileDirFor, guardContext, launchOptions, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser,
+  launchProfile, guardContext, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser,
   pinSite, pinExact, unpinSite,
 } from "./browser.js";
 import { dropIntake } from "./loginintake.js";
@@ -102,8 +102,8 @@ export function liveAskOk(trigger) {
 /** Launch the person's own saved profile for the sealed step, headless and guarded. Injectable for tests. */
 async function realLaunch({ conversationId }) {
   const { chromium } = await import("playwright");
-  const options = launchOptions(conversationId, { headless: true, viewport: { width: 1280, height: 900 } });
-  const context = await chromium.launchPersistentContext(profileDirFor(conversationId), options);
+  // The same launch as every flow: the real browser for a person it is on for, else today's (src/browser.js).
+  const context = await launchProfile(chromium, conversationId, { headless: true, viewport: { width: 1280, height: 900 } });
   return {
     context,
     close: async () => { await context.close().catch(() => {}); },

@@ -21,7 +21,7 @@ import { config, stamp } from "./config.js";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
 import * as social from "./socialsignin.js";
-import { profileDirFor, guardContext, launchOptions, withProfile } from "./browser.js";
+import { profileDirFor, realProfilePath, realBrowserFor, guardContext, launchProfile, withProfile } from "./browser.js";
 import { SITES, siteNames } from "./sites.js";
 // Both registries: the errand sites and the services whose subscriptions cancel on the web. The
 // window this command opens is the same window either way — the person signs in themselves and the
@@ -78,9 +78,9 @@ const HOLDER = "signin_cli";
 async function headlessProbe(conversationId, siteName, { provider = "" } = {}) {
   return withProfile(conversationId, HOLDER, async () => {
     const launcher = await chromium();
-    const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), launchOptions(conversationId, {
+    const ctx = await launchProfile(launcher, conversationId, {
       headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
-    }));
+    });
     await guardContext(ctx);
     try {
       const page = ctx.pages()[0] ?? await ctx.newPage();
@@ -98,14 +98,14 @@ async function openForSignin(conversationId, entry, { provider = "" } = {}) {
 
 async function windowFor(conversationId, entry, { provider = "" } = {}) {
   const launcher = await chromium();
-  const dir = profileDirFor(conversationId);
+  const dir = realBrowserFor(conversationId) ? realProfilePath(conversationId) : profileDirFor(conversationId);
   console.log(`Opening ${entry.label} in a window. Profile: ${dir}`);
   if (provider) console.log(`Pressing the "${social.LABELS[provider]}" button for you, if the page has one.`);
   console.log(`Sign in however you normally would, then CLOSE THE WINDOW. Nothing is typed for you.\n`);
 
   let ctx;
   try {
-    ctx = await launcher.launchPersistentContext(dir, launchOptions(conversationId, { headless: false, ...LAUNCH }));
+    ctx = await launchProfile(launcher, conversationId, { headless: false, ...LAUNCH });
   } catch (e) {
     if (/Executable doesn't exist|browserType.launch/i.test(e.message)) {
       fail("Chromium is not downloaded on this machine. Run: npx playwright install chromium");
@@ -176,9 +176,9 @@ if (args.includes("--forget")) {
   if (!entry) fail(`--forget needs a site. Known: ${allNames().join(", ")}`);
   const out = await withProfile(conversationId, HOLDER, async () => {
     const launcher = await chromium();
-    const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), launchOptions(conversationId, {
+    const ctx = await launchProfile(launcher, conversationId, {
       headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
-    }));
+    });
     try {
       return await signin.forgetSite(ctx, conversationId, entry.site);
     } finally {
