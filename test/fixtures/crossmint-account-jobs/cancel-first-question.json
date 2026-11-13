@@ -1,0 +1,176 @@
+{
+  "about": "A REAL run of the account-job cancel path against Crossmint Agent Checkouts (production API), recorded once and scrubbed. A throwaway Crossmint user with an empty browser profile, no email and no card: it could cancel nothing and buy nothing. It reached the site's sign-in page, asked its first question, was declined and cancelled by Reason, and the throwaway profile was deleted. Ids, the message id and times are replaced; nothing here is anyone's personal data.",
+  "recorded_at": "2026-11-13T04:38:21.962Z",
+  "recorded_by": "a one-off script on the live host calling src/accountjobs.js startCancel at branch feat/account-jobs (PR #528)",
+  "site": "app.link.com",
+  "create": {
+    "status": 202,
+    "request": {
+      "request": {
+        "startUrl": "https://app.link.com/",
+        "task": "Cancel one subscription in my Link account: \"Cardboard Starter\". Nothing else. I should already be signed in. If Link asks me to sign in, ask me for what it needs (my email, then a one-time code or my password) and nothing more. Open the subscription or billing settings and find \"Cardboard Starter\". If there is no such subscription on this account, stop and say so; never cancel a different one. Go through the cancellation steps. Decline every offer to stay, pause, downgrade or take a discount. If a reason is required, choose \"Other\". STOP at the last step, before the click that makes the cancellation final, and ask me ONE question that begins with the words \"CONFIRM CANCELLATION:\" and states the plan's name, its price, and the date my access ends. Only finish after I answer yes to that question. This must cost nothing. Never pay, never buy, never agree to a fee, never add or change a payment method. If cancelling needs a payment, stop and say so. When you are done, end your final summary with one line, exactly \"RESULT: CANCELLED\" if Link now shows the subscription cancelled or set to end and not renew (and give the date access ends), or \"RESULT: NOT CANCELLED\" followed by why."
+      },
+      "browser": {
+        "profileId": "<uuid>"
+      },
+      "constraints": {
+        "maxCost": {
+          "amount": "0.000001",
+          "currency": "USD"
+        }
+      }
+    },
+    "response_keys": [
+      "browser",
+      "createdAt",
+      "input",
+      "requiredAction",
+      "revision",
+      "runId",
+      "status"
+    ],
+    "response_status": "queued"
+  },
+  "profile_create": [
+    {
+      "method": "POST",
+      "status": 201,
+      "response_keys": [
+        "createdAt",
+        "id",
+        "label",
+        "updatedAt"
+      ]
+    }
+  ],
+  "run_snapshots": [
+    {
+      "seconds_after_start": 1,
+      "keys": [
+        "browser",
+        "createdAt",
+        "input",
+        "requiredAction",
+        "revision",
+        "runId",
+        "status"
+      ],
+      "status": "running",
+      "revision": 1,
+      "browser_keys": [
+        "embedUrl",
+        "permissions"
+      ],
+      "requiredAction": null,
+      "result": null,
+      "reason": null
+    },
+    {
+      "seconds_after_start": 7,
+      "keys": [
+        "browser",
+        "createdAt",
+        "input",
+        "requiredAction",
+        "revision",
+        "runId",
+        "status"
+      ],
+      "status": "awaiting_input",
+      "revision": 2,
+      "browser_keys": [
+        "embedUrl",
+        "permissions"
+      ],
+      "requiredAction": {
+        "type": "input_response",
+        "messageId": "<message-id>",
+        "requestId": "<uuid>",
+        "request": {
+          "expiresAt": "<iso-time, ten minutes after the question>",
+          "question": "Link isn't signed in yet — it opened a login page. What email address should I use to sign in to your Link account?",
+          "interaction": {
+            "kind": "form",
+            "fields": [
+              {
+                "key": "email",
+                "label": "Email address for your Link account",
+                "required": false,
+                "handling": "standard",
+                "input": {
+                  "kind": "text",
+                  "autoComplete": "email"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "result": null,
+      "reason": null
+    },
+    {
+      "seconds_after_start": 17,
+      "keys": [
+        "browser",
+        "createdAt",
+        "input",
+        "requiredAction",
+        "result",
+        "revision",
+        "runId",
+        "status"
+      ],
+      "status": "cancelled",
+      "revision": 6,
+      "browser_keys": [
+        "embedUrl",
+        "permissions"
+      ],
+      "requiredAction": null,
+      "result": {
+        "outcome": "cancelled",
+        "summary": "The checkout was cancelled."
+      },
+      "reason": null
+    }
+  ],
+  "messages_sent": [
+    {
+      "status": 202,
+      "part": {
+        "type": "input_response",
+        "action": "decline"
+      }
+    }
+  ],
+  "cancel_calls": [
+    {
+      "status": 202
+    }
+  ],
+  "what_reason_did": {
+    "first_stop": {
+      "state": "needs_answer",
+      "ask_kind": "identity",
+      "seconds": 10
+    },
+    "final_job": {
+      "state": "not_done",
+      "outcome": "stopped",
+      "route": "none"
+    },
+    "attempt_line_keys": [
+      "account_job",
+      "kind",
+      "route",
+      "outcome",
+      "ms",
+      "at"
+    ],
+    "profile_erased": {
+      "ok": true,
+      "erased": true
+    }
+  }
+}

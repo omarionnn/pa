@@ -124,10 +124,22 @@ startOps({ runtime, router, log });
         log,
       });
     }
+    // Account jobs (src/accountjobs.js, REASON_ACCOUNT_JOBS): a subscription cancelled or a bill paid inside
+    // their own account. Its runs are checkout runs, so they are followed and resumed with the rest.
+    const acct = await import("./accountjobs.js");
+    if (acct.jobsMode() !== "off") {
+      acct.attach({
+        say: (c, text) => runtime.say(c, text),
+        wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
+        log,
+      });
+    }
     await shop.foodReady;
     await shop.flightReady;   // a resumed flight checkout meets its traveler form and its payment checks (src/flightcheckout.js)
+    await shop.acctReady;     // a resumed account job's run is never followed as a shopping run
     const resumed = shop.resumeFollowing();
     if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });
+    if (acct.jobsMode() !== "off") { const n = acct.resume(); if (n) log({ account_job_mail_watches_resumed: n }); }
   }
 }
 

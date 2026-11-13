@@ -421,6 +421,8 @@ export function sealTravelers(tool, value, depth = 0) {
   if (tool === "directions" && depth === 0 && !Array.isArray(value)) return sealWalk(value);
   // A checkout's answers (shop_answer: their address, phone, email) never reach a log or ledger row.
   if (tool === "shop_answer" && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
+  // An account job's answers (their email, a one-time code they sent, a bill's lookup details) neither.
+  if ((tool === "account_job_answer" || tool === "account_cancel_confirm") && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
   const travelers = TRAVELER_TOOLS.has(tool);
   if (!travelers && !SECRET_TOOLS.has(tool)) return value;
   if (Array.isArray(value)) return value.map(v => sealTravelers(tool, v, depth + 1));
