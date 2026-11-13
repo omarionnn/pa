@@ -320,7 +320,10 @@ test("no Gmail: asked ONCE in one line; their reply goes to the site, the thread
   assert.equal(em.takeCodeReply(CONV, "thank-you"), null, "a hyphenated word is not a code");
   assert.equal(em.takeCodeReply(CONV, "follow-up"), null);
   assert.equal(em.takeCodeReply(THEIRS, "482 913"), null, "someone else's thread is not this sign-in");
-  const placeholder = em.takeCodeReply(CONV, "482 913");
+  // Only what they typed: a note alone is never a code, and a note under a typed code never lets it
+  // through to the thread.
+  assert.equal(em.takeCodeReply(CONV, "[482913]"), null, "a note is not a code");
+  const placeholder = em.takeCodeReply(CONV, "482 913\n[they sent that with the 'slam' screen effect on it — that is them being emphatic, so read it that way]");
   assert.ok(placeholder && !placeholder.includes(CODE) && !placeholder.includes("482"), "the thread never sees the code");
   assert.equal(em.takeCodeReply(CONV, "482913"), null, "taken once");
   await out.run;
