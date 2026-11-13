@@ -676,6 +676,9 @@ export const config = {
   // The agent made once by scripts/cartesia-agent-setup.mjs; the voice is set on it (Gemma, en-GB).
   cartesiaAgentId: String(process.env.REASON_CARTESIA_AGENT_ID ?? "").trim(),
   cartesiaVoice: String(process.env.REASON_CARTESIA_VOICE ?? "").trim() || "62ae83ad-4f6a-430b-af41-a9bede9286ca",
+  // Inline Sonic emotion tags (<emotion value="calm"/>) in the agent's replies: off until heard on a real
+  // call. Cartesia calls them beta and unreliable on voices not tagged Emotive (Gemma is a "stable" voice).
+  cartesiaEmotionTags: String(process.env.REASON_CARTESIA_EMOTION_TAGS ?? "").trim().toLowerCase() === "on",
   // How Reason sounds on calls (Omari's call voice spec 11-11, src/calls/manner.js): owner | on | off (unset = off).
   callManner: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes", "everyone"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_MANNER ?? "").trim().toLowerCase()),
   // What a call carries into the next call and the text after it (call audit 11-11, src/calls/carryover.js): owner | on | off (unset = off).
