@@ -51,6 +51,7 @@ const back = await import("../src/pages/backlink.js");
 const { header } = await import("../src/pages/paperkit.js");
 const luPage = await import("../src/pages/loginuse.js");
 const slog = await import("../src/signinlog.js");
+const refusing = await import("../src/refusing.js");
 let chromium;
 try { ({ chromium } = await import("playwright")); } catch { /* no browser */ }
 const skip = { skip: chromium ? false : "playwright/chromium not installed" };
@@ -197,6 +198,7 @@ after(async () => {
 });
 
 async function save(path, over = {}) {
+  refusing._resetRefusals(); // each test starts with acme.test not on the refusing list
   for (const r of sl.listLogins(ME)) sl.removeLogin(ME, r.id);
   return sl.saveLogin(ME, {
     site: "acme.test", label: "acme.test", signinOrigin: `https://acme.test:${PORT}`, signinPath: path, permission: "standing",
@@ -327,6 +329,13 @@ test("A2: 'Something went wrong' is site_trouble (not a format problem even with
   assert.ok(r.next_try_at >= t0 + 6 * 3_600_000 - 5_000 && r.next_try_at < t0 + 7 * 3_600_000, "6 hours, not a day");
   await new Promise((res) => setTimeout(res, 500));
   assert.equal(notes.length, 1, "never a third go");
+  // Twice in a row: the site turned the browser away, written down for the site (src/refusing.js).
+  const mark = refusing.refusingSite("acme.test");
+  assert.equal(mark?.evidence, "generic_error_twice");
+  const next = await signIn();
+  assert.equal(next.result, "refuses_software", "the next ask is answered up front");
+  assert.match(next.say_exactly, /turns away browsers run by software, including mine/);
+  refusing._resetRefusals();
   assert.equal((await signIn()).result, "paused");
 });
 
@@ -338,6 +347,7 @@ test("A2: site_trouble then the retry signs in: the person is told it worked", s
   assert.equal(out.result, "site_trouble", out.say_exactly);
   assert.ok(await until(() => notes.length === 1));
   assert.match(notes[0], /ended: signed_in/);
+  assert.equal(refusing.refusingSite("acme.test"), null, "one site_trouble then a sign-in is not a refusal");
   assert.equal(posted.length, 2);
   assert.equal(row(id).state, "working");
   assert.ok(!row(id).next_try_at);
@@ -353,6 +363,7 @@ test("A2: a wrong password keeps today's rules: no retry, no note, locked until 
   assert.equal(posted.length, 1, "no automatic retry");
   assert.equal(notes.length, 0);
   assert.equal(row(id).state, "wrong_password");
+  assert.equal(refusing.refusingSite("acme.test"), null, "a wrong password never marks the site");
 });
 
 // ---------------------------------------------------------------- A3: a code sent INSTEAD of the password (2026-11-13)

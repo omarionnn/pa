@@ -86,6 +86,21 @@ export const HONESTY_LINES = [
   "If Reason's answer says it is not done yet, needs something from them, or will be picked up by text after the call, say exactly that. Never state a price, time, distance or opening hour that Reason's answers in this call did not give you.",
 ];
 
+/**
+ * Turn-taking, as words (call 113): it talked over him five times, said "Skipping for now." out loud,
+ * asked "You still there?" four times (once right after "give me a second"), and two of Reason's answers
+ * were lost when he spoke over them. When to speak is Cartesia's turn detection; these are the parts a
+ * prompt can carry. The agent settings that go with them are `CALL_FEEL` in scripts/cartesia-agent-setup.mjs.
+ */
+export const TURN_LINES = [
+  "If their words stop on a filler or mid-thought (\"um\", \"so\", \"and\", \"like\", \"because\", \"I said\"), they are not done: use skip_turn and wait. Never start talking over them.",
+  "When they ask you to wait (\"give me a second\", \"hold on\", \"one sec\", \"wait\"), use skip_turn and say nothing until they speak again.",
+  "When you skip a turn, say nothing at all: never say \"skipping\", never name a tool, never read out a marker or anything in brackets.",
+  "Only ask if they're still there when the line has really gone quiet: never while Reason is looking something up, never after they asked you to wait, never right after you skipped a turn, at most once per silence and at most twice in a call.",
+  "If they talk over you before you got to the point of Reason's answer, first answer what they just said, then give that point again in one short sentence. Never drop it.",
+  "When Reason's answer reads a time, date or number back to check it (\"eight ten PM, right?\"), say it exactly that way and wait for their yes. Never read one back or confirm one yourself: Reason does that.",
+];
+
 /** Expression: Sonic reads the feeling from the words, so the words carry it. */
 export const EXPRESSION_LINES = [
   "Your voice takes its feeling from your words, so write the way you'd say it: warm and easy on personal things, light on a joke, calmer and slower on something heavy (short sentences, a comma for a beat). Keep it subtle: no exclamation marks on ordinary lines, never gushing.",
@@ -97,7 +112,7 @@ export const EMOTION_TAG_LINE = "You may start a reply with one tag that sets it
 
 /** The lines added to `reason_call` on this line: no names, nothing about anyone. */
 export function cartesiaCallLines({ tags = config.cartesiaEmotionTags } = {}) {
-  return [...MANNER_LINES, ...MOMENT_LINES, ...HONESTY_LINES, ...EXPRESSION_LINES, ...(tags ? [EMOTION_TAG_LINE] : [])].join("\n");
+  return [...MANNER_LINES, ...MOMENT_LINES, ...HONESTY_LINES, ...TURN_LINES, ...EXPRESSION_LINES, ...(tags ? [EMOTION_TAG_LINE] : [])].join("\n");
 }
 
 // ---------- a slow ask_reason ----------
@@ -157,6 +172,102 @@ export function confirmsDone(question, reply) {
   const r = String(reply ?? "").trim();
   return !!r && DONE_QUESTION.test(String(question ?? "")) && YES_FIRST.test(r) && !HOLDING.test(r) && !NOT_A_CLAIM.test(r);
 }
+
+// ---------- what the voice is handed, and what it was cut off saying (call 113) ----------
+
+/**
+ * Internal words that are never for the phone: a skip-turn marker said as words (call 113: "Skipping for
+ * now." out loud), the silence marker, and tool names. `forVoice` takes them out of Reason's words at the
+ * one place those words are handed to the voice (`spoken`); the agent's own lines are checked when they
+ * end (`turnEnded`, logged) and kept out by `TURN_LINES`. Each entry is one spoken form, for the test.
+ */
+export const VOICE_MARKERS = [
+  "Skipping for now.", "Skipping this turn.", "Skipping my turn.", "Skip turn.", "skip_turn", "[skip]", "<skip/>",
+  "[silence]", "[no reply]", "NO_REPLY", "ask_reason", "verify_caller", "end_call", "message_send", "task_start", "web_search",
+];
+// A spoken skip marker is a sentence of its own ("Skipping for now.", "Okay, skip turn."), never words inside
+// one: "skip the turn onto Main" and "I'm skipping for now the 8 am class" are left alone.
+const SENTENCE_START = String.raw`(?:^|(?<=[.!?…]\s*))(?:(?:ok(?:ay)?|alright|sure|right)[,.]?\s+)?`;
+const SENTENCE_END = String.raw`(?:[.!…]+(?=\s|$)|\s*$)`;
+const MARKER_RES = [
+  new RegExp(`${SENTENCE_START}(?:I'?m\\s+|I\\s+am\\s+|I'?ll\\s+be\\s+)?skipping\\s+(?:this\\s+turn|my\\s+turn|the\\s+turn|a\\s+turn|for\\s+now)${SENTENCE_END}`, "gi"),
+  new RegExp(`${SENTENCE_START}skip(?:ped|ping)?[\\s-]+(?:this\\s+|my\\s+|the\\s+|a\\s+)?turn${SENTENCE_END}`, "gi"),
+  /[[<]\/?\s*(?:skip|silence|pause|turn|no[\s_-]?reply)\s*\/?\s*[\]>]/gi,
+  /\bNO[_\s]REPLY\b[.!,]*/g,
+];
+// A snake_case word (not inside a link or an address): a tool name or marker of ours comes out; any other
+// ("store_credit", "model_error") is said as its words, so nothing real is lost.
+const SNAKE = /(?<![\w/.:@-])[a-z]+(?:_[a-z0-9]+)+(?![\w/@-]|\.\w)([.!,]*)/g;
+const DROP_SNAKE = new Set(VOICE_MARKERS.filter(m => /^[a-z]+(?:_[a-z0-9]+)+$/.test(m)));
+/** Reason's words with every internal marker taken out, and the spacing put right after; words with none are returned as they came. */
+export function forVoice(text) {
+  let t = String(text ?? "");
+  let removed = false;
+  for (const re of MARKER_RES) t = t.replace(re, () => { removed = true; return " "; });
+  t = t.replace(SNAKE, (w, punct) => {
+    const word = w.slice(0, w.length - punct.length);
+    if (DROP_SNAKE.has(word)) { removed = true; return " "; }
+    return word.replace(/_/g, " ") + punct;
+  });
+  if (!removed) return t.trim();
+  // Only where something came out: the spacing and stray punctuation it left (an ellipsis stays).
+  return t.replace(/\(\s*\)/g, " ").replace(/\s+([.,!?;:)])/g, "$1").replace(/^[\s.,;:!?…-]+/, "")
+    .replace(/([.!?])[,;:]+/g, "$1").replace(/(?<!\.)\.\.(?!\.)/g, ".").replace(/([!?])\./g, "$1").replace(/\s{2,}/g, " ").trim();
+}
+/** Did this line carry a marker? (Text the agent already spoke: logged, it cannot be unsaid.) */
+export const hasMarker = (text) => { const t = String(text ?? "").replace(/\s+/g, " ").trim(); return !!t && forVoice(t) !== t.replace(/\s+([.,!?;:])/g, "$1"); };
+
+/** The agent's "You still there?" (Cartesia's inactivity check-in, `config.turn.inactivity_check_in_secs`). */
+export const CHECK_IN = /\b(?:(?:are\s+)?you\s+still\s+(?:there|with\s+me)|are\s+you\s+there|you\s+there\s*\?|still\s+(?:there|with\s+me)\s*\?|hello\s*\?\s*$)/i;
+/** They asked Reason to wait: "give me a second", "hold on", "one sec", "wait" (not "wait for 8"). */
+export const WAIT_ASK = /\b(?:give\s+me\s+(?:a|one|a\s+quick)\s+(?:sec(?:ond)?|minute|moment|min)|hold\s+on|hang\s+on|one\s+sec(?:ond)?|just\s+a\s+(?:sec(?:ond)?|minute|moment)|wait\s+a\s+(?:sec(?:ond)?|minute|moment)|(?:^|[.,!?]\s*)wait(?=\s*(?:[.,!?]|$)))/i;
+
+/** An answer counts as heard once this share of its words was spoken before they cut in. */
+export const HEARD_SHARE = 0.6;
+/** The short form of an answer they did not hear: its first sentence, cut to this. */
+export const SHORT_MAX = 160;
+export function shortForm(text, max = SHORT_MAX) {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  const first = (t.match(/^.+?[.!?](?=\s|$)/) ?? [t])[0];
+  return first.length > max ? `${first.slice(0, max - 1).replace(/\s+\S*$/, "")}…` : first;
+}
+const wordsOf = (s) => String(s ?? "").toLowerCase().match(/[a-z0-9']+/g) ?? [];
+/** How much of `answer` is in what was `spoken`, 0..1, by words. */
+export function heardShare(spoken, answer) {
+  const want = wordsOf(answer);
+  if (!want.length) return 1;
+  const got = new Set(wordsOf(spoken));
+  return want.filter(w => got.has(w)).length / want.length;
+}
+/** An answer carrying a code, password or account-like number: never offered again by `unheard`. */
+export const SECRETISH = /\b(?:code|passcode|password|passphrase|pin|one[-\s]time|otp|verification|cvv|card\s+number|account\s+number|routing\s+number|social\s+security|ssn)\b|\b\d(?:[\s-]?\d){5,}\b/i;
+/** What the next answer leads with when they talked over the last one before its point. */
+export const reofferLead = (short) => `They spoke over Reason's last answer before hearing it: first say its point again in one short sentence ("${short}"), then the new answer.`;
+/** The result when Reason has nothing new but an answer was lost: say the lost point again. */
+export const reofferOnly = (short) => `They spoke over Reason's last answer before hearing it: say its point again now, in one short sentence: "${short}"`;
+/** In the call's record when an answer was lost: the brain's next turn and the after-call text see it. */
+export const unheardNote = (short) => `(They spoke over this before hearing it, so they have NOT heard it: "${short}")`;
+
+/** A lookup this slow (ask to answer): the answer opens by owning the wait, in a few words. */
+export const SLOW_ACK_MS = 12_000;
+export const SLOW_ACK_LEAD = "That took a while: open with a few words owning the wait (\"Sorry, that took a minute.\"), then the answer.";
+
+/**
+ * Reason's turn put an ask off until after the call (src/calls/verify.js: an inbound call is not verified
+ * by caller ID alone), and its words for the call don't say so. Call 113: the line was never heard, three
+ * times. This is said at once instead of nothing.
+ */
+export const DEFERRED_LINE = "I can't do that one from a call. I'll do it by text right after we hang up, and tell you there.";
+const SAYS_DEFERRED = /\b(?:by\s+text|text\s+you|texting|after\s+(?:the|this|our)\s+call|after\s+we\s+hang\s+up|when\s+we\s+hang\s+up|as\s+soon\s+as\s+(?:I|we)\s+hang\s+up)\b/i;
+/** Reason's reply with the deferral said, if its words leave it out. Exported for tests. */
+export function withDeferredLine(reply) {
+  const text = String(reply?.text ?? "").trim();
+  if (text && SAYS_DEFERRED.test(text) && !reply?.skip) return { reply, added: false };
+  return { reply: { ...(reply ?? {}), text: reply?.skip || !text ? DEFERRED_LINE : `${DEFERRED_LINE} ${text}`, skip: false }, added: true };
+}
+
+/** The caller's likely ways of saying a time, in the keyterm slots their names leave free (call 113: "8:10" heard as "8 to 10"). */
+export const TIME_KEYTERMS = ["PM", "AM", "o'clock", "half past", "quarter past", "quarter to"];
 
 // ---------- falling back, by reason ----------
 
@@ -252,7 +363,9 @@ function variablesOf(call) {
   // favours them. A slot with nothing for it says "Reason" (an empty keyterm is not known to be allowed).
   let names = [];
   try { names = (todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id })?.names ?? []).map(n => clip(n, 60)).filter(Boolean); } catch { /* none */ }
-  const keyterms = Object.fromEntries(Array.from({ length: KEYTERM_SLOTS }, (_, i) => [`keyterm_${i + 1}`, names[i] ?? "Reason"]));
+  // Two slots are kept for the ways a time is said (TIME_KEYTERMS), whatever the names.
+  const terms = [...names.slice(0, KEYTERM_SLOTS - 2), ...TIME_KEYTERMS.filter(t => !names.includes(t))];
+  const keyterms = Object.fromEntries(Array.from({ length: KEYTERM_SLOTS }, (_, i) => [`keyterm_${i + 1}`, terms[i] ?? "Reason"]));
   return {
     ...keyterms,
     // No turn gate here: the agent's own turn-taking replaces it (section 3), so its lines are left out.
@@ -290,7 +403,7 @@ const WAITED = Symbol("waited");
  * its Cartesia call id): calls running at once on the one agent share nothing but the agent's id.
  */
 export class CartesiaAgentCall {
-  constructor({ call, twilio, openAgent = openAgentSocket, brain, finish = async () => {}, fallBack = null, deleteCall = deleteAgentCall, log = () => {}, now = () => Date.now(), timers = globalThis, readyMs = READY_MS, textMs = TEXT_MS, textOwner = null }) {
+  constructor({ call, twilio, openAgent = openAgentSocket, brain, finish = async () => {}, fallBack = null, deleteCall = deleteAgentCall, log = () => {}, now = () => Date.now(), timers = globalThis, readyMs = READY_MS, textMs = TEXT_MS, textOwner = null, deferredNow = null }) {
     this.call = call;
     this.twilio = twilio;
     this.openAgent = openAgent;
@@ -305,6 +418,8 @@ export class CartesiaAgentCall {
     this.textMs = textMs;
     // A slow answer the agent said it would text: the outbox, as any mid-call text of Reason's (./voice.js).
     this.textOwner = textOwner ?? ((text) => queueMidCall({ call, text, kind: "cartesia_late_answer", log }));
+    // What this call has put off until after it (calls.verify_deferred, src/calls/verify.js), read fresh.
+    this.deferredNow = deferredNow ?? (() => { try { return String(db.getCall(call.conversation_id, call.id)?.verify_deferred ?? ""); } catch { return ""; } });
     // Asks still waiting on Reason; one still waiting when the call ends goes by text.
     this.asking = new Set();
     // The room under the call, and with REASON_CARTESIA_LOOKUP_MUSIC on, soft music over it while a
@@ -332,7 +447,16 @@ export class CartesiaAgentCall {
     this.endWhy = "";
     this.startedAt = now();
     // The numbers the first call is for (section 5): kept per reply, logged as they happen and at the end.
-    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0 };
+    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0, markers: 0, checkIns: 0, unheard: 0, reoffered: 0, deferredSaid: 0 };
+    // Reason's latest answer handed to the voice, until the agent's next turn says how much of it was
+    // spoken; one they talked over before its point, until it is said again (`turnEnded`, `spoken`).
+    this.answerOut = null;
+    this.unheard = null;
+    // When they last asked Reason to wait, and when Reason last had nothing to say (a skip).
+    this.waitAskedAt = -Infinity;
+    this.skippedAt = -Infinity;
+    // The after-call queue as it stood when the deferral line was last added (`ask`).
+    this.deferredSaidFor = "";
     /** When Reason's latest answer said something was done (`claimsDone`), for `turnEnded`'s check. */
     this.claimedAt = -Infinity;
     this.theirTurnEndAt = null;
@@ -527,13 +651,55 @@ export class CartesiaAgentCall {
       this.theirTurnEndAt = this.now();
       this.replyKind = "plain";
       this.askAnsweredAt = null;
+      if (WAIT_ASK.test(text)) this.waitAskedAt = this.now();
     } else {
       this.m.laughs += (String(e.text ?? "").match(/\[laughter\]/gi) ?? []).length;
+      this.agentTurnEnded(e, text);
     }
     // Their clock beside ours (seconds into their session).
     const clock = { turn: Number(e.turn) || 0, role: who, end_time: Number(e.end_time) || null, eager_end: Number(e.eager_end_timestamp) || null, at_ms: this.now() - this.startedAt };
     this.m.turnClock.push(clock);
     this.log({ cartesia_turn: this.call.id, ...clock });
+  }
+
+  /**
+   * One of the agent's turns ended (`text` is what it actually spoke, `interrupted` whether he cut in:
+   * their agent WebSocket's turn_ended). Three checks, none of which changes when anyone speaks:
+   * a marker said out loud, a check-in and what it came after, and Reason's answer talked over before
+   * its point (kept, and offered again by the next answer: `spoken`).
+   */
+  agentTurnEnded(e, text) {
+    const t = this.now();
+    if (text && hasMarker(text)) {
+      this.m.markers += 1;
+      this.log({ cartesia_marker_spoken: this.call.id, turn: Number(e.turn) || 0 });
+    }
+    if (text && CHECK_IN.test(text) && text.length <= 40) {
+      this.m.checkIns += 1;
+      const ago = (at) => (Number.isFinite(at) ? t - at : null);
+      this.log({ cartesia_check_in: this.call.id, n: this.m.checkIns, after_wait_ask_ms: ago(this.waitAskedAt), after_skip_ms: ago(this.skippedAt), lookup_pending: this.asking.size > 0 });
+    }
+    const out = this.answerOut;
+    this.answerOut = null;
+    if (out) {
+      const share = heardShare(text, out.text);
+      // A code, password or long number is never said again from memory: no offer, no note quoting it.
+      if (e.interrupted && share < HEARD_SHARE && SECRETISH.test(out.text)) {
+        this.log({ cartesia_answer_unheard: this.call.id, turn: Number(e.turn) || 0, heard_pct: Math.round(share * 100), withheld: true });
+      } else if (e.interrupted && share < HEARD_SHARE) {
+        this.unheard = { text: out.text, short: shortForm(out.text), at: t };
+        this.m.unheard += 1;
+        this.turns.push({ who: "reason", text: unheardNote(this.unheard.short), at: t });
+        this.log({ cartesia_answer_unheard: this.call.id, turn: Number(e.turn) || 0, heard_pct: Math.round(share * 100) });
+      }
+      return;
+    }
+    // The agent said the lost point again on its own (TURN_LINES): nothing left to offer.
+    if (this.unheard && !e.interrupted && heardShare(text, this.unheard.short) >= HEARD_SHARE) {
+      this.m.reoffered += 1;
+      this.log({ cartesia_answer_reoffered: this.call.id, by: "agent" });
+      this.unheard = null;
+    }
   }
 
   /** The conversation so far as Reason's turn reads it (the same shape a GPT-Live hand-off sends). */
@@ -574,7 +740,7 @@ export class CartesiaAgentCall {
     // Waited for, up to TEXT_MS: the answer itself is the result, and the agent speaks it.
     const out = await this.within(p.done, this.textMs);
     if (p.texting) return; // the call ended meanwhile: it went by text
-    if (out !== WAITED) { this.asking.delete(p); this.music?.end(p); return answer(...this.spoken(out)); }
+    if (out !== WAITED) { this.asking.delete(p); this.music?.end(p); return answer(...this.spoken(out, { waitedMs: this.now() - askedAt })); }
     // Past TEXT_MS: the agent says once that it will come by text, and the answer is texted when it lands.
     this.toText(p);
     this.log({ cartesia_ask_to_text: this.call.id, ms: this.now() - askedAt });
@@ -593,10 +759,21 @@ export class CartesiaAgentCall {
   /** Reason's turn for one ask; logged once it is back. A late one the agent said it would text goes by text. */
   async ask(request, p) {
     let reply;
+    const deferredBefore = this.deferredNow();
     try {
       reply = await this.brain(this.messages(request));
     } catch (err) {
       reply = { text: "", error: (err?.message ?? String(err)).split("\n")[0] };
+    }
+    // This turn put something off until after the call: it is said now, in words, never a skip.
+    // verify_deferred only grows on a call (verify.js queueForAfter); a growth another ask already said is not said twice.
+    const deferredAfter = this.deferredNow();
+    if (!reply?.error && deferredAfter && deferredAfter !== deferredBefore && deferredAfter !== this.deferredSaidFor) {
+      this.deferredSaidFor = deferredAfter;
+      const d = withDeferredLine(reply);
+      reply = d.reply;
+      this.m.deferredSaid += 1;
+      this.log({ cartesia_deferred_said: this.call.id, line_added: d.added });
     }
     const answeredAt = this.now();
     const ask = { asked_to_answered_ms: answeredAt - p.askedAt, error: !!reply?.error, skip: !!reply?.skip, to_text: p.texting, ...(this.music ? { music: answeredAt - p.askedAt >= MUSIC_DELAY_MS } : {}) };
@@ -633,12 +810,25 @@ export class CartesiaAgentCall {
     });
   }
 
-  /** What the agent is answered with for one reply of Reason's: `[result, isError]`. */
-  spoken(reply) {
+  /**
+   * What the agent is answered with for one reply of Reason's: `[result, isError]`. The one place Reason's
+   * words are handed to the voice, so the markers come out here (`forVoice`); a lost answer is offered
+   * again ahead of the new one, and a slow one opens by owning the wait.
+   */
+  spoken(reply, { waitedMs = 0 } = {}) {
     if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and offer to try again.", true];
-    if (reply?.skip || !String(reply?.text ?? "").trim()) return [NOTHING_TO_ADD, false];
+    const text = forVoice(reply?.text);
+    const lost = this.unheard;
+    if (reply?.skip || !text) {
+      this.skippedAt = this.now();
+      if (lost) { this.unheard = null; this.m.reoffered += 1; this.log({ cartesia_answer_reoffered: this.call.id, by: "nothing_new" }); return [reofferOnly(lost.short), false]; }
+      return [NOTHING_TO_ADD, false];
+    }
     if (reply?.endCall) this.endWhy = "goodbye";
-    return [reply.text, false];
+    this.answerOut = { text, at: this.now() };
+    const lead = [waitedMs >= SLOW_ACK_MS ? SLOW_ACK_LEAD : "", lost ? reofferLead(lost.short) : ""].filter(Boolean);
+    if (lost) { this.unheard = null; this.m.reoffered += 1; this.log({ cartesia_answer_reoffered: this.call.id, by: "next_answer" }); }
+    return [lead.length ? `${lead.join(" ")} Reason's answer: ${text}` : text, false];
   }
 
   /** Answering-machine detection is only asked for on third-party calls; their own call has nothing to do with a verdict. */
@@ -731,6 +921,7 @@ export class CartesiaAgentCall {
       talked_over: this.m.overs.filter(o => o.playing).length, clears: this.m.overs.length,
       talked_over_ms: med(this.m.overs.filter(o => o.playing).map(o => o.sound_to_clear_ms)),
       asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs, unbacked_claims: this.m.unbacked,
+      markers_spoken: this.m.markers, check_ins: this.m.checkIns, answers_unheard: this.m.unheard, answers_reoffered: this.m.reoffered, deferrals_said: this.m.deferredSaid,
     });
     // Their copy goes whatever the settle does; both are waited for, neither stops the other.
     const deleting = this.agentCallId ? this.deleteAndCheck().catch(() => null) : Promise.resolve(null);
