@@ -141,7 +141,7 @@ export async function intakePublicKey() {
   const name = gcpkms.intakeVersionName();
   if (intakeCache?.name === name) return { spki: Buffer.from(intakeCache.spki), name };
   const r = await gcpkms.getPublicKey(name);
-  if (r.algorithm && r.algorithm !== "RSA_DECRYPT_OAEP_4096_SHA256") throw new Error("vault KMS: the intake key is not RSA-OAEP 4096 SHA-256.");
+  if (r.algorithm !== "RSA_DECRYPT_OAEP_4096_SHA256") throw new Error("vault KMS: the intake key is not RSA-OAEP 4096 SHA-256.");
   const der = createPublicKey(r.pem).export({ type: "spki", format: "der" });
   intakeCache = { name, spki: Buffer.from(der) };
   return { spki: Buffer.from(der), name };

@@ -162,7 +162,7 @@ test("rule 3: a bank, gmail.com or uber.com gets no link and refusalFor's words;
   const log = rdb.db.prepare("SELECT event, outcome FROM login_log WHERE conversation_id = ? AND event = 'refused_never_list'").all(ME);
   assert.equal(log.length, 3);
   const { runTool } = await import("../src/tools.js");
-  const r = await runTool("saved_login_offer", { site: "chase.com" }, { conversationId: ME, messages: [] });
+  const r = await runTool("saved_login_offer", { site: "chase.com" }, { conversationId: ME, messages: [], kind: "user" });
   assert.equal(r.ok, false);
   assert.equal(r.say_exactly, refusalFor(classifySite("chase.com").category, "chase.com"));
   assert.equal(r.link, undefined);
@@ -201,7 +201,7 @@ test("the tool returns one fixed sentence and the link on its own line, quoting 
   process.env.REASON_SAVED_LOGINS = "owner";
   const { runTool } = await import("../src/tools.js");
   const r = await runTool("saved_login_offer", { site: "example.test" }, {
-    conversationId: ME, messages: [{ role: "user", content: "pay my example bill please" }], locateSigninPage: at(`${ORIGIN}/signin`),
+    conversationId: ME, messages: [{ role: "user", content: "pay my example bill please" }], locateSigninPage: at(`${ORIGIN}/signin`), kind: "user",
   });
   assert.equal(r.ok, true, JSON.stringify(r));
   const [sentence, link, ...rest] = r.say_exactly.split("\n");
@@ -211,6 +211,27 @@ test("the tool returns one fixed sentence and the link on its own line, quoting 
   const { linkParts } = await import("../src/links.js");
   assert.deepEqual(linkParts(r.say_exactly), [sentence, link], "the link goes as its own bubble");
   assert.deepEqual(Object.keys(r).sort(), ["note", "ok", "say_exactly"]);
+});
+
+// Review 2026-11-13 (H2): an email, a page, a timer or the nightly review never makes Reason text a save
+// link. Only a turn the person started with their own message; a missing kind counts as an event.
+test("the live ask: an event turn (or no turn kind) gets no save link and no row", async () => {
+  process.env.REASON_SAVED_LOGINS = "owner";
+  const { runTool } = await import("../src/tools.js");
+  const rows = () => rdb.db.prepare("SELECT COUNT(*) AS n FROM login_intake WHERE conversation_id = ?").get(ME).n;
+  const n0 = rows();
+  let located = 0;
+  for (const kind of ["event", undefined]) {
+    const r = await runTool("saved_login_offer", { site: "amaz0n-account.test" }, {
+      conversationId: ME, messages: [{ role: "user", content: "summarise my email" }], kind,
+      locateSigninPage: async () => { located++; return { found: true, url: "https://amaz0n-account.test/signin", kind: "password" }; },
+    });
+    assert.equal(r.ok, false, `kind ${kind}`);
+    assert.equal(r.error, "not_asked");
+    assert.equal(JSON.stringify(r).includes("/web/save-login/"), false, "no link in the result");
+  }
+  assert.equal(located, 0, "Reason's browser was not even sent to the site");
+  assert.equal(rows(), n0, "no link row was made");
 });
 
 // ---------------------------------------------------------------- the save
@@ -386,8 +407,14 @@ test("rule 6: forget deletes the row and its wrapped key with no Face ID; a pass
     try { return d.prepare("SELECT wrapped_key FROM saved_logins WHERE conversation_id = ?").get(P).wrapped_key; } finally { d.close(); }
   })();
   const { runTool } = await import("../src/tools.js");
+  // An open save link for the same site (review 2026-11-13, M2): forget takes it too.
+  const open = await offer("example.test", `${ORIGIN}/signin`, P);
+  assert.ok(await intake.viewFor(open), "the second link is open before the forget");
   const r = await runTool("saved_login_forget", { site: "example.test" }, { conversationId: P });
   assert.equal(r.removed, 1);
+  assert.equal(await intake.viewFor(open), null, "the open save link is gone with the login");
+  assert.equal(await intake.storeFromIntake(open, {}), null);
+  assert.equal(rdb.db.prepare("SELECT COUNT(*) AS n FROM login_intake WHERE conversation_id = ?").get(P).n, 0, "no intake row, used or open");
   assert.equal(sl.listLogins(P).length, 0);
   const p = sl.loginsDbPath();
   const bytes = Buffer.concat([p, `${p}-journal`, `${p}-wal`].filter(f => existsSync(f)).map(f => readFileSync(f)));
@@ -557,4 +584,22 @@ test("no passkey yet: the link proves the browser with a code texted to their th
   assert.equal((await pageSave(token, { a })).out.ok, true);
   assert.equal(intake.forgetSite(P, "example.test"), 1);
   process.env.REASON_SAVED_LOGINS = "owner";
+});
+
+// Review 2026-11-13 (L1): the purchase page's passkey keeps its old names, so with the vault off nothing a
+// person sees changes; only the save-login page (which passes its own switch) names it "Reason".
+test("passkey names: the purchase page is unchanged; the save-login page names it Reason", async () => {
+  const prev = process.env.REASON_PASSKEY_PAY;
+  process.env.REASON_PASSKEY_PAY = "on";
+  try {
+    const pay = await passkey.registrationOptions("dm:names-probe");
+    if (pay.ok) {
+      assert.equal(pay.options.user.name, "Purchases");
+      assert.equal(pay.options.user.displayName, "Reason purchases");
+    }
+    const login = await passkey.registrationOptions("dm:names-probe", { allowed: true });
+    assert.equal(login.ok, true);
+    assert.equal(login.options.user.name, "Reason");
+    assert.equal(login.options.user.displayName, "Reason");
+  } finally { if (prev === undefined) delete process.env.REASON_PASSKEY_PAY; else process.env.REASON_PASSKEY_PAY = prev; }
 });

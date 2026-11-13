@@ -174,7 +174,10 @@ const userIdOf = (c) => new Uint8Array(sha(`reason-pay-user|${c}`).subarray(0, 1
 export async function registrationOptions(conversationId, { allowed = null } = {}) {
   if (!(allowed ?? passkeyAllowedFor(conversationId))) return { ok: false, error: "not_available" };
   const options = await generateRegistrationOptions({
-    rpName: "Reason", rpID: RP_ID(), userID: userIdOf(conversationId), userName: "Reason", userDisplayName: "Reason",
+    // The save-login page (it passes `allowed`) names it "Reason"; the purchase page keeps its old names,
+    // so with the vault off nothing a person sees changes (review 2026-11-13).
+    rpName: "Reason", rpID: RP_ID(), userID: userIdOf(conversationId),
+    userName: allowed === null ? "Purchases" : "Reason", userDisplayName: allowed === null ? "Reason purchases" : "Reason",
     attestationType: "none", timeout: 120_000,
     excludeCredentials: live(conversationId).map(descriptor),
     authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
