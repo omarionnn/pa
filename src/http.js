@@ -36,6 +36,7 @@
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
+//   GET  /web/save-login/{token}, POST …/save|code|passkey   save a site's login once, sealed in the browser, Face ID (src/pages/savelogin.js; REASON_SAVED_LOGINS)
 //   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
 //   GET  /web/connect-all/{token}, POST …/go/{service}   connect the rest, after the first task that needed a connection worked (src/pages/connectall.js; REASON_CONNECT_AFTER)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
@@ -419,6 +420,25 @@ export function createServer({ router, runtime, log = () => {} }) {
           }
         } catch (e) {
           log({ http: "/web/approve", threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
+      // Save a login once on Reason's own page (src/pages/savelogin.js, vault PR 5). Behind
+      // REASON_SAVED_LOGINS; off for the link's person, or the vault not ready, it falls through to the
+      // same flat 404 as any path nobody was issued.
+      const saveLoginRoute = /^\/web\/save-login\/([A-Za-z0-9_-]{1,64}(?:\/[a-z]{1,12})?)$/.exec(url.pathname);
+      if (saveLoginRoute && (await import("./loginintake.js")).savedLoginsMode() !== "off") {
+        let out = null;
+        try {
+          const { saveLoginRequest } = await import("./pages/savelogin.js");
+          out = await saveLoginRequest({ sub: saveLoginRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), runtime, log });
+        } catch (e) {
+          // The name of what failed only: never the body, which is a sealed login and a signature.
+          log({ http: "/web/save-login", threw: e?.code ?? e?.name ?? "error" });
           return send(500, { ok: false, error: "server error" });
         }
         if (out) {

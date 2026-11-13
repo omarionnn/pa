@@ -403,3 +403,158 @@ test("rule 6: forget deletes the row and its wrapped key with no Face ID; a pass
   assert.deepEqual((await pageSave(t, { a: pf })).out, { ok: false, error: "unknown_passkey" }, "a removed passkey signs nothing");
   process.env.REASON_SAVED_LOGINS = "owner";
 });
+
+// ---------------------------------------------------------------- the page, over HTTP
+const { request: httpRequest } = await import("node:http");
+const { createServer } = await import("../src/http.js");
+const told = [];
+const serverLog = [];
+const server = createServer({
+  router: { webhook: async () => ({ status: 404, body: {} }), statuses: () => [] },
+  runtime: { _tell: async (c, text) => { told.push({ c, text }); return { ok: true }; } },
+  log: (e) => serverLog.push(e),
+});
+await new Promise(r => server.listen(0, "127.0.0.1", r));
+after(() => new Promise(r => server.close(r)));
+const PORT = server.address().port;
+function hit(path, { method = "GET", headers = {}, body = "" } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port: PORT, path, method, headers: { ...(body ? { "content-length": Buffer.byteLength(body) } : {}), ...headers } }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
+    });
+    req.on("error", reject);
+    req.end(body || undefined);
+  });
+}
+const FROM_REASON = { origin: "https://heyreason.com", "sec-fetch-site": "same-origin", "content-type": "application/json" };
+
+test("switch off: /web/save-login/<anything> is the same 404 as an unknown path; with it on, an unknown token is too", async () => {
+  process.env.REASON_SAVED_LOGINS = "owner";
+  const live = await offer();
+  process.env.REASON_SAVED_LOGINS = "off";
+  const unknown = await hit("/web/no-such-page-anywhere");
+  for (const p of [`/web/save-login/${live}`, `/web/save-login/${"A".repeat(32)}`, `/web/save-login/${live}/save`]) {
+    const r = await hit(p);
+    assert.equal(r.status, unknown.status, p);
+    assert.equal(r.body, unknown.body, `${p}: byte for byte`);
+  }
+  const post = await hit(`/web/save-login/${live}/save`, { method: "POST", headers: FROM_REASON, body: "{}" });
+  const postUnknown = await hit("/web/no-such-page-anywhere", { method: "POST", headers: FROM_REASON, body: "{}" });
+  assert.equal(post.status, postUnknown.status);
+  assert.equal(post.body, postUnknown.body);
+  process.env.REASON_SAVED_LOGINS = "owner";
+  const r = await hit(`/web/save-login/${"B".repeat(32)}`);
+  assert.equal(r.status, unknown.status);
+  assert.equal(r.body, unknown.body, "an unknown token: the same 404");
+});
+
+test("the page: their request quoted, the sign-in host, the wording; nonce scripts only, no frame, no-store, no-referrer; no typed value", async () => {
+  process.env.REASON_SAVED_LOGINS = "owner";
+  const token = await offer();
+  const r = await hit(`/web/save-login/${token}`);
+  assert.equal(r.status, 200);
+  const csp = r.headers["content-security-policy"];
+  const nonce = /script-src 'nonce-([A-Za-z0-9+/=]+)'/.exec(csp)?.[1];
+  assert.ok(nonce, csp);
+  assert.doesNotMatch(csp.split(";").find(d => d.includes("script-src")), /unsafe-inline|https?:/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /frame-src 'none'/);
+  assert.match(csp, /default-src 'none'/);
+  assert.equal(r.headers["cache-control"], "no-store");
+  assert.equal(r.headers["referrer-policy"], "no-referrer");
+  const scripts = [...r.body.matchAll(/<script([^>]*)>/g)].map(m => m[1]);
+  assert.ok(scripts.length >= 2);
+  assert.ok(scripts.every(a => a === ` nonce="${nonce}"`), "every script carries the nonce, none has a src");
+  assert.doesNotMatch(r.body, /<iframe|<img[^>]+src="https?:|<link[^>]+href="https?:/i, "no third-party frame, picture or style");
+  assert.match(r.body, /&ldquo;pay my example bill&rdquo;/);
+  assert.match(r.body, /login\.example\.test/);
+  assert.match(r.body, /Save with Face ID/);
+  assert.match(r.body, /The AI never sees it/);
+  assert.match(r.body, /Sign in whenever a job I ask for needs it/);
+  assert.match(r.body, /Ask me with Face ID every time/);
+  assert.match(r.body, /This page is heyreason\.com/);
+  const boxes = [...r.body.matchAll(/<input[^>]*id="sl-(?:user|pass)"[^>]*>/g)].map(m => m[0]);
+  assert.equal(boxes.length, 2);
+  assert.ok(boxes.every(b => !/\svalue=/.test(b)), "no login box is ever filled by the server");
+  const save = await pageSave(token);
+  assert.equal(save.out.ok, true);
+  const after = await hit(`/web/save-login/${token}`);
+  assert.equal(after.status, 410);
+  assert.deepEqual(valuesIn(r.body + after.body), [], "the HTML never holds a typed value");
+  intake.forgetSite(ME, "example.test");
+});
+
+test("careful site page: Face ID every time only, and the site's warning line above the button", async () => {
+  process.env.REASON_SAVED_LOGINS = "owner";
+  const token = await offer("delta.com", "https://www.delta.com/login/loginPage");
+  const r = await hit(`/web/save-login/${token}`);
+  assert.equal(r.status, 200);
+  assert.doesNotMatch(r.body, /value="standing"/);
+  assert.match(r.body, /value="each_time" checked/);
+  const warn = /<p class="sl-warn">([^<]+)<\/p>/.exec(r.body)?.[1] ?? "";
+  assert.ok(warn.startsWith("Delta"), warn);
+  assert.ok(r.body.indexOf("sl-warn") < r.body.indexOf('id="sl-go"'), "above the button");
+});
+
+test("rule 4 over HTTP: a POST without Origin https://heyreason.com is refused and changes nothing; the right one saves; the log holds no value", async () => {
+  process.env.REASON_SAVED_LOGINS = "owner";
+  const token = await offer();
+  const v = await intake.viewFor(token);
+  const sealed = Buffer.from(await intake.sealInBrowser(webcrypto.subtle, Buffer.from(v.publicKey, "base64url"), v.intakeId, PLAIN.username, PLAIN.password, ""));
+  const body = JSON.stringify({ sealed: sealed.toString("base64url"), permission: "standing", assertion: face.get(intake.challengeOf(Buffer.from(v.parts.standing, "base64url"), sealed)) });
+  for (const headers of [{ "content-type": "application/json" }, { ...FROM_REASON, origin: "https://evil.example" }, { ...FROM_REASON, origin: "null" },
+    { ...FROM_REASON, "sec-fetch-site": "cross-site" }, { ...FROM_REASON, origin: "http://heyreason.com" }]) {
+    const r = await hit(`/web/save-login/${token}/save`, { method: "POST", headers, body });
+    assert.equal(r.status, 403, JSON.stringify(headers));
+  }
+  assert.equal((await intake.viewFor(token)).state, "open", "a refused origin never reaches the link");
+  serverLog.length = 0;
+  const r = await captured(() => hit(`/web/save-login/${token}/save`, { method: "POST", headers: FROM_REASON, body }));
+  assert.equal(r.value.status, 200, r.value.body);
+  assert.deepEqual(JSON.parse(r.value.body), { ok: true });
+  assert.deepEqual(valuesIn(body), [], "the request carries ciphertext only");
+  assert.deepEqual(valuesIn(r.text + JSON.stringify(serverLog)), [], "nothing typed in the server's log");
+  assert.ok(serverLog.some(e => e.save_login === "save" && e.ok === true));
+  assert.ok(!JSON.stringify(serverLog).includes(sealed.toString("base64url").slice(0, 40)), "not even the sealed blob is logged");
+  intake.forgetSite(ME, "example.test");
+});
+
+test("no passkey yet: the link proves the browser with a code texted to their thread, then sets up Face ID named Reason, then saves", async () => {
+  process.env.REASON_SAVED_LOGINS = "on";
+  const P = "dm:intake-newcomer";
+  const token = await offer("example.test", `${ORIGIN}/signin`, P);
+  const first = await hit(`/web/save-login/${token}`);
+  assert.equal(first.status, 200);
+  assert.match(first.body, /Text me a code/);
+  assert.doesNotMatch(first.body, /id="sl-user"/, "no boxes before Face ID exists");
+  const same = { origin: "https://heyreason.com", "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded" };
+  told.length = 0;
+  const sent = await hit(`/web/save-login/${token}/code`, { method: "POST", headers: same, body: "send=1" });
+  assert.equal(sent.status, 200);
+  assert.equal(told.length, 1);
+  assert.equal(told[0].c, P, "the code goes to the thread the link came from");
+  const code = /code is (\d{6})/.exec(told[0].text)?.[1];
+  assert.ok(code);
+  const wrong = await hit(`/web/save-login/${token}/code`, { method: "POST", headers: same, body: "code=000000" });
+  assert.equal(wrong.status, 400);
+  const ok = await hit(`/web/save-login/${token}/code`, { method: "POST", headers: same, body: `code=${code}` });
+  assert.equal(ok.status, 303);
+  const cookie = String(ok.headers["set-cookie"]).split(";")[0];
+  const setup = await hit(`/web/save-login/${token}`, { headers: { cookie } });
+  assert.match(setup.body, /Set up Face ID/);
+  const boot = JSON.parse(/var B=(\{.*?\});\n/.exec(setup.body)[1].replace(/\\u003c/g, "<"));
+  assert.equal(boot.reg.user.name, "Reason");
+  assert.equal(boot.reg.user.displayName, "Reason");
+  const a = new Authenticator();
+  const noCookie = await hit(`/web/save-login/${token}/passkey`, { method: "POST", headers: FROM_REASON, body: JSON.stringify(a.create(boot.reg)) });
+  assert.equal(noCookie.status, 403, "another browser can't add the passkey");
+  const reg = await hit(`/web/save-login/${token}/passkey`, { method: "POST", headers: { ...FROM_REASON, cookie }, body: JSON.stringify(a.create(boot.reg)) });
+  assert.equal(reg.status, 200, reg.body);
+  const form = await hit(`/web/save-login/${token}`, { headers: { cookie } });
+  assert.match(form.body, /id="sl-user"/);
+  assert.equal((await pageSave(token, { a })).out.ok, true);
+  assert.equal(intake.forgetSite(P, "example.test"), 1);
+  process.env.REASON_SAVED_LOGINS = "owner";
+});
