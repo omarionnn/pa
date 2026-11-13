@@ -18,6 +18,8 @@ process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_DATA_DIR = dir;                       // deleteData (rule 6) touches nothing outside this dir
 process.env.REASON_RECORDING_ROOT = join(dir, "recordings");
 process.env.REASON_ENCRYPT_REST = "on";
+process.env.REASON_ENCRYPT_REST2 = "on";                 // vaultReady needs encryption at rest fully on
+process.env.REASON_ENCRYPT_REST3 = "on";
 process.env.REASON_ENCRYPT_STRICT = "1";                 // SQLite itself refuses a plaintext login_log.purpose
 process.env.REASON_REST_KEK_SOURCE = "local";
 process.env.REASON_REST_KEK = "44".repeat(32);
@@ -193,6 +195,26 @@ test("switch on with no KMS: one log line, the vault refuses every call; owner m
 });
 
 // ---------------------------------------------------------------- hard rule 3 (stub until vault PR 4)
+test("vaultReady refuses unless encryption at rest is fully on (REST, REST2 and REST3): one log line", async () => {
+  process.env.REASON_SAVED_LOGINS = "on";
+  assert.equal(vaultReady(), true);
+  const r = await captured(async () => {
+    for (const flag of ["REASON_ENCRYPT_REST", "REASON_ENCRYPT_REST2", "REASON_ENCRYPT_REST3"]) {
+      for (const v of ["off", undefined]) {
+        const was = process.env[flag];
+        if (v === undefined) delete process.env[flag]; else process.env[flag] = v;
+        assert.equal(vaultReady(), false, `${flag}=${v}`);
+        assert.equal(savedLoginsAllowedFor(ME), false, `${flag}=${v}`);
+        await assert.rejects(saveLogin(ME, meta(), fields()), { code: "not_available" });
+        process.env[flag] = was;
+      }
+    }
+  });
+  assert.equal(r.error, undefined, r.error?.message);
+  assert.equal(r.text.split("saved logins: off (encryption at rest not fully on)").length - 1, 1, "exactly one log line");
+  assert.equal(vaultReady(), true, "all three back on");
+});
+
 test("rule 3: the real never list (src/sitepolicy.js) refuses a never site and says why; careful means each time", async () => {
   // Real hosts from PR 4's reviewed list; the stand-in KMS is the only thing ever asked, nothing is fetched.
   assert.equal(classifySite("chase.com").policy, "never");

@@ -3351,6 +3351,29 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS login_log_by_conversation ON login_log (conversation_id, at);
 `);
+// A save-login link (src/loginintake.js, vault PR 5): one row per link, kept by the hash of its token
+// only, one use, thirty minutes. The origin and path were pinned by Reason's own visit to the site's
+// sign-in page; `quoted_request` (their own words, shown back on the page) is sealed under the
+// person's key (restcrypt SENSITIVE). No secret is ever in this table: the login arrives sealed in the
+// browser and goes straight to data/logins.db.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS login_intake (
+    token_hash TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL,
+    label TEXT NOT NULL,
+    signin_origin TEXT NOT NULL,
+    signin_path TEXT NOT NULL,
+    quoted_request TEXT NOT NULL DEFAULT '',
+    permission_offered TEXT NOT NULL, -- 'standing' or 'each_time' (careful sites), checked in code
+    consent_version TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    claimed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS login_intake_by_conversation ON login_intake (conversation_id, created_at);
+`);
 
 // ---------- confirmations ----------
 export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null, amount = null, threadKey = null }) {

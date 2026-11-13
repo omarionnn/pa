@@ -54,6 +54,7 @@ import * as connectafter from "../connectafter.js";
 import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
 import * as signinEmail from "../signinemail.js";
+import * as loginIntake from "../loginintake.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -301,6 +302,16 @@ export class Router {
         this.log({ inbound: inbound.externalId, signin_email: "code_reply_taken" });
       }
     }
+    // A password texted while their save link is open (src/loginintake.js, vault PR 5): never used.
+    // The stored copy is a placeholder from here on, like a code above; once the message is claimed,
+    // code answers with fixed words and the page's link, and no turn runs on it.
+    let textedPassword = false;
+    if (typeof inbound.text === "string" && loginIntake.looksLikeTextedPassword(conversationId, inbound.text)) {
+      textedPassword = true;
+      inbound.text = loginIntake.PASSWORD_PLACEHOLDER;
+      if (typeof inbound.said === "string") inbound.said = loginIntake.PASSWORD_PLACEHOLDER;
+      this.log({ inbound: inbound.externalId, saved_login: "texted_password_refused" });
+    }
     const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
     if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
     // Their first text, typed for them by the web setup (src/websetup.js, REASON_WEB_SETUP), carries
@@ -388,6 +399,14 @@ export class Router {
       this.log({ inbound: inbound.externalId, invite_code_from_member: heldInvite.id });
       await this.send({ channel: inbound.channel, to: address, text: memberLine, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
       return { ok: true, conversationId, invite: "member", replied: true };
+    }
+
+    if (textedPassword) {
+      const line = loginIntake.textedPasswordReply(conversationId);
+      if (line) {
+        await this.send({ channel: inbound.channel, to: address, text: line, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
+        return { ok: true, conversationId, textedPassword: true, replied: true };
+      }
     }
 
     // Somebody who texted Reason's old number, writing to the new one for the first time: the card

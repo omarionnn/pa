@@ -195,8 +195,8 @@ test("his call with his choice on: one Cartesia agent, mulaw both ways, his pers
   assert.deepEqual(create.audio, { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true });
   assert.equal(create.dynamic_variables.their_name, "Omari");
   assert.equal(create.dynamic_variables.greeting, "Hey Omari, it's Reason.");
-  assert.equal(create.dynamic_variables.reason_call, gl.voiceInstructionsFor(db.getCall(C, s.row.id), { line: false, turnGate: false }).slice(0, cartesia.VARIABLE_MAX),
-    "the same instructions a GPT-Live own call gets, not a second persona");
+  assert.equal(create.dynamic_variables.reason_call, `${gl.voiceInstructionsFor(db.getCall(C, s.row.id), { line: false, turnGate: false })}\n${cartesia.cartesiaCallLines()}`,
+    "the same instructions a GPT-Live own call gets, not a second persona, then this line's manner");
   s.twilio.say({ event: "media", media: { payload: QUIET } });
   assert.equal(s.agent.of("audio_input").length, 0, "nothing sent before session_ready");
   s.agent.emit({ type: "session_ready", call_id: "ac_1" });
@@ -226,12 +226,14 @@ test("the agent's audio reaches Twilio, a clear clears the phone, and the number
   assert.equal(turn.eager_end, 1.9);
   // Talked over: his sound while the agent speaks, then their clear.
   await s.timers.advance(100);
+  s.agent.emit({ type: "audio_output", audio: SPEECH });
   s.twilio.say({ event: "media", media: { payload: SPEECH } });
   await s.timers.advance(150);
   s.agent.emit({ type: "audio_output_clear" });
   assert.ok(s.twilio.sent.some(m => m.event === "clear" && m.streamSid === "MZ1"));
   const over = s.lines.find(l => l.cartesia_talked_over);
   assert.equal(over.sound_to_clear_ms, 150);
+  assert.equal(over.playing, true);
   // Numbers only: no words in the measurement lines.
   for (const l of s.lines.filter(l => l.cartesia_reply || l.cartesia_talked_over || l.cartesia_turn)) for (const v of Object.values(l)) assert.ok(typeof v !== "string" || v.length < 20);
   stop(s.call);
@@ -519,4 +521,198 @@ test("a normal GPT-Live call logs the first audio WITH SPEECH after a hand-back,
   assert.ok(got[0].from_ask_ms >= 500, `from_ask_ms ${got[0].from_ask_ms}`);
   assert.ok(Object.values(got[0]).every(v => typeof v === "number"), "numbers only");
   stop(call);
+});
+
+// ---------- how this call sounds (the agent's words on this line only) ----------
+
+test("this line's manner: follow-ups now and then, never an interview, stay in the moment; nothing personal in it", async () => {
+  const lines = cartesia.cartesiaCallLines({ tags: false });
+  // The behaviour, as rules the agent can follow.
+  assert.match(lines, /React first/);
+  assert.match(lines, /ONE short follow-up question or a thought of your own/);
+  assert.match(lines, /one reply in three at most/);
+  assert.match(lines, /never two questions in a row/);
+  assert.match(lines, /No follow-up after a lookup, a task, a goodbye, or when they sound busy/);
+  assert.match(lines, /Never repeat their sentence back/);
+  assert.match(lines, /no lists/);
+  assert.match(lines, /never "is there anything else"/);
+  assert.ok((lines.match(/Closed: /g) ?? []).length >= 3, "a few closed-vs-better examples");
+  assert.match(lines, /That is a conversation, not a lookup/);
+  assert.match(lines, /Call ask_reason only for what needs their data or an action/);
+  assert.match(lines, /these win over any line above/);
+  // Nothing about anyone: no name, number, place or conversation in the rules.
+  for (const bad of ["Omari", "+1202", "dm:owner", "sendblue", "Chelsea", "SMS"]) assert.ok(!lines.includes(bad), `no ${bad}`);
+  // Units follow Reason's answer (their profile, as texts do), never a unit of the line's own.
+  assert.match(lines, /units Reason's answer uses/);
+  assert.ok(!/celsius|fahrenheit/i.test(lines), "no unit is named");
+  // Emotion tags only when switched on.
+  assert.ok(!lines.includes("<emotion"));
+  assert.match(cartesia.cartesiaCallLines({ tags: true }), /<emotion value="calm"\/>/);
+  // On the agent, after the brief, and never the part cut to fit.
+  Object.assign(config, CARTESIA);
+  const vars = cartesia.sessionVariables(ownCall());
+  assert.ok(vars.reason_call.endsWith(cartesia.cartesiaCallLines()));
+  assert.ok(vars.reason_call.length <= cartesia.VARIABLE_MAX);
+  // GPT-Live's own-call words are untouched.
+  const gptlive = gl.voiceInstructionsFor(ownCall(), { line: false });
+  assert.ok(!gptlive.includes("How this call sounds") && !gptlive.includes("That is a conversation, not a lookup"));
+});
+
+/** One relay with a brain that answers after `ms` (fake time), and every text it would send. */
+function slowRelay(ms, reply = { text: "Overcast, 52 degrees near work." }) {
+  Object.assign(config, CARTESIA);
+  const timers = fakeTimers();
+  const twilio = fakeTwilio();
+  const agent = fakeSocket();
+  const lines = [];
+  const texts = [];
+  let release;
+  const call = new cartesia.CartesiaAgentCall({
+    call: ownCall(), twilio, openAgent: () => agent.socket, now: timers.now, timers, log: (l) => lines.push(l),
+    brain: () => new Promise((r) => { release = () => r(reply); timers.setTimeout(() => r(reply), ms); }),
+    deleteCall: async () => ({ ok: true, redacted: true, status: 200 }),
+    textOwner: (text) => { texts.push(text); return { ok: true }; },
+  });
+  call.begin();
+  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  agent.open();
+  agent.emit({ type: "session_ready", call_id: "ac_s" });
+  agent.emit({ type: "turn_ended", turn: 1, role: "user", text: "What's the weather near work?" });
+  const ask = (id, request) => agent.emit({ type: "client_tool_call", tool_call_id: id, tool_name: "ask_reason", parameters: { request }, expects_response: true });
+  const results = () => agent.of("client_tool_result");
+  return { call, timers, agent, lines, texts, ask, results, release: () => release() };
+}
+
+test("a 7.7 s and a 10.4 s lookup (calls 109 and 110): the tool call stays open and its result is the answer, spoken, never texted", async () => {
+  for (const ms of [7_700, 10_400]) {
+    const s = slowRelay(ms);
+    s.ask("tc_1", "Brooklyn news");
+    await s.timers.advance(ms - 100);
+    assert.equal(s.results().length, 0, `nothing answered before the answer (${ms} ms): no holding line`);
+    await s.timers.advance(200);
+    const [back] = s.results();
+    assert.deepEqual({ id: back.tool_call_id, result: back.result, err: back.is_error }, { id: "tc_1", result: "Overcast, 52 degrees near work.", err: false });
+    assert.equal(s.results().length, 1, "one result: the answer");
+    await s.timers.advance(30_000);
+    assert.equal(s.texts.length, 0, "said on the call, not texted");
+    assert.ok(!s.lines.some(l => l.cartesia_late_answer || l.cartesia_ask_to_text), "no late answer");
+    assert.equal(s.lines.find(l => l.cartesia_ask_reason).to_text, false);
+    stop(s.call);
+  }
+  assert.ok(!("HOLD_MS" in cartesia) && !("COLLECT" in cartesia) && !("HOLD_LINES" in cartesia), "no holding line left");
+});
+
+test("a 30 s lookup: at 25 s one result says it'll come by text, then the answer is texted once when it lands", async () => {
+  assert.equal(cartesia.TEXT_MS, 25_000);
+  const s = slowRelay(30_000);
+  s.ask("tc_1", "weather near work");
+  await s.timers.advance(24_900);
+  assert.equal(s.results().length, 0, "still waiting at 24.9 s");
+  await s.timers.advance(200);
+  const [handOff] = s.results();
+  assert.equal(handOff.tool_call_id, "tc_1");
+  assert.equal(handOff.result, cartesia.TEXT_RESULT);
+  assert.match(handOff.result, /one short sentence/);
+  assert.match(handOff.result, /Reason will text them the answer/);
+  assert.match(handOff.result, /don't say it's still loading, don't ask if they're still there/);
+  assert.equal(s.texts.length, 0, "nothing to text yet");
+  await s.timers.advance(5_000);
+  assert.deepEqual(s.texts, ["From our call: Overcast, 52 degrees near work."]);
+  assert.equal(s.results().length, 1, "never spoken after the hand-off");
+  assert.ok(s.lines.some(l => l.cartesia_ask_to_text));
+  assert.ok(s.lines.some(l => l.cartesia_late_answer && l.texted === true));
+  assert.equal(s.lines.find(l => l.cartesia_ask_reason).to_text, true);
+  assert.match(s.call.turns.at(-1).text, /^\(Texted them: Overcast/, "the call's record says it went");
+  await s.timers.advance(30_000);
+  assert.equal(s.texts.length, 1, "texted once");
+  stop(s.call);
+});
+
+test("hung up mid-lookup: the answer is texted when it lands, once, and nothing goes to the closed agent", async () => {
+  for (const hangAt of [3_000, 12_000]) {
+    const s = slowRelay(20_000);
+    s.ask("tc_1", "weather near work");
+    await s.timers.advance(hangAt);
+    await s.call.end("caller hung up");
+    await s.timers.advance(5_000);
+    assert.equal(s.texts.length, 0, "nothing to text yet");
+    await s.timers.advance(40_000);
+    assert.deepEqual(s.texts, ["From our call: Overcast, 52 degrees near work."], `hung up at ${hangAt} ms`);
+    assert.equal(s.results().length, 0, "nothing sent to the agent after the end");
+    assert.ok(!s.lines.some(l => l.cartesia_ask_to_text), "no 'I'll text you' line on a call that is over");
+  }
+});
+
+test("a late answer with nothing in it, or a fast one, is never texted", async () => {
+  const s = slowRelay(27_000, { text: "", error: "weather service timed out" });
+  s.ask("tc_1", "weather near work");
+  await s.timers.advance(28_000);
+  assert.equal(s.texts.length, 0);
+  assert.ok(s.lines.some(l => l.cartesia_late_answer && l.texted === false));
+  const f = slowRelay(900);
+  f.ask("tc_1", "weather near work");
+  await f.timers.advance(1_000);
+  assert.equal(f.results()[0].result, "Overcast, 52 degrees near work.");
+  assert.equal(f.lines.find(l => l.cartesia_ask_reason).to_text, false);
+  await f.timers.advance(30_000);
+  assert.equal(f.texts.length, 0);
+  stop(s.call); stop(f.call);
+});
+
+// ---------- talked over: what the number measures ----------
+
+test("talked over is timed from when both were talking, never from an old sound; a clear with nothing playing is no barge-in", async () => {
+  const s = await trialCall();
+  s.twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  s.agent.open();
+  s.agent.emit({ type: "session_ready", call_id: "ac_1" });
+  // The agent talks; he coughs once over it (no clear follows), and it carries on.
+  s.agent.emit({ type: "audio_output", audio: SPEECH });
+  await s.timers.advance(100);
+  s.twilio.say({ event: "media", media: { payload: SPEECH } });
+  for (let i = 0; i < 30; i++) { await s.timers.advance(200); s.agent.emit({ type: "audio_output", audio: SPEECH }); s.twilio.say({ event: "media", media: { payload: QUIET } }); }
+  // Six seconds on, he starts talking and their clear comes 250 ms later.
+  s.twilio.say({ event: "media", media: { payload: SPEECH } });
+  await s.timers.advance(100);
+  s.twilio.say({ event: "media", media: { payload: SPEECH } });
+  await s.timers.advance(150);
+  s.agent.emit({ type: "audio_output_clear" });
+  let over = s.lines.filter(l => l.cartesia_talked_over).at(-1);
+  assert.equal(over.sound_to_clear_ms, 250, "from his run's onset, not the cough 6 s earlier");
+  assert.equal(over.playing, true);
+  // He is mid-sentence and the agent starts over him ("Yeah,"): timed from the agent's start.
+  for (let i = 0; i < 10; i++) { await s.timers.advance(100); s.twilio.say({ event: "media", media: { payload: SPEECH } }); }
+  s.agent.emit({ type: "audio_output", audio: SPEECH });
+  await s.timers.advance(100);
+  s.twilio.say({ event: "media", media: { payload: SPEECH } });
+  await s.timers.advance(80);
+  s.agent.emit({ type: "audio_output_clear" });
+  over = s.lines.filter(l => l.cartesia_talked_over).at(-1);
+  assert.equal(over.sound_to_clear_ms, 180);
+  // Their clear at the start of his turn, with nothing playing and him quiet: no time, not a barge-in.
+  await s.timers.advance(3_000);
+  s.agent.emit({ type: "audio_output_clear" });
+  over = s.lines.filter(l => l.cartesia_talked_over).at(-1);
+  assert.deepEqual({ ms: over.sound_to_clear_ms, playing: over.playing }, { ms: null, playing: false });
+  stop(s.call);
+});
+
+test("setup script --update: the plan by default; with --yes, one sparse PATCH of only what was named", async () => {
+  const setup = await import("../scripts/cartesia-agent-setup.mjs");
+  const said = [];
+  const calls = [];
+  const call = async (key, p, opts = {}) => { calls.push({ p, method: opts.method ?? "GET", body: opts.body }); return { ok: true, json: {} }; };
+  assert.equal(await setup.main(["--update", "agent_x", "--skip-turn"], { log: (l) => said.push(l), call, key: "ck-test" }), 0);
+  assert.equal(calls.length, 0);
+  assert.match(said.join("\n"), /Nothing was changed/);
+  assert.equal(await setup.main(["--update", "agent_x", "--voice", setup.LUCY, "--skip-turn", "--yes"], { log: (l) => said.push(l), call, key: "ck-test" }), 0);
+  assert.deepEqual(calls.map(c => `${c.method} ${c.p}`), ["PATCH /v1/agents/agent_x"]);
+  const body = calls[0].body;
+  assert.deepEqual(Object.keys(body.config).sort(), ["audio", "system_tools"]);
+  assert.equal(body.config.audio.output.voice_id, setup.LUCY);
+  assert.ok(body.config.system_tools.skip_turn.description.length <= 2000);
+  assert.ok(!("end_call" in body.config.system_tools), "other system tools are left as they are");
+  assert.ok(!("instructions" in body.config));
+  assert.equal(await setup.main(["--update", "agent_x"], { log: (l) => said.push(l), call, key: "ck-test" }), 1, "nothing named, nothing done");
+  assert.ok(!said.join("\n").includes("ck-test"));
 });
