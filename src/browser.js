@@ -224,7 +224,7 @@ async function launchErrand(conversationId) {
   // No request this browser makes reaches this machine's own network: a page (or a redirect, or a
   // script on it) pointing at 127.0.0.1, 169.254.169.254 or a name that resolves there is refused.
   // Every request by name; a page load also by its resolved addresses (security audit 2026-11-06).
-  await guardContext(context);
+  await guardContext(context, { conversationId });
   // A sign-in took the profile while this one was starting: it is theirs, so this one goes.
   if (holders.has(String(conversationId))) {
     await context.close().catch(() => {});
@@ -503,7 +503,40 @@ export function locate(page, ref) {
  * addresses (security audit 2026-11-06). Shared with the sign-in browsers (src/signin-remote.js,
  * src/signin-cli.js), which since 2026-11-10 can be pointed at any site by its address.
  */
-export async function guardContext(context) {
+// ---------------------------------------------------------------- the same-site lock (vault PR 6)
+// After Reason signs in to a site with a saved login, the job that follows stays on that site: a page
+// load anywhere else, in any tab of this person's browser, is refused until the pin runs out or is
+// taken off. A signed-in session is never carried to another site by a link on a page or in an email.
+export const PIN_TTL_MS = 30 * 60_000;
+const pins = new Map(); // conversationId -> { base, hosts:Set, until }
+
+/** Hold this person's browser to one site (its registrable domain and subdomains, plus `hosts`). */
+export function pinSite(conversationId, base, { hosts = [], until = Date.now() + PIN_TTL_MS } = {}) {
+  const b = String(base ?? "").toLowerCase();
+  if (!b) return;
+  pins.set(String(conversationId), { base: b, hosts: new Set(hosts.map(h => String(h).toLowerCase())), until });
+}
+export function unpinSite(conversationId) { pins.delete(String(conversationId)); }
+/** The site this person's browser is held to now, or null. */
+export function pinnedSite(conversationId, now = Date.now()) {
+  const p = pins.get(String(conversationId));
+  if (!p) return null;
+  if (p.until <= now) { pins.delete(String(conversationId)); return null; }
+  return p.base;
+}
+/** True when a pin holds and `url` is an http(s) address off the pinned site. */
+export function offPinnedSite(conversationId, url, now = Date.now()) {
+  if (!pinnedSite(conversationId, now)) return false;
+  const p = pins.get(String(conversationId));
+  let u;
+  try { u = new URL(String(url)); } catch { return true; }
+  if (!/^(https?|wss?):$/.test(u.protocol)) return u.protocol !== "about:" && u.protocol !== "data:" && u.protocol !== "blob:";
+  const h = u.hostname.toLowerCase();
+  return !(h === p.base || h.endsWith(`.${p.base}`) || p.hosts.has(h));
+}
+export const OFF_SITE_WORDS = (site) => `I'm signed in to ${site} for this job, so I stay on ${site}. I didn't open the other page.`;
+
+export async function guardContext(context, { conversationId = null } = {}) {
   // And on every one of them: a box that was ever a password box stays one for the life of its page,
   // whatever a "show password" switch turns it into (src/pagesecrets.js).
   await rememberPasswordBoxes(context);
@@ -511,6 +544,8 @@ export async function guardContext(context) {
     const req = route.request();
     let u;
     try { u = new URL(req.url()); } catch { return route.continue(); }
+    // The same-site lock: during a signed-in job no page load leaves the pinned site.
+    if (conversationId != null && req.isNavigationRequest() && offPinnedSite(conversationId, u.href)) return route.abort("blockedbyclient");
     if (allowPrivate() || !/^(https?|wss?):$/.test(u.protocol)) return route.continue();
     if (isPrivateHost(u.hostname)) return route.abort("blockedbyclient");
     if (req.isNavigationRequest() && !(await publicUrl(u.href)).ok) return route.abort("blockedbyclient");

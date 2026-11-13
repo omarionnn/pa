@@ -37,6 +37,7 @@
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/save-login/{token}, POST …/save|code|passkey   save a site's login once, sealed in the browser, Face ID (src/pages/savelogin.js; REASON_SAVED_LOGINS)
+//   GET  /web/login-use/{token}, POST …/approve   Face ID for one sign-in with a saved login (src/pages/loginuse.js; REASON_SAVED_LOGINS)
 //   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
 //   GET  /web/connect-all/{token}, POST …/go/{service}   connect the rest, after the first task that needed a connection worked (src/pages/connectall.js; REASON_CONNECT_AFTER)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
@@ -439,6 +440,23 @@ export function createServer({ router, runtime, log = () => {} }) {
         } catch (e) {
           // The name of what failed only: never the body, which is a sealed login and a signature.
           log({ http: "/web/save-login", threw: e?.code ?? e?.name ?? "error" });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
+      // Approve one sign-in with a saved login, with Face ID (src/pages/loginuse.js, vault PR 6). Behind
+      // REASON_SAVED_LOGINS; off, or a token nobody was issued, falls through to the same flat 404.
+      const loginUseRoute = /^\/web\/login-use\/([A-Za-z0-9_-]{1,64}(?:\/[a-z]{1,12})?)$/.exec(url.pathname);
+      if (loginUseRoute && (await import("./loginintake.js")).savedLoginsMode() !== "off") {
+        let out = null;
+        try {
+          const { loginUseRequest } = await import("./pages/loginuse.js");
+          out = await loginUseRequest({ sub: loginUseRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), log });
+        } catch (e) {
+          log({ http: "/web/login-use", threw: e?.code ?? e?.name ?? "error" });
           return send(500, { ok: false, error: "server error" });
         }
         if (out) {

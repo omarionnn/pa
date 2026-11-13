@@ -411,7 +411,7 @@ const BUILDER_INSTRUCTIONS = new Set(["remote_start", "remote_say", "remote_decl
  * exactly like an install built before any of this was written.
  */
 // Saved logins (vault PR 5): offered only where the vault is on for this person (src/loginintake.js).
-const SAVED_LOGIN_TOOLS = new Set(["saved_login_offer", "saved_login_forget"]);
+const SAVED_LOGIN_TOOLS = new Set(["saved_login_offer", "saved_login_forget", "account_signin"]);
 const SAVED_LOGIN_TOOL_DEFS = [{
   name: "saved_login_offer",
   description: "Let them save a site's login once, on Reason's own page, so you can sign in for jobs they ask for. Call it when a job they just asked for needs them signed in to a password site and nothing else connects it. "
@@ -420,8 +420,16 @@ const SAVED_LOGIN_TOOL_DEFS = [{
   input_schema: { type: "object", properties: { site: { type: "string", description: "The site's domain, e.g. xfinity.com" } }, required: ["site"] },
 }, {
   name: "saved_login_forget",
-  description: "Delete their saved login for a site when they ask (\"forget my xfinity login\"). No Face ID needed. It is gone at once; say so in one line.",
+  description: "Delete their saved login for a site when they ask (\"forget my xfinity login\"). No Face ID needed. Code signs out on the site where it can, clears the site's cookies and stored data from Reason's browser, and deletes the login. Send say_exactly as it is.",
   input_schema: { type: "object", properties: { site: { type: "string", description: "The site's domain" } }, required: ["site"] },
+}, {
+  // Vault PR 6: the filler (src/filler.js, injected by the runtime as ctx.signIn; this file never
+  // imports the vault). The result is a fixed word and a fixed sentence, never a login or page text.
+  name: "account_signin",
+  description: "Sign them in to a site with the login they saved on Reason's page, when a job they just asked for needs them signed in there. You pass only the site's domain; code opens the site's own sign-in page, checks it is the real one and types the login itself. You never see or handle the login. "
+    + "Only on a turn they started by asking. Some sites need their Face ID each time: then say_exactly carries the approval link. A texted or emailed code is asked for once; never guess one. "
+    + "Send say_exactly as it is. On ok, carry on with the job in the browser; it stays on that site.",
+  input_schema: { type: "object", properties: { site: { type: "string", description: "The site's domain, e.g. xfinity.com" } }, required: ["site"] },
 }];
 const SAVE_LINK_NO = {
   not_available: "Saving logins isn't on for them. Say you can't sign in there for them yet, in one line.",
@@ -7214,6 +7222,7 @@ const S = {
   ...PLAID_SCHEMAS,
   saved_login_offer: z.object({ site: z.string().min(3).max(253) }),
   saved_login_forget: z.object({ site: z.string().min(3).max(253) }),
+  account_signin: z.object({ site: z.string().min(3).max(253) }),
   ...TODO_SCHEMAS,
   ...CUE_SCHEMAS,
   invites_list: z.object({}),
@@ -12515,7 +12524,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (out.say) return { ok: false, refused: true, say_exactly: out.say };
       return { ok: false, error: out.error, note: SAVE_LINK_NO[out.error] ?? SAVE_LINK_NO.not_reached };
     }
+    case "account_signin": {
+      // The switch, again, on the conversation (whatever the model was shown), and the runtime's
+      // filler. The turn's kind is the live-ask gate's input: code's, never the model's.
+      if (!saveLinkAllowedFor(c) || typeof ctx.signIn !== "function") return { ok: false, error: "Not available." };
+      const asked = askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? "";
+      const out = await ctx.signIn(c, input.site, { trigger: { kind: ctx.kind ?? null }, purpose: asked });
+      return { ok: !!out?.ok, result: String(out?.result ?? "not_signin_page"), say_exactly: String(out?.say_exactly ?? ""),
+        ...(out?.refused ? { refused: true } : {}),
+        note: out?.ok ? "Signed in. Carry on with the job they asked for; the browser stays on that site." : "Send say_exactly as it is and stop this job. Do not try another way in." };
+    }
     case "saved_login_forget": {
+      // The runtime's filler signs out on the site and clears its browser data first (hard rule 6).
+      if (typeof ctx.forgetLogin === "function" && saveLinkAllowedFor(c)) {
+        const out = await ctx.forgetLogin(c, input.site);
+        return { ok: !!out?.ok, removed: Number(out?.removed ?? 0), say_exactly: String(out?.say_exactly ?? "") };
+      }
       const n = forgetSite(c, input.site, { purpose: "they asked to forget it" });
       return n ? { ok: true, removed: n, say_exactly: `Done. I deleted your saved login for ${String(input.site).toLowerCase().replace(/^https?:\/\//, "").split("/")[0]}.` }
         : { ok: true, removed: 0, note: "No saved login for that site. Say so in one line." };
@@ -19365,6 +19389,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let url;
       try { url = new URL(input.url); } catch { return { ok: false, error: `'${input.url}' is not a URL.` }; }
       if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: `Only http and https.` };
+      // A signed-in job with a saved login stays on that site (src/browser.js pinSite, vault PR 6).
+      if (browser.offPinnedSite(c, url.href)) return { ok: false, refused: true, say_exactly: browser.OFF_SITE_WORDS(browser.pinnedSite(c)) };
       // Never this machine's own network (src/netguard.js); every later request the page makes is
       // checked by the browser's own guard (src/browser.js).
       const pub = await publicUrl(url.href);

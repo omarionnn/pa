@@ -67,7 +67,10 @@ const PAGES = {
   wrongpw_post: () => `<!doctype html><html><head><title>Acme sign in</title></head><body><h1>Sign in to Acme</h1><p role="alert">Your password was incorrect. Please try again.</p>${FORM("/wrongpw")}</body></html>`,
   wall: () => `<!doctype html><html><head><title>Just a moment…</title></head><body><h1>Checking your browser before you access acme.test</h1><p>This process is automatic. Unusual traffic from your network. Please press and hold to confirm you are a human.</p></body></html>`,
   secondstep: () => FORM("/secondstep"),
-  secondstep_post: () => `<!doctype html><html><head><title>Acme</title></head><body><h1>One more step</h1><p>Enter the code we texted you.</p><form method="post"><input type="text" name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" aria-label="Verification code"><button type="submit">Verify</button></form></body></html>`,
+  secondstep_post: (how = "we texted you", bad = false) => `<!doctype html><html><head><title>Acme</title></head><body><h1>One more step</h1>${bad ? `<p role="alert">That code is wrong or expired.</p>` : ""}<p>Enter the code ${how}.</p><form method="post"><input type="text" name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" aria-label="Verification code"><button type="submit">Verify</button></form></body></html>`,
+  home: (signedIn) => signedIn
+    ? `<!doctype html><html><head><title>Acme</title></head><body><h1>Your Acme account</h1><a href="/logout">Sign out</a></body></html>`
+    : `<!doctype html><html><head><title>Acme</title></head><body><h1>Acme</h1><a href="/signin">Sign in</a></body></html>`,
   crossframe: (origin2) => `<!doctype html><html><head><title>Sign in</title></head><body><h1>Sign in</h1><iframe src="${origin2}/pwframe" width="400" height="300"></iframe></body></html>`,
   pwframe: () => `<!doctype html><html><body><form method="post" action="/pwframe"><input type="password" name="password"><button type="submit">Go</button></form></body></html>`,
 };
@@ -77,13 +80,26 @@ function handler(host) {
     const u = new URL(req.url, `https://${host}`);
     const send = (code, html, headers = {}) => { res.writeHead(code, { "content-type": "text/html; charset=utf-8", ...headers }); res.end(html); };
     const redirect = (to) => { res.writeHead(302, { location: to }); res.end(); };
+    const SESSION = { "set-cookie": "acme_sid=s3ss10n; Path=/; Max-Age=86400; Secure; HttpOnly; SameSite=Lax" };
+    const signedIn = /(?:^|;\s*)acme_sid=s3ss10n/.test(String(req.headers.cookie ?? ""));
     if (req.method === "POST") {
-      if (u.pathname === "/signin") return send(200, PAGES.welcome());
-      if (u.pathname === "/wrongpw") return send(200, PAGES.wrongpw_post());
-      if (u.pathname === "/secondstep") return send(200, PAGES.secondstep_post());
-      return send(200, PAGES.welcome());
+      let raw = "";
+      req.on("data", (d) => { raw += d; });
+      req.on("end", () => {
+        const form = new URLSearchParams(raw);
+        const code = form.get("code");
+        const how = { "/secondstep": "we texted you", "/emailstep": "we emailed you", "/authstep": "from your authenticator app" }[u.pathname];
+        if (how && code == null) return send(200, PAGES.secondstep_post(how));
+        if (how) { codesTyped.push(code); return code === GOOD_CODE ? send(200, PAGES.welcome(), SESSION) : send(200, PAGES.secondstep_post(how, true)); }
+        if (u.pathname === "/wrongpw") return send(200, PAGES.wrongpw_post());
+        return send(200, PAGES.welcome(), SESSION);
+      });
+      return;
     }
     switch (u.pathname) {
+      case "/": return send(200, PAGES.home(signedIn));
+      case "/logout": return send(200, PAGES.home(false), { "set-cookie": "acme_sid=; Path=/; Secure; Max-Age=0" });
+      case "/emailstep": case "/authstep": return send(200, FORM(u.pathname));
       case "/signin": return send(200, PAGES.ok());
       case "/welcome": return send(200, PAGES.welcome());
       case "/wrongpw": return send(200, PAGES.wrongpw());
@@ -102,6 +118,8 @@ function handler(host) {
 }
 
 let server, server2, httpServer, PORT, PORT2, HTTP_PORT, launch;
+const GOOD_CODE = "482913";
+const codesTyped = [];
 const skip = { skip: chromium ? false : "playwright/chromium not installed" };
 
 before(async () => {
@@ -134,6 +152,8 @@ after(async () => {
 
 const S = s => new Secret(Buffer.from(s, "utf8"));
 async function save(label, path, over = {}) {
+  // One login per test: whatever an earlier test left (a failure before its cleanup) goes first.
+  for (const r of sl.listLogins(ME)) sl.removeLogin(ME, r.id);
   return sl.saveLogin(ME, {
     site: "acme.test", label, signinOrigin: `https://acme.test:${PORT}`, signinPath: path, permission: "standing",
     consentVersion: "saved-login-v1", consentAt: Date.now(), consentCredential: "standin-passkey-credential-1", ...over,
@@ -235,11 +255,234 @@ test("rule 4: a wrong password stops; a second call types nothing until it is sa
   sl.removeLogin(ME, id);
 });
 
-// ---------------------------------------------------------------- a second step is reported, never guessed
-test("a texted-code step is reported and stops here (PR 7 handles the code)", skip, async () => {
+// ---------------------------------------------------------------- slice 2: the second step, never guessed
+// A promise the test settles: the person's texted reply, taken at intake (src/signinemail.js).
+function replyLater() {
+  let give; const asked = [];
+  const awaitReply = (c, entry) => { asked.push(entry.site); return new Promise(r => { give = r; }); };
+  return { awaitReply, asked, give: (v) => give(v) };
+}
+function noted() {
+  const lines = []; let done; const end = new Promise(r => { done = r; });
+  return { note: (c, text) => { lines.push(text); done(text); }, lines, end };
+}
+
+test("a texted code: asked once, their reply typed once, and the end told in the thread", skip, async () => {
   const { id } = await save("Acme", "/secondstep");
-  const out = await signIn();
+  const r = replyLater(), n = noted();
+  codesTyped.length = 0;
+  const out = await signIn({ awaitReply: r.awaitReply, note: n.note });
   assert.equal(out.result, "needs_code_sms");
   assert.equal(out.ok, false);
+  assert.match(out.say_exactly, /texted a code/);
+  assert.deepEqual(r.asked, ["acme.test"], "asked once");
+  r.give(GOOD_CODE);
+  const said = await n.end;
+  assert.deepEqual(codesTyped, [GOOD_CODE], "the code was typed once");
+  assert.match(said, /ended: signed_in/);
+  assert.ok(!said.includes(GOOD_CODE) && !JSON.stringify(out).includes(GOOD_CODE), "the code is in no result and no note");
+  assert.equal(rowState(id), "working");
+  sl.removeLogin(ME, id);
+});
+
+test("a texted code that is wrong: one attempt, then it stops (wrong_code), never a second guess", skip, async () => {
+  const { id } = await save("Acme", "/secondstep");
+  const r = replyLater(), n = noted();
+  codesTyped.length = 0;
+  await signIn({ awaitReply: r.awaitReply, note: n.note });
+  r.give("000000");
+  const said = await n.end;
+  assert.match(said, /ended: wrong_code/);
+  assert.deepEqual(codesTyped, ["000000"], "exactly one attempt");
+  assert.equal(rowState(id), "unverified", "a wrong code does not mark the login bad");
+  sl.removeLogin(ME, id);
+});
+
+test("an emailed code is read by the existing emailed-code reader and typed once; not found stops", skip, async () => {
+  const { id } = await save("Acme", "/emailstep");
+  const reads = [];
+  codesTyped.length = 0;
+  const found = async (c, entry) => { reads.push(entry.signin_url); return { connected: true, found: true, kind: "code", code: GOOD_CODE }; };
+  const out = await signIn({ emailCode: found });
+  assert.equal(out.result, "signed_in", JSON.stringify(out));
+  assert.equal(reads.length, 1, "the reader is asked once");
+  assert.ok(reads[0].startsWith(`https://acme.test:${PORT}/emailstep`), "for the pinned site only");
+  assert.deepEqual(codesTyped, [GOOD_CODE]);
+  sl.removeLogin(ME, id);
+
+  const { id: id2 } = await save("Acme", "/emailstep");
+  codesTyped.length = 0;
+  const out2 = await signIn({ emailCode: async () => ({ connected: true, found: false }) });
+  assert.equal(out2.result, "code_not_found");
+  assert.deepEqual(codesTyped, [], "nothing guessed");
+  sl.removeLogin(ME, id2);
+});
+
+test("an authenticator code is not supported yet: it says so and types nothing", skip, async () => {
+  const { id } = await save("Acme", "/authstep");
+  codesTyped.length = 0;
+  let entered = 0;
+  const out = await signIn({ enter: async () => { entered++; return { ok: true }; }, awaitReply: async () => { entered++; return null; } });
+  assert.equal(out.result, "needs_authenticator");
+  assert.match(out.say_exactly, /authenticator app/);
+  assert.equal(entered, 0);
+  assert.deepEqual(codesTyped, []);
+  sl.removeLogin(ME, id);
+});
+
+// ---------------------------------------------------------------- slice 2: Face ID before every use
+test("each-time and careful logins need a fresh Face ID before every use; one approval is one sign-in", skip, async () => {
+  const use = await import("../src/loginuse.js");
+  const { id } = await save("Acme", "/signin", { permission: "each_time" });
+  let launches = 0;
+  const counted = async (a) => { launches++; return launch(a); };
+  const before = g.count("decrypt");
+  const out1 = await signIn({ launch: counted });
+  assert.equal(out1.result, "needs_face_id");
+  const link = /\/web\/login-use\/([A-Za-z0-9_-]{32})/.exec(out1.say_exactly);
+  assert.ok(link, "say_exactly carries the approval link");
+  assert.equal(launches, 0, "nothing opened before Face ID");
+  assert.equal(g.count("decrypt"), before, "no KMS before Face ID");
+  // A failed Face ID approves nothing.
+  assert.equal((await use.approveUse(link[1], {}, { verify: async () => ({ ok: false, error: "not_verified" }) })).ok, false);
+  assert.equal((await signIn({ launch: counted })).result, "needs_face_id");
+  // Approve the newest link, then one sign-in goes through; the next needs Face ID again.
+  const fresh = /\/web\/login-use\/([A-Za-z0-9_-]{32})/.exec((await signIn({ launch: counted })).say_exactly)[1];
+  const seen = [];
+  assert.equal((await use.approveUse(fresh, {}, { verify: async (c, ch) => { seen.push([c, ch]); return { ok: true }; } })).ok, true);
+  assert.equal(seen[0][0], ME);
+  assert.match(seen[0][1], /^[A-Za-z0-9_-]{43}$/, "Face ID signs a challenge bound to this login");
+  const out2 = await signIn({ launch: counted });
+  assert.equal(out2.result, "signed_in", JSON.stringify(out2));
+  assert.equal(launches, 1);
+  assert.equal((await signIn({ launch: counted })).result, "needs_face_id", "no standing permission: the next use asks again");
+  sl.removeLogin(ME, id);
+
+  // A careful site asks for Face ID even on a standing login, before anything opens.
+  const { id: cid } = await sl.saveLogin(ME, {
+    site: "united.com", label: "United", signinOrigin: "https://www.united.com", signinPath: "/login", permission: "each_time",
+    consentVersion: "saved-login-v1", consentAt: Date.now(), consentCredential: "standin-passkey-credential-1",
+  }, { username: S(USER), password: S(PASS), totp: null });
+  const out3 = await filler.signIn(ME, "united.com", { trigger: TRIGGER, launch: counted });
+  assert.equal(out3.result, "needs_face_id");
+  assert.equal(launches, 1, "a careful site opens nothing without Face ID");
+  sl.removeLogin(ME, cid);
+});
+
+// ---------------------------------------------------------------- slice 2: the live-ask gate
+test("an event turn (email, page, timer, nightly) never uses a saved login: refused, nothing opened, zero KMS", skip, async () => {
+  const { id } = await save("Acme", "/signin");
+  let launches = 0;
+  const before = g.count("decrypt");
+  for (const trigger of [{ kind: "event" }, null, {}, { kind: "nightly" }]) {
+    const out = await filler.signIn(ME, "acme.test", { trigger, launch: async (a) => { launches++; return launch(a); } });
+    assert.equal(out.ok, false);
+    assert.match(out.say_exactly, /when you ask me in the moment/);
+  }
+  assert.equal(launches, 0);
+  assert.equal(g.count("decrypt"), before);
+  sl.removeLogin(ME, id);
+});
+
+test("a tapped Action Card counts as a live ask: the tap types its prefill and the turn runs as the person's own message", async () => {
+  // The page's tap opens Messages with the card's prefill typed in (src/pages/actioncards.js); the
+  // person sends it, the router matches the card and runs the turn through runtime.inbound, which
+  // is a kind "user" turn. No turn-origin marker is needed and the gate is not widened.
+  const page = readFileSync(new URL("../src/pages/actioncards.js", import.meta.url), "utf8");
+  assert.match(page, /A tap opens Messages with the request typed in/);
+  const router = readFileSync(new URL("../src/channels/router.js", import.meta.url), "utf8");
+  const hit = router.indexOf("cardHit = actioncards.matchInbound(");
+  const turn = router.indexOf("reply = await this.runtime.inbound(conversationId, userText", hit);
+  assert.ok(hit > 0 && turn > hit, "a matched card's text runs as an inbound turn");
+  const { Runtime } = await import("../src/runtime.js");
+  const seen = [];
+  const rt = Object.create(Runtime.prototype);
+  rt._turn = async (args) => { seen.push(args.kind); return null; };
+  rt.log = () => {};
+  await rt.inbound(ME, "Pay my Acme bill", {}).catch(() => {});
+  assert.deepEqual(seen, ["user"], "runtime.inbound is a user turn");
+  assert.equal(filler.liveAskOk({ kind: seen[0] }), true, "and the gate lets it through");
+  assert.equal(filler.liveAskOk({ kind: "event" }), false);
+});
+
+// ---------------------------------------------------------------- slice 2: the same-site lock
+test("during a signed-in job the browser stays on the pinned site; the profile lock is held and released", skip, async () => {
+  const br = await import("../src/browser.js");
+  const { id } = await save("Acme", "/signin");
+  let heldDuring = null;
+  const out = await signIn({ launch: async (a) => { heldDuring = br.profileBusy(ME); return launch(a); } });
+  assert.equal(out.result, "signed_in");
+  assert.equal(heldDuring?.busy, "signing_in", "the profile lock is held during the sealed step");
+  assert.equal(br.profileBusy(ME), null, "and released after (finally)");
+  assert.equal(br.pinnedSite(ME), "acme.test");
+  assert.equal(br.offPinnedSite(ME, `https://evil.test:${PORT}/`), true);
+  assert.equal(br.offPinnedSite(ME, `https://acme-login.test:${PORT}/`), true, "a look-alike is off the site");
+  assert.equal(br.offPinnedSite(ME, `https://acme.test:${PORT}/welcome`), false);
+  // In a real browser guarded for this person: the other site's page load is refused by the browser.
+  const s = await launch({ conversationId: "dm:pin-probe" });
+  try {
+    br.pinSite("dm:pin-probe", "acme.test");
+    await br.guardContext(s.context, { conversationId: "dm:pin-probe" });
+    const p = s.context.pages()[0] ?? await s.context.newPage();
+    await p.goto(`https://acme.test:${PORT}/welcome`);
+    assert.match(await p.textContent("h1"), /Welcome back/);
+    await assert.rejects(p.goto(`https://evil.test:${PORT}/signin`), /ERR_BLOCKED_BY_CLIENT/);
+  } finally { br.unpinSite("dm:pin-probe"); await s.close(); }
+  // browser_open says so in fixed words, before any page is touched.
+  assert.match(br.OFF_SITE_WORDS("acme.test"), /stay on acme\.test/);
+  br.unpinSite(ME);
+  sl.removeLogin(ME, id);
+});
+
+// ---------------------------------------------------------------- slice 2: forget really signs out and deletes
+test("forget: signs out on the site, clears its cookies, deletes the row and key from the file's bytes, and writes the line", skip, async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { id } = await save("Acme Forget Me", "/signin");
+  assert.equal((await signIn()).result, "signed_in");
+  // The session cookie is in the person's profile now.
+  const cookiesNow = async () => { const b = await launch({ conversationId: ME }); try { return await b.context.cookies(); } finally { await b.close(); } };
+  assert.ok((await cookiesNow()).some(k => k.name === "acme_sid"), "signed in: the site's cookie is there");
+  const file = sl.loginsDbPath();
+  const ro = new DatabaseSync(file, { readOnly: true });
+  const { wrapped_key: wrapped } = ro.prepare("SELECT wrapped_key FROM saved_logins WHERE id = ?").get(id);
+  ro.close();
+  assert.ok(readFileSync(file).includes(Buffer.from(wrapped)), "the wrapped key is in the file before");
+
+  const out = await filler.forgetLogin(ME, "acme.test", { launch });
+  assert.equal(out.removed, 1);
+  assert.equal(out.signed_out, true, "the site's own Sign out link was used and it took");
+  assert.equal(out.cleared, true);
+  assert.match(out.say_exactly, /deleted your saved login for acme\.test/);
+  assert.match(out.say_exactly, /signed out on acme\.test/);
+  assert.ok(!(await cookiesNow()).some(k => /acme\.test$/.test(k.domain.replace(/^\./, ""))), "no cookie for the site is left in the profile");
+  assert.equal(sl.listLogins(ME).some(r => r.id === id), false, "the row is gone");
+  const bytes = readFileSync(file);
+  assert.ok(!bytes.includes(Buffer.from(wrapped)), "the wrapped key is gone from the file's bytes");
+  assert.ok(!bytes.includes(Buffer.from("Acme Forget Me")), "and the row's label");
+  const lines = db.db.prepare("SELECT event, outcome FROM login_log WHERE conversation_id = ? AND event IN ('removed', 'signed_out') ORDER BY id DESC LIMIT 2").all(ME);
+  assert.deepEqual(lines.map(l => `${l.event}:${l.outcome}`).sort(), ["removed:ok", "signed_out:ok"]);
+  assert.ok(db.listActions(ME, { limit: 5 }).some(a => a.action === "saved_login_signed_out"), "the activity line is in the ledger");
+});
+
+test("forget says plainly what it could not confirm when the site shows no sign-out link", skip, async () => {
+  const { id } = await save("Acme", "/signin");
+  const out = await filler.forgetLogin(ME, "acme.test", { launch }); // never signed in: no Sign out link on /
+  assert.equal(out.removed, 1);
+  assert.equal(out.signed_out, false);
+  assert.match(out.say_exactly, /couldn't confirm a sign-out on acme\.test itself/);
+  assert.equal(sl.listLogins(ME).some(r => r.id === id), false);
+});
+
+// ---------------------------------------------------------------- slice 2: the attempt log names the route
+test("signinlog: the attempt log names the saved-login routes", skip, async () => {
+  const log = await import("../src/signinlog.js");
+  assert.ok(log.ROUTES.includes("saved_login") && log.ROUTES.includes("saved_login_again"));
+  log._resetAttempts();
+  const { id } = await save("Acme", "/signin");
+  await signIn();
+  await signIn();
+  const routes = log.recentAttempts().map(l => `${l.route}:${l.outcome}`);
+  assert.deepEqual(routes, ["saved_login:signed_in", "saved_login_again:signed_in"]);
+  assert.ok(!JSON.stringify(log.recentAttempts()).includes(USER));
   sl.removeLogin(ME, id);
 });

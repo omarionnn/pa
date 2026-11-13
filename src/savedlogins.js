@@ -217,12 +217,13 @@ const siteVerdict = (hostOrUrl) => classifySite(hostOrUrl) ?? {};
 // Every save, open and removal writes one login_log row (reason.db, `purpose` sealed under the
 // person's key) and one action_ledger row, which ledger_list reads back. From fixed lists only:
 // never a username, a hint, a code or an address with a query string.
-export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_sent", "refused_never_list", "save_failed", "signin"];
+export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_sent", "refused_never_list", "save_failed", "signin", "signed_out"];
 // The vault's own low-level outcomes (what withLogin's `opened` line carries), then the filler's
 // person-facing sign-in outcomes (what its `signin` line carries, vault PR 6). A result word the
 // filler returns to the model is in the second group so recordLoginEvent accepts it.
 export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed",
-  "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused"];
+  "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused",
+  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy"];
 const RECEIPT = {
   saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
   opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
@@ -233,6 +234,9 @@ const RECEIPT = {
   save_failed: (site, outcome) => `Did not save the login for ${site} (${outcome.replace(/_/g, " ")}).`,
   // The filler's person-facing line (vault PR 6, design B10): what the sign-in did, in plain words,
   // never a username. One sentence per sign-in result word.
+  // Forgetting a login (design B11, hard rule 6): whether signing out on the site itself was confirmed.
+  signed_out: (site, outcome) => outcome === "ok" ? `Signed out of ${site} and cleared its cookies and stored data from my browser.`
+    : `Cleared ${site}'s cookies and stored data from my browser; I could not confirm a sign-out on ${site} itself.`,
   signin: (site, outcome) => ({
     signed_in: `Signed in to ${site} with your saved login.`,
     wrong_password: `Could not sign in to ${site}: the saved password was not accepted. I stopped and won't try again until you save it again.`,
@@ -243,6 +247,11 @@ const RECEIPT = {
     needs_face_id: `Did not sign in to ${site}: this one needs your Face ID approval.`,
     origin_mismatch: `Did not sign in to ${site}: the page was not its real sign-in page.`,
     not_signin_page: `Did not sign in to ${site}: I could not find its sign-in form.`,
+    needs_code_email: `Signed in to ${site}; it then emailed a code, and I could not read it from your email.`,
+    needs_authenticator: `Signed in to ${site}; it then asked for an authenticator app code, which I can't do yet. I stopped.`,
+    code_not_found: `Signed in to ${site}; it emailed a code that did not arrive in time. I stopped.`,
+    wrong_code: `Signed in to ${site}; it did not accept the code. I stopped and did not try another.`,
+    busy: `Did not sign in to ${site}: the browser was busy.`,
   }[outcome] ?? `Did not sign in to ${site} (${String(outcome).replace(/_/g, " ")}).`),
 };
 /** Words for `purpose`: one line, no control characters, links without their query or fragment. */
