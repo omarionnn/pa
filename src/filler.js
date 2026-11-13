@@ -9,6 +9,7 @@
 // zero-filled after; it never reaches the model, a tool result, a log, an error, a screenshot or the
 // thread (the page-secret rules in src/pagesecrets.js read a filled box back as "filled", never its
 // value). With REASON_SAVED_LOGINS off, savedLoginsAllowedFor is false and nothing here runs.
+import { createHash } from "node:crypto";
 import { clock } from "./config.js";
 import * as db from "./db.js";
 import {
@@ -16,7 +17,7 @@ import {
 } from "./savedlogins.js";
 import { namedByThem, namesOf } from "./namedsite.js";
 import {
-  profileDirFor, guardContext, launchOptions, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser,
+  launchProfile, guardContext, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser,
   pinSite, pinExact, unpinSite,
 } from "./browser.js";
 import { dropIntake } from "./loginintake.js";
@@ -115,8 +116,8 @@ export function liveAskOk(trigger) {
 /** Launch the person's own saved profile for the sealed step, headless and guarded. Injectable for tests. */
 async function realLaunch({ conversationId }) {
   const { chromium } = await import("playwright");
-  const options = launchOptions(conversationId, { headless: true, viewport: { width: 1280, height: 900 } });
-  const context = await chromium.launchPersistentContext(profileDirFor(conversationId), options);
+  // The same launch as every flow: the real browser for a person it is on for, else today's (src/browser.js).
+  const context = await launchProfile(chromium, conversationId, { headless: true, viewport: { width: 1280, height: 900 } });
   return {
     context,
     close: async () => { await context.close().catch(() => {}); },
@@ -174,8 +175,11 @@ const LINES_JS = `(() => String((document.body && document.body.innerText) || ''
 async function bannerOf(page) { try { return String(await page.evaluate(BANNER_JS) ?? ""); } catch { return ""; } }
 async function linesOf(page) { try { const l = await page.evaluate(LINES_JS); return Array.isArray(l) ? l : []; } catch { return []; } }
 /** The page's words that were not on it before the submit (and the banner, which is the page's own message). */
-async function freshWords(page, before) {
-  const banner = await bannerOf(page);
+// `bannerBefore`: the page's own messages that were already showing before the submit (a standing
+// notice in a live region): never this submit's answer, so they neither end the wait nor name the ending.
+async function freshWords(page, before, bannerBefore = "") {
+  const had0 = new Set(String(bannerBefore || "").split(" | ").filter(Boolean));
+  const banner = (await bannerOf(page)).split(" | ").filter((p) => p && !had0.has(p)).join(" | ");
   if (!before) return { banner, fresh: "" };
   const had = new Set(before);
   const fresh = (await linesOf(page)).filter(l => !had.has(l)).join(" ").slice(0, 1_000);
@@ -203,7 +207,7 @@ async function classifyAfterSubmit(page, ctx = {}) {
   const kinds = boxes.map(f => kindOf(f));
   const hasPassword = kinds.includes("password");
   const hasOtp = kinds.includes("otp");
-  const { banner, fresh } = await freshWords(page, ctx.before);
+  const { banner, fresh } = await freshWords(page, ctx.before, ctx.bannerBefore);
   // Without a before-reading (a code step), the page's text is all there is.
   const msg = ctx.before ? [banner, fresh].filter(Boolean).join(" ") : banner;
   const cls = messageClass(msg) || (!ctx.before && hasPassword && WRONG_PW.test(text) ? "wrong_password" : "");
@@ -216,7 +220,16 @@ async function classifyAfterSubmit(page, ctx = {}) {
   if (cls === "wrong_password") return "wrong_password"; // the page said so, though it took the box away
   // No password box and no challenge: the form was accepted. A logout/account control is the
   // positive evidence a real session read uses; its absence on a fixture is still a signed-in page.
-  if (!hasPassword && (!cls || cls === "other")) return "signed_in";
+  if (!hasPassword && (!cls || cls === "other")) {
+    // Signed in needs evidence: it left the sign-in page (the site's own next page), or the form went
+    // with no message of the page's own. The form gone in place with a message the page marks as an
+    // alert or error that none of the known words name: couldn't tell, never success.
+    if (cls === "other" && banner && ctx.startUrl && urlParts(page.url()).path === urlParts(ctx.startUrl).path) return "no_answer";
+    return "signed_in";
+  }
+  // Still on the password box with only new words the page did not mark as its message (a spinner, a
+  // late footer): it never answered.
+  if (cls === "other" && !banner) return "no_answer";
   // The page said something else (a validation line, no such account, too many tries): it didn't
   // accept the sign-in, and that is not a wrong password.
   if (cls) return "not_accepted";
@@ -281,7 +294,7 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, {
     ensure(); notOurs();
     typing();
     const uk = await userKind();
-    await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.user, b, uk); });
+    await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.user, b, uk); diag.userMarks = marksOf(b); });
     // A moment for anything the typing set off to show itself, then the check: a page that moves on its
     // own once the username is in is not answering our submit, and gets no password.
     await page.waitForTimeout(OWN_STEP_MS).catch(() => {});
@@ -317,7 +330,7 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, {
   const onPinnedPage = () => { if (!atPin()) { const e = new Error("left the pinned page"); e.name = "OriginDrift"; throw e; } };
   ensure(); onPinnedPage();
   typing();
-  if (form.user) { const uk = await userKind(); await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.user, b, uk); }); }
+  if (form.user) { const uk = await userKind(); await username.use(async (b) => { await form.user.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.user, b, uk); diag.userMarks = marksOf(b); }); }
   ensure(); onPinnedPage(); // immediately before the password keystroke (design B5 step 5)
   await password.use(async (b) => { await form.pass.fill(b.toString("utf8"), { timeout: FILL_MS }); await note(form.pass, b, "password"); });
   ensure();
@@ -411,6 +424,26 @@ const ANSWER_MS = 12_000;
 /** A control that sends a code or a link instead of signing in with the password: never pressed. */
 const CODE_BUTTON = /\b(code|link|text me|email me|send|magic)\b/i;
 
+/**
+ * One-way marks of the username and its parts (3+ letters or digits), held in memory for this attempt
+ * only, never logged: a page message word whose mark matches is the username echoed back and is dropped.
+ */
+function marksOf(buf) {
+  const s = buf.toString("utf8").toLowerCase();
+  const parts = [s, ...s.split(/[^a-z0-9]+/)].filter((p) => p.length >= 3);
+  return new Set(parts.map((p) => createHash("sha256").update(p).digest("hex")));
+}
+export function dropMarked(msg, marks) {
+  const m = String(msg ?? "");
+  if (!m || !marks?.size) return m;
+  return m.split(/(\s+)/).map((w) => {
+    const bare = w.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+    const hit = bare.length >= 3 && (marks.has(createHash("sha256").update(bare).digest("hex"))
+      || bare.split(/[^a-z0-9]+/).some((p) => p.length >= 3 && marks.has(createHash("sha256").update(p).digest("hex"))));
+    return hit ? "…" : w;
+  }).join("");
+}
+
 /** How many characters a box holds now: a number only, read in the page; never the value. */
 async function lengthIn(loc) {
   try { return Number(await loc.evaluate((el) => String(el.value ?? "").length)); } catch { return null; }
@@ -422,7 +455,7 @@ async function lengthIn(loc) {
  * that wasn't there before the submit (its alert, or words naming the ending). Words that are none of
  * those (a cookie banner, a spinner) don't end the wait.
  */
-async function awaitAnswer(page, form, before, ms) {
+async function awaitAnswer(page, form, before, ms, bannerBefore = "") {
   const startUrl = page.url();
   const until = Date.now() + ms;
   let goneSince = 0;
@@ -433,7 +466,7 @@ async function awaitAnswer(page, form, before, ms) {
     if (await challengeShown(page)) return;
     const showing = await form.pass.isVisible().catch(() => false);
     if (!showing) { goneSince ||= Date.now(); if (Date.now() - goneSince >= 1_000) return; } else goneSince = 0;
-    const { banner, fresh } = await freshWords(page, before);
+    const { banner, fresh } = await freshWords(page, before, bannerBefore);
     const words = `${banner} ${fresh}`;
     if (messageClass(words) && messageClass(words) !== "other") return;
     if (banner && messageClass(banner)) return;
@@ -448,6 +481,8 @@ async function submitAndRead(page, form, { answerMs = ANSWER_MS, diag = {} } = {
   const remember = page.locator('input[type="checkbox"][name*="remember" i], input[type="checkbox"][id*="remember" i], input[type="checkbox"][name*="trust" i]').first();
   if (await remember.count().catch(() => 0)) await remember.check().catch(() => {});
   const before = await linesOf(page);
+  const bannerBefore = await bannerOf(page);
+  const startUrl = page.url();
   const startedAt = Date.now();
   diag.pressed = "enter";
   await form.pass.press("Enter").catch(async () => {
@@ -455,7 +490,7 @@ async function submitAndRead(page, form, { answerMs = ANSWER_MS, diag = {} } = {
     await page.locator('button[type="submit"]:visible, button:has-text("Sign in"):visible, button:has-text("Log in"):visible, button:has-text("Continue"):visible')
       .filter({ hasNotText: CODE_BUTTON }).first().click({ timeout: FILL_MS }).catch(() => { diag.pressed = "none"; });
   });
-  await awaitAnswer(page, form, before, answerMs);
+  await awaitAnswer(page, form, before, answerMs, bannerBefore);
   diag.waitedMs = Date.now() - startedAt;
   // Clean up before anyone looks: empty any box the filler typed into that is still on the page
   // (design B5 step 7). After a submit the page has usually navigated and the box is gone; a short
@@ -463,9 +498,12 @@ async function submitAndRead(page, form, { answerMs = ANSWER_MS, diag = {} } = {
   for (const loc of [form.user, form.pass]) {
     if (loc) await loc.fill("", { timeout: 800 }).catch(() => {});
   }
-  const ctx = { before };
+  const ctx = { before, bannerBefore, startUrl };
   const result = await classifyAfterSubmit(page, ctx);
-  Object.assign(diag, { msgClass: ctx.msgClass, msg: ctx.msg, challenge: ctx.challenge === true, finalUrl: page.url() });
+  // A page that echoes the username back ("No account for jsmith"): its words go, before the quote or the line.
+  const msg = dropMarked(ctx.msg, diag.userMarks);
+  delete diag.userMarks;
+  Object.assign(diag, { msgClass: ctx.msgClass, msg, challenge: ctx.challenge === true, finalUrl: page.url() });
   return result;
 }
 

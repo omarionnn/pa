@@ -2,7 +2,7 @@
 // Playwright is imported lazily, so the rest of Reason runs fine on a machine where
 // `npx playwright install chromium` was never run — the browser tools just say so.
 import { findProviderButton } from "./providerbutton.js";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { config } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
@@ -87,6 +87,146 @@ export function stableSetting(conversationId) {
 export function launchOptions(conversationId, today) {
   if (!stableBrowserAllowedFor(conversationId)) return today;
   return { headless: today?.headless !== false, ...stableSetting(conversationId) };
+}
+
+// ---------- the real browser: Google Chrome in a real window (REASON_BROWSER_CHANNEL=chrome) ----------
+//
+// For a person the stable switch allows, and only when REASON_BROWSER_CHANNEL=chrome, every launch of
+// their profile is the real Google Chrome build, headed, in a real window on a virtual display
+// (REASON_BROWSER_DISPLAY, e.g. :99, from the reason-xvfb unit) on Linux, or on the Mac's own screen.
+// It is the same honest setting as above with the real build: Chrome's own user agent, the person's
+// time zone, no stealth flag, no fingerprint change, no proxy, nothing that solves a challenge.
+// Chrome's profile is its own directory (realProfilePath): a profile written by Playwright's
+// Chromium is a different, older build, and opening it in Chrome (or back) can break both, so the
+// person's sign-ins start fresh in the real browser and the old profile is left as it was.
+// When Chrome or the display is missing, the cap of real browsers is reached, or Chrome fails to
+// start, that one launch is today's browser in today's profile, with one numbers-only log line.
+
+/** Why a launch was today's browser and not the real one: the codes in the log line. */
+export const REAL_FALLBACK = Object.freeze({ no_chrome: 1, no_display: 2, cap: 3, launch_failed: 4 });
+
+export function realBrowserWanted() {
+  return String(process.env.REASON_BROWSER_CHANNEL ?? "").trim().toLowerCase() === "chrome";
+}
+/** True when this person's launches should be the real browser (before the health check). */
+export function realBrowserFor(conversationId) {
+  return realBrowserWanted() && stableBrowserAllowedFor(conversationId);
+}
+/** At most this many real browsers open at once, across everybody (REASON_REAL_BROWSER_MAX, default 2). */
+export function realBrowserCap() {
+  const n = Number.parseInt(process.env.REASON_REAL_BROWSER_MAX ?? "", 10);
+  return Number.isFinite(n) && n >= 0 ? n : 2;
+}
+/** An errand's real browser left alone this long is closed (REASON_REAL_BROWSER_IDLE_MS, default 5 minutes). */
+export function realBrowserIdleMs() {
+  const n = Number.parseInt(process.env.REASON_REAL_BROWSER_IDLE_MS ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 5 * 60_000;
+}
+export function chromeExecutable(platform = process.platform) {
+  if (process.env.REASON_CHROME_PATH) return process.env.REASON_CHROME_PATH;
+  if (platform === "darwin") return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (platform === "win32") return "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  return "/opt/google/chrome/chrome";
+}
+/** The X display the window goes on (Linux only): REASON_BROWSER_DISPLAY, else DISPLAY. */
+export function realBrowserDisplay() {
+  return String(process.env.REASON_BROWSER_DISPLAY || process.env.DISPLAY || "").trim();
+}
+/**
+ * Is the real browser able to start right now? `null` when yes, else a REAL_FALLBACK code. Linux needs
+ * the display's socket (/tmp/.X11-unix/X<n>, REASON_X11_DIR for tests); the Mac has its own screen.
+ */
+export function realBrowserHealth({ platform = process.platform } = {}) {
+  if (!existsSync(chromeExecutable(platform))) return REAL_FALLBACK.no_chrome;
+  if (platform === "linux") {
+    const m = /^:(\d+)(\.\d+)?$/.exec(realBrowserDisplay());
+    if (!m || !existsSync(join(process.env.REASON_X11_DIR || "/tmp/.X11-unix", `X${m[1]}`))) return REAL_FALLBACK.no_display;
+  }
+  return null;
+}
+
+/** Where one person's real-browser profile lives: its own root under the profile root, never the old directory. */
+export function realProfilePath(conversationId) {
+  const safe = String(conversationId).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+  return resolve(join(config.profileRoot, ".real-chrome", safe));
+}
+export function realProfileDirFor(conversationId) {
+  const dir = realProfilePath(conversationId);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** The real launch for this person: today's setting with the real build in a window. */
+export function realLaunchOptions(conversationId, today, { platform = process.platform } = {}) {
+  const opts = { ...launchOptions(conversationId, today), headless: false, channel: "chrome" };
+  if (platform === "linux") opts.env = { ...process.env, DISPLAY: realBrowserDisplay() };
+  return opts;
+}
+
+const realOpen = new Set(); // contexts of real browsers open now
+const realContexts = new WeakSet();
+export function realBrowsersOpen() { return realOpen.size; }
+export function isRealBrowser(context) { return !!context && realContexts.has(context); }
+
+let realSink = (line) => { if (!process.env.NODE_TEST_CONTEXT) console.log("   ·", line); };
+/** For tests: where the real-browser lines go. Returns the old one. */
+export function setRealBrowserSink(fn) { const old = realSink; realSink = fn; return old; }
+
+let orphansSwept = false;
+/**
+ * Chrome processes left from an earlier run of Reason (a restart that did not close them) still hold
+ * real profiles. The first real launch of this process kills every Chrome whose --user-data-dir is
+ * under the real-profile root: none of this process's own exist yet. Linux only (it reads /proc).
+ * → the number killed.
+ */
+export function killRealOrphans({ procDir = "/proc", kill = (pid) => process.kill(pid, "SIGKILL"), root = resolve(join(config.profileRoot, ".real-chrome")) } = {}) {
+  let n = 0;
+  let pids = [];
+  try { pids = readdirSync(procDir).filter((d) => /^\d+$/.test(d)); } catch { return 0; }
+  for (const pid of pids) {
+    let cmd = "";
+    try { cmd = readFileSync(join(procDir, pid, "cmdline"), "utf8"); } catch { continue; }
+    const args = cmd.split("\0");
+    if (!args.some((a) => a.startsWith("--user-data-dir=") && resolve(a.slice(16)).startsWith(root + "/"))) continue;
+    if (args.some((a) => a.startsWith("--type="))) continue; // a helper process: it goes with its browser
+    try { kill(Number(pid)); n += 1; } catch { /* gone already */ }
+  }
+  return n;
+}
+
+/**
+ * Launch one person's profile, for every flow (errands, the vault filler, the sign-in link and the
+ * emailed code, the Mac's sign-in window). `today` is the flow's own launch as before. Off, or for
+ * anyone the switch does not allow, it is exactly today's launch of today's profile directory.
+ * → the persistent context.
+ */
+export async function launchProfile(launcher, conversationId, today, { platform = process.platform } = {}) {
+  if (realBrowserFor(conversationId)) {
+    if (!orphansSwept && platform === "linux") {
+      orphansSwept = true;
+      const killed = killRealOrphans();
+      if (killed) realSink(`real-browser orphans killed=${killed}`);
+    }
+    let code = realBrowserHealth({ platform });
+    if (code == null && realOpen.size >= realBrowserCap()) code = REAL_FALLBACK.cap;
+    if (code == null) {
+      const slot = Symbol("real");
+      realOpen.add(slot);
+      try {
+        const context = await launcher.launchPersistentContext(realProfileDirFor(conversationId), realLaunchOptions(conversationId, today, { platform }));
+        realOpen.delete(slot);
+        realOpen.add(context);
+        realContexts.add(context);
+        context.once?.("close", () => realOpen.delete(context));
+        return context;
+      } catch {
+        realOpen.delete(slot);
+        code = REAL_FALLBACK.launch_failed;
+      }
+    }
+    realSink(`real-browser fallback code=${code} open=${realOpen.size} cap=${realBrowserCap()}`);
+  }
+  return launcher.launchPersistentContext(profileDirFor(conversationId), launchOptions(conversationId, today));
 }
 
 // ---------- one person's profile, one browser at a time ----------
@@ -179,10 +319,6 @@ export function profilePath(conversationId) {
   return resolve(join(config.profileRoot, safe));
 }
 
-function profileDir(conversationId) {
-  return profileDirFor(conversationId);
-}
-
 /**
  * The live page for this conversation, launching Chromium the first time. While a sign-in holds
  * their profile it throws `ProfileBusy` and touches no page: nothing is opened, read or pictured.
@@ -190,7 +326,7 @@ function profileDir(conversationId) {
 export async function pageFor(conversationId) {
   if (holders.has(String(conversationId))) throw saidBusy();
   const existing = sessions.get(conversationId);
-  if (existing && !existing.page.isClosed()) return existing.page;
+  if (existing && !existing.page.isClosed()) { existing.used = Date.now(); return existing.page; }
   const inFlight = launching.get(conversationId);
   if (inFlight) { await inFlight.catch(() => {}); return pageFor(conversationId); }
 
@@ -207,14 +343,14 @@ async function launchErrand(conversationId) {
   const launcher = await chromium();
   let context;
   try {
-    context = await launcher.launchPersistentContext(profileDir(conversationId), launchOptions(conversationId, {
+    context = await launchProfile(launcher, conversationId, {
       headless: !config.browserHeaded,
       viewport: { width: 1280, height: 900 },
       // A service worker's requests do not pass the request guard below, so pages get none.
       serviceWorkers: "block",
       // No launch flag that hides automation from the site (removed 2026-10-23). A site that blocks
       // an automated browser gets a hand-back, never a workaround — the no-stealth rule in agent.js.
-    }));
+    });
   } catch (e) {
     if (/Executable doesn't exist|browserType.launch/i.test(e.message)) {
       throw new NoBrowser("Chromium is not downloaded on this machine. Run: npx playwright install chromium");
@@ -232,8 +368,25 @@ async function launchErrand(conversationId) {
   }
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
-  sessions.set(conversationId, { context, page });
+  sessions.set(conversationId, { context, page, used: Date.now() });
+  if (isRealBrowser(context)) idleSweep();
   return page;
+}
+
+let idleTimer = null;
+/** A real errand browser nobody used for realBrowserIdleMs is closed; today's browsers are left as they were. */
+export async function closeIdleRealBrowsers(now = Date.now()) {
+  const idle = [...sessions].filter(([, s]) => isRealBrowser(s.context) && now - (s.used ?? 0) >= realBrowserIdleMs()).map(([c]) => c);
+  await Promise.all(idle.map(closeBrowser));
+  return idle.length;
+}
+function idleSweep() {
+  if (idleTimer) return;
+  idleTimer = setInterval(() => {
+    closeIdleRealBrowsers().catch(() => {});
+    if (![...sessions.values()].some((s) => isRealBrowser(s.context))) { clearInterval(idleTimer); idleTimer = null; }
+  }, 30_000);
+  idleTimer.unref?.();
 }
 
 /**

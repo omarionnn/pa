@@ -34,7 +34,7 @@ import { config } from "./config.js";
 import "./strangercalls.js";
 import "./tooldiet.js";
 import "./websetupstore.js"; // web_setups + the websetup_owner() SQL function CHILD_SCOPE uses
-import { profilePath } from "./browser.js";
+import { profilePath, realProfilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
 import * as google from "./google.js";
@@ -475,7 +475,7 @@ function childScope(table, conversation) {
 function deleteProfiles(conversation = null) {
   const out = { listed: 0, deleted: 0, failed: [] };
   const targets = conversation
-    ? [profilePath(conversation)]
+    ? [profilePath(conversation), realProfilePath(conversation)]
     : (existsSync(config.profileRoot)
       ? readdirSync(config.profileRoot).map(d => join(config.profileRoot, d))
       : []);
