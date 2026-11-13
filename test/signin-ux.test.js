@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 const dir = mkdtempSync(join(tmpdir(), "signin-ux-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
@@ -96,7 +97,12 @@ const ANSWERS = {
   "/login-notfound": () => "Sorry, we can't find an account with this email address. Please try again or create a new account.",
   "/login-valid": () => "Please enter a valid email address or phone number.",
   "/login-code": () => null,
+  "/login-ok3": () => null,
 };
+// Review 2026-11-13: a standing notice in a live region (there before the submit) is never the answer.
+const STALE = ONE_PAGE.replace('<div id="msg"></div>', '<div id="msg"></div><div role="alert">Sign-in is quick and secure here.</div>');
+// The form vanishes in place and the page's own alert says something no known words name: couldn't tell.
+const VANISH = ONE_PAGE.replace("<script>", `<script>document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();setTimeout(function(){var a=document.createElement('div');a.setAttribute('role','alert');a.textContent='Something odd happened on our side.';document.body.appendChild(a);document.getElementById('f').remove();},800);},true);</script><script>`);
 const posted = [];
 let codeSends = 0;
 function handler(req, res) {
@@ -110,15 +116,17 @@ function handler(req, res) {
       const form = new URLSearchParams(raw);
       const page = u.pathname.slice(0, -4);
       posted.push({ page, user: form.get("userLoginId"), password: form.get("password") });
-      if (page === "/login-silent") return; // never answers
+      if (page === "/login-silent" || page === "/login-stale" || page === "/login-vanish") return; // never answers
       const msg = (ANSWERS[page] ?? (() => "Something went wrong."))();
       const ok = !msg && form.get("userLoginId") === USER && form.get("password") === PASS;
-      setTimeout(() => send(200, JSON.stringify(ok ? { ok: true } : { ok: false, msg: msg ?? "Incorrect password." }), "application/json"), 1_500);
+      setTimeout(() => send(200, JSON.stringify(ok ? { ok: true } : { ok: false, msg: msg ?? "Incorrect password." }), "application/json"), page === "/login-ok3" ? 3_000 : 1_500);
     });
     return;
   }
   if (u.pathname === "/browse") return send(200, "<!doctype html><html><body><h1>Who's watching?</h1><a href='/logout'>Sign out</a></body></html>");
   if (u.pathname === "/login-code") return send(200, CODE_FIRST);
+  if (u.pathname === "/login-stale") return send(200, STALE);
+  if (u.pathname === "/login-vanish") return send(200, VANISH);
   if (u.pathname.startsWith("/login-")) return send(200, ONE_PAGE);
   return send(404, "<p>not found</p>");
 }
@@ -325,4 +333,31 @@ test("C: the save page and the payment approval page's wordmark go to Messages f
   const { renderApproveEnded } = await import("../src/pages/webapprove.js");
   const used = renderApproveEnded({ v: { a: { conversation_id: ME }, kind: "pay", state: "used", amount: "$1.00", store: "S", item: "I", expiresAt: Date.now() }, state: "used" }).html;
   assert.match(used, /class="wm" href="sms:\+15555550100"/);
+});
+
+// ---------------------------------------------------------------- review 2026-11-13 (update 3)
+test("R: an answer after 3 s that signs in is signed in", skip, async () => {
+  const { id } = await save("/login-ok3");
+  const out = await signIn();
+  assert.equal(out.result, "signed_in", out.say_exactly);
+  assert.equal(row(id).state, "working");
+});
+test("R: a notice already showing before the submit doesn't end the wait or name the ending: no_answer after the full wait", skip, async () => {
+  const { id } = await save("/login-stale");
+  const out = await signIn({ answerMs: 2_000 });
+  assert.equal(out.result, "no_answer", out.say_exactly);
+  assert.notEqual(row(id).state, "wrong_password");
+  assert.ok(lastDiag().waited_ms >= 2_000, `waited ${lastDiag().waited_ms}`);
+  assert.doesNotMatch(out.say_exactly, /quick and secure/);
+});
+test("R: the form gone in place with the page's own unknown alert is couldn't tell, never signed in", skip, async () => {
+  const { id } = await save("/login-vanish");
+  const out = await signIn({ answerMs: 4_000 });
+  assert.equal(out.result, "no_answer", out.say_exactly);
+  assert.notEqual(row(id).state, "working");
+});
+test("R: a username echoed back in the page's message is dropped from the quote and the line", () => {
+  const marks = new Set(["jsmith77", "jsmith"].map((p) => createHash("sha256").update(p).digest("hex")));
+  assert.equal(filler.dropMarked("No account for JSmith77. Try again.", marks), "No account for … Try again.");
+  assert.equal(filler.dropMarked("Incorrect password.", marks), "Incorrect password.");
 });
