@@ -620,7 +620,7 @@ test("a bill needs every reference from the notice, a card, and room under the d
   say("pay my con ed bill");
   const none = await call("account_bill_pay", { ...BILL, reference: "  " });
   assert.equal(none.error, "missing_reference");
-  assert.deepEqual(none.missing, ["the account or invoice number"]);
+  assert.deepEqual(none.missing, ["the account or invoice number (or the notice's own pay link)"]);
   assert.equal((await call("account_bill_pay", BILL)).blocked, "no_card");
   card();
   // Bill total over the daily cap: not started, nothing paid, said with the limit.
@@ -633,13 +633,29 @@ test("a bill needs every reference from the notice, a card, and room under the d
   assert.equal(q("SELECT COUNT(*) AS n FROM account_jobs").get().n, 0);
 });
 
+test("a notice that prints no number but carries its own pay link: the link is the reference, and only on the site named", async () => {
+  card();
+  say("pay the anthropic invoice that failed");
+  const out = await call("account_bill_pay", { biller: "Anthropic", site: "invoice.stripe.com", amount: 6, page: "https://invoice.stripe.com/i/acct_1/live_abc", notice_from: "failed-payments@mail.anthropic.com" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  const start = calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts");
+  assert.equal(start.body.request.startUrl, "https://invoice.stripe.com/i/acct_1/live_abc");
+  assert.match(start.body.request.task, /reference \(account or invoice number\) the invoice the notice links to; amount due 6\.00 USD/);
+  const job = jobs.jobRow(OMARI, out.job_id);
+  assert.equal(job.mail_domains, "anthropic.com", "the biller's own mail is where its confirmation is looked for");
+  // A link on some other site is not the bill's: with no number either, nothing starts.
+  db.db.exec("DELETE FROM account_jobs");
+  const off = await call("account_bill_pay", { biller: "Anthropic", site: "anthropic.com", amount: 6, page: "https://invoice.stripe.com/i/acct_1/live_abc" });
+  assert.equal(off.error, "missing_reference");
+});
+
 test("a bill is paid on the biller's own page through the pay path: exact total first, their yes, the daily cap, then the receipt AND the biller's email", async () => {
   googleOn();
   const { job_id, run_id } = await billStarted();
   const start = calls.find((c) => c.method === "POST" && c.path === "/api/unstable/agent-checkouts");
   assert.equal(start.body.request.startUrl, "https://coned.com/");
   assert.deepEqual(start.body.constraints.maxCost, { amount: "91.39", currency: "USD" }, "a ceiling: the bill and room for a card fee; never what is approved");
-  assert.match(start.body.request.task, /reference \(account or invoice number\) Account 44-1234-5678-9; amount due 82\.10 USD; due Nov 20, 2026/);
+  assert.match(start.body.request.task, /^Pay one bill on Con Edison's own payment page\. The bill: reference \(account or invoice number\) Account 44-1234-5678-9; amount due 82\.10 USD; due Nov 20, 2026/);
   assert.match(start.body.request.task, /guest or one-time payment page/);
   assert.match(start.body.request.task, /Do not turn on autopay, do not save the card/);
   assert.match(start.body.request.task, /request payment approval from me and wait/);

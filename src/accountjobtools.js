@@ -83,19 +83,19 @@ export const ACCOUNT_JOB_TOOL_DEFS = [
   },
   {
     name: "account_bill_pay",
-    description: "Pay ONE specific bill from a notice, on the biller's own website (its guest-pay page where it has one, their signed-in account otherwise). Only when THEY asked to pay it. Needs, from the notice itself and never guessed: the biller, the amount due, and the account or invoice number. NOTHING IS PAID BY THIS TOOL: the run stops at payment and they are texted the biller's EXACT total to approve; that approval (the same one a store checkout uses, their daily limit included) is the only thing that pays. Sign-in, if the biller needs it, is handled inside the job; never offer signin_link for it. Afterwards I text them the result myself: 'paid' needs the payment page's receipt AND, where their mail is connected, the biller's confirmation email.",
+    description: "Pay ONE specific bill from a notice, on the biller's own website (its guest-pay page where it has one, their signed-in account otherwise). Only when THEY asked to pay it. Needs, from the notice itself and never guessed: the biller, the amount due, and the account or invoice number (or, where the notice prints none, its own pay link). NOTHING IS PAID BY THIS TOOL: the run stops at payment and they are texted the biller's EXACT total to approve; that approval (the same one a store checkout uses, their daily limit included) is the only thing that pays. Sign-in, if the biller needs it, is handled inside the job; never offer signin_link for it. Afterwards I text them the result myself: 'paid' needs the payment page's receipt AND, where their mail is connected, the biller's confirmation email.",
     input_schema: {
       type: "object",
       properties: {
         biller: { type: "string", description: "Who is billing, as the notice names them: 'Con Edison'." },
-        site: { type: "string", description: "The biller's own site, from the notice: coned.com." },
+        site: { type: "string", description: "The site the bill is paid on, from the notice: the biller's own (coned.com), or the payment service its pay link opens (invoice.stripe.com)." },
         amount: { type: "number", description: "The amount due on the notice, in dollars." },
-        reference: { type: "string", description: "The account number or invoice number on the notice, exactly." },
+        reference: { type: "string", description: "The account number or invoice number on the notice, exactly. Leave it out only when the notice prints none and you pass its own pay link as page." },
         due_date: { type: "string", description: "The due date on the notice, as written." },
         page: { type: "string", description: "The notice's own pay-this-bill https address on that same site, when it gives one." },
         notice_from: { type: "string", description: "The sender domain of the biller's emails, when it is not the site's." },
       },
-      required: ["biller", "site", "amount", "reference"],
+      required: ["biller", "site", "amount"],
     },
   },
   {
@@ -126,7 +126,7 @@ const answersShape = z.record(z.union([z.string().max(500), z.number(), z.boolea
 export const ACCOUNT_JOB_SCHEMAS = {
   account_cancel: z.object({ site: z.string().min(3).max(300), plan: z.string().min(1).max(80), name: z.string().max(60).optional(), page: z.string().url().max(1000).optional(), notice_from: z.string().max(200).optional() }),
   account_cancel_confirm: z.object({ job_id: z.number().int().positive(), confirmation_id: z.number().int().optional(), answers: answersShape.optional() }),
-  account_bill_pay: z.object({ biller: z.string().min(1).max(60), site: z.string().min(3).max(300), amount: z.number().positive().max(5000), reference: z.string().min(1).max(60), due_date: z.string().max(40).optional(), page: z.string().url().max(1000).optional(), notice_from: z.string().max(200).optional() }),
+  account_bill_pay: z.object({ biller: z.string().min(1).max(60), site: z.string().min(3).max(300), amount: z.number().positive().max(5000), reference: z.string().max(60).optional(), due_date: z.string().max(40).optional(), page: z.string().url().max(1000).optional(), notice_from: z.string().max(200).optional() }),
   account_job_answer: z.object({ job_id: z.number().int().positive(), answers: answersShape }),
   account_job_status: z.object({}),
   account_job_stop: z.object({ job_id: z.number().int().positive() }),

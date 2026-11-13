@@ -208,7 +208,7 @@ export function billCap(amount) {
   return (Math.ceil((n * 1.04 + 6) * 100) / 100).toFixed(2);
 }
 export function billTask({ name, amount, reference, due }) {
-  return `Pay one bill on ${name}'s own website. The bill: reference (account or invoice number) ${reference}; amount due ${amount} USD${due ? `; due ${due}` : ""}.`
+  return `Pay one bill on ${name}'s own payment page. The bill: reference (account or invoice number) ${reference}; amount due ${amount} USD${due ? `; due ${due}` : ""}.`
     + ` Use ${name}'s guest or one-time payment page if it has one (no sign-in). Only if there is none, use my signed-in account; if ${name} asks me to sign in, ask me for what it needs.`
     + ` Pay exactly the amount due on that bill, once, as a one-time card payment. Do not turn on autopay, do not save the card, do not set up a recurring payment, do not add a tip, donation or anything else.`
     + ` If the page shows a different amount due than ${amount} USD, or adds a fee, say so in the payment request so I see the page's own total.`
@@ -477,8 +477,10 @@ export async function startBill({ conversationId, site, biller, amount, referenc
   if (!jobsAllowedFor(conversationId)) return { ok: false, blocked: "not_available" };
   const at = startUrlFor(site, page);
   const amt = String(amount ?? "").replace(/[$,\s]/g, "");
-  const ref = short(String(reference ?? "").replace(/["`\n\r]/g, " "), 60);
-  const missing = [!at && "the biller's site", !/^\d+(\.\d{1,2})?$/.test(amt) || !(Number(amt) > 0) ? "the amount due" : "", !ref && "the account or invoice number"].filter(Boolean);
+  // The notice's own pay link names the bill by itself (a hosted invoice page): a reference where no number is printed.
+  const linked = !!(at && page && at.url !== `https://${at.host}/`);
+  const ref = short(String(reference ?? "").replace(/["`\n\r]/g, " "), 60) || (linked ? "the invoice the notice links to" : "");
+  const missing = [!at && "the biller's site", !/^\d+(\.\d{1,2})?$/.test(amt) || !(Number(amt) > 0) ? "the amount due" : "", !ref && "the account or invoice number (or the notice's own pay link)"].filter(Boolean);
   if (missing.length) return { ok: false, error: "missing_reference", missing, say: `Nothing was started: paying a bill needs ${missing.join(", ")} from the notice itself. Ask for what is missing in one line; never guess a number.` };
   const n = cleanName(biller, at.host);
   const fixed = Number(amt).toFixed(2);
