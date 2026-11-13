@@ -6,6 +6,8 @@
 import * as zonescope from "./zonescope.js";
 
 const DATA_DIR = (process.env.REASON_DATA_DIR || "data").replace(/\/+$/, "");
+/** A positive number from the environment, or the default when unset, zero, negative or not a number. */
+function positive(raw, fallback) { const v = Number(String(raw ?? "").trim()); return String(raw ?? "").trim() && Number.isFinite(v) && v > 0 ? v : fallback; }
 
 export const config = {
   dataDir: DATA_DIR,
@@ -673,6 +675,19 @@ export const config = {
   // offers the operator the call_voice_trial tool, and his own choice (accounts.call_trial) turns it on.
   callCartesia: String(process.env.REASON_CALL_CARTESIA ?? "").trim().toLowerCase() === "owner" ? "owner" : "off",
   cartesiaKey: process.env.CARTESIA_API_KEY || "",
+  // Cartesia's own usage figure (GET /usage/agents, src/planmeter.js) needs an ADMIN key (sk_car_admin_...);
+  // the agent key cannot read it. Unset: the ops page shows Reason's own count of Cartesia minutes only.
+  cartesiaAdminKey: process.env.CARTESIA_ADMIN_API_KEY
+    || (String(process.env.CARTESIA_API_KEY ?? "").startsWith("sk_car_admin_") ? process.env.CARTESIA_API_KEY : ""),
+  // The Cartesia plan the ops page meters calls against (src/planmeter.js): its monthly agent credit in
+  // dollars, the agent rate per minute, and the day of the month credits refresh (a short month uses its
+  // last day). Change REASON_CARTESIA_PLAN_USD alone when the plan changes.
+  cartesiaPlanUsd: positive(process.env.REASON_CARTESIA_PLAN_USD, 5),
+  cartesiaRateUsdPerMin: positive(process.env.REASON_CARTESIA_RATE_USD_PER_MIN, 0.03),
+  cartesiaCycleDay: Math.min(31, Math.max(1, Math.round(positive(process.env.REASON_CARTESIA_CYCLE_DAY, 30)))),
+  // How many banks (Plaid Items) the Plaid plan allows across everyone, for the plan meter on /ops
+  // (src/planmeter.js): 20 on the owner's trial. Change it when the plan changes.
+  plaidPlanItems: Math.round(positive(process.env.REASON_PLAID_PLAN_ITEMS, 20)),
   // The agent made once by scripts/cartesia-agent-setup.mjs; the voice is set on it (Gemma, en-GB).
   cartesiaAgentId: String(process.env.REASON_CARTESIA_AGENT_ID ?? "").trim(),
   cartesiaVoice: String(process.env.REASON_CARTESIA_VOICE ?? "").trim() || "62ae83ad-4f6a-430b-af41-a9bede9286ca",

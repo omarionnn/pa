@@ -548,6 +548,11 @@ export function offPinnedSite(conversationId, url, now = Date.now()) {
 }
 export const OFF_SITE_WORDS = (site) => `I'm signed in to ${site} for this job, so I stay on ${site}. I didn't open the other page.`;
 
+/** Is this navigation request for a page's own (top) frame? Unknown (a worker's, a frame gone): yes. */
+export function topLevel(req) {
+  try { const f = req.frame(); return !f || !f.parentFrame(); } catch { return true; }
+}
+
 export async function guardContext(context, { conversationId = null } = {}) {
   // And on every one of them: a box that was ever a password box stays one for the life of its page,
   // whatever a "show password" switch turns it into (src/pagesecrets.js).
@@ -556,8 +561,12 @@ export async function guardContext(context, { conversationId = null } = {}) {
     const req = route.request();
     let u;
     try { u = new URL(req.url()); } catch { return route.continue(); }
-    // The same-site lock: during a signed-in job no page load leaves the pinned site.
-    if (conversationId != null && req.isNavigationRequest() && offPinnedSite(conversationId, u.href)) return route.abort("blockedbyclient");
+    // The same-site lock: during a signed-in job no TOP-LEVEL page load leaves the pinned site (a tab or
+    // a popup's own page). A sub-frame the pinned page itself embeds (a site's invisible human-check,
+    // its payment or video frame) may load: the filler never types into, clicks in or reads another
+    // origin's frame (src/filler.js works on the page's own frame only), so the frame never sees the
+    // login. A request whose frame cannot be told is treated as top-level: locked.
+    if (conversationId != null && req.isNavigationRequest() && topLevel(req) && offPinnedSite(conversationId, u.href)) return route.abort("blockedbyclient");
     if (allowPrivate() || !/^(https?|wss?):$/.test(u.protocol)) return route.continue();
     if (isPrivateHost(u.hostname)) return route.abort("blockedbyclient");
     if (req.isNavigationRequest() && !(await publicUrl(u.href)).ok) return route.abort("blockedbyclient");
@@ -622,5 +631,64 @@ export async function locateSigninPage(entry, { timeoutMs = 40_000 } = {}) {
   } finally {
     clearTimeout(timer);
     await b.close().catch(() => {});
+  }
+}
+
+/**
+ * Where a saved login may be typed, found BEFORE a save link is made (src/loginintake.js offerSaveLink).
+ * The site's address is opened in a throwaway guarded browser (never anybody's own profile); a page is
+ * taken only when it has a sign-in form the filler can type into (src/signinpage.js loginFormOf: a real
+ * password box, or an email-first box on a sign-in path). Otherwise the site's own "Sign in" / "Log in"
+ * link is followed ONCE (same site only, https only, by src/signinpage.js followSigninDoor) and the page
+ * it lands on, after its own redirects, is read the same way. Nothing is typed. Bounded, always closed.
+ * `launch`: tests hand in their own browser ({ context, close }); production launches headless Chromium.
+ *   → { found, url (origin + path), form: "password"|"email_first"|"", followed, why, ms }
+ *     why: "" | "wall" | "off_site" | "no_form" | "not_loaded"
+ */
+export async function findLoginForm(entry, { timeoutMs = 40_000, launch = null, waitMs = signinPage.formWaitMs() } = {}) {
+  const started = Date.now();
+  let session;
+  if (launch) session = await launch();
+  else {
+    const b = await (await chromium()).launch({ headless: true });
+    // A desktop's width: at a phone's, a site folds its "Log in" link into a menu.
+    const context = await b.newContext({ viewport: { width: 1280, height: 800 } }).catch(async (e) => { await b.close().catch(() => {}); throw e; });
+    session = { context, close: () => b.close() };
+  }
+  let timer;
+  try {
+    const work = (async () => {
+      await guardContext(session.context);
+      const page = await session.context.newPage();
+      const statuses = [];
+      page.on("response", (r) => { try { if (r.request().isNavigationRequest() && r.frame() === page.mainFrame()) statuses.push(r.status()); } catch { /* gone */ } });
+      const look = async () => { const r = await signinPage.readPage(page); const form = signinPage.loginFormOf(r.raw); return form ? { form } : null; };
+      const wait = async (ms) => {
+        const watch = signinPage.settleWatch(page, { forMs: ms });
+        try { return await signinPage.waitFor(page, look, { waitMs: ms, stop: () => watch.settled() }); } finally { watch.stop(); }
+      };
+      const end = (found, form, followed, why) => ({ found, url: found ? signinPage.pageOf(page.url()) : "", form: found ? form : "", followed, why, ms: Date.now() - started });
+      const walled = async () => statuses.some(s => s === 403 || s === 429 || s === 503) || (await signinPage.readPage(page)).kind === "challenge";
+      try { await page.goto(entry.signin_url, { waitUntil: "domcontentloaded", timeout: 20_000 }); } catch { return end(false, "", false, "not_loaded"); }
+      let got = await wait(Math.min(waitMs, signinPage.FIRST_LOOK_MS));
+      if (got.found) return end(true, got.value.form, false, "");
+      if (await walled()) return end(false, "", false, "wall");
+      const door = await signinPage.followSigninDoor(page, entry);
+      if (!door.followed) {
+        if (/off the site/.test(door.why)) return end(false, "", false, "off_site");
+        // No link to follow: the page itself may still be drawing its form.
+        got = await wait(waitMs);
+        return got.found ? end(true, got.value.form, false, "") : end(false, "", false, (await walled()) ? "wall" : "no_form");
+      }
+      got = await wait(waitMs);
+      if (got.found) return end(true, got.value.form, true, "");
+      const off = (() => { try { return !signinPage.onSite(page.url(), entry); } catch { return true; } })();
+      return end(false, "", true, (await walled()) ? "wall" : off ? "off_site" : "no_form");
+    })();
+    const cap = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`no answer in ${Math.round(timeoutMs / 1000)}s`)), timeoutMs); });
+    return await Promise.race([work, cap]);
+  } finally {
+    clearTimeout(timer);
+    await session?.close?.().catch?.(() => {});
   }
 }

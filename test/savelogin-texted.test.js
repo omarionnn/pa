@@ -50,7 +50,7 @@ const router = new Router({ runtime, judge: async () => ({ verdict: "yes" }) });
 const channel = router.register(new FakeChannel({}));
 let n = 0;
 const say = (body) => router.deliver({ channel: "fake", externalId: `m${++n}`, from: MASTER, text: body, at: clock.now() });
-const openLink = () => intake.offerSaveLink(C, "example.test", "pay my example bill", { locate: async () => ({ found: true, url: "https://login.example.test/signin" }) });
+const openLink = () => intake.offerSaveLink(C, "example.test", "pay my example bill", { locate: async () => ({ found: true, url: "https://login.example.test/signin", form: "password" }) });
 
 const PASSWORDS = ["Hunter22!", "xK9#mQ2vLp", "correcthorse42battery", "my password is Tr0ub4dor&3", "password: Sw0rdfish.", "the password is qwerty123"];
 const ORDINARY = ["ok", "thanks!!", "perfect", "Perfect!!!", "done", "got it, thanks", "will do", "on it 👍", "what is this link?", "is this safe?",
