@@ -495,6 +495,25 @@ export function emailSigninFor(conversationId) {
 export function _resetJobs() { for (const j of jobs.values()) j.reply?.(null); jobs.clear(); }
 
 /**
+ * Wait for their texted reply with a code they were asked for once, on behalf of another sign-in path
+ * (src/filler.js, a saved login's texted second step). The reply is taken at intake by takeCodeReply,
+ * exactly as an email sign-in's is, so the code never reaches the thread or the model. One wait per
+ * person; another job already running means null at once. → Promise<code | null> (null: no reply in time).
+ */
+export function awaitCodeReply(conversationId, entry, { waitMs = REPLY_WAIT_MS } = {}) {
+  const old = jobs.get(conversationId);
+  if (old && !old.done) return Promise.resolve(null);
+  const job = { entry, state: "waiting_reply", done: false, reply: null, asked: 1 };
+  jobs.set(conversationId, job);
+  return new Promise((resolve) => {
+    const finish = (v) => { job.done = true; job.state = "done"; job.reply = null; if (jobs.get(conversationId) === job) jobs.delete(conversationId); resolve(v); };
+    const t = setTimeout(() => finish(null), waitMs);
+    t.unref?.();
+    job.reply = (code) => { clearTimeout(t); finish(code); };
+  });
+}
+
+/**
  * Their texted reply, when a sign-in is waiting on a code they were asked for: the code goes to the
  * job, and the thread (and the model) gets a placeholder instead. Anything that does not look like a
  * code goes through untouched. Called by src/runtime.js before a user turn.
