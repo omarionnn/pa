@@ -29,6 +29,8 @@ process.env.REASON_REST_KMS_REGION = "us-west-2";
 process.env.AWS_ACCESS_KEY_ID = "STANDINACCESSKEY0001";
 process.env.AWS_SECRET_ACCESS_KEY = "stand-in-secret-for-tests-only";
 process.env.REASON_VAULT_KMS_KEY = "alias/reason-vault";
+delete process.env.REASON_VAULT_KMS;                     // the AWS provider (test/savedlogins-gcp.test.js runs Google's)
+delete process.env.REASON_GCP_KEY_FILE;
 process.env.REASON_SAVED_LOGINS = "off";
 after(() => rmSync(dir, { recursive: true, force: true }));
 

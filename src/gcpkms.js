@@ -85,7 +85,7 @@ function inspectKeyFile(file) {
   const tokenUri = j.token_uri ?? GOOGLE_TOKEN_URI;
   out.tokenUri = typeof tokenUri === "string" && allowedBase(tokenUri, GOOGLE_TOKEN_URI);
   const ok = Object.values(out).every(Boolean);
-  const creds = ok ? { file, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, projectId: j.project_id, email: j.client_email,
+  const creds = ok ? { file, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, mode: st.mode, projectId: j.project_id, email: j.client_email,
     keyId: j.private_key_id, tokenUri, key } : null;
   return { out, creds };
 }
@@ -100,7 +100,7 @@ function credentials() {
   if (creds && creds.file === file) {
     try {
       const st = statSync(file);
-      if (st.mtimeMs === creds.mtimeMs && st.size === creds.size && st.ino === creds.ino) return creds;
+      if (st.mtimeMs === creds.mtimeMs && st.size === creds.size && st.ino === creds.ino && st.mode === creds.mode) return creds;
     } catch { /* gone: re-check below */ }
   }
   const { out, creds: c } = inspectKeyFile(file);
