@@ -7,7 +7,7 @@
 //                                                                  With REASON_ENCRYPT_REST=on and REASON_ENCRYPT_REST2=off,
 //                                                                  it opens phase 2's columns only; phase 1 stays sealed.
 //   node --env-file=.env scripts/encrypt-rest.mjs --rotate-install-key --server-stopped   new install key, every person key re-wrapped (Reason stopped)
-//   ... --move-master --server-stopped        re-wrap install keys under REASON_REST_KEK_SOURCE (file -> aws-kms)
+//   ... --move-master --server-stopped        re-wrap install keys under REASON_REST_KEK_SOURCE (file -> gcp-kms or aws-kms)
 //   ... --rotate-master --server-stopped      new master key file; old backups' keystores become unopenable
 //   ... --seal-recovery-copy                  write <master file>.age for the off-site backup (also after every rotation)
 //   ... --prune-old-masters                   delete retired master files older than 3 days
