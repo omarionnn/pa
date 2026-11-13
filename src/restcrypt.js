@@ -40,6 +40,8 @@ export const SENSITIVE = [
   // Saved logins (src/savedlogins.js): why a login was used, in Reason's words. The login itself is
   // in data/logins.db under its own KMS key; this is the person's record of using it.
   { table: "login_log", cols: ["purpose"], owner: "conversation_id" },
+  // A save-login link's quoted request: their own words from the thread (src/loginintake.js).
+  { table: "login_intake", cols: ["quoted_request"], owner: "conversation_id" },
 ];
 /**
  * Phase 2 (11-10), behind REASON_ENCRYPT_REST2=on, which needs phase 1 on. Message copies, call
