@@ -1,5 +1,5 @@
 {
-  "ran_at": "2026-11-13T05:01:33.631Z",
+  "ran_at": "2026-11-13T05:08:36.535Z",
   "today": "2026-11-13",
   "plaid_host": "sandbox.plaid.com",
   "sdk": "plaid 51.0.0",
@@ -31,7 +31,7 @@
           }
         },
         "status": 200,
-        "ms": 466,
+        "ms": 300,
         "response_keys": [
           "expiration",
           "hosted_link_url",
@@ -39,7 +39,7 @@
           "request_id"
         ],
         "hosted_link_url_shape": "https://secure.plaid.com/hl/<34 chars>",
-        "expiration": "2026-11-13T05:31:34Z",
+        "expiration": "2026-11-13T05:38:37Z",
         "expires_in_minutes": 30,
         "tool_said_minutes": 30,
         "page": {
@@ -75,27 +75,27 @@
         "probes": {
           "empty_hosted_link_object": {
             "accepted": true,
-            "expires_in_minutes": 30.01,
+            "expires_in_minutes": 30,
             "has_hosted_link_url": true
           },
           "redirect_to_a_host_never_registered": {
             "accepted": true,
-            "expires_in_minutes": 30.01,
+            "expires_in_minutes": 29.99,
             "has_hosted_link_url": true
           },
           "redirect_to_loopback_http": {
             "accepted": true,
-            "expires_in_minutes": 30,
+            "expires_in_minutes": 29.99,
             "has_hosted_link_url": true
           },
           "lifetime_one_day": {
             "accepted": true,
-            "expires_in_minutes": 1440,
+            "expires_in_minutes": 1439.99,
             "has_hosted_link_url": true
           },
           "no_webhook_url": {
             "accepted": true,
-            "expires_in_minutes": 30,
+            "expires_in_minutes": 30.01,
             "has_hosted_link_url": true
           },
           "with_webhook_url": {
@@ -106,7 +106,7 @@
         },
         "line": "url https://secure.plaid.com/hl/<34 chars>, expires in 30 min, page 200"
       },
-      "seconds": 1.52
+      "seconds": 1.19
     },
     "b": {
       "title": "Connect with no person: Sandbox public token, exchange, first sync, fresh balance, recurring",
@@ -120,7 +120,7 @@
             "First Platypus Bank"
           ]
         },
-        "connect_seconds": 1.36,
+        "connect_seconds": 0.85,
         "institution_saved": "First Platypus Bank",
         "accounts_get": {
           "keys": [
@@ -177,11 +177,11 @@
           "type": "ITEM_ERROR"
         },
         "asked_with_no_webhook": {
-          "questions": 5,
-          "answered_after_seconds": 8.01,
+          "questions": 3,
+          "answered_after_seconds": 4.04,
           "timeline": [
             {
-              "at_s": 0.64,
+              "at_s": 0.3,
               "ok": false,
               "error": "still_loading",
               "still_loading": [
@@ -190,7 +190,7 @@
               "has_a_number": false
             },
             {
-              "at_s": 2.49,
+              "at_s": 2.12,
               "ok": false,
               "error": "still_loading",
               "still_loading": [
@@ -199,25 +199,7 @@
               "has_a_number": false
             },
             {
-              "at_s": 4.37,
-              "ok": false,
-              "error": "still_loading",
-              "still_loading": [
-                "First Platypus Bank"
-              ],
-              "has_a_number": false
-            },
-            {
-              "at_s": 6.21,
-              "ok": false,
-              "error": "still_loading",
-              "still_loading": [
-                "First Platypus Bank"
-              ],
-              "has_a_number": false
-            },
-            {
-              "at_s": 8.01,
+              "at_s": 4.04,
               "ok": true,
               "total": "$4,274.46",
               "count": 11,
@@ -226,7 +208,7 @@
           ],
           "never_gave_a_number_before_the_data": true,
           "first": {
-            "at_s": 0.64,
+            "at_s": 0.3,
             "ok": false,
             "error": "still_loading",
             "still_loading": [
@@ -235,7 +217,7 @@
             "has_a_number": false
           },
           "last": {
-            "at_s": 8.01,
+            "at_s": 4.04,
             "ok": true,
             "total": "$4,274.46",
             "count": 11,
@@ -244,11 +226,11 @@
         },
         "stored_after_questions": 16,
         "settle": {
-          "seconds": 0.23,
+          "seconds": 0.27,
           "polls": 1,
           "timeline": [
             {
-              "at_s": 0.23,
+              "at_s": 0.27,
               "ok": true,
               "added": 0,
               "modified": 0,
@@ -263,7 +245,7 @@
         "sync_calls": [
           {
             "status": 200,
-            "ms": 457,
+            "ms": 417,
             "added": 0,
             "has_more": false,
             "update_status": "NOT_READY",
@@ -272,7 +254,7 @@
           },
           {
             "status": 200,
-            "ms": 636,
+            "ms": 293,
             "added": 0,
             "has_more": false,
             "update_status": "NOT_READY",
@@ -281,7 +263,7 @@
           },
           {
             "status": 200,
-            "ms": 354,
+            "ms": 324,
             "added": 0,
             "has_more": false,
             "update_status": "INITIAL_UPDATE_COMPLETE",
@@ -290,25 +272,7 @@
           },
           {
             "status": 200,
-            "ms": 370,
-            "added": 0,
-            "has_more": false,
-            "update_status": "HISTORICAL_UPDATE_COMPLETE",
-            "cursor_sent": false,
-            "next_cursor_empty": true
-          },
-          {
-            "status": 200,
-            "ms": 343,
-            "added": 0,
-            "has_more": false,
-            "update_status": "HISTORICAL_UPDATE_COMPLETE",
-            "cursor_sent": false,
-            "next_cursor_empty": true
-          },
-          {
-            "status": 200,
-            "ms": 287,
+            "ms": 349,
             "added": 16,
             "has_more": false,
             "update_status": "HISTORICAL_UPDATE_COMPLETE",
@@ -317,7 +281,7 @@
           },
           {
             "status": 200,
-            "ms": 227,
+            "ms": 266,
             "added": 0,
             "has_more": false,
             "update_status": "HISTORICAL_UPDATE_COMPLETE",
@@ -330,7 +294,7 @@
         ],
         "balance": {
           "ok": true,
-          "seconds": 1.67,
+          "seconds": 1.63,
           "accounts": 14,
           "sample": [
             {
@@ -457,9 +421,9 @@
             }
           ]
         },
-        "line": "First Platypus Bank: 14 accounts, first sync 0 tx (NOT_READY); asked at once: still_loading, answered $4,274.46 after 8.01s and 5 questions, no webhook; history in 0.23s, 16 stored; balance 1.67s; recurring 200 7 out (plaid)"
+        "line": "First Platypus Bank: 14 accounts, first sync 0 tx (NOT_READY); asked at once: still_loading, answered $4,274.46 after 4.04s and 3 questions, no webhook; history in 0.27s, 16 stored; balance 1.63s; recurring 200 7 out (plaid)"
       },
-      "seconds": 16.25
+      "seconds": 9.52
     },
     "c": {
       "title": "Two banks together: combined totals, own transfer not spending, card payment not twice, accounts by name and last four",
@@ -473,13 +437,26 @@
             "Tartan Bank"
           ]
         },
-        "connect_seconds": 0.93,
+        "connect_seconds": 0.72,
+        "second_bank_seconds_old": {
+          "ok": true,
+          "error": null,
+          "source": "plaid",
+          "count": 5,
+          "still_loading": [
+            "Tartan Bank"
+          ],
+          "recurring_answers": [
+            "200",
+            "PRODUCT_NOT_READY"
+          ]
+        },
         "settle": {
-          "seconds": 5.26,
+          "seconds": 5.53,
           "polls": 3,
           "timeline": [
             {
-              "at_s": 0.27,
+              "at_s": 0.24,
               "ok": true,
               "added": 0,
               "modified": 0,
@@ -487,17 +464,17 @@
               "history": "NOT_READY"
             },
             {
-              "at_s": 2.62,
+              "at_s": 3.28,
               "ok": true,
-              "added": 0,
+              "added": 311,
               "modified": 0,
               "removed": 0,
               "history": "INITIAL_UPDATE_COMPLETE"
             },
             {
-              "at_s": 5.26,
+              "at_s": 5.53,
               "ok": true,
-              "added": 311,
+              "added": 0,
               "modified": 0,
               "removed": 0,
               "history": "HISTORICAL_UPDATE_COMPLETE"
@@ -530,11 +507,11 @@
           "request_id"
         ],
         "settle_purchase": {
-          "seconds": 2.91,
+          "seconds": 3,
           "polls": 2,
           "timeline": [
             {
-              "at_s": 0.44,
+              "at_s": 0.58,
               "ok": true,
               "added": 51,
               "modified": 311,
@@ -542,7 +519,7 @@
               "history": "HISTORICAL_UPDATE_COMPLETE"
             },
             {
-              "at_s": 2.91,
+              "at_s": 3,
               "ok": true,
               "added": 1,
               "modified": 0,
@@ -555,22 +532,14 @@
         },
         "settle_moves": {
           "bank1": {
-            "seconds": 2.93,
-            "polls": 2,
+            "seconds": 0.33,
+            "polls": 1,
             "timeline": [
               {
-                "at_s": 0.56,
+                "at_s": 0.33,
                 "ok": true,
-                "added": 80,
+                "added": 84,
                 "modified": 16,
-                "removed": 0,
-                "history": "HISTORICAL_UPDATE_COMPLETE"
-              },
-              {
-                "at_s": 2.93,
-                "ok": true,
-                "added": 4,
-                "modified": 0,
                 "removed": 0,
                 "history": "HISTORICAL_UPDATE_COMPLETE"
               }
@@ -579,11 +548,11 @@
             "stored": 36
           },
           "bank2": {
-            "seconds": 2.54,
+            "seconds": 2.66,
             "polls": 2,
             "timeline": [
               {
-                "at_s": 0.23,
+                "at_s": 0.27,
                 "ok": true,
                 "added": 0,
                 "modified": 0,
@@ -591,7 +560,7 @@
                 "history": "HISTORICAL_UPDATE_COMPLETE"
               },
               {
-                "at_s": 2.54,
+                "at_s": 2.65,
                 "ok": true,
                 "added": 2,
                 "modified": 0,
@@ -829,7 +798,7 @@
         "transaction_accounts_named": true,
         "line": "First Platypus Bank + Tartan Bank: total $9,999.14 -> +purchase $10,011.48 -> +moves $10,011.48; matches Plaid rows: true (10011.48); labels ok: true; loan lines left out: 69 ($3103.47); long numbers in names: 6 sent, 0 kept"
       },
-      "seconds": 25.49
+      "seconds": 23.14
     },
     "d": {
       "title": "The questions a person asks, answered from the real data",
@@ -1034,7 +1003,7 @@
         },
         "line": "week $852.52 (Plaid rows 852.52); food $1,127.53 (1127.53); subs 7 via plaid; too-large short=true of $43,200.00; old period -> beyond_60_days"
       },
-      "seconds": 10.88
+      "seconds": 8.97
     },
     "e": {
       "title": "The 60-day rule on real data: nothing older stored, and the purge removes what ages out",
@@ -1163,7 +1132,7 @@
         },
         "line": "sync -> login_required (Plaid 400 ITEM_LOGIN_REQUIRED); update link 200, access_token sent: true, products named: false, expires 30 min; texted 1"
       },
-      "seconds": 4.04
+      "seconds": 4.55
     },
     "g": {
       "title": "Webhooks: what /sandbox/item/fire_webhook answers, and the verification path as far as it goes without a delivery",
@@ -1234,7 +1203,7 @@
         "real_delivery": "NOT PROVEN: no webhook was received. Plaid had no reachable address for this machine, so no real Plaid-Verification signature has been checked by this code.",
         "line": "no url: SANDBOX_WEBHOOK_INVALID; with url: SYNC_UPDATES_AVAILABLE=true, DEFAULT_UPDATE=true, RECURRING_TRANSACTIONS_UPDATE=true, LOGIN_REPAIRED=true, PENDING_DISCONNECT=true; forged -> 401 (INVALID_WEBHOOK_VERIFICATION_KEY_ID)"
       },
-      "seconds": 1.35
+      "seconds": 1.34
     },
     "h": {
       "title": "Disconnect: one of two, then all; really gone at Plaid, and the token and that bank's rows gone here",
@@ -1345,14 +1314,14 @@
         },
         "line": "one (last four): remove 200, later call -> ITEM_NOT_FOUND, rows {\"items\":0,\"accounts\":0,\"transactions\":0,\"links\":0}; all: remove 200, later -> ITEM_NOT_FOUND, left 0"
       },
-      "seconds": 0.98
+      "seconds": 1.07
     },
     "leaks": {
       "title": "Nothing a person, the model or a log was given holds a token, an id, or more than four digits of an account",
       "pass": true,
       "facts": {
-        "checked_identifiers": 523,
-        "tool_answers": 28,
+        "checked_identifiers": 522,
+        "tool_answers": 27,
         "texts": 3,
         "log_lines": 3,
         "leaked_kinds": [],
@@ -1360,7 +1329,7 @@
         "log_kinds": [
           "plaid_webhook_rejected"
         ],
-        "line": "523 real identifiers checked against 28 answers, 3 texts, 3 log lines: 0 found"
+        "line": "522 real identifiers checked against 27 answers, 3 texts, 3 log lines: 0 found"
       },
       "seconds": 0
     }
@@ -1383,8 +1352,8 @@
       "/sandbox/item/reset_login": 1,
       "/sandbox/public_token/create": 2,
       "/sandbox/transactions/create": 3,
-      "/transactions/recurring/get": 4,
-      "/transactions/sync": 18,
+      "/transactions/recurring/get": 6,
+      "/transactions/sync": 16,
       "/webhook_verification_key/get": 2
     },
     "non_sandbox_hosts": 0

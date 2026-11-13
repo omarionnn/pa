@@ -27,15 +27,17 @@
 // recorded shapes are test/fixtures/plaid/). What it showed that the docs alone did not:
 //   - The first /transactions/sync after a connection ALWAYS answers with nothing: NOT_READY, no
 //     transactions, an empty cursor. They arrive 3 to 8 seconds later, the whole first month re-sent
-//     as `modified` when the history lands, and once HISTORICAL_UPDATE_COMPLETE was reported before
-//     any had arrived. So a read never trusts what is stored to be current: it syncs first (freshen).
+//     as `modified` when the history lands, and in two runs of four HISTORICAL_UPDATE_COMPLETE was
+//     reported, still with an empty cursor, before any had arrived. So a read never trusts what is
+//     stored to be current, nor that status alone: it syncs first (freshen).
 //   - A webhook answered 401 or 404 is never retried (Plaid's webhook docs), so a late, lost or
 //     refused webhook must not be the only way transactions get here. It is not: see freshen.
 //   - Loan accounts carry their own lines ("Interest charged", "Monthly payment"): interest accruing
-//     on a loan is not money the person spent, and it was a third of a week's "spending".
+//     on a loan is not money the person spent, and it was nearly half of one week's "spending".
 //   - When Plaid has no merchant name the bank's own line is all there is, and it carries long runs
 //     of digits (references, card fragments): those are taken out before a name is kept (txName).
-//   - /transactions/recurring/get answers in Sandbox without any request for access (200, streams).
+//   - /transactions/recurring/get answers in Sandbox without any request for access (200, streams),
+//     and PRODUCT_NOT_READY when asked in the first seconds after a connection.
 //   - A token whose Item was removed fails ITEM_NOT_FOUND. /link/token/get on a link nobody has
 //     opened has no `link_sessions` at all.
 //
@@ -634,13 +636,17 @@ export function localRecurring(c, { now = clock.now(), tz = "America/New_York" }
 export async function subscriptions(c, { now = clock.now() } = {}) {
   const tz = zoneFor(c) || "America/New_York";
   const today = ymd(now, tz);
-  let streams = [], source = "plaid";
+  let streams = [], source = "plaid", asked = 0, unready = 0;
   try {
     const api = await client();
     const accts = accountMap(c);
     for (const it of itemsOf(c)) {
       if (it.status !== "ok") continue;
-      const out = await api.transactions.getRecurring({ access_token: tokenOf(c, it.itemId) });
+      asked++;
+      let out;
+      // A bank connected seconds ago answers PRODUCT_NOT_READY (real Sandbox): it is left out, and the others still count.
+      try { out = await api.transactions.getRecurring({ access_token: tokenOf(c, it.itemId) }); }
+      catch (e) { if (errorCode(e) === "PRODUCT_NOT_READY") { unready++; continue; } throw e; }
       for (const s of out?.outflow_streams ?? []) {
         if (s.is_active === false || s.status === "TOMBSTONED") continue;
         if (accts.get(s.account_id)?.type === "loan") continue; // interest accruing on a loan is not a charge they pay
@@ -649,6 +655,7 @@ export async function subscriptions(c, { now = clock.now() } = {}) {
         streams.push({ name: String(s.merchant_name || s.description || "").slice(0, 120), amount: Math.abs(Number(s.average_amount?.amount) || 0), last_amount: Math.abs(Number(s.last_amount?.amount) || 0), frequency: s.frequency || "UNKNOWN", last_date: s.last_date || "", next_date: s.predicted_next_date || "", category: categoryOf(t) });
       }
     }
+    if (asked && unready === asked) throw Object.assign(new Error("recurring not ready"), { code: "PRODUCT_NOT_READY" });
   } catch (e) {
     // Not on the plan, not ready yet, or Plaid is down: the local reading is still an honest answer.
     source = "worked_out_here"; streams = localRecurring(c, { now, tz });

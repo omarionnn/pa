@@ -99,6 +99,8 @@ export function makePlaid({ now = () => Date.now() } = {}) {
         return { status: 200, body: { accounts: item.accounts, added: page.added ?? [], has_more: next < item.pages.length, modified: page.modified ?? [], next_cursor: `cur:${next}`, removed: page.removed ?? [], request_id: "req_sync", transactions_update_status: item.history } };
       }
       case "/transactions/recurring/get":
+        // Asked in the first seconds after a connection, the real Sandbox answers PRODUCT_NOT_READY.
+        if (item.notReady > 0) return err("PRODUCT_NOT_READY");
         if (!item.recurring) return err("INVALID_PRODUCT", "INVALID_INPUT");
         return { status: 200, body: { inflow_streams: [], outflow_streams: item.recurring, personal_finance_category_version: "v2", request_id: "req_rec", updated_datetime: "2026-11-12T00:00:00Z" } };
       case "/item/remove": item.removed = true; return { status: 200, body: { request_id: "req_rm" } };

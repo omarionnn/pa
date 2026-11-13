@@ -4,7 +4,7 @@
   "status": 400,
   "request": {
     "access_token": "access-sandbox-PLACEHOLDER-2",
-    "cursor": "CURSOR_7",
+    "cursor": "CURSOR_6",
     "count": 500
   },
   "response": {

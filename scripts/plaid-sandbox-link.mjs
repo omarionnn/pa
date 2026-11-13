@@ -104,26 +104,29 @@ if (has("--disconnect")) {
     done();
   }
 } else {
+  // With --serve the page is up before the link is printed: Plaid's last stop, on this Mac only, is
+  // Reason's real done page, which finishes the connection.
+  let server = null, row = null;
+  if (has("--serve")) {
+    const { bankDonePage } = await import("../src/http.js");
+    server = createServer(async (req, res) => {
+      const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+      if (req.method !== "GET" || url.pathname !== "/bank/done") { res.writeHead(404); return res.end(); }
+      const page = await bankDonePage(url.searchParams.get("s") ?? "");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" });
+      res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${page.title}</title><body style="font: 17px/1.5 -apple-system, system-ui, sans-serif; max-width: 34rem; margin: 15vh auto; padding: 0 1.25rem">${page.body}</body>`);
+      if (row && ["connected", "expired", "failed"].includes(plaid.linkOutcome(row.id))) server.close(() => done());
+    });
+    try { await new Promise((ok, no) => { server.once("error", no); server.listen(PORT, "127.0.0.1", ok); }); }
+    catch (e) { console.error(`could not listen on 127.0.0.1:${PORT} (${e.code ?? e.message}); run without --serve, or free the port`); process.exit(1); }
+  }
   const link = await plaid.createLink(C);
-  if (!link.ok) { console.error(`Plaid would not make the link: ${link.error}`); done(1); }
+  if (!link.ok) { console.error(`Plaid would not make the link: ${link.error}`); server?.close(); done(1); }
   else {
-    const row = newest();
+    row = newest();
     console.log(link.url);
     console.log(`expires ${when(row.expires_at)} (${link.minutes} minutes)`);
-    if (!has("--serve")) done();
-    else {
-      // Plaid's last stop, on this Mac only: Reason's real done page, which finishes the connection.
-      const { bankDonePage } = await import("../src/http.js");
-      const server = createServer(async (req, res) => {
-        const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
-        if (req.method !== "GET" || url.pathname !== "/bank/done") { res.writeHead(404); return res.end(); }
-        const page = await bankDonePage(url.searchParams.get("s") ?? "");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" });
-        res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${page.title}</title><body style="font: 17px/1.5 -apple-system, system-ui, sans-serif; max-width: 34rem; margin: 15vh auto; padding: 0 1.25rem">${page.body}</body>`);
-        if (["connected", "expired", "failed"].includes(plaid.linkOutcome(row.id))) server.close(() => done());
-      });
-      server.listen(PORT, "127.0.0.1");
-      setTimeout(() => server.close(() => done()), Math.max(1000, row.expires_at - clock.now() + 60_000));
-    }
+    if (!server) done();
+    else setTimeout(() => server.close(() => done()), Math.max(1000, row.expires_at - clock.now() + 60_000));
   }
 }

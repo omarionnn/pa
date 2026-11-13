@@ -197,9 +197,15 @@ assumed: where the credentials are not known yet, the registry says that instead
 A person connects a bank through Plaid and asks Reason about their own money by text. Reason reads
 balances and transactions. It cannot move money: the only Plaid products used are Transactions and
 Balance, and no endpoint that pays, transfers or returns an account or routing number is called.
-**Off by default** (`REASON_PLAID=off | owner | on`), Sandbox by default (`PLAID_ENV`). As of this
-date it has only been run against Plaid's documented response shapes (`test/fixture-plaid.js`, through
-the real `plaid` SDK v51); there are no Plaid keys on any machine yet, so nothing has touched Plaid.
+**Off by default** (`REASON_PLAID=off | owner | on`), Sandbox by default (`PLAID_ENV`).
+**Run against Plaid's real Sandbox on 2026-11-13** (`scripts/plaid-sandbox-proof.mjs`, the
+integration's own functions, a throwaway database, a made-up person; the record is
+`docs/plaid-sandbox-proof-2026-11-13.json` and the real response shapes are `test/fixtures/plaid/`):
+Hosted Link creation, connecting, syncing, a fresh balance, recurring, two banks combined, the
+60-day rule, an expired login and update mode, and disconnecting all behaved as written below.
+**Not proven:** a real webhook arriving and its signature being checked (Plaid could not reach the
+machine it ran on; a forged one is refused), a person going through Hosted Link in a browser
+(`scripts/plaid-sandbox-link.mjs` makes a link for that), and anything in production.
 
 - **Connecting.** "connect my bank" (or a money question with no bank connected) → the `bank` tool
   makes a Plaid Hosted Link at that moment (it lasts 30 minutes) and Reason sends one short heads-up
@@ -233,13 +239,27 @@ the real `plaid` SDK v51); there are no Plaid keys on any machine yet, so nothin
   four) and asks which; a last four or an unambiguous bank name picks one; "disconnect all" removes
   each Item at Plaid and deletes each token and its data.
 - **Answers.** `bank` actions: `spending` (a period or two days, optional category or word; the
-  total first, by category; card payments, transfers between accounts and income are not counted),
+  total first, by category; card payments, transfers between accounts and income are not counted;
+  nothing on a loan account is, so interest accruing on a mortgage is not "spending", while what
+  they pay toward a loan from a cash account is, whether or not the loan is connected),
   `transactions`, `subscriptions` (Plaid's `/transactions/recurring/get` when the plan has that
   add-on, otherwise worked out from their synced rows and said to be so; each with last charge, next
   expected and `gone_out_this_month`, which is what "has rent gone out yet" reads), `balance`
   (always `/accounts/balance/get`, never a kept number: there is no column for one), `status`,
   `disconnect`. Categories come from Plaid's `personal_finance_category`. No bank connected → the
   link is offered, never a guess. No investment, tax or insurance advice (the tool's description; nothing is added to the system prompt).
+- **Up to date before any answer, webhook or not** (`freshen`). In the real Sandbox the first sync
+  after a connection always came back empty (`NOT_READY`, no cursor); the transactions arrived 3 to
+  8 seconds later; and twice Plaid said `HISTORICAL_UPDATE_COMPLETE` with nothing delivered yet.
+  Plaid also never re-sends a webhook that was answered 401 or 404. So `spending`, `transactions`
+  and `subscriptions` sync each bank first unless it was synced in the last 30 seconds with its
+  history in, and a bank connected in the last ten minutes with nothing stored is asked every time.
+  While nothing has arrived the answer is `still_loading` and carries no number ("$0" would be
+  wrong); with one bank loading and another in, the total is given and the missing bank is named.
+  `/transactions/sync` is not billed per call.
+- **Names.** A charge is called by Plaid's merchant name. Where Plaid has none, the bank's own
+  line is used with every run of five or more digits taken out (real lines carry 14-digit
+  references and card fragments), before it is stored.
 - **Kept fresh.** `POST /plaid/webhook`, verified the documented way (ES256 JWT in
   `Plaid-Verification`, key by `kid`, five-minute `iat`, SHA-256 of the raw body, constant-time).
   `SYNC_UPDATES_AVAILABLE` syncs from the saved cursor. `ITEM_LOGIN_REQUIRED` (webhook or met on a
@@ -267,8 +287,18 @@ the real `plaid` SDK v51); there are no Plaid keys on any machine yet, so nothin
   production access for Transactions and Balance (application, company profile, security
   questionnaire), the Recurring Transactions add-on (a product access request), and OAuth
   institution registration (Chase, Capital One and others need it and can take weeks). Balance is
-  billed per call in production; Transactions per connected Item per month.
-- Tests: `test/plaid.test.js` (27).
+  billed per call in production; Transactions per connected Item per month, and Recurring
+  Transactions is a second monthly fee per Item once `/transactions/recurring/get` is called on it.
+  In Sandbox recurring answers with no access request (200, real streams; `PRODUCT_NOT_READY` if
+  asked in the first seconds), so whether production has it is only known once Plaid grants it.
+- Tests: `test/plaid.test.js` (36), against `test/fixture-plaid.js`, which answers the way the real
+  Sandbox did and is held to the recordings in `test/fixtures/plaid/` field for field.
+- By hand, with Sandbox keys: `REASON_PLAID_SANDBOX=1 node scripts/plaid-sandbox-proof.mjs
+  --env-file .env` (the whole flow against sandbox.plaid.com, about a minute, every Item removed at
+  the end; `--save test/fixtures/plaid` re-records the shapes) and `node
+  scripts/plaid-sandbox-link.mjs --env-file .env` (prints a fresh Sandbox Hosted Link and its
+  expiry for a person to open: First Platypus Bank, `user_good` / `pass_good`; `--check` then
+  connects it through the integration and says what came in; `--disconnect` cleans up).
 
 ### Food ordering (`REASON_FOOD`, `src/food.js`)
 

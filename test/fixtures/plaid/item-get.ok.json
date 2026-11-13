@@ -31,7 +31,7 @@
         "transactions"
       ],
       "consent_expiration_time": null,
-      "created_at": "2026-11-13T05:01:35Z",
+      "created_at": "2026-11-13T05:08:37Z",
       "error": null,
       "institution_id": "ins_109508",
       "institution_name": "First Platypus Bank",
@@ -47,7 +47,7 @@
       "last_webhook": null,
       "transactions": {
         "last_failed_update": null,
-        "last_successful_update": "2026-11-13T05:02:07.93Z"
+        "last_successful_update": "2026-11-13T05:09:04.193Z"
       }
     }
   }

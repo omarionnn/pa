@@ -331,6 +331,10 @@ try {
   await step("c", "Two banks together: combined totals, own transfer not spending, card payment not twice, accounts by name and last four", async (f) => {
     const it = await connect({ institution_id: "ins_109511", username: "user_transactions_dynamic", facts: f });
     item2 = it.itemId;
+    // Asked for subscriptions while the second bank is seconds old: Plaid's recurring list is not ready for it.
+    const rcBefore = callsTo("/transactions/recurring/get").length;
+    const early = await bank({ action: "subscriptions" });
+    f.second_bank_seconds_old = { ok: early.ok, error: early.error ?? null, source: early.source ?? null, count: early.count ?? null, still_loading: early.still_loading ?? null, recurring_answers: callsTo("/transactions/recurring/get").slice(rcBefore).map(c => (c.status === 200 ? "200" : c.res?.error_code)) };
     f.settle = await settle(item2);
     f.banks = plaid.itemsOf(C).map(i => i.institution);
     const accts = plaid.accountsOf(C);
@@ -391,7 +395,7 @@ try {
     f.todays_transactions = tx.transactions?.slice(0, 8);
     f.transaction_accounts_named = (tx.transactions ?? []).length > 0 && (tx.transactions ?? []).every(t => /••\d{4}$/.test(t.account ?? ""));
     f.line = `${f.banks.join(" + ")}: total ${s0.total} -> +purchase ${s1.total} -> +moves ${s2.total}; matches Plaid rows: ${f.combined.match} (${want.total}); labels ok: ${f.labels_all_name_and_last_four}; loan lines left out: ${f.loan_accounts.money_out_lines_in_30_days} ($${f.loan_accounts.their_sum}); long numbers in names: ${f.names.plaid_lines_with_5_or_more_digits_in_a_row} sent, ${f.names.kept_names_with_5_or_more_digits_in_a_row} kept`;
-    return f.purchase_counted_once && f.moves_not_counted && f.combined.match && f.both_banks_in_answer && f.labels_all_name_and_last_four && f.transaction_accounts_named && f.loan_accounts.money_out_lines_in_30_days > 0 && f.loan_accounts.counted_as_spending.length === 0 && f.names.plaid_lines_with_5_or_more_digits_in_a_row > 0 && f.names.kept_names_with_5_or_more_digits_in_a_row === 0;
+    return f.second_bank_seconds_old.ok === true && f.second_bank_seconds_old.source === "plaid" && f.purchase_counted_once && f.moves_not_counted && f.combined.match && f.both_banks_in_answer && f.labels_all_name_and_last_four && f.transaction_accounts_named && f.loan_accounts.money_out_lines_in_30_days > 0 && f.loan_accounts.counted_as_spending.length === 0 && f.names.plaid_lines_with_5_or_more_digits_in_a_row > 0 && f.names.kept_names_with_5_or_more_digits_in_a_row === 0;
   });
 
   // ============================================================ d. the questions

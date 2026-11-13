@@ -800,7 +800,7 @@ test("a webhook is lost: a question more than 30 seconds after the last sync ask
   } finally { clock.skip(-62_000); }
 });
 
-test("Plaid says the history is complete before any of it has arrived (seen once in Sandbox): nothing stored minutes after connecting is 'still coming in', never $0; an account that really is empty answers $0 once it has had ten minutes", async () => {
+test("Plaid says the history is complete before any of it has arrived (seen in two Sandbox runs of four): nothing stored minutes after connecting is 'still coming in', never $0; an account that really is empty answers $0 once it has had ten minutes", async () => {
   const b = await connect(A);
   // The second answer: HISTORICAL_UPDATE_COMPLETE, and nothing.
   let out = await bank(A, { action: "spending", period: "this_week" });
@@ -949,6 +949,10 @@ test("the fixture is held to the real Sandbox: the fake Plaid answers with the s
   same(unopened.body.metadata, real("link-token-get.ok").response.metadata, "/link/token/get metadata");
   assert.equal("link_sessions" in real("link-token-get.ok").response, false);
   same((await call("/item/public_token/exchange", { public_token: b.publicToken })).body, real("item-public_token-exchange.ok").response, "/item/public_token/exchange");
+  // Recurring asked in the first seconds: PRODUCT_NOT_READY.
+  const early = await call("/transactions/recurring/get", { access_token: b.access }), wantEarly = real("transactions-recurring-get.product_not_ready");
+  same(early.body, wantEarly.response, "recurring, too early");
+  assert.deepEqual([early.status, early.body.error_type, early.body.error_code], [wantEarly.status, wantEarly.response.error_type, "PRODUCT_NOT_READY"]);
   // Accounts and balances: the Item names its institution; an account has a name, a type and a mask, never a number.
   for (const [path, name] of [["/accounts/get", "accounts-get.ok"], ["/accounts/balance/get", "accounts-balance-get.ok"]]) {
     const got = (await call(path, { access_token: b.access })).body, want = real(name).response;
@@ -999,4 +1003,20 @@ test("the fixture is held to the real Sandbox: the fake Plaid answers with the s
   const { SHAPES_FROM, SHAPES_FROM_DOCS } = await import("./fixture-plaid.js");
   assert.match(SHAPES_FROM, /^sandbox \d{4}-\d\d-\d\d$/);
   assert.equal(SHAPES_FROM_DOCS.length, 4, "what is still from the docs alone is named");
+});
+
+test("a second bank connected seconds ago: Plaid's recurring list is not ready for it, so it is left out and named as still coming in, and the first bank's subscriptions (a yearly one too) still come from Plaid", async () => {
+  const a = await connect(A, { institution: "First Platypus Bank", mask: "0000" });
+  await push(a, { added: week(a) });
+  a.item.recurring = [fx.stream(a.item, "Spotify", 11.99, "MONTHLY", "2026-10-13", "2026-11-13", "ENTERTAINMENT", "MUSIC_AND_AUDIO"), fx.stream(a.item, "Prime", 139, "ANNUALLY", "2026-02-02", "2027-02-02", "GENERAL_MERCHANDISE", "ONLINE_MARKETPLACES")];
+  const b = await connect(A, { institution: "Tartan Bank", mask: "4321" });
+  b.item.notReady = 5;
+  const out = await bank(A, { action: "subscriptions" });
+  assert.deepEqual([out.ok, out.source, out.subscriptions.map(x => [x.name, x.every])], [true, "plaid", [["Spotify", "monthly"], ["Prime", "annually"]]]);
+  assert.deepEqual(out.still_loading, ["Tartan Bank"]);
+  assert.equal(fx.callsTo("/transactions/recurring/get").length, 2, "both were asked");
+  // Only that bank connected: nothing to list yet, so no list at all.
+  const c = await connect(B, { institution: "Tartan Bank", mask: "9999" });
+  c.item.notReady = 5;
+  assert.equal((await bank(B, { action: "subscriptions" })).error, "still_loading");
 });

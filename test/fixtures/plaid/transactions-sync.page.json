@@ -29,10 +29,10 @@
         "account_id": "ACCOUNT_ID_16",
         "apy": null,
         "balances": {
-          "available": 10584.2,
+          "available": 7584.200000000001,
           "current": 500,
           "iso_currency_code": "USD",
-          "limit": 8400,
+          "limit": 5400,
           "unofficial_currency_code": null
         },
         "holder_category": "personal",
@@ -659,7 +659,7 @@
     "next_cursor": "CURSOR_2",
     "removed": [],
     "request_id": "REQUEST_ID",
-    "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+    "transactions_update_status": "INITIAL_UPDATE_COMPLETE",
     "_added_total": 311
   }
 }
