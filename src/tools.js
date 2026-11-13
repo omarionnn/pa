@@ -12351,6 +12351,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           const out = await dispatch("gmail_search", { query, limit }, ctx, c, me);
           return out?.ok ? { ok: true, messages: out.content?.messages ?? out.messages ?? [] } : out;
         }),
+        // The dishes and the total are in the receipt, not in its subject: the same gmail_read the
+        // model has, one message, its text only. A search handed in (a test) brings its own reader.
+        mailRead: ctx.mailRead ?? (ctx.mailSearch ? null : (async (m) => {
+          const out = await dispatch("gmail_read", { message_id: m.id, account: m.account, max_chars: 8000 }, ctx, c, me);
+          const v = out?.content?.message ?? out?.message ?? null;
+          return out?.ok && v ? { ok: true, text: String(v.text ?? v.body ?? "") } : { ok: false };
+        })),
       });
 
     // ---------- invites (src/invites.js) ----------

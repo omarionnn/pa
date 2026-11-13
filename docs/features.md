@@ -215,7 +215,12 @@ through Reason; every run below was stopped at the payment request and cancelled
   Eats' own card form then failed to load, so no payment request was made.
 - **Past orders come from their mail** (`food_order` `past_orders`): the receipts every app and
   ordering system sends, newest first, for "what did I last order" and "get that again". It needs
-  their mail connected and the receipts to be in a connected mailbox.
+  their mail connected and the receipts to be in a connected mailbox. Only an order's own mail
+  counts: a confirmation or a receipt (by the sender's address and the subject's form, then by an
+  order number, itemised lines or a charged total in the mail itself). Adverts, offers, cart
+  reminders and "rate your order" from the same apps are left out. The restaurant, the dishes and
+  the total are read from the receipt where it has them; where it does not (DoorDash's and Uber
+  Eats' receipts list no dishes in their text), the answer says the receipt does not list them.
 - **Money** is the shopping gate unchanged: Crossmint's exact amount, their yes to that amount, Face
   ID where set up, the daily cap.
 
