@@ -15,7 +15,7 @@
 // straight before it, in reply to their previous own message with no event in between, names exactly
 // one of their saved sites, and it is this one. A yes to a message naming two sites, or none, is not
 // a yes to either.
-import { ownerTexts, typedOnly } from "./trust.js";
+import { ownerTexts } from "./trust.js";
 
 export const NAMED_WINDOW = 3;
 const MIN_NAME = 3;
@@ -68,9 +68,11 @@ export function isBareYes(text) {
 }
 
 const own = (m) => ownerTexts([m]).length === 1;
-// What they typed in one of their own messages: the time stamp off, then only the typed lines (the
-// bracketed notes under it never count). Nothing else is cut, so "Con Ed: pay the bill" still names it.
-const typedBy = (m) => typedOnly(String(m.content).replace(/^\[[^\]\n]*\]\s*/, ""));
+// What they typed in one of their own messages, exactly as trust.ownerTexts reads it: the time stamp
+// and their name label off the first line, then only the typed lines (the bracketed notes under it
+// never count). Their name label is not their words: a display name such as "Chase" never names a
+// site, and "Omari: yes" is a bare yes. Only the label is cut, so "Con Ed: pay the bill" still names it.
+const typedBy = (m) => ownerTexts([m])[0] ?? "";
 const reasonText = (m) => typeof m.content === "string" ? m.content
   : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => String(b.text ?? "")).join("\n") : "";
 

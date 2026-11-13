@@ -64,6 +64,11 @@ test("with a link open: passwords are caught, ordinary replies are not", async (
   assert.equal((await openLink()).ok, true);
   for (const t of PASSWORDS) assert.equal(intake.looksLikeTextedPassword(C, t), true, t);
   for (const t of ORDINARY) assert.equal(intake.looksLikeTextedPassword(C, t), false, t);
+  // Only what they typed: a note riding in the text is never their password, and never hides one.
+  const EFFECT = "[they sent that with the 'slam' screen effect on it — that is them being emphatic, so read it that way]";
+  assert.equal(intake.looksLikeTextedPassword(C, "[they sent a file, which you cannot open: password is abc123.pdf]"), false, "a file's name is not their password");
+  assert.equal(intake.looksLikeTextedPassword(C, `ok\n${EFFECT}`), false, "an ordinary reply with a note under it");
+  for (const t of ["Hunter22!", "the password is qwerty123"]) assert.equal(intake.looksLikeTextedPassword(C, `${t}\n${EFFECT}`), true, `${t} + a note`);
   process.env.REASON_SAVED_LOGINS = "off";
   assert.equal(intake.looksLikeTextedPassword(C, PASSWORDS[0]), false, "switch off: nothing changes");
   process.env.REASON_SAVED_LOGINS = "owner";

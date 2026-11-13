@@ -35,6 +35,7 @@ import * as restartGate from "./busy.js";
 import * as findings from "./sitefindings.js";
 import * as signinPage from "./signinpage.js";
 import { logAttempt, logStep } from "./signinlog.js";
+import { typedOnly } from "./trust.js";
 
 /** How long Gmail is polled for the site's mail, and how often. */
 export const MAIL_WAIT_MS = 90_000;
@@ -522,7 +523,9 @@ export function awaitCodeReply(conversationId, entry, { waitMs = REPLY_WAIT_MS }
 export function takeCodeReply(conversationId, text) {
   const j = jobs.get(conversationId);
   if (!j || j.done || j.state !== "waiting_reply" || !j.reply) return null;
-  const t = String(text ?? "").trim();
+  // Only what they typed (trust.typedOnly): a note under it (a file's name, a screen effect) is never a
+  // code, and never lets a code they typed through to the thread.
+  const t = typedOnly(text ?? "");
   if (!t || t.length > 40) return null;
   const tidy = t.replace(/^(it'?s|the code is|code:?|here:?)\s*/i, "").replace(/[.!]+$/, "").trim();
   // Digits, letters with a digit, or three-plus word groups ("brave-otter-lamp"): never "thank-you"

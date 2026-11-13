@@ -26,6 +26,7 @@ import * as db from "./db.js";
 import { clock } from "./config.js";
 import * as restcrypt from "./restcrypt.js";
 import * as passkey from "./passkey.js";
+import { typedOnly } from "./trust.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { signinFinding } from "./sitefindings.js";
 import {
@@ -274,7 +275,9 @@ const openLinkOf = (c) => q("SELECT * FROM login_intake WHERE conversation_id = 
 export function looksLikeTextedPassword(conversationId, text) {
   const c = String(conversationId ?? "");
   if (!c || !intakeReadyFor(c) || !openLinkOf(c)) return false;
-  const t = String(text ?? "").trim();
+  // Only what they typed (trust.typedOnly): a note riding under it (a file's name, a screen effect) is
+  // never read as their password, and never hides one they did type.
+  const t = typedOnly(text ?? "");
   const said = PASSWORD_SAID.exec(t);
   if (said) return notAWord(said[1]);
   if (!/^\S{8,128}$/.test(t) || /^(?:https?:|www\.)|@|^[0-9]+$/i.test(t)) return false;

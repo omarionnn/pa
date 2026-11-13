@@ -60,11 +60,22 @@ const unverifiedSpeech = (content) => /^\[[^\]]*\]\s*[^:]{0,80}\(on the call, ca
   // not from them either: an event's name, which somebody else chose, is in it.
   || /^\[[^\]]*\]\s*\(nothing from them\b/.test(content);
 
-/** The owner's own messages in this conversation, oldest first, with the timestamp prefix stripped. */
+// A line Reason wrote into the thread itself, with a stamp and then a note and no name: its record of
+// what it looked up on a call (src/calls/postcall.js), and the like. Nobody said it.
+const reasonsOwnLine = (content) => /^\[[^\]\n]*\]\s*\[/.test(content);
+
+/**
+ * What the person typed, oldest first, one entry per message of theirs: the stamp and their name taken
+ * off the FIRST line only, and then only the typed lines (typedOnly), so a PDF's text, a document's,
+ * what a video said, or anything else riding under their words in [brackets] is never in it, however
+ * much of it looks like "Name: yes". A message that was only an attachment is still one message from
+ * them (the counts that mark when an ask was answered depend on that), with nothing typed in it: "".
+ */
 export function ownerTexts(messages = []) {
   return messages
-    .filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[event ") && !unverifiedSpeech(m.content))
-    .map(m => m.content.replace(/^\[[^\]]*\]\s*/, "").replace(/^[^:]{0,40}:\s*/, "").trim());
+    .filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[event ")
+      && !unverifiedSpeech(m.content) && !reasonsOwnLine(m.content))
+    .map(m => typedOnly(m.content.replace(/^\[[^\]\n]*\]\s*/, "").replace(/^[^:\n]{0,40}:[ \t]*/, "")));
 }
 
 const sayNorm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}$%.'\s]/gu, " ").replace(/\s+/g, " ").trim();
@@ -292,6 +303,14 @@ export async function recordConfirmation({ conversationId, messages, confirmatio
   const used = db.grantedByReply(c, texts.length);
   if (used) return replyUsed(c, used);
 
+  // A reply with nothing typed in it (a PDF or a photo on its own) answers nothing: what the document
+  // says was never their saying it, so nothing is read and nothing is spent.
+  if (!latest) {
+    return {
+      ok: false, state: "waiting_for_yes",
+      error: `Their last message had nothing typed in it, only what they attached, so it is not an answer. Ask once, plainly, for a yes.`,
+    };
+  }
   // A flat no needs no reading, and is honoured even if the judge is down.
   if (isBareRefusal(latest)) {
     db.refuseConfirmation(c.id);
