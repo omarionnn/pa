@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { dirname } from "node:path";
 import { config, clock } from "./config.js";
 import * as zonescope from "./zonescope.js";
+import { keepableMessages } from "./pagesecrets.js";
 import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
@@ -2119,9 +2120,11 @@ export function loadConversation(id) {
   return row ? JSON.parse(row.messages || "[]") : [];
 }
 export function saveConversation(id, messages) {
+  // The thread never keeps what a secret box of a page held, or a credential typed into the chat
+  // for a tool (src/pagesecrets.js keepableMessages). Here because this is the thread's one writer.
   db.prepare(`INSERT INTO conversations (id, messages, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET messages = excluded.messages, updated_at = excluded.updated_at`)
-    .run(id, restcrypt.sealFor(id, JSON.stringify(messages)), clock.now());
+    .run(id, restcrypt.sealFor(id, JSON.stringify(keepableMessages(messages))), clock.now());
 }
 export function clearConversation(id) {
   db.prepare("DELETE FROM conversations WHERE id = ?").run(id);

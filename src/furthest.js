@@ -126,9 +126,12 @@ export function filledFrom(elements = []) {
   for (const el of elements) {
     if (!el || !["input", "textarea", "select"].includes(el.tag)) continue;
     if (NEVER_RECORDED.test(String(el.type ?? ""))) continue;
+    const field = String(el.name ?? el.ref ?? "").replace(/\s+/g, " ").trim() || String(el.type || el.tag);
+    // A secret box (a card, a code: src/pagesecrets.js) is read as filled or not, never by what it
+    // holds. Filled is all this record needs of it.
+    if (el.secret === true) { if (el.filled === true) out.push({ field, value: "(filled in — not written down)" }); continue; }
     const value = String(el.value ?? "").trim();
     if (!value) continue;
-    const field = String(el.name ?? el.ref ?? "").replace(/\s+/g, " ").trim() || String(el.type || el.tag);
     const sensitive = SENSITIVE_FIELD.test(field) || !!looksLikeACredential(value);
     out.push({ field, value: sensitive ? "(filled in — not written down)" : value.slice(0, 120) });
   }

@@ -18,7 +18,7 @@ import * as doing from "./doing.js";
 import { startCapture, recordLooked, captureViaApi, capturedWords } from "./looked.js";
 import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
-import { forLog, sealTravelers } from "./privacy.js";
+import { forLog, sealCall } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
 import * as saidLedger from "./said.js";
 import { keptNote } from "./kept.js";
@@ -760,7 +760,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
         // A picture a tool hands back (photo_look) goes to the model as an image block in the
         // result and never into the log; see splitImage.
         const { image, shown } = splitImage(out);
-        log({ tool: tu.name, input: forLog(sealTravelers(tu.name, tu.input)), out: forLog(sealTravelers(tu.name, shown)) });
+        const kept = sealCall(tu.name, tu.input, shown);
+        log({ tool: tu.name, input: forLog(kept.input), out: forLog(kept.out) });
         content = image
           ? [{ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } }, { type: "text", text: JSON.stringify(shown) }]
           : JSON.stringify(out);

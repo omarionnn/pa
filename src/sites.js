@@ -22,6 +22,7 @@
 // headless browser from a scratch profile, signed out, and writes down what happened. Most of
 // these sites refuse an automated browser outright. That is recorded as a refusal, and a refusal
 // is a finding: `docs/unverified.md` carries the run, and nothing here tries to get around one.
+import { withoutQueries } from "./pagesecrets.js";
 
 /**
  * How Reason tells a signed-in page from a signed-out one, per site.
@@ -369,7 +370,9 @@ export function readSignedInState(entry, { url = "", text = "", status = null, e
   // a few hundred characters, and an earlier version of this called that "unknown" and threw away
   // the clearest signal there is.
   if (spec.when_out_url && landed.includes(spec.when_out_url.toLowerCase())) {
-    return { state: "signed_out", why: `it bounced to ${url}, which is the sign-in page` };
+    // Without its query string: a sign-in address can carry an email, a token or a redirect, and
+    // this sentence is kept as evidence and read back to the model (src/pagesecrets.js).
+    return { state: "signed_out", why: `it bounced to ${withoutQueries(String(url))}, which is the sign-in page` };
   }
   if (body.trim().length < 50) {
     return { state: "unknown", why: `${spec.url} came back with almost no readable text (${body.trim().length} characters), so neither state can be read off it` };

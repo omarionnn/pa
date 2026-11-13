@@ -8,6 +8,7 @@ import { config } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
 import { publicUrl, allowPrivate } from "./netguard.js";
 import * as signinPage from "./signinpage.js";
+import { inPage, rememberPasswordBoxes, withoutQueries } from "./pagesecrets.js";
 
 const sessions = new Map(); // conversationId -> { context, page }
 let playwright = null;
@@ -116,11 +117,18 @@ export function openConversations() {
 // ---------- snapshots ----------
 // Every interactive element gets a stable ref stamped onto the DOM, so the model can say
 // "click e7" and the click lands on the thing the snapshot described.
+//
+// What a secret box holds never leaves the page (src/pagesecrets.js): a password, a one-time code, a
+// card number or the like is reported as `secret: true, filled: true|false` and nothing else, and
+// any copy of it the site printed elsewhere on the page is cut from the text, the names, the other
+// boxes and the addresses before the reading is returned. `S` is those rules, handed in by `inPage`.
 /* Runs inside the page. Browser globals only — Playwright serializes it across. */
 /* eslint-env browser */
-function snapshotInPage(maxChars) {
+function snapshotInPage(S, maxChars) {
   const SEL = "a[href], button, input, select, textarea, [role=button], [role=link], [role=option], [role=tab], [role=checkbox], [role=radio], [onclick], summary";
   const labelFor = (el) => {
+    // A secret box is never named by what is typed in it.
+    if (S.kind(el)) return S.nameOf(el);
     const byAria = el.getAttribute("aria-label");
     if (byAria) return byAria.trim();
     if (el.id) {
@@ -145,31 +153,78 @@ function snapshotInPage(maxChars) {
     const ref = "e" + (++n);
     el.setAttribute("data-reason-ref", ref);
     const tag = el.tagName.toLowerCase();
-    const d = { ref, tag, name: labelFor(el).replace(/\s+/g, " ").slice(0, 120) };
+    const secret = S.kind(el);
+    // Cut before it is shortened: a copy of a secret cut in half would no longer match and be kept.
+    const d = { ref, tag, name: S.hide(labelFor(el).replace(/\s+/g, " ")).slice(0, 120) };
     if (tag === "input" || tag === "textarea") {
       d.type = el.getAttribute("type") || "text";
       d.required = !!el.required;
-      if (el.value) d.value = String(el.value).slice(0, 80);
+      if (secret) { d.secret = true; d.filled = !!el.value; }
+      else if (el.value) d.value = S.hide(String(el.value)).slice(0, 80);
     }
     if (tag === "select") {
-      d.options = [...el.options].map(o => o.value).slice(0, 25);
-      if (el.value) d.value = el.value;
+      d.options = [...el.options].map(o => S.hide(o.value)).slice(0, 25);
+      if (secret) { d.secret = true; d.filled = !!el.value; }
+      else if (el.value) d.value = S.hide(el.value);
     }
-    if (tag === "a" && el.href) d.href = el.href.slice(0, 200);
+    if (tag === "a" && el.href) d.href = S.hideUrl(el.href).slice(0, 200);
     if (el.getAttribute("role")) d.role = el.getAttribute("role");
     out.push(d);
     if (n >= 150) break;
   }
-  let text = (document.body ? document.body.innerText : "").replace(/\n{3,}/g, "\n\n").trim();
+  let text = S.hide(document.body ? document.body.innerText : "").replace(/\n{3,}/g, "\n\n").trim();
   const truncated = text.length > maxChars;
   if (truncated) text = text.slice(0, maxChars);
-  return { title: document.title, url: location.href, text, text_truncated: truncated, elements: out };
+  return { title: S.hide(document.title), url: S.hideUrl(location.href), text, text_truncated: truncated, elements: out };
 }
+const SNAPSHOT = inPage(snapshotInPage);
 
 /** Accessibility-ish snapshot: the page's visible text plus every interactive element with a ref. */
 export async function snapshot(page, maxChars = 6000) {
-  return await page.evaluate(snapshotInPage, maxChars);
+  return await page.evaluate(SNAPSHOT, maxChars);
 }
+
+/**
+ * The page's visible words and nothing else, with the same cut as the snapshot: no copy of what a
+ * secret box holds. For every caller that reads a page's text without wanting its elements.
+ */
+export async function pageText(page, maxChars = 20_000) {
+  return await page.evaluate(PAGE_TEXT, maxChars);
+}
+const PAGE_TEXT = inPage((S, maxChars) => S.hide(document.body ? document.body.innerText : "").slice(0, maxChars));
+
+/** The address the page is on, as a reading may repeat it (see hideUrl in src/pagesecrets.js). */
+export async function pageUrl(page) {
+  // A page that cannot be asked (mid-navigation, closed) gives its address without the query string.
+  return await page.evaluate(PAGE_URL).catch(() => { try { return withoutQueries(page.url()); } catch { return ""; } });
+}
+const PAGE_URL = inPage((S) => S.hideUrl(location.href));
+
+/**
+ * Is this ref a secret box, and which kind ("" when it is an ordinary one, null when there is no
+ * such element)? For the tools that type: what goes into a secret box is never repeated back.
+ */
+export async function secretRef(page, ref) {
+  return await page.evaluate(SECRET_REF, ref);
+}
+const SECRET_REF = inPage((S, r) => {
+  const el = document.querySelector(`[data-reason-ref="${r}"]`);
+  return el ? S.kind(el) : null;
+});
+
+/**
+ * Before a picture of the page is taken: marks every secret box, so the picture can cover them
+ * (`mask` below). A password box draws dots, but one switched to "show" draws the password.
+ */
+export async function secretBoxesToMask(page) {
+  await page.evaluate(MARK_SECRETS).catch(() => {});
+  return [page.locator("[data-reason-secret]")];
+}
+const MARK_SECRETS = inPage((S) => {
+  for (const el of document.querySelectorAll("input, textarea, select")) {
+    if (S.kind(el)) el.setAttribute("data-reason-secret", "1"); else el.removeAttribute("data-reason-secret");
+  }
+});
 
 /**
  * The real photo URLs on the page that is open, not icons or layout graphics.
@@ -241,14 +296,16 @@ async function stopLoading(page, ms = 3_000) {
 
 /** The accessible name of one ref, used by the commit guard before a click goes through. */
 export async function refName(page, ref) {
-  return await page.evaluate((r) => {
-    const el = document.querySelector(`[data-reason-ref="${r}"]`);
-    if (!el) return null;
-    const raw = (el.getAttribute("aria-label") || el.innerText || el.value || el.getAttribute("title") || "") +
-      " " + (el.getAttribute("name") || "");
-    return raw.replace(/\s+/g, " ").trim();
-  }, ref);
+  return await page.evaluate(REF_NAME, ref);
 }
+// A secret box is named by its label, never by what is typed in it (src/pagesecrets.js).
+const REF_NAME = inPage((S, r) => {
+  const el = document.querySelector(`[data-reason-ref="${r}"]`);
+  if (!el) return null;
+  const raw = (S.kind(el) ? S.nameOf(el) : (el.getAttribute("aria-label") || el.innerText || el.value || el.getAttribute("title") || "")) +
+    " " + (el.getAttribute("name") || "");
+  return S.hide(raw.replace(/\s+/g, " ").trim());
+});
 
 /**
  * What an element actually IS, as opposed to what anyone says about it.
@@ -260,24 +317,27 @@ export async function refName(page, ref) {
  * of the element, so the element is what gets inspected.
  */
 export async function describeRef(page, ref) {
-  return await page.evaluate((r) => {
-    const el = document.querySelector(`[data-reason-ref="${r}"]`);
-    if (!el) return null;
-    const attr = (n) => el.getAttribute(n) || "";
-    const name = ((attr("aria-label") || el.innerText || el.value || attr("title") || "") + " " + attr("name"))
-      .replace(/\s+/g, " ").trim();
-    const tag = el.tagName.toLowerCase();
-    const type = (el.type || attr("type") || "").toLowerCase();
-    return {
-      tag,
-      type,
-      name,
-      href: tag === "a" ? attr("href") : "",
-      inForm: !!el.closest("form"),
-      isSubmit: (tag === "button" && (type === "submit" || type === "")) || (tag === "input" && ["submit", "image"].includes(type)),
-    };
-  }, ref);
+  return await page.evaluate(DESCRIBE_REF, ref);
 }
+const DESCRIBE_REF = inPage((S, r) => {
+  const el = document.querySelector(`[data-reason-ref="${r}"]`);
+  if (!el) return null;
+  const attr = (n) => el.getAttribute(n) || "";
+  const secret = S.kind(el);
+  const name = S.hide(((secret ? S.nameOf(el) : (attr("aria-label") || el.innerText || el.value || attr("title") || "")) + " " + attr("name"))
+    .replace(/\s+/g, " ").trim());
+  const tag = el.tagName.toLowerCase();
+  const type = (el.type || attr("type") || "").toLowerCase();
+  return {
+    tag,
+    type,
+    name,
+    href: tag === "a" ? S.hideUrl(attr("href")) : "",
+    inForm: !!el.closest("form"),
+    isSubmit: (tag === "button" && (type === "submit" || type === "")) || (tag === "input" && ["submit", "image"].includes(type)),
+    ...(secret ? { secret } : {}),
+  };
+});
 
 export function locate(page, ref) {
   return page.locator(`[data-reason-ref="${ref}"]`);
@@ -291,6 +351,9 @@ export function locate(page, ref) {
  * src/signin-cli.js), which since 2026-11-10 can be pointed at any site by its address.
  */
 export async function guardContext(context) {
+  // And on every one of them: a box that was ever a password box stays one for the life of its page,
+  // whatever a "show password" switch turns it into (src/pagesecrets.js).
+  await rememberPasswordBoxes(context);
   await context.route("**/*", async (route) => {
     const req = route.request();
     let u;
