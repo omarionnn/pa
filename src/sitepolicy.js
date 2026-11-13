@@ -63,11 +63,11 @@ export const CATEGORIES = Object.freeze({
   social: { policy: NEVER, route: "none",
     say: "I don't sign in to social networks with a password. Their rules ban it and they close accounts for it.", // NEW
     why: "Social networks ban automated access and close accounts for it." },
-  tickets: { policy: NEVER, route: "none",
-    say: "I don't sign in to ticket sites.", // NEW
+  tickets: { policy: NEVER, route: "event_link",
+    say: "I don't sign in to ticket sites. They ban bots, and getting round a ticket seller's limits is against the law, so buying stays with you. I can find the event and send you the link.", // NEW
     why: "The BOTS Act makes getting round a ticket seller's controls unlawful, and ticket sites ban bots." },
   own_infra: { policy: NEVER, route: "none",
-    say: "I don't keep logins for the accounts that run me.", // NEW
+    say: "I don't keep logins for cloud, domain or developer accounts. One stolen login there can run up bills or take down everything it runs, so it stays with you.", // NEW
     why: "A login there would let a stolen server reach the controls that are meant to sit outside it." },
   not_a_site: { policy: NEVER, route: "none",
     say: "I can only keep a login for a site's own web address, and that isn't one.", // NEW
@@ -201,6 +201,11 @@ const RAW = [
   ...proposed("own_infra", "GitHub holds the code that runs.", ["github.com"], { label: "GitHub" }),
   ...proposed("own_infra", "An AI provider's console holds the keys Reason runs on.", ["console.anthropic.com", "platform.claude.com", "platform.openai.com"]),
   ...proposed("own_infra", "Tailscale carries the private address the server is reached on.", ["tailscale.com"], { label: "Tailscale" }),
+  ...proposed("own_infra", "Sendblue carries Reason's texts (iMessage, SMS, RCS).", ["sendblue.com"], { label: "Sendblue", source: "src/channels/sendblue.js" }),
+  ...proposed("own_infra", "Sendblue's contact-verification API sits on this second domain.", ["sendblue.co"], { label: "Sendblue", source: ".env.example" }),
+  ...proposed("own_infra", "Bland places Reason's phone calls.", ["bland.ai"], { label: "Bland", source: "src/calls/bland.js" }),
+  ...proposed("own_infra", "Linq is Reason's other texting channel (iMessage, RCS, SMS).", ["linqapp.com"], { label: "Linq", source: "src/channels/linq.js" }),
+  ...proposed("own_infra", "GoDaddy is the domain registrar: that login can move the domain or let it lapse.", ["godaddy.com"], { label: "GoDaddy", source: "src/sitefindings.js" }),
   // ---- careful
   byReview("travel_points", "delta.com", "Delta: a third-party agent is used \"at your own risk\".", "https://www.delta.com/us/en/legal/terms-of-use", { label: "Delta" }),
   ...byRule("travel_points", "Airline or hotel points: value a lockout or a bad booking can lose.", [

@@ -68,6 +68,11 @@ const TABLE = [
   ["github.com", NEVER, "own_infra"],
   ["app.netlify.com", NEVER, "own_infra"],
   ["platform.openai.com", NEVER, "own_infra"],
+  ["dashboard.sendblue.com", NEVER, "own_infra"],
+  ["https://api.sendblue.co/v3/verified-contacts", NEVER, "own_infra"],
+  ["app.bland.ai", NEVER, "own_infra"],
+  ["https://linqapp.com", NEVER, "own_infra"],
+  ["sso.godaddy.com", NEVER, "own_infra"],
   // careful
   ["delta.com", CAREFUL, "travel_points"],
   ["www.marriott.com", CAREFUL, "travel_points"],
@@ -197,8 +202,12 @@ test("rule 3: the section C words, exactly", () => {
   assert.equal(refusalFor("carrier"), "I don't keep your phone carrier's login: that account controls your number. I can pay the bill without signing in, or call them.");
   assert.equal(refusalFor("password_manager"), "I don't keep password manager logins: that one account opens all the others.");
   assert.equal(refusalFor("social"), "I don't sign in to social networks with a password. Their rules ban it and they close accounts for it.");
-  assert.equal(refusalFor("tickets"), "I don't sign in to ticket sites.");
-  assert.equal(refusalFor("own_infra"), "I don't keep logins for the accounts that run me.");
+  assert.equal(refusalFor("tickets"), "I don't sign in to ticket sites. They ban bots, and getting round a ticket seller's limits is against the law, so buying stays with you. I can find the event and send you the link.");
+  assert.equal(CATEGORIES.tickets.route, "event_link");
+  // own_infra is refused for everyone, so its words name no provider and no per-entry reason.
+  const infra = "I don't keep logins for cloud, domain or developer accounts. One stolen login there can run up bills or take down everything it runs, so it stays with you.";
+  assert.equal(refusalFor("own_infra"), infra);
+  for (const e of POLICY.filter((x) => x.category === "own_infra")) assert.equal(refusalFor(e.category, e.label), infra, e.match);
 });
 
 test("rule 3: the terms refusal names the site, cleaned, and reads right without one", () => {
