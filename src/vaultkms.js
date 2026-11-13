@@ -11,7 +11,7 @@
 // sorted). Either refuses an unwrap whose context differs from the one the key was wrapped with, so a
 // moved row or a tab on another origin fails at the key service, not only here.
 // Only src/savedlogins.js may import this file (test/savedlogins.test.js checks).
-import { randomBytes } from "node:crypto";
+import { randomBytes, createPublicKey } from "node:crypto";
 import { kmsCall } from "./restcrypt.js";
 import * as gcpkms from "./gcpkms.js";
 import { Secret } from "./secret.js";
@@ -119,4 +119,43 @@ export async function unwrap(wrapped, context) {
   }
   const j = await kmsCall("Decrypt", { CiphertextBlob: String(wrapped ?? ""), EncryptionContext: contextOf(context), KeyId }, { retry: vaultRetry });
   return new Secret(keyBytes(j, "Decrypt"));
+}
+
+// ---------------------------------------------------------------- the intake key (vault PR 5)
+// The save page seals a login inside the person's browser to the intake key's public half (RSA-OAEP
+// 4096, SHA-256, wrapping a fresh AES-256-GCM key). The private half never leaves the key service.
+// Google only: reason-vault-intake, ASYMMETRIC_DECRYPT, RSA_DECRYPT_OAEP_4096_SHA256, used by version
+// (gcpkms.intakeVersionName). Under the AWS provider there is no intake key here, so no save page.
+
+/** The intake key can be asked: the Google provider, its key file valid. Never throws. */
+export function intakeConfigured() {
+  if (provider() !== "gcp") return false;
+  try { gcpkms.intakeVersionName(); } catch { return false; }
+  return gcpkms.configured("intake");
+}
+
+let intakeCache = null; // { name, spki } — the public half only, by version
+/** The intake key's public half as DER (SPKI) bytes, and the version it is: { spki: Buffer, name }. Cached per version. */
+export async function intakePublicKey() {
+  if (!intakeConfigured()) throw new Error("vault KMS: the intake key is not configured.");
+  const name = gcpkms.intakeVersionName();
+  if (intakeCache?.name === name) return { spki: Buffer.from(intakeCache.spki), name };
+  const r = await gcpkms.getPublicKey(name);
+  if (r.algorithm && r.algorithm !== "RSA_DECRYPT_OAEP_4096_SHA256") throw new Error("vault KMS: the intake key is not RSA-OAEP 4096 SHA-256.");
+  const der = createPublicKey(r.pem).export({ type: "spki", format: "der" });
+  intakeCache = { name, spki: Buffer.from(der) };
+  return { spki: Buffer.from(der), name };
+}
+/** For tests: forget the cached public half. */
+export function _forgetIntakeKey() { intakeCache = null; }
+
+/**
+ * Open a key the browser wrapped to the intake key (RSA-OAEP SHA-256): the 32 AES bytes, in a Secret.
+ * The only call that can, and only src/savedlogins.js makes it, inside its intake step.
+ */
+export async function openIntake(wrapped) {
+  if (!intakeConfigured()) throw new Error("vault KMS: the intake key is not configured.");
+  const b = await gcpkms.asymmetricDecrypt(gcpkms.intakeVersionName(), Buffer.from(wrapped));
+  if (b.length !== 32) { b.fill(0); throw new Error("vault KMS: the intake key did not open a 32-byte key."); }
+  return new Secret(b);
 }
