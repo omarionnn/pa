@@ -224,6 +224,29 @@ test("a task's receipt: steps, the money actually charged, recording, transcript
   assert.equal(Buffer.from(audio.body).toString(), "ID3 fake audio bytes");
   assert.equal(pid != null, true);
 });
+
+test("a recording they deleted: the receipt says so with no link, and the audio route is a clean 404", async () => {
+  const { deleteCallRecordings } = await import("../src/calls/recordingdelete.js");
+  const token = await signIn(A);
+  const cid = call(A.c);
+  mkdirSync(config.recordingRoot, { recursive: true });
+  const file = join(config.recordingRoot, `call-${cid}.mp3`);
+  writeFileSync(file, Buffer.from("ID3 fake audio bytes"));
+  db.db.prepare("UPDATE calls SET state = 'completed', transcript = 'Hello there', recording_state = 'stored', recording_file = ?, recording_format = 'mp3' WHERE id = ?").run(file, cid);
+  assert.equal((await api(`/calls/${cid}/recording`, { token })).status, 200);
+  assert.equal(deleteCallRecordings(A.c, { callId: cid }).what, "deleted");
+  const { json } = await api(`/items/call-${cid}`, { token });
+  const kinds = json.item.artifacts.map(a => a.type).sort();
+  assert.deepEqual(kinds, ["recording_deleted", "transcript"]);
+  const gone = json.item.artifacts.find(a => a.type === "recording_deleted");
+  assert.equal(gone.by, "you");
+  assert.ok(gone.deleted_at > 0);
+  assert.equal(gone.url, undefined);
+  const audio = await api(`/calls/${cid}/recording`, { token });
+  assert.equal(audio.status, 404);
+  assert.equal(audio.json.error, "recording_deleted");
+  assert.equal(existsSync(file), false);
+});
 test("a purchase whose outcome nobody knows does not claim a number", async () => {
   const token = await signIn(A);
   db.recordAgentcardPurchase({ conversationId: A.c, buyConversationId: "b2", status: "outcome_unknown", amountCents: 900, merchant: "Target", what: "x" });

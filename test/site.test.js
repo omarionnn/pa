@@ -140,7 +140,9 @@ test("the policy names Cartesia for calls with your own Reason and Plaid for a b
   // Their own calls are recorded; a call to somebody else only with notice; recordings go with a delete.
   assert.match(body, /Your own calls are always recorded/);
   assert.match(body, /recorded only if they are told so at the start of the call/);
-  assert.match(body, /Deleting your data removes the recordings too/);
+  assert.match(body, /You can ask Reason to delete the recording of any call, or all of them, at any time; it removes the audio files from the machine and keeps the call(?:'|&#39;)s summary and transcript\./);
+  assert.match(body, /A copy already sent to you stays on your phone, and the encrypted off-site backups made before you delete one keep it until they are pruned, which is not done on a schedule\./);
+  assert.doesNotMatch(body, /Deleting your data removes the recordings too/);
   assert.match(body, /disconnect my bank(?:&quot;|")? and it removes the connection at Plaid/);
   for (const name of ["Cartesia, a voice company", "through Plaid", "voice provider for that call"]) {
     const at = body.indexOf(name);

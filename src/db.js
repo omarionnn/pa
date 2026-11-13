@@ -465,6 +465,9 @@ db.exec(`
     recording_sha256 TEXT,
     recording_why TEXT NOT NULL DEFAULT '',
     recording_sent_at INTEGER,
+    -- When the person asked for this call's recording to be deleted (call_recording_delete). The
+    -- state is then 'deleted', as when the retention setting takes it; this says it was them.
+    recording_deleted_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     ended_at INTEGER
@@ -1545,6 +1548,7 @@ addColumnIfMissing("calls", "recording_bytes", "INTEGER");
 addColumnIfMissing("calls", "recording_sha256", "TEXT");
 addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
+addColumnIfMissing("calls", "recording_deleted_at", "INTEGER");
 addColumnIfMissing("calls", "webhook_token", "TEXT");
 addColumnIfMissing("pending_inbound", "held_times", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("pending_inbound", "down_since", "INTEGER");
@@ -5812,7 +5816,7 @@ export function updateCall(conversationId, id, fields) {
     // What a second call_place handed into this one while it rang or ran (tools.js, calls 66/67).
     "facts",
     "recording_state", "recording_file", "recording_format", "recording_seconds",
-    "recording_bytes", "recording_sha256", "recording_why",
+    "recording_bytes", "recording_sha256", "recording_why", "recording_deleted_at",
     "language", "language_announced",
     // What a real call is like (2026-10-07): waiting, who has heard the announcement, which keys were
     // pressed, what was read back, and what the call ACHIEVED as opposed to what the phone did.
