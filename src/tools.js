@@ -504,6 +504,7 @@ function rememberWithName(t) {
 // only shown where the flag reaches this person; nobody else's model hears that cards exist.
 // The Cartesia voice trial on the operator's own calls (src/calls/calltrial.js, REASON_CALL_CARTESIA=owner):
 // only the operator, and only with the switch at owner, is shown call_voice_trial; the dispatch refuses it for anyone else.
+// At on nobody is shown it: the Cartesia voice is every own call's voice, with GPT-Live only as the automatic fall-back.
 export const CALL_TRIAL_TOOLS = new Set(["call_voice_trial"]);
 export function callTrialToolVisible(name, conversationId) {
   return !CALL_TRIAL_TOOLS.has(name) || callTrial.trialOffered(conversationId);

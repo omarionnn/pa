@@ -301,7 +301,17 @@ export async function runChecks({ runtime = null, router = null, now = clock.now
   if (trends) {
     try { trends.subscriptions = { reason: subusage.hourlyFive("reason", now), coding: subusage.hourlyFive("coding", now) }; } catch { /* no lines */ }
   }
-  return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks), trends, meters: plans.readings };
+  return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks), trends, meters: plans.readings, counts: countsOf(day) };
+}
+
+/**
+ * Numbers the ops check reads off /ops.json, never a check (no verdict, no text to anyone): today's
+ * Cartesia call voice (src/calls/cartesia.js `count`), calls tried, ready, and fall-backs by reason.
+ */
+export function countsOf(day = accounts.today()) {
+  let cartesia = null;
+  try { cartesia = db.cartesiaDaily(day); } catch { /* an older database: no numbers this pass */ }
+  return { cartesia };
 }
 
 /**

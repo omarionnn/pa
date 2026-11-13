@@ -671,9 +671,12 @@ export const config = {
   // every call is GPT-Live already and this changes nothing.
   callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
   // The Cartesia voice on the operator's own calls (src/calls/cartesia.js, docs/calls-cartesia.md section 5):
-  // off | owner; unset or anything else is off. There is no "on": owner by itself changes nothing, it only
-  // offers the operator the call_voice_trial tool, and his own choice (accounts.call_trial) turns it on.
-  callCartesia: String(process.env.REASON_CALL_CARTESIA ?? "").trim().toLowerCase() === "owner" ? "owner" : "off",
+  // off | owner | on; unset or anything else is off. owner by itself changes nothing: it offers the operator
+  // the call_voice_trial tool, and his own choice (accounts.call_trial) turns it on. on: every account's own
+  // calls with Reason use it, with no per-person choice (nobody is shown the tool); GPT-Live only as the
+  // automatic fall-back. Calls to anyone else never do, in any mode (src/calls/calltrial.js). Before
+  // setting on: section 5's list.
+  callCartesia: (v => (v === "owner" || v === "on" ? v : "off"))(String(process.env.REASON_CALL_CARTESIA ?? "").trim().toLowerCase()),
   cartesiaKey: process.env.CARTESIA_API_KEY || "",
   // Cartesia's own usage figure (GET /usage/agents, src/planmeter.js) needs an ADMIN key (sk_car_admin_...);
   // the agent key cannot read it. Unset: the ops page shows Reason's own count of Cartesia minutes only.

@@ -4904,8 +4904,9 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
     if (early) { amdEarly.delete(row.id); call.amd(early); }
     return call;
   };
-  // The Cartesia voice trial (./calltrial.js, docs/calls-cartesia.md section 5): the operator's own call,
-  // with REASON_CALL_CARTESIA=owner and his choice on, and nothing else. Its relay is imported only here.
+  // The Cartesia voice (./calltrial.js, docs/calls-cartesia.md section 5): a person's own call with Reason,
+  // with REASON_CALL_CARTESIA=owner (the operator, his choice on) or =on (anyone who has not chosen the
+  // usual voice), and nothing else. Its relay is imported only here.
   // Not ready in 1.5 s, or broken before it is: this same call carries on with GPT-Live, no warm session.
   if (cartesiaTrialFor(row)) {
     const line = passableSocket(socket);
@@ -4928,7 +4929,8 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
       slot.holder = call;
       call.begin();
     }, (e) => {
-      log({ cartesia_fell_back: row.id, why: `not loaded: ${(e?.message ?? String(e)).split("\n")[0]}`.slice(0, 120), ms: 0 });
+      try { db.bumpCartesia(accounts.today(), "fell_back:not_loaded"); } catch { /* a number never breaks a call */ }
+      log({ cartesia_fell_back: row.id, reason: "not_loaded", why: `not loaded: ${(e?.message ?? String(e)).split("\n")[0]}`.slice(0, 120), ms: 0 });
       try { db.updateCall(row.conversation_id, row.id, { cartesia_seconds: 0, cartesia_cents: 0, cartesia_fell_back: 1 }); } catch { /* a number never breaks a call */ }
       if (streams.get(row.id) === slot) back("not loaded");
     });

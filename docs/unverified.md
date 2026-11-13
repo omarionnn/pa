@@ -5340,3 +5340,17 @@ Proved only with stand-in sockets (`test/call-cartesia-music.test.js`). Not know
   lookup starts and ends, ducks per frame, and sits on our side of the line with the room tone. After a
   fall-back to GPT-Live there is no lookup music (GPT-Live calls are not changed).
 
+
+### 2026-11-13: the Cartesia voice for everyone (REASON_CALL_CARTESIA=on): not run
+
+Built and proved only with stand-in sockets (`test/call-cartesia-everyone.test.js`: two accounts at once,
+refusals, the day's counts). Never run:
+- What a refused agent session really sends: a close reason, an `error` event, or neither. `fallBackReason`
+  reads 402/credit/balance, 429/limit/concurrency and 401/403/key from whatever it gets; one that says nothing
+  is `closed_before_ready`. The first real refusal's `cartesia_fell_back` line says which.
+- What happens to an agent call over the plan's concurrency limit (docs.cartesia.ai/line/infrastructure/scaling
+  gives the limits, not the behaviour).
+- Whether a PATCH of `audio.input.keyterms` alone keeps the agent's other input settings (`--clear-keyterms`;
+  their docs say an omitted field keeps its setting, not how nested objects merge).
+- Whether the agent's own `timezone` setting reaches the model; each call says the person's clock in
+  `reason_call` either way (`clockLine`).
