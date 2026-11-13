@@ -35,6 +35,8 @@ import { normalizeTarget, toolName, money } from "./trust.js";
 export const GATED_ACTIONS = new Set([
   "account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve",
   "message_send", "voice_note_send", "call_place",
+  // All their call recordings at once (one is not gated). About them alone, so pre-authorizable.
+  "call_recording_delete",
   "gmail_archive", "gmail_mark", "gmail_label", "calendar_create",
   // Ending a subscription. Pre-authorizable, and the reasoning is worth writing down because the
   // first instinct is that it should not be: a cancellation is irreversible in one direction — a

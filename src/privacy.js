@@ -31,7 +31,8 @@
 // Nothing here is a substitute for that delete, which is immediate, total, and theirs to run.
 import * as strangerCalls from "./strangercalls.js";
 import { rmSync } from "node:fs";
-import { forgetPlayable, sweepPlayable } from "./webaudio.js";
+import { sweepPlayable } from "./webaudio.js";
+import { deleteRecordingFile } from "./calls/recordings.js";
 import { db, scrubConversationText } from "./db.js";
 import { scrubPageSecrets, HIDDEN, TYPED_SECRET_ARGS } from "./pagesecrets.js";
 import { config, clock } from "./config.js";
@@ -223,10 +224,9 @@ function deleteOldRecordings(before, now, log) {
      AND COALESCE(ended_at, created_at) < ?`).all(before);
   let gone = 0;
   for (const r of rows) {
-    try { forgetPlayable(r.recording_file); rmSync(r.recording_file, { force: true }); } catch (e) {
-      log({ retention_recording_failed: r.id, why: (e?.message ?? String(e)).split("\n")[0] });
-      continue;
-    }
+    // The same delete as the person's own (call_recording_delete): the file and the copies made of it.
+    const d = deleteRecordingFile(r.recording_file);
+    if (!d.ok) { log({ retention_recording_failed: r.id, why: d.error }); continue; }
     db.prepare(`UPDATE calls SET recording_state = 'deleted', recording_file = NULL,
       recording_why = ?, updated_at = ? WHERE id = ?`)
       .run(`deleted after ${config.keepContentDays} days by the retention setting (REASON_KEEP_CONTENT_DAYS)`, now, r.id);
