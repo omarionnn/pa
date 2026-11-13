@@ -179,7 +179,7 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
     // has been seen yet, the kind of page last seen, whether they have submitted anything, and
     // whether the site's own sign-in link has been tried. `tag` tells two sessions' log lines
     // apart: a hash, never the link.
-    sawStep: false, kind: "", submitted: false, typed: false, opened: false, doorTried: false, lookSince: null, submits: 0,
+    sawStep: false, kind: "", submitted: false, typed: false, opened: false, doorTried: false, lookSince: null, submits: 0, formPage: "",
     tag: createHash("sha256").update(`steplog:${token}`).digest("hex").slice(0, 8),
   };
   sessions.set(token, s);
@@ -223,7 +223,9 @@ function noteKind(s, raw) {
   const kind = signinPage.pageKind(raw, { provider: s.provider, midFlow: s.sawStep });
   if (kind === "loading") return kind;
   if (signinPage.isStep(kind)) {
-    if (!s.sawStep && kind === "signin_form" && s.entry.generic) { try { signinPage.rememberSigninPage(s.conversationId, s.entry, raw?.url); } catch { /* remembering is a help, never a requirement */ } }
+    // `formPage`: where this session's sign-in form really was. A session that opened on a home page
+    // and went through the site's own "Log in" link ends on THAT page, not on the one its link named.
+    if (!s.sawStep && kind === "signin_form" && s.entry.generic) { try { s.formPage = signinPage.rememberSigninPage(s.conversationId, s.entry, raw?.url) || s.formPage; } catch { /* remembering is a help, never a requirement */ } }
     s.sawStep = true;
   }
   if (kind !== s.kind) {
@@ -361,7 +363,10 @@ async function end(s, how) {
   const expired = how === "timed_out" || how === "link_expired";
   step(s, s.ended.state === "signed_in" ? "signed_in" : expired ? "expired" : "ended", { detail: s.ended.state === "signed_in" ? "" : how === "link_expired" ? "never_opened" : String(how) });
   try {
-    signinPage.noteEnding(c, entry, { how, state: s.ended.state ?? "", page: entry.signin_url });
+    // Both pages are written down: the one the link named and the one the sign-in was shown on. A
+    // next link to either is "the same page again" (live replay, 2026-11-13: a session begun on
+    // Link's home page had shown the sign-in page for ten minutes, and a link to it counted as new).
+    signinPage.noteEnding(c, entry, { how, state: s.ended.state ?? "", page: entry.signin_url, seen: s.formPage ?? "" });
     // A page that turned out not to be a sign-in page is not kept as "the page this sign-in is on".
     if (how === "no_signin_page" && signinPage.signinPageFor(c, entry) === signinPage.pageOf(entry.signin_url)) signinPage.forgetSigninPage(c, entry);
   } catch { /* the ending still stands */ }

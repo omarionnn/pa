@@ -551,6 +551,24 @@ test("the same link when the home page HAS a 'Log in' link: it is followed once,
   clock.skip(20_000);
   assert.equal((await h.view(cookie)).meta.np.step, "email", "a session on a real step is never ended as 'no sign-in page'");
   assert.deepEqual(stepsOf().slice(0, 4), ["start_pressed", "page_kind:not_signin_page", "signin_link_followed:followed", "page_kind:signin_form"]);
+
+  // The session runs out there. Both pages are remembered: the home page the link named and the
+  // sign-in page it showed, so a link to either is "the same page again". (Live replay, 2026-11-13:
+  // only the home page was kept, and one more link to the sign-in page went out by itself.)
+  clock.skip(config.remoteSigninSessionMs);
+  h.booked.find(t => t.ms === config.remoteSigninSessionMs && !t.cleared).fn();
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(sp.lastNoProgress(CONV, signin.genericEntry("link.com")).pages, ["https://link.com/", LINK_LOGIN]);
+  const made = [];
+  const seam = { publicUrl: pub, createRemoteSignin: (a) => { made.push(a); return { ok: true, url: "https://reason.example/s/y", good_for_minutes: 10, reachable_from_a_phone: true }; } };
+  for (const site of ["link.com", LINK_LOGIN, "https://link.com/"]) {
+    const auto = await runTool("signin_link", { site }, { conversationId: CONV, messages: [], kind: "event", ...seam });
+    assert.equal(auto.not_sent_again, true, site);
+  }
+  assert.equal(made.length, 0, "no second link to the page they had already been shown");
+  const theirs = await runTool("signin_link", { site: "link.com" }, { conversationId: CONV, messages: [], kind: "user", ...seam });
+  assert.equal(theirs.ok, true, "their own ask is still theirs");
+  assert.equal(made[0].entry.signin_url, LINK_LOGIN);
 });
 
 test("a known site showing a page with nothing to fill in mid-way: shown as that, never as a step to finish", async () => {
@@ -654,6 +672,12 @@ test("what counts as an ending without progress, and what wipes it", () => {
   sp.noteEnding(CONV, entry, { how: "timed_out", state: "unknown" });
   sp.noteEnding(CONV, entry, { how: "finished", state: "signed_in" });
   assert.deepEqual(sp.mayLinkAgain(CONV, entry), { ok: true });
+  // The page a link named and the page it showed its sign-in on are both "the same page again".
+  const home = signin.genericEntry("https://link.com/");
+  sp.noteEnding(CONV, home, { how: "timed_out", state: "signed_out", page: home.signin_url, seen: LINK_LOGIN });
+  assert.equal(sp.mayLinkAgain(CONV, home).ok, false, "the page it named");
+  assert.equal(sp.mayLinkAgain(CONV, entry).ok, false, "the page it had already shown");
+  assert.deepEqual(sp.mayLinkAgain(CONV, signin.genericEntry("https://app.link.com/signin")), { ok: true, retry: true }, "a page it neither named nor showed");
 });
 
 test("a link nobody opened expires silently: no note, and no new one made by itself", async () => {
