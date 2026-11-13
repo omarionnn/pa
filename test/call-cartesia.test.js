@@ -788,3 +788,75 @@ test("saysDone: the forms a voice uses, and not their negations", () => {
   for (const yes of ["Yeah, it's done.", "Yeah, submitted.", "Booked: 8:10 tonight.", "Done.", "I've sent it.", "You're all set."]) assert.ok(cartesia.saysDone(yes), yes);
   for (const no of ["Nothing's booked yet.", "It's not done yet.", "I haven't sent it.", "Booking eight ten PM.", "Asking Reason to book that.", "Yeah, I know you're at work until eight.", "", "Done what?"]) assert.ok(!cartesia.saysDone(no), no);
 });
+
+test("saysDone: the rephrasings a voice reaches for are claims too, and plans, offers and facts are not", () => {
+  const yes = ["All set.", "You're good.", "You're good to go.", "That's taken care of.", "Taken care of.", "Confirmed.", "I've filled it in.",
+    "I've put you down for 3.", "Got it booked.", "Got you booked for 3.", "Sorted.", "Booking's confirmed.", "Your appointment is booked.",
+    "It went through.", "Yep, sent it.", "Sent it over.", "I did it.", "Yes I did.", "Okay, booked you in.", "I've taken care of it.",
+    "I've handled that.", "The form's in.", "Finished.", "Your booking went through.", "Yup, all set.", "It's in.", "No worries, it's booked.",
+    "It's done, I'll text you the confirmation.", "Booking the Genius Bar, done."];
+  for (const t of yes) assert.ok(cartesia.saysDone(t), t);
+  const no = ["Reason will text you once it's booked.", "I'll text you once it's done.", "If it's booked, Reason will text you.", "Is it done?",
+    "Want me to ask Reason to book it?", "Reason says it isn't booked yet.", "The Genius Bar is in the Meatpacking District.", "You're good at this.",
+    "Sounds good.", "That's in Brooklyn.", "You made my day.", "Let me check if it went through.", "It still needs your card.",
+    "Got it, asking Reason to book that.", "Want me to get you booked?", "I'm good, thanks.", "Checking whether it went through."];
+  for (const t of no) assert.ok(!cartesia.saysDone(t), t);
+});
+
+test("a bare yes to \"is it done?\" is the same claim; a holding line or a no is not", () => {
+  for (const [q, r] of [["Have you finished filling the form?", "Yeah."], ["and submitted?", "Yes, I did."], ["Is it booked?", "Yep!"], ["did it go through", "Uh-huh."]])
+    assert.ok(cartesia.confirmsDone(q, r), `${q} / ${r}`);
+  for (const [q, r] of [["Is it booked?", "Checking with Reason."], ["Is it booked?", "Yeah, asking Reason now."], ["What's the weather?", "Yeah, sunny."], ["Is it booked?", "No, not yet."]])
+    assert.ok(!cartesia.confirmsDone(q, r), `${q} / ${r}`);
+});
+
+test("call 113 rephrased: \"All set.\" and a bare \"Yeah.\" to \"submitted?\" are flagged; the note reaches Reason's next turn and the after-call record", async () => {
+  const s = slowRelay(100, { text: "Here's the Genius Bar page." });
+  let settled = null;
+  s.call.finishCall = async (live) => { settled = live; };
+  s.agent.emit({ type: "turn_ended", turn: 2, role: "user", text: "Have you booked it?" });
+  s.agent.emit({ type: "turn_ended", turn: 3, role: "assistant", text: "All set." });
+  s.agent.emit({ type: "turn_ended", turn: 4, role: "user", text: "and submitted?" });
+  s.agent.emit({ type: "turn_ended", turn: 5, role: "assistant", text: "Yeah." });
+  s.agent.emit({ type: "turn_ended", turn: 6, role: "user", text: "is it done?" });
+  s.agent.emit({ type: "turn_ended", turn: 7, role: "assistant", text: "Asking Reason now." });
+  assert.deepEqual(s.lines.filter(l => l.cartesia_unbacked_claim).map(l => l.turn), [3, 5]);
+  for (const l of s.lines.filter(l => l.cartesia_unbacked_claim)) assert.deepEqual(Object.keys(l).sort(), ["cartesia_unbacked_claim", "chars", "turn"], "no words in the log");
+  assert.ok(s.call.messages("is it done?").some(m => m.role === "assistant" && m.content.includes(cartesia.UNBACKED_NOTE)));
+  await s.call.end("test");
+  assert.ok(settled?.transcript.includes(cartesia.UNBACKED_NOTE), "the after-call record carries the note");
+  assert.equal(settled.turns.filter(t => t.text === cartesia.UNBACKED_NOTE).length, 2);
+  stop(s.call);
+});
+
+test("setup script: --show reads the agent with no secrets and --save keeps it; --instructions PATCHes only the instructions; --instructions-file puts saved ones back", async () => {
+  const setup = await import("../scripts/cartesia-agent-setup.mjs");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "cartesia-setup-"));
+  const said = [];
+  const calls = [];
+  const live = { id: "agent_x", version_id: "v_1", webhook_secret: "whsec_x", config: { instructions: "old words", audio: { output: { voice_id: setup.GEMMA } }, tools: [{ id: "tool_1" }], system_tools: { end_call: {}, skip_turn: { description: "d" } } } };
+  const call = async (key, p, opts = {}) => { calls.push({ p, method: opts.method ?? "GET", body: opts.body }); return { ok: true, json: opts.method ? {} : live }; };
+  const file = join(dir, "before.json");
+  assert.equal(await setup.main(["--show", "agent_x", "--save", file], { log: (l) => said.push(l), call, key: "ck-test" }), 0);
+  assert.deepEqual(calls.map(c => `${c.method} ${c.p}`), ["GET /v1/agents/agent_x"]);
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  assert.equal(saved.config.instructions, "old words");
+  assert.ok(!("webhook_secret" in saved), "secret-shaped fields are not kept");
+  const summary = JSON.parse(said.at(-1));
+  assert.equal(summary.version, "v_1");
+  assert.equal(summary.voice, setup.GEMMA);
+  assert.deepEqual(summary.system_tools, ["end_call", "skip_turn"]);
+  calls.length = 0;
+  assert.equal(await setup.main(["--update", "agent_x", "--instructions", "--yes"], { log: (l) => said.push(l), call, key: "ck-test" }), 0);
+  assert.deepEqual(calls.map(c => `${c.method} ${c.p}`), ["PATCH /v1/agents/agent_x"]);
+  assert.deepEqual(Object.keys(calls[0].body.config), ["instructions"], "only the instructions: voice, tools and skip_turn stay as they are");
+  assert.equal(calls[0].body.config.instructions, setup.INSTRUCTIONS);
+  assert.match(setup.INSTRUCTIONS, /Never state a price, time, distance, opening hour or limit/);
+  calls.length = 0;
+  assert.equal(await setup.main(["--update", "agent_x", "--instructions-file", file, "--yes"], { log: (l) => said.push(l), call, key: "ck-test" }), 0);
+  assert.deepEqual(calls[0].body.config, { instructions: "old words" }, "the saved instructions go back as they were");
+  assert.ok(!said.join("\n").includes("ck-test"));
+});

@@ -119,13 +119,40 @@ export const NOTHING_TO_ADD = "Reason has nothing to add yet. Reply in a few wor
 /** How long a done-claim in Reason's answer backs the agent saying it (the GPT-Live guard's window). */
 export const CLAIM_BACKED_MS = 60_000;
 /** In the call's record after a done-claim nothing backed: the brain's next turn and the after-call text see it. */
-export const UNBACKED_NOTE = "(Said on the call without Reason confirming it: as far as Reason knows, it is NOT done.)";
+export const UNBACKED_NOTE = "(Said on the call without Reason confirming it: unless the record shows it was really done, it is NOT done.)";
 // Bare done-words the way a voice says them: "Yeah, submitted." "Booked: 8:10 tonight." "Done."
 const BARE_DONE = /(?:^|[.!?…]\s+)(?:(?:yeah|yes|yep|yup)[,.!]?\s+)?(?:all\s+)?(?:done|booked|sent|texted|submitted|scheduled|confirmed|ordered|paid|cancel+ed|reserved)\s*(?:[:.!,]|$)/i;
-/** Does this say something has been done? GPT-Live's `claimsDone`, plus the bare forms. Exported for tests. */
+// The rephrasings a voice reaches for instead ("All set." "You're good." "Taken care of." "Got you booked
+// for 3." "Sent it over." "It went through." "I've filled it in."), read one clause at a time below.
+const DONE_PARTS = "done|booked|sent|texted|emailed|messaged|submitted|scheduled|rescheduled|confirmed|ordered|paid|cancel+ed|reserved|purchased|bought|placed|finished|completed|handled|sorted|arranged|registered|filed|added|filled\\s+(?:it\\s+|that\\s+|them\\s+)?(?:in|out)|signed\\s+(?:you\\s+)?up|set\\s+up|locked\\s+in|squared\\s+away|taken\\s+care\\s+of";
+const DONE_CLAUSE = new RegExp([
+  `\\b(?:${DONE_PARTS})\\b`,
+  `\\b(?:all|you(?:'|’)re|you\\s+are|we(?:'|’)re|we\\s+are|it(?:'|’)s|that(?:'|’)s)\\s+(?:all\\s+)?(?:set\\b|good\\s+to\\s+go\\b|(?:good|in)\\s*[.!,;…]*$)`,
+  `\\b(?:went|gone|got)\\s+through\\b`,
+  `\\b(?:put|got|have)\\s+(?:you|it|that|them|him|her)\\s+(?:down|in|on)\\b`,
+  `\\bi\\s+(?:did|have)(?:\\s+(?:it|that|so))?\\s*[.!…]*$`,
+  `\\b(?:form|order|booking|request|application|reservation|appointment|payment)(?:'|’)s\\s+in\\b`,
+].join("|"), "i");
+// What makes a clause not a claim: a negation, a future or a condition, an offer, or a question.
+const NOT_A_CLAIM = /\b(?:not|never|nothing|no\s+one|yet\s+to|will|i(?:'|’)ll|it(?:'|’)ll|gonna|going\s+to|once|when|whenever|after|if|until|unless|as\s+soon\s+as|want\s+me|should\s+i|shall\s+i|can\s+i|could|would|ask(?:ing|ed)?\s+reason|let\s+me|try(?:ing)?\s+to|about\s+to|need(?:s)?\s+to|still|checking|check)\b|n(?:'|’)t\b/i;
+/** One spoken reply as clauses, each with its own end mark ("?" marks a question). */
+function clauses(t) {
+  return (String(t).match(/[^.!?;…,]+[.!?;…,]*/g) ?? []).flatMap(s => s.split(/\s+but\s+/i)).map(s => s.replace(/,+$/, "").trim()).filter(Boolean);
+}
+/** Does this say something has been done? GPT-Live's `claimsDone`, plus the bare forms and the rephrasings. Exported for tests. */
 export function saysDone(text) {
   const t = String(text ?? "").trim();
-  return !!t && (claimsDone(t) || BARE_DONE.test(t));
+  if (!t) return false;
+  return clauses(t.replace(/\bno\s+(?:worries|problem|prob)\b/gi, "")).some(c => !/\?\s*$/.test(c) && !NOT_A_CLAIM.test(c) && (claimsDone(c) || BARE_DONE.test(c) || DONE_CLAUSE.test(c)));
+}
+// Their words asking whether something is done ("Have you finished filling the form?" "and submitted?").
+const DONE_QUESTION = new RegExp(`(?:\\b(?:is|was|are|were|did|does|has|have|had)\\b.*\\b(?:${DONE_PARTS}|through|in)\\b|\\b(?:${DONE_PARTS})\\b.*(?:\\?|\\byet\\b))`, "i");
+const YES_FIRST = /^(?:yes|yeah|yep|yup|ya|yea|sure|of\s+course|absolutely|definitely|correct|right|that(?:'|’)s\s+right|it\s+is|it\s+has|i\s+did|i\s+have|we\s+did|uh[\s-]*huh|mm[\s-]*hmm)\b/i;
+const HOLDING = /\b(?:ask|asking|check|checking|reason|not\s+sure|don(?:'|’)t\s+know|let\s+me|hold\s+on|one\s+(?:sec|moment))\b/i;
+/** A bare yes to "is it done?" ("Yeah." "Yes, I did."): the same claim in fewer words. Exported for tests. */
+export function confirmsDone(question, reply) {
+  const r = String(reply ?? "").trim();
+  return !!r && DONE_QUESTION.test(String(question ?? "")) && YES_FIRST.test(r) && !HOLDING.test(r) && !NOT_A_CLAIM.test(r);
 }
 
 // ---------- falling back, by reason ----------
@@ -473,7 +500,8 @@ export class CartesiaAgentCall {
     // no answer of Reason's in the last minute said so. The words are already spoken (their socket takes
     // no correction mid-call), so it is logged, counted and written into the record, where Reason's next
     // turn and the after-call text read it.
-    if (who === "reason" && text && saysDone(text) && this.now() - this.claimedAt > CLAIM_BACKED_MS) {
+    const asked = who === "reason" ? this.turns.findLast(t => t.who === "them" && t !== this.turns.at(-1))?.text : "";
+    if (who === "reason" && text && (saysDone(text) || confirmsDone(asked, text)) && this.now() - this.claimedAt > CLAIM_BACKED_MS) {
       this.m.unbacked += 1;
       this.log({ cartesia_unbacked_claim: this.call.id, turn: Number(e.turn) || 0, chars: text.length });
       this.turns.push({ who: "reason", text: UNBACKED_NOTE, at: this.now() });
