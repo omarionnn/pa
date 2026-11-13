@@ -335,27 +335,51 @@ function harness() {
 }
 const text = (from, body) => ({ channel: "fake", externalId: `m${Math.random()}`, from, text: body, at: clock.now() });
 
-test("a text in a card's words runs as the normal turn, as it is; the card is done once the turn replied; the log has reply and done", async () => {
-  const h = harness();
+test("a text in a card's words runs as the normal turn, told what the card promised; done only when the proof is on record, off the note when it is not", async () => {
+  const turns = [];
+  // One turn really does the thing (and leaves the ledger row a finished action leaves); the others only talk.
+  const runtime = new Runtime({ runTurn: async ({ conversationId, text: t }) => {
+    turns.push({ conversationId, text: t });
+    if (/Find out why my server/.test(t)) db.recordAction({ conversationId, action: "browser_submit", target: "restart web-1", attempted: {}, outcome: "ok", result: { ok: true }, receipt: "pressed Restart" });
+    return "on it";
+  } });
+  const router = new Router({ runtime, judge: async () => ({ verdict: "unclear" }) });
+  router.register(new FakeChannel({ number: LINE }));
+  runtime.turnExtras.channels = router;
+  runtime.deliver = makeDeliver({ router, consoleChannel: new ConsoleChannel(), log: () => {} });
   const num = newNumber();
-  await h.router.deliver(text(num, "hi"));
-  assert.equal(h.turns.length, 1);
+  await router.deliver(text(num, "hi"));
+  assert.equal(turns.length, 1);
   const d = seed(conv(num));
-  await h.router.deliver(text(num, "Replace my Anthropic key before it expires Nov 18"));
-  assert.equal(h.turns.length, 2);
-  assert.equal(h.turns[1].conversationId, conv(num));
-  assert.match(h.turns[1].text, /Replace my Anthropic key before it expires Nov 18/, "the turn reads the request itself");
-  assert.doesNotMatch(h.turns[1].text, /card|digest/i, "no wrapper, no id");
-  const after = cards.digestById(d.id);
-  assert.deepEqual(after.cards.map(c => c.status), ["done", "open", "open"]);
-  assert.deepEqual(cards.counts(d.cards[0].id, conv(num)), { view: 0, tap: 0, reply: 1, dismiss: 0, done: 1 });
-  // An unrelated text leaves the others alone.
-  await h.router.deliver(text(num, "what's the weather"));
-  assert.deepEqual(cards.digestById(d.id).cards.map(c => c.status), ["done", "open", "open"]);
+  await router.deliver(text(num, "Replace my Anthropic key before it expires Nov 18"));
+  assert.equal(turns.length, 2);
+  assert.equal(turns[1].conversationId, conv(num));
+  assert.match(turns[1].text, /Replace my Anthropic key before it expires Nov 18/, "the turn reads the request itself");
+  // Above it, what the card promised and what failing honestly looks like. No id, no token, no code.
+  assert.match(turns[1].text, /a tap on a card from the note/);
+  assert.match(turns[1].text, /do NOT send a sign-in link/);
+  assert.ok(!turns[1].text.includes(d.token) && !turns[1].text.includes(d.cards[0].code) && !turns[1].text.includes(d.id));
+  // The turn replied "on it" and nothing was done: a reply is not the job. The card is NOT checked off.
+  let after = cards.digestById(d.id);
+  assert.deepEqual(after.cards.map(c => c.status), ["failed", "open", "open"]);
+  assert.deepEqual(cards.counts(d.cards[0].id, conv(num)), { view: 0, tap: 0, reply: 1, dismiss: 0, done: 0, fail: 1 });
+  assert.equal(cards.wasDismissed(conv(num), d.cards[0].title), false, "they did not strike it out: Reason failed it");
+  // A failed card is not matched again: the same words now run as an ordinary text.
+  assert.equal(cards.matchInbound(conv(num), ["Replace my Anthropic key before it expires Nov 18"]), null);
+  // The turn that really did it: its proof is in the ledger, and only then is the card done.
+  await router.deliver(text(num, "Find out why my server went down 6 times last night"));
+  after = cards.digestById(d.id);
+  assert.deepEqual(after.cards.map(c => c.status), ["failed", "open", "done"]);
+  assert.deepEqual(cards.counts(d.cards[2].id, conv(num)), { view: 0, tap: 0, reply: 1, dismiss: 0, done: 1, fail: 0 });
+  // An unrelated text leaves the others alone and carries no card note.
+  await router.deliver(text(num, "what's the weather"));
+  assert.doesNotMatch(turns.at(-1).text, /a tap on a card/);
+  assert.deepEqual(cards.digestById(d.id).cards.map(c => c.status), ["failed", "open", "done"]);
   assert.equal(cards.counts(d.cards[1].id, conv(num)).reply, 0);
-  // The page now shows it done, under the open ones.
+  // The page: the open one, the done one under it, and the one Reason could not finish is off the note.
   const html = (await get(`/a/${d.token}`)).body;
-  assert.deepEqual(liOrder(html).map(o => o.cls), ["card", "card", "card done"]);
+  assert.deepEqual(liOrder(html).map(o => o.cls), ["card", "card done"]);
+  assert.match(html, /One thing I can take off your plate|Two things I can take off your plate/);
 });
 
 test("a turn that fails leaves the card open (replied, not done)", async () => {
@@ -390,7 +414,7 @@ test("the log: a view per open, a tap when the page says so, each per card", asy
   assert.equal((await post(`/a/${d.token}/tap/${d.cards[0].code}`)).status, 200);
   assert.equal((await post(`/a/${d.token}/tap/${d.cards[0].code}`)).status, 200);
   assert.equal((await post(`/a/${d.token}/tap/nopenope`)).status, 404);
-  assert.deepEqual(cards.counts(d.cards[0].id, C), { view: 0, tap: 2, reply: 0, dismiss: 0, done: 0 });
+  assert.deepEqual(cards.counts(d.cards[0].id, C), { view: 0, tap: 2, reply: 0, dismiss: 0, done: 0, fail: 0 });
   assert.equal((await get(`/a/${d.token}/tap/${d.cards[0].code}`)).status, 405, "a GET is not a tap");
   assert.equal((await get(`/a/${d.token}`, "POST")).status, 405);
 });

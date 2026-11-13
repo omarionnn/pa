@@ -319,7 +319,7 @@ export function sweepCards({ now = clock.now(), log = () => {}, queue = backgrou
 }
 
 /** For tests. */
-export function resetEngine() { running.clear(); sweeping = false; testAsk = null; }
+export function resetEngine() { running.clear(); sweeping = false; testAsk = null; testDeps = null; }
 
 const errorKind = (e) => {
   const m = String(e?.message ?? e ?? "");
@@ -1263,13 +1263,16 @@ export function cardFrame(run) {
 /**
  * Is a card's job in flight for this person, so that a tool handing the job back to them (a sign-in
  * link, a page: cardroutes.HANDOFF_TOOLS) must refuse? Yes for the card's own turn; and for anything
- * that is NOT a turn they started (a job that woke up, a resumed task) for as long as the card is
- * unsettled. That second half is the third link of 2026-11-12: a restart resumed the job and it
- * texted the same sign-in link again.
+ * that is NOT a turn they started (a job that woke up, a resumed task) for PENDING_MS after the tap,
+ * settled or not. That second half is the third link of 2026-11-12: a restart resumed the job and it
+ * texted the same sign-in link again. A turn they start themselves afterwards ("send me the sign-in
+ * link") is theirs to ask and is not refused.
  */
 export function runBlocksHandoff(conversationId, { kind = "user", now = clock.now() } = {}) {
   if (cards.mode() === "off" || !conversationId) return false;
-  const rows = db.db.prepare("SELECT outcome, tapped_at FROM action_card_sources WHERE conversation_id = ? AND outcome IN ('running', 'pending') AND tapped_at > ?").all(conversationId, now - routes.PENDING_MS);
+  // A card that FAILED counts too, for anything they did not start: the job it left behind must not
+  // wake up later and text the link the card's own turn was refused.
+  const rows = db.db.prepare("SELECT outcome, tapped_at FROM action_card_sources WHERE conversation_id = ? AND outcome IN ('running', 'pending', 'failed') AND tapped_at > ?").all(conversationId, now - routes.PENDING_MS);
   return rows.some(r => (r.outcome === "running" && now - r.tapped_at < RUN_GUARD_MS) || kind !== "user");
 }
 
