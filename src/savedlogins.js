@@ -217,8 +217,12 @@ const siteVerdict = (hostOrUrl) => classifySite(hostOrUrl) ?? {};
 // Every save, open and removal writes one login_log row (reason.db, `purpose` sealed under the
 // person's key) and one action_ledger row, which ledger_list reads back. From fixed lists only:
 // never a username, a hint, a code or an address with a query string.
-export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_sent", "refused_never_list", "save_failed"];
-export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed"];
+export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_sent", "refused_never_list", "save_failed", "signin"];
+// The vault's own low-level outcomes (what withLogin's `opened` line carries), then the filler's
+// person-facing sign-in outcomes (what its `signin` line carries, vault PR 6). A result word the
+// filler returns to the model is in the second group so recordLoginEvent accepts it.
+export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed",
+  "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused"];
 const RECEIPT = {
   saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
   opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
@@ -227,6 +231,19 @@ const RECEIPT = {
   link_sent: (site) => `Sent a link to save a login for ${site} on Reason's own page.`,
   refused_never_list: (site) => `Did not offer to save a login for ${site}: it is on the never list.`,
   save_failed: (site, outcome) => `Did not save the login for ${site} (${outcome.replace(/_/g, " ")}).`,
+  // The filler's person-facing line (vault PR 6, design B10): what the sign-in did, in plain words,
+  // never a username. One sentence per sign-in result word.
+  signin: (site, outcome) => ({
+    signed_in: `Signed in to ${site} with your saved login.`,
+    wrong_password: `Could not sign in to ${site}: the saved password was not accepted. I stopped and won't try again until you save it again.`,
+    blocked: `${site} blocked the sign-in. I stopped and did not retry.`,
+    paused: `Did not sign in to ${site}: it is paused after an earlier refusal.`,
+    needs_code_sms: `Signed in to ${site}; it then asked for a texted code.`,
+    needs_approval: `Signed in to ${site}; it then asked you to approve in an app.`,
+    needs_face_id: `Did not sign in to ${site}: this one needs your Face ID approval.`,
+    origin_mismatch: `Did not sign in to ${site}: the page was not its real sign-in page.`,
+    not_signin_page: `Did not sign in to ${site}: I could not find its sign-in form.`,
+  }[outcome] ?? `Did not sign in to ${site} (${String(outcome).replace(/_/g, " ")}).`),
 };
 /** Words for `purpose`: one line, no control characters, links without their query or fragment. */
 function cleanPurpose(s) {
@@ -414,6 +431,43 @@ export function listLogins(conversationId) {
       consent_version, consent_at, fail_count, next_try_at, last_used_at, created_at
     FROM saved_logins WHERE conversation_id = ? ORDER BY site, id`).all(String(conversationId))
     .map(r => ({ ...r, username_hint: restcrypt.openAny(r.username_hint) }));
+}
+
+/**
+ * The saved logins for one site, for the filler to find and gate on (src/filler.js, vault PR 6): id,
+ * state, next_try_at, permission, the pinned origin and path, second_step and the site. No ciphertext,
+ * no wrapped key, nothing secret. `site` is a bare host ("amazon.com"); a login whose site is that host
+ * or a parent of it matches (a login saved for "example.test" answers a request for "login.example.test").
+ */
+export function peekForSignin(conversationId, site) {
+  const d = open({ create: false });
+  const host = String(site ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+  if (!d || !conversationId || !SITE_RE.test(host)) return [];
+  return d.prepare(`SELECT id, site, label, signin_origin, signin_path, permission, second_step, state, next_try_at, fail_count
+    FROM saved_logins WHERE conversation_id = ? ORDER BY id`).all(String(conversationId))
+    .filter(r => r.site === host || host === r.site || host.endsWith(`.${r.site}`) || r.site.endsWith(`.${host}`));
+}
+
+export const SIGNIN_STATES = ["unverified", "working", "wrong_password", "needs_person", "paused", "refused"];
+/**
+ * Move a saved login's row after a sign-in (src/filler.js, vault PR 6): its state, fail_count and
+ * next_try_at. Scoped to the person. Never touches a secret. Returns true when a row changed.
+ * `bumpFail` adds one to fail_count; `failCount` sets it outright (0 clears it on a success).
+ */
+export function setState(conversationId, id, { state = null, failCount = null, bumpFail = false, nextTryAt = null, clearNextTry = false } = {}) {
+  const d = open({ create: false });
+  const c = String(conversationId ?? "");
+  if (!d || !c || !Number.isSafeInteger(Number(id))) return false;
+  if (state !== null && !SIGNIN_STATES.includes(state)) throw new VaultError("bad_state");
+  const sets = [], args = [];
+  if (state !== null) { sets.push("state = ?"); args.push(state); }
+  if (bumpFail) sets.push("fail_count = fail_count + 1");
+  else if (Number.isSafeInteger(failCount)) { sets.push("fail_count = ?"); args.push(failCount); }
+  if (clearNextTry) sets.push("next_try_at = NULL");
+  else if (Number.isSafeInteger(nextTryAt)) { sets.push("next_try_at = ?"); args.push(nextTryAt); }
+  if (!sets.length) return false;
+  args.push(Number(id), c);
+  return Number(d.prepare(`UPDATE saved_logins SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args).changes) > 0;
 }
 
 /** Delete one login: the row, its ciphertext and its wrapped key (secure_delete zeroes them). Works with the switch off. */
