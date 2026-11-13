@@ -534,9 +534,11 @@ export async function reachPinned(page, row, { conversationId, mark = () => {} }
     got = (await walk()) ?? (unpinSite(c), await direct());
   } else {
     // A sign-in page on the site's own host (www.netflix.com/login): opened directly, as before. When it
-    // shows no form (walled, sent elsewhere, formless) the front door is walked once; never a loop.
+    // shows no form (sent elsewhere, formless) the front door is walked once; never a loop. A wall on the
+    // direct load stops it (review 2026-11-13): the site has turned the browser away, and walking round
+    // by another way would be a second try against a wall.
     got = await direct();
-    if (got.verdict !== "ok" && row.signin_path !== "/") got = (await walk()) ?? got;
+    if (got.verdict !== "ok" && got.verdict !== "wall" && row.signin_path !== "/") got = (await walk()) ?? got;
   }
   if (got.verdict !== "ok") unpinSite(c);
   return { ...got, door };
