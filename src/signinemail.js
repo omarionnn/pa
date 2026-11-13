@@ -573,6 +573,8 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
         // No sign-in form anywhere Reason could reach: a link would only show them that same page
         // (a home page under "finish this step"), so none is sent and the line says what is true.
         if (asked.detail === "no_signin_page") {
+          // A page that turned out not to be a sign-in page is not kept as "the page this sign-in is on".
+          signinPage.forgetSigninPage(conversationId, entry);
           return finish(`the ${entry.label} email sign-in could not start: ${asked.why}. Reason cannot find where to sign in on ${entry.label}. Nothing was saved. Do NOT send a sign-in link: it would only show them a page with nothing to sign in to. Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page, signin_email or signin_link takes that address as the site.`, "no_route", "no_signin_page");
         }
         return finish(`the ${entry.label} email sign-in could not ask for a code: ${asked.why}. Nothing was saved. Say it in ONE plain line${pw ? `, and offer the secure sign-in link (signin_link with site "${linkSite()}", no provider) where they can type their ${entry.label} password themselves` : `, and offer the secure sign-in link (signin_link with site "${linkSite()}", no provider)`}. Use that site value exactly as written: it is the page this sign-in is on. Never offer Google.`, "no_route", pw ? "wants_password" : "no_email_box");

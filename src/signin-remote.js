@@ -360,7 +360,11 @@ async function end(s, how) {
   // ending without progress is written down, so no second identical link goes out on its own.
   const expired = how === "timed_out" || how === "link_expired";
   step(s, s.ended.state === "signed_in" ? "signed_in" : expired ? "expired" : "ended", { detail: s.ended.state === "signed_in" ? "" : how === "link_expired" ? "never_opened" : String(how) });
-  try { signinPage.noteEnding(c, entry, { how, state: s.ended.state ?? "", page: entry.signin_url }); } catch { /* the ending still stands */ }
+  try {
+    signinPage.noteEnding(c, entry, { how, state: s.ended.state ?? "", page: entry.signin_url });
+    // A page that turned out not to be a sign-in page is not kept as "the page this sign-in is on".
+    if (how === "no_signin_page" && signinPage.signinPageFor(c, entry) === signinPage.pageOf(entry.signin_url)) signinPage.forgetSigninPage(c, entry);
+  } catch { /* the ending still stands */ }
   // A wall met by the link's own browser is a dated finding (src/sitefindings.js): no fresh link is
   // made into it until it is old enough to ask again.
   if (s.ended.state === "blocked") { try { findings.recordFinding(entry, { kind: "walled", why: s.ended.why }); } catch { /* the note still goes */ } }
