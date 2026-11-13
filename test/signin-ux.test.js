@@ -98,7 +98,15 @@ const ANSWERS = {
   "/login-valid": () => "Please enter a valid email address or phone number.",
   "/login-code": () => null,
   "/login-ok3": () => null,
+  // Netflix's own generic error, as it answered the server on 2026-11-13: every time, or only the first.
+  "/login-trouble": () => "Something went wrong. Please try again in a few minutes.",
+  "/login-trouble-once": () => (++troubleOnce === 1 ? "Something went wrong. Please try again in a few minutes." : null),
 };
+let troubleOnce = 0;
+// Like Netflix: an emptied box shows the page's own hint under it (not an alert). Emptying the boxes
+// after the submit made that hint read as the site's answer ("validation") on 2026-11-13.
+const HINTED = ONE_PAGE.replace('<div id="msg"></div>', '<div id="msg"></div><div id="hint"></div>').replace("<script>",
+  "<script>document.getElementById('u').addEventListener('input',function(){if(!this.value)document.getElementById('hint').textContent='Please enter a valid email or mobile number.'});</script><script>");
 // Review 2026-11-13: a standing notice in a live region (there before the submit) is never the answer.
 const STALE = ONE_PAGE.replace('<div id="msg"></div>', '<div id="msg"></div><div role="alert">Sign-in is quick and secure here.</div>');
 // The form vanishes in place and the page's own alert says something no known words name: couldn't tell.
@@ -127,6 +135,7 @@ function handler(req, res) {
   if (u.pathname === "/login-code") return send(200, CODE_FIRST);
   if (u.pathname === "/login-stale") return send(200, STALE);
   if (u.pathname === "/login-vanish") return send(200, VANISH);
+  if (u.pathname.startsWith("/login-trouble")) return send(200, HINTED);
   if (u.pathname.startsWith("/login-")) return send(200, ONE_PAGE);
   return send(404, "<p>not found</p>");
 }
@@ -235,6 +244,80 @@ test("A: a page that never answers is 'no_answer' (the 2.9 s Netflix verdict), n
   assert.ok(row(id).next_try_at > Date.now());
   assert.equal(lastDiag().msg_class, "none");
   assert.ok(lastDiag().waited_ms >= 2_000);
+});
+
+// ---------------------------------------------------------------- A2: the site's own generic error (2026-11-13)
+test("A2: the words alone: generic site trouble is its own class, never 'validation' and never a wrong password", () => {
+  const { messageClass } = filler._testWords;
+  for (const t of ["Something went wrong. Please try again in a few minutes.", "Oops, something went wrong.", "We're having trouble right now.",
+    "An unexpected error occurred.", "This service is temporarily unavailable.", "Please try again later.", "An error occurred. Try again shortly."]) {
+    assert.equal(messageClass(t), "site_trouble", t);
+  }
+  assert.equal(messageClass("Too many attempts. Please try again later."), "rate_limited");
+  assert.equal(messageClass("Incorrect password. Please try again later."), "wrong_password");
+  assert.equal(messageClass("Sorry, we can't find an account with this email address. Please try again or create a new account."), "account_not_found");
+  assert.equal(messageClass("Please enter a valid email or mobile number."), "validation");
+  assert.equal(messageClass("Your password must contain between 4 and 60 characters."), "validation");
+  assert.ok(slog.DIAG_CLASSES.includes("site_trouble"));
+  assert.ok(sl.LOGIN_OUTCOMES.includes("site_trouble") && filler.SIGNIN_RESULTS.includes("site_trouble"));
+});
+
+const until = async (ok, ms = 40_000) => { const end = Date.now() + ms; while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 100)); return ok(); };
+
+test("A2: 'Something went wrong' is site_trouble (not a format problem even with the page's hint after the clean-up): told once, ONE retry, then a 6 h pause", skip, async () => {
+  const { id } = await save("/login-trouble");
+  posted.length = 0;
+  const notes = [];
+  const t0 = Date.now();
+  const out = await signIn({ retryWaitMs: 200, note: (_c, text) => notes.push(text) });
+  assert.equal(out.result, "site_trouble", out.say_exactly);
+  assert.match(out.say_exactly, /answered with its own error before it accepted or turned down your login/);
+  assert.match(out.say_exactly, /Something went wrong/);
+  assert.match(out.say_exactly, /doesn't need saving again/);
+  assert.match(out.say_exactly, /try once more by myself in a few minutes/);
+  assert.doesNotMatch(out.say_exactly, /form it expects|saving again\.?$|want me to|try again\?|shall I/i);
+  assert.equal(lastDiag().msg_class, "site_trouble", "the page's answer, read before the boxes were emptied");
+  assert.equal(lastDiag().result, "site_trouble");
+  noSecrets(lastDiag());
+  assert.ok(!row(id).next_try_at, "the first go rests nothing: one retry follows");
+  assert.equal((await signIn()).result, "busy", "the job still holds the browser during the wait");
+  assert.ok(await until(() => notes.length === 1), "the second go's ending is told");
+  assert.match(notes[0], /ended: site_trouble/);
+  assert.match(notes[0], /again before it accepted or turned down your login/);
+  assert.match(notes[0], /doesn't need saving again/);
+  assert.match(notes[0], /won't try acme\.test again for 6 hours/);
+  assert.equal(posted.length, 2, "exactly one automatic retry");
+  const r = row(id);
+  assert.notEqual(r.state, "wrong_password");
+  assert.ok(r.next_try_at >= t0 + 6 * 3_600_000 - 5_000 && r.next_try_at < t0 + 7 * 3_600_000, "6 hours, not a day");
+  await new Promise((res) => setTimeout(res, 500));
+  assert.equal(notes.length, 1, "never a third go");
+  assert.equal((await signIn()).result, "paused");
+});
+
+test("A2: site_trouble then the retry signs in: the person is told it worked", skip, async () => {
+  const { id } = await save("/login-trouble-once");
+  posted.length = 0; troubleOnce = 0;
+  const notes = [];
+  const out = await signIn({ retryWaitMs: 200, note: (_c, text) => notes.push(text) });
+  assert.equal(out.result, "site_trouble", out.say_exactly);
+  assert.ok(await until(() => notes.length === 1));
+  assert.match(notes[0], /ended: signed_in/);
+  assert.equal(posted.length, 2);
+  assert.equal(row(id).state, "working");
+  assert.ok(!row(id).next_try_at);
+});
+
+test("A2: a wrong password keeps today's rules: no retry, no note, locked until saved again", skip, async () => {
+  const { id } = await save("/login-wrong");
+  posted.length = 0;
+  const notes = [];
+  const out = await signIn({ retryWaitMs: 100, note: (_c, text) => notes.push(text) });
+  assert.equal(out.result, "wrong_password");
+  await new Promise((r) => setTimeout(r, 1_500));
+  assert.equal(posted.length, 1, "no automatic retry");
+  assert.equal(notes.length, 0);
+  assert.equal(row(id).state, "wrong_password");
 });
 
 test("A: a code-first form: the page's own 'Use password instead' is pressed; 'Send sign-in code' never is", skip, async () => {
