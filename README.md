@@ -736,12 +736,9 @@ spawned before the memory lookup and the notes are in and reads its message off 
 (its boot overlaps them); the said check is skipped when no tool acted and the draft shares not one
 figure or content word with anything standing, closed or declined (`said_check_skipped`); and the
 background lane (extraction) stays paused through the check and the send, not only the model's run.
-Since 2026-11-12 it also covers: the loaded tool set stands for as long as the CLI's cache really
-lives (an hour, read off the wire, not six minutes) and across a restart, and the tools a person
-really called are loaded before whole packs (the owner's most-used tools were not loaded and cost a
-search round each use); and a changed set is logged (`toolset`, with `idle_ms`). The hold before a
-reply is NOT changed by this switch: a shorter one exists only when `REASON_BURST_QUIET_FAST_MS` is
-set (unset by default; never longer than `REASON_BURST_QUIET_MS`), and is not approved for live.
+The hold before a reply is NOT changed by this switch: a shorter one exists only when
+`REASON_BURST_QUIET_FAST_MS` is set (unset by default; never longer than `REASON_BURST_QUIET_MS`),
+and is not approved for live.
 
 **`REASON_KEEP_SESSION`** (`off` default | `owner` | `on`; src/fastreply.js, "The kept session" in
 src/backends/claude-cli.js): a reply continues the CLI session the last reply of the same thread
@@ -754,11 +751,16 @@ and the message carries only what is new: the new message, lines added to the th
 elsewhere, each note that changed (whole), and each note that is gone (named as gone, so nothing
 stale stands). A session is continued only while the thread still reads as the session left it
 (a line rewritten or removed — "forget that" — starts afresh), the instructions are the same bytes,
-the cache is still alive (55 min), it has not grown past 60k tokens or 30 replies, its last turn
-finished, and the harm screen did not refuse it; anything else is the fresh turn every reply was
+no saved fact or rule it could have read has been retired, reworded or deleted since, no line was
+put into the thread by something else while its last reply ran, the cache is still alive (55 min),
+it has not grown past 60k tokens or 30 replies, its last turn finished (a turn killed half-way is
+marked on disk), and the harm screen did not refuse it; anything else is the fresh turn every reply was
 before. The record is `data/cli-sessions.json` (line hashes, not lines), read back after a restart
 and cleared with a person's data. Logged: `session_kept` (turns, since, notes sent / same / gone),
-`session_fresh` (why), `session_resume_failed`.
+`session_fresh` (why), `session_resume_failed`. With the same switch (src/tooldiet.js): the loaded
+tool set stands for as long as the CLI's cache really lives (an hour, read off the wire, not six
+minutes) and across a restart, and the tools a person really called are loaded before whole packs;
+a changed set is logged (`toolset`, with `idle_ms`).
 
 **Parts of one message are one message.** Paste a link into iMessage and your phone sends one
 bubble — but Sendblue delivers it as several webhooks ten seconds apart: your words and the link,

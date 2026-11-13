@@ -22,9 +22,8 @@
 //      claim or closed question. ~2.3 s off those replies; the warm CLI is put down unasked.
 //   5. The background lane stays paused through the check and the send (src/runtime.js _turn),
 //      not only through the model: extraction's CLI was booting beside the said check's.
-//   6. The tool set stands for as long as the CLI's cache really lives (src/tooldiet.js): an hour,
-//      not six minutes, and across a restart; and the tools a person really called are loaded
-//      before whole packs, so the ones used most stop costing a search round each time.
+//   6. (Moved under REASON_KEEP_SESSION below, 2026-11-12: this switch is on for everyone on live,
+//      and nothing new is opened to anyone before it is shown not to cost quality.)
 //   7. Only when REASON_BURST_QUIET_FAST_MS is set (unset by default: the hold is unchanged): a text
 //      waits that long for the rest of its thought instead of the configured window
 //      (src/channels/router.js quietWindowFor). Not approved for live; #519 decides the hold.
@@ -37,7 +36,10 @@
 // to the thread from elsewhere, and the notes that changed. Before it, every reply rendered the
 // thread afresh into a new process: ~10k tokens of notes and recent lines written again on every
 // reply, and the whole ~34k-token instructions-and-history block written again each time the
-// history anchor moved (40 of 118 rewrites on live, 11-08 → 11-12).
+// history anchor moved (115 of 318 owner replies on live, 11-08 → 11-12: two thirds of all the cache written).
+// With it (src/tooldiet.js): the tool set stands for as long as the CLI's cache really lives (an
+// hour, not six minutes, and across a restart), and the tools a person really called are loaded
+// before whole packs, so the ones used most stop costing a search round each time.
 import { config } from "./config.js";
 
 /** off | owner | on. */

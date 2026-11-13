@@ -1,4 +1,4 @@
-// REASON_FAST_REPLY §6: the tool set stands for as long as the CLI's cache really lives, and the
+// REASON_KEEP_SESSION (tool set): the tool set stands for as long as the CLI's cache really lives, and the
 // tools a person really called are loaded before whole packs.
 //
 // Tools are the first thing in the prompt, so a set that changes turns the next reply cold: ~90k
@@ -28,11 +28,11 @@ const { mcpDispatch } = await import("../src/backends/mcp-core.js");
 
 const U = "dm:fake:+14155550101";
 const was = { backend: process.env.REASON_BACKEND };
-after(() => { delete process.env.REASON_FAST_REPLY; delete process.env.REASON_TOOL_DIET; if (was.backend === undefined) delete process.env.REASON_BACKEND; else process.env.REASON_BACKEND = was.backend; rmSync(dir, { recursive: true, force: true }); });
+after(() => { delete process.env.REASON_KEEP_SESSION; delete process.env.REASON_TOOL_DIET; if (was.backend === undefined) delete process.env.REASON_BACKEND; else process.env.REASON_BACKEND = was.backend; rmSync(dir, { recursive: true, force: true }); });
 beforeEach(() => {
   diet._resetDiet();
   process.env.REASON_TOOL_DIET = "on";
-  process.env.REASON_FAST_REPLY = "on";
+  process.env.REASON_KEEP_SESSION = "on";
   process.env.REASON_BACKEND = "claude-cli";
   db.upsertAccount({ conversationId: U, channel: "fake", address: "+14155550101", name: "Kofi", isOperator: false });
 });
@@ -40,9 +40,9 @@ beforeEach(() => {
 test("the window: an hour and five minutes on the CLI lane where the switch reaches, six minutes everywhere else", () => {
   assert.equal(diet.warmMsFor(U), diet.CLI_WARM_MS);
   assert.equal(diet.CLI_WARM_MS, 65 * 60_000);
-  process.env.REASON_FAST_REPLY = "off";
+  process.env.REASON_KEEP_SESSION = "off";
   assert.equal(diet.warmMsFor(U), diet.WARM_MS);
-  process.env.REASON_FAST_REPLY = "on";
+  process.env.REASON_KEEP_SESSION = "on";
   process.env.REASON_BACKEND = "api";
   assert.equal(diet.warmMsFor(U), diet.WARM_MS, "the API's cache lives five minutes: its window is unchanged");
 });
@@ -59,7 +59,7 @@ test("twenty idle minutes into a conversation the set still stands; past the cac
   assert.ok(cold.has("flight_search"));
   // With the switch off it changes after six minutes, as before.
   diet._resetDiet();
-  process.env.REASON_FAST_REPLY = "off";
+  process.env.REASON_KEEP_SESSION = "off";
   const a = diet.loadedFor(U, v, { now: t0 });
   diet.noteModelCall(U, t0);
   diet.recordToolUse(U, "flight_search");
@@ -78,7 +78,7 @@ test("a restart in the middle of a conversation does not change the set: the las
   const after = diet.loadedFor(U, v, { now: t0 + 2 * 60_000 });
   assert.deepEqual([...after].sort(), [...first].sort(), "two minutes after the last reply, deploy or not");
   // Off: the restart recomputes, as before.
-  process.env.REASON_FAST_REPLY = "off";
+  process.env.REASON_KEEP_SESSION = "off";
   diet._forgetCalls();
   assert.ok(diet.loadedFor(U, v, { now: t0 + 2 * 60_000 }).has("flight_search"));
 });
@@ -95,7 +95,7 @@ test("the tools they really called are loaded before whole packs, most used firs
   for (const n of loose) for (let i = 0; i < 30; i++) diet.recordToolUse(U, n);
   const fast = diet.computeLoaded(U, v).names;
   for (const n of loose) assert.ok(fast.has(n), `${n}: called 30 times, loaded`);
-  process.env.REASON_FAST_REPLY = "off";
+  process.env.REASON_KEEP_SESSION = "off";
   const before = diet.computeLoaded(U, v).names;
   assert.ok(loose.some(n => !before.has(n)), "before: the cap went on packs and a tool used 30 times was left to be searched for");
   // Either way the cap holds and core is whole.

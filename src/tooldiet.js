@@ -25,7 +25,7 @@ import { db } from "./db.js";
 import * as dbm from "./db.js";
 import { clock, config } from "./config.js";
 import { socialAllowedFor } from "./socialsignin.js";
-import { fastReplyOn } from "./fastreply.js";
+import { keepSessionOn } from "./fastreply.js";
 
 const OFF = ["0", "off", "false", "no"];
 /** off (the default) | owner | on. Off: every tool loaded, exactly as before. Unset is off, so a deploy
@@ -50,11 +50,11 @@ export const WARM_MS = Number(process.env.REASON_TOOLSET_WARM_MS || 6 * 60_000);
 // carries every written token). With the six-minute window the set was recomputed in the middle of a
 // conversation whose cache was still there, and a set that came out different turned the next reply
 // cold: tools are first in the prefix, so ~90k tokens were written again (live 11-08 → 11-12: 5 such
-// turns in one process, cache alive; 8 more straight after a restart). REASON_FAST_REPLY §6.
+// turns in one process, cache alive; 8 more straight after a restart). REASON_KEEP_SESSION (was FAST_REPLY §6; moved so nothing changes on live until this switch is opened).
 export const CLI_WARM_MS = Number(process.env.REASON_TOOLSET_CLI_WARM_MS || 65 * 60_000);
 /** How long this person's set stands after their last model call. */
 export function warmMsFor(conversationId) {
-  return process.env.REASON_BACKEND === "claude-cli" && fastReplyOn({ conversationId }) ? CLI_WARM_MS : WARM_MS;
+  return process.env.REASON_BACKEND === "claude-cli" && keepSessionOn({ conversationId }) ? CLI_WARM_MS : WARM_MS;
 }
 
 /**
@@ -137,7 +137,7 @@ db.exec(`
     computed_at INTEGER NOT NULL
   );
 `);
-// When their last model call went out, kept beside the set (REASON_FAST_REPLY §6): a restart used to
+// When their last model call went out, kept beside the set (REASON_KEEP_SESSION (was FAST_REPLY §6; moved so nothing changes on live until this switch is opened)): a restart used to
 // forget it, so the first turn after every deploy recomputed the set while the cache was still warm.
 try { db.exec("ALTER TABLE tool_sets ADD COLUMN called_at INTEGER"); } catch { /* already there */ }
 
@@ -227,11 +227,11 @@ export function computeLoaded(conversationId, visible, { messages = [], now = cl
   }
   const packs = statePacks(conversationId, { now });
   const recent = recentToolUse(conversationId, { now });
-  // REASON_FAST_REPLY §6: the tools they really called come first, most used first, and whole packs
+  // REASON_KEEP_SESSION (was FAST_REPLY §6; moved so nothing changes on live until this switch is opened): the tools they really called come first, most used first, and whole packs
   // after. A person with many packs (the owner: 16) spent the whole cap on packs, so the tools used
   // most were not loaded and each use cost a search round (~4 s): food_order 33 calls, memory_search
   // 10, google_accounts 8, transit_status 5 in three days, none of them loaded (live tool_sets, 11-12).
-  if (fastReplyOn({ conversationId })) for (const r of recent) take(r.name);
+  if (keepSessionOn({ conversationId })) for (const r of recent) take(r.name);
   for (const r of recent) { const p = packOf(r.name); if (p && !packs.includes(p)) packs.push(p); }
   for (const p of packs) for (const n of PACKS[p] ?? []) take(n);
   for (const r of recent) take(r.name);
@@ -245,7 +245,7 @@ const lastCall = new Map();
 export function noteModelCall(conversationId, now = clock.now()) {
   if (!conversationId) return;
   lastCall.set(conversationId, now);
-  if (!fastReplyOn({ conversationId })) return;
+  if (!keepSessionOn({ conversationId })) return;
   try { db.prepare("UPDATE tool_sets SET called_at = ? WHERE conversation_id = ?").run(now, conversationId); } catch { /* the in-memory mark still stands */ }
 }
 /** For tests: what a restart does to this process's memory of calls (the database keeps its own). */
@@ -261,7 +261,7 @@ export function loadedFor(conversationId, visible, { messages = [], now = clock.
   const visibleNames = new Set(visible.map(t => t.name));
   let row = null;
   try { row = db.prepare("SELECT names, packs, computed_at, called_at FROM tool_sets WHERE conversation_id = ?").get(conversationId); } catch {}
-  const fast = fastReplyOn({ conversationId });
+  const fast = keepSessionOn({ conversationId });
   // The last call this process made for them, or (fast) the one written down before a restart.
   const last = lastCall.get(conversationId) ?? (fast ? row?.called_at ?? null : null);
   const warm = last != null && now - last < warmMsFor(conversationId);
