@@ -51,7 +51,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   remote.forgetAllRemoteSignins();
-  db.db.exec("DELETE FROM accounts; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals;");
+  db.db.exec("DELETE FROM accounts; DELETE FROM connected_accounts; DELETE FROM action_ledger; DELETE FROM social_declines; DELETE FROM social_refusals; DELETE FROM signin_pages;");
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
   config.publicUrl = "https://reason.example";

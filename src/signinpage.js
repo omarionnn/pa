@@ -443,6 +443,3 @@ export function mayLinkAgain(conversationId, entry, { asked = false } = {}) {
   if (changed && !last.retried) return { ok: true, retry: true };
   return { ok: false, last };
 }
-
-/** For tests: nothing remembered about anybody's sign-in pages or endings. */
-export function _forgetAll() { db.db.exec("DELETE FROM signin_pages"); }

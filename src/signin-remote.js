@@ -1038,7 +1038,7 @@ function frameAnswer(got, h, extra = {}) {
 export async function endAllRemoteSignins(how = "shutdown") {
   await Promise.all([...sessions.values()].filter(s => !s.ended).map(s => end(s, how).catch(() => {})));
 }
-export function forgetAllRemoteSignins() { sessions.clear(); byConversation.clear(); signinPage._forgetAll(); }
+export function forgetAllRemoteSignins() { sessions.clear(); byConversation.clear(); }
 
 // ---------- the pages ----------
 
