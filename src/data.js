@@ -681,6 +681,10 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   // nothing was connected while the browser went on being logged in, which is the worst of both.
   const profiles = deleteProfiles(conversation);
 
+  // What the CLI backend keeps about their threads outside the database: the history anchor (their
+  // thread's own lines, data/cli-anchors.json) and the kept session's record (cli-sessions.json).
+  try { (await import("./backends/claude-cli.js")).forgetCliThreads(conversation); } catch { /* nothing kept, or not this backend */ }
+
   const albumRoot = resolve(config.dataDir, "event-albums");
   const eventPhotos = { listed: photos.length, files_deleted: 0, failed: [] };
   for (const p of photos) {

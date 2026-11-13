@@ -20,10 +20,12 @@
 // call cold. The set is recomputed only when the cache has already gone (no model call for them in
 // WARM_MS) — at that moment a new set costs nothing, because the next call writes the cache anyway.
 // It is kept in the database, so a restart in the middle of a burst does not change it either.
+// (On the CLI lane the cache lives an hour, so the window there is CLI_WARM_MS — see below.)
 import { db } from "./db.js";
 import * as dbm from "./db.js";
 import { clock, config } from "./config.js";
 import { socialAllowedFor } from "./socialsignin.js";
+import { keepSessionOn } from "./fastreply.js";
 
 const OFF = ["0", "off", "false", "no"];
 /** off (the default) | owner | on. Off: every tool loaded, exactly as before. Unset is off, so a deploy
@@ -43,6 +45,17 @@ export function dietOn(conversationId) {
 
 // The cache's life (5 min) plus a margin. A set is only ever replaced after this long with no call.
 export const WARM_MS = Number(process.env.REASON_TOOLSET_WARM_MS || 6 * 60_000);
+// On the CLI lane the cache lives an HOUR, not five minutes: Claude Code marks every breakpoint
+// `ttl: "1h"` (read off the wire 2026-11-12, both 2.1.296 and 2.1.322; `ephemeral_1h_input_tokens`
+// carries every written token). With the six-minute window the set was recomputed in the middle of a
+// conversation whose cache was still there, and a set that came out different turned the next reply
+// cold: tools are first in the prefix, so ~90k tokens were written again (live 11-08 → 11-12: 5 such
+// turns in one process, cache alive; 8 more straight after a restart). REASON_KEEP_SESSION (was FAST_REPLY §6; moved so nothing changes on live until this switch is opened).
+export const CLI_WARM_MS = Number(process.env.REASON_TOOLSET_CLI_WARM_MS || 65 * 60_000);
+/** How long this person's set stands after their last model call. */
+export function warmMsFor(conversationId) {
+  return process.env.REASON_BACKEND === "claude-cli" && keepSessionOn({ conversationId }) ? CLI_WARM_MS : WARM_MS;
+}
 
 /**
  * Always loaded, for everybody (each still subject to toolsFor's visibility). The first fifteen are
@@ -124,6 +137,9 @@ db.exec(`
     computed_at INTEGER NOT NULL
   );
 `);
+// When their last model call went out, kept beside the set (REASON_KEEP_SESSION (was FAST_REPLY §6; moved so nothing changes on live until this switch is opened)): a restart used to
+// forget it, so the first turn after every deploy recomputed the set while the cache was still warm.
+try { db.exec("ALTER TABLE tool_sets ADD COLUMN called_at INTEGER"); } catch { /* already there */ }
 
 /** A tool call that ran, counted for the likely set. Never throws: a count must not fail a tool. */
 export function recordToolUse(conversationId, name) {
@@ -211,6 +227,11 @@ export function computeLoaded(conversationId, visible, { messages = [], now = cl
   }
   const packs = statePacks(conversationId, { now });
   const recent = recentToolUse(conversationId, { now });
+  // REASON_KEEP_SESSION (was FAST_REPLY §6; moved so nothing changes on live until this switch is opened): the tools they really called come first, most used first, and whole packs
+  // after. A person with many packs (the owner: 16) spent the whole cap on packs, so the tools used
+  // most were not loaded and each use cost a search round (~4 s): food_order 33 calls, memory_search
+  // 10, google_accounts 8, transit_status 5 in three days, none of them loaded (live tool_sets, 11-12).
+  if (keepSessionOn({ conversationId })) for (const r of recent) take(r.name);
   for (const r of recent) { const p = packOf(r.name); if (p && !packs.includes(p)) packs.push(p); }
   for (const p of packs) for (const n of PACKS[p] ?? []) take(n);
   for (const r of recent) take(r.name);
@@ -221,7 +242,14 @@ export function computeLoaded(conversationId, visible, { messages = [], now = cl
 
 const lastCall = new Map();
 /** A model call for this person is going out now: their cache is warm from here for WARM_MS. */
-export function noteModelCall(conversationId, now = clock.now()) { if (conversationId) lastCall.set(conversationId, now); }
+export function noteModelCall(conversationId, now = clock.now()) {
+  if (!conversationId) return;
+  lastCall.set(conversationId, now);
+  if (!keepSessionOn({ conversationId })) return;
+  try { db.prepare("UPDATE tool_sets SET called_at = ? WHERE conversation_id = ?").run(now, conversationId); } catch { /* the in-memory mark still stands */ }
+}
+/** For tests: what a restart does to this process's memory of calls (the database keeps its own). */
+export const _forgetCalls = () => lastCall.clear();
 export const _resetDiet = () => { lastCall.clear(); try { db.exec("DELETE FROM tool_sets; DELETE FROM tool_recent;"); } catch {} };
 
 /**
@@ -232,9 +260,11 @@ export const _resetDiet = () => { lastCall.clear(); try { db.exec("DELETE FROM t
 export function loadedFor(conversationId, visible, { messages = [], now = clock.now(), log = () => {} } = {}) {
   const visibleNames = new Set(visible.map(t => t.name));
   let row = null;
-  try { row = db.prepare("SELECT names, packs, computed_at FROM tool_sets WHERE conversation_id = ?").get(conversationId); } catch {}
-  const last = lastCall.get(conversationId);
-  const warm = last != null && now - last < WARM_MS;
+  try { row = db.prepare("SELECT names, packs, computed_at, called_at FROM tool_sets WHERE conversation_id = ?").get(conversationId); } catch {}
+  const fast = keepSessionOn({ conversationId });
+  // The last call this process made for them, or (fast) the one written down before a restart.
+  const last = lastCall.get(conversationId) ?? (fast ? row?.called_at ?? null : null);
+  const warm = last != null && now - last < warmMsFor(conversationId);
   let stored = null;
   try { stored = row ? new Set(JSON.parse(row.names)) : null; } catch {}
   // Warm: the set stands, whatever changed. Only a tool that has stopped being visible to them comes
@@ -248,7 +278,7 @@ export function loadedFor(conversationId, visible, { messages = [], now = clock.
         ON CONFLICT(conversation_id) DO UPDATE SET names = excluded.names, packs = excluded.packs, why = excluded.why, computed_at = excluded.computed_at`)
         .run(conversationId, JSON.stringify([...fresh.names].sort()), JSON.stringify(fresh.packs), fresh.why, now);
     } catch {}
-    log({ toolset: conversationId, loaded: fresh.names.size, of: visible.length, packs: fresh.packs, was: stored?.size ?? null });
+    log({ toolset: conversationId, loaded: fresh.names.size, of: visible.length, packs: fresh.packs, was: stored?.size ?? null, idle_ms: last == null ? null : now - last });
   }
   return fresh.names;
 }

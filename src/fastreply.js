@@ -22,6 +22,24 @@
 //      claim or closed question. ~2.3 s off those replies; the warm CLI is put down unasked.
 //   5. The background lane stays paused through the check and the send (src/runtime.js _turn),
 //      not only through the model: extraction's CLI was booting beside the said check's.
+//   6. (Moved under REASON_KEEP_SESSION below, 2026-11-12: this switch is on for everyone on live,
+//      and nothing new is opened to anyone before it is shown not to cost quality.)
+//   7. Only when REASON_BURST_QUIET_FAST_MS is set (unset by default: the hold is unchanged): a text
+//      waits that long for the rest of its thought instead of the configured window
+//      (src/channels/router.js quietWindowFor). Not approved for live; #519 decides the hold.
+//
+// REASON_KEEP_SESSION (off | owner | on; default off), 2026-11-12 — its own switch because it
+// changes what the model is handed, not only when: a reply continues the CLI session the last reply
+// of the same thread ran in (src/backends/claude-cli.js, "The kept session"), so everything Reason
+// already read — its instructions, the history, the notes, what its tools returned, the tools it
+// looked up — is read from the cache and only what is new is sent: the new message, what was added
+// to the thread from elsewhere, and the notes that changed. Before it, every reply rendered the
+// thread afresh into a new process: ~10k tokens of notes and recent lines written again on every
+// reply, and the whole ~34k-token instructions-and-history block written again each time the
+// history anchor moved (115 of 318 owner replies on live, 11-08 → 11-12: two thirds of all the cache written).
+// With it (src/tooldiet.js): the tool set stands for as long as the CLI's cache really lives (an
+// hour, not six minutes, and across a restart), and the tools a person really called are loaded
+// before whole packs, so the ones used most stop costing a search round each time.
 import { config } from "./config.js";
 
 /** off | owner | on. */
@@ -33,6 +51,20 @@ export function fastReplyMode() {
 /** Is it on for this conversation? Either the operator's flag or the conversation id names the owner. */
 export function fastReplyOn({ isOperator = false, conversationId = null } = {}) {
   const m = fastReplyMode();
+  if (m === "on") return true;
+  if (m !== "owner") return false;
+  return !!isOperator || (conversationId != null && conversationId === config.ownerConversation);
+}
+
+/** off | owner | on. */
+export function keepSessionMode() {
+  const v = String(process.env.REASON_KEEP_SESSION ?? "off").trim().toLowerCase();
+  return v === "on" || v === "owner" ? v : "off";
+}
+
+/** Does a reply in this conversation continue the session the last one ran in? */
+export function keepSessionOn({ isOperator = false, conversationId = null } = {}) {
+  const m = keepSessionMode();
   if (m === "on") return true;
   if (m !== "owner") return false;
   return !!isOperator || (conversationId != null && conversationId === config.ownerConversation);

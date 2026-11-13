@@ -455,6 +455,8 @@ test("check-create-confirm-correct reaches the model with calendar_create, on bo
   // The prompt is built from systemFor(me) plus the thread's anchor (systemWithAnchor), and that is
   // what the CLI really sends: `common.system` is the anchored prompt.
   assert.match(cliSrc, /const systemBase = systemFor\(me\)/, "the base prompt comes from systemFor");
-  assert.match(cliSrc, /const system = systemWithAnchor\(systemBase, parts\.anchor\)/, "and the anchored prompt is what goes out");
+  // A fresh turn's anchor, or (REASON_KEEP_SESSION) the one the continued session started under: the same base either way.
+  assert.match(cliSrc, /const freshSystem = \(\) => systemWithAnchor\(systemBase, freshParts\(\)\.anchor\)/, "and the anchored prompt is what goes out");
+  assert.match(cliSrc, /const system = chain \? systemWithAnchor\(systemBase, chain\.anchor\) : freshSystem\(\)/, "on a continued session too");
   assert.match(cliSrc, /const common = \{ system, mcpUrl/, "and must really send it");
 });
