@@ -23,7 +23,7 @@
 // usage/agents: "Rounded down to the start of the UTC day").
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
-import { configured as plaidConfigured } from "./plaid.js";
+import { configured as plaidConfigured, slotsUsed as plaidSlotsUsed } from "./plaid.js";
 // Cartesia's API, as in src/calls/cartesia.js (not imported: the relay loads only for a Cartesia call).
 const CARTESIA_BASE = "https://api.cartesia.ai";
 const CARTESIA_VERSION = "2026-08-14";
@@ -111,13 +111,13 @@ export function standingReading(meter, own) {
 // ---------- the meters ----------
 
 /**
- * Banks connected through Plaid (Plaid calls each an Item), across everyone: every row still held at
- * Plaid, healthy or waiting for a re-login. A bank they disconnected is gone from the table or marked
- * `removing` (src/plaid.js disconnect) and does not count. A count, never which bank or whose.
+ * Banks connected through Plaid (Plaid calls each an Item), across everyone, EVER: Plaid's Trial counts
+ * every Item created and /item/remove does not give one back (src/plaid.js slotsUsed). So a bank they
+ * disconnected still counts. A count, never which bank or whose.
  */
 function plaidOwn() {
-  const r = db.db.prepare("SELECT COUNT(*) AS n FROM plaid_items WHERE status != 'removing'").get();
-  return { count: r.n };
+  const live = db.db.prepare("SELECT COUNT(*) AS n FROM plaid_items WHERE status != 'removing'").get().n;
+  return { count: Math.max(live, plaidSlotsUsed()) };
 }
 
 /** Reason's own count of the Cartesia voice this cycle, from the call rows the relay writes. */

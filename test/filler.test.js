@@ -36,6 +36,7 @@ useStandIn(g);
 const sl = await import("../src/savedlogins.js");
 const { Secret } = await import("../src/secret.js");
 const filler = await import("../src/filler.js");
+const refusing = await import("../src/refusing.js");
 const db = await import("../src/db.js");
 const busy = await import("../src/busy.js");
 let chromium;
@@ -170,6 +171,7 @@ after(async () => {
 
 const S = s => new Secret(Buffer.from(s, "utf8"));
 async function save(label, path, over = {}) {
+  refusing._resetRefusals(); // a wall in an earlier test marks acme.test as refusing (src/refusing.js)
   // One login per test: whatever an earlier test left (a failure before its cleanup) goes first.
   for (const r of sl.listLogins(ME)) sl.removeLogin(ME, r.id);
   return sl.saveLogin(ME, {
@@ -273,6 +275,7 @@ test("rule 4: a wall refuses once and the site is paused; a second call does not
   const decryptsAfterFirst = g.count("decrypt");
   const out2 = await signIn();
   assert.equal(out2.result, "paused", "a refused site is paused on the next call");
+  assert.equal(refusing.refusingSite("acme.test"), null, "one wall never marks the site for everyone (src/refusing.js)");
   assert.equal(g.count("decrypt"), decryptsAfterFirst, "the second call does no KMS unwrap");
   sl.removeLogin(ME, id);
 });

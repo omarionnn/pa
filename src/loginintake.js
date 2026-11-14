@@ -27,11 +27,13 @@ import { clock } from "./config.js";
 import * as restcrypt from "./restcrypt.js";
 import * as passkey from "./passkey.js";
 import { typedOnly } from "./trust.js";
-import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
+import { classifySite, refusalFor, registrableOf, GOOGLE_WARNING } from "./sitepolicy.js";
 import { signinFinding, recordFinding } from "./sitefindings.js";
 import {
   savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor, intakePublicKey, saveFromSealed, recordLoginEvent, listLogins, removeLogin,
+  setSigninRoute, peekForSignin, signinRouteFor, markSaveOffered,
 } from "./savedlogins.js";
+import { refusingSite } from "./refusing.js";
 
 export { savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor };
 
@@ -74,7 +76,10 @@ const hostOf = (s) => { try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) 
 export async function offerSaveLink(conversationId, site, quotedRequest, { locate = null, label = "" } = {}) {
   const c = String(conversationId ?? "");
   if (!intakeReadyFor(c)) return { ok: false, error: "not_available" };
-  const host = hostOf(String(site ?? ""));
+  // "Save my Google login": the one Google host a Google login is ever typed on (owner decision
+  // 2026-11-13; src/federated.js). Gmail, Drive and the rest stay on the never list.
+  const asked = hostOf(String(site ?? ""));
+  const host = asked === "google.com" ? "accounts.google.com" : asked;
   const verdict = classifySite(host);
   const name = oneLine(label, 40) || host;
   // Hard rule 3: the never list refuses, and says why.
@@ -161,7 +166,8 @@ export async function viewFor(token) {
   const base = {
     state, site: row.site, label: row.label, host: new URL(row.signin_origin).host, path: row.signin_path,
     quoted: restcrypt.openAny(row.quoted_request) ?? "", careful: row.permission_offered !== "standing",
-    warning: row.permission_offered !== "standing" ? oneLine(verdict.reason, 200) : "",
+    warning: verdict.category === "google" ? GOOGLE_WARNING : row.permission_offered !== "standing" ? oneLine(verdict.reason, 200) : "",
+    google: verdict.category === "google",
     permissions: permissionsOf(row), consentVersion: row.consent_version, expiresAt: row.expires_at, conversationId: row.conversation_id,
   };
   if (state !== "open") return base;
@@ -314,4 +320,62 @@ export function textedPasswordReply(conversationId) {
   const token = randomBytes(24).toString("base64url");
   if (q("UPDATE login_intake SET token_hash = ? WHERE token_hash = ? AND conversation_id = ? AND claimed_at IS NULL").run(hashToken(token), row.token_hash, row.conversation_id).changes !== 1) return null;
   return `${TEXTED_PASSWORD_WORDS}\n${passkey.ORIGIN()}${LINK_PATH}${token}`;
+}
+
+/** How they sign in to a site with no saved login of its own ("google": Continue with Google). For src/tools.js account_signin. */
+export function rememberSigninRoute(conversationId, site, route) {
+  return setSigninRoute(conversationId, site, route);
+}
+
+// ---------------------------------------------------------------- which way to sign in (owner decision 2026-11-13)
+// A plain "sign in to X" goes to the saved login when there is one, and to the type-it-through link
+// when there is not. Decided here, in code, from the vault's own rows (src/tools.js signin_status reads
+// the answer; it may not import the vault). Nothing secret leaves: a domain and a word.
+const GOOGLE_OWN = /(^|\.)(google\.[a-z.]+|gmail\.com|youtube\.com|googlemail\.com)$/;
+/** The registrable domains a site entry (src/signin.js) or a typed site stands for, most specific first. */
+export function domainsOf(entry, asked = "") {
+  const out = [];
+  const add = (h) => {
+    const host = String(h ?? "").toLowerCase().trim().replace(/^https?:\/\//, "").split("/")[0].split(":")[0].replace(/^www\./, "");
+    if (!/^[a-z0-9.-]{3,253}$/.test(host) || !host.includes(".")) return;
+    const d = registrableOf(host) || host;
+    if (!GOOGLE_OWN.test(d) && !out.includes(d)) out.push(d);
+  };
+  for (const u of [entry?.signin_url, entry?.signed_in?.url, entry?.entry]) { try { if (u) add(new URL(String(u)).hostname); } catch { /* not a URL */ } }
+  add(asked);
+  return out;
+}
+/**
+ * For someone the vault is on for: how a named site is signed in to.
+ *   → { refusing, domain }   the site turns away software-driven browsers (src/refusing.js): said up front
+ *   | { domain, via }        "saved": a saved login for that site; "google": the site's stored route is
+ *                            Continue with Google and their Google login is saved
+ *   | null                   no saved login: the link, as for everyone else
+ * Null for anyone the vault is off for, so their answers stay exactly as they were.
+ */
+export function savedLoginRoute(conversationId, entry, asked = "") {
+  const c = String(conversationId ?? "");
+  if (!c || !savedLoginsAllowedFor(c)) return null;
+  const domains = domainsOf(entry, asked);
+  for (const d of domains) { const r = refusingSite(d); if (r) return { refusing: r, domain: d }; }
+  for (const d of domains) {
+    if (peekForSignin(c, d).length) return { domain: d, via: "saved" };
+    if (signinRouteFor(c, d) === "google" && peekForSignin(c, "google.com").some((r) => r.site === "google.com")) return { domain: d, via: "google" };
+  }
+  return null;
+}
+/**
+ * After a sign-in through a link ended signed in: the one offer to save that login, or null. Once per
+ * person and site, ever (save_offers): never for a site with a saved login or a Google route already,
+ * one on the never list, one that turns away software, or a sign-in that went through a provider button.
+ */
+export function saveOfferFor(conversationId, entry, { provider = "" } = {}) {
+  const c = String(conversationId ?? "");
+  if (!c || provider || !savedLoginsAllowedFor(c)) return null;
+  const domain = domainsOf(entry)[0];
+  if (!domain || (classifySite(domain) ?? {}).policy === "never" || refusingSite(domain)) return null;
+  if (peekForSignin(c, domain).length || signinRouteFor(c, domain)) return null;
+  if (!markSaveOffered(c, domain)) return null;
+  const label = String(entry?.label ?? "").trim() || domain;
+  return { domain, line: `Want me to save this login, so next time I can sign in to ${label} for you myself?` };
 }

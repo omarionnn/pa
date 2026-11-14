@@ -5289,7 +5289,7 @@ Built from design 3 in `docs/calls-cartesia.md` (#527): `src/calls/cartesia.js`,
 `scripts/cartesia-agent-setup.mjs`. Proved only with stand-in sockets (`test/call-cartesia.test.js`). Never run:
 the setup script with `--yes`, a real agent session, or a real call. Not known until it is:
 
-- The largest dynamic variable Cartesia takes. `reason_call` (the own-call instructions) is cut at 12,000 characters.
+- The largest dynamic variable Cartesia takes (their docs give none). `reason_call` (the own-call instructions) is fitted inside our own 12,000-character limit by rank (src/calls/fitprompt.js), never cut at the end; `REASON_CARTESIA_VARIABLE_MAX` moves the limit. Uncut it runs to about 24k on a busy day.
 - Whether a keyterm made of a variable (`{{keyterm_1}}`) is substituted per call, and whether an empty one would be refused. Unused slots say "Reason".
 - Whether the agent's own `end_call` closes the socket with 1000. Any other close code is treated as a failure, and GPT-Live takes the rest of the call.
 - Whether a socket closed before `session_ready` leaves a call record on their side that cannot be deleted (there is no id to delete). A session that comes up within 5 s of the fall-back is deleted.
@@ -5354,3 +5354,48 @@ refusals, the day's counts). Never run:
   their docs say an omitted field keeps its setting, not how nested objects merge).
 - Whether the agent's own `timezone` setting reaches the model; each call says the person's clock in
   `reason_call` either way (`clockLine`).
+
+### 2026-11-13: how a Cartesia call feels (call 113): guards, prompt and config; not run on a call
+
+Proved only with stand-in sockets (`test/call-cartesia-feel.test.js`). Nothing about when anyone speaks
+changed. Never run:
+- Whether Cartesia's inactivity check-in ("You still there?") is written by the agent's model, so that
+  `TURN_LINES` ("never after they asked you to wait", "at most twice") reach it, or is a fixed line. The
+  settings that certainly reach it are `CALL_FEEL` in scripts/cartesia-agent-setup.mjs
+  (`turn.inactivity_check_in_secs` 20, `skip_turn.wait_timeout_secs` -1), proposed and NOT applied to the
+  live agent; `cartesia_check_in` lines (with `after_wait_ask_ms`, `lookup_pending`, `after_skip_ms`) will
+  show what happens either way.
+- Whether `turn_ended.interrupted` and its `text` ("the text the agent actually spoke") are what call 113's
+  "Got" looked like on a real line. The re-offer reads them: an interrupted turn that spoke under 60% of
+  the words of Reason's last answer counts as not heard (`HEARD_SHARE`); a paraphrase that was mostly
+  heard can still read as unheard, and the cost of that is one short repeat.
+- Whether a deferral is always visible as a change of `calls.verify_deferred` during the ask: a second
+  deferral of the same words is not a change (`queueForAfter` keeps one copy), so no line is added for it.
+- Managed agents have no setting for interruption or end-of-turn sensitivity in their config (read
+  2026-11-13: only `initial_message_interruptions` and `speculative_generation`, which never speaks before
+  the turn ends). The five talk-overs in call 113 were their end-of-turn detection replying 0.5-0.9 s
+  after a pause; `skip_turn` on a filler or a wait ask is the only lever, and it is the agent's choice.
+
+## Calls: who Reason trusts on a call (REASON_CALL_TRUST, 2026-11-13)
+
+Offline-tested in `test/call-trust.test.js` (fixtures only). Not proved, or not in our hands:
+
+- **The voice vendor hears the passphrase.** Cartesia's or OpenAI's speech-to-text and their voice model
+  hear it while the call runs and keep it in their session context for the rest of the call. Reason
+  replaces it with a marker before it is stored, logged, put in Reason's own turn or the after-call
+  summary, and tells the voice never to repeat it; what the vendor's model does with it is its own. Each
+  Cartesia session (its transcript and recording) is deleted when the call ends and the delete is checked;
+  Reason's own call recording keeps the audio under the account's ordinary recording retention.
+- **Caller ID can be spoofed.** The low level (own calendar, a free booking, a voice note to themselves)
+  runs on caller ID alone, by the owner's choice. A forwarded call (Twilio `ForwardedFrom`) or a failed
+  carrier check (`StirVerstat` containing "Failed") is not trusted; whether every carrier sets these, and
+  whether to require full attestation ("TN-Validation-Passed-A"), is not known.
+- **A free booking is read off the page.** "No price, deposit, card or fee anywhere on the open page or the
+  line" is a wording check, not a guarantee; a page that charges without saying so reads as free.
+- **The voice may answer instead of handing over.** The caller's next words after the ask are screened
+  either way; if the voice answers them itself, the action is not done on the call and stays on the
+  after-call text.
+- **Sensitive reads are a short list** (codes found in any tool's answer, the ledger, purchases, receipts,
+  boarding passes, saved travellers, today's spend). Someone else's full address read aloud is not caught.
+- **How often a real line mishears a phrase** (and so whether one word of tolerance from five words is right)
+  is a live observation.

@@ -20,7 +20,7 @@ import { afterApproval } from "../resume.js";
 
 const TITLE = "Reason — approve a sign-in";
 const CSS = `${PAPER_CSS}${BACK_CSS}${VAULT_CSS}`;
-const shell = (main) => `${header()}<main class="pf vt" id="lu-main">${main}</main>`;
+const shell = (main, home = "", via = "") => `${header({ home, via })}<main class="pf vt" id="lu-main">${main}</main>`;
 const margin = () => label("FACE ID SAYS YES TO", { pen: true }) + para("One sign-in to this site, in the next few minutes. Nothing else.")
   + label("I NEVER SEE", { sp: true }) + para("Your login. It goes straight from the vault into the site's own page.");
 const TRUST = `<p class="pf-note vt-trust">This page is heyreason.com. Reason sends this link only in your own thread.</p>`;
@@ -70,32 +70,36 @@ function ending(kind, v, { step = "", off = false } = {}) {
     expired: [headline("This link ran out.", "Nothing was signed in to.")
       + lede("Approval links last ten minutes. Send the reply that's typed for you and I'll text a fresh one."), "again"],
   }[kind];
-  return frame({ step, off, main: E[0] + backToMessages(c, { reply: E[1] }) + TRUST, margin: afterMargin() });
+  return frame({ step, off, main: E[0] + backToMessages(c, { reply: E[1], via: v?.via ?? "" }) + TRUST, margin: afterMargin() });
 }
 
 export function renderUse({ v, nonce, base }) {
   const site = v.site;
   if (v.state !== "open") {
-    if (v.state === "approved") return html(410, shell(ending(v.resumed ? "done" : "held", v)), nonce);
-    return html(410, shell(ending("expired", v)), nonce);
+    if (v.state === "approved") return html(410, shell(ending(v.resumed ? "done" : "held", v), v.conversationId, v.via), nonce);
+    return html(410, shell(ending("expired", v), v.conversationId, v.via), nonce);
   }
   if (!v.passkey?.ok) {
     const main = label("APPROVE ONE SIGN-IN", { pen: true }) + headline(`Sign in to ${site}?`, "Face ID isn't ready on this phone.")
       + lede(v.passkey?.error === "cooling_off" ? "A Face ID added in the last day can't approve anything yet. Nothing was signed in to." : "Set up Face ID by saving a login first. Nothing was signed in to.")
-      + backToMessages(v.conversationId) + TRUST;
-    return html(200, shell(frame({ main, margin: margin() })), nonce);
+      + backToMessages(v.conversationId, { via: v.via }) + TRUST;
+    return html(200, shell(frame({ main, margin: margin() }), v.conversationId, v.via), nonce);
   }
   const ask = frame({
     step: "ask",
-    main: label("APPROVE ONE SIGN-IN", { pen: true }) + headline(`Sign in to ${site}?`, "With your saved login.")
+    main: label("APPROVE ONE SIGN-IN", { pen: true }) + (v.google
+      ? headline(`Sign in to ${site} with your Google account?`, "Through its Continue with Google.")
+      : headline(`Sign in to ${site}?`, "With your saved login."))
       + asked(v.request)
-      + lede(`I'll sign in to ${site} once, for ${v.request ? "that" : "the job you just asked for"}, then text you how it went.`)
+      + lede(v.google
+        ? `I'll press ${site}'s own "Continue with Google" and type your saved Google login on Google's sign-in page, once, for ${v.request ? "that" : "the job you just asked for"}. This one approval covers the whole sign-in. I won't open Gmail, Drive or your Google settings. If Google asks you to confirm, I'll text you.`
+        : `I'll sign in to ${site} once, for ${v.request ? "that" : "the job you just asked for"}, then text you how it went.`)
       + `<div class="vt-act"><button class="act pf-go vt-go" type="button" id="lu-go">${FACE}<span class="vt-t">Approve with Face ID</span> <span aria-hidden="true">→</span></button></div>`
       + `<p class="pf-note vt-err" id="lu-err" role="alert" hidden></p>` + TRUST,
     margin: margin(),
   });
   const ends = ["done", "held", "gone"].map((k) => ending(k, v, { step: k, off: true })).join("");
-  return html(200, shell(ask + ends), nonce, { base, challenge: v.challenge, options: v.passkey.options });
+  return html(200, shell(ask + ends, v.conversationId, v.via), nonce, { base, challenge: v.challenge, options: v.passkey.options });
 }
 
 /** Everything under /web/login-use. `sub` is the path after it. null: the caller's flat 404. */

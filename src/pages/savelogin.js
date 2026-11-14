@@ -73,7 +73,7 @@ const CSS = `${PAPER_CSS}${BACK_CSS}${VAULT_CSS}
 .sl-form+.pf-l{margin-top:14px}
 `;
 export const FACE = `<svg class="sl-face" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M9 9v1.5M15 9v1.5M12 9v4h-1M9 16.5c1.8 1.4 4.2 1.4 6 0"/></svg>`;
-const shell = (main) => `${header()}<main class="pf vt" id="sl-main">${main}</main>`;
+const shell = (main, home = "") => `${header({ home })}<main class="pf vt" id="sl-main">${main}</main>`;
 const minutes = (ms) => Math.max(1, Math.round(ms / 60_000));
 const FOOT = `<p class="pf-note vt-trust">This page is heyreason.com. Reason only sends this link in your own thread, right after you ask for something.</p>`;
 
@@ -113,7 +113,7 @@ export function renderSave({ v, nonce, boot = null, blocked = "", proved = false
   const name = v.label;
   if (blocked === "cooling_off") {
     const main = headline("Your new Face ID isn't ready yet.", "Nothing was saved.") + lede("A Face ID added after the first one waits a day before it can approve anything, so nobody can add one and use it before you hear.") + FOOT;
-    return page("Reason — save a login", shell(frame({ main, margin: margin() })), { nonce });
+    return page("Reason — save a login", shell(frame({ main, margin: margin() }), v.conversationId), { nonce });
   }
   if (blocked === "no_passkey" && !proved) {
     const main = eyebrow() + headline(`Save your ${name} login in Reason.`, "First, prove this is your phone.") + asked(v)
@@ -123,7 +123,7 @@ export function renderSave({ v, nonce, boot = null, blocked = "", proved = false
         + actions(go("Check the code", { type: "submit" }))
         : (error ? para(esc(error)) : "") + actions(`<button class="act pf-go" type="submit" name="send" value="1">Text me a code <span aria-hidden="true">→</span></button>`))
       + `</form>` + FOOT;
-    return page("Reason — save a login", shell(frame({ main, margin: margin() })), { nonce, status: error ? 400 : 200 });
+    return page("Reason — save a login", shell(frame({ main, margin: margin() }), v.conversationId), { nonce, status: error ? 400 : 200 });
   }
   if (blocked === "no_passkey") {
     const add = frame({
@@ -134,7 +134,7 @@ export function renderSave({ v, nonce, boot = null, blocked = "", proved = false
         + `<p class="pf-note vt-err" id="sl-err" role="alert" hidden></p>` + FOOT,
       margin: margin(),
     });
-    return page("Reason — save a login", shell(add), { nonce, boot });
+    return page("Reason — save a login", shell(add, v.conversationId), { nonce, boot });
   }
   const careful = v.careful;
   const choice = `<fieldset class="sl-ch"><legend class="pf-l">WHEN I MAY SIGN IN</legend>`
@@ -150,10 +150,11 @@ export function renderSave({ v, nonce, boot = null, blocked = "", proved = false
       + `</form>` + `<p class="pf-l">${sealedTag("SEALED ON THIS PHONE")}</p>`
       + label("WHAT SAVING MEANS", { sp: true }) + wording(name)
       + choice
-      + (careful && v.warning ? `<p class="sl-warn">${esc(v.warning)} So I'll ask you with Face ID every time.</p>` : "")
+      + (v.google ? `<p class="sl-warn" id="sl-google-warn">${esc(v.warning)}</p>`
+        : careful && v.warning ? `<p class="sl-warn">${esc(v.warning)} So I'll ask you with Face ID every time.</p>` : "")
       // What saving here starts, said before they save (review 2026-11-13): with their request quoted
       // above, this page and their Face ID are the confirmation the save grant stands on (src/resume.js).
-      + (v.quoted ? para(`Once it's saved, I'll sign in to ${esc(v.host)} for that and carry on${careful ? ", after you say yes with Face ID" : ""}. You don't need to tell me to go ahead.`) : "")
+      + (v.quoted && !v.google ? para(`Once it's saved, I'll sign in to ${esc(v.host)} for that and carry on${careful ? ", after you say yes with Face ID" : ""}. You don't need to tell me to go ahead.`) : "")
       + `<div class="vt-act"><button class="act pf-go vt-go" type="button" id="sl-go" disabled>${FACE}<span class="vt-t">Save with Face ID</span> <span aria-hidden="true">→</span></button></div>`
       + `<p class="pf-l vt-small">RUNS OUT IN ${minutes(v.expiresAt - Date.now())} MIN · NOTHING SAVED YET</p>`
       + `<p class="pf-note vt-err" id="sl-err" role="alert" hidden></p>` + FOOT,
@@ -171,7 +172,7 @@ export function renderSave({ v, nonce, boot = null, blocked = "", proved = false
   const savedMargin = label("THIS LINK") + para("Is used up.") + label("TO REMOVE IT", { sp: true }) + para(`Text &ldquo;forget my ${esc(name)} login&rdquo;.`);
   const saved = frame({ step: "saved", off: true, main: savedMain(true), margin: savedMargin })
     + frame({ step: "savedq", off: true, main: savedMain(false), margin: savedMargin });
-  return page("Reason — save a login", shell(ask + saving + saved), { nonce, boot });
+  return page("Reason — save a login", shell(ask + saving + saved, v.conversationId), { nonce, boot });
 }
 
 /** A used or expired link: plain words, nothing to type. 410 so a guess at an old link reads as gone. */
@@ -180,7 +181,7 @@ export function renderEnded({ v, nonce }) {
   const main = headline(used ? "This link has been used." : "This link ran out.", used ? "Nothing to type here." : "Nothing was saved.")
     + lede(used ? "Save links work once. If your login didn't save, ask me again and I'll send a fresh one." : "Save links last thirty minutes. Send the reply that's typed for you and I'll text a fresh one.")
     + backToMessages(v.conversationId, { reply: used ? "" : "fresh" }) + FOOT;
-  return page("Reason — save a login", shell(frame({ main, margin: label("WHY") + para("A link that runs out can't be used by anyone who sees it later.") })), { nonce, status: 410 });
+  return page("Reason — save a login", shell(frame({ main, margin: label("WHY") + para("A link that runs out can't be used by anyone who sees it later.") }), v.conversationId), { nonce, status: 410 });
 }
 
 // ---------------------------------------------------------------- the script

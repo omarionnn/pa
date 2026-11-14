@@ -9,7 +9,7 @@ import { clock } from "./config.js";
 
 // saved_login: the filler's first sign-in with a saved login (src/filler.js); saved_login_again: a
 // sign-in with a login that has signed in before.
-export const ROUTES = ["emailed_code", "emailed_link", "provider", "password_link", "saved_login", "saved_login_again"];
+export const ROUTES = ["emailed_code", "emailed_link", "provider", "password_link", "saved_login", "saved_login_again", "continue_with_google"];
 /** The five the owner asked for, plus three for runs that are none of them. */
 export const OUTCOMES = ["signed_in", "blocked_by_site", "code_not_found", "wrong_code", "abandoned", "email_rejected", "no_email_route", "failed"];
 
@@ -46,6 +46,50 @@ export function logAttempt(entry, { route, outcome, startedAt = null, detail = "
   try { sink(JSON.stringify(line)); } catch { /* a log that cannot be written never breaks a sign-in */ }
   return line;
 }
+
+// ---------------------------------------------------------------- what a failed sign-in looked like
+// One line per failed saved-login attempt (2026-11-13: a Netflix attempt said "wrong password" with
+// nothing to show why). Built here from a fixed list, so no caller can put a value in: the kind of each
+// box typed into with two numbers (how many characters the box holds after typing, how many the saved
+// field has), which control submitted, the class of the page's message and its first 80 characters with
+// every digit and anything email-like taken out, where the page ended up (host and path, digits taken
+// out), and whether a human-check frame was showing. Never a username, a value or a query string.
+export const DIAG_KINDS = ["email", "username", "password", "text", "otp"];
+export const DIAG_PRESSED = ["enter", "submit_button", "none"];
+export const DIAG_CLASSES = ["wrong_password", "validation", "account_not_found", "rate_limited", "site_trouble", "other", "none"];
+/** A page's message made safe to keep: no digits, nothing email-like, letters and plain punctuation, 80 chars. */
+export function safeMessage(s) {
+  return String(s ?? "")
+    .replace(/[^\s@]+@[^\s@]+/g, " ")
+    .replace(/\d+/g, "")
+    .replace(/[^A-Za-z .,'!?:;()-]/g, " ")
+    .replace(/\s+/g, " ").trim().slice(0, 80);
+}
+const safePath = (p) => String(p ?? "").replace(/\d+/g, "").replace(/[^A-Za-z/_.-]/g, "").slice(0, 60);
+const num = (n) => (Number.isFinite(Number(n)) && n !== null ? Math.max(0, Math.min(99_999, Math.round(Number(n)))) : null);
+export function logDiag(entry, d = {}) {
+  let host = "", where = "";
+  try { const u = new URL(String(d.finalUrl ?? "")); host = cleanHost(u.hostname); where = safePath(u.pathname); } catch { /* none */ }
+  const line = {
+    signin_diag: hostOf(entry),
+    boxes: (Array.isArray(d.boxes) ? d.boxes : []).slice(0, 4).map(b => ({
+      kind: DIAG_KINDS.includes(b?.kind) ? b.kind : "text", typed: num(b?.typed), saved: num(b?.saved),
+    })),
+    pressed: DIAG_PRESSED.includes(d.pressed) ? d.pressed : "none",
+    msg_class: DIAG_CLASSES.includes(d.msgClass) ? d.msgClass : "none",
+    ...(d.msg ? { msg: safeMessage(d.msg) } : {}),
+    ...(host ? { final_host: host, final_path: where } : {}),
+    challenge: d.challenge === true,
+    ...(num(d.waitedMs) !== null ? { waited_ms: num(d.waitedMs) } : {}),
+    ...(/^[a-z_]{1,40}$/.test(String(d.result ?? "")) ? { result: String(d.result) } : {}),
+  };
+  diagsKept.push(line);
+  if (diagsKept.length > 100) diagsKept.shift();
+  try { sink(JSON.stringify(line)); } catch { /* never breaks a sign-in */ }
+  return line;
+}
+const diagsKept = [];
+export function recentDiags() { return diagsKept.slice(); }
 
 // ---------------------------------------------------------------- one line per step
 // The attempt line above is a summary. On 2026-11-12 the owner's hosted session left only two of
