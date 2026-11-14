@@ -2054,7 +2054,7 @@ async function paidEndText(run, status, result, after = []) {
     if (!watching) return `${head} I looked in your email: nothing from ${store} since the payment. ${charge}`;
     return `${head} I looked in your email: nothing from ${store} since the payment yet. I'm watching it and will text you the order number the moment the confirmation lands, or tell you if a day goes by with nothing. ${charge}`;
   }
-  if (!watching) return `${head} I couldn't get into your email just now; ask me and I'll try again. ${charge}`;
+  if (!watching) return `${head} I couldn't get into your email just now, so I couldn't look for ${store}'s confirmation; the shop's own order page is the surest place to check. ${charge}`;
   return `${head} I couldn't get into your email just now; I'll keep looking for ${store}'s confirmation and text you what it says. ${charge}`;
 }
 const looked = (look) => (look.looked ? "I looked in your email: " : "");
@@ -2069,7 +2069,7 @@ async function endText(run, status, result, paid, after = []) {
     return `The ${store} checkout${itemOf(run)} stopped: ${store} was waiting for ${askedFor(run)} and didn't get it in time, so it expired. Nothing was charged. Want me to start it again?`;
   }
   if (status === "cancelled") return `The ${store} checkout${itemOf(run)} was cancelled. Nothing was charged.`;
-  return `The ${store} checkout${itemOf(run)} didn't go through${summary ? ` (${summary})` : code ? ` (${code})` : ""}. Nothing was charged. Want me to try again, or try another store?`;
+  return `The ${store} checkout${itemOf(run)} didn't go through${summary ? ` (${summary})` : code ? ` (${code})` : ""}. Nothing was charged, and I won't retry it on my own: a new try, here or at another store, needs your go.`;
 }
 
 // ---------------------------------------------------------------- a store turns the checkout away: the next one
@@ -2133,7 +2133,7 @@ export async function moveOn(run, reason, say, { stopAnswer = null, rq = null } 
   }
   await endQuietly(run, reason);
   await say(alt && !again?.ok
-    ? `${store} ${reason}. Nothing charged, and ${storeName(alt.store) || alt.store} wouldn't start the same checkout. Want me to try another store?`
+    ? `${store} ${reason}. Nothing charged, and ${storeName(alt.store) || alt.store} wouldn't start the same checkout. A new try needs a store from you.`
     : `${store} ${reason}. Nothing charged, and I have no other store lined up${run.item ? ` for ${run.item}` : ""}. Want me to find one?`);
   return { moved: null };
 }

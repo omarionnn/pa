@@ -100,7 +100,7 @@ test("Ulta, 10-31: 'I've started the Ulta checkout' when the checkout did not st
     return { changed_silently: [], asks_closed: [], unbacked: [{ quote: "I've started the Ulta checkout", problem: "not_done", fact: "store_checkout did not work; no checkout is running" }] };
   });
   const FALSE = "I've started the Ulta checkout for the CeraVe 16 oz. I'll text you when it needs your approval.";
-  const HONEST = "The Ulta checkout didn't start: the checkout service turned it down. Nothing was charged. Want me to try again?";
+  const HONEST = "The Ulta checkout didn't start: the checkout service turned it down. Nothing was charged.";
   const h = harness({
     tools: [["store_checkout", { store: "Ulta", start_url: ULTA, what: "One CeraVe Foaming Facial Cleanser, 16 oz, shipped to home.", item: "CeraVe Foaming Facial Cleanser 16 oz", max_usd: 35 }]],
     draft: FALSE,

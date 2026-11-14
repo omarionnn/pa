@@ -2,6 +2,7 @@
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
 import { randomUUID } from "node:crypto";
 import * as onethought from "./onethought.js";
+import * as retry from "./retry.js";
 import { taskOfCall } from "./settle.js";
 import { carServicesAt } from "./rides.js";
 import { withCoords } from "./ridelinks.js";
@@ -490,7 +491,7 @@ const SAVE_LINK_NO = {
   bad_site: "That isn't a site's domain. Ask which site, in one line.",
   walled: "That site blocks Reason's browser right now, so no link was made. Say so in one line.",
   off_site: "That site's sign-in page is on another company's domain, so no link was made. Say you can't save a login for it yet, in one line.",
-  not_reached: "Reason's browser couldn't reach that site's sign-in page just now, so no link was made. Say so in one line and offer to try again later.",
+  not_reached: "Reason's browser couldn't reach that site's sign-in page just now, so no link was made. Run it once more yourself now; if it still can't reach the page, say so in one line and that you'll open it again the next time they ask. Never offer to try again.",
 };
 
 export function toolsFor(conversationId) {
@@ -602,7 +603,7 @@ async function onItsSigninPage(c, entry, ctx) {
     return { entry };
   }
   if (at?.error) {
-    return { answer: { ok: false, could_not_open: true, site: entry.site, error: `${entry.label}'s site could not be opened just now (${at.error}), so no sign-in link was made.`, say: `Say ONE plain line, like: "I couldn't open ${entry.label} just now, so I haven't sent you anything. Want me to try again in a bit?" Do not send a link.` } };
+    return { answer: { ok: false, could_not_open: true, site: entry.site, error: `${entry.label}'s site could not be opened just now (${at.error}), so no sign-in link was made.`, say: `Say ONE plain line, like: "I couldn't open ${entry.label} just now, so I haven't sent you anything. I'll open it again the next time you ask for it." Do not send a link, and never offer to try again.` } };
   }
   return {
     answer: {
@@ -2021,7 +2022,7 @@ function gmailError(res, doing) {
     return { ...base, status: "forbidden", error: `Google refused it. What they said: "${res.error}". Nothing was read or changed — do not try it a different way, and tell them what Google said.` };
   }
   if (res.status === 429 || res.google_status === "RESOURCE_EXHAUSTED") {
-    return { ...base, status: "rate_limited", ...(res.retry_after_s ? { retry_after_s: res.retry_after_s } : {}), error: `Google is rate-limiting this, so it could not ${doing} right now: "${res.error}". Nothing was changed. Say it is busy and try again later rather than hammering it.` };
+    return { ...base, status: "rate_limited", ...(res.retry_after_s ? { retry_after_s: res.retry_after_s } : {}), error: `Google is rate-limiting this, so it could not ${doing} right now: "${res.error}". Nothing was changed. Say in one line that Google is busy and nothing changed; do not call it again this turn and never offer to try again.` };
   }
   return { ...base, status: res.status ? `http_${res.status}` : "unreachable", error: `Could not ${doing}: ${res.error}. Nothing was changed.` };
 }
@@ -2152,7 +2153,7 @@ async function conflictRefusal(cal, { window, ignoreEventId = "", doing }) {
       ok: false, status: "conflict_check_failed",
       ...(look.google_status ? { google_status: look.google_status } : {}),
       error: `Reason could not read ${cal.account || "their"} calendar to check whether anything is already at that time: ${look.error}.`
-        + ` Nothing was ${doing} — say that it could not check rather than saying the time is free, and offer to try again.`,
+        + ` Nothing was ${doing} — say that it could not check rather than saying the time is free, and what you'll do or need instead. Never offer to try again.`,
     };
   }
   if (!look.conflicts.length) return null;
@@ -8698,7 +8699,7 @@ function researchFollowUpDelivered(c, runBefore, out) {
     return {
       follow_up: { delivering: true, task_id: taskId, closed: true, finished_the_rest: false },
       follow_up_note: "This is the one follow-up you said you would send, and the rest of the look could not be finished, so its task is closed."
-        + " Send ONE short honest line: you could not get to the rest, your earlier answer is what you have, and you can try again if they want. Nothing else will wake for this.",
+        + " Send ONE short honest line: you could not get to the rest, and your earlier answer is what you have. Never offer to try again. Nothing else will wake for this.",
     };
   }
   db.finishTask(c, taskId, { state: "done", outcome: `carried research #${runBefore.id} on: ${out?.pages_read ?? 0} page(s) read in all` });
@@ -9718,7 +9719,21 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   const startedAt = Date.now();
   // What a secret box of a page holds reaches nobody: not the model, the thread, the log or the
   // ledger (src/pagesecrets.js). The page reading already withholds it; this is the net under it.
-  let out = scrubPageSecrets(await runToolInner(name, rawInput, ctx));
+  // A read-only lookup that failed for a passing reason is tried again here, bounded, before it is
+  // reported; one whose every try failed sets one re-check and says so (src/retry.js). Never a send,
+  // a purchase, a booking, a call or a sign-in: only RETRY_TOOLS are wrapped.
+  let out;
+  if (retry.RETRY_TOOLS.has(String(name))) {
+    const got = await retry.retryTransient(() => runToolInner(name, rawInput, ctx), { capMs: ctx?.onCall ? retry.CALL_CAP_MS : retry.CAP_MS });
+    out = scrubPageSecrets(got.out);
+    if (out && typeof out === "object" && !Array.isArray(out)) {
+      out = { ...out, tries: got.tries };
+      if (retry.isTransient(out)) {
+        const recheck = retry.scheduleRecheck({ conversationId: ctx?.conversationId, name, input: rawInput, error: out.error, fromTimer: ctx?.fromTimer ?? null });
+        out = { ...out, ...(recheck ? { recheck_in_min: Math.round(retry.RECHECK_MS / 60_000) } : {}), note: retry.exhaustedNote({ name, tries: got.tries, recheck: recheck ?? (ctx?.conversationId && !ctx?.fromTimer ? retry.hasRecheck(ctx.conversationId, name) : null), onCall: !!ctx?.onCall }) };
+      } else if (out.ok !== false && !out.error && ctx?.conversationId) retry.cancelRecheck(ctx.conversationId, name, { fromTimer: ctx?.fromTimer ?? null });
+    }
+  } else out = scrubPageSecrets(await runToolInner(name, rawInput, ctx));
   if (fit.shortened.length && out && typeof out === "object" && !Array.isArray(out)) out = { ...out, input_shortened: shortenedNote(fit.shortened) };
   // A file this call wrote is this person's, for the tools that take a path later (src/ownfiles.js).
   if (ctx?.conversationId) ownfiles.noteMade(ctx.conversationId, out, startedAt, rawInput);
@@ -12084,7 +12099,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (already && already.provider === gptliveProvider && already.state === "in_progress" && !gptliveRunning(already.id)) already = null;
       if (already) {
         if (already.conversation_id !== c) {
-          return { ok: false, status: "line_busy", error: "That number is on another call right now, so nothing was dialled. Say it's busy and offer to try again in a few minutes." };
+          return { ok: false, status: "line_busy", error: "That number is on another call right now, so nothing was dialled. Say plainly that the line is busy and nothing was dialled. A call is never redialled without their say-so, and never offered as a retry." };
         }
         const facts = [...new Set([...(already.facts ?? []), ...(input.facts ?? [])])].slice(0, 40);
         db.updateCall(c, already.id, { facts: JSON.stringify(facts) });
@@ -15487,7 +15502,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ...(entry.ride_access ? { ride_access: entry.ride_access } : {}),
           ...(blockedNow ? { blocked: true, signin_here: "blocked", seen: blockedNow.seen, say: blockedNow.say, instead: blockedNow.instead, never: blockedNow.never }
             : out.state === "unknown" && out.no_evidence ? { could_not_tell: true, say: `${entry.label}'s page loaded, but nothing on it shows whether they are signed in (${out.why}). Say plainly that you can't tell, in one line. Do not say they are signed in, do not say they are signed out, and do not send a sign-in link unless they ask for one.` }
-            : out.state === "unknown" ? { could_not_check: true, say: `Reason could not read ${entry.label}'s account page just now (${out.why}), so whether they are signed in is not known. Say you could not check right now and can try again in a bit. Do not say they are signed out and do not ask them to sign in.` } : {}),
+            : out.state === "unknown" ? { could_not_check: true, say: `Reason could not read ${entry.label}'s account page just now (${out.why}), so whether they are signed in is not known. Say plainly you could not check it right now. Never offer to try again. Do not say they are signed out and do not ask them to sign in.` } : {}),
           ...(out.state === "signed_in" || out.state === "unknown" ? {}
             : vault ? { ...vault, how_to_sign_in: vault.sign_in_with ?? null }
             : { how_to_sign_in: route.can_sign_in ? signin.signinCommand(entry.site) : null, remote: route.can_sign_in ? null : signin.remoteSigninAnswer(entry.site) }),
