@@ -275,11 +275,11 @@ test("the placeholder bank loads whole: every line passes its check", () => {
 
 test("a bank file can never put a claim, a number or a promise in Reason's mouth", () => {
   const b = bank.checkBank({ version: "t", buckets: [
-    { id: "a", kind: "instant", cues: ["^thanks$", "("], lines: [{ text: "Of course." }, { text: "Done, it's booked." }, { text: "I'll text you at 8." }, { text: "Yes." }] },
+    { id: "a", kind: "instant", cues: ["^thanks$", "("], lines: [{ text: "Of course." }, { text: "Done, it's booked." }, { text: "I'll text you at 8." }, { text: "Yes." }, { text: "No rush." }] },
     { id: "b", kind: "opener", cues: [], lines: [{ text: "So," }, { text: "Sure, got it," }] },
     { id: "c", kind: "weird", lines: [{ text: "x" }] },
   ] });
-  assert.deepEqual(b.buckets.map(x => [x.id, x.lines.map(l => l.text)]), [["a", ["Of course."]], ["b", ["So,"]]]);
+  assert.deepEqual(b.buckets.map(x => [x.id, x.lines.map(l => l.text)]), [["a", ["Of course.", "No rush."]], ["b", ["So,"]]]);
   assert.deepEqual(b.dropped, { lines: 4, cues: 1, buckets: 1 });
 });
 
@@ -304,4 +304,43 @@ test("a bucket A turn calls no model and says the bank's line", async () => {
   assert.equal(modelCalled, false);
   assert.equal(out[0].from, "bank");
   assert.equal(out.at(-1).instant, "presence_check");
+});
+
+// ---------- the assistant's nickname is never the caller's name (#571, on the speaking turn) ----------
+
+test("a nickname they give the assistant is said to the speaking turn as the assistant's, never theirs", () => {
+  db.saveProfile(C, "- Sam: works nights (saved Nov 1)\n- Sam: calls the assistant \"Juno\" (saved Nov 2)", []);
+  const nicks = bf.assistantNicknames(C, { ownName: "Sam" });
+  assert.deepEqual(nicks, ["Juno"]);
+  const sys = bf.speakingSystem({ context: { system: "You are Reason.\n\n--- you are ON A PHONE CALL right now, not texting ---" }, preloaded: ["- Sam: calls the assistant \"Juno\" (saved Nov 2)"], nicknames: nicks, ownName: "Sam" });
+  assert.match(sys, /they call YOU, their assistant, "Juno": a nickname for you, not their name\. Their own name is Sam\. Never call them Juno\./);
+  assert.match(sys, /They call YOU, their assistant, "Juno"/);
+  assert.ok(!/Sam: calls the assistant "Juno"/.test(sys));
+});
+
+test("a streamed sentence that addresses the caller by the assistant's nickname is said without it", async () => {
+  const out = await run(bf.speakTurn({ system: "s", messages: [{ role: "user", content: "How are you?" }], theirWords: "How are you?", nicknames: ["Juno"], stream: fakeStream(["Doing good, Juno, thanks for asking. ", "Juno, what's on your mind?"]) }));
+  assert.deepEqual(out.filter(e => e.type === "say").map(e => e.text), ["Doing good, thanks for asking.", "what's on your mind?"]);
+  assert.equal(bf.withoutNickname("Hey Juno, I'm here.", ["Juno"]), "Hey, I'm here.");
+  assert.equal(bf.withoutNickname("You named me Juno last week.", ["Juno"]), "You named me Juno last week.");
+});
+
+test("the mined bank's shape loads: its classifier picks the bucket, A answers, a repeat says Reason's last sentence, SILENT waits", () => {
+  const raw = { version: "mined-test", classifier_js: `function classify(t, prev, frag) { if (/you there/i.test(t)) return "A_PRESENCE"; if (/say that again/i.test(t)) return "A_REPEAT"; if (/\\band the\\s*$/i.test(t)) return "SILENT"; if (/last call/i.test(t)) return "B_MEMORY"; return "UNKNOWN"; } module.exports = { classify };`,
+    buckets: [
+      { id: "SILENT", kind: "none", lines: [], nudge_after_1_5s_silence: { text: "Mm-hm?", cont: "complete" } },
+      { id: "A_PRESENCE", kind: "A", lines: [{ text: "Right here.", cont: "complete" }, { text: "Yes.", cont: "complete" }] },
+      { id: "A_REPEAT", kind: "A", lines: [{ text: "Sorry, I said ", cont: "same", then: "last sentence" }] },
+      { id: "B_MEMORY", kind: "B", lines: [{ text: "Hmm, so,", cont: "same" }, { text: "So, last time,", cont: "same" }] },
+      { id: "UNKNOWN", kind: "fallback", lines: [{ text: "Mm.", cont: "new" }] },
+    ] };
+  const use = bank.checkBank(raw);
+  assert.equal(use.dropped.lines, 2); // a bare "Yes." and "So, last time," (it would claim there was one)
+  const h = [{ role: "assistant", content: "Okay. The market is about two hundred million." }];
+  assert.deepEqual([bank.instantReply("you there?", { history: h, use })?.text], ["Right here."]);
+  assert.equal(bank.instantReply("say that again?", { history: h, use })?.text, "Sorry, I said The market is about two hundred million.");
+  assert.equal(bank.instantReply("I was thinking and the", { history: h, use })?.silent, true);
+  assert.equal(bank.instantReply("where were we on the last call", { history: h, use }), null);
+  assert.deepEqual(bank.bankOpener("where were we on the last call", { history: h, use }), { bucket: "B_MEMORY", text: "Hmm, so," });
+  assert.equal(bank.bankOpener("hmm what about this", { history: h, use })?.bucket, "UNKNOWN");
 });

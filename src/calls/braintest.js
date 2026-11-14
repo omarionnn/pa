@@ -141,7 +141,9 @@ export async function handle({ method, path, headers = {}, rawBody = "", secret,
     const t0 = Date.now();
     const s = await open(row, { log, preload: async () => [], warm: false });
     bf.closeBrain(row.id);
-    return json({ ok: !!s?.system, system_chars: s?.system?.length ?? 0, ms: Date.now() - t0 });
+    const b = (await import("./brainbank.js")).bank({ log });
+    return json({ ok: !!s?.system, system_chars: s?.system?.length ?? 0, ms: Date.now() - t0, nicknames: s?.nicknames?.length ?? 0, nickname_line: /they call YOU, their assistant/.test(s?.system ?? ""),
+      bank: { version: b.version, buckets: b.buckets.length, classifier: !!b.classify, dropped: b.dropped } });
   }
   if (path === "/brain-test/selftest") {
     // A stand-in turn through the real turn code: no model, no memory read, no call kept.

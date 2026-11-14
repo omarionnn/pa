@@ -15,6 +15,7 @@ Environment=BRAIN_TEST_VARIANT_FILE=/opt/reason-brain-test/state/variant.json
 Environment=BRAIN_TEST_NOTES_FILE=/opt/reason-brain-test/state/notes.jsonl
 Environment=HOME=/opt/reason-brain-test/state
 Environment=REASON_DATA_DIR=/opt/reason/data
+Environment=REASON_CALL_BRAIN_BANK=/opt/reason-brain-test/bank.json
 LoadCredential=brain-test-secret:/etc/reason-brain-test/secret
 MemoryMax=700M
 TasksMax=64

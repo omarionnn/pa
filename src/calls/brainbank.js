@@ -34,23 +34,74 @@ export const PLACEHOLDER_BANK = {
 };
 
 /** An instant line may be a presence, a greeting or thanks, never a claim, a number or a promise. */
-const NOT_IN_AN_INSTANT = /\d|\b(?:done|booked|sent|submitted|scheduled|ordered|paid|confirmed|i(?:'|’)ll|i\s+will|it(?:'|’)s\s+(?:done|in|set)|yes|no)\b/i;
-export const lineSafe = (kind, text) => !!String(text ?? "").trim() && !saysDone(text) && (kind === "instant" ? !NOT_IN_AN_INSTANT.test(text) : !NOT_IN_AN_OPENER.test(text));
+// No number, no done-word, no promise, and never a bare yes or no (an answer to a question it has not checked).
+const NOT_IN_AN_INSTANT = /\d|\b(?:done|booked|sent|submitted|scheduled|ordered|paid|confirmed|i(?:'|’)ll|i\s+will|it(?:'|’)s\s+(?:done|in|set))\b/i;
+const BARE_YES_NO = /^\s*(?:yes|yeah|yep|yup|no|nope|nah)\s*[.!?]?\s*$/i;
+export const lineSafe = (kind, text) => !!String(text ?? "").trim() && !saysDone(text) && (kind === "instant" ? !NOT_IN_AN_INSTANT.test(text) && !BARE_YES_NO.test(text) : !NOT_IN_AN_OPENER.test(text));
 
 /** A bank, checked: bad cues and unsafe lines dropped, each counted. Never throws. */
+/** The mined bank's kinds in this file's words: A = instant, B and fallback = opener, none = silent. */
+const KIND = { instant: "instant", A: "instant", opener: "opener", B: "opener", fallback: "opener", none: "silent", silent: "silent" };
 export function checkBank(raw) {
-  const out = { version: String(raw?.version ?? ""), buckets: [], dropped: { lines: 0, cues: 0, buckets: 0 } };
+  const out = { version: String(raw?.version ?? ""), buckets: [], dropped: { lines: 0, cues: 0, buckets: 0 }, classify: null, fallback: null };
+  // The mined bank's own recogniser (`classifier_js`: (text, reason's previous line, previous fragment) -> bucket id).
+  if (typeof raw?.classifier_js === "string") {
+    try { const m = { exports: {} }; new Function("module", "exports", raw.classifier_js)(m, m.exports); if (typeof m.exports.classify === "function") out.classify = m.exports.classify; }
+    catch { out.dropped.cues++; }
+  }
   for (const b of Array.isArray(raw?.buckets) ? raw.buckets : []) {
-    const kind = b?.kind === "instant" ? "instant" : b?.kind === "opener" ? "opener" : null;
+    const kind = KIND[b?.kind] ?? null;
     if (!kind || !b.id) { out.dropped.buckets++; continue; }
+    if (kind === "silent") {
+      const nudge = b.nudge_after_1_5s_silence?.text;
+      out.buckets.push({ id: String(b.id), kind, cues: [], maxWords: 0, lines: [], nudge: nudge && lineSafe("instant", nudge) ? String(nudge) : "" });
+      continue;
+    }
     const cues = [];
-    for (const c of Array.isArray(b.cues) ? b.cues : []) { try { cues.push(new RegExp(String(c), "i")); } catch { out.dropped.cues++; } }
+    // Regex cues (the placeholder); the mined bank's cues are prose for people, and its classifier does the work.
+    if (!out.classify) for (const c of Array.isArray(b.cues) ? b.cues : []) { try { cues.push(new RegExp(String(c), "i")); } catch { out.dropped.cues++; } }
     const lines = (Array.isArray(b.lines) ? b.lines : []).filter(l => { const ok = lineSafe(kind, l?.text); if (!ok) out.dropped.lines++; return ok; })
-      .map(l => ({ text: String(l.text).trim(), continuation: l.continuation ?? (kind === "instant" ? "complete" : "continue"), delivery: l.delivery ?? {} }));
+      .map(l => ({ text: String(l.text).trim(), continuation: l.continuation ?? l.cont ?? (kind === "instant" ? "complete" : "continue"), then: l.then ? String(l.then) : "", delivery: l.delivery ?? {} }));
     if (!lines.length) { out.dropped.buckets++; continue; }
     out.buckets.push({ id: String(b.id), kind, cues, maxWords: Number(b.max_words) || 8, lines });
+    if (b.kind === "fallback") out.fallback = String(b.id);
   }
   return out;
+}
+
+/** The bucket for their turn: the bank's own classifier when it has one, else the regex cues; null when none fits. */
+export function bucketFor(words, { history = [], use = bank() } = {}) {
+  const t = String(words ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  if (use.classify) {
+    const msgs = (history ?? []).filter(m => String(m?.content ?? "").trim());
+    const prevReason = String([...msgs].reverse().find(m => m.role === "assistant")?.content ?? "");
+    const lastTwo = msgs.slice(-2);
+    const prevFragment = lastTwo.length === 2 && lastTwo[0].role === "user" ? String(lastTwo[0].content) : "";
+    let id = null;
+    try { id = use.classify(t, prevReason, prevFragment); } catch { id = null; }
+    return use.buckets.find(b => b.id === id) ?? use.buckets.find(b => b.id === use.fallback) ?? null;
+  }
+  const n = t.split(" ").length;
+  return use.buckets.find(b => b.kind === "instant" && n <= b.maxWords && b.cues.some(re => re.test(t))) ?? null;
+}
+
+/** A line from a bucket, never one of the last three said on the call. */
+export function lineFrom(b, recent = [], { random = Math.random } = {}) {
+  const fresh = b.lines.filter(l => !recent.slice(-3).includes(l.text));
+  const from = fresh.length ? fresh : b.lines;
+  const line = from[Math.floor(random() * from.length) % from.length];
+  recent.push(line.text);
+  return line;
+}
+
+/** Bucket B: the bank's opener for their turn, or null (no bank classifier, or not an opener bucket). */
+export function bankOpener(words, { history = [], recent = [], use = bank() } = {}) {
+  if (!use.classify) return null;
+  const b = bucketFor(words, { history, use });
+  if (!b || b.kind !== "opener") return null;
+  const l = lineFrom(b, recent);
+  return { bucket: b.id, text: l.text };
 }
 
 let loaded = null;
@@ -77,14 +128,17 @@ export function instantReply(words, { history = [], recent = [], use = bank(), r
   if (!t) return null;
   const msgs = (history ?? []).filter(m => String(m?.content ?? "").trim());
   if (msgs.length >= 2 && msgs.at(-1).role === "user" && msgs.at(-2).role === "user") return null;
-  const n = t.split(" ").length;
-  for (const b of use.buckets) {
-    if (b.kind !== "instant" || n > b.maxWords || !b.cues.some(re => re.test(t))) continue;
-    const fresh = b.lines.filter(l => !recent.slice(-3).includes(l.text));
-    const from = fresh.length ? fresh : b.lines;
-    const line = from[Math.floor(random() * from.length) % from.length];
-    recent.push(line.text);
-    return { bucket: b.id, text: line.text, delivery: line.delivery };
-  }
-  return null;
+  const b = bucketFor(t, { history, use });
+  // He has not finished (the mined bank's SILENT): nothing now, its nudge only after 1.5 s of quiet.
+  if (b?.kind === "silent") return { bucket: b.id, silent: true, text: "", nudge: b.nudge };
+  if (!b || b.kind !== "instant") return null;
+  // Only a whole reply, or one code finishes with Reason's own last sentence (a repeat); a line the brain
+  // would have to finish is not an instant reply.
+  const lastSaid = String([...msgs].reverse().find(m => m.role === "assistant")?.content ?? "").trim();
+  const lastSentence = (lastSaid.match(/[^.!?]+[.!?]*\s*$/)?.[0] ?? lastSaid).trim();
+  const pool = { ...b, lines: b.lines.filter(l => l.continuation === "complete" || (/last sentence/i.test(l.then) && lastSentence)) };
+  if (!pool.lines.length) return null;
+  const line = lineFrom(pool, recent, { random });
+  const text = /last sentence/i.test(line.then) ? `${line.text.replace(/\s+$/, "")} ${lastSentence}`.trim() : line.text;
+  return { bucket: b.id, text, delivery: line.delivery };
 }

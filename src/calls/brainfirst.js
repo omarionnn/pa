@@ -23,12 +23,12 @@
 import { config } from "../config.js";
 import * as accounts from "../accounts.js";
 import * as db from "../db.js";
-import { memoryHits } from "../memorynote.js";
+import { memoryHits, assistantNameIn, profileForPrompt } from "../memorynote.js";
 import { timingSafeEqual } from "node:crypto";
 import { saysDone, confirmsDone, forVoice, SECRETISH, withDeferredLine } from "./cartesia.js";
 import * as calltrust from "./calltrust.js";
 import * as opening from "./brainopener.js";
-import { instantReply } from "./brainbank.js";
+import { instantReply, bankOpener } from "./brainbank.js";
 
 /** The fast model the speaking turn runs on (one the app already uses). REASON_CALL_BRAIN_MODEL overrides. */
 export const SPEAK_MODEL_DEFAULT = "claude-haiku-5-5";
@@ -84,7 +84,34 @@ This is their own call with you, Reason. You have everything in front of you tha
 - If they say goodbye, say a short goodbye and nothing else.`;
 
 /** The speaking turn's system prompt: the persona, the call's own context, the preload, the frame. */
-export function speakingSystem({ context, preloaded = [] } = {}) {
+/**
+ * The names they call the assistant (a profile line like "calls the assistant 'X'"), read the way #571 reads
+ * them (`assistantNameIn`): never "Reason" and never their own name. On the call these are said back to
+ * the speaking turn as the assistant's, and a sentence addressing the caller by one loses the name.
+ */
+export function assistantNicknames(conversationId, { ownName = "" } = {}) {
+  let block = "";
+  try { block = String(db.getProfile(conversationId)?.block ?? ""); } catch { return []; }
+  const own = String(ownName ?? "").trim().toLowerCase();
+  return [...new Set(block.split("\n").map(assistantNameIn).filter(n => n && !/^reason$/i.test(n) && n.toLowerCase() !== own))];
+}
+/** The frame's line for those names, as #571 words it in the profile. */
+export const nicknameLine = (nicks, ownName = "") => nicks.length
+  ? `Names: they call YOU, their assistant, ${nicks.map(n => `"${n}"`).join(" or ")}: a nickname for you, not their name.${ownName ? ` Their own name is ${ownName}.` : ""} Never call them ${nicks.join(" or ")}.`
+  : "";
+/** "Doing good, X, thanks." -> "Doing good, thanks.": a nickname of the assistant used to address the caller comes out. */
+export function withoutNickname(sentence, nicks = []) {
+  let t = String(sentence ?? "");
+  for (const n of nicks) {
+    const name = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    t = t.replace(new RegExp(`,\\s*${name}\\s*(?=[,.!?])`, "g"), "")
+      .replace(new RegExp(`^(\\s*(?:hey|hi|hello|yo|okay|ok|sure|so|well|mm|hm|oh)\\b),?\\s*${name}\\b,?`, "i"), "$1,")
+      .replace(new RegExp(`^\\s*${name}\\s*,\\s*`), "");
+  }
+  return t.replace(/,\s*,/g, ",").replace(/,\s*([.!?])/g, "$1").trim();
+}
+
+export function speakingSystem({ context, preloaded = [], nicknames = [], ownName = "" } = {}) {
   const sys = String(context?.system ?? "");
   const cut = sys.indexOf("--- you are ON A PHONE CALL");
   const textPart = cut > 0 ? sys.slice(0, cut) : "";
@@ -92,8 +119,10 @@ export function speakingSystem({ context, preloaded = [] } = {}) {
   return [
     corePersona(textPart),
     callPart,
-    preloaded.length ? `WHAT YOU REMEMBER THAT MAY COME UP ON THIS CALL (saved facts and things you did or said, closest to what they have been on about; not something they said now):\n${preloaded.join("\n")}` : "",
+    // Preloaded lines read as the profile does (#571): a line naming the assistant says whose name it is.
+    preloaded.length ? `WHAT YOU REMEMBER THAT MAY COME UP ON THIS CALL (saved facts and things you did or said, closest to what they have been on about; not something they said now):\n${profileForPrompt(preloaded.join("\n"), ownName)}` : "",
     SPEAK_FRAME,
+    nicknameLine(nicknames, ownName),
   ].filter(s => String(s).trim()).join("\n\n");
 }
 
@@ -172,8 +201,8 @@ export const asksIfDone = (theirWords) => DONE_ASK.test(String(theirWords ?? "")
  * One spoken sentence through the guards. Returns { say } with the words to speak (markers out), or
  * { handoff: why } when the sentence must not be said: a done-claim, or a yes to "is it done?".
  */
-export function guardSentence(sentence, { theirWords = "", saidSoFar = "" } = {}) {
-  const say = forVoice(sentence);
+export function guardSentence(sentence, { theirWords = "", saidSoFar = "", nicknames = [] } = {}) {
+  const say = withoutNickname(forVoice(sentence), nicknames);
   if (!say) return { say: "" };
   if (saysDone(say)) return { handoff: "done_claim" };
   if (!saidSoFar && confirmsDone(theirWords, say)) return { handoff: "done_yes" };
@@ -197,7 +226,7 @@ const SENTENCE_END = /([.!?…]+)(["')\]]?)(\s+|$)/;
  *   { type: "done", text, usage, ms, firstMs }
  * `stream` is injectable: given a request body, an async iterable of Anthropic stream events.
  */
-export async function* speakTurn({ system, messages, theirWords = "", model = speakModel(), stream, now = () => Date.now(), log = () => {}, callId = null, opener = "", prefill = OPENER_PREFILL }) {
+export async function* speakTurn({ system, messages, theirWords = "", model = speakModel(), stream, now = () => Date.now(), log = () => {}, callId = null, opener = "", prefill = OPENER_PREFILL, nicknames = [] }) {
   const t0 = now();
   const careful = needsFullBrain(theirWords) ? "careful_topic" : asksIfDone(theirWords) ? "done_question" : null;
   if (careful) {
@@ -223,7 +252,7 @@ export async function* speakTurn({ system, messages, theirWords = "", model = sp
   const usage = {};
   let stopped = null;
   const emit = function* (piece) {
-    const g = guardSentence(piece, { theirWords, saidSoFar: said });
+    const g = guardSentence(piece, { theirWords, saidSoFar: said, nicknames });
     if (g.handoff) { stopped = g.handoff; return; }
     if (!g.say) return;
     said = said ? `${said} ${g.say}` : g.say;
@@ -343,7 +372,10 @@ export function openBrain(call, { voice = null, preload = preloadFor, warm = tru
     await v.prime();
     const context = v.contextFor({ call, kind: "owner", callMessages: [] });
     const preloaded = await preload(call, { log });
-    const system = speakingSystem({ context, preloaded });
+    let ownName = "";
+    try { const me = accounts.ownerOf(call.conversation_id); ownName = me?.name && me.name !== "the person I work for" ? me.name : ""; } catch { /* no name */ }
+    const nicknames = assistantNicknames(call.conversation_id, { ownName });
+    const system = speakingSystem({ context, preloaded, nicknames, ownName });
     if (warm && process.env.ANTHROPIC_API_KEY) {
       const api = client ?? new (await import("@anthropic-ai/sdk")).default();
       const model = chosen ?? speakModel();
@@ -351,13 +383,15 @@ export function openBrain(call, { voice = null, preload = preloadFor, warm = tru
         .then(() => log({ brain_warmed: call.id }), (e) => log({ brain_warm_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }));
     }
     log({ brain_open: call.id, system_chars: system.length, preloaded: preloaded.length });
-    return { system, preloaded };
+    return { system, preloaded, nicknames };
   })().catch((e) => { log({ brain_open_failed: call?.id, why: (e?.message ?? String(e)).split("\n")[0] }); sessions.delete(call.id); return null; });
   sessions.set(call.id, p);
   return p;
 }
 export function closeBrain(callId) { sessions.delete(callId); recentOpeners.delete(callId); }
 
+/** How long a mid-thought turn waits in quiet before its nudge. */
+export const SILENT_NUDGE_MS = 1500;
 /** Openers on the speaking turn: REASON_CALL_BRAIN_OPENERS=off turns them off (on with the brain). */
 export const OPENERS_ON = () => String(process.env.REASON_CALL_BRAIN_OPENERS ?? "on").trim().toLowerCase() !== "off";
 /** The openers said on each call so far, newest last (never the same one twice running). */
@@ -393,6 +427,13 @@ export async function* brainTurn({ call, history, speak = speakTurn, full, model
   // once from the bank, and no model is called. Never for screened passphrase words.
   if (openers && !screened) {
     const instant = instantReply(words, { history, recent });
+    if (instant?.silent) {
+      // Mid-thought: say nothing; the nudge only if the line stays quiet (the voice side stops this turn when they talk).
+      log({ brain_silent: call.id, bucket: instant.bucket });
+      if (instant.nudge) { await new Promise(r => timers.setTimeout(r, SILENT_NUDGE_MS)); yield { type: "say", text: instant.nudge, from: "bank", bucket: instant.bucket }; }
+      yield { type: "done", handoff: null, instant: instant.bucket, ms: now() - t0 };
+      return;
+    }
     if (instant) {
       log({ brain_instant: call.id, bucket: instant.bucket });
       yield { type: "say", text: instant.text, from: "bank", bucket: instant.bucket, delivery: instant.delivery };
@@ -411,11 +452,12 @@ export async function* brainTurn({ call, history, speak = speakTurn, full, model
       const kind = opening.classify(words);
       const careful = needsFullBrain(words) || asksIfDone(words);
       const ctlA = new AbortController(), ctlB = new AbortController();
-      const turnA = speak({ system: s.system, messages, theirWords: words, model, stream: stream ?? anthropicStream({ signal: ctlA.signal }), log, callId: call.id });
+      const turnA = speak({ system: s.system, messages, theirWords: words, model, nicknames: s.nicknames ?? [], stream: stream ?? anthropicStream({ signal: ctlA.signal }), log, callId: call.id });
       let events = turnA;
       if (openers && !careful) {
-        const opener = opening.pickOpener(kind, recent);
-        const turnB = speak({ system: s.system, messages, theirWords: words, model, stream: streamB ?? anthropicStream({ signal: ctlB.signal }), log, callId: call.id, opener });
+        // The mined bank's opener for this bucket when it is loaded, else this file's own bank (./brainopener.js).
+        const opener = bankOpener(words, { history, recent })?.text ?? opening.pickOpener(kind, recent);
+        const turnB = speak({ system: s.system, messages, theirWords: words, model, nicknames: s.nicknames ?? [], stream: streamB ?? anthropicStream({ signal: ctlB.signal }), log, callId: call.id, opener });
         events = withOpenerRace({ speakA: turnA, speakB: turnB, opener, atMs: openerAtMs, stopA: () => ctlA.abort(), stopB: () => ctlB.abort(), timers, now });
       }
       for await (const ev of events) {

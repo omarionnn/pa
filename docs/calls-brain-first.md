@@ -138,3 +138,19 @@ Buckets of what a caller says, as data. Each bucket has cues to recognise it and
   - `ii`: Haiku plus openers (the default).
   - `iii`: Opus plus openers.
 - **Remove all of it**: run `bash /root/brain-test-teardown.sh` on the server. It deletes the test calls' data, releases the number and deletes the agent, then removes the unit and files, then removes the Caddy route (under the deploy lock, validated, with a graceful reload and checks).
+
+## The assistant's nickname, and the mined bank (test line)
+
+**Nickname** (as #571 handles it in the profile):
+
+- The speaking prompt carries "they call YOU, their assistant, "<name>": a nickname for you, not their name… Never call them <name>." The name comes from the profile, read with `assistantNameIn`.
+- Preloaded memory lines go through `profileForPrompt`.
+- In code, a spoken sentence that addresses the caller by that name loses it (`withoutNickname`), e.g. "Doing good, <name>, thanks" → "Doing good, thanks".
+
+**The bank mined from the owner's calls** (`REASON_CALL_BRAIN_BANK`) loads as data:
+
+- Its own classifier picks the bucket.
+- **A** lines marked `complete` are said whole. A repeat line is finished by code with Reason's last sentence. A lines the brain would have to finish are not used.
+- **B** and fallback lines are openers.
+- **SILENT** says nothing, then its nudge after 1.5 s of quiet.
+- Every line still passes this file's content check. Lines that hold a bare yes/no, a promise, or a claim such as "last time" are dropped and counted.
