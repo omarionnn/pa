@@ -3,6 +3,7 @@
 // to Cartesia: the relay itself (./cartesia.js) is only imported inside acceptStream's one branch.
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
+import * as plan from "../plan.js";
 import { config } from "../config.js";
 
 /**
@@ -12,7 +13,9 @@ import { config } from "../config.js";
  *     "cartesia", set by `call_voice_trial`). As before `on` existed.
  *   - REASON_CALL_CARTESIA=on: every account's own call. There is no per-person choice: nothing stored
  *     is read, and nobody is offered the tool. GPT-Live carries a call only as the automatic fall-back
- *     (not ready in time, refused, failed: ./cartesia.js `fallBack`).
+ *     (not ready in time, refused, failed: ./cartesia.js `fallBack`), and every call of someone on the
+ *     monthly free tier (src/plan.js `callLimitSeconds`): its 5-minute limit and wrap-up cue live in
+ *     GptLiveCall, and the agent's socket takes nothing mid-call to say "wrap up" with.
  *   - off or unset: never.
  * Never, in any mode, a call to a business or another person, a call on someone's behalf, an event
  * call or a stranger (who has no row and never reaches this): Cartesia keeps a recording of every
@@ -27,7 +30,8 @@ export function cartesiaTrialFor(row) {
     if (mode === "on") {
       // Anyone with an account: an own call always has one (the console thread is the operator's).
       const me = accounts.ownerOf(row.conversation_id);
-      return me?.known === true || me?.isOperator === true;
+      if (me?.known !== true && me?.isOperator !== true) return false;
+      return !me.isOperator && plan.callLimitSeconds(row.conversation_id) ? false : true;
     }
     return trialOffered(row.conversation_id) && db.callTrial(row.conversation_id) === "cartesia";
   } catch { return false; }
