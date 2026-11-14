@@ -186,7 +186,7 @@ export function remoteSessionSince(conversationId) {
  * Make a link. Nothing is launched yet: the browser starts when somebody taps Start, so a link
  * nobody opens never holds the saved profile.
  */
-export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "", offered = [], pressProvider = social.clickProviderButton }) {
+export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", saveOffer = null, onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "", offered = [], pressProvider = social.clickProviderButton }) {
   const old = sessions.get(byConversation.get(conversationId));
   if (old) end(old, "replaced").catch(() => {});
 
@@ -198,7 +198,7 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
   const prov = social.socialAllowedFor(conversationId) ? social.usableProvider(provider) : "";
   const s = {
     token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
-    provider: prov, pressProvider, pressed: "", lastFields: [],
+    provider: prov, pressProvider, pressed: "", lastFields: [], saveOffer: typeof saveOffer === "function" ? saveOffer : null,
     // The "Continue with" choices the intro page shows (src/socialsignin.js offeredFor); the one
     // tapped replaces `provider` at Start, and the email button clears it. None without the flag.
     offered: social.socialAllowedFor(conversationId) ? [...new Set([prov, ...(offered ?? []).map(social.usableProvider)].filter(Boolean))] : [],
@@ -387,8 +387,18 @@ async function end(s, how) {
       ? ` Their ${entry.label} login is saved as ${s.provider === "apple" ? "an" : "a"} ${social.LABELS[s.provider]} sign-in${s.pressed ? "" : " (the site's own form had no such button, so this is what you were told rather than what was pressed)"}.`
         + ` After the task is done, say once what else that unlocks: any site of theirs that signs in with ${social.LABELS[s.provider]} can be opened the same way now without asking again.`
       : "";
+    // The one offer to save this login (owner decision 2026-11-13): only after a link sign-in that ended
+    // signed in, for someone the vault is on for, once per site ever (src/loginintake.js saveOfferFor,
+    // handed in by src/tools.js signin_link: this file reaches nothing that holds a login).
+    let saveOffer = "";
+    if (s.ended.state === "signed_in" && !s.onEnd) {
+      try {
+        const o = typeof s.saveOffer === "function" ? s.saveOffer({ provider: s.provider ?? "" }) : null;
+        if (o) saveOffer = ` In the same message, add this one line, word for word: "${o.line}" If they say yes, call saved_login_offer with site '${o.domain}'. If they say no or don't answer, drop it: it is never asked again.`;
+      } catch { /* no offer is the safe ending */ }
+    }
     note = s.ended.state === "signed_in"
-      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}${unlocked}`
+      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}${unlocked}${saveOffer}`
       : how === "no_signin_page"
         ? `the ${entry.label} sign-in link you sent opened a page of ${entry.label}'s that is not a sign-in page, and Reason could not find a sign-in page from it, so they were shown no step and nothing was saved (${s.ended.why}). ${noLink} Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page they can send it, and signin_link takes that address as the site.`
         // Replaced by a newer link and not signed in: the newer link is the one they have. There is

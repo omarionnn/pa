@@ -126,6 +126,14 @@ export const LOGINS_SCHEMA = `
     set_at INTEGER NOT NULL,
     PRIMARY KEY (conversation_id, site)
   );
+  -- The one offer to save a login, after a sign-in through a link ended signed in (src/loginintake.js
+  -- saveOfferFor): a site is offered once per person, never again, whatever they answered.
+  CREATE TABLE IF NOT EXISTS save_offers (
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL,
+    offered_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, site)
+  );
   -- A person's call passphrase (src/callpass.js, REASON_CALL_TRUST): a salted scrypt hash of the
   -- normalised phrase, never the phrase. pending_* is one set on a call, waiting for a typed yes.
   CREATE TABLE IF NOT EXISTS call_passphrases (
@@ -164,8 +172,9 @@ export const LOGINS_COVERAGE = {
   notExported: {
     vault_people: "a random handle that goes into the KMS context; it holds nothing of the person",
     call_passphrase_links: "the hash of a one-use set-up link and when it expires; nothing they typed",
+    save_offers: "which sites Reason once offered to save a login for, so the offer is never repeated; a site name and a time, nothing they typed",
   },
-  deleted: ["saved_logins", "vault_people", "signin_routes", "call_passphrases", "call_passphrase_links"],
+  deleted: ["saved_logins", "vault_people", "signin_routes", "call_passphrases", "call_passphrase_links", "save_offers"],
 };
 
 // Opened on first use, not at load: loading this module with the switch off must not create the file.
@@ -565,6 +574,7 @@ export function deleteAllFor(conversationId, { purpose = "" } = {}) {
     had = Number(d.prepare("DELETE FROM signin_routes WHERE conversation_id = ?").run(c).changes) > 0 || had;
     had = Number(d.prepare("DELETE FROM call_passphrases WHERE conversation_id = ?").run(c).changes) > 0 || had;
     d.prepare("DELETE FROM call_passphrase_links WHERE conversation_id = ?").run(c);
+    d.prepare("DELETE FROM save_offers WHERE conversation_id = ?").run(c);
     d.exec("COMMIT");
   } catch (e) { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
   if (had) logEvent(c, { site: "", event: "removed_all", outcome: "ok", purpose, kmsCalls: 0, count: n });
@@ -582,6 +592,7 @@ export function deleteEveryLogin() {
     d.prepare("DELETE FROM signin_routes").run();
     d.prepare("DELETE FROM call_passphrases").run();
     d.prepare("DELETE FROM call_passphrase_links").run();
+    d.prepare("DELETE FROM save_offers").run();
     d.exec("COMMIT");
     return n;
   } catch { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
@@ -623,6 +634,16 @@ export function signinRouteFor(conversationId, site) {
   const rows = d.prepare("SELECT site, route FROM signin_routes WHERE conversation_id = ?").all(String(conversationId));
   const hit = rows.find(r => r.site === s) ?? rows.find(r => s.endsWith(`.${r.site}`));
   return hit?.route ?? "";
+}
+/**
+ * The one save offer for a site (owner decision 2026-11-13): true the first time for this person and
+ * site, and false every time after, whatever they answered. Atomic: two endings at once offer once.
+ */
+export function markSaveOffered(conversationId, site) {
+  const c = String(conversationId ?? ""), s = routeSite(site);
+  if (!c || !savedLoginsAllowedFor(c) || !SITE_RE.test(s)) return false;
+  const d = open({ create: true });
+  return Number(d.prepare("INSERT OR IGNORE INTO save_offers (conversation_id, site, offered_at) VALUES (?, ?, ?)").run(c, s, clock.now()).changes) > 0;
 }
 /** For an export: each site and how they sign in to it. `null` = everyone. */
 export function exportRoutesFor(conversationId) {

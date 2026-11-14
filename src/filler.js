@@ -899,7 +899,7 @@ export async function signIn(conversationId, site, {
       unpinSite(c);
       logAttempt({ signin_url: pinned }, { route: again ? "saved_login_again" : "saved_login", outcome: "blocked_by_site", startedAt, detail: door ? "wall_front_door" : "wall_before_form" });
       recordLoginEvent(c, { site: host, event: "signin", outcome: "blocked", purpose: why });
-      return { out: { ...say("walled", host), result: "blocked" } };
+      return { out: { ...say("walled", host), result: "blocked", walled: true } };
     }
     if (got.verdict !== "ok") {
       // The saved page itself has no sign-in form: the pin is wrong, not the page's mood. Never re-pinned
