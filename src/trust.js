@@ -1356,6 +1356,10 @@ export function receiptFor(action, input, out) {
       return ok ? `Changed the page "${out.title}" (revision ${out.revision}), same link: ${out.link}` : `Could not change page ${input.page_id}${tail}`;
     case "page_delete":
       return ok ? `Deleted the page "${out.title}" and everything on it.` : `Could not delete page ${input.page_id}${tail}`;
+    // A report of theirs to Reason's team (src/teamflag.js). The receipt names the flag, never its words.
+    case "team_flag":
+      if (input.step !== "send") return ok ? `Asked whether to flag something to Reason's team (flag ${out?.ref ?? "?"}); nothing sent.` : `Did not propose a flag to Reason's team${tail}`;
+      return ok ? `Sent flag ${out?.ref ?? input.ref} to Reason's team, in the words they were shown.` : `Did not send flag ${input.ref ?? "?"} to Reason's team${tail}`;
     case "call_recording_delete":
       return input.all === true
         ? (ok ? `Deleted ${out.counts?.deleted ?? 0} call recording(s); the calls themselves are kept.` : `Could not delete every call recording${tail}`)

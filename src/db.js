@@ -2250,6 +2250,10 @@ addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
 addColumnIfMissing("calls", "cartesia_seconds", "INTEGER");
 addColumnIfMissing("calls", "cartesia_cents", "INTEGER");
 addColumnIfMissing("calls", "cartesia_fell_back", "INTEGER NOT NULL DEFAULT 0");
+// Whether Cartesia's own copy of the call (its transcript and recording) was deleted when the relay let
+// go: '' (never asked, or not a Cartesia call), 'deleted', or 'not_deleted' (call_status offers a report
+// to Reason's team, src/teamflag.js).
+addColumnIfMissing("calls", "cartesia_copy", "TEXT NOT NULL DEFAULT ''");
 export function setItemLabel(kind, conversationId, id, label, { blurb = null } = {}) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
@@ -2274,7 +2278,11 @@ export function setItemBlurb(kind, conversationId, id, blurb) {
 }
 export function listTimers(conversationId) {
   // Not the onboarding's nudge (src/onboarding.js): that one is code's, not a reminder of theirs.
-  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after', 'cue:offer') ORDER BY fire_at").all(conversationId);
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after', 'cue:offer', 'recheck:lookup') ORDER BY fire_at").all(conversationId);
+}
+/** Code's own pending timers under one label (src/retry.js re-checks), soonest first. */
+export function pendingLabelledTimers(conversationId, label) {
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND label = ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(conversationId, String(label));
 }
 export function cancelTimer(conversationId, id) {
   const t = getTimer(conversationId, id);
@@ -5851,7 +5859,7 @@ export function updateCall(conversationId, id, fields) {
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
     // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
-    "cartesia_seconds", "cartesia_cents", "cartesia_fell_back",
+    "cartesia_seconds", "cartesia_cents", "cartesia_fell_back", "cartesia_copy",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
     "turn_log",
   ];
@@ -10931,6 +10939,26 @@ export function getClaim(conversationId, id) {
  * end. The CLI path's thread is text only, so the line is removed. The API path's carries tool
  * blocks and has to keep alternating, so its text is replaced with a line saying it was not sent.
  */
+/** The sent words differ from the model's draft (src/retry.js took an offer out): the thread holds what went. */
+export function replaceDraft(conversationId, draft, text) {
+  const want = String(draft ?? "").trim();
+  if (!want || !String(text ?? "").trim()) return false;
+  const messages = loadConversation(conversationId);
+  const squash = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
+  const textOf = (m) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join("\n") : "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || squash(textOf(m)) !== squash(want)) continue;
+    if (typeof m.content === "string") m.content = String(text);
+    else {
+      let put = false;
+      m.content = m.content.flatMap(b => b?.type !== "text" ? [b] : put ? [] : (put = true, [{ ...b, text: String(text) }]));
+    }
+    saveConversation(conversationId, messages);
+    return true;
+  }
+  return false;
+}
 export function retractDraft(conversationId, draft) {
   const want = String(draft ?? "").trim();
   if (!want) return false;
@@ -12151,6 +12179,20 @@ db.exec(`
     resolved_at INTEGER,
     resolved_how TEXT NOT NULL DEFAULT ''
   );
+  -- A person's own report to Reason's team (src/teamflag.js, team_flag): the exact words they were
+  -- shown and said yes to, and the reference code the operator's text carries. Theirs: exported with
+  -- their data, gone with it, sealed at rest (src/restcrypt.js). state: proposed | sent | send_failed.
+  CREATE TABLE IF NOT EXISTS team_flags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    ref TEXT NOT NULL UNIQUE,
+    text TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'proposed',
+    confirmation_id INTEGER,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS team_flags_conv ON team_flags (conversation_id, created_at);
   -- Operator notices held for the one daily digest (src/opsdigest.js, owner 2026-11-06): everything
   -- that is not an emergency waits here instead of landing in the owner's chat as it happens.
   CREATE TABLE IF NOT EXISTS ops_digest (

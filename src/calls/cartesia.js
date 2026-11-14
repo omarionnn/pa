@@ -12,6 +12,7 @@
 // carries on with GPT-Live (`fallBack`) and that is logged.
 import { writeSealed } from "../restfiles.js";
 import * as db from "../db.js";
+import * as retry from "../retry.js";
 import * as accounts from "../accounts.js";
 import { config, clock } from "../config.js";
 import { recordingFileFor } from "./recordings.js";
@@ -891,8 +892,9 @@ export class CartesiaAgentCall {
    * again ahead of the new one, and a slow one opens by owning the wait.
    */
   spoken(reply, { waitedMs = 0 } = {}) {
-    if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and offer to try again.", true];
-    const text = forVoice(reply?.text);
+    if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and plainly; never offer to try again or ask if they want you to.", true];
+    // An offer to try again is taken out; a set re-check is said as the text it will be (src/retry.js).
+    const text = retry.callLine(forVoice(reply?.text), this.call?.conversation_id ?? null);
     const lost = this.unheard;
     if (reply?.skip || !text) {
       this.skippedAt = this.now();
@@ -946,6 +948,8 @@ export class CartesiaAgentCall {
   async deleteAndCheck() {
     const d = await this.deleteCall(this.agentCallId);
     this.log({ cartesia_recording_deleted: this.call.id, ok: !!d?.ok, redacted: !!d?.redacted, status: d?.status ?? 0 });
+    // On the call row, so call_status can say their copy at Cartesia is still there (src/teamflag.js).
+    try { db.updateCall(this.call.conversation_id, this.call.id, { cartesia_copy: d?.ok ? "deleted" : "not_deleted" }); } catch { /* the log line stands */ }
     return d;
   }
 
