@@ -172,6 +172,19 @@ export function nativeStepPanel(step = {}, { entry } = {}) {
         + `<label class="np-field"><span>The code</span><input id="np-in" type="text" inputmode="numeric" autocomplete="one-time-code" enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456"></label>`
         + note("send it however it came — \"G-123 456\" is fine, I'll clean it up.", { sp: true })
         + actions(go("Continue", { type: "button", attrs: ` id="np-go"` }));
+    case "password_code":
+      return provLine + eyebrow(`${upper(pname || n)} · PASSWORD AND CODE`) + say
+        + `<label class="np-field"><span>Password</span><input id="np-in" type="password" autocomplete="current-password" enterkeyhint="next" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="••••••••"></label>`
+        + `<label class="np-field"><span>The code</span><input id="np-in2" type="text" inputmode="numeric" autocomplete="one-time-code" enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456"></label>`
+        + `<p class="np-seal">${sealed(`STAYS ON ${upper(pname || n)}'S PAGE · NEVER KEPT`)}</p>`
+        + actions(go("Sign in", { type: "button", attrs: ` id="np-go"` }));
+    // The site's own approval request ("approve the notification sent to your phone"): Reason only
+    // waits. "I approved it" asks the page to be read again for a bounded while; nothing is pressed.
+    case "approve":
+      return provLine + eyebrow(`${upper(pname || n)} · CHECK YOUR PHONE`) + say
+        + `<div class="np-tap">${mark || LOCK_DOT}</div>`
+        + `<p class="np-wait"><span class="spin"></span>waiting for ${esc(n)} to see it\u2026</p>`
+        + actions(go("I approved it", { type: "button", attrs: ` id="np-approved"` }));
     case "number_match":
       return provLine + eyebrow(`${upper(pname || "GOOGLE")} · CHECK YOUR PHONE`) + say
         + `<div class="np-num" aria-label="the number to tap">${esc(step.number || "—")}</div>`
@@ -226,6 +239,7 @@ const NATIVE_CSS = `
 .np-field input{font:inherit;width:100%;padding:13px 14px;border-radius:var(--radius);border:1px solid var(--ink);background:var(--lifted);color:var(--ink);min-height:50px;-webkit-appearance:none;appearance:none}
 .np-field input:focus{outline:none;border-color:var(--pen);box-shadow:0 0 0 1px var(--pen)}
 .np-seal{margin:2px 0}
+.np-site{margin:0;padding:10px 12px;border:1px solid var(--pen);border-radius:var(--radius);background:var(--lifted);font-size:15px;line-height:1.45;color:var(--ink)}
 .np-num{font:italic 400 clamp(3.5rem,22vw,6rem)/1 var(--serif);text-align:center;color:var(--pen);letter-spacing:.02em;padding:18px 0;border:1px dashed var(--hair);border-radius:var(--radius);background:var(--lifted)}
 .np-tap{display:flex;align-items:center;justify-content:center;padding:28px 0;color:var(--pen)}
 .np-tap svg{width:48px;height:48px}
@@ -258,6 +272,8 @@ export function setupNativePage({ entry, step = {}, view = { width: 430, height:
     + `<input id="in-o" type="text" autocomplete="one-time-code" inputmode="numeric" autocapitalize="off" autocorrect="off" spellcheck="false">`
     + `<input id="in-g" type="text" autocomplete="on"></form></div></details>`;
   const body = `<div class="np" id="np" style="--ss-ar:${view.width}/${view.height}">`
+    // What the site said back to a submit, in its own words (masked), set by the live script.
+    + `<p class="np-site" id="np-site" role="alert" hidden></p>`
     + `<div id="np-panel">${nativeStepPanel(step, { entry })}</div>`
     + pageBlock
     + `<p class="ss-small" id="msg" role="status"></p><p class="ss-small" id="tip" hidden></p>`
@@ -322,7 +338,13 @@ export function setupResultPage({ entry, ended, back = "", thread = null, card =
     const prov = ended?.provider ? ({ google: "Google", apple: "Apple", microsoft: "Microsoft", facebook: "Facebook" })[ended.provider] ?? "The provider" : "The provider";
     // No sign-in page was found (src/signin-remote.js): said as that, whatever the site's front page
     // read as, and never "ask for a fresh link" — a fresh link would open the same page.
-    const [h1, why, reply] = ended?.how === "no_signin_page"
+    // The site answered the same step the same way twice (src/signin-remote.js): Reason stopped so
+    // repeated tries cannot lock the account. The site's own words, masked; nothing about a wrong
+    // password unless the site said so; no "try again".
+    const said = String(ended?.said ?? "");
+    const [h1, why, reply] = ended?.how === "site_repeated"
+      ? [`I stopped here.`, `${n} showed the same step again${said ? ` and said: \u201c${said}\u201d` : " without saying why"}. I've stopped so repeated tries don't lock your account. Nothing was saved.`, `the ${n} sign-in stopped`]
+      : ended?.how === "no_signin_page"
       ? [`I couldn't find where to sign in on ${n}.`, `The ${n} page that opened has no sign-in form, and I couldn't find one from it, so there was nothing for you to do here and nothing was saved. ${t ? `If you know the address of ${n}'s sign-in page, text it to Reason.` : "You can try again from your setup."}`, `couldn't find ${n}'s sign-in page`]
       : state === "refused"
       ? [`${prov} said no to my browser.`, `${prov} refused my browser for ${n}, so nothing was saved and I won't try it again. ${t ? `Reason is signing you in with your ${n} email instead.` : `You can sign in with your ${n} email and password from your setup.`}`, `${prov} refused the sign-in`]
