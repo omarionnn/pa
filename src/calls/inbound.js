@@ -160,9 +160,16 @@ const LEAD_INS = ["oh,", "ah,", "hey —", "yo,"];
  * model in the loop yet. It is short on purpose: the opening line's job is to hand the conversation
  * to them having already shown it knows what is going on, and then get out of the way.
  */
-export function openingLineFor({ person, conversationId = "" }) {
+export function openingLineFor({ person, conversationId = "", classic = false }) {
   // Their own call, carry-over on: fitted to the time of day, never the last call's line (./carryover.js).
-  const varied = conversationId ? greetingFor({ conversationId, name: person?.name ?? "", direction: "in" }) : "";
+  const varied = conversationId ? greetingFor({ conversationId, name: person?.name ?? "", direction: "in", classic }) : "";
+  // REASON_CALL_FEEL=classic (./callclassic.js): call 112's opening, any lead-in in front (as at 752a9e72).
+  if (classic) {
+    const lead = LEAD_INS[Math.floor(Math.random() * LEAD_INS.length)];
+    if (varied) return `${lead} ${varied}`;
+    const named = person?.name && person.name !== "the person I work for" ? `hey ${person.name}` : "hey";
+    return `${lead} ${named} — what's up?`;
+  }
   // Never "hey — hey Omari" (calls 114-116): a line that opens on "hey" gets one of the other lead-ins.
   const first = person.name && person.name !== "the person I work for" ? `hey ${person.name}` : "hey";
   const line = varied || `${first} — what's up?`;

@@ -601,6 +601,8 @@ const SALUTES = {
   morning: ["morning {n}", "hey {n}, good morning"], afternoon: ["hey {n}", "afternoon {n}"],
   evening: ["hey {n}", "evening {n}"], night: ["hey {n}"], again: ["hey again {n}", "hey {n}"],
 };
+/** The "again" lines as on call 112 (752a9e72), for REASON_CALL_FEEL=classic. */
+export const CLASSIC_AGAIN = ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, what did we miss?"];
 /** They spoke this recently: the opening says "again". */
 export const AGAIN_MS = 3 * 3600_000;
 /** They ring back this soon after a call with notes: the opening picks up from it. */
@@ -637,7 +639,7 @@ export function dayPart(ms, tz = config.tz) {
  * The opening line for a person's own call, or "" (off for them: the caller keeps its old line).
  * `direction` "in": they rang. "out": Reason rang with no reason of its own to say.
  */
-export function greetingFor({ conversationId, name = "", direction = "in", now = clock.now(), tz = config.tz } = {}) {
+export function greetingFor({ conversationId, name = "", direction = "in", now = clock.now(), tz = config.tz, classic = false } = {}) {
   if (!conversationId || !carryoverFor(conversationId)) return "";
   let rows = [];
   try { rows = db.listCalls(conversationId, { limit: 8 }).filter(r => Number(r.is_owner) === 1 && Number(r.created_at) < now); } catch { rows = []; }
@@ -646,14 +648,16 @@ export function greetingFor({ conversationId, name = "", direction = "in", now =
   const part = again ? "again" : dayPart(now, tz);
   const who = name && name !== "the person I work for" ? name : "";
   // Ringing back soon after a call (call 115: six minutes on, "what did we miss?"): pick up from its notes.
-  const picked = direction === "in" && talked[0] && now - endOf(talked[0]) < PICKUP_MS ? pickUpLine(talked[0], who) : "";
+  // REASON_CALL_FEEL=classic (./callclassic.js): call 112's greeting (752a9e72): no pick-up line, its "again"
+  // lines, and the last call read off the newest row.
+  const picked = !classic && direction === "in" && talked[0] && now - endOf(talked[0]) < PICKUP_MS ? pickUpLine(talked[0], who) : "";
   if (picked) return picked;
   const fill = (l) => (who ? l.replace("{n}", who) : l.replace(/,? ?\{n\}/, "")).replace(/^[\s,—-]+/, "");
-  const options = (direction === "in" ? GREETINGS[part] : SALUTES[part].map(s => `${s}, what's up?`)).map(fill);
+  const options = (direction === "in" ? (classic && part === "again" ? CLASSIC_AGAIN : GREETINGS[part]) : SALUTES[part].map(s => `${s}, what's up?`)).map(fill);
   // What the last call opened with, off its own transcript (an inbound row's greeting is not on the row).
   // The newest row with words: the call being greeted is already a row, with none yet (call 116 read its own
   // empty row and opened with call 115's line).
-  const prev = rows.find(r => String(r.transcript ?? "").trim() || String(r.announcement ?? "").trim());
+  const prev = classic ? rows[0] : rows.find(r => String(r.transcript ?? "").trim() || String(r.announcement ?? "").trim());
   const last = String(prev?.transcript ?? "").split("\n").find(l => /^Reason\s*:/.test(l)) ?? String(prev?.announcement ?? "");
   const said = last.toLowerCase();
   const start = rows.length % options.length;

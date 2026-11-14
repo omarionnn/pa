@@ -121,3 +121,24 @@ relay deletes Cartesia's copy at the end of every call (`DELETE /agents/calls/{i
 `redacted_at`, tried up to 4 times, logged as `cartesia_recording_deleted`), and a session that came up
 after a fall-back is deleted too.
 
+## Classic feel (REASON_CALL_FEEL=classic)
+
+The owner loved call 112 (2026-11-13 16:38 UTC; main 752a9e72 with #543's lookup music, agent version
+`av_f1C22VxgaAQd8zn2MFk8RS`). The changes after it (#563, #564, #571, #572 on the voice side; #555's error
+line) made calls worse for him, so `classic` puts his Cartesia calls back to that call:
+
+- `reason_call` is that build's own text (`src/calls/callclassic-words.js`, generated from 752a9e72): the
+  own-call rule lines in their order, the pre-call brief in its order, cut at the end where it was then
+  (12,000 less the line's manner lines; about 740 characters of brief survive on a busy day), then the manner,
+  moment and expression lines. The greeting, the keyterms (no time words) and the error-turn line are that
+  build's too. Claude's call frame leaves out the time read-back rule.
+- Kept from later, after that text only: the EARLIER CALLS and SINCE YOUR LAST CALL notes (no links) and one
+  line saying memory questions are answered from them or by asking Reason (call 115); the passphrase line
+  when call trust is on; markers and tool names taken out of Reason's words; on a quiet turn `NOTHING_TO_ADD`
+  (no fact, nothing done) instead of "Reply yourself", and the done-claim check (call 113). The cap is
+  16,500 (`CLASSIC_MAX`; the worst case is about 16.4k), so the call-112 text is never trimmed.
+- The agent: `node scripts/cartesia-agent-classic.mjs --agent <id> --save <dir> --yes` reads version
+  `av_f1C22...` from Cartesia and PATCHes its config back, with one change: the silence check-in at 20 s, not 8
+  (call 113's four "You still there?"). `--restore <saved agent.json> --yes` puts a saved config back.
+- Golden test: `test/call-classic.test.js` against `test/fixtures/call-classic-baseline.json`, the 752a9e72
+  build's own output for the same scenarios.
