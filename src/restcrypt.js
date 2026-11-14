@@ -139,6 +139,14 @@ export function keystorePath(dbPath) {
 }
 
 function openKeystore(path) {
+  // Read-only with the database (REASON_DB_READONLY, src/db.js): keys are read, never made or changed.
+  if (process.env.REASON_DB_READONLY === "1" && path !== ":memory:") {
+    const k = new DatabaseSync(path, { readOnly: true });
+    const exec = k.exec.bind(k);
+    k.exec = (sql) => { try { return exec(sql); } catch (e) { if (/readonly|read-only|attempt to write/i.test(String(e?.message ?? e))) return undefined; throw e; } };
+    k.exec("PRAGMA busy_timeout = 5000;");
+    return k;
+  }
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const k = new DatabaseSync(path);
   k.exec(`

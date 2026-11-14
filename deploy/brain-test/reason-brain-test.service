@@ -1,0 +1,32 @@
+# The brain test line (docs/calls-brain-first.md "Test line"): a second process, apart from reason.service.
+# Reads the live databases read-only (REASON_DB_READONLY=1 and ReadOnlyPaths), sends nothing, acts on nothing.
+[Unit]
+Description=Reason brain test line (experiment; read-only)
+After=network-online.target
+
+[Service]
+Type=simple
+User=reason
+Group=reason
+WorkingDirectory=/opt/reason-brain-test
+ExecStart=/usr/bin/node scripts/brain-test-server.mjs
+Environment=BRAIN_TEST_PORT=8790
+Environment=BRAIN_TEST_VARIANT_FILE=/opt/reason-brain-test/state/variant.json
+Environment=BRAIN_TEST_NOTES_FILE=/opt/reason-brain-test/state/notes.jsonl
+Environment=HOME=/opt/reason-brain-test/state
+Environment=REASON_DATA_DIR=/opt/reason/data
+Environment=REASON_CALL_BRAIN_BANK=/opt/reason-brain-test/bank.json
+LoadCredential=brain-test-secret:/etc/reason-brain-test/secret
+MemoryMax=700M
+TasksMax=64
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/reason
+ReadWritePaths=/opt/reason-brain-test/state
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

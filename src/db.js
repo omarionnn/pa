@@ -13,8 +13,31 @@ import * as turnlink from "./turnlink.js";
 import { keepableMessages } from "./pagesecrets.js";
 import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 
-mkdirSync(dirname(config.dbPath), { recursive: true });
-export const db = new DatabaseSync(config.dbPath);
+// REASON_DB_READONLY=1 (the brain test line, src/calls/braintest.js): the database is opened read-only, so
+// this process cannot write it at all. The schema statements below then change nothing on a database that
+// already has them; one that would write is skipped and counted (`readOnlySkipped`), never run.
+export const READ_ONLY = process.env.REASON_DB_READONLY === "1";
+export let readOnlySkipped = 0;
+export const isReadOnlyError = (e) => /readonly|read-only|attempt to write/i.test(String(e?.message ?? e));
+// Only while this module loads (its schema and one-off fixes): after `readOnlyLoaded()` at the end of the
+// file, every write throws as SQLite says, so nothing at run time can believe it wrote.
+let loading = true;
+export function readOnlyGuard(handle) {
+  const exec = handle.exec.bind(handle);
+  const prepare = handle.prepare.bind(handle);
+  handle.exec = (sql) => { try { return exec(sql); } catch (e) { if (loading && isReadOnlyError(e)) { readOnlySkipped++; return undefined; } throw e; } };
+  handle.prepare = (sql) => {
+    const st = prepare(sql);
+    if (!loading) return st;
+    const run = st.run.bind(st);
+    st.run = (...a) => { try { return run(...a); } catch (e) { if (loading && isReadOnlyError(e)) { readOnlySkipped++; return { changes: 0, lastInsertRowid: 0 }; } throw e; } };
+    return st;
+  };
+  return handle;
+}
+export function readOnlyLoaded() { loading = false; }
+if (!READ_ONLY) mkdirSync(dirname(config.dbPath), { recursive: true });
+export const db = READ_ONLY ? readOnlyGuard(new DatabaseSync(config.dbPath, { readOnly: true })) : new DatabaseSync(config.dbPath);
 // Encryption at rest (src/restcrypt.js, REASON_ENCRYPT_REST): unlock the install key before any query,
 // so every read below stays synchronous. Rows from statements on a sensitive table open themselves.
 // Sealed files with no sealed rows left (a rollback cut short, flags off) still need the keystore
@@ -14624,3 +14647,7 @@ export function setFactSources(conversationId, id, messageIds) {
 // REASON_ENCRYPT_STRICT=1 (tests, shadow copies): SQLite itself refuses plaintext in a sealed column.
 if (restcrypt.flagOn() && process.env.REASON_ENCRYPT_STRICT === "1") restcrypt.installStrictTriggers(db);
 else restcrypt.dropStrictTriggers(db);
+
+// The read-only guard's load-time window ends here (REASON_DB_READONLY, top of this file), unless the process
+// loads more modules first and closes it itself (REASON_DB_READONLY_HOLD=1: scripts/brain-test-server.mjs).
+if (process.env.REASON_DB_READONLY_HOLD !== "1") readOnlyLoaded();
