@@ -24,6 +24,7 @@
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
 import { configured as plaidConfigured, slotsUsed as plaidSlotsUsed } from "./plaid.js";
+import * as gplaces from "./googleplaces.js";
 // Cartesia's API, as in src/calls/cartesia.js (not imported: the relay loads only for a Cartesia call).
 const CARTESIA_BASE = "https://api.cartesia.ai";
 const CARTESIA_VERSION = "2026-08-14";
@@ -105,6 +106,10 @@ export function standingReading(meter, own) {
     used, allowance, left: Math.max(0, allowance - used),
     pct: allowance > 0 ? Math.round((used / allowance) * 1000) / 10 : 0,
     out: allowance > 0 && used >= allowance,
+    // The page's words for a count that is not Plaid's (Google Places): what the count is, where it comes from, what it costs.
+    ...(meter.usedLabel ? { used_label: meter.usedLabel } : {}),
+    ...(meter.sourceWords ? { source_words: meter.sourceWords } : {}),
+    ...(meter.costWords ? { cost_words: meter.costWords(used) } : {}),
   };
 }
 
@@ -173,6 +178,26 @@ export const METERS = [
     whenOut: (r) => `New connections stop at ${r.allowance} on the trial plan.`,
     whenOutNow: (r) => `New connections stop here on the trial plan: ${r.allowance} is the most it allows.`,
   },
+  // Google Places (src/googleplaces.js): requests sent this billing month against Reason's own hard
+  // cap, per tier. Shown only once a key is set. A standing count that falls back to 0 on the 1st,
+  // which re-arms its texts for the new month.
+  ...["pro", "enterprise"].map(tier => ({
+    id: `google-places-${tier}`, name: `Google Places (${tier === "pro" ? "Pro" : "Enterprise"} searches)`, standing: true,
+    unit: "searches this month",
+    get allowance() { return gplaces.capOf(tier); },
+    thresholds: [80, 100],
+    configured: () => gplaces.configured(),
+    own: () => ({ count: gplaces.used(tier) }),
+    usedLabel: "This month",
+    get sourceWords() { return `Reason's own count of requests sent, ${gplaces.monthOf()} (Google's billing month, Pacific time); the cap is Reason's, inside Google's free ${gplaces.TIERS[tier].free.toLocaleString("en-US")} a month`; },
+    costWords: (n) => {
+      const c = gplaces.estCents(tier, n);
+      return c > 0 ? `about $${(c / 100).toFixed(2)} this month (past Google's free ${gplaces.TIERS[tier].free.toLocaleString("en-US")})` : `$0 (inside Google's free ${gplaces.TIERS[tier].free.toLocaleString("en-US")} a month)`;
+    },
+    dashboard: "https://console.cloud.google.com/google/maps-apis/quotas",
+    whenOut: (r) => `At ${r.allowance} this month, nearby searches switch to the free map sources until the 1st.`,
+    whenOutNow: (r) => `Nearby searches now use the free map sources until the 1st (Reason's cap is ${r.allowance}, so no charge).`,
+  })),
 ];
 
 // ---------- the provider's figure, cached ----------

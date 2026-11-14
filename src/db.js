@@ -12154,6 +12154,14 @@ db.exec(`
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
   );
+  -- Google Places requests sent, per billing month ("2026-11", Pacific) and tier (pro, enterprise):
+  -- the hard monthly cap (src/googleplaces.js) and the ops meter. Counts only, no place content.
+  CREATE TABLE IF NOT EXISTS google_places_usage (
+    month TEXT NOT NULL,
+    tier TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (month, tier)
+  );
   -- Failures raised where they happened (src/incidents.js, 2026-10-25): one row per kind of
   -- failure, so the fourteenth repeat updates the row the first one opened instead of texting again.
   CREATE TABLE IF NOT EXISTS incidents (
@@ -12446,6 +12454,20 @@ export function opsSet(k, v) {
 
 export function opsDelete(k) {
   db.prepare("DELETE FROM ops_state WHERE k = ?").run(k);
+}
+
+// ---------- Google Places usage (src/googleplaces.js) ----------
+
+export function googlePlacesUsed(month, tier) {
+  return db.prepare("SELECT count FROM google_places_usage WHERE month = ? AND tier = ?").get(month, tier)?.count ?? 0;
+}
+
+/** One more request this month if it stays within `cap`: true when taken. A single statement, so two at once can't both take the last one. */
+export function googlePlacesClaim(month, tier, cap) {
+  if (!(cap > 0)) return false;
+  const r = db.prepare(`INSERT INTO google_places_usage (month, tier, count) VALUES (?, ?, 1)
+    ON CONFLICT(month, tier) DO UPDATE SET count = count + 1 WHERE count < ?`).run(month, tier, cap);
+  return r.changes === 1;
 }
 
 // ---------- invites (src/invites.js) ----------

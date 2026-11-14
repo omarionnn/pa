@@ -3465,6 +3465,31 @@ const SHEET_DESC = [
   "document: {what?, where, says, could_not?} — the real terms you read, not a summary page about them: 'where' is the link, 'says' is what they say about the things that bite (cancellation, fees, dates) in their own words. A 'binding' job cannot be closed as done without it.",
 ].join(" ");
 
+
+const googlePlacesOn = () => !!String(process.env.REASON_GOOGLE_PLACES_KEY ?? "").trim();
+const NEARBY_DESC = "Find places near specific coordinates — restaurants, cafes, bars, cinemas, shops, parks, etc. Uses OpenStreetMap data. Results include name, address, phone, website, and hours when available. Use this instead of web_search when someone has shared their location and wants to find a type of place nearby: pass their coordinates and the kind of place. For restaurants and cafes, pass `cuisine` to narrow it down.";
+const NEARBY_DESC_GOOGLE = "Find places near specific coordinates — restaurants, cafes, bars, cinemas, shops, parks, etc. From Google Maps (OpenStreetMap when Google is not answering), nearest first with each place's distance and Google Maps link. Use this instead of web_search when someone has shared their location and wants to find a type of place nearby: pass their coordinates and the kind of place. For restaurants and cafes, pass `cuisine` to narrow it down. Pass `open_now` when they want somewhere open now, and `details` only when their ask needs hours, a phone number, ratings, a website or price.";
+const NEARBY_SCHEMA = {
+  type: "object",
+  properties: {
+    latitude: { type: "number", description: "Latitude" },
+    longitude: { type: "number", description: "Longitude" },
+    type: { type: "string", description: "Kind of place: restaurant, cafe, bar, fast_food, cinema, theatre, park, hospital, pharmacy, supermarket, gas_station, bank, hotel, gym, library, museum, bakery, clothing, bookstore, ice_cream" },
+    cuisine: { type: "string", description: "For restaurants/cafes: indian, chinese, italian, mexican, thai, japanese, korean, french, mediterranean, ethiopian, american, etc." },
+    name: { type: "string", description: "Filter by name when looking for a specific place" },
+    radius: { type: "integer", description: "Search radius in meters. Default 1500 (about 1 mile)." },
+  },
+  required: ["latitude", "longitude", "type"],
+};
+const NEARBY_SCHEMA_GOOGLE = {
+  ...NEARBY_SCHEMA,
+  properties: {
+    ...NEARBY_SCHEMA.properties,
+    open_now: { type: "boolean", description: "Only places open right now, when they asked for that." },
+    details: { type: "array", items: { type: "string", enum: ["hours", "phone", "rating", "website", "price"] }, description: "Only what their ask needs beyond name and address: hours, phone, rating (\"best\", \"good\"), website, price. Leave it out otherwise: each one costs more." },
+  },
+};
+
 export const tools = [
   {
     name: "plan_create",
@@ -6896,19 +6921,10 @@ export const tools = [
   },
   {
     name: "nearby_places",
-    description: "Find places near specific coordinates — restaurants, cafes, bars, cinemas, shops, parks, etc. Uses OpenStreetMap data. Results include name, address, phone, website, and hours when available. Use this instead of web_search when someone has shared their location and wants to find a type of place nearby: pass their coordinates and the kind of place. For restaurants and cafes, pass `cuisine` to narrow it down.",
-    input_schema: {
-      type: "object",
-      properties: {
-        latitude: { type: "number", description: "Latitude" },
-        longitude: { type: "number", description: "Longitude" },
-        type: { type: "string", description: "Kind of place: restaurant, cafe, bar, fast_food, cinema, theatre, park, hospital, pharmacy, supermarket, gas_station, bank, hotel, gym, library, museum, bakery, clothing, bookstore, ice_cream" },
-        cuisine: { type: "string", description: "For restaurants/cafes: indian, chinese, italian, mexican, thai, japanese, korean, french, mediterranean, ethiopian, american, etc." },
-        name: { type: "string", description: "Filter by name when looking for a specific place" },
-        radius: { type: "integer", description: "Search radius in meters. Default 1500 (about 1 mile)." },
-      },
-      required: ["latitude", "longitude", "type"],
-    },
+    // Google's words and its two extra inputs only when a Google key is set: with none, the tool reads
+    // exactly as before (src/googleplaces.js).
+    get description() { return googlePlacesOn() ? NEARBY_DESC_GOOGLE : NEARBY_DESC; },
+    get input_schema() { return googlePlacesOn() ? NEARBY_SCHEMA_GOOGLE : NEARBY_SCHEMA; },
   },
   {
     name: "get_location",
@@ -8102,6 +8118,8 @@ const S = {
     cuisine: z.string().min(1).max(50).optional(),
     name: z.string().min(1).max(100).optional(),
     radius: z.number().int().min(100).max(50_000).optional(),
+    open_now: z.boolean().optional(),
+    details: z.array(z.enum(["hours", "phone", "rating", "website", "price"])).max(5).optional(),
   }),
   get_location: z.object({
     action: z.enum(["auto", "read", "request"]).optional(),
@@ -19266,12 +19284,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const out = await nearbyPlaces(input.latitude, input.longitude, input.type, {
         cuisine: input.cuisine, name: input.name, radius: input.radius, fetchImpl: ctx.fetchImpl,
         ...(ctx?.onCall ? { budgetMs: CALL_BUDGET_MS } : {}),
+        ...(input.open_now ? { openNow: true } : {}),
+        ...(input.details?.length ? { details: input.details } : {}),
       });
       if (!out.ok) return out;
       // A place's number is timed by the place's own clock if it is rung later (zone.calleeZone).
       for (const r of out.results ?? []) if (r?.phone) try { zone.notePlace(r); } catch { /* the area code still answers */ }
       return markOutside(out, {
-        source: "OpenStreetMap nearby-places results",
+        source: out.attribution === "Google Maps" ? "Google Maps nearby-places results" : "OpenStreetMap nearby-places results",
         text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),
       });
     }
