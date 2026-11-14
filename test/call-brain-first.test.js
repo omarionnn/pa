@@ -16,8 +16,11 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 delete process.env.REASON_CALL_BRAIN;
 delete process.env.REASON_CALL_TRUST;
 delete process.env.ANTHROPIC_API_KEY;
+// Openers are on with the brain; the tests that are not about them turn them off per call.
+process.env.REASON_CALL_BRAIN_OPENERS = "off";
 
 const bf = await import("../src/calls/brainfirst.js");
+const op = await import("../src/calls/brainopener.js");
 const db = await import("../src/db.js");
 const { config } = await import("../src/config.js");
 
@@ -167,4 +170,95 @@ test("the preload never throws and reads nothing after the call began", async ()
   const lines = await bf.preloadFor(row, { topics: ["the events idea"], until: 1000, find: async (c, t) => { seen.push(t); return ["- a fact"]; }, history: async (c, t, { until }) => { assert.equal(until, 1000); return ["- (Nov 13, a call) the events idea"]; } });
   assert.deepEqual(lines, ["- a fact", "- (Nov 13, a call) the events idea"]);
   assert.deepEqual(await bf.preloadFor(row, { topics: ["x"], find: async () => { throw new Error("down"); }, history: async () => { throw new Error("down"); } }), []);
+});
+
+// ---------- openers (src/calls/brainopener.js) ----------
+
+test("every opener is content-free: no fact, number, yes/no, sure/done/got it, nothing upbeat, no done-claim", () => {
+  assert.ok(op.ALL_OPENERS.length >= 36);
+  for (const o of op.ALL_OPENERS) assert.ok(op.openerSafe(o), o);
+  for (const bad of ["Sure,", "Yes,", "Got it,", "No problem,", "Done.", "Great news,", "It's booked.", "Last time,", "I'll do it,", "Okay, 8 pm"]) assert.equal(op.openerSafe(bad), false, bad);
+  for (const k of op.CLASSES) assert.ok(op.OPENERS[k].length >= 6, k);
+  for (const s of op.STANDALONE) assert.match(s, /[.]$/);
+});
+
+test("never the same opener twice running, nor within the last three", () => {
+  const recent = [];
+  let seq = [];
+  for (let i = 0; i < 60; i++) seq.push(op.pickOpener(op.CLASSES[i % 2 ? 1 : 4], recent));
+  for (let i = 1; i < seq.length; i++) assert.notEqual(seq[i], seq[i - 1]);
+  const r2 = [];
+  seq = Array.from({ length: 40 }, () => op.pickOpener("lookup", r2));
+  for (let i = 3; i < seq.length; i++) assert.ok(!seq.slice(i - 3, i).includes(seq[i]), seq.slice(i - 3, i + 1).join(" | "));
+});
+
+test("their turn is read by rules, in well under a millisecond", () => {
+  const cases = { "How are you?": "chat", "Hello.": "chat", "Good. I have a thing to tell you. Hello?": "chat", "Where were we?": "memory", "what did we say on the last call?": "memory",
+    "can you book it for me?": "request", "Yeah, do that.": "request", "how much is it with tax?": "lookup", "what time does it close?": "lookup",
+    "what do you think of the idea?": "question", "No, I said when I get there": "repair", "Uh no, I didn't want that": "repair", "what the hell, that's wrong": "repair" };
+  const t0 = process.hrtime.bigint();
+  for (const [t, k] of Object.entries(cases)) assert.equal(op.classify(t), k, t);
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 / Object.keys(cases).length < 1);
+});
+
+test("the continuation joins the opener as one sentence: nothing said twice, no filler restart", () => {
+  assert.equal(op.joinAfter("Okay, so", "Okay, so we were on the events idea."), "we were on the events idea.");
+  assert.equal(op.joinAfter("Alright, so", "so the idea is this."), "the idea is this.");
+  assert.equal(op.joinAfter("Fair,", "... fair, I should be clearer."), "I should be clearer.");
+  assert.equal(op.joinAfter("Okay, so", "We were on it."), "we were on it.");
+  assert.equal(op.joinAfter("So,", "Sorry about that."), "Sorry about that.");
+  assert.equal(op.joinAfter("Let me see.", "the store is close."), "The store is close.");
+  assert.equal(op.joinAfter("Okay, so", "Apple West is closest."), "Apple West is closest.");
+  assert.match(op.openerNote("Hmm,"), /ALREADY said.*"Hmm,"/);
+  const m = op.withOpener([{ role: "user", content: "hi" }], "Mm,");
+  assert.equal(m.length, 1);
+  assert.match(m[0].content, /^hi\n\n\[You have ALREADY said/);
+});
+
+const later = (ms, gen) => async function* () { await new Promise(r => setTimeout(r, ms)); yield* gen; };
+async function* says(...texts) { for (const t of texts) yield { type: "say", text: t }; yield { type: "done" }; }
+
+test("the speaking turn's own first sentence in before the deadline: no opener, the other turn stopped", async () => {
+  let stoppedB = false;
+  const out = await run(bf.withOpenerRace({ speakA: later(5, says("We were on the events idea."))(), speakB: later(50, says("we were on it."))(), opener: "Okay, so", atMs: 40, stopB: () => { stoppedB = true; } }));
+  assert.deepEqual(out.filter(e => e.type === "say").map(e => e.text), ["We were on the events idea."]);
+  assert.ok(stoppedB);
+});
+
+test("not in by the deadline: the opener is said, then the continuation that was told about it", async () => {
+  let stoppedA = false;
+  const out = await run(bf.withOpenerRace({ speakA: later(200, says("Never heard."))(), speakB: later(60, says("Okay, so we were on the events idea.", "Still sizing it."))(), opener: "Okay, so", atMs: 20, stopA: () => { stoppedA = true; } }));
+  const s = out.filter(e => e.type === "say");
+  assert.deepEqual(s.map(e => e.text), ["Okay, so", "we were on the events idea.", "Still sizing it."]);
+  assert.ok(s[0].opener && stoppedA);
+});
+
+test("a hand-off right after an unfinished opener closes the sentence before the music", async () => {
+  async function* handsOff() { yield { type: "handoff", why: "asked", ask: "x" }; yield { type: "done" }; }
+  const out = await run(bf.withOpenerRace({ speakA: later(200, says("x"))(), speakB: later(5, handsOff())(), opener: "Okay, so", atMs: 10 }));
+  assert.deepEqual(out.filter(e => e.type === "say").map(e => e.text), ["Okay, so", op.HANDOFF_TAIL]);
+  assert.ok(out.some(e => e.type === "handoff"));
+  const out2 = await run(bf.withOpenerRace({ speakA: later(200, says("x"))(), speakB: later(5, handsOff())(), opener: "Let me see.", atMs: 10 }));
+  assert.deepEqual(out2.filter(e => e.type === "say").map(e => e.text), ["Let me see."]);
+});
+
+test("a done-claim in the continuation is still never said; the opener alone is heard, then the hand-off", async () => {
+  const row = ownCall();
+  const full = async () => ({ text: "Let me check the record: not booked yet." });
+  const out = await run(bf.brainTurn({ call: row, history: [{ role: "user", content: "what's the plan tonight?" }], full, session, openers: true, openerAtMs: 30,
+    stream: later(300, fakeStream(["Never heard."])()), streamB: fakeStream(["it's booked for 8."]), timers: globalThis }));
+  const said = out.filter(e => e.type === "say").map(e => e.text).join(" ");
+  assert.ok(!/booked for 8/.test(said), said);
+  assert.ok(out.some(e => e.type === "hold"));
+  assert.match(said, /not booked yet/);
+});
+
+test("'is it done?' gets a stand-alone opener at once, then the hold and the full brain; no model word", async () => {
+  const row = ownCall();
+  let modelCalled = false;
+  const stream = async function* () { modelCalled = true; yield* fakeStream(["Yes."])(); };
+  const out = await run(bf.brainTurn({ call: row, history: [{ role: "user", content: "did you send it?" }], full: async () => ({ text: "Not yet: it is still waiting on your yes." }), session, openers: true, stream, streamB: stream }));
+  assert.equal(modelCalled, false);
+  assert.deepEqual(out.map(e => e.type), ["say", "hold", "say", "done"]);
+  assert.ok(op.STANDALONE.includes(out[0].text));
 });

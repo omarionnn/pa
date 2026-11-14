@@ -27,6 +27,7 @@ import { memoryHits } from "../memorynote.js";
 import { timingSafeEqual } from "node:crypto";
 import { saysDone, confirmsDone, forVoice, SECRETISH, withDeferredLine } from "./cartesia.js";
 import * as calltrust from "./calltrust.js";
+import * as opening from "./brainopener.js";
 
 /** The fast model the speaking turn runs on (one the app already uses). REASON_CALL_BRAIN_MODEL overrides. */
 export const SPEAK_MODEL_DEFAULT = "claude-haiku-5-5";
@@ -195,7 +196,7 @@ const SENTENCE_END = /([.!?…]+)(["')\]]?)(\s+|$)/;
  *   { type: "done", text, usage, ms, firstMs }
  * `stream` is injectable: given a request body, an async iterable of Anthropic stream events.
  */
-export async function* speakTurn({ system, messages, theirWords = "", model = speakModel(), stream, now = () => Date.now(), log = () => {}, callId = null }) {
+export async function* speakTurn({ system, messages, theirWords = "", model = speakModel(), stream, now = () => Date.now(), log = () => {}, callId = null, opener = "", prefill = OPENER_PREFILL }) {
   const t0 = now();
   const careful = needsFullBrain(theirWords) ? "careful_topic" : asksIfDone(theirWords) ? "done_question" : null;
   if (careful) {
@@ -207,7 +208,8 @@ export async function* speakTurn({ system, messages, theirWords = "", model = sp
     model, max_tokens: SPEAK_MAX_TOKENS,
     system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
     tools: [HANDOFF_TOOL],
-    messages,
+    // With an opener already said, the turn is told so and writes only what follows it (./brainopener.js).
+    messages: opener ? opening.withOpener(messages, opener, { prefill }) : messages,
     // No up-front thinking pass: on a phone it is seconds of silence before the first word (call 38).
     ...modelOptions(model),
     stream: true,
@@ -258,6 +260,60 @@ export async function* speakTurn({ system, messages, theirWords = "", model = sp
   yield { type: "done", text: said, usage, ms: now() - t0, firstMs };
 }
 
+/** Whether the opener also rides as an assistant prefill (measured: see docs/calls-brain-first.md). */
+export const OPENER_PREFILL = false;
+
+/**
+ * Two speaking turns started together the moment they stop talking: A as usual, B told it has already
+ * said `opener`. If A's first sentence (or its hand-off) is in by `atMs`, A is used, B is stopped and no
+ * opener is said. Otherwise the opener is said at `atMs` and B's words follow it as one sentence.
+ * Yields the events of whichever won, with { opener } on the opener's own say event.
+ */
+export async function* withOpenerRace({ speakA, speakB, opener, atMs = opening.OPENER_AT_MS, stopA = () => {}, stopB = () => {}, timers = globalThis, now = () => Date.now() }) {
+  const t0 = now();
+  const queue = (gen) => {
+    const q = { items: [], done: false, wake: null };
+    (async () => {
+      try { for await (const ev of gen) { q.items.push(ev); q.wake?.(); } } catch (e) { q.items.push({ type: "error", why: (e?.message ?? String(e)).split("\n")[0] }); }
+      q.done = true; q.wake?.();
+    })();
+    return q;
+  };
+  const next = (q) => (q.items.length || q.done ? Promise.resolve() : new Promise(r => { q.wake = r; }));
+  const a = queue(speakA);
+  const b = queue(speakB);
+  const firstOf = (q) => q.items.find(e => e.type === "say" || e.type === "handoff" || e.type === "error");
+  let timer;
+  const deadline = new Promise(r => { timer = timers.setTimeout(r, Math.max(0, atMs)); });
+  while (!firstOf(a) && !a.done) {
+    const late = await Promise.race([next(a).then(() => false), deadline.then(() => true)]);
+    if (late) break;
+  }
+  timers.clearTimeout(timer);
+  const drain = async function* (q) {
+    for (let i = 0; ; i++) {
+      while (i >= q.items.length && !q.done) await next(q);
+      if (i >= q.items.length) return;
+      yield q.items[i];
+    }
+  };
+  if (firstOf(a) && firstOf(a).type !== "error") { stopB(); yield* drain(a); return; }
+  stopA();
+  yield { type: "say", text: opener, opener: true, ms: now() - t0 };
+  let saidAfter = false;
+  for await (const ev of drain(b)) {
+    if (ev.type === "say") {
+      const text = saidAfter ? ev.text : opening.joinAfter(opener, ev.text);
+      if (text) { saidAfter = true; yield { ...ev, text }; }
+      continue;
+    }
+    // A hand-off right after an unfinished opener ("Okay, so") closes the sentence first.
+    if (ev.type === "handoff" && !saidAfter && !/[.!?…]$/.test(opener)) yield { type: "say", text: opening.HANDOFF_TAIL, ms: now() - t0 };
+    if (ev.type === "error") { yield { type: "handoff", ask: "", why: "error" }; continue; }
+    yield ev;
+  }
+}
+
 /** The Anthropic stream for `speakTurn`, on the API key the call backend already uses. */
 export function anthropicStream({ client = null, signal = null } = {}) {
   let api = client;
@@ -299,7 +355,13 @@ export function openBrain(call, { voice = null, preload = preloadFor, warm = tru
   sessions.set(call.id, p);
   return p;
 }
-export function closeBrain(callId) { sessions.delete(callId); }
+export function closeBrain(callId) { sessions.delete(callId); recentOpeners.delete(callId); }
+
+/** Openers on the speaking turn: REASON_CALL_BRAIN_OPENERS=off turns them off (on with the brain). */
+export const OPENERS_ON = () => String(process.env.REASON_CALL_BRAIN_OPENERS ?? "on").trim().toLowerCase() !== "off";
+/** The openers said on each call so far, newest last (never the same one twice running). */
+const recentOpeners = new Map();
+export const recentFor = (call) => { const k = call?.id ?? ""; if (!recentOpeners.has(k)) recentOpeners.set(k, []); return recentOpeners.get(k); };
 
 /** Their newest words in a history of {role, content}. */
 const lastTheirs = (history) => String([...(history ?? [])].reverse().find(m => m?.role === "user")?.content ?? "").trim();
@@ -314,7 +376,7 @@ const deferredOf = (call) => { try { return String(db.getCall(call.conversation_
  * The safety half of the full brain's answer is the one the Cartesia ask has today (./cartesia.js `ask`):
  * a passphrase ask in its fixed words, the deferral line when something was put off, markers out.
  */
-export async function* brainTurn({ call, history, speak = speakTurn, full, stream = anthropicStream(), session = null, log = () => {}, now = () => Date.now() }) {
+export async function* brainTurn({ call, history, speak = speakTurn, full, stream = null, streamB = null, session = null, openers = OPENERS_ON(), openerAtMs = opening.OPENER_AT_MS, recent = recentFor(call), log = () => {}, now = () => Date.now(), timers = globalThis }) {
   const t0 = now();
   let words = lastTheirs(history);
   // Their passphrase answer is checked in code and never reaches a model: only the marker goes on.
@@ -334,10 +396,22 @@ export async function* brainTurn({ call, history, speak = speakTurn, full, strea
     const s = session ?? await openBrain(call, { log });
     if (!s) handoff = { ask: words, why: "no_brain" };
     else {
-      for await (const ev of speak({ system: s.system, messages, theirWords: words, stream, log, callId: call.id })) {
-        if (ev.type === "say") { said.push(ev.text); yield { type: "say", text: ev.text, from: "speak" }; }
-        if (ev.type === "handoff") handoff = { ask: ev.ask, why: ev.why };
+      const kind = opening.classify(words);
+      const careful = needsFullBrain(words) || asksIfDone(words);
+      const ctlA = new AbortController(), ctlB = new AbortController();
+      const turnA = speak({ system: s.system, messages, theirWords: words, stream: stream ?? anthropicStream({ signal: ctlA.signal }), log, callId: call.id });
+      let events = turnA;
+      if (openers && !careful) {
+        const opener = opening.pickOpener(kind, recent);
+        const turnB = speak({ system: s.system, messages, theirWords: words, stream: streamB ?? anthropicStream({ signal: ctlB.signal }), log, callId: call.id, opener });
+        events = withOpenerRace({ speakA: turnA, speakB: turnB, opener, atMs: openerAtMs, stopA: () => ctlA.abort(), stopB: () => ctlB.abort(), timers, now });
       }
+      for await (const ev of events) {
+        if (ev.type === "say") { said.push(ev.text); yield { type: "say", text: ev.text, from: "speak", ...(ev.opener ? { opener: true, kind } : {}) }; }
+        if (ev.type === "handoff") handoff = { ask: ev.ask || words, why: ev.why };
+      }
+      // A careful turn (money, logins, "is it done?") opens with a stand-alone line before the music.
+      if (openers && careful && handoff) { const line = opening.pickStandalone(recent); said.push(line); yield { type: "say", text: line, from: "speak", opener: true, kind: "careful" }; }
     }
   }
   if (handoff && full) {

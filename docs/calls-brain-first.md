@@ -87,3 +87,22 @@ Time to first sentence, from the model request (the speaking turn, warm cache):
 5. Set `REASON_CALL_BRAIN=owner` and `REASON_CALL_BRAIN_SECRET`, then make test calls before `on`.
 
 Recordings stay deleted per call (`DELETE /agents/calls/{id}`) as today.
+
+## Openers (`src/calls/brainopener.js`, `REASON_CALL_BRAIN_OPENERS`, on with the brain)
+
+How a turn starts:
+
+- **Classify, then pick an opener.** Their turn is classified by fixed rules in under 3 ms: chat, question, lookup, request, memory or repair. A content-free opener is then picked from that class's bank.
+  - No opener holds a fact, a number, a yes/no, "sure", "done" or "got it", or anything upbeat. A test pins this.
+  - The opener is never one of the last 3 said on the call.
+- **Two speaking turns start together.** One is plain. The other is told the opener is already said; Haiku refuses an assistant prefill, so this goes in as a note.
+  - If the plain turn's first sentence is in by 700 ms (`OPENER_AT_MS`), no opener is said.
+  - Otherwise the opener is said and the told turn's words follow it. `joinAfter` drops repeats.
+- **Careful turns** (done questions, money, logins) open with a stand-alone line ("Let me see.") before the hold.
+
+Measured on four replayed calls:
+
+- Decision time: rules 0.02-2.9 ms; a tiny model 526-1301 ms.
+- Class accuracy: rules 12/16 (14/16 after fixes made on the same turns); the tiny model 14/16.
+- Continuation's first sentence: p50 ~0.85 s, the same as without an opener.
+- Joins: 4/17 wrong before the fixes to `joinAfter` and the bank.
