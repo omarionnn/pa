@@ -184,6 +184,16 @@ export function callHead(row, { now = clock.now(), tz = config.tz } = {}) {
   return `- ${whenSpoken(row.created_at, now, tz)}, ${row.direction === "in" ? "they called" : "you rang them"}${mins ? `, ${mins} min` : ""}`;
 }
 
+/** Reason's own texts after a call, up to `until`, as one short clause, or "" (at most two, newest kept). */
+export function sentAfter(row, until, { tz = config.tz, read = messagesBetween } = {}) {
+  let rows = [];
+  try { rows = (read(row.conversation_id, endOf(row), until) ?? []).filter((r) => r.role === "assistant"); } catch { return ""; }
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+  const parts = rows.map((r) => ({ at: r.at, g: gistOf(r.text, 60) })).filter((x) => x.g && !/NO_REPLY/.test(x.g)).slice(-2)
+    .map((x) => `${fmt.format(new Date(Number(x.at)))} "${x.g.replace(/"/g, "'")}"`);
+  return parts.length ? ` Texted them after this call (done, whatever is listed open above): ${parts.join("; ")}.` : "";
+}
+
 export function callLine(row, { now = clock.now(), tz = config.tz } = {}) {
   const head = callHead(row, { now, tz });
   const kept = String(row.summary ?? "").trim();
@@ -214,14 +224,22 @@ export function earlierCallsNote(call, { tz = config.tz } = {}) {
     const line = callLine(r, { now: until, tz })
       || (!lines.length && Number(r.created_at) >= until - KEEP_LAST_HOURS * 3600_000 ? `${callHead(r, { now: until, tz })}: no notes were kept from it; Reason has the call itself` : "");
     if (!line) continue;
-    if (lines.length && used + line.length > CARRY_CHARS) break;
-    lines.push(line);
-    used += line.length;
+    // What Reason texted after this call and before the next one (the newest call's own after-texts are in
+    // SINCE YOUR LAST CALL): a thing it delivered is never read again as still open.
+    const next = rows.filter((x) => x.id !== call.id && Number(x.created_at) > Number(r.created_at) && Number(x.created_at) < until && wasTheirCall(x)).at(-1);
+    // The newest call: SINCE YOUR LAST CALL lists its after-texts when it was in the past day; older, they go here.
+    const upTo = next ? Number(next.created_at) : until - endOf(r) >= KEEP_LAST_HOURS * 3600_000 ? until : 0;
+    const after = upTo ? sentAfter(r, upTo, { tz }) : "";
+    const full = `${line}${after}`;
+    if (lines.length && used + full.length > CARRY_CHARS) break;
+    lines.push(full);
+    used += full.length;
     if (lines.length >= CARRY_CALLS) break;
   }
   const note = lines.length
     ? "EARLIER CALLS with them, newest first (your own record of your calls, kept by code): when, what they told you, what you said you'd do, what was left open."
-      + " You were on these calls — never ask again for something here, and if something you said you'd do is still open, own it.\n"
+      + " You were on these calls — never ask again for something here, and if something you said you'd do is still open, own it."
+      + " A text you sent after a call (listed with it, or under SINCE YOUR LAST CALL) settles what it delivered: never call that still open or still to do.\n"
       + lines.join("\n")
     : "";
   kept.set(key, note);
@@ -254,7 +272,21 @@ export function lastCallWithin(call, hours) {
 export const endOf = (row) => Number(row.ended_at) || (Number(row.created_at) + (Number(row.duration_s) || 0) * 1000);
 
 const SINCE_LINES = 8;
-const SINCE_CHARS = 1100;
+const SINCE_CHARS = 850;
+/** Past SINCE_CHARS, older texts are kept as one-line gists (what was sent, when) in this much more room. */
+const GIST_CHARS = 300;
+const GIST_LINES = 8;
+const LINK = /\b(?:https?|ftp):\/\/[^\s<>"'()\[\]]+|\bwww\.[^\s<>"'()\[\]]+/gi;
+/**
+ * A text as the voice may be handed it: no link anywhere in it (a Reason page's link carries an access key,
+ * and is never said on a call), "" when nothing is left. Call 116 kept two bare links and lost the texts.
+ */
+export function withoutLinks(text) {
+  return String(text ?? "").replace(LINK, " ").replace(/\(\s*\)|\[\s*\]/g, " ").replace(/\s+([.,;:!?])/g, "$1").replace(/\s+/g, " ").trim()
+    .replace(/^[\s:—-]+|[\s:—-]+$/g, "");
+}
+/** One short line of what a text said: its first words, links out. */
+export const gistOf = (text, n = 70) => clip(withoutLinks(text), n);
 /**
  * What was texted after their last call ended, up to this call (call 115: "where were we?" six minutes
  * after a call whose page had been texted at 8:26 PM): Reason's texts and theirs, from the message log,
@@ -269,19 +301,34 @@ export function sinceLastCallNote(call, { tz = config.tz, read = messagesBetween
   try { rows = read(call.conversation_id, endOf(last), until) ?? []; } catch { rows = []; }
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
   const out = [];
-  let used = 0;
+  let used = 0, gists = 0, gistUsed = 0;
   for (const r of [...rows].reverse()) {
     const who = r.role === "assistant" ? "you texted them" : r.role === "user" ? "they texted you" : "";
-    const text = clip(r.text, 200);
-    if (!who || !text || /NO_REPLY/.test(text)) continue;
-    const line = `- ${fmt.format(new Date(Number(r.at)))} ${who}: ${text}`;
-    if (used + line.length > SINCE_CHARS) break;
-    out.unshift(line);
-    used += line.length;
-    if (out.length >= SINCE_LINES) break;
+    // No link in anything the voice is handed: a bare link is skipped, and took the room of the text it came
+    // with (call 116: the 8:27 PM market numbers were cut, their page's link kept).
+    const plain = withoutLinks(r.text);
+    if (!who || !plain || /NO_REPLY/.test(plain)) continue;
+    const at = fmt.format(new Date(Number(r.at)));
+    const line = `- ${at} ${who}: ${clip(plain, 200)}`;
+    if (!gists && out.length < SINCE_LINES && used + line.length <= SINCE_CHARS) {
+      out.unshift(line);
+      used += line.length;
+      continue;
+    }
+    // Out of room: an older text is still listed, as a gist, so what went is never lost (call 114's market
+    // page, sent and then read as "still open").
+    // Reason's own texts first (what it delivered); theirs while there is room for both.
+    const mine = r.role === "assistant";
+    const gist = `- ${at} ${mine ? "you texted" : "they texted"}: ${gistOf(plain, mine ? 60 : 40)}`;
+    if (gists >= GIST_LINES) break;
+    if (gistUsed + gist.length > (mine ? GIST_CHARS : GIST_CHARS / 3)) continue;
+    out.unshift(gist);
+    gists += 1;
+    gistUsed += gist.length;
   }
   const ended = whenSpoken(endOf(last), until, tz);
   return `SINCE YOUR LAST CALL (it ended ${ended}), from the message log, newest last: what you texted them and what they texted you after it. What is listed here really went.`
+    + (gists ? " Older texts are shortened to their first words (ending in …)." : "")
     + `\n${out.length ? out.join("\n") : "- nothing texted either way since it ended"}`;
 }
 
@@ -541,12 +588,13 @@ export function brokeNote(row) {
 // 14 of 16 calls opened "hey Omari — what's up?" (call audit 11-11). The opening is still code's words —
 // it is said before any turn has run — but it fits the time of day, says "again" when they spoke a
 // little while ago, and is never the line the last call opened with.
-const GREETINGS = {
+export const GREETINGS = {
   morning: ["morning, {n} — what's up?", "hey {n}, good morning — how's it going?", "hey {n} — how's your morning?"],
   afternoon: ["hey {n} — how's your afternoon going?", "afternoon, {n} — what's going on?", "hey {n}, good to hear from you — what's up?"],
   evening: ["hey {n} — how's your evening?", "evening, {n} — what's up?", "hey {n}, good to hear from you — how was today?"],
   night: ["hey {n} — you're up late. what's up?", "hey {n} — late one tonight? what's going on?", "hey {n}, what's up?"],
-  again: ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, what did we miss?"],
+  // Not "what did we miss?" (calls 115, 116): it asks them to fill Reason in, the one thing Reason should not need.
+  again: ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, good to hear from you again — what's up?"],
 };
 // A call Reason places keeps "…, what's up?" at the end: the voice swaps that for why it rang (`openingPurpose`).
 const SALUTES = {
@@ -603,7 +651,10 @@ export function greetingFor({ conversationId, name = "", direction = "in", now =
   const fill = (l) => (who ? l.replace("{n}", who) : l.replace(/,? ?\{n\}/, "")).replace(/^[\s,—-]+/, "");
   const options = (direction === "in" ? GREETINGS[part] : SALUTES[part].map(s => `${s}, what's up?`)).map(fill);
   // What the last call opened with, off its own transcript (an inbound row's greeting is not on the row).
-  const last = String(rows[0]?.transcript ?? "").split("\n").find(l => /^Reason\s*:/.test(l)) ?? String(rows[0]?.announcement ?? "");
+  // The newest row with words: the call being greeted is already a row, with none yet (call 116 read its own
+  // empty row and opened with call 115's line).
+  const prev = rows.find(r => String(r.transcript ?? "").trim() || String(r.announcement ?? "").trim());
+  const last = String(prev?.transcript ?? "").split("\n").find(l => /^Reason\s*:/.test(l)) ?? String(prev?.announcement ?? "");
   const said = last.toLowerCase();
   const start = rows.length % options.length;
   for (let i = 0; i < options.length; i++) {

@@ -101,7 +101,11 @@ export const HONESTY_LINES = [
  * prompt can carry. The agent settings that go with them are `CALL_FEEL` in scripts/cartesia-agent-setup.mjs.
  */
 export const TURN_LINES = [
-  "If their words stop on a filler or mid-thought (\"um\", \"so\", \"and\", \"like\", \"because\", \"I said\"), they are not done: use skip_turn and wait. Never start talking over them.",
+  // Call 116: "Yeah, um, [re]member conversation about um, for events." was skipped (an "um" inside it), and
+  // nothing more was said until he asked "Hello?" ten seconds later. Skip only on the LAST word.
+  "Only when their very last word is a filler or a joining word (\"um\", \"so\", \"and\", \"like\", \"because\") are they not done: then use skip_turn and wait. Never start talking over them.",
+  "A sentence that ends on a real word is finished, even with an \"um\" inside it or words that sound garbled: answer it. If you're not sure what they said, ask back in a few words (\"sorry, the conversation about events?\"); never say nothing to it.",
+  "If they say \"hello?\" or \"you there?\" after you said nothing, you missed their last turn: answer what they said before it, or ask about it, never a fresh \"what's up?\".",
   "When they ask you to wait (\"give me a second\", \"hold on\", \"one sec\", \"wait\"), use skip_turn and say nothing until they speak again.",
   "When you skip a turn, say nothing at all: never say \"skipping\", never name a tool, never read out a marker or anything in brackets.",
   "Only ask if they're still there when the line has really gone quiet: never while Reason is looking something up, never after they asked you to wait, never right after you skipped a turn, at most once per silence and at most twice in a call.",
@@ -499,7 +503,7 @@ export class CartesiaAgentCall {
     this.endWhy = "";
     this.startedAt = now();
     // The numbers the first call is for (section 5): kept per reply, logged as they happen and at the end.
-    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0, memoryClaims: 0, markers: 0, checkIns: 0, unheard: 0, reoffered: 0, deferredSaid: 0 };
+    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0, memoryClaims: 0, markers: 0, checkIns: 0, unheard: 0, reoffered: 0, deferredSaid: 0, missedTurns: 0 };
     // Reason's latest answer handed to the voice, until the agent's next turn says how much of it was
     // spoken; one they talked over before its point, until it is said again (`turnEnded`, `spoken`).
     this.answerOut = null;
@@ -708,6 +712,13 @@ export class CartesiaAgentCall {
       this.turns.push({ who: "reason", text: MEMORY_NOTE, at: this.now() });
     }
     if (who === "them") {
+      // "Hello?" right after a turn of theirs that got no answer (call 116): the agent missed it. The voice is
+      // told to pick it back up (TURN_LINES); this counts it, so the next test call shows whether that happens.
+      const before = this.turns.at(-2);
+      if (text && text.length <= 40 && CHECK_IN.test(text) && before?.who === "them" && !CHECK_IN.test(before.text)) {
+        this.m.missedTurns += 1;
+        this.log({ cartesia_missed_turn: this.call.id, turn: Number(e.turn) || 0, after_ms: this.now() - Number(before.at || 0) });
+      }
       this.theirTurnEndAt = this.now();
       this.replyKind = "plain";
       this.askAnsweredAt = null;
@@ -996,7 +1007,7 @@ export class CartesiaAgentCall {
       talked_over: this.m.overs.filter(o => o.playing).length, clears: this.m.overs.length,
       talked_over_ms: med(this.m.overs.filter(o => o.playing).map(o => o.sound_to_clear_ms)),
       asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs, unbacked_claims: this.m.unbacked, memory_claims: this.m.memoryClaims,
-      markers_spoken: this.m.markers, check_ins: this.m.checkIns, answers_unheard: this.m.unheard, answers_reoffered: this.m.reoffered, deferrals_said: this.m.deferredSaid,
+      markers_spoken: this.m.markers, check_ins: this.m.checkIns, answers_unheard: this.m.unheard, answers_reoffered: this.m.reoffered, deferrals_said: this.m.deferredSaid, missed_turns: this.m.missedTurns,
     });
     // Their copy goes whatever the settle does; both are waited for, neither stops the other.
     const deleting = this.agentCallId ? this.deleteAndCheck().catch(() => null) : Promise.resolve(null);
