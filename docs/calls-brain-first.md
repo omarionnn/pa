@@ -117,3 +117,24 @@ Buckets of what a caller says, as data. Each bucket has cues to recognise it and
 - **opener (bucket B)**: a content-free opener, and the brain continues from it.
 
 `REASON_CALL_BRAIN_BANK` names a JSON file (the bank mined from the owner's own calls). Without one, a small placeholder of the same shape is used. Every line is checked as it loads, and claims, numbers, promises and yes/no are dropped. A bank file can never put a "done" in Reason's mouth.
+
+## Test line (experiment; `deploy/brain-test/`, `line-agent/`, `src/calls/braintest.js`)
+
+- **Who speaks**: a Cartesia-hosted Line agent (`line-agent/main.py`, voice Gemma) keeps the ears, the voice, turn-taking and interruptions. For each turn it posts the history to `https://app.heyreason.com/brain-test/turn` with a bearer secret, held in the agent's Cartesia env and in `/etc/reason-brain-test/secret` (root 600, handed to the unit with `LoadCredential`). It speaks each streamed `say`.
+- **The brain**: `reason-brain-test.service` runs `scripts/brain-test-server.mjs` as `reason`, from `/opt/reason-brain-test`, on 127.0.0.1:8790, with `MemoryMax=700M`.
+  - Its environment is the live `.env` minus every sending, paying or acting key.
+  - The database and keystore are opened read-only (`REASON_DB_READONLY=1`). Writes that modules make while loading are skipped; after that, every write throws.
+  - The unit also mounts `/opt/reason` read-only.
+  - No timers or sweeps start.
+- **Who may use it**: only the owner's registered number with carrier attestation A (`gate`). Any other caller hears "This is a private test line." and the call ends; nothing about anyone is loaded for that call.
+  - Cartesia's `CallRequest` carries `from` and `metadata` but no documented attestation field. A refused call logs its metadata key names (never values) so this can be checked.
+  - `"gate": "number"` in the variant file accepts the number alone. That is an owner decision.
+- **What it does**: it answers from memory, using the speaking turn plus the openers and bank.
+  - Anything that would act, look up or check something gets an honest fixed line ("This test line can't do things yet. I've noted it…"). Notes go to a local file with mode 600.
+  - Nothing from these calls is saved to Reason, and nothing is texted.
+  - After each call, Cartesia's copy of the audio and transcript is deleted (`DELETE /agents/calls/{id}`).
+- **Variants**: `/opt/reason-brain-test/state/variant.json` is read at each call's start, so changing it needs no restart.
+  - `i`: Haiku, no opener.
+  - `ii`: Haiku plus openers (the default).
+  - `iii`: Opus plus openers.
+- **Remove all of it**: run `bash /root/brain-test-teardown.sh` on the server. It deletes the test calls' data, releases the number and deletes the agent, then removes the unit and files, then removes the Caddy route (under the deploy lock, validated, with a graceful reload and checks).

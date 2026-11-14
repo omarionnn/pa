@@ -109,7 +109,8 @@ export async function handle({ method, path, headers = {}, rawBody = "", secret,
   if (path === "/brain-test/start") {
     const g = gate(body, gateOpts);
     // Refused: nothing about anyone is loaded, and the call is not kept.
-    if (!g.ok) { log({ brain_test_refused: g.why }); return json({ ok: false, say: PRIVATE_LINE, end: true }); }
+    // Key names only (never values or the number), so one refused call shows whether Cartesia passes attestation on.
+    if (!g.ok) { log({ brain_test_refused: g.why, metadata_keys: Object.keys(body.metadata ?? {}).slice(0, 20) }); return json({ ok: false, say: PRIVATE_LINE, end: true }); }
     if (!callId) return json({ ok: false, say: PRIVATE_LINE, end: true });
     const variant = variantNow();
     const row = rowFor(callId);
