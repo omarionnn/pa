@@ -28,7 +28,7 @@ import { trySubmittedCode, issueCode, cookieHeader, codeHost, boundTo, ATTEMPT_W
 import * as db from "../db.js";
 import { backToMessages, BACK_JS, BACK_CSS } from "./backlink.js";
 import { grantAfterSave } from "../loginuse.js";
-import { afterSave } from "../resume.js";
+import { afterSave, saveOnly } from "../resume.js";
 
 /**
  * The two vault pages' phone layout (this page and src/pages/loginuse.js), on top of the paper kit: a
@@ -284,7 +284,7 @@ export async function saveLoginRequest({ sub = "", method = "GET", headers = {},
   // Reason hears about it by itself (src/resume.js): it carries on with the request the save link was
   // made for (a one-use grant bound to this person, site and request), or texts a short confirmation.
   // The answer says only whether Reason knows: never the grant or the request.
-  const grant = v.quoted ? grantAfterSave(v.conversationId, out.site, v.quoted) : "";
+  const grant = v.quoted && !saveOnly(v.quoted) ? grantAfterSave(v.conversationId, out.site, v.quoted) : "";
   const carried = afterSave(runtime, { conversationId: v.conversationId, site: out.site, label: out.label, request: v.quoted, grant }, { log });
   return json(200, { ok: true, carried: !!carried });
 }

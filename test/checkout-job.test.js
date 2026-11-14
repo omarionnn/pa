@@ -358,7 +358,7 @@ test("pinned 11-08 review: the end text says what the watch already found, and n
   db.saveOauthTokens(OMARI, "google", { accessToken: "at_1", scope: "gmail.readonly", accountLabel: "omari@gmail.com" });
   let tries = 0;
   const brokeStopped = await endAfterPay(async () => { if (++tries > 1) throw new Error("gmail 500"); return { ok: true, connected: true, hits: [] }; }, { stop: true });
-  assert.equal(brokeStopped.text, `${HEAD} I couldn't get into your email just now; ask me and I'll try again. ${CHARGE}`);
+  assert.equal(brokeStopped.text, `${HEAD} I couldn't get into your email just now, so I couldn't look for Ulta's confirmation; the shop's own order page is the surest place to check. ${CHARGE}`);
   // 5. Watch running and the mail can't be read right now: the promise is real, the watch keeps going.
   tries = 0;
   const broke = await endAfterPay(async () => { if (++tries > 1) throw new Error("gmail 500"); return { ok: true, connected: true, hits: [] }; });

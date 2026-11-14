@@ -1,6 +1,7 @@
 // One Reason instance: per-conversation turn queue, plus the three things that make it proactive
 // without making it a nuisance — timers that fire, watches that re-check, and dropped threads
 // it raises again. Each pass is separately callable so its logic can be tested without a model.
+import * as retry from "./retry.js";
 import { RECORDING_RIDES_MS } from "./config.js";
 import * as doing from "./doing.js";
 import { EventEmitter } from "node:events";
@@ -646,7 +647,17 @@ export class Runtime extends EventEmitter {
           const check = kind !== "user" ? { ok: true }
             : draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text, fast: fastReplyOn({ conversationId, isOperator: !!meta.isOperator }) });
           timing.mark(conversationId, "check");
-          const notes = [check.ok ? "" : check.note, figures ?? ""].filter(Boolean);
+          // An offer to try again after a failed attempt (src/retry.js): a safe lookup with tries left
+          // goes back through the one rewrite below to be run again; otherwise code states it plainly.
+          const offer = retry.fixOffer({ draft: reply, acts: turnActs, conversationId });
+          if (offer?.text) {
+            this.log({ retry_offer_stated: conversationId, tool: offer.tool, kind: offer.kind });
+            draft?.taken();
+            if (!db.replaceDraft(conversationId, reply, offer.text)) this.log({ draft_not_replaced: conversationId });
+            reply = offer.text;
+          }
+          else if (offer?.note) this.log({ retry_offer_rerun: conversationId, tool: offer.tool });
+          const notes = [check.ok ? "" : check.note, figures ?? "", offer?.note ?? ""].filter(Boolean);
           if (notes.length) {
             const rewriteStarted = Date.now();
             const note = notes.join(" ");
