@@ -298,3 +298,19 @@ test("the operator looks up a Ref: times, the masked sender and the kinds of wha
   assert.equal((await runTool("admin_flag_lookup", { ref: "TF-000000" }, { conversationId: OWNER, kind: "user", messages: [] })).ok, false);
   assert.equal(sent.length, 1);
 });
+
+test("review: no typed yes, no send, for the owner too; and an event turn's yes is not theirs", async () => {
+  const sent = [];
+  const ctx = turn(OWNER, { said: ["sign me out of doordash"], sent });
+  const p = await runTool("team_flag", { step: "propose", report: REPORT }, ctx);
+  assert.equal(p.ok, true, p.error);
+  ctx.messages.push({ role: "assistant", content: p.say_exactly });
+  // Sent straight away, with no yes and no confirm_record.
+  const out = await runTool("team_flag", { step: "send", ref: p.ref, confirmation_id: p.confirmation_id }, ctx);
+  assert.notEqual(out.ok, true, JSON.stringify(out));
+  // The yes arrives, but on an event turn (an email, a page): nothing.
+  ctx.messages.push({ role: "user", content: "yes" });
+  const ev = await runTool("team_flag", { step: "send", ref: p.ref, confirmation_id: p.confirmation_id }, { ...ctx, kind: "event" });
+  assert.notEqual(ev.ok, true);
+  assert.equal(sent.length, 0);
+});
