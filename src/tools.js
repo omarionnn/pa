@@ -12294,6 +12294,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "team_flag": {
       const kind = ctx.kind ?? "event";
+      // Never from a call: a spoken yes is not their typed one, and the words were not shown.
+      if (ctx.onCall) return { ok: false, blocked: "on_call", error: "A report to Reason's team is never made on a call. Nothing was proposed or sent. If it is still wrong after the call, it can be offered by text." };
       if (input.step === "propose") {
         return teamflag.propose({
           conversationId: c, report: input.report, kind,
@@ -12304,7 +12306,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const ev = ctx.events;
       const send = ctx.teamFlagSend ?? (ev?._tell ? (text, idempotencyKey) => ev._tell(config.ownerConversation, text, { toMaster: true, idempotencyKey })
         : ev?.say ? (text, idempotencyKey) => ev.say(config.ownerConversation, text, { toMaster: true, idempotencyKey }) : null);
-      return await teamflag.sendFlag({ conversationId: c, ref: input.ref, confirmationId: ctx.confirmationId ?? input.confirmation_id ?? null, kind, send, spend: ctx.spend ?? (() => {}) });
+      return await teamflag.sendFlag({ conversationId: c, ref: input.ref, confirmationId: ctx.confirmationId ?? input.confirmation_id ?? null, kind, send, spend: ctx.spend ?? (() => {}), messages: ctx.messages ?? [] });
     }
 
     case "call_recording_delete": {

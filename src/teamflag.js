@@ -20,10 +20,13 @@ import * as restcrypt from "./restcrypt.js";
 import { scrub as opsScrub } from "./opsdigest.js";
 import { maskPhone, maskEmail } from "./logmask.js";
 import { HIDDEN } from "./pagesecrets.js";
+import * as callpass from "./callpass.js";
 
 export const MAX_CHARS = 400;
 export const MIN_CHARS = 20;
 export const PER_DAY = 3;
+/** Across everyone: the operator's thread is never flooded, whoever is sending. */
+export const ALL_PER_DAY = 20;
 const DAY_MS = 24 * 60 * 60_000;
 /** The first line of what the operator receives. */
 export const HEADER = "Flag from a Reason user";
@@ -77,6 +80,12 @@ const secretValue = (sep, raw) => {
 const TOKEN = /\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}\b/g;
 // A bare one-time code: six to eight digits standing alone.
 const LONE_CODE = /(?<![\d$.,:/-])\b\d{6,8}\b(?![\d.,:/-])/g;
+// A bank account or routing number, named or not: any run of 9 to 17 digits (a phone number is masked
+// before this, a card number hidden before it), and the value after "account/routing number".
+const LONG_DIGITS = /(?<![\d…])\b\d(?:[ -]?\d){8,16}\b/g;
+const BANK_NAMED = /\b(account|acct|routing|aba|iban|sort code|member)(\s*(?:number|no\.?|#))?(\s*(?:is|was|=|:|->|ending in|ends in)?\s*)([A-Z]{0,4}[\d][\d -]{3,}\d)/gi;
+// Whatever follows "passphrase" (a call passphrase is plain words, so no shape gives it away): the rest of the sentence.
+const PASSPHRASE_SAID = /\b(pass ?phrase|pass phrase)(\s*(?:is|was|=|:|->|of)?\s*)(["'“‘]?)([^.!?\n"”’]{2,120})/gi;
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 // A phone number's shapes: +14155559876, (415) 555-9876, 415.555.9876, 415 555 9876.
 const PHONE = /(?:\+?\d{1,3}[\s.-]?)?\(?\b\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g;
@@ -114,10 +123,13 @@ export function cleanReport(raw, { names = [] } = {}) {
   let t = String(raw ?? "").normalize("NFKC")
     .replace(/[\u0000-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ");
   t = t.replace(URL, "[a link]");
+  t = t.replace(PASSPHRASE_SAID, (m, word, sep, _q, v) => /^(?:is |was )?(?:wrong|incorrect|not (?:set|accepted|right)|missing|required|asked|needed|set)\b/i.test(v.trim()) && !/[:=]|->/.test(sep) ? m : `${word}${sep || " "}${HIDDEN}`);
   t = t.replace(NAMED_SECRET, (m, word, sep, _q, v) => secretValue(sep, v) ? `${word}${sep || " "}${HIDDEN}${(v.match(/[.!?)]+$/) ?? [""])[0]}` : m);
   t = t.replace(CARD, (m) => { const d = m.replace(/\D/g, ""); return d.length >= 13 && d.length <= 19 && luhn(d) ? HIDDEN : m; });
   t = t.replace(EMAIL, emailMask);
   t = t.replace(/\+\d{8,15}\b/g, phoneMask).replace(PHONE, phoneMask);
+  t = t.replace(BANK_NAMED, (m, word, num, sep) => `${word}${num ?? ""}${sep || " "}${HIDDEN}`);
+  t = t.replace(LONG_DIGITS, (m) => (m.replace(/\D/g, "").length >= 9 ? HIDDEN : m));
   t = t.replace(TOKEN, HIDDEN);
   t = t.replace(LONE_CODE, HIDDEN);
   t = t.replace(STREET, "[an address]");
@@ -163,6 +175,37 @@ export function sendTarget(conversationId, ref) {
   return r ? flagTarget(r.ref, r.text) : `team flag ${String(ref ?? "").toUpperCase()}: none`;
 }
 
+/** Sent by anybody in the last day. */
+export function sentByEveryone(now = clock.now()) {
+  return q("SELECT COUNT(*) AS n FROM team_flags WHERE state = 'sent' AND sent_at > ?").get(now - DAY_MS).n;
+}
+const BUSY_WORDS = "Reason's team has had a lot of reports today, so this one can't be sent right now. Nothing was sent. Say so plainly in one line, and that they can flag it tomorrow if it is still wrong.";
+
+/** Does the text hold their active call passphrase (src/callpass.js keeps only its hash)? */
+export function holdsPassphrase(conversationId, text) {
+  let rec = null;
+  try { rec = callpass.activeFor(conversationId); } catch { return false; }
+  if (!rec?.n) return false;
+  const words = callpass.normalWords(text);
+  const n = Number(rec.n);
+  for (let i = 0; i + n <= words.length && i < 120; i++) {
+    try { if (callpass.phraseMatches(words.slice(i, i + n).join(" "), rec)) return true; } catch { return false; }
+  }
+  return false;
+}
+
+/**
+ * Were these exact words shown to them? The send goes only when one of Reason's own messages in this
+ * turn's thread carried the stored text, so a yes is never a yes to words they did not see.
+ */
+export function wasShown(messages, text) {
+  const norm = (v) => String(v ?? "").replace(/["“”'’]/g, "'").replace(/\s+/g, " ").trim().toLowerCase();
+  const want = norm(text);
+  if (!want) return false;
+  const textOf = (m) => typeof m?.content === "string" ? m.content : Array.isArray(m?.content) ? m.content.map((b) => b?.text ?? "").join(" ") : "";
+  return (Array.isArray(messages) ? messages : []).slice(-12).some((m) => m?.role === "assistant" && norm(textOf(m)).includes(want));
+}
+
 const LIMIT_WORDS = `They have already sent ${PER_DAY} reports to Reason's team today, which is the most there can be in a day. Nothing was sent.`
   + ` Say so kindly in one line, and that they can flag it tomorrow if it is still wrong. Do not offer anything else in its place.`;
 const EVENT_WORDS = "A report to Reason's team can only come from a turn they started. Nothing was proposed and nothing was sent. Do not offer it now.";
@@ -177,7 +220,10 @@ export function propose({ conversationId, report, kind = "event", ask }) {
   const c = String(conversationId);
   if (kind !== "user") return { ok: false, blocked: "not_their_turn", error: EVENT_WORDS };
   if (sentToday(c) >= PER_DAY) return { ok: false, blocked: "daily_limit", error: LIMIT_WORDS };
+  if (sentByEveryone() >= ALL_PER_DAY) return { ok: false, blocked: "team_busy", error: BUSY_WORDS };
   const text = cleanReport(report, { names: namesOnRecord(c) });
+  // Their call passphrase is never in a report, whatever words it is: every run of its length is checked against its hash.
+  if (holdsPassphrase(c, text)) return { ok: false, blocked: "holds_secret", error: "That report would carry something secret of theirs. Nothing was proposed or sent. Write it again from the facts only, with no words they use to prove who they are." };
   if (text.replace(/\[[^\]]*\]|…/g, "").replace(/\W+/g, "").length < MIN_CHARS) {
     return { ok: false, blocked: "too_short", error: "That report says too little once cleaned. Write one or two plain sentences: what they asked for, what happened, what is still wrong, what would fix it. Nothing was proposed." };
   }
@@ -232,7 +278,7 @@ export function operatorText({ conversationId, ref, text, at = clock.now() }) {
  * say to config.ownerConversation as an operator notice). One row is sent once; a failed send is not
  * tried again by code, and the model is told not to either.
  */
-export async function sendFlag({ conversationId, ref, confirmationId = null, kind = "event", send, spend = () => {} }) {
+export async function sendFlag({ conversationId, ref, confirmationId = null, kind = "event", send, spend = () => {}, messages = null }) {
   const c = String(conversationId);
   if (kind !== "user") return { ok: false, blocked: "not_their_turn", error: EVENT_WORDS };
   const row = getFlag(c, ref);
@@ -243,6 +289,10 @@ export async function sendFlag({ conversationId, ref, confirmationId = null, kin
     return { ok: false, blocked: "wrong_confirmation", error: `Confirmation #${confirmationId} is not the ask for flag ${row.ref}. Nothing was sent.` };
   }
   if (sentToday(c) >= PER_DAY) return { ok: false, blocked: "daily_limit", error: LIMIT_WORDS };
+  if (sentByEveryone() >= ALL_PER_DAY) return { ok: false, blocked: "team_busy", error: BUSY_WORDS };
+  if (messages && !wasShown(messages, row.text)) {
+    return { ok: false, blocked: "not_shown", error: `They have not been shown the exact words of flag ${row.ref}. Nothing was sent. Say this to them as it is, and wait for their yes: ${offerWords(row.text)}` };
+  }
   if (typeof send !== "function") return { ok: false, blocked: "no_sender", error: "Reason's team cannot be reached from here right now. Nothing was sent. Say so plainly; do not try again." };
   const at = clock.now();
   // Claimed before the send, so two calls in one turn cannot both go.

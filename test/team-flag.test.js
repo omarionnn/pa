@@ -233,3 +233,48 @@ test("the offer is cued on the listed endings, and not on a clean one", async ()
   assert.equal(flagFacts(job("not_found")), "");
   assert.match(teamflag.offerCue("x"), /team_flag/);
 });
+
+test("review: bank account and routing numbers, and a call passphrase however written, never reach the report", async () => {
+  const t = teamflag.cleanReport("Bill pay to ConEd from checking account number 000123456789, routing 021000021, failed; the passphrase is blue river stone lamp. Account ending in 4321.");
+  assert.ok(!/000123456789|021000021|blue river|stone lamp/.test(t), t);
+  // The last four, as a bank prints it, is a mask already and stays.
+  assert.match(t, /ending in 4321/);
+  assert.match(t, /failed/);
+  // Ordinary words about a passphrase stay.
+  assert.match(teamflag.cleanReport("The call passphrase was not accepted and the payment was deferred to text."), /passphrase was not accepted/);
+  // A passphrase written with no label at all: matched against its hash, and refused.
+  const callpass = await import("../src/callpass.js");
+  assert.equal(callpass.setActive(OWNER, "copper kettle under bridge"), true);
+  try {
+    const out = await runTool("team_flag", { step: "propose", report: "Their Netflix cancel failed and they said copper kettle under bridge twice on the call before it ended." }, turn(OWNER, { said: ["cancel netflix"] }));
+    assert.equal(out.ok, false);
+    assert.equal(out.blocked, "holds_secret");
+    assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM team_flags").get().n, 0, "nothing stored");
+    const fine = await runTool("team_flag", { step: "propose", report: REPORT }, turn(OWNER, { said: ["cancel netflix"] }));
+    assert.equal(fine.ok, true, fine.error);
+  } finally { callpass.removeActive(OWNER); }
+});
+
+test("review: a yes to words that were never shown sends nothing; the words are shown again", async () => {
+  const sent = [];
+  const ctx = turn(OWNER, { said: ["sign me out of doordash"], sent });
+  const p = await runTool("team_flag", { step: "propose", report: REPORT }, ctx);
+  ctx.messages.push({ role: "assistant", content: "Can I let the team know about this?" });
+  ctx.messages.push({ role: "user", content: "yes" });
+  const r = await runTool("confirm_record", { confirmation_id: p.confirmation_id }, ctx);
+  const out = await runTool("team_flag", { step: "send", ref: p.ref, confirmation_id: p.confirmation_id }, { ...ctx, confirmationId: r.confirmation_id ?? p.confirmation_id });
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "not_shown", JSON.stringify(out));
+  assert.match(out.error, /I.d send: "/);
+  assert.equal(sent.length, 0, "nothing reached the operator");
+});
+
+test("review: never on a call, and the operator's thread takes at most a day's worth from everyone together", async () => {
+  const onCall = await runTool("team_flag", { step: "propose", report: REPORT }, { ...turn(OWNER, { said: ["x"] }), onCall: 9 });
+  assert.equal(onCall.blocked, "on_call");
+  const now = Date.now();
+  const ins = db.db.prepare("INSERT INTO team_flags (conversation_id, ref, text, state, created_at, sent_at) VALUES (?, ?, 'x', 'sent', ?, ?)");
+  for (let i = 0; i < teamflag.ALL_PER_DAY; i++) ins.run(`dm:other${i}`, `TF-${String(i).padStart(6, "0")}`, now, now);
+  const out = await runTool("team_flag", { step: "propose", report: REPORT }, turn(OWNER, { said: ["x"] }));
+  assert.equal(out.blocked, "team_busy");
+});
