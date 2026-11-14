@@ -335,7 +335,7 @@ const sessions = new Map();
  * has), the preload, and one cache warm-up, while the call connects. Never throws; the promise is kept,
  * so a turn that comes early waits on the one build instead of starting another.
  */
-export function openBrain(call, { voice = null, preload = preloadFor, warm = true, client = null, log = () => {} } = {}) {
+export function openBrain(call, { voice = null, preload = preloadFor, warm = true, client = null, model: chosen = null, log = () => {} } = {}) {
   if (!call?.id) return Promise.resolve(null);
   if (sessions.has(call.id)) return sessions.get(call.id);
   const p = (async () => {
@@ -346,7 +346,7 @@ export function openBrain(call, { voice = null, preload = preloadFor, warm = tru
     const system = speakingSystem({ context, preloaded });
     if (warm && process.env.ANTHROPIC_API_KEY) {
       const api = client ?? new (await import("@anthropic-ai/sdk")).default();
-      const model = speakModel();
+      const model = chosen ?? speakModel();
       void api.messages.create({ model, max_tokens: 1, system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }], tools: [HANDOFF_TOOL], messages: [{ role: "user", content: "(warming up)" }], ...modelOptions(model) }, { timeout: 15_000, maxRetries: 0 })
         .then(() => log({ brain_warmed: call.id }), (e) => log({ brain_warm_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }));
     }
@@ -377,7 +377,7 @@ const deferredOf = (call) => { try { return String(db.getCall(call.conversation_
  * The safety half of the full brain's answer is the one the Cartesia ask has today (./cartesia.js `ask`):
  * a passphrase ask in its fixed words, the deferral line when something was put off, markers out.
  */
-export async function* brainTurn({ call, history, speak = speakTurn, full, stream = null, streamB = null, session = null, openers = OPENERS_ON(), openerAtMs = opening.OPENER_AT_MS, recent = recentFor(call), log = () => {}, now = () => Date.now(), timers = globalThis }) {
+export async function* brainTurn({ call, history, speak = speakTurn, full, model = speakModel(), stream = null, streamB = null, session = null, openers = OPENERS_ON(), openerAtMs = opening.OPENER_AT_MS, recent = recentFor(call), log = () => {}, now = () => Date.now(), timers = globalThis }) {
   const t0 = now();
   let words = lastTheirs(history);
   // Their passphrase answer is checked in code and never reaches a model: only the marker goes on.
@@ -411,11 +411,11 @@ export async function* brainTurn({ call, history, speak = speakTurn, full, strea
       const kind = opening.classify(words);
       const careful = needsFullBrain(words) || asksIfDone(words);
       const ctlA = new AbortController(), ctlB = new AbortController();
-      const turnA = speak({ system: s.system, messages, theirWords: words, stream: stream ?? anthropicStream({ signal: ctlA.signal }), log, callId: call.id });
+      const turnA = speak({ system: s.system, messages, theirWords: words, model, stream: stream ?? anthropicStream({ signal: ctlA.signal }), log, callId: call.id });
       let events = turnA;
       if (openers && !careful) {
         const opener = opening.pickOpener(kind, recent);
-        const turnB = speak({ system: s.system, messages, theirWords: words, stream: streamB ?? anthropicStream({ signal: ctlB.signal }), log, callId: call.id, opener });
+        const turnB = speak({ system: s.system, messages, theirWords: words, model, stream: streamB ?? anthropicStream({ signal: ctlB.signal }), log, callId: call.id, opener });
         events = withOpenerRace({ speakA: turnA, speakB: turnB, opener, atMs: openerAtMs, stopA: () => ctlA.abort(), stopB: () => ctlB.abort(), timers, now });
       }
       for await (const ev of events) {
