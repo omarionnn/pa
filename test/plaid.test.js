@@ -36,6 +36,9 @@ process.env.REASON_REST_KEK = "33".repeat(32);
 process.env.REASON_TOKEN_KEY = "44".repeat(32);
 process.env.REASON_PUBLIC_URL = "https://reason.test";
 process.env.REASON_PLAID = "on";
+// The cap and the per-person limit are tested on their own below; everywhere else they are out of the way.
+process.env.REASON_PLAID_PLAN_ITEMS = "1000";
+process.env.REASON_PLAID_PER_PERSON = "1000";
 process.env.PLAID_CLIENT_ID = "client_id_fixture";
 process.env.PLAID_SECRET = "secret_fixture_never_printed";
 delete process.env.PLAID_ENV;
@@ -49,10 +52,10 @@ const d = await import("../src/db.js");
 const plaid = await import("../src/plaid.js");
 const http = await import("../src/http.js");
 const data = await import("../src/data.js");
-const { toolsFor } = await import("../src/tools.js");
+const { toolsFor, runTool } = await import("../src/tools.js");
 const { systemFor } = await import("../src/agent.js");
 const { makePlaid: makeFixture } = await import("./fixture-plaid.js");
-const { clock } = await import("../src/config.js");
+const { clock, config } = await import("../src/config.js");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const A = "dm:sendblue:+15550001111";
@@ -66,7 +69,10 @@ const bank = (c, input) => plaid.runPlaidTool("bank", input, { conversationId: c
 
 let fx, said, logged;
 beforeEach(() => {
-  for (const t of ["plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks"]) d.db.exec(`DELETE FROM ${t}`);
+  for (const t of ["plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks", "plaid_slots", "plaid_waits"]) d.db.exec(`DELETE FROM ${t}`);
+  // Two people Reason has let in (a delete in one test takes the account row with it).
+  for (const [c, n] of [[A, "+15550001111"], [B, "+15550002222"]]) d.upsertAccount({ conversationId: c, channel: "sendblue", address: n });
+  d.rawPrepare("UPDATE accounts SET state = 'active'").run();
   fx = makePlaid(); said = []; logged = [];
   plaid._reset(); plaid._setFetch(fx.fetchImpl);
   plaid.attach({ say: (c, text) => said.push({ c, text }), log: (e) => logged.push(e) });
@@ -158,8 +164,10 @@ test("connect: a Hosted Link made when it is sent, 30 minutes, read-only product
   assert.equal(out.ok, true);
   assert.match(out.url, /^https:\/\/secure\.plaid\.com\/hl\//);
   assert.equal(out.minutes, 30);
-  assert.match(out.say, /through Plaid/);
-  assert.match(out.say, /only read balances and transactions, never move money/);
+  // Their first bank: told plainly, before the link, what Reason sees, keeps, and how to undo it.
+  assert.equal(out.tell_first, plaid.CONSENT_WORDS);
+  for (const re of [/through Plaid, read-only/, /balances, transactions and account names \(last 4 digits only\)/, /can't move money/, /last 60 days/, /tell me to disconnect your bank anytime, and i remove it at Plaid and delete what i had/]) assert.match(out.tell_first, re);
+  assert.match(out.say, /tell_first word for word, before the link/);
   assert.match(out.say, /ON ITS OWN LINE/);
   const [call] = fx.callsTo("/link/token/create");
   assert.equal(fx.state.calls[0].host, "sandbox.plaid.com");
@@ -1019,4 +1027,115 @@ test("a second bank connected seconds ago: Plaid's recurring list is not ready f
   const c = await connect(B, { institution: "Tartan Bank", mask: "9999" });
   c.item.notReady = 5;
   assert.equal((await bank(B, { action: "subscriptions" })).error, "still_loading");
+});
+
+// ---------------------------------------------------------------- on for everyone: the trial's cap, one person's share, who is asked
+const C = "dm:sendblue:+15550003333";
+const limits = async (cap, per, fn) => {
+  const was = [config.plaidPlanItems, config.plaidPerPerson];
+  config.plaidPlanItems = cap; config.plaidPerPerson = per;
+  try { await fn(); } finally { [config.plaidPlanItems, config.plaidPerPerson] = was; }
+};
+
+test("the trial's cap: checked before a link is made, counting every bank ever connected (a disconnect gives none back); full gets fixed words, nothing breaks, and signing in again still works", async () => {
+  d.upsertAccount({ conversationId: C, channel: "sendblue", address: "+15550003333" });
+  await limits(3, 1000, async () => {
+    const a1 = await connect(A, { institution: "First Platypus Bank", mask: "0000" });
+    await connect(A, { institution: "Tartan Bank", mask: "4321" });
+    await connect(B, { institution: "Gingham Credit Union", mask: "9999" });
+    assert.equal(plaid.slotsUsed(), 3);
+    // B lets go of theirs: Plaid's Trial still counts it, and so does Reason.
+    assert.equal((await bank(B, { action: "disconnect" })).ok, true);
+    assert.equal(plaid.slotsUsed(), 3);
+    const before = fx.callsTo("/link/token/create").length;
+    const full = await bank(C, { action: "connect" });
+    assert.equal(full.ok, false);
+    assert.equal(full.error, "connections_full");
+    assert.equal(full.say_exactly, "bank connections are full right now; I'll let you know when there's room");
+    assert.equal(full.url, undefined);
+    assert.equal(fx.callsTo("/link/token/create").length, before, "no link was asked of Plaid at the cap");
+    assert.equal((await bank(B, { action: "connect" })).error, "connections_full", "a disconnected one cannot be connected anew at the cap");
+    // The owner's meter reads the same count, at 100%: its existing alert is what tells the owner.
+    const pm = await import("../src/planmeter.js");
+    const r = pm.readMeter(pm.METERS.find(m => m.id === "plaid"), { now: Date.now() });
+    assert.equal(r.used, 3); assert.equal(r.out, true);
+    // A's bank signs them out: signing in again makes no new Item, so the cap does not stop it.
+    await http.plaidWebhookRequest({ ...fx.signed({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: a1.item.item_id, error: { error_code: "ITEM_LOGIN_REQUIRED", error_type: "ITEM_ERROR" } }) });
+    const again = await bank(A, { action: "connect", bank: "platypus" });
+    assert.equal(again.ok, true); assert.equal(again.reconnecting, "First Platypus Bank");
+    // Room again (a paid plan): the people who asked are told once, as many as fit, and only them.
+    said.length = 0;
+    assert.equal(plaid.tellWaiting(), 0, "still full: nobody is told");
+    config.plaidPlanItems = 4;
+    assert.equal(plaid.tellWaiting(), 1, "one slot: the longest waiting is told");
+    assert.deepEqual(said.map(s => s.c), [C]);
+    assert.equal(said[0].text, "there's room now to connect your bank. want me to send the link?");
+    config.plaidPlanItems = 10;
+    assert.equal(plaid.tellWaiting(), 1); assert.equal(plaid.tellWaiting(), 0, "told once");
+    assert.deepEqual(said.map(s => s.c), [C, B]);
+  });
+});
+
+test("links open right now hold a slot: two people cannot both take the last one; asking again for your own fresh link is fine", async () => {
+  await limits(2, 1000, async () => {
+    await connect(A);
+    assert.equal((await bank(B, { action: "connect" })).ok, true, "the last slot, B's link open");
+    assert.equal((await bank(A, { action: "connect" })).error, "connections_full", "A cannot take the slot B's open link holds");
+    assert.equal((await bank(B, { action: "connect" })).ok, true, "B's fresh link replaces B's own open one");
+  });
+});
+
+test("one person's share: at most two banks each (ever), so one person cannot use up the trial; the owner is exempt", async () => {
+  await limits(1000, 2, async () => {
+    await connect(A, { institution: "First Platypus Bank", mask: "0000" });
+    const b2 = await connect(A, { institution: "Tartan Bank", mask: "4321" });
+    const third = await bank(A, { action: "connect" });
+    assert.equal(third.error, "per_person_limit");
+    assert.equal(third.say_exactly, "that's the most banks i can connect for one person right now (2); I'll let you know when there's room");
+    // Disconnecting does not give the slot back (Plaid's Trial counts Items ever made).
+    await bank(A, { action: "disconnect", bank: "tartan" });
+    assert.equal(b2.item.removed, true);
+    assert.equal((await bank(A, { action: "connect" })).error, "per_person_limit");
+    assert.equal((await bank(B, { action: "connect" })).ok, true, "somebody else's share is their own");
+    for (let i = 0; i < 3; i++) await connect("dm:owner", { institution: `Owner Bank ${i}`, mask: `000${i}` });
+    assert.equal(plaid.itemsOf("dm:owner").length, 3, "the owner is exempt from the per-person limit");
+  });
+});
+
+test("two people: a link made for A completes into A only, whoever's link is open beside it; B's stays B's and empty", async () => {
+  const ba = fx.addBank({ institution: "First Platypus Bank", mask: "0000" });
+  const la = await bank(A, { action: "connect" });
+  const tokA = [...fx.state.links.keys()].pop();
+  const lb = await bank(B, { action: "connect" });
+  assert.notEqual(la.url, lb.url);
+  Object.assign(fx.state.links.get(tokA), { finished: true, publicTokens: [ba.publicToken] });
+  await http.plaidWebhookRequest({ ...fx.signed({ webhook_type: "LINK", webhook_code: "SESSION_FINISHED", status: "success", link_token: tokA, public_tokens: [ba.publicToken] }) });
+  assert.deepEqual(raw("SELECT DISTINCT conversation_id FROM plaid_items").map(r => r.conversation_id), [A]);
+  assert.equal(plaid.hasBank(B), false);
+  assert.equal(said.filter(s => s.c === B).length, 0, "B is told nothing about A's bank");
+  // The confirmation text for A carries no number of any kind.
+  assert.doesNotMatch(said.map(s => s.text).join(" "), /\$|\d{4}/);
+});
+
+test("who is asked: only a person's own turn reads their bank (never an event, a timer or the nightly review); nobody Reason has not let in, or a paused account, has the tool", async () => {
+  await connect(A);
+  for (const kind of ["event", undefined]) {
+    const out = await runTool("bank", { action: "balance" }, { conversationId: A, kind });
+    assert.equal(out.error, "not_asked", String(kind));
+  }
+  assert.equal(fx.callsTo("/accounts/balance/get").length, 0, "Plaid was not asked");
+  assert.equal((await runTool("bank", { action: "status" }, { conversationId: A, kind: "user" })).ok, true);
+  assert.equal(toolsFor("dm:sendblue:+15559990000").some(t => t.name === "bank"), false, "no account: no bank tool");
+  assert.equal(plaid.plaidOn("group:abc"), false);
+  d.rawPrepare("UPDATE accounts SET state = 'paused' WHERE conversation_id = ?").run(B);
+  assert.equal(toolsFor(B).some(t => t.name === "bank"), false, "a paused account: no bank tool");
+  assert.equal(toolsFor(A).some(t => t.name === "bank"), true);
+});
+
+test("forget me keeps the count true: a deleted person's banks still count against the trial, and nothing says whose they were", async () => {
+  await connect(A); await connect(B);
+  await data.deleteData({ conversation: A });
+  assert.equal(plaid.slotsUsed(), 2);
+  assert.equal(raw("SELECT COUNT(*) AS n FROM plaid_slots WHERE who = ''")[0].n, 1);
+  assert.equal(raw("SELECT COUNT(*) AS n FROM plaid_waits WHERE conversation_id = ?", A)[0].n, 0);
 });

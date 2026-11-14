@@ -688,9 +688,14 @@ export const config = {
   cartesiaPlanUsd: positive(process.env.REASON_CARTESIA_PLAN_USD, 5),
   cartesiaRateUsdPerMin: positive(process.env.REASON_CARTESIA_RATE_USD_PER_MIN, 0.03),
   cartesiaCycleDay: Math.min(31, Math.max(1, Math.round(positive(process.env.REASON_CARTESIA_CYCLE_DAY, 30)))),
-  // How many banks (Plaid Items) the Plaid plan allows across everyone, for the plan meter on /ops
-  // (src/planmeter.js): 20 on the owner's trial. Change it when the plan changes.
-  plaidPlanItems: Math.round(positive(process.env.REASON_PLAID_PLAN_ITEMS, 20)),
+  // How many banks (Plaid Items) the Plaid plan allows across everyone, EVER: Plaid's Trial plan is 10
+  // Production Items and removing one does not give it back (plaid.com/docs/account/billing, read
+  // 2026-11-13). The cap a new connection is checked against (src/plaid.js connectRoom) and the plan
+  // meter on /ops. Lower it if Plaid's dashboard shows Items made before Reason counted them.
+  plaidPlanItems: Math.round(positive(process.env.REASON_PLAID_PLAN_ITEMS, 10)),
+  // How many banks one person may connect (ever, same counting), so one person cannot use up the
+  // plan. The owner is exempt.
+  plaidPerPerson: Math.round(positive(process.env.REASON_PLAID_PER_PERSON, 2)),
   // The agent made once by scripts/cartesia-agent-setup.mjs; the voice is set on it (Gemma, en-GB).
   cartesiaAgentId: String(process.env.REASON_CARTESIA_AGENT_ID ?? "").trim(),
   cartesiaVoice: String(process.env.REASON_CARTESIA_VOICE ?? "").trim() || "62ae83ad-4f6a-430b-af41-a9bede9286ca",

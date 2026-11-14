@@ -272,6 +272,8 @@ const TABLES = [
   // last four, every synced transaction, the links texted, when a bank read was answered, and the
   // "that looks short" warnings before a payment.
   "plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks",
+  // and that they asked to connect while connections were full (to be told when there is room).
+  "plaid_waits",
 ];
 
 /**
@@ -309,6 +311,7 @@ export const INSTALL_WIDE = {
   site_wall_strikes: "A site's one unconfirmed wall or challenge (src/refusing.js): its registrable domain, a fixed evidence word and when; a second one 10+ minutes later marks the site. About the site, never a person",
   site_refusals: "Sites that turn away browsers run by software (src/refusing.js): the site's registrable domain, a fixed evidence word and the day seen; believed 30 days. About the site, never a person",
   site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain, with a short one-way mark of which sign-in page was asked (never the address itself); nothing in it says who asked.",
+  plaid_slots: "How many banks were ever connected through Plaid (src/plaid.js), which Plaid's Trial plan counts even after a disconnect: a one-way mark of each bank connection and a hash of whose, emptied by deleteData (removeAllAtPlaid)",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
   cartesia_daily: "Cartesia call voice counts per day (calls, ready, fall-backs by reason), no person",
   channel_limits: "what each channel refused, learned once for everyone",

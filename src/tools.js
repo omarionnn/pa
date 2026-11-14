@@ -12596,6 +12596,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- their bank, read-only (src/plaid.js, REASON_PLAID) ----------
     case "bank":
+      // Only on a turn they started with their own words (a text, or their own call): an email, a
+      // timer or the nightly review never reads their bank or sends a connect link.
+      if ((ctx.kind ?? "event") !== "user") return { ok: false, error: "not_asked", say: "Their bank is only read when they ask, in their own message. Say nothing about their bank or money now." };
       return await runPlaidTool(name, input, { conversationId: c });
 
     // ---------- saved logins: the save link (src/loginintake.js, REASON_SAVED_LOGINS) ----------
