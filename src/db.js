@@ -2278,7 +2278,11 @@ export function setItemBlurb(kind, conversationId, id, blurb) {
 }
 export function listTimers(conversationId) {
   // Not the onboarding's nudge (src/onboarding.js): that one is code's, not a reminder of theirs.
-  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after', 'cue:offer') ORDER BY fire_at").all(conversationId);
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') NOT IN ('onboarding:nudge', 'event:after', 'cue:offer', 'recheck:lookup') ORDER BY fire_at").all(conversationId);
+}
+/** Code's own pending timers under one label (src/retry.js re-checks), soonest first. */
+export function pendingLabelledTimers(conversationId, label) {
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND label = ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(conversationId, String(label));
 }
 export function cancelTimer(conversationId, id) {
   const t = getTimer(conversationId, id);
@@ -10935,6 +10939,26 @@ export function getClaim(conversationId, id) {
  * end. The CLI path's thread is text only, so the line is removed. The API path's carries tool
  * blocks and has to keep alternating, so its text is replaced with a line saying it was not sent.
  */
+/** The sent words differ from the model's draft (src/retry.js took an offer out): the thread holds what went. */
+export function replaceDraft(conversationId, draft, text) {
+  const want = String(draft ?? "").trim();
+  if (!want || !String(text ?? "").trim()) return false;
+  const messages = loadConversation(conversationId);
+  const squash = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
+  const textOf = (m) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join("\n") : "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || squash(textOf(m)) !== squash(want)) continue;
+    if (typeof m.content === "string") m.content = String(text);
+    else {
+      let put = false;
+      m.content = m.content.flatMap(b => b?.type !== "text" ? [b] : put ? [] : (put = true, [{ ...b, text: String(text) }]));
+    }
+    saveConversation(conversationId, messages);
+    return true;
+  }
+  return false;
+}
 export function retractDraft(conversationId, draft) {
   const want = String(draft ?? "").trim();
   if (!want) return false;

@@ -1646,7 +1646,7 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
           ? (row.kind === "flight"
             ? `heads up — the approval link for ${what} ran out, so nothing was booked and nothing was charged. fares move, so if you still want it i'll get a fresh price first and show it to you again.`
             : `heads up — the approval link for ${what} ran out, so nothing was bought and nothing was charged. say the word and i'll set it up again.`)
-          : `${what} didn't go through — the payment was declined, so nothing was charged. want me to try a different card or a different shop?`);
+          : `${what} didn't go through — the payment was declined, so nothing was charged and i won't retry it on my own. to go again i need a different card or a different shop from you.`);
       }
       log({ agentcard_webhook: event.type, purchase: row.buy_conversation_id, authorization: authId, ended: ends });
       return { status: 200, body: { ok: true, matched: true } };

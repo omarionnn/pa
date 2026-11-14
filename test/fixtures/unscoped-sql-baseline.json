@@ -612,5 +612,6 @@
  "src/teamflag.js | SELECT SELECT COUNT(*) AS n FROM team_flags WHERE state = 'sent' AND sent_at > ?": 1,
  "src/tooldiet.js | DELETE DELETE FROM tool_sets; DELETE FROM tool_recent;": 1,
  "src/verifications.js | SELECT SELECT * FROM verifications WHERE id = ?": 1,
- "src/verifications.js | SELECT SELECT * FROM verifications WHERE state = 'due' AND due_at <= ? ORDER BY due_at LIMIT ?": 1
+ "src/verifications.js | SELECT SELECT * FROM verifications WHERE state = 'due' AND due_at <= ? ORDER BY due_at LIMIT ?": 1,
+ "src/proofshot.js | SELECT SELECT file FROM proof_pictures": 1
 }

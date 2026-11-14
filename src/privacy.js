@@ -36,6 +36,7 @@ import { deleteRecordingFile } from "./calls/recordings.js";
 import { db, scrubConversationText } from "./db.js";
 import { scrubPageSecrets, HIDDEN, TYPED_SECRET_ARGS } from "./pagesecrets.js";
 import { config, clock } from "./config.js";
+import { pruneProofs } from "./proofshot.js";
 import { fromOutside } from "./outside.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -125,6 +126,8 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
     // document was made and sent, which is the record rather than the contents, and the copy on
     // their own phone, which was always theirs and was never Reason's to expire.
     del("documents", deleteOldDocuments(content, log));
+    // A proof picture of a page (src/proofshot.js) is content like a document: the file, then its row.
+    del("proof_pictures", pruneProofs(content, log));
 
     // What a researched source said, in its own words. Which sources were read stays.
     drop("research_quotes", n(db.prepare(

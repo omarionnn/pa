@@ -284,6 +284,30 @@ test("after a save Reason confirms in the thread by itself, or carries on with t
   assert.equal(resume.afterSave(null, { conversationId: ME, site: "acme.test", label: "Acme" }), "");
 });
 
+test("a save-only link gets the fixed one-line confirmation, never a resumed turn that asks \"want me to try signing in now?\"", async () => {
+  use._resetAsks();
+  const told = [];
+  const events = [];
+  const runtime = { _tell: async (c, t, m) => { told.push([c, t, m]); return { ok: true }; }, event: async (...a) => { events.push(a); } };
+  for (const asked of ["save my acme login", "Send me the link to save my Acme login so you can sign in next time", "I changed my acme password, update it"]) {
+    assert.equal(resume.saveOnly(asked), true, asked);
+    const grant = use.grantAfterSave(ME, "acme.test", asked);
+    assert.equal(resume.afterSave(runtime, { conversationId: ME, site: "acme.test", label: "Acme", request: asked, grant }), "told", asked);
+  }
+  await new Promise((r) => setImmediate(r));
+  assert.equal(events.length, 0, "no turn, so no question");
+  assert.equal(told.length, 3);
+  for (const [, t] of told) { assert.equal(t, resume.savedNote("Acme")); assert.doesNotMatch(t, /\?/); }
+  // Something to do on that site: carried on, as before.
+  for (const asked of [ASKED, "save my acme login and then cancel it", "save my login and check what plan I am on"]) assert.equal(resume.saveOnly(asked), false, asked);
+  const grant = use.grantAfterSave(ME, "acme.test", "save my acme login and then cancel it");
+  assert.equal(resume.afterSave(runtime, { conversationId: ME, site: "acme.test", label: "Acme", request: "save my acme login and then cancel it", grant }), "resumed");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(events.length, 1);
+  // The resumed turn's instruction forbids the question itself.
+  assert.match(events[0][1], /Never ask whether to sign in now/);
+});
+
 test("a standing login saved mid-job resumes the job itself through the save grant", async () => {
   use._resetAsks();
   for (const r of sl.listLogins(ME)) if (r.site === "other.test") sl.removeLogin(ME, r.id);
