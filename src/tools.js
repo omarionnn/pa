@@ -49,6 +49,7 @@ import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
 import * as ownfiles from "./ownfiles.js";
+import * as proofshot from "./proofshot.js";
 import * as connectafter from "./connectafter.js";
 import { judgeReply } from "./judge.js";
 import { publicUrl } from "./netguard.js";
@@ -173,7 +174,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "account_cancel_confirm", "account_bill_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "account_cancel_confirm", "account_bill_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "browser_proof", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -7000,6 +7001,19 @@ export const tools = [
     },
   },
   {
+    name: "browser_proof",
+    description: "After you FINISHED something for them on a page in your browser, send ONE picture of the part of the page that lets them check it, with your result line. Only for: a cancellation notice, a paid/receipt confirmation, a changed plan, a confirmation number, or an error the site showed (proves). A routine success (signed in, still loading, a status whose answer is already in your line) is text only: do not call this. It is cropped to the block holding page_line and refused if that block can't be found or cut clear of payment, invoice, address or email rows; then send the line in words. Nothing on the picture comes back to you.",
+    input_schema: {
+      type: "object",
+      properties: {
+        proves: { type: "string", enum: ["cancellation", "payment", "plan_change", "confirmation_number", "site_error", "signed_in", "loading", "status", "other"], description: "What the picture lets them check." },
+        say: { type: "string", description: "The result line, which must stand on its own without the picture: what the page shows, what you did or didn't change, what happens next." },
+        page_line: { type: "string", description: "The page's own line that proves it, copied exactly from browser_read. The picture is that block only." },
+      },
+      required: ["proves", "say", "page_line"],
+    },
+  },
+  {
     name: "browser_images",
     description: "List the real photo URLs on the page that is open — listing photos, product images, any picture worth showing. Skips icons and layout graphics. Use this to find pictures you can send with send_picture.",
     input_schema: { type: "object", properties: {} },
@@ -8093,6 +8107,7 @@ const S = {
   // `path` is still accepted from an older call and ignored: the file always goes in the shots folder.
   browser_screenshot: z.object({ path: z.string().max(400).optional(), full_page: z.boolean().optional() }),
   browser_images: z.object({}),
+  browser_proof: z.object({ proves: z.string().max(40), say: z.string().min(1).max(600), page_line: z.string().min(1).max(300) }),
   browser_close: z.object({}),
 };
 
@@ -9303,6 +9318,7 @@ function targetOf(name, input) {
     case "mark_moment": return `effect:${input.effect ?? ""}`;
     case "voice_note_send": return `voice:${input.to}`;
     case "send_picture": return `picture:${input.url?.slice(0, 120) ?? ""}`;
+    case "browser_proof": return "picture:proof of the page into this thread";
     case "image_generate": return input.send === false ? "picture:for a page" : `picture:generated x${input.count ?? 1} into this thread`;
     // What was made, and what was handed to whom. The title rather than the content: a receipt says
     // which document went where, and it is not where the contents of somebody's document live.
@@ -9662,7 +9678,23 @@ export function runTool(name, rawInput, ctx) {
   return turnlink.enter(turn, () => zonescope.runFor(ctx?.conversationId, () => runToolOnTheirClock(name, rawInput, ctx)));
 }
 
+/**
+ * Never done on a call, whoever is on the line and whatever was verified: an account job (signed in
+ * with a saved login, money or a cancellation) and its proof picture. The call's own gate
+ * (src/calls/calltrust.js TEXT_ONLY) already defers these with the switch on; this holds with it off,
+ * and after a verified caller, too. Exported for the tests.
+ */
+/** The proof picture follows the account-jobs switch (REASON_ACCOUNT_JOBS off | owner | on), without the checkout service. */
+export function proofAllowedFor(conversationId) {
+  const v = String(process.env.REASON_ACCOUNT_JOBS ?? "").trim().toLowerCase();
+  if (["1", "true", "on", "yes"].includes(v)) return !!conversationId;
+  return v === "owner" && !!conversationId && accounts.featureOwner(conversationId);
+}
+export const NEVER_BY_VOICE = new Set(["account_bill_pay", "account_cancel", "account_cancel_confirm", "account_signin", "account_job_answer", "browser_proof"]);
+export const NEVER_BY_VOICE_WORDS = "Not done: this is never done on a call. Say in one line that you'll do it by text right after the call, and do it when they text.";
+
 async function runToolOnTheirClock(name, rawInput, ctx) {
+  if (ctx?.onCall && NEVER_BY_VOICE.has(String(name))) return { ok: false, blocked: "never_by_voice", error: NEVER_BY_VOICE_WORDS };
   // One thought, one answer (src/onethought.js). They texted while this turn was working, and the
   // text adds to what it is working on: a message about to go out was written without it, so it is
   // not sent — the model is handed the new text instead, to write the one message that uses it.
@@ -19872,6 +19904,33 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       await page.screenshot({ path: resolve(path), fullPage: !!input.full_page, mask: await browser.secretBoxesToMask(page), maskColor: "#888888" });
       sealInPlace(resolve(path), c); // theirs: sealed (REASON_ENCRYPT_REST2)
       return { ok: true, path: resolve(path), url: await browser.pageUrl(page) };
+    }
+    case "browser_proof": {
+      // One picture of the page that proves a finished job, into THIS thread only (src/proofshot.js has the rules).
+      // The owner's rule: a picture only when it helps them check something; otherwise text is enough.
+      // Part of account jobs: on for whom REASON_ACCOUNT_JOBS is (owner = the owner only), the same switch.
+      if (!proofAllowedFor(c)) return { ok: false, blocked: "not_enabled", text_only: true, note: "No picture here: send the result line in words, quoting the page's line." };
+      if (!proofshot.pictureHelps(input.proves)) return { ok: false, text_only: true, note: "Text is enough for this: no picture. Send the result line in words." };
+      if (proofshot.sentRecently(c)) return { ok: false, text_only: true, note: "This result already has its one picture. Send anything else in words." };
+      if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing goes to their phone from here. Say the result in your reply instead." };
+      const page = browser.openPage(c);
+      if (!page || page.url() === "about:blank") return { ok: false, error: "No page is open in my browser, so there is nothing to take a picture of. Say the result in words." };
+      const router = ctx.channels;
+      const thread = db.getThread(c);
+      const channel = thread ? router?.get?.(thread.channel) : null;
+      if (!router || !thread || !channel) return { ok: false, status: "not_connected", error: "There is no texting thread here to send a picture into. Say the result in words." };
+      if (!channel.carriesFiles) return { ok: false, supported: false, error: `${thread.channel} cannot carry a picture. Say the result in words.` };
+      const shot = await proofshot.captureProof(c, page, { proves: input.proves, focus: input.page_line ?? "", what: input.say });
+      if (!shot.ok) return { ok: false, refused: shot.refused, note: `No picture. Send the result in words, quoting the page's line ("${String(input.page_line ?? "").slice(0, 200)}").` };
+      const line = String(input.say ?? "").replace(/\bhttps?:\/\/\S+/gi, "").replace(/\s+/g, " ").trim().slice(0, 600);
+      let r;
+      try {
+        r = await router.sendMedia({ channel: thread.channel, to: thread.address, text: line, chatId: thread.chat_id ?? null, file: shot.file, mimeType: "image/jpeg", filename: "proof.jpg", idempotencyKey: `proof:${c}:${shot.id}`, conversationId: c, toOwner: true });
+      } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+      if (!r?.ok || r.queued) return { ok: false, kept: true, queued: !!r?.queued, error: r?.error ?? null, note: r?.queued ? "The picture is NOT sent yet; the send is being retried. Do not say you sent it." : "The picture did not go. Send the result in words and say the picture couldn't be sent." };
+      proofshot.markSent(c, shot.id);
+      // No page words and no image come back: the picture is evidence for them, never instructions for the model.
+      return { ok: true, sent: true, proof_id: shot.id, note: "The picture of the page and your line went into their thread as one message. You may say you sent it; do not repeat the line." };
     }
     case "browser_images": {
       const page = await browser.pageFor(c);

@@ -20,8 +20,38 @@ gate into `account_cancel_confirm`, pinned to the job, plan, site, run and open 
 price where given, the date access ends, or "gave no end date") and handed to the model with the
 question. Before their yes, ANY go-ahead question that is not plainly an earlier step (a reason, which
 plan, an offer to stay) is treated as the last step and goes to the gate; `account_job_answer`
-refuses it. The run's result must carry `RESULT: CANCELLED`; the merchant's cancellation email is
-the second proof. A run that cancels without stopping to ask is said as exactly that.
+refuses it. The run's result must end with one fixed line, read by `readResult`:
+`RESULT: CANCELLED NOW | ENDS: <date> | PAGE: "<the page's own line>"`, `RESULT: ALREADY CANCELLED | ENDS: … | PAGE: "…"`,
+`RESULT: NOT FOUND | PAGE: "…"` or `RESULT: NOT CANCELLED <why>` (the old bare `RESULT: CANCELLED` still reads as
+changed now). The page's line is kept as `account_jobs.page_line` and quoted back to them. Changed now: the
+merchant's cancellation email is the second proof. A run that cancels without stopping to ask is said as
+exactly that.
+
+**Already so** (2026-11-13: the owner's plan was already set to cancel on Nov 27, the run said it worked, and
+the job waited for an email that could never come). When the page already shows the plan set to end, the
+run changes nothing and asks nothing; the job ends `done` / `already_done` with no mail watch, and the line
+says what the page shows, that nothing was changed, and until when they keep access, quoting the page.
+It counts only on the page's own words (`lineShowsDone`: ending or not renewing, and no "renews on"), and
+only when their yes never went to the site; anything weaker is `not_cancelled`, said as not done. A bill
+whose page shows it already paid (`RESULT: ALREADY PAID | PAGE: "Amount due: $0.00"`) ends the same way, with
+nothing paid; a zero balance said without the page's line stays `nothing_paid`.
+
+**The manage link first.** A `page` they or their notice gave is where the run starts, and the task says it
+is their manage link. With no link, the latest manage page an earlier cancellation of theirs started on at
+the same site is used. A `not_found` that started on the front page asks for the link in its line.
+
+**Proof pictures.** Crossmint's API returns no picture of a run: a run has `status`, `result.summary` in
+words and `run.browser.embedUrl`, "a read-only live view of the browser in your app" (agents/checkouts/
+how-it-works) that is "`null` until a session exists" (agents/checkouts/follow-run); no screenshot,
+artifact or recording field is documented (read 2026-11-13). So these jobs keep the page's own line, and
+no picture is drawn or faked for them. Where Reason's OWN browser finished the work (signed in with a saved
+login, an errand on a page it opened), `browser_proof` sends one picture of the page with the result line
+(`src/proofshot.js`): refused on a sign-in page, a page with a secret box, or words holding a full card or
+bank number; secret boxes masked; cropped to the section holding the page's line, else the viewport;
+JPEG under 1.5 MB; sealed per person; in their export, unlinked on a delete, gone with the content
+retention window; nothing of the page comes back to the model. A caller-owned browser (`browser.cdp` on
+create) would let a Crossmint run drive a browser Reason can photograph, at the cost of the saved
+Crossmint profile and its way past sign-in walls; not done here.
 
 **Bill.** `account_bill_pay` needs the biller, the amount due and the account or invoice number (or,
 where the notice prints none, the notice's own pay link on the site named), a saved card, and room
@@ -115,3 +145,40 @@ Offline: `node --test test/account-jobs.test.js` (every run state is built to th
 A real cancellation or bill needs the owner: it acts in his account. A harmless real exercise is a
 cancel run for a made-up plan under a throwaway Crossmint user, stopped at its first question
 (recorded in `test/fixtures/crossmint-account-jobs/` when one has been run).
+
+## Where it goes: found from their mail, or one question
+
+With no link from them, before anything runs, `findPlace` (src/accountplace.js) searches their own connected
+mailboxes for the merchant's and its billing service's mail. From that mail it takes the manage/billing
+link: only one on the merchant's own site or its biller's (same registrable domain), or a tracking redirect
+that lands there when followed through `src/netguard.js`. It never follows a link that reads as
+unsubscribe or cancel. It also takes who bills it (the site, or Stripe Link, Paddle, Chargebee, Recurly,
+FastSpring, Lemon Squeezy, Gumroad, PayPal) and which of their mailboxes it goes to. That becomes the start
+page and the sign-in address. If Apple or Google Play bills it, the job ends `store_billed` with the
+store's own steps (src/cancel-routes.js). If the mail gives no answer, or two answers (two mailboxes, two
+billers), the job waits in `needs_answer` / `ask_kind: place` with one fixed question, and nothing runs.
+Their reply (`account_job_answer`, `{ answer }`) resumes it: a link (checked the same way), an address, or
+which mailbox. There are at most two questions; after that it ends `no_place` and says so. A link they
+give still wins. A bill never asks when the mail is silent (its reference and the biller's page are
+enough).
+
+## Done or not: one table (`OUTCOME_TABLE`)
+
+| Verdict | Outcomes | Evidence it needs |
+|---|---|---|
+| Done | `done` | the site's page showed the new state (an end date; "payment received" with amount/confirmation) and the site's own confirming email arrived |
+| Done | `done_result_only` | the page alone (a receipt, for a bill); their mail isn't connected, so no email can be looked for |
+| Done, already so | `already_done` | the page's own line showed it already so; nothing changed or paid; no email is waited for |
+| Not confirmed | `waiting_mail` | the page said it worked; the email hasn't come; checked every 10 minutes for a day |
+| Not confirmed | `no_mail_came` | the page said it worked (quoted); no email came within the day; closed, not left open |
+| Not confirmed | `unconfirmed` | their yes or payment went in, then the run broke before the result |
+| Not done: not found | `not_found`, `no_place`, `nothing_paid` | no such subscription / couldn't tell where it's billed / nothing paid |
+| Not done: couldn't sign in | `no_signin`, `no_signin_route` | the sign-in wasn't finished / no way to sign in from here |
+| Not done: site refused | `blocked_browser`, `human_check`, `site_error`, `no_safe_path`, `payment_declined`, `not_cancelled` | what the site did |
+| Not done: money asked | `refused_by_cap`, `payment_asked` | the page wanted money a cancellation can't pay |
+| Not done: needs you | `unexpected_purchase`, `paid_unapproved`, `no_answer`, `approval_timeout`, `store_billed` | something to check yourself, a timed-out wait, or a store-billed plan |
+| Not done: stopped | `declined`, `stopped` | they said no / stopped |
+| Not done: service broke | `service_failed`, `start_failed` | the checkout service failed |
+
+`account_job_status` answers "is it done?" from this table: `line` is the verdict and its evidence, and
+`verdict` carries the quoted page line, the email's subject (when one was seen), the end date and the day.
