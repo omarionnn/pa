@@ -547,6 +547,9 @@ export class CartesiaAgentCall {
   /** Open the agent and start the clock it has to be ready by. */
   begin() {
     count("calls");
+    // The platform ceiling, as on a GPT-Live call (`callPlatformCapSeconds`): never outlives the lost-call sweep.
+    this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
+    this.capTimer?.unref?.();
     this.readyTimer = this.timers.setTimeout(() => { if (!this.ready) this.fallBack(`not ready in ${this.readyMs} ms`, "not_ready"); }, this.readyMs);
     try {
       this.agent = this.openAgent();
@@ -960,6 +963,7 @@ export class CartesiaAgentCall {
     for (const k of ["readyTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     // `reason`: one word from a fixed set, the same word counted for the day (`count`).
     count(`fell_back:${reason}`);
+    if (this.capTimer) this.timers.clearTimeout(this.capTimer);
     this.log({ cartesia_fell_back: this.call.id, reason, why: String(why).slice(0, 120), ms: this.now() - this.startedAt });
     this.noteMinutes(true);
     // A session that did start is a call on their side, kept until deleted. One still coming up is given
@@ -999,7 +1003,7 @@ export class CartesiaAgentCall {
     // A lookup still running when the call ends: its answer goes by text when it lands.
     for (const p of [...this.asking]) this.toText(p);
     this.endWhy = this.endWhy || why;
-    for (const k of ["readyTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
+    for (const k of ["readyTimer", "roomTimer", "capTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     try { this.agent?.close(); } catch { /* already gone */ }
     if (this.twilio.open?.()) this.twilio.close();
     const seconds = Math.round((this.now() - this.startedAt) / 1000);

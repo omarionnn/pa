@@ -1,5 +1,6 @@
-// REASON_CALL_FEEL=classic: the owner's Cartesia calls as they were on call 112 (2026-11-13 16:38 UTC), the
-// call he said was perfect. That call ran on main 752a9e72 (#543, lookup music on) with the agent at
+// REASON_CALL_FEEL=classic: every account's own Cartesia call (`is_owner` is "their own call", whichever
+// account) as the owner's was on call 112 (2026-11-13 16:38 UTC), the call he said was perfect. The rule
+// words are the same for everyone; every personal slot (name, greeting, keyterms, brief, notes) is the caller's. That call ran on main 752a9e72 (#543, lookup music on) with the agent at
 // version av_f1C22VxgaAQd8zn2MFk8RS. Everything the voice is handed comes out as that build gave it:
 //   - `reason_call`: the build's own rule words (./callclassic-words.js), in its order, with the pre-call brief
 //     in its order, cut at the end as it was then (12,000 less this line's manner lines), then those lines;
@@ -28,7 +29,7 @@ export const REF_AGENT_VERSION = "av_f1C22VxgaAQd8zn2MFk8RS";
 
 /** REASON_CALL_FEEL read: "classic" or "current" (the default). */
 export const classicOn = () => config.callFeel === "classic";
-/** A call that gets the classic feel: their own call, with the switch at classic (Cartesia calls only use it). */
+/** A call that gets the classic feel: any account's own call, with the switch at classic (Cartesia calls only use it). */
 export const classicFor = (call) => classicOn() && Number(call?.is_owner) === 1;
 
 /**
