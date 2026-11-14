@@ -179,9 +179,13 @@ export function whenSpoken(ms, now, tz = config.tz) {
 }
 
 /** What one earlier call left: its kept read, or — when there is none — their own words from it. */
-export function callLine(row, { now = clock.now(), tz = config.tz } = {}) {
+export function callHead(row, { now = clock.now(), tz = config.tz } = {}) {
   const mins = row.duration_s ? Math.max(1, Math.round(row.duration_s / 60)) : 0;
-  const head = `- ${whenSpoken(row.created_at, now, tz)}, ${row.direction === "in" ? "they called" : "you rang them"}${mins ? `, ${mins} min` : ""}`;
+  return `- ${whenSpoken(row.created_at, now, tz)}, ${row.direction === "in" ? "they called" : "you rang them"}${mins ? `, ${mins} min` : ""}`;
+}
+
+export function callLine(row, { now = clock.now(), tz = config.tz } = {}) {
+  const head = callHead(row, { now, tz });
   const kept = String(row.summary ?? "").trim();
   if (kept) return `${head}: ${clip(kept.replace(/\n/g, ". "), CALL_CHARS)}`;
   const said = theirLines(row.transcript).filter(l => l.length >= 20);
@@ -202,19 +206,21 @@ export function earlierCallsNote(call, { tz = config.tz } = {}) {
   try { rows = db.listCalls(call.conversation_id, { limit: 30 }); } catch { return ""; }
   const lines = [];
   let used = 0;
-  // Newest first off the table; the note reads oldest first.
+  // Newest first, off the table and in the note (call 115: the last call is the one they ask about).
   for (const r of rows) {
     if (r.id === call.id || Number(r.created_at) >= until || Number(r.created_at) < until - CARRY_HOURS * 3600_000) continue;
     if (!wasTheirCall(r)) continue;
-    const line = callLine(r, { now: until, tz });
+    // The newest call of the past day is always there, even with nothing kept from it.
+    const line = callLine(r, { now: until, tz })
+      || (!lines.length && Number(r.created_at) >= until - KEEP_LAST_HOURS * 3600_000 ? `${callHead(r, { now: until, tz })}: no notes were kept from it; Reason has the call itself` : "");
     if (!line) continue;
-    if (used + line.length > CARRY_CHARS) break;
-    lines.unshift(line);
+    if (lines.length && used + line.length > CARRY_CHARS) break;
+    lines.push(line);
     used += line.length;
     if (lines.length >= CARRY_CALLS) break;
   }
   const note = lines.length
-    ? "EARLIER CALLS with them, newest last (your own record of your calls, kept by code): what they told you, what you said you'd do, what was left open."
+    ? "EARLIER CALLS with them, newest first (your own record of your calls, kept by code): when, what they told you, what you said you'd do, what was left open."
       + " You were on these calls — never ask again for something here, and if something you said you'd do is still open, own it.\n"
       + lines.join("\n")
     : "";
@@ -223,6 +229,67 @@ export function earlierCallsNote(call, { tz = config.tz } = {}) {
   return note;
 }
 const kept = new Map();
+
+/** The last call in this long is never cut from a call's instructions (./fitprompt.js). */
+export const KEEP_LAST_HOURS = 24;
+
+/** Their newest own call (one they were really on) before this one, or null. */
+export function lastCallBefore(call) {
+  if (!call?.conversation_id) return null;
+  const until = Number(call.created_at) || clock.now();
+  try {
+    return db.listCalls(call.conversation_id, { limit: 12 }).find(r => r.id !== call.id && Number(r.created_at) < until && wasTheirCall(r)) ?? null;
+  } catch { return null; }
+}
+
+/** Did their last call end within `hours` of this one starting? */
+export function lastCallWithin(call, hours) {
+  const last = lastCallBefore(call);
+  if (!last) return false;
+  const until = Number(call.created_at) || clock.now();
+  return until - endOf(last) < hours * 3600_000;
+}
+
+/** When a call ended: its own end, else its start plus how long it ran. */
+export const endOf = (row) => Number(row.ended_at) || (Number(row.created_at) + (Number(row.duration_s) || 0) * 1000);
+
+const SINCE_LINES = 8;
+const SINCE_CHARS = 1100;
+/**
+ * What was texted after their last call ended, up to this call (call 115: "where were we?" six minutes
+ * after a call whose page had been texted at 8:26 PM): Reason's texts and theirs, from the message log,
+ * newest last. Only for a last call in the past day; "" when there is none or the flag is off.
+ */
+export function sinceLastCallNote(call, { tz = config.tz, read = messagesBetween } = {}) {
+  if (!call?.conversation_id || Number(call.is_owner) !== 1 || !carryoverFor(call.conversation_id)) return "";
+  const until = Number(call.created_at) || clock.now();
+  const last = lastCallBefore(call);
+  if (!last || until - endOf(last) >= KEEP_LAST_HOURS * 3600_000) return "";
+  let rows = [];
+  try { rows = read(call.conversation_id, endOf(last), until) ?? []; } catch { rows = []; }
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+  const out = [];
+  let used = 0;
+  for (const r of [...rows].reverse()) {
+    const who = r.role === "assistant" ? "you texted them" : r.role === "user" ? "they texted you" : "";
+    const text = clip(r.text, 200);
+    if (!who || !text || /NO_REPLY/.test(text)) continue;
+    const line = `- ${fmt.format(new Date(Number(r.at)))} ${who}: ${text}`;
+    if (used + line.length > SINCE_CHARS) break;
+    out.unshift(line);
+    used += line.length;
+    if (out.length >= SINCE_LINES) break;
+  }
+  const ended = whenSpoken(endOf(last), until, tz);
+  return `SINCE YOUR LAST CALL (it ended ${ended}), from the message log, newest last: what you texted them and what they texted you after it. What is listed here really went.`
+    + `\n${out.length ? out.join("\n") : "- nothing texted either way since it ended"}`;
+}
+
+/** This conversation's texts between two times (ms), oldest first, text only, never deleted ones. */
+function messagesBetween(conversationId, since, until) {
+  return db.db.prepare(`SELECT role, text, at FROM messages WHERE conversation_id = ? AND at > ? AND at < ?
+    AND deleted_at IS NULL AND text != '' ORDER BY at DESC, id DESC LIMIT 20`).all(conversationId, since, until).reverse();
+}
 
 /** For tests: forget every call's note. */
 export function resetCarryover() { kept.clear(); pending.clear(); calendars.clear(); memories.clear(); broken.clear(); }
@@ -488,6 +555,30 @@ const SALUTES = {
 };
 /** They spoke this recently: the opening says "again". */
 export const AGAIN_MS = 3 * 3600_000;
+/** They ring back this soon after a call with notes: the opening picks up from it. */
+export const PICKUP_MS = 30 * 60_000;
+
+// A note item said back in the greeting: short, and nothing about anyone in the third person (the
+// notes are written about "Them"; a "him" or "their" said to them reads wrong).
+const SAYABLE = (s) => s.split(/\s+/).length <= 10 && s.length <= 80 && !/\b(?:he|she|him|her|his|hers|they|them|their|theirs)\b/i.test(s) && !/["“”]/.test(s);
+const lowerFirst = (s) => (/^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+
+/**
+ * The opening for a call soon after the last one, from that call's kept notes (`calls.summary`): what
+ * Reason said it would do, else what was left open, in a few words. "" when the call has no notes, so
+ * the ordinary greeting is used. Code, read off the row: no model and no wait.
+ */
+export function pickUpLine(row, who = "") {
+  const notes = String(row?.summary ?? "").trim();
+  if (!notes) return "";
+  const hi = who ? `hey again, ${who}` : "hey again";
+  const tidyItem = (s) => String(s ?? "").replace(/^(?:i(?:'|’)ll|i\s+will|will|to)\s+/i, "").replace(/[.!?;:,]+$/, "").trim();
+  const promised = itemsFrom(notes, "promised").map(tidyItem).find(s => s && SAYABLE(s));
+  if (promised) return `${hi} — picking up from just now: I said I'd ${lowerFirst(promised)}. where are we at?`;
+  const open = itemsFrom(notes, "open").map(tidyItem).find(s => s && SAYABLE(s));
+  if (open) return `${hi} — picking up from just now: we'd left off on ${lowerFirst(open)}. what's up?`;
+  return `${hi} — picking up from just now. what's up?`;
+}
 
 export function dayPart(ms, tz = config.tz) {
   const h = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", hour12: false }).format(new Date(ms))) % 24;
@@ -506,6 +597,9 @@ export function greetingFor({ conversationId, name = "", direction = "in", now =
   const again = talked.some(r => now - Number(r.ended_at ?? r.created_at) < AGAIN_MS);
   const part = again ? "again" : dayPart(now, tz);
   const who = name && name !== "the person I work for" ? name : "";
+  // Ringing back soon after a call (call 115: six minutes on, "what did we miss?"): pick up from its notes.
+  const picked = direction === "in" && talked[0] && now - endOf(talked[0]) < PICKUP_MS ? pickUpLine(talked[0], who) : "";
+  if (picked) return picked;
   const fill = (l) => (who ? l.replace("{n}", who) : l.replace(/,? ?\{n\}/, "")).replace(/^[\s,—-]+/, "");
   const options = (direction === "in" ? GREETINGS[part] : SALUTES[part].map(s => `${s}, what's up?`)).map(fill);
   // What the last call opened with, off its own transcript (an inbound row's greeting is not on the row).
