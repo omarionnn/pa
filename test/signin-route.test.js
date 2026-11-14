@@ -260,10 +260,12 @@ const req = (token, action, { method = "GET", cookie = "" } = {}) =>
 /** One link sign-in to Amazon that ends signed in; → the note Reason is woken with. */
 async function linkSignin(state = "signed_in", { provider = "" } = {}) {
   remote.forgetAllRemoteSignins();
+  // What src/tools.js signin_link hands in (the test below proves it does).
+  const handed = (o = {}) => li.saveOfferFor(ME, sites.site("amazon"), o);
   db.db.exec("DELETE FROM timers");
   const timers = { set: () => ({}), clear: () => {} };
   const out = remote.createRemoteSignin({
-    conversationId: ME, entry: sites.site("amazon"), launch: fakeLaunch(), timers, provider,
+    conversationId: ME, entry: sites.site("amazon"), launch: fakeLaunch(), timers, provider, saveOffer: handed,
     check: async () => ({ ok: true, state, why: "the order history page loaded" }),
   });
   const token = out.url.split("/").pop();
@@ -301,6 +303,15 @@ test("rule 3: no offer for a site with a saved login, through a provider button,
   assert.equal(li.saveOfferFor(ME, { label: "Chase", signin_url: "https://secure.chase.com/" }), null);
   // And the offer is still owed for Amazon: nothing above spent it.
   assert.ok((await linkSignin("signed_in")).includes(OFFER));
+});
+
+test("rule 3: signin_link hands the link its save offer, and the offer is the vault's (spent once)", async () => {
+  const seam = linkSeam();
+  const r = await runTool("signin_link", { site: "amazon" }, { ...turn("sign in to amazon"), ...seam });
+  assert.equal(r.ok, true);
+  assert.equal(typeof seam.made[0].saveOffer, "function");
+  assert.deepEqual(seam.made[0].saveOffer({ provider: "" }), { domain: "amazon.com", line: OFFER });
+  assert.equal(seam.made[0].saveOffer({ provider: "" }), null, "once");
 });
 
 // ---------------------------------------------------------------- the words the model reads

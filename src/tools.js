@@ -85,7 +85,7 @@ import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool } from "./plaid.js";
-import { offerSaveLink, forgetSite, savedLoginsAllowedFor as saveLinkAllowedFor, OFFER_SENTENCE, rememberSigninRoute, savedLoginRoute, domainsOf } from "./loginintake.js";
+import { offerSaveLink, forgetSite, savedLoginsAllowedFor as saveLinkAllowedFor, OFFER_SENTENCE, rememberSigninRoute, savedLoginRoute, domainsOf, saveOfferFor } from "./loginintake.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords, ACCOUNT_CANCEL_GATE } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
@@ -15384,6 +15384,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const choice = social.choiceLine(entry, offered, recorded);
       const out = (ctx.createRemoteSignin ?? signinRemote.createRemoteSignin)({
         conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}), provider, offered,
+        // The one offer to save this login once it ends signed in (src/loginintake.js; null without the vault).
+        saveOffer: (o = {}) => saveOfferFor(c, entry, o),
         // Their profile is busy while the window on the Mac is open on it.
         busy: (conv) => (signinWindow.openWindowFor(conv) ? "A sign-in window is already open on the Mac for this account. Close it first, then tap Start again." : null),
       });

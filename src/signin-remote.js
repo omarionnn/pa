@@ -57,7 +57,6 @@ import * as emailRoute from "./signinemail.js";
 import { readSignedInState } from "./sites.js";
 import { launchProfile, launchOptions, guardContext, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser } from "./browser.js";
 import * as restartGate from "./busy.js";
-import { saveOfferFor } from "./loginintake.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
@@ -187,7 +186,7 @@ export function remoteSessionSince(conversationId) {
  * Make a link. Nothing is launched yet: the browser starts when somebody taps Start, so a link
  * nobody opens never holds the saved profile.
  */
-export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "", offered = [], pressProvider = social.clickProviderButton }) {
+export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", saveOffer = null, onEnd = null, launch = realLaunch, check = signin.checkAndRecord, closeBrowser = async () => {}, busy = () => null, timers = { set: setTimeout, clear: clearTimeout }, log = () => {}, provider = "", offered = [], pressProvider = social.clickProviderButton }) {
   const old = sessions.get(byConversation.get(conversationId));
   if (old) end(old, "replaced").catch(() => {});
 
@@ -199,7 +198,7 @@ export function createRemoteSignin({ conversationId, entry, afterSignedIn = "", 
   const prov = social.socialAllowedFor(conversationId) ? social.usableProvider(provider) : "";
   const s = {
     token, conversationId, entry, afterSignedIn, onEnd, launch, check, closeBrowser, busy, timers, log,
-    provider: prov, pressProvider, pressed: "", lastFields: [],
+    provider: prov, pressProvider, pressed: "", lastFields: [], saveOffer: typeof saveOffer === "function" ? saveOffer : null,
     // The "Continue with" choices the intro page shows (src/socialsignin.js offeredFor); the one
     // tapped replaces `provider` at Start, and the email button clears it. None without the flag.
     offered: social.socialAllowedFor(conversationId) ? [...new Set([prov, ...(offered ?? []).map(social.usableProvider)].filter(Boolean))] : [],
@@ -389,11 +388,12 @@ async function end(s, how) {
         + ` After the task is done, say once what else that unlocks: any site of theirs that signs in with ${social.LABELS[s.provider]} can be opened the same way now without asking again.`
       : "";
     // The one offer to save this login (owner decision 2026-11-13): only after a link sign-in that ended
-    // signed in, for someone the vault is on for, once per site ever (src/loginintake.js saveOfferFor).
+    // signed in, for someone the vault is on for, once per site ever (src/loginintake.js saveOfferFor,
+    // handed in by src/tools.js signin_link: this file reaches nothing that holds a login).
     let saveOffer = "";
     if (s.ended.state === "signed_in" && !s.onEnd) {
       try {
-        const o = saveOfferFor(c, entry, { provider: s.provider ?? "" });
+        const o = typeof s.saveOffer === "function" ? s.saveOffer({ provider: s.provider ?? "" }) : null;
         if (o) saveOffer = ` In the same message, add this one line, word for word: "${o.line}" If they say yes, call saved_login_offer with site '${o.domain}'. If they say no or don't answer, drop it: it is never asked again.`;
       } catch { /* no offer is the safe ending */ }
     }
