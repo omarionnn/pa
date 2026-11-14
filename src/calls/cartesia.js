@@ -100,7 +100,11 @@ export const HONESTY_LINES = [
  * prompt can carry. The agent settings that go with them are `CALL_FEEL` in scripts/cartesia-agent-setup.mjs.
  */
 export const TURN_LINES = [
-  "If their words stop on a filler or mid-thought (\"um\", \"so\", \"and\", \"like\", \"because\", \"I said\"), they are not done: use skip_turn and wait. Never start talking over them.",
+  // Call 116: "Yeah, um, [re]member conversation about um, for events." was skipped (an "um" inside it), and
+  // nothing more was said until he asked "Hello?" ten seconds later. Skip only on the LAST word.
+  "Only when their very last word is a filler or a joining word (\"um\", \"so\", \"and\", \"like\", \"because\") are they not done: then use skip_turn and wait. Never start talking over them.",
+  "A sentence that ends on a real word is finished, even with an \"um\" inside it or words that sound garbled: answer it. If you're not sure what they said, ask back in a few words (\"sorry, the conversation about events?\"); never say nothing to it.",
+  "If they say \"hello?\" or \"you there?\" after you said nothing, you missed their last turn: answer what they said before it, or ask about it, never a fresh \"what's up?\".",
   "When they ask you to wait (\"give me a second\", \"hold on\", \"one sec\", \"wait\"), use skip_turn and say nothing until they speak again.",
   "When you skip a turn, say nothing at all: never say \"skipping\", never name a tool, never read out a marker or anything in brackets.",
   "Only ask if they're still there when the line has really gone quiet: never while Reason is looking something up, never after they asked you to wait, never right after you skipped a turn, at most once per silence and at most twice in a call.",

@@ -284,3 +284,52 @@ test("assistantNameIn: the forms such a fact takes, and not other names", () => 
   for (const no of ["- Has a cat named Biscuit", "- Asked Reason to call him back", "- His brother Kofi calls him Kwame"]) assert.equal(memorynote.assistantNameIn(no), "", no);
   assert.equal(memorynote.profileForPrompt("- Named the assistant Reason", "Omari"), "- Named the assistant Reason");
 });
+
+// ---------- call 116: a skipped question, a stale opener, a lost text ----------
+
+test("call 116: a bare link texted since never takes the room of the words it came with", () => {
+  const now = clock.now();
+  pastCall({ endedAgo: 2 * HOUR, summary: LAST });
+  // Newest last, the shape of the night: the page's words, its link, then a long evening of texts.
+  text("assistant", now - 107 * MIN, `back on your events idea: at a 2% cut MARKET-NUMBERS-116 ${"the market is worth this much ".repeat(8)}`);
+  text("assistant", now - 107 * MIN + 1, "https://files.example.test/abc?k=SECRETKEY");
+  text("user", now - 91 * MIN, "Help me buy a case for my iPhone 14 Pro");
+  text("assistant", now - 90 * MIN, `Here's the one I'd get ${"a long case answer ".repeat(12)}`);
+  text("assistant", now - 90 * MIN + 1, "https://www.example.test/products/case");
+  text("assistant", now - 59 * MIN, `Hope you're home by now ${"a long reminder ".repeat(14)}`);
+  text("user", now - 11 * MIN, "Next week we're starting a crazy strict workout body care regiment");
+  text("assistant", now - 11 * MIN + 1, `let's go ${"a long reply about the plan ".repeat(8)}`);
+  const said = carry.sinceLastCallNote(thisCall());
+  assert.ok(said.includes("MARKET-NUMBERS-116"), "the words kept");
+  assert.ok(!said.includes("SECRETKEY") && !/https?:\/\//.test(said), "no bare link line");
+});
+
+test("call 116: the opener is never the last call's line (the call being greeted is a row with no words yet), and never 'hey — hey'", () => {
+  const at = Date.UTC(2026, 10, 14, 3, 14); // 10:14 PM in New York
+  clock.skip(at - Date.now());
+  pastCall({ endedAgo: 2 * HOUR, seconds: 36, transcript: "Reason: hey — hey Omari, good to hear from you again — what's up?\nThem: where were we?" });
+  for (let i = 0; i < 7; i++) pastCall({ endedAgo: (3 + i) * HOUR, transcript: "Reason: hey Omari\nThem: hi" });
+  thisCall();
+  const line = carry.greetingFor({ conversationId: C, name: "Omari", direction: "in" });
+  assert.match(line, /again|back so soon/, "they spoke within three hours");
+  assert.ok(!/good to hear from you again/.test(line), `not the last call's line: "${line}"`);
+  assert.ok(!/what did we miss/.test(line));
+  for (const g of Object.values(carry.GREETINGS ?? {}).flat()) assert.ok(!/what did we miss/.test(g));
+  for (let i = 0; i < 40; i++) {
+    const open = inbound.openingLineFor({ person: { name: "Omari" }, conversationId: C });
+    assert.ok(!/^hey\s*—\s*hey\b/i.test(open), `stutter: "${open}"`);
+    assert.match(open, /^(oh,|ah,|yo,) /);
+  }
+});
+
+test("call 116: the turn rules skip only on a last-word filler, answer a finished sentence, and pick a missed turn back up after 'hello?'", async () => {
+  const lines = cartesia.cartesiaCallLines({ tags: false });
+  assert.match(lines, /Only when their very last word is a filler/);
+  assert.match(lines, /even with an "um" inside it/);
+  assert.match(lines, /If they say "hello\?" or "you there\?" after you said nothing, you missed their last turn/);
+  assert.ok(!/stop on a filler or mid-thought/.test(lines), "the old, wider skip rule is gone");
+  const setup = await import("../scripts/cartesia-agent-setup.mjs");
+  assert.match(setup.SKIP_TURN_DESCRIPTION, /very last word is a filler/);
+  assert.match(setup.SKIP_TURN_DESCRIPTION, /never because you didn't catch it/);
+  assert.ok(setup.SKIP_TURN_DESCRIPTION.length <= 2000);
+});

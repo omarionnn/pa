@@ -161,12 +161,13 @@ const LEAD_INS = ["oh,", "ah,", "hey —", "yo,"];
  * to them having already shown it knows what is going on, and then get out of the way.
  */
 export function openingLineFor({ person, conversationId = "" }) {
-  const lead = LEAD_INS[Math.floor(Math.random() * LEAD_INS.length)];
   // Their own call, carry-over on: fitted to the time of day, never the last call's line (./carryover.js).
   const varied = conversationId ? greetingFor({ conversationId, name: person?.name ?? "", direction: "in" }) : "";
-  if (varied) return `${lead} ${varied}`;
+  // Never "hey — hey Omari" (calls 114-116): a line that opens on "hey" gets one of the other lead-ins.
   const first = person.name && person.name !== "the person I work for" ? `hey ${person.name}` : "hey";
-  return `${lead} ${first} — what's up?`;
+  const line = varied || `${first} — what's up?`;
+  const leads = /^hey\b/i.test(line) ? LEAD_INS.filter(l => !/^hey\b/i.test(l)) : LEAD_INS;
+  return `${leads[Math.floor(Math.random() * leads.length)]} ${line}`;
 }
 
 

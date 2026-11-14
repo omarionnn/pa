@@ -41,7 +41,7 @@ export const GEMMA = "62ae83ad-4f6a-430b-af41-a9bede9286ca";
 /** Lucy (en-GB), named emotive in Cartesia's "Choosing a Voice" page: the option to hear, never set by default. */
 export const LUCY = "2f251ac3-89a9-4a77-a452-704b474ccd01";
 /** Cartesia's skip_turn system tool, described for this line (its description field, up to 2000 chars). */
-export const SKIP_TURN_DESCRIPTION = "Say nothing this turn, not even a word about skipping. Use it when their words are plainly unfinished: they trailed off mid-sentence (\"and...\", \"so the thing is...\"), stopped on a filler (\"um\", \"so\", \"like\", \"because\") or paused mid-thought, and anything you said would talk over them. Use it too when they ask you to wait (\"give me a second\", \"hold on\", \"one sec\"), and stay quiet until they speak. Never when they asked something or finished a thought.";
+export const SKIP_TURN_DESCRIPTION = "Say nothing this turn, not even a word about skipping. Use it when they ask you to wait (\"give me a second\", \"hold on\", \"one sec\"), and stay quiet until they speak. Use it otherwise only when their very last word is a filler or a joining word (\"um\", \"so\", \"and\", \"like\", \"because\") and anything you said would talk over them. Never when the sentence ends on a real word (an \"um\" inside it does not make it unfinished), never when they asked something or finished a thought, and never because you didn't catch it: ask instead.";
 /**
  * The agent settings for how a call feels (call 113), as one sparse PATCH (`--call-feel`). Cartesia's
  * names, from docs.cartesia.ai/agents/configuration ("Turn settings") and /agents/system-tools (read

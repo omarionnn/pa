@@ -274,6 +274,9 @@ export function sinceLastCallNote(call, { tz = config.tz, read = messagesBetween
     const who = r.role === "assistant" ? "you texted them" : r.role === "user" ? "they texted you" : "";
     const text = clip(r.text, 200);
     if (!who || !text || /NO_REPLY/.test(text)) continue;
+    // A bare link is never said on a call, and took the room of the text it came with (call 116: the 8:27 PM
+    // market numbers were cut, their page's link kept).
+    if (/^\S+:\/\/\S+$/.test(String(r.text ?? "").trim())) continue;
     const line = `- ${fmt.format(new Date(Number(r.at)))} ${who}: ${text}`;
     if (used + line.length > SINCE_CHARS) break;
     out.unshift(line);
@@ -541,12 +544,13 @@ export function brokeNote(row) {
 // 14 of 16 calls opened "hey Omari — what's up?" (call audit 11-11). The opening is still code's words —
 // it is said before any turn has run — but it fits the time of day, says "again" when they spoke a
 // little while ago, and is never the line the last call opened with.
-const GREETINGS = {
+export const GREETINGS = {
   morning: ["morning, {n} — what's up?", "hey {n}, good morning — how's it going?", "hey {n} — how's your morning?"],
   afternoon: ["hey {n} — how's your afternoon going?", "afternoon, {n} — what's going on?", "hey {n}, good to hear from you — what's up?"],
   evening: ["hey {n} — how's your evening?", "evening, {n} — what's up?", "hey {n}, good to hear from you — how was today?"],
   night: ["hey {n} — you're up late. what's up?", "hey {n} — late one tonight? what's going on?", "hey {n}, what's up?"],
-  again: ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, what did we miss?"],
+  // Not "what did we miss?" (calls 115, 116): it asks them to fill Reason in, the one thing Reason should not need.
+  again: ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, good to hear from you again — what's up?"],
 };
 // A call Reason places keeps "…, what's up?" at the end: the voice swaps that for why it rang (`openingPurpose`).
 const SALUTES = {
@@ -603,7 +607,10 @@ export function greetingFor({ conversationId, name = "", direction = "in", now =
   const fill = (l) => (who ? l.replace("{n}", who) : l.replace(/,? ?\{n\}/, "")).replace(/^[\s,—-]+/, "");
   const options = (direction === "in" ? GREETINGS[part] : SALUTES[part].map(s => `${s}, what's up?`)).map(fill);
   // What the last call opened with, off its own transcript (an inbound row's greeting is not on the row).
-  const last = String(rows[0]?.transcript ?? "").split("\n").find(l => /^Reason\s*:/.test(l)) ?? String(rows[0]?.announcement ?? "");
+  // The newest row with words: the call being greeted is already a row, with none yet (call 116 read its own
+  // empty row and opened with call 115's line).
+  const prev = rows.find(r => String(r.transcript ?? "").trim() || String(r.announcement ?? "").trim());
+  const last = String(prev?.transcript ?? "").split("\n").find(l => /^Reason\s*:/.test(l)) ?? String(prev?.announcement ?? "");
   const said = last.toLowerCase();
   const start = rows.length % options.length;
   for (let i = 0; i < options.length; i++) {
