@@ -75,7 +75,13 @@ export function plaidOn(conversationId) {
   if (!conversationId) return false;
   const m = plaidMode();
   if (m === "owner") { try { return !!accounts.ownerOf(conversationId).isOperator; } catch { return false; } }
-  return m === "on";
+  if (m !== "on") return false;
+  // On: a person Reason has let in (an active account, src/accounts.js admit), or the owner's own thread.
+  try {
+    if (accounts.ownerOf(conversationId).isOperator) return true;
+    const row = db.getAccount(conversationId);
+    return !!row && (row.state ?? "active") === "active";
+  } catch { return false; }
 }
 /** sandbox unless PLAID_ENV says production. Anything else reads as sandbox: a typo never reaches real banks. */
 export const plaidEnv = () => (String(process.env.PLAID_ENV ?? "sandbox").trim().toLowerCase() === "production" ? "production" : "sandbox");
@@ -147,6 +153,20 @@ db.db.exec(`
     at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS plaid_reads_conv ON plaid_reads (conversation_id, at);
+  -- Every bank (Item) ever made through Reason, kept after a disconnect: Plaid's Trial counts Items
+  -- ever created and /item/remove does not give one back. who is the hash Plaid knows them by
+  -- (clientUserId), emptied when they delete their data; the row stays so the count stays true.
+  CREATE TABLE IF NOT EXISTS plaid_slots (
+    item_hash TEXT PRIMARY KEY,
+    who TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  -- Asked to connect while connections were full: told once when there is room.
+  CREATE TABLE IF NOT EXISTS plaid_waits (
+    conversation_id TEXT PRIMARY KEY,
+    asked_at INTEGER NOT NULL,
+    told_at INTEGER
+  );
   -- "that looks short" said before a pay step: which payment, and how many texts they had sent by then.
   CREATE TABLE IF NOT EXISTS plaid_pay_checks (
     conversation_id TEXT NOT NULL,
@@ -160,6 +180,10 @@ db.db.exec(`
 if (!db.db.prepare("PRAGMA table_info(plaid_items)").all().some(col => col.name === "history")) db.db.exec("ALTER TABLE plaid_items ADD COLUMN history TEXT NOT NULL DEFAULT ''");
 const q = (sql) => db.db.prepare(sql);
 const sha = (s) => createHash("sha256").update(String(s)).digest("hex");
+// Banks connected before the count was kept are counted too.
+for (const r of q("SELECT conversation_id, item_id, connected_at FROM plaid_items").all()) {
+  q("INSERT OR IGNORE INTO plaid_slots (item_hash, who, created_at) VALUES (?, ?, ?)").run(sha("plaid-item:" + r.item_id), `r_${sha("plaid-user:" + r.conversation_id).slice(0, 32)}`, r.connected_at);
+}
 const sealTok = (c, t) => sealCell("plaid_items", "access_token", c, secretbox.seal(t));
 const openTok = (v) => secretbox.open(v);
 const last4 = (mask) => String(mask ?? "").replace(/\D/g, "").slice(-4);
@@ -227,11 +251,59 @@ export const LINK_TTL_S = 30 * 60;
 export const clientUserId = (c) => `r_${sha("plaid-user:" + c).slice(0, 32)}`;
 export const webhookUrl = () => (config.publicUrl ? `${config.publicUrl}/plaid/webhook` : "");
 
+// ---------------------------------------------------------------- the cap: Plaid's Trial plan
+// Plaid's Trial is 10 Production Items EVER: "Removing Items created on a Trial plan (using
+// /item/remove) will not allow you to create more Items" (plaid.com/docs/account/billing, read
+// 2026-11-13). So a new connection is checked BEFORE its link is made, against every bank ever
+// connected (plaid_slots) plus links other people have open right now, and one person may use at
+// most REASON_PLAID_PER_PERSON of them (the owner is exempt). Signing in again to a bank already
+// connected (update mode) makes no new Item and is never checked.
+/** Banks ever connected through Reason, removed or not. */
+export const slotsUsed = () => Math.max(Number(q("SELECT COUNT(*) AS n FROM plaid_slots").get().n), Number(q("SELECT COUNT(*) AS n FROM plaid_items").get().n));
+const slotsOf = (c) => Number(q("SELECT COUNT(*) AS n FROM plaid_slots WHERE who = ?").get(clientUserId(c)).n);
+/** New-bank links still open (not finished, not expired), other than this person's: each may become an Item. */
+const openLinks = (exceptC = "") => Number(q("SELECT COUNT(*) AS n FROM plaid_links WHERE item_id = '' AND finished_at IS NULL AND expires_at > ? AND conversation_id != ?").get(clock.now(), exceptC).n);
+export const FULL_WORDS = "bank connections are full right now; I'll let you know when there's room";
+export const PER_PERSON_WORDS = () => `that's the most banks i can connect for one person right now (${config.plaidPerPerson}); I'll let you know when there's room`;
+/** May `c` connect one more bank now? A fresh link of theirs replaces their own open one, so that is not counted. */
+export function connectRoom(c) {
+  const cap = config.plaidPlanItems, used = slotsUsed();
+  if (used + openLinks(c) + 1 > cap) return { ok: false, why: "full", used, cap };
+  let owner = false;
+  try { owner = !!accounts.ownerOf(c).isOperator; } catch { owner = false; }
+  if (!owner && slotsOf(c) + 1 > config.plaidPerPerson) return { ok: false, why: "per_person", used, cap };
+  return { ok: true, used, cap };
+}
+const wait = (c) => q("INSERT INTO plaid_waits (conversation_id, asked_at) VALUES (?, ?) ON CONFLICT (conversation_id) DO UPDATE SET asked_at = excluded.asked_at, told_at = NULL").run(c, clock.now());
+/**
+ * The hourly sweep (src/serve.js): somebody who was told connections were full is told once when one
+ * of theirs fits, as many as there is room for, longest waiting first.
+ */
+export function tellWaiting() {
+  if (!sayFn) return 0;
+  let room = config.plaidPlanItems - slotsUsed() - openLinks(), n = 0;
+  for (const r of q("SELECT conversation_id FROM plaid_waits WHERE told_at IS NULL ORDER BY asked_at").all()) {
+    if (room <= 0) break;
+    if (!plaidOn(r.conversation_id) || !connectRoom(r.conversation_id).ok) continue;
+    q("UPDATE plaid_waits SET told_at = ? WHERE conversation_id = ?").run(clock.now(), r.conversation_id);
+    say(r.conversation_id, "there's room now to connect your bank. want me to send the link?");
+    room--; n++;
+  }
+  return n;
+}
+/** Said before the first link a person is ever sent: what Reason sees, keeps, and how to undo it. */
+export const CONSENT_WORDS = `before you tap: this connects your bank through Plaid, read-only. i can see your balances, transactions and account names (last 4 digits only), and i can't move money. i keep the last 60 days of transactions. you can tell me to disconnect your bank anytime, and i remove it at Plaid and delete what i had.`;
+const firstTime = (c) => slotsOf(c) === 0 && !q("SELECT 1 FROM plaid_items WHERE conversation_id = ?").get(c);
+
 /**
  * Make a Hosted Link, now, for sending now (it lasts 30 minutes). With `itemId` it is update mode:
  * the same bank signed in again, no products named (Plaid's update-mode rule).
  */
 export async function createLink(c, { itemId = "" } = {}) {
+  if (!itemId) {
+    const room = connectRoom(c);
+    if (!room.ok) { wait(c); logFn({ plaid_connect_refused: room.why, used: room.used, cap: room.cap }); return { ok: false, error: room.why === "full" ? "connections_full" : "per_person_limit" }; }
+  }
   const api = await client();
   const state = randomBytes(18).toString("base64url");
   const update = itemId ? tokenOf(c, itemId) : "";
@@ -333,6 +405,9 @@ async function finishOnce(row, publicTokens) {
     q(`INSERT INTO plaid_items (conversation_id, item_id, access_token, institution, connected_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (item_id) DO UPDATE SET access_token = excluded.access_token, status = 'ok'`)
       .run(c, ex.item_id, sealTok(c, ex.access_token), sealCell("plaid_items", "institution", c, institution), clock.now());
+    // Counted for good: Plaid's Trial counts this Item even after it is removed.
+    q("INSERT OR IGNORE INTO plaid_slots (item_hash, who, created_at) VALUES (?, ?, ?)").run(sha("plaid-item:" + ex.item_id), clientUserId(c), clock.now());
+    q("DELETE FROM plaid_waits WHERE conversation_id = ?").run(c);
     saveAccounts(c, ex.item_id, accts);
     names.push(institution || "your bank");
     // The first sync. Plaid may still be pulling history; SYNC_UPDATES_AVAILABLE brings the rest.
@@ -783,6 +858,9 @@ export async function retryRemovals() {
 }
 /** For a full delete of somebody's data (src/data.js): let go at Plaid first, while the tokens are still here. */
 export async function removeAllAtPlaid(conversation = null) {
+  // The count of banks ever connected stays (Plaid still counts them); whose they were does not.
+  if (conversation) q("UPDATE plaid_slots SET who = '' WHERE who = ?").run(clientUserId(conversation));
+  else q("UPDATE plaid_slots SET who = ''").run();
   if (!configured()) return { removed: 0, failed: 0 };
   const rows = conversation
     ? q("SELECT conversation_id, item_id, access_token FROM plaid_items WHERE conversation_id = ?").all(conversation)
@@ -877,7 +955,7 @@ const PERIODS = ["today", "yesterday", "this_week", "last_week", "this_month", "
 export const PLAID_TOOL_DEFS = [{
   name: "bank",
   description: "Their own bank accounts, READ-ONLY through Plaid: balances and transactions. It cannot pay, transfer or move money, and never returns a full account or routing number (last four only). Actions: "
-    + "\"connect\" makes a secure Plaid link to connect a bank (or, with `bank`, to sign back in to one that needs it). Your reply is ONE short heads-up in your own voice (they connect through Plaid; you can only read balances and transactions, never move money) and then the url ON ITS OWN LINE as the last thing, untouched; it works for 30 minutes, so only call it when you are about to send it. A confirmation text goes by code when they finish. "
+    + "\"connect\" makes a secure Plaid link to connect a bank (or, with `bank`, to sign back in to one that needs it). Your reply is ONE short heads-up in your own voice (they connect through Plaid; you can only read balances and transactions, never move money) and then the url ON ITS OWN LINE as the last thing, untouched; it works for 30 minutes, so only call it when you are about to send it. A confirmation text goes by code when they finish. The first time a person connects, the answer has tell_first: send it word for word before the url. When connections are full the answer has say_exactly and no url: send that as it is. "
     + "\"status\" lists what is connected. "
     + "\"spending\" totals what they spent in a `period` (or `from`/`to` days), optionally one `category` (food, transport, travel, shopping, bills, entertainment, health, services, fees, or a word like groceries, coffee, rent, or a merchant). Say the total first, then a short breakdown only if it helps. Transfers, card payments, income and interest accruing on a loan are not counted as spending; a payment toward a loan is. "
     + "\"transactions\" lists them, optionally narrowed by `search`. "
@@ -944,11 +1022,17 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
     switch (input.action) {
       case "connect": {
         const target = pickBank(c, mine, input.bank) ?? (stale.length === 1 && !input.bank ? stale[0] : null);
+        const first = !target && firstTime(c);
         const link = target ? await askReconnect(c, target.itemId, { force: true }) : await createLink(c);
+        if (link.error === "connections_full" || link.error === "per_person_limit") {
+          return { ok: false, error: link.error, say_exactly: link.error === "connections_full" ? FULL_WORDS : PER_PERSON_WORDS(), say: "No link was made. Send say_exactly as it is, and nothing else about connecting a bank." };
+        }
         if (!link.ok) return { ok: false, error: link.error, say: "The link could not be made just now. Say so in one line and offer to try again in a minute." };
-        return { ok: true, url: link.url, minutes: LINK_TTL_S / 60, ...(target ? { reconnecting: target.institution } : {}),
+        return { ok: true, url: link.url, minutes: LINK_TTL_S / 60, ...(target ? { reconnecting: target.institution } : {}), ...(first ? { tell_first: CONSENT_WORDS } : {}),
           say: target
             ? `One short line that ${target.institution} needs them to sign in again (same as before, read-only), then this url ON ITS OWN LINE as the last thing, untouched. It works for 30 minutes.`
+            : first
+            ? "Their first bank: send tell_first word for word, before the link, then this url ON ITS OWN LINE as the last thing, untouched. It works for 30 minutes. Don't say it's connected; a text goes by code when they finish."
             : "One short heads-up in your own voice, lowercase: they connect through Plaid, and you can only read balances and transactions, never move money. Then this url ON ITS OWN LINE as the last thing, untouched. It works for 30 minutes. Don't say it's connected; a text goes by code when they finish." };
       }
       case "status":

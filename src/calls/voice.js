@@ -47,9 +47,11 @@ import { briefLines, buildBrief, todaySoFarNote } from "./brief.js";
 import { earlierCallsNote, CARRY_TURN_LINE, CARRY_TURN_GOODBYE, carryoverFor, calendarNote, recentMemoryNote, prepareCarry, setCalendarReader, brokeLine, turnWorked } from "./carryover.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
+import * as calltrust from "./calltrust.js";
+import { peekForSignin } from "../savedlogins.js";
 import { rulesNote } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory } from "./callmemory.js";
-import { memoryHits } from "../memorynote.js";
+import { memoryHits, profileNote as profileForCall } from "../memorynote.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
 import * as callMetrics from "./metrics.js";
@@ -520,8 +522,8 @@ export function announcementOwedIn(call) {
 /** The owner's profile, as a text turn is shown it, or "" when there is none. */
 export function ownerProfileNote(conversationId) {
   try {
-    const block = db.getProfile(conversationId)?.block;
-    return block ? `WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty; where two disagree, the later date wins):\n${block}` : "";
+    // A name they gave Reason is said as Reason's, never as theirs (../memorynote.js `profileForPrompt`).
+    return profileForCall(conversationId);
   } catch {
     return "";
   }
@@ -581,7 +583,8 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // Who is on the line is not settled by the number it came from (section 6). Said here, in the
     // owner's own frame, because the gate in `voiceTurn` refusing a tool reads much better when the
     // model already knew the rule than when it is learning it from a refusal.
-    verify.promptNote({ call }),
+    // REASON_CALL_TRUST on: the three levels (./calltrust.js) in place of the one whole-call check.
+    calltrust.trustOn(call) ? calltrust.promptNote(call) : verify.promptNote({ call }),
     contextDeps.openWorkNote(conversationId),
     contextDeps.keptNote(conversationId),
     // What they have really bought, read from the database — a call must not say "it's ordered"
@@ -962,6 +965,30 @@ export function withoutSpokenLinks(text) {
  * entirely — and that is the path a paused commitment uses to ask him about a fee nobody approved
  * while a restaurant waits on the line (see `./commit.js`).
  */
+/**
+ * The open errand page, for telling a free booking from one that pays (./calltrust.js): its visible words,
+ * whether it has a card or payment field (a field, or a payment provider's frame), and whether this browser
+ * may be signed in there (a saved login for the site; the page's own sign-out link is read off the words).
+ * A field check that cannot be made counts as a field: what cannot be seen is never low risk.
+ */
+const PAY_FIELDS = `document.querySelectorAll('input[autocomplete^="cc-"], input[name*="card" i], input[id*="card" i], input[name*="cvc" i], input[name*="cvv" i], input[name*="expir" i], iframe[src*="stripe"], iframe[src*="braintree"], iframe[src*="adyen"], iframe[src*="squareup"], iframe[src*="paypal"], iframe[name*="card" i], iframe[title*="payment" i], iframe[title*="card" i]').length`;
+async function openPageText(conversationId) {
+  try {
+    const { openPage, pageText } = await import("../browser.js");
+    const page = openPage(conversationId);
+    if (!page) return null;
+    const text = await pageText(page, 20_000);
+    let payField = true;
+    try { payField = Number(await page.evaluate(PAY_FIELDS)) > 0; } catch { /* unknown: a field */ }
+    let savedLogin = false;
+    try {
+      const host = new URL(page.url()).hostname;
+      savedLogin = peekForSignin(conversationId, host).length > 0;
+    } catch { /* none known */ }
+    return { text, payField, savedLogin };
+  } catch { return null; }
+}
+
 export function queueMidCall({ call, text, kind = "link", log = () => {} }) {
   if (!String(text ?? "").trim()) return { ok: false, why: "nothing to send" };
   const who = db.getAccount(call.conversation_id);
@@ -1119,6 +1146,9 @@ export function runCallTool(name, input = {}, { call, context, log = () => {}, t
       if (!call.is_owner) break;
       return verify.verify({
         call, passphrase: input.passphrase ?? "", about: input.about ?? "",
+        // REASON_CALL_TRUST on: a passphrase unlocks one action at the moment it is needed
+        // (./calltrust.js), never the whole call, so the old one-check-per-call passphrase is off.
+        ...(calltrust.trustOn(call) ? { expected: "" } : {}),
         // The text leaves by the same outbox everything else mid-call uses, and the yes is read off
         // the owner's own thread as this turn already has it.
         tell, messages: context?.messages ?? [], log,
@@ -1692,6 +1722,19 @@ export async function* voiceTurn({
   // The first chunk of an OpenAI stream carries the role and nothing else.
   yield chunk({ role: "assistant" });
 
+  // REASON_CALL_TRUST: a line code owes right now (after a passphrase check, or for setting one up) is
+  // said instead of a model turn, word for word. Null with the switch off.
+  if (context.kind === "owner" && call.is_owner) {
+    const owed = calltrust.owedLine(call, { theirWords: latestSpoken(context.messages), log });
+    if (owed) {
+      yield chunk({ content: owed });
+      yield chunk({}, "stop");
+      yield SSE_DONE;
+      log({ voice_turn: call.id, kind: context.kind, trust_line: true });
+      return;
+    }
+  }
+
   const messages = withCallRecord(endOnTheirSide(context.messages, { own: context.kind === "owner" }), db.callLookups(call));
   // On their own call, what Reason remembers that is closest in meaning to what they just said — the
   // same search a text turn gets — riding in front of their words like the call record, never as theirs.
@@ -1732,7 +1775,7 @@ export async function* voiceTurn({
     log({ voice_where_ask: call.id, why, lead_in: Boolean(leadAsks), ...timing() });
     // Something refused for the caller check this turn, not yet said: that first (it is what they asked for).
     if (checkRefusalIsOwed()) {
-      const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+      const line = turnState.checkLine ?? (turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE);
       const content = said ? ` ${line}` : line;
       said += content;
       yield chunk({ content });
@@ -1935,7 +1978,7 @@ export async function* voiceTurn({
       const checkRefusalOwed = function* () {
         if (!checkRefusalIsOwed()) return;
         log({ voice_check_later_said: call.id, round });
-        yield* emit([turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE]);
+        yield* emit([turnState.checkLine ?? (turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE)]);
       };
 
       if (superseded()) {
@@ -2066,7 +2109,7 @@ export async function* voiceTurn({
             yield* emit(lastLeadIn);
             if (refusalOwed && lastLeadInRound <= (turnState.checkRefusedRound ?? -1)) {
               log({ voice_check_later_said: call.id, round, after: "lead_in" });
-              yield* emit([turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE]);
+              yield* emit([turnState.checkLine ?? (turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE)]);
             }
           } else if (refusalOwed) yield* checkRefusalOwed();
         }
@@ -2281,7 +2324,7 @@ export async function* voiceTurn({
       // Hanging up on a refusal nobody has heard: the platform says end_call's message, so the text-back
       // goes in front of it rather than being lost.
       else if (system?.name === "end_call" && checkRefusalIsOwed()) {
-        const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+        const line = turnState.checkLine ?? (turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE);
         const msg = String(system.input?.message ?? "").trim();
         system = { ...system, input: { ...(system.input ?? {}), message: msg ? `${line} ${msg}` : line } };
         log({ voice_check_later_said: call.id, round, on: "end_call" });
@@ -2339,10 +2382,12 @@ export async function* voiceTurn({
           catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
           if (t.name === "verify_caller" && out?.deferred) turnState.checkQueued = true;
           // make_a_call_for_me refused for the check (./fromcall.js go): owed out loud like any other.
-          if (out?.blocked === "needs_verification") {
+          if (out?.blocked === "needs_verification" || out?.blocked === "needs_passphrase") {
             turnState.checkRefused ??= said.length;
             if (out.queued) turnState.checkQueued = true;
+            if (out.trust_line) turnState.checkLine = out.trust_line;
           }
+          if (t.name === "make_a_call_for_me" && t.input?.request_id) calltrust.ran(call, t.name, out, { log });
           // Words have already left this turn, and a refusal that says "ask them for the date" does not
           // know that. In the 2026-10-07 rehearsal that produced a call which asked the same question
           // twice in one breath, every turn: the model asked about the date, proposed the booking, was
@@ -2464,8 +2509,15 @@ export async function* voiceTurn({
         // phone, so the first thing on this call that spends, books, sends or changes state stops
         // here. `confirm_record` is on the list because it is how a spoken yes becomes a granted
         // confirmation — exactly the thing that must not be grantable by whoever is on the line.
-        if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
-          out = verify.gateRefusal({ call, name: t.name, input: t.input, log });
+        // REASON_CALL_TRUST on (./calltrust.js): the level of this tool decides, in code. Null with it off,
+        // and then this is exactly the check it always was.
+        const toSelf = (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false;
+        const trustGate = call.is_owner && !verify.isVerified(call)
+          ? calltrust.decide({ call, name: t.name, input: t.input, toSelf, page: calltrust.trustOn(call) && ["browser_submit", "confirm_record"].includes(String(t.name)) ? await openPageText(context.conversationId) : null, log })
+          : null;
+        if (trustGate ? !trustGate.allow : (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf }))) {
+          out = trustGate?.out ?? verify.gateRefusal({ call, name: t.name, input: t.input, log });
+          if (trustGate?.line) turnState.checkLine = trustGate.line;
           turnState.checkRefused ??= said.length;
           if (out.queued) turnState.checkQueued = true;
           turnState.checkRefusedRound ??= round;
@@ -2489,6 +2541,17 @@ export async function* voiceTurn({
           }), toolBudgetMs, { name: t.name }));
         } catch (e) {
           out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+        }
+        if (trustGate?.allow) calltrust.ran(call, t.name, out, { log });
+        // A one-time code in what came back is not read out on a caller-ID-only call (switch on only).
+        {
+          const held = call.is_owner && !verify.isVerified(call) ? calltrust.holdsCode({ call, name: t.name, out, log }) : null;
+          if (held) {
+            out = held.out;
+            if (held.line) turnState.checkLine = held.line;
+            turnState.checkRefused ??= said.length;
+            if (out.queued) turnState.checkQueued = true;
+          }
         }
         if (out?.slow) log({ call_tool_over_budget: t.name, call_id: call.id, budget_ms: toolBudgetMs });
         // Only once get_location itself has looked (review 11-08): weather's own "give coordinates" before
@@ -2528,7 +2591,7 @@ export async function* voiceTurn({
     if (checkRefusalIsOwed()) {
       log({ voice_check_later_said: call.id, after: "out_of_rounds" });
       yield* openingIfOwed();
-      const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+      const line = turnState.checkLine ?? (turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE);
       const content = said ? ` ${line}` : line;
       said += content;
       yield chunk({ content });
@@ -2595,7 +2658,10 @@ export function withinBudget(promise, budgetMs, { name = "that tool" } = {}) {
       slow: true,
       say: `${name} is still running after ${Math.round(budgetMs / 1000)} seconds and a phone call cannot wait on it.`
         + ` Do not call it again on this call. Tell them in one sentence that you will text them the result, start the work`
-        + ` as something that outlives the call — task_start with what they asked for — and carry on talking.`,
+        + ` as something that outlives the call — task_start with what they asked for — and carry on talking.`
+        // Call 113 (2026-11-13): directions timed out and the turn said "about a fifteen minute walk, seven
+        // tenths of a mile" from its own estimate; the route came back 5 minutes, 360 m.
+        + ` Do not guess or estimate the answer yourself meanwhile: no rough time, distance, price or count of your own.`,
     }), budgetMs);
     timer.unref?.();
   });

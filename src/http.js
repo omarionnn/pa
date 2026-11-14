@@ -37,6 +37,7 @@
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/save-login/{token}, POST …/save|code|passkey   save a site's login once, sealed in the browser, Face ID (src/pages/savelogin.js; REASON_SAVED_LOGINS)
+//   GET  /web/call-passphrase/{token}, POST …/save           set or change a call passphrase; hashed at once (src/pages/callpassphrase.js; REASON_CALL_TRUST)
 //   GET  /web/login-use/{token}, POST …/approve   Face ID for one sign-in with a saved login (src/pages/loginuse.js; REASON_SAVED_LOGINS)
 //   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
 //   GET  /web/connect-all/{token}, POST …/go/{service}   connect the rest, after the first task that needed a connection worked (src/pages/connectall.js; REASON_CONNECT_AFTER)
@@ -89,7 +90,7 @@ import * as agentcard from "./agentcard.js";
 import * as parallel from "./parallel.js";
 import * as x from "./x.js";
 import { connectStartRequest, refuseForeignBrowser, START_PATH as CONNECT_START_PATH } from "./connectgate.js";
-import { renderNotice, renderConnected, dark, THEME, iconLinks } from "./pages/render.js";
+import { renderNotice, renderConnected, backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN, PAPER_GLOW, NIGHT_GLOW, GLOW_OFF, SHEET_BG } from "./pages/brand.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
@@ -447,6 +448,24 @@ export function createServer({ router, runtime, log = () => {} }) {
           return res.end(req.method === "HEAD" ? "" : out.body);
         }
       }
+      // Set or change a call passphrase on Reason's own page (src/pages/callpassphrase.js). Behind
+      // REASON_CALL_TRUST; off for the link's person, or a link nobody was issued: the same flat 404.
+      const callPassRoute = /^\/web\/call-passphrase\/([A-Za-z0-9_-]{1,64}(?:\/[a-z]{1,12})?)$/.exec(url.pathname);
+      if (callPassRoute && (await import("./callpass.js")).callTrustMode() !== "off") {
+        let out = null;
+        try {
+          const { callPassphraseRequest } = await import("./pages/callpassphrase.js");
+          out = await callPassphraseRequest({ sub: callPassRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), log });
+        } catch (e) {
+          // The name of what failed only: never the body, which holds the phrase.
+          log({ http: "/web/call-passphrase", threw: e?.code ?? e?.name ?? "error" });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
       // Approve one sign-in with a saved login, with Face ID (src/pages/loginuse.js, vault PR 6). Behind
       // REASON_SAVED_LOGINS; off, or a token nobody was issued, falls through to the same flat 404.
       const loginUseRoute = /^\/web\/login-use\/([A-Za-z0-9_-]{1,64}(?:\/[a-z]{1,12})?)$/.exec(url.pathname);
@@ -454,7 +473,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         let out = null;
         try {
           const { loginUseRequest } = await import("./pages/loginuse.js");
-          out = await loginUseRequest({ sub: loginUseRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), log });
+          out = await loginUseRequest({ sub: loginUseRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), runtime, log });
         } catch (e) {
           log({ http: "/web/login-use", threw: e?.code ?? e?.name ?? "error" });
           return send(500, { ok: false, error: "server error" });
@@ -896,8 +915,8 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(200, HTML());
         return res.end(brandedPage(url.pathname === "/pay/done" ? "You're all set" : "No charge",
           url.pathname === "/pay/done"
-            ? `<h1>You're all set.</h1><p>Thank you. Everything is back on.</p><p class="lead">Head back to Messages — Reason will text you there in a moment, and whatever you were in the middle of picks up right where it was.</p>`
-            : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>`));
+            ? `<h1>You're all set.</h1><p>Thank you. Everything is back on.</p><p class="lead">Head back to Messages — Reason will text you there in a moment, and whatever you were in the middle of picks up right where it was.</p>${backToReason({ text: "" })}`
+            : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>${backToReason({ text: "" })}`));
       }
 
       // ---------- Plaid pushing back: a bank was connected, transactions changed, a login expired (src/plaid.js) ----------
@@ -1474,13 +1493,15 @@ export async function bankDonePage(state, { log = () => {}, waitMs = 8000 } = {}
     } catch (e) { log({ plaid_done_page_failed: plaid.errorCode(e) }); }
     outcome = plaid.linkOutcome(state);
   }
+  // The way back (src/pages/render.js backToReason): Reason texts them by itself once the bank is
+  // through, so the thread opens with nothing typed; a closed link types the ask for a fresh one.
   if (outcome === "connected" || outcome === "reconnected") {
-    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Head back to Messages: Reason will text you there in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. You can ask Reason to disconnect it any time.</p>` };
+    return { title: "You're connected", body: `<h1>You're connected.</h1><p>That's it. Reason will text you in Messages in a moment.</p><p class="lead">Reason can read balances and transactions. It can't move money. You can ask Reason to disconnect it any time.</p>${backToReason({ text: "" })}` };
   }
   if (outcome === "open") {
-    return { title: "Almost there", body: `<h1>Not connected yet.</h1><p>If you finished signing in, give it a moment: Reason will text you when it's through. If you backed out, the link in your messages still works for a little while.</p>` };
+    return { title: "Almost there", body: `<h1>Not connected yet.</h1><p>If you finished signing in, give it a moment: Reason will text you when it's through. If you backed out, the link in your messages still works for a little while.</p>${backToReason({ text: "" })}` };
   }
-  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Ask Reason in Messages and it will send a fresh one.</p>` };
+  return { title: "Link closed", body: `<h1>This link is closed.</h1><p>Nothing was connected. Send the reply that's typed for you and Reason will text a fresh one.</p>${backToReason({ text: "send me a fresh bank link" })}` };
 }
 
 export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {
@@ -1755,9 +1776,12 @@ export async function googleCallbackRequest({ code, state, error = "", headers =
   const setupBack = websetup.googleCallbackDone(out);
   if (setupBack) return setupBack;
 
+  // Reason says so in the thread by itself, so Back to Messages then opens it with nothing typed.
+  let told = false;
   if (out.ok && runtime?.say) {
     try {
       runtime.say(out.conversationId, google.connectedLine(out));
+      told = true;
     } catch (e) {
       log({ google_connected_text_failed: out.conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
     }
@@ -1772,7 +1796,7 @@ export async function googleCallbackRequest({ code, state, error = "", headers =
       lines: out.ok
         ? [out.email ? `Reason can now work with ${out.email}.` : "Reason can now work with this account."]
         : [out.error],
-      back: { text: out.ok ? "connected google, keep going" : "google didn't connect" },
+      back: { text: told ? "" : out.ok ? "connected google, keep going" : "google didn't connect", conversationId: out.conversationId ?? "" },
     }),
   };
 }

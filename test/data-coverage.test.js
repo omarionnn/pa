@@ -31,7 +31,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 
 const data = await import("../src/data.js");
 // Every module that makes its own tables, so the database here has all of them.
-for (const m of ["plaid", "actioncards", "actionengine", "connectafter", "daily", "eventpay", "passkey", "plan", "saved", "shipping", "shopconnect", "socialsignin", "spendcap", "stamps", "strangercalls", "ownfiles", "tooldiet", "websetupstore", "verifications"]) {
+for (const m of ["plaid", "actioncards", "actionengine", "connectafter", "daily", "eventpay", "passkey", "plan", "saved", "shipping", "shopconnect", "socialsignin", "refusing", "spendcap", "stamps", "strangercalls", "ownfiles", "tooldiet", "websetupstore", "verifications"]) {
   await import(`../src/${m}.js`);
 }
 const db = await import("../src/db.js");
@@ -101,6 +101,10 @@ test("the vault cannot be forgotten: every logins.db table is in LOGINS_COVERAGE
     ld.prepare(`INSERT INTO saved_logins (id, conversation_id, site, label, signin_origin, signin_path, username_ct, password_ct, wrapped_key,
       kms_key, permission, consent_version, consent_at, consent_credential, created_at) VALUES (?, ?, 'example.test', 'Example',
       'https://example.test', '/signin', x'00', x'00', 'wrapped-${id}', 'stand-in', 'each_time', 'v1', 1, 'cred', 1)`).run(id, c);
+    ld.prepare("INSERT INTO signin_routes (conversation_id, site, route, set_at) VALUES (?, 'doordash.test', 'google', 1)").run(c);
+    ld.prepare("INSERT INTO call_passphrases (conversation_id, active_hash, active_set_how, active_set_at, active_words) VALUES (?, '{}', 'text', 1, 3)").run(c);
+    ld.prepare("INSERT INTO call_passphrase_links (token_hash, conversation_id, purpose, expires_at) VALUES (?, ?, 'set', 1)").run(`t-${id}`, c);
+    ld.prepare("INSERT INTO save_offers (conversation_id, site, offered_at) VALUES (?, 'example.test', 1)").run(c);
   };
   row(GONE, 1); row(STAYS, 2);
   const shown = sl.exportFor(GONE);

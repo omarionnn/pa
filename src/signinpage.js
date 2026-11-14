@@ -85,7 +85,43 @@ export const FRAME_JS = `(() => {
       if (OUT.test(ct)) acct = 'logout'; else if (!acct && ACC.test(ct)) acct = 'account';
     }
   } catch (e) {}
-  return { fields: out, buttons: bl, acct: acct, url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
+  // The site's own message boxes ("There was a problem", "Important Message!"), visible ones only: what
+  // the site said back to a submit. Its words, never anything in a box; masked again before use.
+  var al = [], seenA = {};
+  try {
+    var as = document.querySelectorAll('[role="alert"],[aria-live="assertive"],.a-alert,[class*="alert" i],[class*="error-message" i],[id*="error-message" i],[class*="form-error" i]');
+    for (var a = 0; a < as.length && al.length < 3; a++) {
+      var ae = as[a], ar = ae.getBoundingClientRect();
+      if (ar.width < 4 || ar.height < 4) continue;
+      var acs = window.getComputedStyle(ae);
+      if (acs.visibility === 'hidden' || acs.display === 'none' || Number(acs.opacity) < 0.05) continue;
+      var at = String(ae.innerText || '').replace(/\\s+/g, ' ').trim();
+      if (at.length < 3 || at.length > 400 || seenA[at]) continue;
+      var dup = false; for (var q = 0; q < al.length; q++) if (al[q].indexOf(at) >= 0 || at.indexOf(al[q]) >= 0) { dup = true; if (at.length > al[q].length) al[q] = at; }
+      seenA[at] = 1; if (!dup) al.push(at);
+    }
+  } catch (e) {}
+  // A picture or puzzle check on the page: names only (an image the site calls a captcha, a known
+  // challenge frame), and a count of visible checkboxes. Nothing is read out of any of them.
+  var ch = { img: false, frames: [] }, nchk = 0;
+  try {
+    var ims = document.querySelectorAll('img,canvas');
+    for (var m = 0; m < ims.length; m++) {
+      var im = ims[m], hay = String((im.id || '') + ' ' + (im.getAttribute('alt') || '') + ' ' + (im.getAttribute('src') || '').slice(0, 200) + ' ' + (typeof im.className === 'string' ? im.className : '')).toLowerCase();
+      var ir = im.getBoundingClientRect();
+      if (ir.width >= 40 && ir.height >= 20 && /captcha|characters|puzzle/.test(hay)) { ch.img = true; break; }
+    }
+    var fs = document.querySelectorAll('iframe');
+    for (var n = 0; n < fs.length && ch.frames.length < 4; n++) {
+      var fh = String((fs[n].getAttribute('src') || '').slice(0, 300) + ' ' + (fs[n].title || '') + ' ' + (fs[n].id || '')).toLowerCase();
+      var nm = /recaptcha/.test(fh) ? 'recaptcha' : /hcaptcha/.test(fh) ? 'hcaptcha' : /arkose|funcaptcha/.test(fh) ? 'arkose' : /turnstile|challenges\\.cloudflare/.test(fh) ? 'turnstile' : /captcha|puzzle|challenge/.test(fh) ? 'puzzle frame' : '';
+      if (nm && ch.frames.indexOf(nm) < 0) ch.frames.push(nm);
+    }
+    var cbs = document.querySelectorAll('input[type="checkbox"]');
+    for (var c = 0; c < cbs.length; c++) { var cr = cbs[c].getBoundingClientRect(); if (cr.width > 0 && cr.height > 0 && cr.bottom > 0 && cr.top < H) nchk++; }
+  } catch (e) {}
+  var doc = 0; try { doc = Math.round(performance.timeOrigin || 0); } catch (e) {}
+  return { fields: out, buttons: bl, acct: acct, alerts: al, doc: doc, challenge: ch, checks: nchk, title: String(document.title || '').slice(0, 120), url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
 })()`;
 
 /**
@@ -100,7 +136,9 @@ export function fieldKind(f = {}) {
   const hay = `${f.ac ?? ""} ${f.name ?? ""} ${f.id ?? ""} ${f.label ?? ""}`.toLowerCase();
   const type = String(f.type ?? "").toLowerCase();
   if (type === "password" || /password|passwd|\bpwd\b/.test(hay)) return "password";
-  if (/one-time-code|onetime|one time code|\botp\b|verification code|security code|\bpasscode\b|\bpin\b|sms code|email code|\bcode\b/.test(hay)) return "otp";
+  // The box beside a picture check ("Type characters", Amazon's `guess`): its own kind, never a sign-in box.
+  if (/captcha|\bguess\b|characters/.test(hay)) return "captcha";
+  if (/one-time-code|onetime|one time code|\botp\b|otpcode|otp-code|otp_code|verification code|security code|\bpasscode\b|\bpin\b|sms code|email code|\bcode\b/.test(hay)) return "otp";
   // A short numbers-only box is a code too, whatever it is called. Amazon's is `maxlength=6`.
   if ((type === "tel" || type === "number" || f.im === "numeric") && f.ml > 0 && f.ml <= 8) return "otp";
   if (type === "email" || /\be-?mail\b/.test(hay)) return "email";
@@ -129,7 +167,8 @@ const STRONG_CHALLENGE = /performing security verification|verif(y|ies|ying) (th
 const SHORT_PAGE = 1500;
 const STEP_TO_KIND = {
   refused: "provider_prompt", consent: "provider_prompt", number_match: "provider_prompt", phone_tap: "provider_prompt", account: "provider_prompt",
-  chooser: "signin_form", email: "signin_form", password: "signin_form", code: "signin_form", signed_in: "signed_in",
+  chooser: "signin_form", email: "signin_form", password: "signin_form", code: "signin_form", password_code: "signin_form", signed_in: "signed_in",
+  approve: "provider_prompt",
 };
 
 /**
@@ -158,6 +197,35 @@ export function pageKind(raw = {}, { provider = "", midFlow = false, framed = []
   if (STRONG_CHALLENGE.test(text) && text.trim().length <= SHORT_PAGE) return "challenge";
   if (midFlow && fields.some(f => { const k = fieldKind(f); return k === "text" || k === "number"; })) return "signin_form";
   return "not_signin";
+}
+
+/** A path that names itself a sign-in page: /login, /us/login, /signin, /account/sign-in, /auth/login. */
+export const SIGNIN_PATH = /(^|\/)(log-?in|sign-?in|sign_in|log_in|signin|login)(\/|\.|$)/i;
+
+/**
+ * The sign-in form a SAVED login may be typed into, read off one page's own boxes (never a frame's: the
+ * filler types only into the page's own frame). Pure. Stricter than pageKind, which counts any email
+ * box as a sign-in form: on 2026-11-13 Netflix's home page, whose one box is "enter your email to create
+ * or restart your membership", was pinned as its sign-in page and the filler found no password box.
+ *   "password"     one real password box (not a "new-password" one: that is making an account), the
+ *                  username/email box beside it optional.
+ *   "email_first"  exactly one email/username box and no other sign-in box, on a page whose own path
+ *                  says it is a sign-in page (never the front page: a sign-up box lives there).
+ *   null           anything else, a page with two password boxes included (making or changing one).
+ */
+const NEW_PASSWORD = /\bnew\b|new_?pass|newpass|confirm|re-?type|re-?enter|repeat|again|verify|choose (a |your )?password|create (a |your )?password|set (a |your )?password/i;
+export function loginFormOf(raw = {}) {
+  const fields = Array.isArray(raw?.fields) ? raw.fields : [];
+  const pw = fields.filter(f => String(f?.type ?? "").toLowerCase() === "password");
+  // A lone box the site calls a new, confirm or repeat password is making or changing one: never the sign-in box.
+  if (pw.length === 1) return /new-password/i.test(String(pw[0].ac ?? "")) || NEW_PASSWORD.test(`${pw[0].name ?? ""} ${pw[0].id ?? ""} ${pw[0].label ?? ""}`) ? null : "password";
+  if (pw.length) return null;
+  const boxes = fields.filter(signinBox);
+  const ids = boxes.filter(f => { const k = fieldKind(f); return k === "email" || k === "username"; });
+  if (ids.length !== 1 || boxes.length !== 1) return null;
+  let p = "";
+  try { p = new URL(String(raw?.url ?? "")).pathname; } catch { p = ""; }
+  return p && p !== "/" && SIGNIN_PATH.test(p) ? "email_first" : null;
 }
 
 const originOf = (u) => { try { return new URL(String(u)).origin; } catch { return ""; } };
@@ -478,7 +546,7 @@ export function forgetSigninPage(conversationId, entry) {
 }
 
 /** The endings that are "nothing happened": the person never got through, and the link is spent. */
-export const NO_PROGRESS = new Set(["timed_out", "cancelled", "link_expired", "no_signin_page"]);
+export const NO_PROGRESS = new Set(["timed_out", "cancelled", "link_expired", "no_signin_page", "site_repeated"]);
 /**
  * Write down how a link ended. Without progress: remembered, so no second identical link goes out
  * on its own. With progress (signed in): the slate is wiped.

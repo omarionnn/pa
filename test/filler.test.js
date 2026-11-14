@@ -36,7 +36,9 @@ useStandIn(g);
 const sl = await import("../src/savedlogins.js");
 const { Secret } = await import("../src/secret.js");
 const filler = await import("../src/filler.js");
+const refusing = await import("../src/refusing.js");
 const db = await import("../src/db.js");
+const busy = await import("../src/busy.js");
 let chromium;
 try { ({ chromium } = await import("playwright")); } catch { /* no browser on this machine */ }
 
@@ -169,6 +171,7 @@ after(async () => {
 
 const S = s => new Secret(Buffer.from(s, "utf8"));
 async function save(label, path, over = {}) {
+  refusing._resetRefusals(); // a wall in an earlier test marks acme.test as refusing (src/refusing.js)
   // One login per test: whatever an earlier test left (a failure before its cleanup) goes first.
   for (const r of sl.listLogins(ME)) sl.removeLogin(ME, r.id);
   return sl.saveLogin(ME, {
@@ -236,6 +239,7 @@ test("a saved login signs in on its exact origin; the row flips unverified -> wo
   assert.equal(out.result, "signed_in", JSON.stringify(out));
   assert.equal(out.ok, true);
   assert.equal(rowState(id), "working", "a success flips the row to working");
+  assert.deepEqual(busy.holding(), [], "the restart gate's hold ends with the sign-in");
   assert.equal(g.count("decrypt"), beforeDecrypts + 1, "exactly one KMS unwrap for one sign-in");
 
   // Rule 2: the password is in no request body the stand-in saw, no login_log row, and not in the
@@ -271,6 +275,7 @@ test("rule 4: a wall refuses once and the site is paused; a second call does not
   const decryptsAfterFirst = g.count("decrypt");
   const out2 = await signIn();
   assert.equal(out2.result, "paused", "a refused site is paused on the next call");
+  assert.equal(refusing.refusingSite("acme.test"), null, "one wall never marks the site for everyone (src/refusing.js)");
   assert.equal(g.count("decrypt"), decryptsAfterFirst, "the second call does no KMS unwrap");
   sl.removeLogin(ME, id);
 });
@@ -303,13 +308,20 @@ test("a texted code: asked once, their reply typed once, and the end told in the
   const { id } = await save("Acme", "/secondstep");
   const r = replyLater(), n = noted();
   codesTyped.length = 0;
-  const out = await signIn({ awaitReply: r.awaitReply, note: n.note });
+  // The restart gate sees the browser held, then the wait for the code, then nothing (src/busy.js).
+  const kinds = () => busy.holding().map((i) => i.kind);
+  let atLaunch = null;
+  const out = await signIn({ awaitReply: r.awaitReply, note: n.note, launch: async (a) => { atLaunch = kinds(); return launch(a); } });
   assert.equal(out.result, "needs_code_sms");
   assert.equal(out.ok, false);
   assert.match(out.say_exactly, /texted a code/);
   assert.deepEqual(r.asked, ["acme.test"], "asked once");
+  assert.deepEqual(atLaunch, ["saved_login"], "the gate sees the sign-in while the browser opens");
+  assert.deepEqual(kinds(), ["saved_login_code"], "the gate sees the wait for the code");
+  assert.ok(busy.holding().every((i) => i.site === ""), "no site in what the gate reads");
   r.give(GOOD_CODE);
   const said = await n.end;
+  assert.deepEqual(kinds(), [], "released when it ends");
   assert.deepEqual(codesTyped, [GOOD_CODE], "the code was typed once");
   assert.match(said, /ended: signed_in/);
   assert.ok(!said.includes(GOOD_CODE) && !JSON.stringify(out).includes(GOOD_CODE), "the code is in no result and no note");

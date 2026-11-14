@@ -26,8 +26,9 @@ import { PAPER_CSS, header, frame, headline, lede, label, para, note, go, two, a
 import { SECURITY_HEADERS, sameOrigin } from "./websignin.js";
 import * as shop from "../shopconnect.js";
 import * as passkey from "../passkey.js";
+import { backToMessages, BACK_JS, BACK_CSS } from "./backlink.js";
 
-const CSS = `${PAPER_CSS}
+const CSS = `${PAPER_CSS}${BACK_CSS}
 .pk-item{margin:10px 0 0;font-size:17px;line-height:1.45;color:var(--ink)}
 .pk-note{margin-top:22px}
 .pk-go .pf-go{font-size:28px}
@@ -57,14 +58,14 @@ export const payingLines = (store, amount) => [
 ];
 
 function page(title, body, { staging = false, status = 200, boot = null, card = null } = {}) {
-  const script = `${STEP_JS}${LIVE_JS}${boot ? JS(boot) : ""}`;
+  const script = `${STEP_JS}${LIVE_JS}${BACK_JS}${boot ? JS(boot) : ""}`;
   // The link card a phone draws for the texted link (src/pages/securedcard.js): the action only.
   const head = card ? securedCardTags(card) : "";
   return { status, html: webPage({ title, body: body + (staging ? `<p class="stg">STAGING · SAMPLE</p>` : ""), css: CSS, script, head }) };
 }
 /** Which "Secured by Reason" card a payment link shows: a limit change or a purchase. */
 const cardOf = (v) => (v?.kind === "cap" ? "limit" : "approve");
-const shell = (main) => `${header()}<main class="pf" id="pk-main">${main}</main>`;
+const shell = (main, home = "") => `${header({ home })}<main class="pf" id="pk-main">${main}</main>`;
 const LABELS = { item: "Item", shipping: "Shipping", tax: "Tax", fees: "Fees", discount: "Discount" };
 /**
  * What the total is made of (2026-11-07: the page showed one number and no breakdown): item, shipping,
@@ -107,7 +108,7 @@ function renderApproveCap({ v, staging = false, boot = null, blocked = "" }) {
     const main = headline(cooling ? "Your new Face ID isn't ready yet." : "Face ID isn't set up here.", "Your limit hasn't changed.", "pk-h")
       + lede(cooling ? "A Face ID added after the first one waits a day before it can approve anything, so nobody can add one and raise your limit before you hear." : "Set up Face ID in Settings, then ask me again.")
       + theNumber + `<div class="pk-note">${actions(NO("Leave it"), go("Settings", { href: "/web/settings#shopping" }))}</div>`;
-    return page("Reason — approve", shell(frame({ main, margin: WHAT_IT_COVERS(v) })), { staging, boot, card: cardOf(v) });
+    return page("Reason — approve", shell(frame({ main, margin: WHAT_IT_COVERS(v) }), v?.a?.conversation_id ?? ""), { staging, boot, card: cardOf(v) });
   }
   const ask = frame({
     step: "ask",
@@ -139,7 +140,7 @@ function renderApproveCap({ v, staging = false, boot = null, blocked = "" }) {
       + theNumber + `<div class="pk-note">${actions(`<button class="act pf-go" type="button" id="pk-retry" data-busy="1">Try again <span aria-hidden="true">→</span></button>`, go("Back to Settings", { href: "/web/settings#shopping" }))}</div>`,
     margin: label("THIS LINK") + para("Still works, once, until it runs out."),
   });
-  return page("Reason — approve", shell(ask + paying + paid + declined + failed), { staging, boot, card: cardOf(v) });
+  return page("Reason — approve", shell(ask + paying + paid + declined + failed, v?.a?.conversation_id ?? ""), { staging, boot, card: cardOf(v) });
 }
 
 /** The open payment and every screen its script moves to. `blocked` is cooling_off / no_passkey. */
@@ -151,7 +152,7 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
     const main = headline(cooling ? "Your new Face ID isn't ready yet." : "Face ID isn't set up here.", "Nothing was charged.", "pk-h")
       + lede(cooling ? "A Face ID added after the first one waits a day before it can pay, so nobody can add one and pay with it before you hear. Use the phone you set it up on, or decline." : "Set up Face ID in Settings, then ask me for a fresh link.")
       + theTotal(v) + `<div class="pk-note">${actions(NO("Decline it"), go("Settings", { href: "/web/settings#shopping" }))}</div>`;
-    return page("Reason — approve", shell(frame({ main, margin: WHAT_IT_COVERS(v) })), { staging, boot, card: cardOf(v) });
+    return page("Reason — approve", shell(frame({ main, margin: WHAT_IT_COVERS(v) }), v?.a?.conversation_id ?? ""), { staging, boot, card: cardOf(v) });
   }
   const ask = frame({
     step: "ask",
@@ -174,19 +175,19 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
     step: "paid", off: true,
     main: headline(`Paid ${v.amount}.`, "Back to the chat.") + lede(`${v.store} still has to place the order. I'll text you when it's through.`)
       + paper({ stamp: "APPROVED", label: v.store.toUpperCase(), big: v.amount, extra: v.item ? `<p class="pk-item">${esc(v.item)}</p>` : "" })
-      + `<div class="pk-note">${actions(go("Back to Reason", { href: BACK }))}</div>`,
+      + backToMessages(v.a?.conversation_id),
     margin: label("APPROVED WITH") + para("Face ID, on this device.") + label("THIS LINK", { sp: true }) + para("Is used up. It can't pay again."),
   });
   const declined = frame({
     step: "declined", off: true,
     main: headline("Declined.", "Nothing was charged.") + lede(`I told ${v.store} no. Text me if you want something else.`)
-      + `<div class="pk-note">${actions(go("Back to Reason", { href: BACK }))}</div>`,
+      + backToMessages(v.a?.conversation_id),
     margin: label("THIS LINK") + para("Is closed. It can't pay."),
   });
   const unsure = frame({
     step: "unsure", off: true,
     main: headline("I couldn't tell if it went through.", "I won't pay twice.") + lede(`The store didn't answer in time. I'll check with ${v.store} and text you what happened.`)
-      + `<div class="pk-note">${actions(go("Back to Reason", { href: BACK }))}</div>`,
+      + backToMessages(v.a?.conversation_id),
     margin: label("NOT RETRIED") + para("A payment that might have gone through is never paid again by itself."),
   });
   // Face ID passed and nothing was charged, but the payment did not start on Reason's side (Crossmint
@@ -210,7 +211,7 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
       + theTotal(v) + `<div class="pk-note">${actions(`<button class="act pf-go" type="button" id="pk-retry" data-busy="1">Try again <span aria-hidden="true">→</span></button>`, go("Back to Reason", { href: BACK }))}</div>`,
     margin: label("THIS LINK") + para("Still works, once, until it runs out.") + label("NOT CHARGED", { sp: true }) + para("The store never got a payment to take."),
   });
-  return page("Reason — approve", shell(ask + cvc + paying + paid + declined + unsure + failed), { staging, boot, card: cardOf(v) });
+  return page("Reason — approve", shell(ask + cvc + paying + paid + declined + unsure + failed, v?.a?.conversation_id ?? ""), { staging, boot, card: cardOf(v) });
 }
 
 /** A link that can't pay anymore: used, declined, run out, replaced by a newer one, or the payment closed. */
@@ -224,9 +225,9 @@ export function renderApproveEnded({ v = null, state = "expired", staging = fals
       : state === "declined" ? (cap ? "Tell me if you want a different number." : "Text me if you want something else.")
       : state === "renewed" ? "Stores hold a payment for ten minutes. I asked again for the same thing, and a fresh link comes by text with the total."
       : `Approval links last thirty minutes and work once. If you still want it, ${cap ? "set the number again in Settings or tell me" : "tell me and I'll send a fresh one"}.`)
-    + (v ? (cap ? paper({ label: "DAILY LIMIT", big: v.to, extra: `<p class="pk-item">From ${esc(v.from)} a day</p>` }) : theTotal(v)) : "") + `<div class="pk-note">${actions(go(cap ? "Back to Settings" : "Back to Reason", { href: cap ? "/web/settings#shopping" : BACK }))}</div>`;
+    + (v ? (cap ? paper({ label: "DAILY LIMIT", big: v.to, extra: `<p class="pk-item">From ${esc(v.from)} a day</p>` }) : theTotal(v)) : "") + (cap || !v ? `<div class="pk-note">${actions(go(cap ? "Back to Settings" : "Back to Reason", { href: cap ? "/web/settings#shopping" : BACK }))}</div>` : backToMessages(v.a?.conversation_id));
   const margin = label("WHY") + para("A link that runs out can't be used by anyone who sees it later.");
-  return page("Reason — approve", shell(frame({ main, margin })), { staging, status: state === "used" || state === "declined" ? 200 : 410, card: cardOf(v) });
+  return page("Reason — approve", shell(frame({ main, margin }), v?.a?.conversation_id ?? ""), { staging, status: state === "used" || state === "declined" ? 200 : 410, card: cardOf(v) });
 }
 
 // ---------------------------------------------------------------- setting it up

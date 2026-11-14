@@ -34,14 +34,15 @@ import { config } from "./config.js";
 import "./strangercalls.js";
 import "./tooldiet.js";
 import "./websetupstore.js"; // web_setups + the websetup_owner() SQL function CHILD_SCOPE uses
-import { profilePath } from "./browser.js";
+import { profilePath, realProfilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
 import { exportProofs, proofFilesFor } from "./proofshot.js";
 import * as google from "./google.js";
 // Saved logins live in data/logins.db (their own file): exported as a list with the login REDACTED,
 // deleted before the person's key goes. Loading it creates no file.
-import { deleteAllFor, deleteEveryLogin, exportFor } from "./savedlogins.js";
+import { deleteAllFor, deleteEveryLogin, exportFor, exportRoutesFor } from "./savedlogins.js";
+import { exportFor as exportPassphraseFor } from "./callpass.js";
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
@@ -275,6 +276,8 @@ const TABLES = [
   // last four, every synced transaction, the links texted, when a bank read was answered, and the
   // "that looks short" warnings before a payment.
   "plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks",
+  // and that they asked to connect while connections were full (to be told when there is room).
+  "plaid_waits",
 ];
 
 /**
@@ -309,8 +312,12 @@ export const KEPT_ON_DELETE = {
  * coverage test can tell "nobody's" from "forgotten". A whole-install delete leaves them, as before.
  */
 export const INSTALL_WIDE = {
+  site_wall_strikes: "A site's one unconfirmed wall or challenge (src/refusing.js): its registrable domain, a fixed evidence word and when; a second one 10+ minutes later marks the site. About the site, never a person",
+  site_refusals: "Sites that turn away browsers run by software (src/refusing.js): the site's registrable domain, a fixed evidence word and the day seen; believed 30 days. About the site, never a person",
   site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain, with a short one-way mark of which sign-in page was asked (never the address itself); nothing in it says who asked.",
+  plaid_slots: "How many banks were ever connected through Plaid (src/plaid.js), which Plaid's Trial plan counts even after a disconnect: a one-way mark of each bank connection and a hash of whose, emptied by deleteData (removeAllAtPlaid)",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
+  cartesia_daily: "Cartesia call voice counts per day (calls, ready, fall-backs by reason), no person",
   channel_limits: "what each channel refused, learned once for everyone",
   flight_provider_usage: "monthly search counts per flight provider",
   // `last_addr` is the number the last failure was about, so a fix can tell which one cleared.
@@ -478,7 +485,7 @@ function childScope(table, conversation) {
 function deleteProfiles(conversation = null) {
   const out = { listed: 0, deleted: 0, failed: [] };
   const targets = conversation
-    ? [profilePath(conversation)]
+    ? [profilePath(conversation), realProfilePath(conversation)]
     : (existsSync(config.profileRoot)
       ? readdirSync(config.profileRoot).map(d => join(config.profileRoot, d))
       : []);
@@ -562,6 +569,9 @@ export function exportData({ conversation = null, audio = true, files = true } =
   }
   for (const t of GLOBAL_TABLES) out.tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
   out.saved_logins = exportFor(conversation).map(r => ({ ...r, login: REDACTED }));
+  out.signin_routes = exportRoutesFor(conversation);
+  // That a call passphrase is set, how and when (src/callpass.js); never its hash.
+  out.call_passphrase = exportPassphraseFor(conversation);
 
   // A page is only half of itself without the browsers signed in to it and the answers on it.
   // Plus the person's own event sign-in key (src/events.js signinKey), which no page row carries,

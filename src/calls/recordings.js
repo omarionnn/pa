@@ -210,11 +210,25 @@ export async function storeRecording(callId, ref, { fetchImpl = globalThis.fetch
   };
 }
 
-/** Delete one recording file. Missing is success: the point is that it is gone. */
+/** The copies made of a recording next to it: call-7.caf (the voice note it went out as) beside call-7.mp3. */
+const COPY_EXTS = [".caf", ".m4a", ".mp3", ".aac", ".wav"];
+function copiesOf(file) {
+  const ext = extname(file);
+  if (!/^call-\d+$/.test(basename(file, ext))) return [];
+  const stem = file.slice(0, file.length - ext.length);
+  return COPY_EXTS.filter(e => e !== ext.toLowerCase()).map(e => `${stem}${e}`).filter(f => existsSync(f));
+}
+
+/**
+ * Delete one recording file, and the copies of it made beside it (the .caf it was sent as) and for
+ * Reason Web (src/webaudio.js). Missing is success: the point is that it is gone.
+ */
 export function deleteRecordingFile(file) {
   if (!file) return { ok: true, existed: false };
   try {
-    if (!existsSync(file)) return { ok: true, existed: false };
+    const copies = copiesOf(file);
+    for (const f of copies) { forgetPlayable(f); unlinkSync(f); }
+    if (!existsSync(file)) return { ok: true, existed: copies.length > 0 };
     forgetPlayable(file); // Reason Web's .m4a of it (src/webaudio.js) goes with it
     unlinkSync(file);
     return { ok: true, existed: true };

@@ -112,6 +112,8 @@ export function pageFeed(conversationId, now = clock.now()) {
 function callArtifacts(c) {
   const out = [];
   if (c.recording_state === "stored" && c.recording_file) out.push({ type: "recording", url: `/ios/v1/calls/${c.id}/recording`, seconds: c.recording_seconds ?? null });
+  // Deleted (by them, call_recording_delete, or by the retention setting): no link, and the fact said.
+  else if (c.recording_state === "deleted") out.push({ type: "recording_deleted", deleted_at: c.recording_deleted_at ?? null, by: c.recording_deleted_at ? "you" : "retention" });
   if (String(c.transcript ?? "").trim()) out.push({ type: "transcript", text: c.transcript });
   return out;
 }

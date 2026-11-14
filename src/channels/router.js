@@ -55,6 +55,7 @@ import * as actionengine from "../actionengine.js";
 import * as websetup from "../websetup.js";
 import * as signinEmail from "../signinemail.js";
 import * as loginIntake from "../loginintake.js";
+import * as callPass from "../callpass.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
 import * as webhookAlert from "../webhookalert.js";
@@ -406,6 +407,24 @@ export class Router {
       if (line) {
         await this.send({ channel: inbound.channel, to: address, text: line, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
         return { ok: true, conversationId, textedPassword: true, replied: true };
+      }
+    }
+
+    // Their call passphrase (src/callpass.js, REASON_CALL_TRUST): "set / change / remove my call passphrase"
+    // and a typed yes to Reason's own question about one, answered by code with fixed words; no turn runs.
+    // Off: fromText returns null for everyone. The phrase itself is never typed here: the link's page takes it.
+    {
+      let pass = null;
+      try { pass = callPass.fromText({ conversationId, text: inbound.text, channel: inbound.channel, reasonDb: db.db }); } catch { pass = null; }
+      if (pass) {
+        const to = { channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, conversationId, toOwner: true };
+        await this.send({ ...to, text: pass.reply }).catch(() => {});
+        if (pass.link) await this.send({ ...to, text: pass.link }).catch(() => {});
+        if (pass.noteOutbox) {
+          try { pass.noteOutbox(db.db.prepare("SELECT id FROM outbox WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversationId)?.id ?? null); } catch { /* the yes then answers nothing */ }
+        }
+        this.log({ inbound: inbound.externalId, call_passphrase: pass.kind });
+        return { ok: true, conversationId, callPassphrase: pass.kind, replied: true };
       }
     }
 
@@ -1621,6 +1640,21 @@ export class Router {
     return await outbox.sendDurable({
       channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, log: this.log,
       media: mediaUrl ? { mediaUrl, mimeType, filename, ...(table ? { table: true } : {}) } : { file, mimeType, filename },
+    });
+  }
+
+  /**
+   * Several pictures as ONE swipeable stack, durably — the welcome cards' row (src/welcome.js), for
+   * any set of cards (src/stack.js). `mediaUrls` are what the provider fetches; `pictures` are the same
+   * pictures as files, in the same order, which the outbox sends one by one if the stack cannot go.
+   */
+  async sendCarousel({ channel, to, mediaUrls, pictures, historyText = "", chatId = null, idempotencyKey, conversationId = null, toOwner = false }) {
+    const pre = this.#ready(channel, { media: true });
+    if (pre) return pre;
+    if (channel === "console" || !conversationId) return await this.sendNow({ channel, to, text: "", carousel: mediaUrls, chatId, idempotencyKey });
+    return await outbox.sendDurable({
+      channel, router: this, conversationId, to, text: "", chatId, idempotencyKey, toOwner, log: this.log,
+      media: { carousel: mediaUrls, pictures, ...(historyText ? { historyText } : {}) },
     });
   }
 

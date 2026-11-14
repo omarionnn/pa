@@ -465,6 +465,9 @@ db.exec(`
     recording_sha256 TEXT,
     recording_why TEXT NOT NULL DEFAULT '',
     recording_sent_at INTEGER,
+    -- When the person asked for this call's recording to be deleted (call_recording_delete). The
+    -- state is then 'deleted', as when the retention setting takes it; this says it was them.
+    recording_deleted_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     ended_at INTEGER
@@ -1388,6 +1391,18 @@ addColumnIfMissing("calls", "verified_at", "INTEGER");
 addColumnIfMissing("calls", "verified_how", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "verify_tries", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("calls", "verify_sent_at", "INTEGER");
+// Who Reason trusts on a call (src/calls/calltrust.js, REASON_CALL_TRUST): the one action a spoken
+// passphrase is being asked for, the one it unlocked and until when, the call's tries, the line code
+// owes next, a passphrase being set on the call, and how the caller's number arrived (Twilio's
+// ForwardedFrom and StirVerstat). Never a passphrase or a word of one.
+addColumnIfMissing("calls", "trust_ask", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "trust_grant", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "trust_tries", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "trust_told", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "trust_owed", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "trust_setup", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "caller_forwarded", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "caller_attest", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "verify_sent_after_msgs", "INTEGER");
 // What an unverified caller asked for that waits for the call to end, picked up by text after it
 // (src/calls/verify.js; owner 2026-11-06: no "reply yes" during a live call).
@@ -1545,6 +1560,7 @@ addColumnIfMissing("calls", "recording_bytes", "INTEGER");
 addColumnIfMissing("calls", "recording_sha256", "TEXT");
 addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
+addColumnIfMissing("calls", "recording_deleted_at", "INTEGER");
 addColumnIfMissing("calls", "webhook_token", "TEXT");
 addColumnIfMissing("pending_inbound", "held_times", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("pending_inbound", "down_since", "INTEGER");
@@ -1666,7 +1682,7 @@ addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 addColumnIfMissing("accounts", "web_reach", "TEXT");
 addColumnIfMissing("accounts", "web_theme", "TEXT");
 // The voice on the operator's own calls (src/calls/cartesia.js): "" is today's voice, "cartesia" the trial.
-// Only read with REASON_CALL_CARTESIA=owner, and only on the operator's account.
+// Only read with REASON_CALL_CARTESIA=owner, and only on the operator's account (at on it is never read).
 addColumnIfMissing("accounts", "call_trial", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("page_sessions", "user_agent", "TEXT");
 // Which client a session was issued to: NULL for a browser, 'ios' for the app (src/ios/session.js).
@@ -2227,6 +2243,13 @@ addColumnIfMissing("calls", "turn_log", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_opener", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_about", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
+// What the Cartesia voice ran on a call, for the plan meter on /ops (src/planmeter.js): its seconds and
+// cents at the plan's rate, written when the Cartesia relay lets the call go — at its end, or when it
+// hands the call to GPT-Live (`cartesia_fell_back` 1), whose own cost then lands in cost_cents. Numbers
+// only. Null on every call the Cartesia voice never carried.
+addColumnIfMissing("calls", "cartesia_seconds", "INTEGER");
+addColumnIfMissing("calls", "cartesia_cents", "INTEGER");
+addColumnIfMissing("calls", "cartesia_fell_back", "INTEGER NOT NULL DEFAULT 0");
 export function setItemLabel(kind, conversationId, id, label, { blurb = null } = {}) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
@@ -5805,7 +5828,7 @@ export function updateCall(conversationId, id, fields) {
     // What a second call_place handed into this one while it rang or ran (tools.js, calls 66/67).
     "facts",
     "recording_state", "recording_file", "recording_format", "recording_seconds",
-    "recording_bytes", "recording_sha256", "recording_why",
+    "recording_bytes", "recording_sha256", "recording_why", "recording_deleted_at",
     "language", "language_announced",
     // What a real call is like (2026-10-07): waiting, who has heard the announcement, which keys were
     // pressed, what was read back, and what the call ACHIEVED as opposed to what the phone did.
@@ -5815,6 +5838,8 @@ export function updateCall(conversationId, id, fields) {
     "errand_id", "voicemail_left", "attempt", "told_at",
     // The 2026-10-07 addendum: the second check on an owner call, and what the call ran under.
     "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs", "verify_deferred",
+    // Who Reason trusts on the call (src/calls/calltrust.js).
+    "trust_ask", "trust_grant", "trust_tries", "trust_told", "trust_owed", "trust_setup", "caller_forwarded", "caller_attest",
     "profile", "tts_model",
     "opening_waits", "machine_heard",
     // A GPT-Live third-party call names Reason in its disclosure (src/calls/gptlive.js lineAnnouncement).
@@ -5825,6 +5850,8 @@ export function updateCall(conversationId, id, fields) {
     "settle_started_at", "settled_at", "settle_resumes",
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
+    // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
+    "cartesia_seconds", "cartesia_cents", "cartesia_fell_back",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
     "turn_log",
   ];
@@ -11476,8 +11503,13 @@ function historyFromOutbound(row) {
   // by the tool that drew it): Web serves it from there. Any other address (a contact card's .vcf) stays a file.
   const table = row.media?.table === true && /^https?:\/\/.+\/web\/media\/u\//.test(String(row.media.mediaUrl ?? ""))
     && /^image\//.test(String(row.media.mimeType ?? "image/png"));
+  // A stack of choice cards (src/stack.js): every card, in order, so Web draws the set as it was sent.
+  const stackCards = Array.isArray(row.media?.carousel) && Array.isArray(row.media.pictures)
+    ? row.media.pictures.map(p => /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(p?.file ?? ""))) : null;
   // A welcome card (src/welcome.js) is history as its words: Web cannot draw the picture, and a blank file says nothing.
-  const media = !row.media || row.media.fallbackText || row.media.carousel ? []
+  const media = stackCards?.length && stackCards.every(Boolean)
+    ? row.media.pictures.map((p, i) => ({ kind: "image", mimeType: "image/jpeg", filename: p.filename ?? null, url: `card:${stackCards[i][1]}`, choice: true }))
+    : !row.media || row.media.fallbackText || row.media.carousel ? []
     : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
       : table ? [{ kind: "image", mimeType: row.media.mimeType ?? "image/png", filename: row.media.filename ?? null, url: row.media.mediaUrl, table: true }]
         : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
@@ -12282,6 +12314,42 @@ export function opsWeekByConversation(now = clock.now()) {
     (out[r.c] ??= new Array(7).fill(0))[i] += r.n;
   }
   return out;
+}
+
+// ---------- the Cartesia call voice, counted (src/calls/cartesia.js) ----------
+// Numbers only, per day: no person, no call id, no words. `what` is one of CARTESIA_COUNTS or
+// "fell_back:<reason>" with a reason from CARTESIA_FALLBACK_REASONS; nothing else is ever written.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS cartesia_daily (
+    day TEXT NOT NULL,
+    what TEXT NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, what)
+  );
+`);
+export const CARTESIA_COUNTS = new Set(["calls", "ready"]);
+export const CARTESIA_FALLBACK_REASONS = new Set(["not_ready", "refused_plan_limit", "refused_out_of_credits", "refused_auth", "closed_before_ready", "error_before_ready", "closed_mid_call", "error_mid_call", "could_not_open", "not_loaded", "other"]);
+export function bumpCartesia(day, what) {
+  const reason = String(what ?? "").startsWith("fell_back:") ? String(what).slice("fell_back:".length) : null;
+  const ok = reason == null ? CARTESIA_COUNTS.has(what) : CARTESIA_FALLBACK_REASONS.has(reason);
+  if (!ok && reason == null) return; // not a number this table keeps
+  const key = ok ? what : "fell_back:other";
+  db.prepare(`INSERT INTO cartesia_daily (day, what, n) VALUES (?, ?, 1)
+    ON CONFLICT(day, what) DO UPDATE SET n = n + 1`).run(String(day), key);
+}
+/** One day's counts: `{ day, calls, ready, fell_back: { total, <reason>: n } }`. Prunes past 35 days as it reads. */
+export function cartesiaDaily(day) {
+  const out = { day: String(day), calls: 0, ready: 0, fell_back: { total: 0 } };
+  const t = Date.parse(`${day}T00:00:00Z`);
+  if (Number.isFinite(t)) pruneCartesiaDaily(new Date(t - 35 * 86_400_000).toISOString().slice(0, 10));
+  for (const r of db.prepare("SELECT what, n FROM cartesia_daily WHERE day = ?").all(String(day))) {
+    if (r.what.startsWith("fell_back:")) { out.fell_back[r.what.slice(10)] = r.n; out.fell_back.total += r.n; }
+    else if (CARTESIA_COUNTS.has(r.what)) out[r.what] = r.n;
+  }
+  return out;
+}
+export function pruneCartesiaDaily(beforeDay) {
+  return Number(db.prepare("DELETE FROM cartesia_daily WHERE day < ?").run(String(beforeDay)).changes);
 }
 
 export function providerCalls(provider, day) {

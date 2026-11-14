@@ -55,7 +55,7 @@ after(async () => {
 });
 
 test("a person types a login on the page, taps Save with Face ID, and one unverified login is stored; the requests carry ciphertext only", async () => {
-  const out = await intake.offerSaveLink(ME, "example.test", "pay my example bill", { locate: async () => ({ found: true, url: "https://login.example.test/signin" }) });
+  const out = await intake.offerSaveLink(ME, "example.test", "pay my example bill", { locate: async () => ({ found: true, url: "https://login.example.test/signin", form: "password" }) });
   assert.equal(out.ok, true, out.error);
   const path = new URL(out.link).pathname;
 
@@ -91,7 +91,8 @@ test("a person types a login on the page, taps Save with Face ID, and one unveri
   await page.fill("#sl-pass", PLAIN.password);
   await page.waitForFunction(() => !document.getElementById("sl-go").disabled);
   await go.click();
-  await page.locator('[data-step="saved"]:not(.pf-off)').waitFor({ timeout: 15_000 });
+  // `saved` when Reason heard by itself, `savedq` (the button types "saved it, go ahead") when it couldn't.
+  await page.locator('[data-step^="saved"]:not(.pf-off)').waitFor({ timeout: 15_000 });
   assert.deepEqual(errors.filter(e => !/Failed to load resource: .* 404/.test(e)), [], "no script error (icons and fonts 404 with Web off here)");
 
   const saved = sl.listLogins(ME);

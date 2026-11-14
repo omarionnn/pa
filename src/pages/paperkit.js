@@ -19,6 +19,7 @@
 // shadow-stage / shadow-night), so Paper and Night paper both follow.
 import { esc } from "./render.js";
 import { wordmark, action, typed } from "./webkit.js";
+import { backHref } from "./backlink.js";
 
 // tokens.json spacing / radius, by name.
 const SPACE = "--max-w:1120px;--gutter:1.25rem;--gutter-wide:3rem;--part-gap:56px;--message-gap:40px;--label-gap:.75rem;--card-pad:2rem;--radius:4px;--radius-btn:3px";
@@ -39,7 +40,7 @@ export const PAPER_CSS = `
 .pf-p{margin:0;font-size:16px;line-height:1.6}
 .pf-p.mut{color:var(--muted)}
 .pf-sp{margin-top:20px}
-.pf-note{display:block;margin:0;font:400 1.3rem/1.3 var(--hand);color:var(--pen);transform:rotate(-1deg);transform-origin:left center}
+.pf-note{display:block;margin:0;overflow-wrap:break-word;font:400 1.3rem/1.3 var(--hand);color:var(--pen);transform:rotate(-1deg);transform-origin:left center}
 .pf-form{margin:64px 0 0;display:flex;flex-direction:column;gap:40px}
 .pf-fld{display:flex;flex-direction:column;gap:6px;min-width:0}
 .pf-fld>label,.pf-fld>.pf-l{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -64,7 +65,9 @@ export const PAPER_CSS = `
 .pf-card-slot iframe{width:100%!important;display:block}
 .pf-g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}
 .pf-acts{margin-top:16px;display:flex;flex-wrap:wrap;align-items:center;gap:12px 40px}
-.pf-acts+.pf-l,.pf-acts+.pf-note{margin-top:-24px}
+.pf-acts+.pf-l,.pf-acts+.pf-note{margin-top:12px}
+.pf-form>.pf-acts+.pf-l,.pf-form>.pf-acts+.pf-note{margin-top:-24px}
+.pf-note[hidden],.pf-l[hidden]{display:none}
 .pf-go{min-height:48px;font-size:34px;line-height:1.15}
 .pf-two{min-height:44px;font-size:12px;color:var(--muted)}
 .pf-two:hover{color:var(--ink)}
@@ -113,8 +116,21 @@ export const PAPER_CSS = `
 `;
 
 // ---------------------------------------------------------------- parts
-/** The page's header: the wordmark, home, and (StoreSignIn) a typed eyebrow on the right. */
-export const header = ({ right = "" } = {}) => `<header class="pf-hd">${wordmark({ href: "/web?home" })}${right ? `<span class="pf-l">${esc(right)}</span>` : ""}</header>`;
+/**
+ * The page's header: the wordmark and (StoreSignIn) a typed eyebrow on the right. `home`: the conversation
+ * the page's link was sent in. The wordmark then goes where Back to Messages goes (src/pages/backlink.js):
+ * a texted person's own thread in Messages, a web-chat person's web thread. Decided by that
+ * conversation, never by whether this browser holds a Reason Web session (2026-11-13: the save page's
+ * wordmark opened Reason Web for someone who texts Reason). No conversation: Reason Web's home.
+ */
+export const header = ({ right = "", home = "", via = "" } = {}) => {
+  let mark = wordmark({ href: "/web?home" });
+  if (home) {
+    const { href, sms } = backHref(home, { via });
+    mark = wordmark({ href }).replace('aria-label="Reason, home"', `aria-label="${sms ? "Back to your thread with Reason in Messages" : "Back to your thread with Reason"}"${sms ? " data-sms" : ""}`);
+  }
+  return `<header class="pf-hd">${mark}${right ? `<span class="pf-l">${esc(right)}</span>` : ""}</header>`;
+};
 
 /**
  * One screen: the main column and its margin column. `step` names it when a page holds several

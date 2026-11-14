@@ -481,6 +481,9 @@ export class SendblueChannel extends Channel {
    * "Carousel messaging is only available on V2 lines", which comes back here as a plain failure so
    * the caller can send the pictures one by one instead (src/outbox.js). No words go with it.
    */
+  /** The most pictures one carousel takes ("2 to 20", api-v2/carousel); src/stack.js splits past it. */
+  get stackMax() { return 20; }
+
   async sendCarousel({ to, mediaUrls, chatId = null, idempotencyKey = null }) {
     const missing = this.missing();
     if (missing.length) {

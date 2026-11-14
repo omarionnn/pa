@@ -56,7 +56,7 @@ const ORIGIN = "https://login.example.test";
 const PLAIN = { username: "intake-tester@example.test", password: "Stand-in-intake-9Zr!", totp: "STANDININTAKEKEYJBSWY3DPEH" };
 const ASKED = "pay my example bill";
 const sha = (b) => createHash("sha256").update(b).digest();
-const at = (url) => async () => ({ found: true, url, kind: "password", followed: false, ms: 5 });
+const at = (url) => async () => ({ found: true, url, form: "password", followed: false, ms: 5 });
 const valuesIn = (s) => [PLAIN.username, PLAIN.password, PLAIN.totp].filter(v => s.includes(v) || s.includes(Buffer.from(v).toString("base64")));
 
 class Authenticator {
@@ -151,7 +151,7 @@ test("rule 3: a bank, gmail.com or uber.com gets no link and refusalFor's words;
   const before = rawIntake().length;
   for (const site of ["chase.com", "gmail.com", "uber.com"]) {
     let visited = false;
-    const out = await intake.offerSaveLink(ME, site, ASKED, { locate: async () => { visited = true; return { found: true, url: `https://${site}/login` }; } });
+    const out = await intake.offerSaveLink(ME, site, ASKED, { locate: async () => { visited = true; return { found: true, url: `https://${site}/login`, form: "password" }; } });
     const v = classifySite(site);
     assert.equal(v.policy, "never", site);
     assert.equal(out.ok, false);
@@ -176,7 +176,24 @@ test("rule 1: the origin is pinned from Reason's own visit; a sign-in page on an
     const out = await intake.offerSaveLink(ME, "example.test", ASKED, { locate: at(url) });
     assert.equal(out.error, why, url);
   }
-  assert.equal((await intake.offerSaveLink(ME, "example.test", ASKED, { locate: async () => ({ found: false }) })).error, "not_reached");
+  // A form page whose path cannot be kept is never pinned as the front page instead (ship review 2026-11-13).
+  const long = await intake.offerSaveLink(ME, "example.test", ASKED, { locate: async () => ({ found: true, form: "password", url: `https://login.example.test/${"a".repeat(320)}` }) });
+  assert.equal(long.error, "no_signin_form");
+  // Reason's visit found no sign-in form: no link, and fixed words say so (2026-11-13, Netflix's home page).
+  const none = await intake.offerSaveLink(ME, "example.test", ASKED, { locate: async () => ({ found: false, why: "no_form" }) });
+  assert.equal(none.error, "no_signin_form");
+  assert.match(none.say, /couldn't find example\.test's sign-in page/);
+  // Each on a site of its own: a wall is remembered for its site, and example.test is used below.
+  for (const [why, error] of [["wall", "walled"], ["off_site", "off_site"], ["not_loaded", "not_reached"]]) {
+    const out = await intake.offerSaveLink(ME, `${why.replace("_", "-")}-example.test`, ASKED, { locate: async () => ({ found: false, why }) });
+    assert.equal(out.ok, false); assert.equal(out.error, error); assert.equal(typeof out.say, "string");
+  }
+  // A page reached but with no form the filler can type into is never pinned, whatever "found" says.
+  for (const form of [undefined, "", "signin_form", "challenge"]) {
+    const out = await intake.offerSaveLink(ME, "example.test", ASKED, { locate: async () => ({ found: true, url: `${ORIGIN}/`, form }) });
+    assert.equal(out.ok, false, `form ${form} is not a pin`);
+    assert.equal(out.error, "no_signin_form");
+  }
   assert.equal((await intake.offerSaveLink(ME, "example.test", ASKED, { locate: async () => { throw new Error("timeout"); } })).error, "not_reached");
   assert.equal((await intake.offerSaveLink(ME, "example.test", ASKED)).error, "not_reached", "no visit under test: no link");
   assert.equal(rawIntake().length, before);
@@ -224,7 +241,7 @@ test("the live ask: an event turn (or no turn kind) gets no save link and no row
   for (const kind of ["event", undefined]) {
     const r = await runTool("saved_login_offer", { site: "amaz0n-account.test" }, {
       conversationId: ME, messages: [{ role: "user", content: "summarise my email" }], kind,
-      locateSigninPage: async () => { located++; return { found: true, url: "https://amaz0n-account.test/signin", kind: "password" }; },
+      locateSigninPage: async () => { located++; return { found: true, url: "https://amaz0n-account.test/signin", form: "password" }; },
     });
     assert.equal(r.ok, false, `kind ${kind}`);
     assert.equal(r.error, "not_asked");
@@ -544,7 +561,9 @@ test("rule 4 over HTTP: a POST without Origin https://heyreason.com is refused a
   serverLog.length = 0;
   const r = await captured(() => hit(`/web/save-login/${token}/save`, { method: "POST", headers: FROM_REASON, body }));
   assert.equal(r.value.status, 200, r.value.body);
-  assert.deepEqual(JSON.parse(r.value.body), { ok: true });
+  // `carried`: whether Reason heard about it by itself (src/resume.js); never the request or a grant.
+  assert.deepEqual(Object.keys(JSON.parse(r.value.body)).sort(), ["carried", "ok"]);
+  assert.equal(JSON.parse(r.value.body).ok, true);
   assert.deepEqual(valuesIn(body), [], "the request carries ciphertext only");
   assert.deepEqual(valuesIn(r.text + JSON.stringify(serverLog)), [], "nothing typed in the server's log");
   assert.ok(serverLog.some(e => e.save_login === "save" && e.ok === true));

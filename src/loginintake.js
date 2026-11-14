@@ -5,7 +5,7 @@
 // saveFromSealed) is the only code that opens what was sealed.
 //
 //   offerSaveLink   code decides a link may exist: the switch, not the never list, Reason's own browser
-//                   reached the site's sign-in form just now (src/browser.js locateSigninPage) on the
+//                   reached the site's sign-in form just now (src/browser.js findLoginForm) on the
 //                   site itself, no wall on record. The pinned origin and path come from that visit,
 //                   never from the AI and never from a link in mail.
 //   viewFor         the page's data: what to show and what to seal to. Never a login.
@@ -27,11 +27,13 @@ import { clock } from "./config.js";
 import * as restcrypt from "./restcrypt.js";
 import * as passkey from "./passkey.js";
 import { typedOnly } from "./trust.js";
-import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
-import { signinFinding } from "./sitefindings.js";
+import { classifySite, refusalFor, registrableOf, GOOGLE_WARNING } from "./sitepolicy.js";
+import { signinFinding, recordFinding } from "./sitefindings.js";
 import {
   savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor, intakePublicKey, saveFromSealed, recordLoginEvent, listLogins, removeLogin,
+  setSigninRoute, peekForSignin, signinRouteFor, markSaveOffered,
 } from "./savedlogins.js";
+import { refusingSite } from "./refusing.js";
 
 export { savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor };
 
@@ -43,6 +45,16 @@ const SEALED_MAX = 8_000; // base64url: RSA 4096 wrap (512) + the three fields, 
 
 /** What the tool returns, whatever happened: one fixed sentence (hard rule 2). The link is its own bubble. */
 export const OFFER_SENTENCE = "Here's a link to save that login on Reason's own page. Type it there, not here: I never see it.";
+
+/** The forms a pin may be: the filler types into nothing else (src/signinpage.js loginFormOf). */
+const PIN_FORMS = new Set(["password", "email_first"]);
+/** Fixed words when no link is made because Reason's own visit found no sign-in form to pin. */
+export const NO_LINK_WORDS = {
+  no_signin_form: (n) => `I couldn't find ${n}'s sign-in page from its website, so I haven't made a save link. I only save a login for a sign-in form I've seen on the site myself.`,
+  walled: (n) => `${n} showed my browser a security check instead of its sign-in page, so I haven't made a save link. I don't try to get round a site's checks.`,
+  off_site: (n) => `${n}'s sign-in is on another company's website, so I haven't made a save link. I only type a login on the site's own sign-in page.`,
+  not_reached: (n) => `I couldn't open ${n}'s website just now, so I haven't made a save link. Ask me again in a bit.`,
+};
 
 const q = (sql) => db.db.prepare(sql);
 const sha = (b) => createHash("sha256").update(b).digest();
@@ -57,14 +69,17 @@ const hostOf = (s) => { try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) 
 /**
  * Make a save link for `site`, if code allows one. `quotedRequest`: the person's own words that asked
  * for the job (shown back on the page so a stranger's page can't fake it). `locate`: the visit
- * (src/browser.js locateSigninPage); in a test only a handed-in one runs.
+ * (src/browser.js findLoginForm); in a test only a handed-in one runs.
  *   → { ok: true, link, site, label, careful } | { ok: false, error, say? }
  * Never throws for the AI's input; `say` is fixed words where the person should hear why.
  */
 export async function offerSaveLink(conversationId, site, quotedRequest, { locate = null, label = "" } = {}) {
   const c = String(conversationId ?? "");
   if (!intakeReadyFor(c)) return { ok: false, error: "not_available" };
-  const host = hostOf(String(site ?? ""));
+  // "Save my Google login": the one Google host a Google login is ever typed on (owner decision
+  // 2026-11-13; src/federated.js). Gmail, Drive and the rest stay on the never list.
+  const asked = hostOf(String(site ?? ""));
+  const host = asked === "google.com" ? "accounts.google.com" : asked;
   const verdict = classifySite(host);
   const name = oneLine(label, 40) || host;
   // Hard rule 3: the never list refuses, and says why.
@@ -78,12 +93,19 @@ export async function offerSaveLink(conversationId, site, quotedRequest, { locat
   const entry = { site: base, label: name, signin_url: `https://${host}/`, generic: true };
   // A wall on record: no link (a site that will not load is never asked for a login).
   const had = signinFinding(entry);
-  if (had?.fresh && had.kind === "walled") return { ok: false, error: "walled" };
-  const visit = locate ?? (process.env.NODE_TEST_CONTEXT ? null : (await import("./browser.js")).locateSigninPage);
+  if (had?.fresh && had.kind === "walled") return { ok: false, error: "walled", say: NO_LINK_WORDS.walled(name) };
+  const visit = locate ?? (process.env.NODE_TEST_CONTEXT ? null : (await import("./browser.js")).findLoginForm);
   if (!visit) return { ok: false, error: "not_reached" };
   let at;
   try { at = await visit(entry); } catch { at = null; }
-  if (!at?.found || typeof at.url !== "string") return { ok: false, error: "not_reached" };
+  // The pin is never a page without a sign-in form the filler can type into (2026-11-13: Netflix's home
+  // page, whose one box is a sign-up box, was pinned as its sign-in page). No form, no link; the person
+  // hears why in fixed words, and a wall is remembered like any other.
+  if (!at?.found || typeof at.url !== "string" || !PIN_FORMS.has(at.form)) {
+    const why = at?.why === "wall" ? "walled" : at?.why === "off_site" ? "off_site" : at?.why === "not_loaded" || !at ? "not_reached" : "no_signin_form";
+    if (why === "walled") { try { recordFinding(entry, { kind: "walled", why: "a wall before the sign-in form" }); } catch { /* a record that cannot be written never breaks the answer */ } }
+    return { ok: false, error: why, say: NO_LINK_WORDS[why](name) };
+  }
   // Hard rule 1: the sign-in page Reason reached is the site's own, over https. A sign-in page on
   // another registrable domain gets no link (an identity host for the site is not handled yet).
   let u;
@@ -92,7 +114,9 @@ export async function offerSaveLink(conversationId, site, quotedRequest, { locat
   const there = classifySite(u.origin);
   if (there.policy === "never") return { ok: false, error: "never_site", say: refusalFor(there.category, name) };
   const careful = verdict.policy === "careful" || there.policy === "careful";
-  const path = /^\/[^?#\s]{0,300}$/.test(u.pathname) ? u.pathname : "/";
+  // The path the form was found on, or no link: never a fallback to the front page (which has no form).
+  if (!/^\/[^?#\s]{0,300}$/.test(u.pathname)) return { ok: false, error: "no_signin_form", say: NO_LINK_WORDS.no_signin_form(name) };
+  const path = u.pathname;
 
   const token = randomBytes(24).toString("base64url");
   const now = clock.now();
@@ -142,7 +166,8 @@ export async function viewFor(token) {
   const base = {
     state, site: row.site, label: row.label, host: new URL(row.signin_origin).host, path: row.signin_path,
     quoted: restcrypt.openAny(row.quoted_request) ?? "", careful: row.permission_offered !== "standing",
-    warning: row.permission_offered !== "standing" ? oneLine(verdict.reason, 200) : "",
+    warning: verdict.category === "google" ? GOOGLE_WARNING : row.permission_offered !== "standing" ? oneLine(verdict.reason, 200) : "",
+    google: verdict.category === "google",
     permissions: permissionsOf(row), consentVersion: row.consent_version, expiresAt: row.expires_at, conversationId: row.conversation_id,
   };
   if (state !== "open") return base;
@@ -295,4 +320,62 @@ export function textedPasswordReply(conversationId) {
   const token = randomBytes(24).toString("base64url");
   if (q("UPDATE login_intake SET token_hash = ? WHERE token_hash = ? AND conversation_id = ? AND claimed_at IS NULL").run(hashToken(token), row.token_hash, row.conversation_id).changes !== 1) return null;
   return `${TEXTED_PASSWORD_WORDS}\n${passkey.ORIGIN()}${LINK_PATH}${token}`;
+}
+
+/** How they sign in to a site with no saved login of its own ("google": Continue with Google). For src/tools.js account_signin. */
+export function rememberSigninRoute(conversationId, site, route) {
+  return setSigninRoute(conversationId, site, route);
+}
+
+// ---------------------------------------------------------------- which way to sign in (owner decision 2026-11-13)
+// A plain "sign in to X" goes to the saved login when there is one, and to the type-it-through link
+// when there is not. Decided here, in code, from the vault's own rows (src/tools.js signin_status reads
+// the answer; it may not import the vault). Nothing secret leaves: a domain and a word.
+const GOOGLE_OWN = /(^|\.)(google\.[a-z.]+|gmail\.com|youtube\.com|googlemail\.com)$/;
+/** The registrable domains a site entry (src/signin.js) or a typed site stands for, most specific first. */
+export function domainsOf(entry, asked = "") {
+  const out = [];
+  const add = (h) => {
+    const host = String(h ?? "").toLowerCase().trim().replace(/^https?:\/\//, "").split("/")[0].split(":")[0].replace(/^www\./, "");
+    if (!/^[a-z0-9.-]{3,253}$/.test(host) || !host.includes(".")) return;
+    const d = registrableOf(host) || host;
+    if (!GOOGLE_OWN.test(d) && !out.includes(d)) out.push(d);
+  };
+  for (const u of [entry?.signin_url, entry?.signed_in?.url, entry?.entry]) { try { if (u) add(new URL(String(u)).hostname); } catch { /* not a URL */ } }
+  add(asked);
+  return out;
+}
+/**
+ * For someone the vault is on for: how a named site is signed in to.
+ *   → { refusing, domain }   the site turns away software-driven browsers (src/refusing.js): said up front
+ *   | { domain, via }        "saved": a saved login for that site; "google": the site's stored route is
+ *                            Continue with Google and their Google login is saved
+ *   | null                   no saved login: the link, as for everyone else
+ * Null for anyone the vault is off for, so their answers stay exactly as they were.
+ */
+export function savedLoginRoute(conversationId, entry, asked = "") {
+  const c = String(conversationId ?? "");
+  if (!c || !savedLoginsAllowedFor(c)) return null;
+  const domains = domainsOf(entry, asked);
+  for (const d of domains) { const r = refusingSite(d); if (r) return { refusing: r, domain: d }; }
+  for (const d of domains) {
+    if (peekForSignin(c, d).length) return { domain: d, via: "saved" };
+    if (signinRouteFor(c, d) === "google" && peekForSignin(c, "google.com").some((r) => r.site === "google.com")) return { domain: d, via: "google" };
+  }
+  return null;
+}
+/**
+ * After a sign-in through a link ended signed in: the one offer to save that login, or null. Once per
+ * person and site, ever (save_offers): never for a site with a saved login or a Google route already,
+ * one on the never list, one that turns away software, or a sign-in that went through a provider button.
+ */
+export function saveOfferFor(conversationId, entry, { provider = "" } = {}) {
+  const c = String(conversationId ?? "");
+  if (!c || provider || !savedLoginsAllowedFor(c)) return null;
+  const domain = domainsOf(entry)[0];
+  if (!domain || (classifySite(domain) ?? {}).policy === "never" || refusingSite(domain)) return null;
+  if (peekForSignin(c, domain).length || signinRouteFor(c, domain)) return null;
+  if (!markSaveOffered(c, domain)) return null;
+  const label = String(entry?.label ?? "").trim() || domain;
+  return { domain, line: `Want me to save this login, so next time I can sign in to ${label} for you myself?` };
 }
