@@ -442,6 +442,7 @@ test("6. weatherAt: the reading at the point, in words, with its age; °C beside
 });
 
 test("6. the weather tool: a saved place of his by name, his own only; coordinates; nothing to go on", async () => {
+  weather.resetWeatherState(); // the test before took Open-Meteo down on purpose
   db.savePlace(C, { name: "work", address: "430 W 17th St, New York", lat: 40.7429, lng: -74.0061 });
   db.savePlace(OTHER, { name: "office", address: "1 Elm St", lat: 39.8, lng: -89.6 });
   const seen = [];
