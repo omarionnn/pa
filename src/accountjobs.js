@@ -44,6 +44,7 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { clock } from "./config.js";
 import * as shop from "./shopconnect.js";
+import { offerCue } from "./teamflag.js";
 import { codeFromGmail, senderMatches, registrableOf, fromDomain } from "./signinemail.js";
 import * as place from "./accountplace.js";
 import { route as cancelRoute } from "./cancel-routes.js";
@@ -1338,7 +1339,26 @@ export function statusView(conversationId, { sinceMs = 48 * 3600_000 } = {}) {
     ...(j.ends ? { ends: j.ends } : {}),
     ...(j.summary ? { site_said: j.summary } : {}),
     ...(j.page_line ? { page_said: j.page_line } : {}),
+    ...(flagFacts(j) ? { note: offerCue(flagFacts(j)) } : {}),
   }));
+}
+
+/**
+ * The endings that leave something wrong Reason cannot put right itself, as the facts a report to
+ * Reason's team would carry (src/teamflag.js offerCue); "" for every other ending. A bill whose
+ * payment went out is only one of these once the email watch for its confirmation is over.
+ */
+export function flagFacts(j, now = clock.now()) {
+  if (isOpen(j)) return "";
+  const doing = j.kind === "cancel" ? `cancel ${j.what} at ${j.name}` : `pay a ${j.name} bill`;
+  switch (j.outcome) {
+    case "service_failed": return `They asked Reason to ${doing}; the job stopped with a failure on Reason's side, so it is not done.`;
+    case "unexpected_purchase": return `They asked Reason to ${doing}; ${j.name}'s page reported a purchase that was never approved.`;
+    case "paid_unapproved": return `They asked Reason to ${doing}; ${j.name}'s page says a payment went through without the approval Reason asks for.`;
+    case "unconfirmed": return j.kind === "bill" && j.paid_at && !(Number(j.mail_until) > now)
+      ? `They asked Reason to ${doing}; the payment went out but no receipt or confirmation arrived.` : "";
+    default: return "";
+  }
 }
 
 /** The record in front of the model on their turns (src/shopconnect.js checkoutNote): "" when there is nothing, or the switch is off for them. */

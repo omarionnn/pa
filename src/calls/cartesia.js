@@ -944,6 +944,8 @@ export class CartesiaAgentCall {
   async deleteAndCheck() {
     const d = await this.deleteCall(this.agentCallId);
     this.log({ cartesia_recording_deleted: this.call.id, ok: !!d?.ok, redacted: !!d?.redacted, status: d?.status ?? 0 });
+    // On the call row, so call_status can say their copy at Cartesia is still there (src/teamflag.js).
+    try { db.updateCall(this.call.conversation_id, this.call.id, { cartesia_copy: d?.ok ? "deleted" : "not_deleted" }); } catch { /* the log line stands */ }
     return d;
   }
 

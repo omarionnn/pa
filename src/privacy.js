@@ -449,6 +449,9 @@ function sealFields(tool, value, depth = 0) {
   if (tool === "shop_answer" && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
   // An account job's answers (their email, a one-time code they sent, a bill's lookup details) neither.
   if ((tool === "account_job_answer" || tool === "account_cancel_confirm") && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
+  // A report to Reason's team as the model wrote it, before src/teamflag.js cleaned it, and the words
+  // shown to them: the cleaned text lives sealed in team_flags, and the log and ledger keep the ref.
+  if (tool === "team_flag" && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.report !== undefined ? { report: "[sealed]" } : {}), ...(value.say_exactly !== undefined ? { say_exactly: "[sealed]" } : {}) };
   const travelers = TRAVELER_TOOLS.has(tool);
   if (!travelers && !SECRET_TOOLS.has(tool)) return value;
   if (Array.isArray(value)) return value.map(v => sealFields(tool, v, depth + 1));

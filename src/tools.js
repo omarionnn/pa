@@ -149,6 +149,7 @@ import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
 import * as purchasesNoteMod from "./purchasesnote.js";
 import * as incidents from "./incidents.js";
+import * as teamflag from "./teamflag.js";
 import { TITLE_HINT, normTitle, queueTitle } from "./itemtitle.js";
 import { resultFor } from "./ongoing.js";
 import * as zone from "./zone.js";
@@ -209,6 +210,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_cancel", "acc
   // Deleting a call's recording, or all of them, is their audio gone off this disk for good: "did you
   // delete it" and "when" have to be answerable from the record.
   "call_recording_delete",
+  // A report of theirs that went to Reason's team: "did you tell them" is answered from the record.
+  "team_flag",
   // The master's own acts on other people. "What did you do today" has to be able to answer
   // "you let Kofi in", "you blocked that number", "you deleted their Reason".
   "admin_pause", "admin_resume", "admin_remove", "admin_block", "admin_delete",
@@ -399,6 +402,9 @@ export const CONDITIONALLY_GATED = new Set([
   // Saving a standing permission: always asked about, from inside its own handler once every refusal
   // it can make has been made (see permission_grant). Named here so confirm_request takes the ask.
   "permission_grant",
+  // A report to Reason's team (src/teamflag.js): the propose step opens its own ask, pinned to the
+  // stored words; the send step is gated on that yes. Never under a standing permission.
+  "team_flag",
   // Showing an event's guest list after it was private texts every guest who joined while it was
   // private, asking if they want to be on it (src/events.js setListVisible). Hiding it, or a cap, texts
   // nobody. Decided in needsConfirmation.
@@ -795,6 +801,8 @@ function needsConfirmation(name, input, conversationId) {
   // A share with nobody in it is a link for the owner, which reaches no one and asks nothing. The
   // moment an address is on it, it is the same kind of act as sending that person an email.
   if (name === "drive_share") return !!String(input.with_email ?? "").trim();
+  // Proposing sends nothing; sending a report to Reason's team needs their yes to that one report.
+  if (name === "team_flag") return input.step === "send";
   if (name === "event_settings") return settingsNeedYes(conversationId, input);
   if (name === "event_questions") return questionsNeedYes(conversationId, input);
   if (name === "event_seats") return seatsNeedYes(input);
@@ -1669,7 +1677,7 @@ function nearMissLine(near) {
 
 // These only mean anything inside somebody's own Reason. A conversation with no account behind it
 // has nobody to authorize anything, so a yes typed there is a yes from nobody.
-const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit", "flight_checkin_commit",
+const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "team_flag", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit", "flight_checkin_commit",
   // Handing a file to somebody who is not the person whose Reason this is.
   "document_send",
   // Whose vault this is and what was bought out of it mean nothing outside the Reason they belong
@@ -4444,6 +4452,22 @@ export const tools = [
     },
   },
   {
+    name: "team_flag",
+    description: "Send a short report to Reason's team about something left wrong that you cannot put right yourself. Only when a result's note says it may be offered, or they ask you to tell the team."
+      + " step 'propose' with `report`: one or two plain factual sentences (what they asked for, what happened, what is still wrong, what would fix it). Code cleans it and returns say_exactly: say that as it is and wait. Nothing is sent."
+      + " step 'send' with `ref` and confirmation_id, only after their yes and confirm_record granted: the exact words they saw go to the team. At most one offer per problem; never as a retry.",
+    input_schema: {
+      type: "object",
+      properties: {
+        step: { type: "string", enum: ["propose", "send"] },
+        report: { type: "string", description: "propose: the facts, plainly. Site and service names are fine; no passwords, codes, card numbers, links or other people's details." },
+        ref: { type: "string", description: "send: the ref propose returned." },
+        confirmation_id: { type: "integer", description: "send: from confirm_record, granted." },
+      },
+      required: ["step"],
+    },
+  },
+  {
     name: "page_create",
     description: "Turn an answer into a small web page the owner opens from a link. When you send the link, never promise a preview card, a picture of the page or a title — whether their phone shows one is not yours to know. Use it when a text would be too long to read on a phone, or when pictures, a comparison or sections make it genuinely easier to use — a gift shortlist with prices, an itinerary, a plan, a guide. Offer it when an answer is getting long, and make one straight away when they ask for something they can come back to. An answer from research to a comparison or a which-should-i-get question ALWAYS goes on a page: the research result tells you so. The link you get back opens the page when they tap it on a browser they have used before. On a browser that has never opened one of their pages, the page texts them a six-digit code once — do not warn them about it in advance, and if they ask, say that is what it is. You give structured blocks, never HTML.",
     input_schema: {
@@ -4549,6 +4573,11 @@ export const tools = [
     name: "admin_requests",
     description: "Master only. Who has texted asking for their own Reason and is still waiting, with the exact words of their first message. This is the ONLY thing of theirs you ever see before they are let in. You cannot approve anyone with this or any other tool — the master says yes or no in their own words and the guard reads it.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "admin_flag_lookup",
+    description: "Master only. Look up a report sent to Reason's team by its Ref (TF-xxxxxx): when it was proposed and sent, who it is from (masked), and the kinds of the last few things Reason did in that conversation. Never the words of anything; the report itself is the text the master already got.",
+    input_schema: { type: "object", properties: { ref: { type: "string", description: "The Ref from the flag's text, like TF-1A2B3C." } }, required: ["ref"] },
   },
   {
     name: "admin_usage",
@@ -7263,6 +7292,9 @@ const S = {
     errand_id: z.number().int().optional(),
   }),
   call_status: z.object({ call_id: z.number().int().optional() }),
+  team_flag: z.object({
+    step: z.enum(["propose", "send"]), report: z.string().max(2000).optional(), ref: z.string().max(20).optional(), confirmation_id: z.number().int().optional(),
+  }).refine(v => v.step === "propose" ? !!v.report?.trim() : !!v.ref?.trim(), { message: "propose needs report; send needs ref (and confirmation_id)." }),
   call_recording_delete: z.object({
     call_id: z.number().int().positive().optional(), all: z.boolean().optional(), confirmation_id: z.number().int().optional(),
   }).refine(v => v.all === true ? v.call_id === undefined : v.call_id !== undefined, { message: "Pass either call_id (one call) or all: true, not both and not neither." }),
@@ -7323,6 +7355,7 @@ const S = {
   invite_requests_pending: z.object({}),
   invite_request_decide: z.object({ request_number: z.number().int().min(1), decision: z.enum(["approve", "decline"]), count: z.number().int().min(1).max(1_000_000).optional() }),
   admin_requests: z.object({}),
+  admin_flag_lookup: z.object({ ref: z.string().min(3).max(20) }),
   admin_usage: z.object({ days: z.number().int().min(1).max(90).optional() }),
   admin_pause: z.object({ number: z.string().min(3).max(40) }),
   admin_resume: z.object({ number: z.string().min(3).max(40), undo_removal: z.boolean().optional() }),
@@ -9465,6 +9498,8 @@ function confirmTargetFor(name, input, c = null) {
     case "flight_checkin_commit": return `flight #${input.flight_id}: ${input.what}`;
     case "admin_delete": return input.number;
     case "call_recording_delete": return input.all === true ? "every call recording" : `call recording #${input.call_id ?? ""}`;
+    // The flag and the exact words stored with it, read off the row rather than retyped by the model.
+    case "team_flag": return teamflag.sendTarget(c, input.ref);
     // Which provider, and which of its scopes: a yes to connecting one is not a yes to another one
     // with credentials on this server (audit lead 26).
     case "account_connect": return `connect ${String(input.name ?? "").trim()}${input.scopes?.length ? ` (${[...input.scopes].sort().join(", ")})` : ""}`;
@@ -12310,6 +12345,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
     }
 
+    case "team_flag": {
+      const kind = ctx.kind ?? "event";
+      // Never from a call: a spoken yes is not their typed one, and the words were not shown.
+      if (ctx.onCall) return { ok: false, blocked: "on_call", error: "A report to Reason's team is never made on a call. Nothing was proposed or sent. If it is still wrong after the call, it can be offered by text." };
+      if (input.step === "propose") {
+        return teamflag.propose({
+          conversationId: c, report: input.report, kind, callpass: await import("./callpass.js"),
+          ask: ({ summary, target }) => trust.requestConfirmation({ conversationId: c, messages: ctx.messages ?? [], historyId: ctx.historyId ?? null, action: "team_flag", summary, stakes: "", target }),
+        });
+      }
+      // The operator's thread, the way the ops alerts reach it (src/ops.js startOps sendNow).
+      const ev = ctx.events;
+      const send = ctx.teamFlagSend ?? (ev?._tell ? (text, idempotencyKey) => ev._tell(config.ownerConversation, text, { toMaster: true, idempotencyKey })
+        : ev?.say ? (text, idempotencyKey) => ev.say(config.ownerConversation, text, { toMaster: true, idempotencyKey }) : null);
+      return await teamflag.sendFlag({ conversationId: c, ref: input.ref, confirmationId: ctx.confirmationId ?? input.confirmation_id ?? null, kind, send, spend: ctx.spend ?? (() => {}), messages: ctx.messages ?? [] });
+    }
+
     case "call_recording_delete": {
       const out = deleteCallRecordings(c, input.all === true ? { all: true } : { callId: input.call_id });
       if (out.not_found) return { ok: false, error: `No call #${input.call_id} of theirs. call_status lists their calls; nothing was deleted.` };
@@ -12321,7 +12373,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           already_deleted: `The recording of call #${out.call_id} was already deleted, so there was nothing left to remove. Say it is gone.`,
           no_recording: `Call #${out.call_id} has no recording to delete: there was never any audio saved for it. Say so plainly.`,
           still_going: `Call #${out.call_id} is still going or still being wrapped up, so nothing was deleted. Say you can delete its recording once it has finished.`,
-          failed: `The recording of call #${out.call_id} could NOT be deleted from this machine, so it is still there. Say so plainly.`,
+          failed: `The recording of call #${out.call_id} could NOT be deleted from this machine, so it is still there. Say so plainly. ${teamflag.offerCue(`They asked to delete the recording of a call; Reason could not delete the audio file, so it is still stored.`)}`,
         }[out.what];
         return {
           ok: out.ok, call_id: out.call_id, result: out.what, counts: out.counts,
@@ -12338,7 +12390,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: (n.deleted ? `Deleted ${n.deleted} call recording${n.deleted === 1 ? "" : "s"} from this machine.` : "There were no saved call recordings left to delete.")
           + (n.already_deleted ? ` ${n.already_deleted} had already been deleted.` : "")
           + (n.still_going ? ` ${n.still_going} call${n.still_going === 1 ? " is" : "s are"} still going or being wrapped up and kept ${n.still_going === 1 ? "its" : "their"} recording; say you can delete ${n.still_going === 1 ? "it" : "them"} once finished.` : "")
-          + (n.failed ? ` ${n.failed} could NOT be deleted and ${n.failed === 1 ? "is" : "are"} still here — say so.` : "")
+          + (n.failed ? ` ${n.failed} could NOT be deleted and ${n.failed === 1 ? "is" : "are"} still here — say so. ${teamflag.offerCue(`They asked to delete all their call recordings; ${n.failed} of them could not be deleted and are still stored.`)}` : "")
           + ` ${kept}`
           + (out.earlier_sent ? ` Copies already sent to their phone are theirs to delete.` : "")
           + (n.deleted ? ` ${backups}` : ""),
@@ -12367,7 +12419,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const judging = goalPending(r.id);
         // Capped: a slow read never holds the status up for long, and the row says what it says.
         if (judging) { await Promise.race([judging, new Promise(res => setTimeout(res, 20_000).unref?.())]); r = db.getCall(c, r.id) ?? r; }
-        out.push(callView(r, me.name));
+        const view = callView(r, me.name);
+        // Cartesia's own copy of the call could not be deleted: left wrong, and not Reason's to fix.
+        if (view && r.cartesia_copy === "not_deleted") {
+          view.voice_provider_copy = "not deleted";
+          view.flag_note = teamflag.offerCue("After a call, the voice provider (Cartesia) did not confirm deleting its copy of the call's recording and transcript, so it may still be stored there.");
+        }
+        out.push(view);
       }
       const missingAudio = out.filter(cv => cv && cv.recording_missing_why);
       // Everything said on a call to somebody who is not the person Reason works for is that
@@ -12747,7 +12805,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // The runtime's filler signs out on the site and clears its browser data first (hard rule 6).
       if (typeof ctx.forgetLogin === "function" && saveLinkAllowedFor(c)) {
         const out = await ctx.forgetLogin(c, input.site);
-        return { ok: !!out?.ok, removed: Number(out?.removed ?? 0), say_exactly: String(out?.say_exactly ?? "") };
+        // The login gone but the site's session maybe not: a report to the team may be offered (src/teamflag.js).
+        return { ok: !!out?.ok, removed: Number(out?.removed ?? 0), say_exactly: String(out?.say_exactly ?? ""), ...teamflag.forgetLeftover(input.site, out) };
       }
       const n = forgetSite(c, input.site, { purpose: "they asked to forget it" });
       return n ? { ok: true, removed: n, say_exactly: `Done. I deleted your saved login for ${String(input.site).toLowerCase().replace(/^https?:\/\//, "").split("/")[0]}.` }
@@ -12828,7 +12887,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- admin: the master's own controls ----------
     case "admin_requests": case "admin_usage": case "admin_pause": case "admin_resume":
-    case "admin_remove": case "admin_block": case "admin_delete": {
+    case "admin_remove": case "admin_block": case "admin_delete": case "admin_flag_lookup": {
       if (!me.isOperator) {
         return {
           ok: false, blocked: "master_only",
@@ -12836,6 +12895,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
+      if (name === "admin_flag_lookup") {
+        const found = teamflag.lookupForOperator(input.ref);
+        return found ? { ok: true, ...found, note: "Kinds only: nothing anybody said, and not the report again." } : { ok: false, error: `No flag ${String(input.ref).toUpperCase()}. Check the Ref in the flag's text.` };
+      }
       if (name === "admin_requests") {
         const waiting = access.pendingForMaster();
         return {
