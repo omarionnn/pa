@@ -445,6 +445,11 @@ export function sealCall(tool, input, out) {
 function sealFields(tool, value, depth = 0) {
   if (value === null || typeof value !== "object" || depth > 6) return value;
   if (tool === "directions" && depth === 0 && !Array.isArray(value)) return sealWalk(value);
+  // Google's places (src/googleplaces.js): its terms let Reason keep place IDs only, so a record of
+  // the call keeps those and the count, never the names, addresses, hours or ratings.
+  if (tool === "nearby_places" && depth === 0 && !Array.isArray(value) && value.attribution === "Google Maps" && Array.isArray(value.results)) {
+    return { ...value, results: value.results.map(r => ({ place_id: r?.place_id ?? null })) };
+  }
   // A checkout's answers (shop_answer: their address, phone, email) never reach a log or ledger row.
   if (tool === "shop_answer" && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
   // An account job's answers (their email, a one-time code they sent, a bill's lookup details) neither.

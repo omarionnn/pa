@@ -314,9 +314,10 @@ export function metersSection(meters, now = Date.now()) {
     const pct = Math.max(0, Number(r.pct) || 0);
     const tone = pct >= 100 ? "bad" : pct >= 80 ? "warn" : "ok";
     const rows = [
-      ["Connected", `${r.used} of ${r.allowance} ${r.unit} · ${num(pct)}%`],
-      ["Left", r.out ? "none — new connections stop here on this plan" : `${r.left}`],
-      ["Source", "Reason's own count of connections still held at Plaid"],
+      [r.used_label ?? "Connected", `${r.used} of ${r.allowance} ${r.unit} · ${num(pct)}%`],
+      ["Left", r.out ? (r.used_label ? "none — the free sources answer until the cap resets" : "none — new connections stop here on this plan") : `${r.left}`],
+      ...(r.cost_words ? [["Estimated cost", r.cost_words]] : []),
+      ["Source", r.source_words ?? "Reason's own count of connections still held at Plaid"],
     ];
     const dl = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
     return `<article class="pc ck-${tone}" id="meter-${esc(anchor(r.id))}"><div class="ph"><span class="led" aria-label="${tone}"></span><div class="rm">`

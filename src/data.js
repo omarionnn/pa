@@ -322,6 +322,7 @@ export const INSTALL_WIDE = {
   cartesia_daily: "Cartesia call voice counts per day (calls, ready, fall-backs by reason), no person",
   channel_limits: "what each channel refused, learned once for everyone",
   flight_provider_usage: "monthly search counts per flight provider",
+  google_places_usage: "monthly Google Places request counts per tier (src/googleplaces.js), no person and no place content",
   // `last_addr` is the number the last failure was about, so a fix can tell which one cleared.
   incidents: "the operator's failure log; last_addr names the number it was about",
   model_usage: "token and cost counts per feature, no person",

@@ -344,9 +344,37 @@ function merge(lists) {
  * phone, website, opening_hours (only when the source has them; never made up), latitude,
  * longitude, distance_m. `budgetMs`: the whole search, every source (CALL_BUDGET_MS on a call).
  */
-export async function nearbyPlaces(lat, lng, type, { cuisine, name, radius = 1500, limit = 10, fetchImpl = fetch, budgetMs = BUDGET_MS, sleep = realSleep } = {}) {
+export async function nearbyPlaces(lat, lng, type, { cuisine, name, radius = 1500, limit = 10, fetchImpl = fetch, budgetMs = BUDGET_MS, sleep = realSleep, openNow = false, details = [], freeOnly = false } = {}) {
   lat = Number(lat); lng = Number(lng);
   radius = Math.max(100, Math.min(50_000, Number(radius) || 1500));
+  // Google first when a key is set (src/googleplaces.js; never loaded without one). Its places are
+  // never cached (Google's terms). Not asked, over its cap, failed or nothing within the radius: the
+  // free sources below, in what is left of the budget.
+  if (!freeOnly && process.env.REASON_GOOGLE_PLACES_KEY?.trim()) {
+    const t0 = clock.now();
+    const g = await (await import("./googleplaces.js")).googleSearch(lat, lng, type, {
+      name, cuisine, radius, openNow, details, fetchImpl, timeoutMs: Math.min(2_500, Math.round(budgetMs / 2)),
+    });
+    if (g.ok) {
+      const results = g.results
+        .map(r => ({ ...r, distance_m: Math.round(distanceM(lat, lng, r.latitude, r.longitude)) }))
+        .filter(r => r.distance_m <= radius)
+        .sort((a, b) => a.distance_m - b.distance_m)
+        .slice(0, limit);
+      if (results.length) {
+        return {
+          ok: true, results, count: results.length, answered_by: `google_${g.tier}`,
+          ...(openNow ? { open_now_checked: true } : {}),
+          attribution: "Google Maps",
+          note: "These places are from Google Maps. When you send one, include its google_maps_url and say it is from Google Maps. Hours, phone and rating only where a result has them; never fill them in.",
+        };
+      }
+    }
+    budgetMs = Math.max(1_000, budgetMs - (clock.now() - t0));
+    const out = await nearbyPlaces(lat, lng, type, { cuisine, name, radius, limit, fetchImpl, budgetMs, sleep, freeOnly: true });
+    // The free sources have no live open/closed status: say so rather than let a list read as open now.
+    return openNow && out.ok ? { ...out, open_now_checked: false, note: "Open-now was not checked (no live status from these sources): give the opening_hours a result has, or say you can't tell." } : out;
+  }
   const key = JSON.stringify([String(type ?? "").toLowerCase(), String(cuisine ?? "").toLowerCase(), String(name ?? "").toLowerCase(), radius, limit, lat.toFixed(3), lng.toFixed(3)]);
   const hit = cache.get(key);
   if (hit && hit.until > clock.now()) return { ...hit.value, results: hit.value.results.map(r => ({ ...r })), cached: true };
