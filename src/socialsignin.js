@@ -220,7 +220,14 @@ export function providerPrompt(raw = {}) {
  *     number: the match number to tap, when step is number_match (a short string, else "")
  *     say: the live line for the person, plain words, honest about what is happening behind
  */
-const CAPTCHA = /i'?m not a robot|are you a human|verify you(?:'re| are) (?:a )?human|select all (?:images|squares)|press (?:and hold|& hold)|slide to|unusual traffic|recaptcha|hcaptcha|cloudflare|verify it'?s you|help us keep your account safe|confirm it'?s really you|prove you'?re not a robot/;
+const CAPTCHA = /i'?m not a robot|are you a human|verify you(?:'re| are) (?:a )?human|select all (?:images|squares)|press (?:and hold|& hold)|slide to|unusual traffic|recaptcha|hcaptcha|cloudflare|prove you'?re not a robot|(?:enter|type) the characters|characters (?:as they are shown|you see)|solve (?:this|the) puzzle/;
+/**
+ * The site's OWN "approve it on your phone" step (Amazon's "Approve the notification sent to…"), on any
+ * host: an approval Reason can only wait for. A provider's own wording is providerPrompt's.
+ */
+/** Words a site also puts on a code or approval page: a check only where neither is there. */
+const WEAK_CHECK = /verify it'?s you|help us keep your account safe|confirm it'?s really you/;
+const APPROVE = /approve the (?:notification|request|sign[- ]?in)|approve (?:this|your) sign[- ]?in|we(?:'ve| have)? sent (?:a|an) (?:notification|approval|push)|(?:notification|approval request) (?:was |has been )?sent to|tap approve|approval (?:request|notification)|check your (?:phone|device|mobile|app) (?:to|and) approve/;
 const SIGNED = /you(?:'re| are) signed in|signed in successfully|you can close this|signed in to/;
 export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   const t = String(raw?.text ?? "").replace(/\s+/g, " ").trim();
@@ -231,7 +238,10 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   if (no.refused) return { step: "refused", provider: no.provider, number: "", say: `${LABELS[no.provider]} refused my browser.` };
   // A bot wall / "verify it's you" / a slider: nothing native can answer it, the person finishes it
   // on the streamed page. Read before the form screens, since a captcha page often has a stray box.
-  if (CAPTCHA.test(low)) return { step: "captcha", provider, number: "", say: providerKey(provider) ? `${LABELS[providerKey(provider)]} wants to check you're human.` : "The page wants to check you're human." };
+  // A picture check on the page (an image the site calls a captcha, a known challenge frame) is one
+  // too, whatever its words say: FRAME_JS names it, nothing in it is read.
+  const pictured = !!(raw?.challenge?.img || (Array.isArray(raw?.challenge?.frames) && raw.challenge.frames.length));
+  if (CAPTCHA.test(low) || pictured || has("captcha") || (WEAK_CHECK.test(low) && !has("otp") && !APPROVE.test(low))) return { step: "captcha", provider, number: "", say: providerKey(provider) ? `${LABELS[providerKey(provider)]} wants to check you're human.` : "The page wants to check you're human." };
   // Which provider's OWN page this is, by its host — the only place a provider's wording ("enter your
   // password", "check your phone") is believed. A site's own page that merely names Google in a button
   // is not Google's page (seen live on Notion's login, 2026-11-10: read as Google's password step).
@@ -268,6 +278,10 @@ export function stepOf(raw = {}, { provider = "", fields = [] } = {}) {
   // A password box alone does not stop it when an email box sits beside it (Notion keeps one on its
   // first page for password managers); a password box with no email box is the password step.
   if (offered0.length && !has("otp") && (!has("password") || has("email") || has("username") || has("tel"))) return { step: "chooser", provider: providerKey(provider), number: "", offered: offered0, say: "Pick how you sign in." };
+  // The site's own approval request: waited for, never pressed. A code box beside it is the code step.
+  if (!onProvider && !has("otp") && APPROVE.test(low)) return { step: "approve", provider: prov, number: "", say: `${name} sent an approval request to your phone or its app. Approve it there — I'll wait here.` };
+  // A password box AND a code box on the same page: both asked for at once, each its own box.
+  if (has("password") && has("otp")) return { step: "password_code", provider: prov, number: "", say: `${name} wants your password and a code on the same page. Type each in its own box here — they go only to ${name}'s page.` };
   if (prompt.kind === "code" || has("otp")) return { step: "code", provider: prov, number: "", say: `${name} sent a code. Send it to me as it came — I'll clean it up.` };
   if (prompt.kind === "password" || has("password")) return { step: "password", provider: prov, number: "", say: `${name} wants your password. Type it here on ${name}'s own page — it never reaches me.` };
   // An input box for the email/number comes before the account-picker words: "Email or phone" on

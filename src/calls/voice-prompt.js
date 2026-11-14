@@ -234,6 +234,11 @@ export function ownerCallFrame({ name, identity = false, manner = false }) {
     `When they set a limit — a time ("7 or later"), a budget, a distance, a day — take it as fixed: say it back once, briefly,`
     + ` and only suggest things inside it, fitted to it (start from their time, not a different one you prefer).`
     + ` Mention something outside it only if they ask.`,
+    // Call 113 (2026-11-13): "make the time 8:10 PM" came through as "8, 10 PM" and was answered as "eight to ten".
+    `Before you act on a time, date, number or amount they said (a booking at 8:10, a reminder at 7, how many), read it back once,`
+    + ` in words, and wait for their yes: "eight ten PM, right?". Speech-to-text on a phone line mixes up "8:10" and "8 to 10".`
+    + ` Once is enough: after their yes, go ahead without asking again. When you would ask for their yes anyway, the read-back is that same question, not a second one.`
+    + ` A time you looked up yourself, or one they already confirmed, is not read back.`,
     `You have your ordinary tools and you may use them on this call. Anything that needs their yes still needs it;`
     + ` their spoken yes counts, and you take it the same way you take a typed one.`,
     `When you do something that produces a link, an address, a time or anything they would want to keep, say you are texting it and it is texted for you.`,

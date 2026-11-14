@@ -90,10 +90,29 @@ function madeFor(conversationId, real) {
  * `conversationId`, else `{ ok: false, status, why }`. The why never says whether somebody else's
  * file exists.
  */
+/**
+ * A path naming one of their call recordings that has been deleted (call_recording_delete, or the
+ * retention setting): said as that, not as a file that was never theirs. Their own calls only.
+ */
+function deletedRecording(conversationId, asked) {
+  const m = /^call-(\d+)(?:-\d+)?\.[a-z0-9]+$/i.exec(basename(asked));
+  if (!m || !conversationId) return null;
+  const call = db.db.prepare("SELECT recording_state, recording_deleted_at FROM calls WHERE id = ? AND conversation_id = ?").get(Number(m[1]), conversationId);
+  if (call?.recording_state !== "deleted") return null;
+  return {
+    ok: false, status: "recording_deleted",
+    why: call.recording_deleted_at
+      ? "the recording of that call was deleted at their request, so there is nothing to send. The call's summary and transcript are still there."
+      : "the recording of that call was deleted by the retention setting, so there is nothing to send. The call's summary and transcript are still there.",
+  };
+}
+
 export function ownFile(conversationId, path) {
   const asked = String(path ?? "").trim();
   if (!asked) return { ok: false, status: "no_path", why: "no file path was given." };
   const refused = { ok: false, status: "not_theirs", why: `${asked} is not a file Reason made for this person, so it is not going anywhere. Only a file Reason itself made or kept for them can be used: a document it wrote, a picture or screenshot it took, a recording of their own call.` };
+  const gone = deletedRecording(conversationId, asked);
+  if (gone) return gone;
   const real = realOf(asked);
   if (!real || !conversationId || !insideRoots(real)) return refused;
   try { if (!statSync(real).isFile()) return refused; } catch { return refused; }

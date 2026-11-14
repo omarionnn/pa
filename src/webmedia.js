@@ -300,9 +300,10 @@ export async function webMediaRoute({ path, method, headers = {}, readBody, log 
   // A table picture Reason drew (src/tableimage.js) is fetched by the texting provider, which has no
   // session: served to anyone holding its address. The 128-bit random id is the secret, the record says
   // it was made public on purpose (`public: "table"`), and it goes with the upload after 30 days.
+  // A choice card in a stack (src/choicecards.js) is the same bargain (`public: "card"`).
   if (!account && (m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/[^/]*)?$/.exec(path))) {
     const rec = uploads.meta(m[1]);
-    return rec?.public === "table" ? serveUpload(rec, { headers, method }) : notFound();
+    return rec?.public === "table" || rec?.public === "card" ? serveUpload(rec, { headers, method }) : notFound();
   }
   if (!account) return notFound();
   if ((m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/[^/]*)?$/.exec(path))) {

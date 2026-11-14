@@ -1,5 +1,6 @@
-// Soft music under a Cartesia call while Reason is looking something up (the operator's own calls only;
-// docs/calls-cartesia.md section 5). On Cartesia's own demo a quiet bed of music came in while the
+// Soft music under a Cartesia call while Reason is looking something up (every Cartesia call, which is
+// always someone's own call with Reason, whichever account: `lookupMusicFor` asks only `is_owner` and the
+// switch; docs/calls-cartesia.md section 5). On Cartesia's own demo a quiet bed of music came in while the
 // assistant went off to look something up and blended out when it came back; this is the same, mixed on
 // our side of the line so it sounds the same whichever voice carries the call.
 //

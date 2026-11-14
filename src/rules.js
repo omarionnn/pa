@@ -52,7 +52,7 @@ export const RULE_READERS = Object.freeze([
   { path: "text turn, API backend: event turns (reminders, check-ins, after-call notes)", file: "src/agent.js", fn: "runTurnOnTheirClock" },
   { path: "text turn, claude-cli backend (their messages, Web, and event turns)", file: "src/backends/claude-cli.js", fn: "runTurnOnCli" },
   { path: "Claude's turn on their own phone call", file: "src/calls/voice.js", fn: "ownerContext" },
-  { path: "the GPT-Live voice on their own phone call", file: "src/calls/gptlive.js", fn: "preCallBrief" },
+  { path: "the GPT-Live voice on their own phone call", file: "src/calls/gptlive.js", fn: "briefSections" },
   { path: "the per-call notes a session opened before the call loads (rules + where they usually are)", file: "src/calls/callmemory.js", fn: "callNotes" },
   { path: "the Web daily edition's greeting", file: "src/daily.js", fn: "written" },
   { path: "the nightly memory review (reads and rewrites the rules themselves)", file: "src/dream.js", exempt: "it reviews the rules as its subject: they are its input, read with db.activeRules" },

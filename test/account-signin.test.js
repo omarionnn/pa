@@ -70,7 +70,8 @@ test("switch on: the tool is shown (owner mode: the operator only), with a schem
     assert.ok(t, "shown to the operator");
     assert.equal(toolsFor("dm:not-the-owner").some(x => x.name === "account_signin"), false);
     assert.deepEqual(t.input_schema.required, ["site"]);
-    assert.deepEqual(Object.keys(t.input_schema.properties), ["site"], "the model passes only a site name");
+    assert.deepEqual(Object.keys(t.input_schema.properties), ["site", "with"], "the model passes only a site name, and how they sign in to it");
+    assert.deepEqual(t.input_schema.properties.with.enum, ["google", "password"], "with is one of two fixed words: never a login");
     const bad = await runTool("account_signin", { site: 42 }, { conversationId: ME, kind: "user", messages: [], signIn: spy().fn });
     assert.equal(bad.ok, false, "the zod check refuses a non-string site");
   } finally { process.env.REASON_SAVED_LOGINS = "off"; }
@@ -89,7 +90,7 @@ test("the runtime hands the filler to every turn; the turn's kind (not the model
       conversationId: ME, kind: "event", messages: [{ role: "user", content: "check my acme bill" }], signIn: leaky.fn,
     });
     assert.equal(leaky.calls.length, 1);
-    assert.deepEqual(leaky.calls[0].opts.trigger, { kind: "event", messages: [{ role: "user", content: "check my acme bill" }] }, "the turn's own kind and the stored thread go to the gate");
+    assert.deepEqual(leaky.calls[0].opts.trigger, { kind: "event", channel: "phone", messages: [{ role: "user", content: "check my acme bill" }] }, "the turn's own kind, its thread (phone or web) and the stored thread go to the gate");
     assert.equal(leaky.calls[0].site, "acme.test");
     assert.ok(!JSON.stringify(r).includes(SECRET) && !JSON.stringify(r).includes("u@example.test"), "only the fixed fields leave the tool");
     assert.deepEqual(Object.keys(r).sort(), ["note", "ok", "result", "say_exactly"]);

@@ -46,11 +46,13 @@ import { webLookup, plainFetch } from "./weblookup.js";
 import { parallelClient } from "./parallel.js";
 import { connectAllowedFor } from "./shopconnect.js";
 import { tableInboundLine } from "./tableimage.js";
+import * as uploads from "./webuploads.js";
+import { canStack, sendPictureSet } from "./stack.js";
 
 export const CHOICE_TOOLS = new Set(["show_choices"]);
 
 /** Bump when the drawing changes, so every kept card is drawn again. */
-export const CHOICE_CARD_VERSION = 2;
+export const CHOICE_CARD_VERSION = 3;
 /** How long a set of cards is still the thing their next message may be answering. */
 export const CHOICE_TTL_MS = 12 * 3_600_000;
 /** 360×450 points, drawn at 3× — crisp on any iPhone, about the shape of a portrait photo. */
@@ -144,7 +146,7 @@ export function themeFor(conversationId) {
 /** "16 oz" never breaks across two lines of a card's name. */
 const keepSize = (html) => html.replace(/(\d)\s+(fl\.?\s?oz|oz|ml|mL|l|g|kg|lb|lbs|ct|count|pack)\b/g, (_, n, u) => `${n}&nbsp;${u.replace(/\s/g, "&nbsp;")}`);
 
-export function choiceCardHtml({ n, kind = "shopping", name, brand = "", price = "", detail = "", why = "", photo, theme = "paper" }) {
+export function choiceCardHtml({ n, of = 0, kind = "shopping", name, brand = "", price = "", detail = "", why = "", photo, theme = "paper" }) {
   const t = TOKENS[theme === "night" ? "night" : "paper"];
   const f = fonts();
   const product = kind !== "places";
@@ -162,7 +164,9 @@ html,body{width:${CARD_PT_W}px;height:${CARD_PT_H}px}
 body{background:${t.lifted};color:${t.ink};display:flex;flex-direction:column;padding:14px 14px 0;overflow:hidden;-webkit-font-smoothing:antialiased;font-family:"Card Sans",Inter,system-ui,sans-serif}
 .ph{position:relative;flex:1 1 auto;min-height:200px;border-radius:14px;overflow:hidden;background:${product ? "#ffffff" : t.photo};box-shadow:0 0 0 1px ${t.hair}}
 .ph img{position:absolute;inset:0;width:100%;height:100%;object-fit:${product ? "contain" : "cover"};${product ? "padding:12px;" : ""}display:block}
-.num{position:absolute;left:0;top:0;width:58px;height:58px;border-bottom-right-radius:16px;background:${t.pen};color:${theme === "night" ? t.deep : "#fff"};font:italic 400 44px/58px "Card Serif",Georgia,serif;text-align:center;letter-spacing:-.02em}
+.num{position:absolute;left:0;top:0;min-width:58px;height:58px;border-bottom-right-radius:16px;background:${t.pen};color:${theme === "night" ? t.deep : "#fff"};font:italic 400 44px/58px "Card Serif",Georgia,serif;text-align:center;letter-spacing:-.02em}
+.num.of{padding:0 13px 0 14px;white-space:nowrap}
+.num .of{font:600 12px/1 "Card Sans",sans-serif;font-style:normal;letter-spacing:.06em;margin-left:5px;opacity:.9;vertical-align:4px}
 .tx{flex:none;padding:14px 8px 0}
 .eb{font:600 10.5px/1 "Card Sans",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:${t.muted};margin-bottom:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 h1{font:italic 400 ${String(name).length > 24 ? 26 : 29}px/1.06 "Card Serif",Georgia,serif;letter-spacing:-.015em;color:${t.ink};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -174,7 +178,7 @@ h1{font:italic 400 ${String(name).length > 24 ? 26 : 29}px/1.06 "Card Serif",Geo
 .wm .wordmark{font-size:15px;color:${t.muted}}
 .wm .wm-bubble path{stroke:${t.pen}}
 </style></head><body>
-<div class="ph"><img src="${photo}" alt=""><div class="num">${Number(n)}</div></div>
+<div class="ph"><img src="${photo}" alt=""><div class="num${of > 1 ? " of" : ""}">${Number(n)}${of > 1 ? `<span class="of">OF ${Number(of)}</span>` : ""}</div></div>
 <div class="tx">${brand ? `<p class="eb">${esc(brand)}</p>` : ""}<h1>${keepSize(esc(name))}</h1>${meta ? `<p class="meta">${meta}</p>` : ""}</div>
 <div class="ft">${why ? `<p class="why">${esc(why)}</p>` : ""}<div class="wm">${wordmark()}</div></div>
 </body></html>`;
@@ -195,7 +199,7 @@ export const isCardFile = (file) => !!file && cardFile(basename(String(file))) =
  */
 export async function drawCard(card, { shoot = shootWithChromium } = {}) {
   const key = createHash("sha256")
-    .update(JSON.stringify([CHOICE_CARD_VERSION, card.theme, card.kind, card.n, card.name, card.brand, card.price, card.detail, card.why]))
+    .update(JSON.stringify([CHOICE_CARD_VERSION, card.theme, card.kind, card.n, card.of ?? 0, card.name, card.brand, card.price, card.detail, card.why]))
     .update(card.photo)
     .digest("hex").slice(0, 20);
   const name = `${key}.jpg`;
@@ -828,6 +832,27 @@ const sameError = (pairs, options, dropped = []) => {
     + " Call show_choices again with each option visibly different — the size, variant, skin type, scent or store in its name or detail, as its own listing says it — or leave out the repeats and, with one left, just answer.";
 };
 
+/**
+ * Will this conversation's thread take the set as one stack (src/stack.js)? Only then is each card
+ * also kept at a public address for the provider to fetch, as a table picture is (src/tableimage.js).
+ */
+function stackableHere(c, ctx) {
+  if (!ctx?.channels) return false;
+  if (![config.pagesUrl, config.siteUrl, config.publicUrl].some(u => /^https:\/\//.test(u || ""))) return false;
+  let thread = null;
+  try { thread = db.getThread(c); } catch { /* none */ }
+  return !!thread?.channel && canStack(ctx.channels, thread.channel, 2);
+}
+
+/** Draw one card and, for a stack, keep it at its public address. Throws when either cannot be done. */
+async function makeCard(card, { c, ctx, stackable }) {
+  const drawn = await drawCard(card, { shoot: ctx.shoot ?? shootWithChromium });
+  if (!stackable) return drawn;
+  const m = (ctx.store ?? uploads.store)({ conversationId: c, bytes: readFileSync(drawn.file), name: `reason-${card.n}.jpg`, extra: { public: "card" } });
+  if (!m || m.error) throw new Error(`keeping card ${card.n} failed (${m?.error ?? "no record"})`);
+  return { ...drawn, url: uploads.uploadUrl(m.id, m.name) };
+}
+
 export async function runChoiceTool(name, input, ctx) {
   const c = ctx.conversationId;
   if (name !== "show_choices" || !choiceCardsOn(c)) return { ok: false, error: "Choice cards are not available here. Write the options as a short numbered list." };
@@ -913,15 +938,35 @@ export async function runChoiceTool(name, input, ctx) {
     return { ok: false, error: sameError(alike, options, kept.flatMap((i, k) => checks[i].dropped.map(d => `option ${k + 1}: ${d}`))) };
   }
   if (!why) {
-    try {
-      cards = [];
-      for (const [i, o] of options.entries()) {
-        cards.push(await drawCard({ n: i + 1, kind: input.kind, theme, ...o, photo: shots[i].uri }, { shoot: ctx.shoot ?? shootWithChromium }));
+    // Each card says "1 of 3" (owner, 2026-11-13: the set arrives as one swipeable stack), so X is
+    // what really goes: a card that cannot be drawn or kept is left out and the rest drawn again,
+    // numbered 1..X once more. A second failure, or fewer than two left, is the list as before.
+    const stackable = stackableHere(c, ctx);
+    let idx = options.map((_, k) => k);
+    const failed = [];
+    for (let pass = 0; pass < 2; pass++) {
+      const made = [];
+      const bad = [];
+      for (const [j, k] of idx.entries()) {
+        try {
+          made.push(await makeCard({ n: j + 1, of: idx.length, kind: input.kind, theme, ...options[k], photo: shots[k].uri }, { c, ctx, stackable }));
+        } catch (e) {
+          bad.push({ k, why: (e?.message ?? String(e)).split("\n")[0] });
+        }
       }
-    } catch (e) {
+      if (!bad.length) { cards = made; break; }
+      failed.push(...bad);
+      idx = idx.filter(k => !bad.some(b => b.k === k));
+      if (idx.length < 2) break;
+    }
+    if (cards && failed.length) {
+      log({ choice_cards_not_drawn: c, n: failed.length, why: failed.map(b => b.why) });
+      leftOut = [...leftOut, ...failed.map(b => asked[kept[b.k]])];
+      kept = idx.map(k => kept[k]);
+      options = idx.map(k => options[k]);
+    } else if (!cards) {
       // No cards at all: the list carries every option again, the photo-less ones too.
-      cards = null;
-      why = (e?.message ?? String(e)).split("\n")[0];
+      why = failed[0]?.why ?? "the cards could not be drawn";
       kept = all.map((_, i) => i);
       leftOut = [];
       options = all;
@@ -947,7 +992,7 @@ export async function runChoiceTool(name, input, ctx) {
       note: `No cards this time (${why}). Write them as a short numbered list in your reply, one line each, in this order — the numbers are kept, so a number back picks that one:\n${options.map(textLine).join("\n")}${offNote}`,
     };
   }
-  queued.set(c, { setId: set.id, cards });
+  queued.set(c, { setId: set.id, cards, names: options.map((o, i) => `${i + 1}. ${o.name}`) });
   log({ choice_cards_drawn: c, set: set.id, n: cards.length, theme });
   return {
     ok: true, set_id: set.id, cards: cards.length,
@@ -968,30 +1013,18 @@ export async function sendQueued(conversationId, { router, route, withWords, log
     log({ choice_cards_dropped: conversationId, set: q.setId, why: withWords ? "no channel to send pictures on" : "the turn sent no words" });
     return { sent: 0 };
   }
-  const handles = [];
-  let sent = 0;
-  for (const [i, card] of q.cards.entries()) {
-    if (i) await sleep(GAP_MS);
-    let r;
-    try {
-      r = await router.sendMedia({
-        channel: route.channel, to: route.to, chatId: route.chatId ?? null, text: "",
-        file: card.file, mimeType: "image/jpeg", filename: `reason-${i + 1}.jpg`,
-        conversationId, toOwner: true, idempotencyKey: `choice:${q.setId}:${i + 1}`,
-      });
-    } catch (e) {
-      r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
-    }
-    if (!r?.ok) {
-      log({ choice_card_failed: conversationId, set: q.setId, n: i + 1, why: r?.error ?? "unknown" });
-      break;
-    }
-    handles[i] = r.delivered?.message_id ?? null;
-    sent++;
-  }
+  // One swipeable stack where the line has one (src/stack.js), each card its own message otherwise.
+  const out = await sendPictureSet({
+    router, channel: route.channel, to: route.to, chatId: route.chatId ?? null, conversationId, toOwner: true,
+    idempotencyKey: `choice:${q.setId}`, gapMs: GAP_MS, sleep, log,
+    pictures: q.cards.map((card, i) => ({ file: card.file, url: card.url ?? null, mimeType: "image/jpeg", filename: `reason-${i + 1}.jpg` })),
+    historyText: (q.names ?? []).join(" · "),
+  });
+  const { sent, handles } = out;
+  if (sent < q.cards.length) log({ choice_card_failed: conversationId, set: q.setId, n: sent + 1 });
   db.setChoiceShown(q.setId, { handles, state: sent === q.cards.length ? "shown" : sent ? "partial" : "dropped" });
-  log({ choice_cards_sent: conversationId, set: q.setId, sent, of: q.cards.length });
-  return { sent };
+  log({ choice_cards_sent: conversationId, set: q.setId, sent, of: q.cards.length, stacked: out.stacked });
+  return { sent, stacked: out.stacked };
 }
 
 // ---------- reading what came back ----------
@@ -1023,7 +1056,11 @@ export function inboundChoiceLine(conversationId, { text = "", replyTo = null, n
   let line = `[${ago(now - (set.shown_at ?? set.created_at))} ago you showed them ${set.options.length} options ${shown}: ${list}.`;
   const onCard = replyTo ? set.handles.findIndex(h => h && sameHandle(h, replyTo)) : -1;
   const tb = readTapback(text);
-  if (onCard >= 0) {
+  // Cards that went as one stack (src/stack.js) are one message: a reply on it does not say which card.
+  const onStack = onCard >= 0 && set.handles.filter(h => h && sameHandle(h, set.handles[onCard])).length > 1;
+  if (onStack) {
+    line += " This is an inline reply on the cards, which went as one swipeable set, so the phone does not say which card. If it names one (a number, a name, how it looks), go with that one; if not, ask which in a few plain words.";
+  } else if (onCard >= 0) {
     line += ` This is an inline reply on card ${onCard + 1} (${set.options[onCard].name}) — read it as about that one.`;
   } else if (tb && tb.image) {
     line += set.options.length === 1 || set.handles.filter(Boolean).length === 1

@@ -116,6 +116,49 @@ export const LOGINS_SCHEMA = `
     created_at INTEGER NOT NULL,
     UNIQUE (conversation_id, site, label COLLATE NOCASE) -- a second account on a site needs its own name
   );
+  -- How a person signs in to a site that has no saved login of its own (owner decision 2026-11-13):
+  -- "google" = through the site's own "Continue with Google", with their saved Google login
+  -- (src/federated.js). Not a secret: a site name and a word.
+  CREATE TABLE IF NOT EXISTS signin_routes (
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL,
+    route TEXT NOT NULL CHECK (route IN ('google', 'password')),
+    set_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, site)
+  );
+  -- The one offer to save a login, after a sign-in through a link ended signed in (src/loginintake.js
+  -- saveOfferFor): a site is offered once per person, never again, whatever they answered.
+  CREATE TABLE IF NOT EXISTS save_offers (
+    conversation_id TEXT NOT NULL,
+    site TEXT NOT NULL,
+    offered_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, site)
+  );
+  -- A person's call passphrase (src/callpass.js, REASON_CALL_TRUST): a salted scrypt hash of the
+  -- normalised phrase, never the phrase. pending_* is one set on a call, waiting for a typed yes.
+  CREATE TABLE IF NOT EXISTS call_passphrases (
+    conversation_id TEXT PRIMARY KEY,
+    active_hash TEXT,
+    active_set_how TEXT CHECK (active_set_how IN ('text', 'call')),
+    active_set_at INTEGER,
+    active_words INTEGER,
+    pending_hash TEXT,
+    pending_set_at INTEGER,
+    pending_call_id INTEGER,
+    pending_asked_outbox INTEGER,
+    removal_asked_outbox INTEGER,
+    told_count INTEGER NOT NULL DEFAULT 0,
+    misses INTEGER NOT NULL DEFAULT 0,
+    misses_since INTEGER
+  );
+  -- The set-up page's one-use links: only a hash of the token.
+  CREATE TABLE IF NOT EXISTS call_passphrase_links (
+    token_hash TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('set', 'change')),
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
 `;
 
 /**
@@ -124,9 +167,14 @@ export const LOGINS_SCHEMA = `
  * read by exportFor or kept out of an export with a reason, and deleted by deleteAllFor and deleteEveryLogin.
  */
 export const LOGINS_COVERAGE = {
-  exported: ["saved_logins"],   // exportFor: sites, hints, dates, permission, state; never the login (data.js REDACTED)
-  notExported: { vault_people: "a random handle that goes into the KMS context; it holds nothing of the person" },
-  deleted: ["saved_logins", "vault_people"],
+  // exportFor (never the login, data.js REDACTED); exportRoutesFor: site + route; callpass.exportFor: set, how, when (never the hash)
+  exported: ["saved_logins", "signin_routes", "call_passphrases"],
+  notExported: {
+    vault_people: "a random handle that goes into the KMS context; it holds nothing of the person",
+    call_passphrase_links: "the hash of a one-use set-up link and when it expires; nothing they typed",
+    save_offers: "which sites Reason once offered to save a login for, so the offer is never repeated; a site name and a time, nothing they typed",
+  },
+  deleted: ["saved_logins", "vault_people", "signin_routes", "call_passphrases", "call_passphrase_links", "save_offers"],
 };
 
 // Opened on first use, not at load: loading this module with the switch off must not create the file.
@@ -146,6 +194,9 @@ function open({ create }) {
   ldb = d; ldbPath = p;
   return d;
 }
+
+/** The logins.db handle for src/callpass.js (the call passphrase lives in this file too). Null when there is no file and `create` is false. */
+export function loginsDb({ create = false } = {}) { return open({ create }); }
 
 function handleFor(d, c, create) {
   const get = () => d.prepare("SELECT handle FROM vault_people WHERE conversation_id = ?").get(c)?.handle ?? null;
@@ -223,7 +274,9 @@ export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_
 // filler returns to the model is in the second group so recordLoginEvent accepts it.
 export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwrap_failed", "open_failed", "fill_failed",
   "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused",
-  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy"];
+  "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy", "not_accepted", "no_answer",
+  "needs_google_login", "needs_google_tap", "needs_google_code", "consent_more", "google_property", "no_google_button", "waiting_face_id",
+  "site_trouble", "refuses_software"];
 const RECEIPT = {
   saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
   opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
@@ -252,6 +305,10 @@ const RECEIPT = {
     code_not_found: `Signed in to ${site}; it emailed a code that did not arrive in time. I stopped.`,
     wrong_code: `Signed in to ${site}; it did not accept the code. I stopped and did not try another.`,
     busy: `Did not sign in to ${site}: the browser was busy.`,
+    not_accepted: `Could not sign in to ${site}: it did not accept the sign-in (not a wrong password). I stopped and paused it for a day.`,
+    no_answer: `Could not sign in to ${site}: the page did not answer the sign-in in time. I stopped and paused it for a day.`,
+    refuses_software: `Did not sign in to ${site}: it turns away browsers run by software, so nothing was opened.`,
+    site_trouble: `Could not sign in to ${site}: it answered with its own error before accepting or turning down the login (not a wrong password; the saved login looks fine).`,
   }[outcome] ?? `Did not sign in to ${site} (${String(outcome).replace(/_/g, " ")}).`),
 };
 /** Words for `purpose`: one line, no control characters, links without their query or fragment. */
@@ -313,7 +370,10 @@ export async function saveLogin(conversationId, meta, fields) {
     if (totp !== null && (!(totp instanceof Secret) || !totp.live)) throw new VaultError("bad_fields");
 
     // Hard rule 3: the never list refuses, and says why; a careful site never gets a standing permission.
-    for (const v of [siteVerdict(site), siteVerdict(origin)]) {
+    // The Google login (owner decision 2026-11-13) is kept as site google.com on exactly https://accounts.google.com:
+    // only that host is judged (careful); google.com itself, and every other Google host, stays never.
+    const googleLogin = site === "google.com" && origin === "https://accounts.google.com";
+    for (const v of googleLogin ? [siteVerdict(origin)] : [siteVerdict(site), siteVerdict(origin)]) {
       if (v.policy === "never") throw new VaultError("never_site", { why: refusalFor(v.category, m.label) });
       if (v.policy === "careful" && m.permission === "standing") throw new VaultError("careful_needs_each_time");
       if (!["careful", "allowed"].includes(v.policy)) throw new VaultError("no_site_policy");
@@ -487,6 +547,10 @@ export function removeLogin(conversationId, id, { purpose = "" } = {}) {
   const row = d.prepare("SELECT site FROM saved_logins WHERE id = ? AND conversation_id = ?").get(Number(id), c);
   if (!row) return false;
   d.prepare("DELETE FROM saved_logins WHERE id = ? AND conversation_id = ?").run(Number(id), c);
+  // The Google login gone (and no other kept): every site they signed in to through it goes with it (review 2026-11-13).
+  if (row.site === "google.com" && !d.prepare("SELECT 1 FROM saved_logins WHERE conversation_id = ? AND site = 'google.com'").get(c)) {
+    d.prepare("DELETE FROM signin_routes WHERE conversation_id = ? AND route = 'google'").run(c);
+  }
   logEvent(c, { site: row.site, event: "removed", outcome: "ok", purpose, kmsCalls: 0 });
   return true;
 }
@@ -507,6 +571,10 @@ export function deleteAllFor(conversationId, { purpose = "" } = {}) {
   try {
     n = Number(d.prepare("DELETE FROM saved_logins WHERE conversation_id = ?").run(c).changes);
     had = Number(d.prepare("DELETE FROM vault_people WHERE conversation_id = ?").run(c).changes) > 0 || n > 0;
+    had = Number(d.prepare("DELETE FROM signin_routes WHERE conversation_id = ?").run(c).changes) > 0 || had;
+    had = Number(d.prepare("DELETE FROM call_passphrases WHERE conversation_id = ?").run(c).changes) > 0 || had;
+    d.prepare("DELETE FROM call_passphrase_links WHERE conversation_id = ?").run(c);
+    d.prepare("DELETE FROM save_offers WHERE conversation_id = ?").run(c);
     d.exec("COMMIT");
   } catch (e) { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
   if (had) logEvent(c, { site: "", event: "removed_all", outcome: "ok", purpose, kmsCalls: 0, count: n });
@@ -521,6 +589,10 @@ export function deleteEveryLogin() {
   try {
     const n = Number(d.prepare("DELETE FROM saved_logins").run().changes);
     d.prepare("DELETE FROM vault_people").run();
+    d.prepare("DELETE FROM signin_routes").run();
+    d.prepare("DELETE FROM call_passphrases").run();
+    d.prepare("DELETE FROM call_passphrase_links").run();
+    d.prepare("DELETE FROM save_offers").run();
     d.exec("COMMIT");
     return n;
   } catch { try { d.exec("ROLLBACK"); } catch {} throw new VaultError("store_failed"); }
@@ -540,6 +612,47 @@ export function exportFor(conversationId) {
       consent_version, consent_at, fail_count, next_try_at, last_used_at, unused_warned_at, created_at
     FROM saved_logins${all ? "" : " WHERE conversation_id = ?"} ORDER BY conversation_id, site, id`).all(...(all ? [] : [String(conversationId)]))
     .map(r => ({ ...r, username_hint: restcrypt.openAny(r.username_hint) }));
+}
+
+// ---------------------------------------------------------------- how they sign in to a site (owner decision 2026-11-13)
+export const SIGNIN_ROUTES = ["google", "password"];
+const routeSite = (s) => String(s ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0].split(":")[0].replace(/^www\./, "");
+/** Remember that this person signs in to `site` with Continue with Google (or a password). True when stored. */
+export function setSigninRoute(conversationId, site, route) {
+  const c = String(conversationId ?? ""), s = routeSite(site);
+  if (!savedLoginsAllowedFor(c) || !SITE_RE.test(s) || !SIGNIN_ROUTES.includes(route)) return false;
+  const d = open({ create: true });
+  d.prepare(`INSERT INTO signin_routes (conversation_id, site, route, set_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(conversation_id, site) DO UPDATE SET route = excluded.route, set_at = excluded.set_at`).run(c, s, route, clock.now());
+  return true;
+}
+/** "google", "password" or "" for this person and site (the site or a parent domain of it). */
+export function signinRouteFor(conversationId, site) {
+  const d = open({ create: false });
+  const s = routeSite(site);
+  if (!d || !conversationId || !SITE_RE.test(s)) return "";
+  const rows = d.prepare("SELECT site, route FROM signin_routes WHERE conversation_id = ?").all(String(conversationId));
+  const hit = rows.find(r => r.site === s) ?? rows.find(r => s.endsWith(`.${r.site}`));
+  return hit?.route ?? "";
+}
+/**
+ * The one save offer for a site (owner decision 2026-11-13): true the first time for this person and
+ * site, and false every time after, whatever they answered. Atomic: two endings at once offer once.
+ */
+export function markSaveOffered(conversationId, site) {
+  const c = String(conversationId ?? ""), s = routeSite(site);
+  if (!c || !savedLoginsAllowedFor(c) || !SITE_RE.test(s)) return false;
+  const d = open({ create: true });
+  return Number(d.prepare("INSERT OR IGNORE INTO save_offers (conversation_id, site, offered_at) VALUES (?, ?, ?)").run(c, s, clock.now()).changes) > 0;
+}
+/** For an export: each site and how they sign in to it. `null` = everyone. */
+export function exportRoutesFor(conversationId) {
+  const d = open({ create: false });
+  if (!d) return [];
+  const all = conversationId === null;
+  if (!all && !conversationId) return [];
+  return d.prepare(`SELECT conversation_id, site, route, set_at FROM signin_routes${all ? "" : " WHERE conversation_id = ?"} ORDER BY conversation_id, site`)
+    .all(...(all ? [] : [String(conversationId)]));
 }
 
 /**
