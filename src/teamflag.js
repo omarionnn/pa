@@ -251,6 +251,20 @@ export function propose({ conversationId, report, kind = "event", ask }) {
   };
 }
 
+/**
+ * The operator looking up a Ref from their thread (admin_flag_lookup): when it was proposed and sent, who
+ * it is from (masked, fromWords), and the KINDS of the last few things Reason did in that conversation
+ * up to the flag (action names only). Never the report again, a target, a result, or a word anybody said.
+ */
+export function lookupForOperator(ref, { kinds = 6 } = {}) {
+  const r = q("SELECT conversation_id, ref, state, created_at, sent_at FROM team_flags WHERE ref = ?").get(String(ref ?? "").trim().toUpperCase());
+  if (!r) return null;
+  const until = Number(r.sent_at ?? r.created_at);
+  const recent = q("SELECT action FROM action_ledger WHERE conversation_id = ? AND created_at <= ? ORDER BY id DESC LIMIT ?").all(r.conversation_id, until, kinds).map((x) => String(x.action));
+  const when = (t) => (t ? new Date(Number(t)).toLocaleString("en-US", { timeZone: config.installTz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null);
+  return { ref: r.ref, state: r.state, proposed_at: when(r.created_at), sent_at: when(r.sent_at), from: fromWords(r.conversation_id), recent_kinds: recent.reverse() };
+}
+
 /** Who it is from, as the operator's texts may say it: never a full number or email, never a name. */
 export function fromWords(conversationId) {
   const c = String(conversationId);

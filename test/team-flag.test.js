@@ -278,3 +278,23 @@ test("review: never on a call, and the operator's thread takes at most a day's w
   const out = await runTool("team_flag", { step: "propose", report: REPORT }, turn(OWNER, { said: ["x"] }));
   assert.equal(out.blocked, "team_busy");
 });
+
+test("the operator looks up a Ref: times, the masked sender and the kinds of what happened, never a word", async () => {
+  const { p, r, ctx, sent } = await proposeAndYes(OWNER);
+  assert.equal(r.ok, true, r.error);
+  const out = await runTool("team_flag", { step: "send", ref: p.ref, confirmation_id: p.confirmation_id }, { ...ctx, confirmationId: p.confirmation_id });
+  assert.equal(out.ok, true, out.error);
+  db.db.prepare("INSERT INTO action_ledger (conversation_id, action, target, attempted, outcome, result, receipt, created_at) VALUES (?, 'account_signin', 'doordash.com secret target', 'x', 'failed', 'the words', 'r', ?)").run(OWNER, Date.now() - 1000);
+  const look = await runTool("admin_flag_lookup", { ref: p.ref.toLowerCase() }, { conversationId: OWNER, kind: "user", messages: [] });
+  assert.equal(look.ok, true, look.error);
+  assert.equal(look.ref, p.ref);
+  assert.equal(look.state, "sent");
+  assert.ok(look.recent_kinds.includes("account_signin"));
+  const json = JSON.stringify(look);
+  assert.ok(!/DoorDash remained|secret target|the words/.test(json), json);
+  // Nobody but the operator.
+  const theirs = await runTool("admin_flag_lookup", { ref: p.ref }, { conversationId: B, kind: "user", messages: [] });
+  assert.equal(theirs.ok, false);
+  assert.equal((await runTool("admin_flag_lookup", { ref: "TF-000000" }, { conversationId: OWNER, kind: "user", messages: [] })).ok, false);
+  assert.equal(sent.length, 1);
+});

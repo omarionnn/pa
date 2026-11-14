@@ -4573,6 +4573,11 @@ export const tools = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "admin_flag_lookup",
+    description: "Master only. Look up a report sent to Reason's team by its Ref (TF-xxxxxx): when it was proposed and sent, who it is from (masked), and the kinds of the last few things Reason did in that conversation. Never the words of anything; the report itself is the text the master already got.",
+    input_schema: { type: "object", properties: { ref: { type: "string", description: "The Ref from the flag's text, like TF-1A2B3C." } }, required: ["ref"] },
+  },
+  {
     name: "admin_usage",
     description: "Master only. Who has a Reason, whether it is answering, and how much each of them has used it — counts only, never a word of what anybody said. The master pays the bill, so this is how they see it; it is NOT a way to read other people's conversations, and there is no tool that is.",
     input_schema: { type: "object", properties: { days: { type: "integer", description: "How many days back. Default 7." } } },
@@ -7335,6 +7340,7 @@ const S = {
   invite_requests_pending: z.object({}),
   invite_request_decide: z.object({ request_number: z.number().int().min(1), decision: z.enum(["approve", "decline"]), count: z.number().int().min(1).max(1_000_000).optional() }),
   admin_requests: z.object({}),
+  admin_flag_lookup: z.object({ ref: z.string().min(3).max(20) }),
   admin_usage: z.object({ days: z.number().int().min(1).max(90).optional() }),
   admin_pause: z.object({ number: z.string().min(3).max(40) }),
   admin_resume: z.object({ number: z.string().min(3).max(40), undo_removal: z.boolean().optional() }),
@@ -12834,7 +12840,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- admin: the master's own controls ----------
     case "admin_requests": case "admin_usage": case "admin_pause": case "admin_resume":
-    case "admin_remove": case "admin_block": case "admin_delete": {
+    case "admin_remove": case "admin_block": case "admin_delete": case "admin_flag_lookup": {
       if (!me.isOperator) {
         return {
           ok: false, blocked: "master_only",
@@ -12842,6 +12848,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
+      if (name === "admin_flag_lookup") {
+        const found = teamflag.lookupForOperator(input.ref);
+        return found ? { ok: true, ...found, note: "Kinds only: nothing anybody said, and not the report again." } : { ok: false, error: `No flag ${String(input.ref).toUpperCase()}. Check the Ref in the flag's text.` };
+      }
       if (name === "admin_requests") {
         const waiting = access.pendingForMaster();
         return {
