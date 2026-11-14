@@ -198,7 +198,11 @@ test("his call with his choice on: one Cartesia agent, mulaw both ways, his pers
   assert.deepEqual(create.audio, { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true });
   assert.equal(create.dynamic_variables.their_name, "Omari");
   assert.equal(create.dynamic_variables.greeting, "Hey Omari, it's Reason.");
-  assert.equal(create.dynamic_variables.reason_call, `${gl.voiceInstructionsFor(db.getCall(C, s.row.id), { line: false, turnGate: false })}\n${cartesia.clockLine(db.getCall(C, s.row.id))}\n${cartesia.cartesiaCallLines()}`,
+  // The same instructions a GPT-Live own call gets, then the clock and this line's manner: whole when
+  // they fit, fitted by rank inside VARIABLE_MAX when they don't (call 115), never a second persona.
+  const whole = `${gl.voiceInstructionsFor(db.getCall(C, s.row.id), { line: false, turnGate: false })}\n${cartesia.clockLine(db.getCall(C, s.row.id))}\n${cartesia.cartesiaCallLines()}`;
+  assert.equal(cartesia.reasonCallFit(db.getCall(C, s.row.id), { max: 100_000 }).text, whole, "uncut, it is GPT-Live's words, the clock, then this line's manner");
+  assert.equal(create.dynamic_variables.reason_call, cartesia.reasonCallFit(db.getCall(C, s.row.id)).text,
     "the same instructions a GPT-Live own call gets, not a second persona, then this line's manner");
   s.twilio.say({ event: "media", media: { payload: QUIET } });
   assert.equal(s.agent.of("audio_input").length, 0, "nothing sent before session_ready");
@@ -554,7 +558,8 @@ test("this line's manner: follow-ups now and then, never an interview, stay in t
   // On the agent, after the brief, and never the part cut to fit.
   Object.assign(config, CARTESIA);
   const vars = cartesia.sessionVariables(ownCall());
-  assert.ok(vars.reason_call.endsWith(cartesia.cartesiaCallLines()));
+  // The honesty and turn lines are never the part cut to fit (./fitprompt.js ranks).
+  for (const l of [...cartesia.HONESTY_LINES, ...cartesia.TURN_LINES]) assert.ok(vars.reason_call.includes(l), l.slice(0, 40));
   assert.ok(vars.reason_call.length <= cartesia.VARIABLE_MAX);
   // GPT-Live's own-call words are untouched.
   const gptlive = gl.voiceInstructionsFor(ownCall(), { line: false });

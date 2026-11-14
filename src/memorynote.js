@@ -12,6 +12,52 @@ import { distinct } from "./samefact.js";
 import { savedOn } from "./extract.js";
 import { rulesNote } from "./rules.js";
 
+// A saved fact that gives the ASSISTANT a name ("Wants the assistant to answer to the name Hewie"),
+// shown under their own name in the profile, read by a model as THEIR name: the text after call 115
+// opened with it. The name it gives, in the forms facts are written in.
+const NAMES_THE_ASSISTANT = [
+  /\b(?:[Tt]he\s+assistant|[Rr]eason|[Yy]ou|(?:[Hh]is|[Hh]er|[Tt]heir)\s+assistant)\b[^.\n]{0,30}?\b(?:answer(?:s|ing)?\s+to|be\s+called|go(?:es)?\s+by|respond(?:s)?\s+to)\s+(?:the\s+name\s+|the\s+nickname\s+)?["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
+  /\b(?:[Cc]alls?|[Cc]alling|[Cc]alled|[Nn]ames?|[Nn]amed|[Nn]aming|[Nn]icknamed?)\s+(?:[Tt]he\s+assistant|[Rr]eason|[Yy]ou|(?:[Hh]is|[Hh]er|[Tt]heir)\s+assistant)\s+(?:by\s+the\s+name\s+|as\s+)?["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
+  /\b(?:[Tt]he\s+assistant(?:'|’)s|[Rr]eason(?:'|’)s|[Yy]our)\s+(?:nick)?name\s+(?:is|should\s+be)\s+["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
+];
+
+/** The name a profile line gives the assistant, or "". Exported for tests. */
+export function assistantNameIn(line) {
+  for (const re of NAMES_THE_ASSISTANT) { const m = re.exec(String(line ?? "")); if (m) return m[1].replace(/['’]s$/, ""); }
+  return "";
+}
+
+/**
+ * The profile block as a prompt is shown it: a line that names the assistant says outright whose name
+ * that is ("they call YOU…, never call them that"), so a nickname for Reason is never read as theirs.
+ * Every other line is as stored; the stored block is never changed. `theirName`: the account's own name.
+ */
+export function profileForPrompt(block, theirName = "") {
+  const own = String(theirName ?? "").trim();
+  return String(block ?? "").split("\n").map(line => {
+    const nick = assistantNameIn(line);
+    if (!nick || /^reason$/i.test(nick) || (own && nick.toLowerCase() === own.toLowerCase())) return line;
+    const tag = /\(([^()]*)\)\s*$/.exec(line)?.[1];
+    return `- They call YOU, their assistant, "${nick}": a nickname for you, not their name.${own ? ` Their own name is ${own}.` : ""} Never call them ${nick}.${tag ? ` (${tag})` : ""}`;
+  }).join("\n");
+}
+
+/** The profile note a turn or a call is shown ("" with no profile): the heading, then `profileForPrompt`. */
+export function profileNote(conversationId) {
+  const block = db.getProfile(conversationId)?.block;
+  if (!block) return "";
+  return `WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty; where two disagree, the later date wins):\n${profileForPrompt(block, ownNameOf(conversationId))}`;
+}
+
+/** Their own name as the account has it, or "" (never a stand-in). */
+function ownNameOf(conversationId) {
+  try {
+    const row = db.getAccount(conversationId);
+    const name = row?.name || (row?.is_operator || conversationId === config.ownerConversation ? config.ownerName : "");
+    return name && name !== "the person I work for" ? name : "";
+  } catch { return ""; }
+}
+
 /** How many matches ride on a turn. Enough to catch the thing they mean, few enough to stay cheap. */
 const HITS = 3;
 /** Below this a match is about something else. The API path used the same floor. */
@@ -29,7 +75,7 @@ export async function memoryNotes(conversationId, text, { find = search, vectors
   try {
     const profile = db.getProfile(conversationId);
     if (profile?.block) {
-      notes.push(`WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty; where two disagree, the later date wins):\n${profile.block}`);
+      notes.push(profileNote(conversationId));
       inProfile = new Set(JSON.parse(profile.fact_ids || "[]"));
     }
   } catch (e) {
@@ -68,7 +114,8 @@ export async function memoryHits(conversationId, text, { find = search, vectors 
     const vec = vectors(conversationId, [...found, ...shown].map(f => f.id));
     const lines = distinct(found, vec, { max: HITS, seen: shown }).map(f => {
       const tags = [f.source === "inferred" ? "inferred" : "", `saved ${savedOn(f.created_at)}`].filter(Boolean).join(", ");
-      return `- ${f.about}: ${f.fact} (${tags})`;
+      // A fact naming the assistant says whose name it is, as the profile does (`profileForPrompt`).
+      return profileForPrompt(`- ${f.about}: ${f.fact} (${tags})`, ownNameOf(conversationId));
     });
     log({ memory_hits: lines.length, conversation: conversationId });
     return lines;

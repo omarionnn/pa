@@ -51,7 +51,7 @@ import * as calltrust from "./calltrust.js";
 import { peekForSignin } from "../savedlogins.js";
 import { rulesNote } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory } from "./callmemory.js";
-import { memoryHits } from "../memorynote.js";
+import { memoryHits, profileNote as profileForCall } from "../memorynote.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
 import * as callMetrics from "./metrics.js";
@@ -522,8 +522,8 @@ export function announcementOwedIn(call) {
 /** The owner's profile, as a text turn is shown it, or "" when there is none. */
 export function ownerProfileNote(conversationId) {
   try {
-    const block = db.getProfile(conversationId)?.block;
-    return block ? `WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty; where two disagree, the later date wins):\n${block}` : "";
+    // A name they gave Reason is said as Reason's, never as theirs (../memorynote.js `profileForPrompt`).
+    return profileForCall(conversationId);
   } catch {
     return "";
   }

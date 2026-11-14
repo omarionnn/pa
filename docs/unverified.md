@@ -5289,7 +5289,7 @@ Built from design 3 in `docs/calls-cartesia.md` (#527): `src/calls/cartesia.js`,
 `scripts/cartesia-agent-setup.mjs`. Proved only with stand-in sockets (`test/call-cartesia.test.js`). Never run:
 the setup script with `--yes`, a real agent session, or a real call. Not known until it is:
 
-- The largest dynamic variable Cartesia takes. `reason_call` (the own-call instructions) is cut at 12,000 characters.
+- The largest dynamic variable Cartesia takes (their docs give none). `reason_call` (the own-call instructions) is fitted inside our own 12,000-character limit by rank (src/calls/fitprompt.js), never cut at the end; `REASON_CARTESIA_VARIABLE_MAX` moves the limit. Uncut it runs to about 24k on a busy day.
 - Whether a keyterm made of a variable (`{{keyterm_1}}`) is substituted per call, and whether an empty one would be refused. Unused slots say "Reason".
 - Whether the agent's own `end_call` closes the socket with 1000. Any other close code is treated as a failure, and GPT-Live takes the rest of the call.
 - Whether a socket closed before `session_ready` leaves a call record on their side that cannot be deleted (there is no id to delete). A session that comes up within 5 s of the fall-back is deleted.

@@ -18,7 +18,8 @@ import { recordingFileFor } from "./recordings.js";
 import * as manner from "./manner.js";
 import * as ambience from "./ambience.js";
 import { lookupMusicFor, MUSIC_DELAY_MS } from "./lookupmusic.js";
-import { CallTape, hasSpeech, voiceInstructionsFor, claimsDone } from "./gptlive.js";
+import { CallTape, hasSpeech, voiceSectionsFor, claimsDone, saysNoMemory, MEMORY_NOTE } from "./gptlive.js";
+import { section, fitSections, joinSections } from "./fitprompt.js";
 import { queueMidCall } from "./voice.js";
 import { openingLineFor } from "./inbound.js";
 import { todaySoFar } from "./brief.js";
@@ -43,8 +44,12 @@ export const RESULT_MAX = 12_000;
 export const KEYTERM_SLOTS = 8;
 /** How long an ask_reason waits for the caller's passphrase answer to be screened (./calltrust.js). */
 export const EAR_WAIT_MS = 1500;
-/** A dynamic variable's text, kept inside a size their docs do not state (docs/unverified.md). */
-export const VARIABLE_MAX = 12_000;
+/**
+ * A dynamic variable's text, kept inside a size their docs do not state (docs/unverified.md): our own
+ * limit, not theirs. `reason_call` is fitted inside it by rank (./fitprompt.js), never cut at the end.
+ * REASON_CARTESIA_VARIABLE_MAX moves it (4,000 to 60,000); 12,000 is what every call so far has used.
+ */
+export const VARIABLE_MAX = (n => (Number.isInteger(n) && n >= 4000 && n <= 60_000 ? n : 12_000))(Number(process.env.REASON_CARTESIA_VARIABLE_MAX));
 
 // ---------- how this call sounds (Cartesia calls only) ----------
 
@@ -82,6 +87,8 @@ export const MOMENT_LINES = [
 export const HONESTY_LINES = [
   "Only Reason's answer (ask_reason) in this call can tell you something has been done. Never say anything is done, booked, sent, submitted, filled in, scheduled, ordered or confirmed unless Reason's answer in this call said exactly that. This wins over every other line.",
   "If they ask whether something is done, booked, sent, submitted or finished, call ask_reason with that question; never answer it yourself, even if it was asked for earlier in this call.",
+  // Call 115: "where were we on the last call?" answered by the agent itself, as "I only know this call".
+  "If they ask about an earlier call or what has happened since (\"where were we?\", \"what did we talk about?\", \"what do you remember?\", \"any update?\"), call ask_reason with that question too; never answer it yourself, and never say you only know this call.",
   "Before an action, your short line says you are asking Reason (\"Asking Reason to book that.\"), never that it is happening or done (\"Booking it.\", \"On it, done.\").",
   "If Reason's answer says it is not done yet, needs something from them, or will be picked up by text after the call, say exactly that. Never state a price, time, distance or opening hour that Reason's answers in this call did not give you.",
 ];
@@ -112,7 +119,23 @@ export const EMOTION_TAG_LINE = "You may start a reply with one tag that sets it
 
 /** The lines added to `reason_call` on this line: no names, nothing about anyone. */
 export function cartesiaCallLines({ tags = config.cartesiaEmotionTags } = {}) {
-  return [...MANNER_LINES, ...MOMENT_LINES, ...HONESTY_LINES, ...TURN_LINES, ...EXPRESSION_LINES, ...(tags ? [EMOTION_TAG_LINE] : [])].join("\n");
+  return joinSections(cartesiaSections({ tags }));
+}
+
+/**
+ * The same lines as ranked sections (./fitprompt.js): honesty is never cut; this line's manner, moment and
+ * turn lines (they win over the GPT-Live lines they differ from) are kept before those; the made-up examples go first.
+ */
+export function cartesiaSections({ tags = config.cartesiaEmotionTags } = {}) {
+  const examples = MANNER_LINES.indexOf("Like this (made-up examples):");
+  return [
+    section("cartesia_manner", 3, MANNER_LINES.slice(0, examples)),
+    section("cartesia_examples", 11, MANNER_LINES.slice(examples)),
+    section("cartesia_moment", 3, MOMENT_LINES),
+    section("cartesia_honesty", 0, HONESTY_LINES),
+    section("cartesia_turns", 3, TURN_LINES),
+    section("cartesia_expression", 8, [...EXPRESSION_LINES, ...(tags ? [EMOTION_TAG_LINE] : [])]),
+  ];
 }
 
 // ---------- a slow ask_reason ----------
@@ -345,13 +368,13 @@ export async function deleteAgentCall(callId, { key = config.cartesiaKey, base =
  * GPT-Live own call is given (`voiceInstructionsFor`: the name he gave Reason, the one identity, persona,
  * carryover and his brief), and the same opening line. No second persona is written for Cartesia.
  */
-export function sessionVariables(call) {
+export function sessionVariables(call, { onFit = null } = {}) {
   // On this person's own clock (src/zonescope.js), as their turns are: "today", "now" and the brief's
   // times are theirs, never the install's or another account's.
-  return zonescope.runFor(call?.conversation_id, () => variablesOf(call));
+  return zonescope.runFor(call?.conversation_id, () => variablesOf(call, onFit));
 }
 
-function variablesOf(call) {
+function variablesOf(call, onFit) {
   const clip = (s, n) => { const t = String(s ?? ""); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
   let name = "";
   // The name they gave, or nothing: never the stand-in an unnamed account reads as ("the person I work for").
@@ -370,7 +393,7 @@ function variablesOf(call) {
     ...keyterms,
     // No turn gate here: the agent's own turn-taking replaces it (section 3), so its lines are left out.
     // This line's own manner goes last, after the brief, and is never the part cut.
-    reason_call: reasonCall(call, clip),
+    reason_call: reasonCall(call, clip, onFit),
     greeting: clip(greeting || "Hey, it's Reason.", 400),
     their_name: clip(name, 80),
   };
@@ -389,10 +412,34 @@ export function clockLine(call) {
   return `Their clock: it is ${when} where they are (${tz}) as the call starts. Any time or day you say is in their time, never another clock.`;
 }
 
-/** The GPT-Live own-call words (cut to fit), then their clock and this line's manner (`cartesiaCallLines`). */
-function reasonCall(call, clip) {
-  const lines = [clockLine(call), cartesiaCallLines()].filter(Boolean).join("\n");
-  return `${clip(voiceInstructionsFor(call, { line: false, turnGate: false }), VARIABLE_MAX - lines.length - 1)}\n${lines}`;
+/**
+ * The GPT-Live own-call words, then their clock and this line's manner (`cartesiaSections`), fitted
+ * inside VARIABLE_MAX by rank (call 115: a cut at the end took the whole brief, and the last call with it).
+ * Never cut: who it is, the honesty and memory rules, the passphrase rules, their clock. Then the last
+ * calls (the newest of the past day always), what was texted since, and everything else by rank.
+ */
+export function reasonCallFit(call, { max = VARIABLE_MAX } = {}) {
+  const sections = [
+    ...voiceSectionsFor(call, { turnGate: false }),
+    section("clock", 0, clockLine(call)),
+    ...cartesiaSections(),
+  ];
+  return fitSections(sections, max);
+}
+
+function reasonCall(call, clip, onFit = null) {
+  const fit = reasonCallFit(call);
+  try { onFit?.(fit); } catch { /* the log is never the call's problem */ }
+  // Rank 0 alone past the limit (never seen): the limit wins, as before, and the fit says so in the log.
+  return fit.size > VARIABLE_MAX ? clip(fit.text, VARIABLE_MAX) : fit.text;
+}
+
+/** Sizes and section names only (never their words), for the log and the deploy proof. */
+export function reasonCallReport(call) {
+  return zonescope.runFor(call?.conversation_id, () => {
+    const fit = reasonCallFit(call);
+    return { size: fit.size, max: VARIABLE_MAX, kept: fit.kept, trimmed: fit.trimmed, dropped: fit.dropped };
+  });
 }
 
 const WAITED = Symbol("waited");
@@ -451,7 +498,7 @@ export class CartesiaAgentCall {
     this.endWhy = "";
     this.startedAt = now();
     // The numbers the first call is for (section 5): kept per reply, logged as they happen and at the end.
-    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0, markers: 0, checkIns: 0, unheard: 0, reoffered: 0, deferredSaid: 0 };
+    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0, memoryClaims: 0, markers: 0, checkIns: 0, unheard: 0, reoffered: 0, deferredSaid: 0 };
     // Reason's latest answer handed to the voice, until the agent's next turn says how much of it was
     // spoken; one they talked over before its point, until it is said again (`turnEnded`, `spoken`).
     this.answerOut = null;
@@ -487,7 +534,7 @@ export class CartesiaAgentCall {
     }
     this.agent.on("open", () => {
       this.openedMs = this.now() - this.startedAt;
-      this.agent.send({ type: "session_create", audio: { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true }, dynamic_variables: sessionVariables(this.call) });
+      this.agent.send({ type: "session_create", audio: { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true }, dynamic_variables: sessionVariables(this.call, { onFit: (f) => this.log({ cartesia_prompt_fit: this.call.id, size: f.size, max: VARIABLE_MAX, kept: f.kept.map(k => k.split(":")[0]), trimmed: f.trimmed, dropped: f.dropped }) }) });
     });
     this.agent.on("event", (e) => this.fromAgent(e));
     this.agent.on("close", (code, said = "") => {
@@ -652,6 +699,12 @@ export class CartesiaAgentCall {
       this.m.unbacked += 1;
       this.log({ cartesia_unbacked_claim: this.call.id, turn: Number(e.turn) || 0, chars: text.length });
       this.turns.push({ who: "reason", text: UNBACKED_NOTE, at: this.now() });
+    }
+    // The same for a line saying it has no memory of earlier calls (call 115): untrue, so flagged in the record.
+    if (who === "reason" && text && saysNoMemory(text)) {
+      this.m.memoryClaims += 1;
+      this.log({ cartesia_memory_claim: this.call.id, turn: Number(e.turn) || 0, chars: text.length });
+      this.turns.push({ who: "reason", text: MEMORY_NOTE, at: this.now() });
     }
     if (who === "them") {
       this.theirTurnEndAt = this.now();
@@ -938,7 +991,7 @@ export class CartesiaAgentCall {
       asks: this.m.asks.length, ask_answered_ms: med(this.m.asks.map(a => a.asked_to_answered_ms)),
       talked_over: this.m.overs.filter(o => o.playing).length, clears: this.m.overs.length,
       talked_over_ms: med(this.m.overs.filter(o => o.playing).map(o => o.sound_to_clear_ms)),
-      asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs, unbacked_claims: this.m.unbacked,
+      asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs, unbacked_claims: this.m.unbacked, memory_claims: this.m.memoryClaims,
       markers_spoken: this.m.markers, check_ins: this.m.checkIns, answers_unheard: this.m.unheard, answers_reoffered: this.m.reoffered, deferrals_said: this.m.deferredSaid,
     });
     // Their copy goes whatever the settle does; both are waited for, neither stops the other.

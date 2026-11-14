@@ -51,6 +51,7 @@ import { ulawToPcm, pcmToUlaw } from "./ulaw.js";
 import { Hearing } from "./hearing.js";
 import * as opener from "./opener.js";
 import { goalPending } from "./goalmet.js";
+import { section, joinSections } from "./fitprompt.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
@@ -143,7 +144,7 @@ export function whoFor(call) {
     name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
     manner: manner.mannerFor(call.conversation_id),
     carry: own && carryover.carryoverFor(call.conversation_id),
-    ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
+    ...(own ? (() => { const parts = briefSections(call); const brief = briefText(parts); return { brief, briefParts: brief ? parts : [], purpose: openingPurpose(call) }; })() : {}),
     // The turn gate (./turngate.js, REASON_CALL_TURN_GATE): absent unless it is on for this call.
     ...(turngate.turnGateFor(call) ? { turnGate: turngate.turnGateFor(call) } : {}),
   };
@@ -160,14 +161,23 @@ export function whoFor(call) {
  * number are not calls of an account and are not covered here.
  */
 export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1, turnGate = true } = {}) {
+  if (!line) return joinSections(voiceSectionsFor(call, { turnGate }));
   const who = turnGate ? whoFor(call) : { ...whoFor(call), turnGate: "" };
-  if (!line) return [liveInstructions(who), calltrust.voiceLines(call)].filter(Boolean).join("\n");
   // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
   if (config.lineTalk && call?.direction !== "in") {
     const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
     return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, disclose: manner.callRecorded(call) });
   }
   return lineInstructions(who);
+}
+
+/**
+ * A call that is not a line call (theirs, or a stranger's own), as ranked sections (./fitprompt.js):
+ * `liveSections` and the passphrase rules (rank 0). `voiceInstructionsFor` is these joined.
+ */
+export function voiceSectionsFor(call, { turnGate = true } = {}) {
+  const who = turnGate ? whoFor(call) : { ...whoFor(call), turnGate: "" };
+  return [...liveSections(who), section("passphrase", 0, calltrust.voiceLines(call))];
 }
 
 /**
@@ -222,51 +232,64 @@ export function recentChatLines(conversationId, { max = 6, chars = 700 } = {}) {
  * are. Everything here is this call's own person's; nothing for any other call.
  */
 export function preCallBrief(call, { place = "" } = {}) {
-  if (Number(call?.is_owner) !== 1) return "";
-  const lines = [];
-  // What day and time it is (call 94: "you're off at 8, yeah?" from a Thursday-to-Sunday fact, on a Wednesday).
-  const nowIs = carryover.nowLine(call);
-  if (nowIs) lines.push(nowIs);
+  return briefText(briefSections(call, { place }));
+}
+
+/** The brief's sections as one string (its heading first), or "" when there is nothing under the heading. */
+export function briefText(parts) {
+  return (parts ?? []).some(s => s.name !== "brief_head" && s.lines?.length) ? joinSections(parts) : "";
+}
+
+export const BRIEF_HEAD = "PRE-CALL BRIEF — what you know going in, about them and from your chats. Answer from it yourself where it does; any lookup, action or live fact still goes to Reason.";
+
+/**
+ * The pre-call brief as ranked sections (./fitprompt.js), in the order they are shown. What a caller
+ * notices first comes first and is cut last (call 115): why Reason rang, their own earlier calls (newest
+ * first; the last one in the past day is never cut) and what was texted since it ended. Then the clock,
+ * what's coming up, who they are to Reason, today's chats, and the small-talk extras last.
+ * [] for anyone else's call.
+ */
+export function briefSections(call, { place = "" } = {}) {
+  if (Number(call?.is_owner) !== 1) return [];
+  const out = [section("brief_head", 1, BRIEF_HEAD)];
+  const lines = (text) => String(text ?? "").split("\n").filter(l => l.trim());
   if (call.direction !== "in") {
     const goal = clip(call.goal, 300);
-    if (goal) lines.push(`Why you rang them: ${goal}`);
     const facts = (Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })())
       .map(f => clip(f, 160)).filter(Boolean).slice(0, 5);
-    if (facts.length) lines.push(`What you've got for it:\n${facts.map(f => `- ${f}`).join("\n")}`);
+    out.push(section("why_rang", 1, [goal ? `Why you rang them: ${goal}` : "", ...(facts.length ? ["What you've got for it:", ...facts.map(f => `- ${f}`)] : [])]));
   }
-  const chat = recentChatLines(call.conversation_id);
-  if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
-  // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
-  const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
-  // What memory saved lately, from texts and calls alike (the profile below is rebuilt rarely).
-  const lately = carryover.recentMemoryNote(call);
-  if (lately) lines.push(lately);
-  // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
-  if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
-  if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
-  // Their own earlier calls (call 85 -> 86: a call is never in "today so far", which reads texts), and
-  // what is due or still open (./carryover.js, REASON_CALL_CARRYOVER).
+  // Their own earlier calls (call 85 -> 86: a call is never in "today so far", which reads texts), newest
+  // first (./carryover.js, REASON_CALL_CARRYOVER). The newest, when it was in the past day, is never cut.
   const earlier = carryover.earlierCallsNote(call);
-  if (earlier) lines.push(earlier);
-  const comingUp = carryover.comingUpNote(call);
-  if (comingUp) lines.push(comingUp);
-  if (place) lines.push(placeLine(place));
+  if (earlier) out.push(section("earlier_calls", 1, lines(earlier), { head: 1, keep: carryover.lastCallWithin(call, carryover.KEEP_LAST_HOURS) ? 1 : 0 }));
+  // What Reason texted them, and they texted, after the last call ended ("did you send it?").
+  const since = carryover.sinceLastCallNote(call);
+  if (since) out.push(section("since_last_call", 2, lines(since), { head: 1, from: "start" }));
+  // What day and time it is (call 94: "you're off at 8, yeah?" from a Thursday-to-Sunday fact, on a Wednesday).
+  out.push(section("now", 6, carryover.nowLine(call)));
+  out.push(section("coming_up", 6, lines(carryover.comingUpNote(call)), { head: 0 }));
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
   // fresh — a rule saved after the last call is here), and their places and week (./callmemory.js).
   // On caller ID alone too (Omari, 11-08: where he is and what Reason knows are fine on his number;
   // only money, booking, texting others and settings wait for the check).
   const profile = ownerProfileNote(call.conversation_id);
-  if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
-  const rules = rulesNote(call.conversation_id);
-  if (rules) lines.push(rules);
+  if (profile) out.push(section("profile", 7, lines(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile), { head: 1 }));
+  out.push(section("rules", 7, lines(rulesNote(call.conversation_id)), { head: 1 }));
+  // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
+  const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself); oldest cut first.
+  if (today?.lines?.length) out.push(section("today_so_far", 9, ["Today so far in your chats, before this call (newest last):", ...today.lines], { head: 1, from: "start" }));
+  out.push(section("lately_chats", 12, (() => { const chat = recentChatLines(call.conversation_id); return chat.length ? ["Lately in your chats:", ...chat] : []; })(), { head: 1, from: "start" }));
+  // What memory saved lately, from texts and calls alike (the profile above is rebuilt rarely).
+  out.push(section("recent_memory", 12, lines(carryover.recentMemoryNote(call)), { head: 1 }));
+  if (today?.names?.length) out.push(section("names", 12, `Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`));
+  if (place) out.push(section("place", 12, placeLine(place)));
   // Where they are based, said outright (./carryover.js): an unclear place name is heard as a local one.
-  const area = carryover.areaNote(call);
-  if (area) lines.push(area);
-  const where = whereaboutsNote(call);
-  if (where) lines.push(where);
-  if (!lines.length) return "";
-  return `PRE-CALL BRIEF — what you know going in, about them and from your chats. Answer from it yourself where it does; any lookup, action or live fact still goes to Reason.\n${lines.join("\n")}`;
+  out.push(section("area", 12, carryover.areaNote(call)));
+  out.push(section("whereabouts", 12, lines(whereaboutsNote(call)), { head: 1 }));
+  return out.filter(s => s.lines.length);
 }
 
 /** Why Reason is ringing, for the opening line, when the line itself does not already say it. */
@@ -370,8 +393,32 @@ export const OWN_CALL56_LINES = CALL56_LINES.map(l => l === NO_HOLDING_LINE ? OW
  * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", manner: mannered = false, carry = false, turnGate = "" } = {}) {
+export function liveInstructions(who = {}) {
+  return joinSections(liveSections(who));
+}
+
+/**
+ * Never say or imply there is no memory of earlier calls (call 115, 2026-11-14: six minutes after his
+ * last call, "where were we?" got "I only know what's been said in this call" with the record of that
+ * call kept and the brain holding it). Questions about before go to Reason. Their own call, both voices.
+ */
+export const MEMORY_LINES = [
+  "You were on their earlier calls, and Reason keeps every call and text: EARLIER CALLS and SINCE YOUR LAST CALL in the brief are your own record of them."
+    + " Never say or hint that you only know this call, have no memory, weren't on an earlier call, or can't see earlier calls, texts or conversations: none of that is true.",
+  "When they ask about before — \"where were we?\", \"what did we talk about?\", \"the last call\", \"what do you remember?\", \"did you do it?\", \"did you send that?\", \"any update?\" — hand it to Reason with their question, in their words, and say Reason's answer."
+    + " Never answer that yourself, not even from the brief. This wins over any line that says to answer from the brief yourself.",
+];
+
+/**
+ * The live prompt as ranked sections (./fitprompt.js), in the order they are said: rank 0 is never cut
+ * (who it is, the honesty and memory rules), then the earlier-calls notes and what was sent since (the
+ * brief's own sections, `briefSections`), then everything else. GPT-Live joins them all; a line with a
+ * size limit (Cartesia) fits them by rank.
+ */
+export function liveSections({ name = "them", named = name !== "them", owner = false, identity = false, brief = "", briefParts = null, manner: mannered = false, carry = false, turnGate = "" } = {}) {
   const own = owner;
+  // Only their own call is ever fitted; anyone else's words are all rank 0 (never cut).
+  const r = (n) => (own ? n : 0);
   // The turn gate on their own call (./turngate.js): brief acknowledgements at a mid-thought pause are
   // welcome, and code keeps their timing; the line that forbade them all gives way.
   const acks = own && turnGate === "own";
@@ -405,29 +452,43 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
       "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, a brief listening sound, or asking them to repeat something.",
       "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
     ];
+  // Their own call's lines that are this voice's hand-off mechanics (a line with its own tool rules,
+  // Cartesia's, says the same in its own words): cut first when there is a limit.
+  const mechanics = new Set([OWN_VOICE_NO_DEFLECT, HANDOFF_ACK, OWN_NO_HOLDING_LINE, NO_HOLDING_LINE]);
+  const fiftySix = (own ? OWN_CALL56_LINES : CALL56_LINES).map(swap).map(bye).map(reword);
+  const [persona, ...splitRest] = split;
   return [
-    own
-      ? `You are Reason, ${theirs} personal assistant — the same Reason they text with — on a phone call with ${them}. You are who they hear and talk with; Reason's backend has ${theirs} messages, calendar, memory, tasks and tools, and does every lookup and every action.`
-      : `You are the voice of Reason, ${theirs} personal assistant, on a phone call with ${them}.`,
-    ...who,
-    makerLine(),
-    "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
-    ...split,
-    "While the backend works, do not fill the silence with guesses.",
-    ...(own ? OWN_CALL56_LINES : CALL56_LINES).map(swap).map(bye).map(reword),
-    PIECES_LINE,
-    ...HEARING_LINES,
-    ...(own ? OWN_CALL_LINES.map(reword) : []),
-    ...(mm ? manner.OWN_MANNER_LINES : []),
-    ...(own && carry ? carryover.CARRY_VOICE_LINES.filter(l => !(acks && l.startsWith("When they are thinking out loud"))) : []),
-    ...(acks ? turngate.ackVoiceLines({ repeatRule: !carry }) : []),
-    "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
-    "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
-    mm ? "Never read out links, internal IDs or anything in square brackets, and never say the words NO_REPLY. A code they asked for is said in small groups, as Reason gives it."
-      : "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
-    "Stop speaking when they talk over you, and listen.",
-    ...(own && brief ? [brief] : []),
-  ].join("\n");
+    section("frame", 0, [
+      own
+        ? `You are Reason, ${theirs} personal assistant — the same Reason they text with — on a phone call with ${them}. You are who they hear and talk with; Reason's backend has ${theirs} messages, calendar, memory, tasks and tools, and does every lookup and every action.`
+        : `You are the voice of Reason, ${theirs} personal assistant, on a phone call with ${them}.`,
+      ...who,
+    ]),
+    section("maker", r(4), makerLine()),
+    section("voice_accent", r(10), "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone."),
+    section("persona", r(5), persona),
+    section("voice_split", r(4), splitRest.filter(l => !mechanics.has(l))),
+    section("handoff_mechanics", r(10), [...splitRest.filter(l => mechanics.has(l)), "While the backend works, do not fill the silence with guesses."]),
+    section("holding", r(10), fiftySix.filter(l => mechanics.has(l))),
+    section("call56", r(4), fiftySix.filter(l => !mechanics.has(l))),
+    section("pieces", r(10), PIECES_LINE),
+    section("hearing", r(4), HEARING_LINES),
+    section("own_call", r(5), own ? OWN_CALL_LINES.map(reword) : []),
+    section("manner", r(5), mm ? manner.OWN_MANNER_LINES : []),
+    section("carry_lines", r(4), own && carry ? carryover.CARRY_VOICE_LINES.filter(l => !(acks && l.startsWith("When they are thinking out loud"))) : []),
+    section("acks", r(4), acks ? turngate.ackVoiceLines({ repeatRule: !carry }) : []),
+    section("honesty", 0, [
+      "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
+      ...(own ? MEMORY_LINES : []),
+    ]),
+    section("results", r(9), "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include."),
+    section("links", 0, [
+      mm ? "Never read out links, internal IDs or anything in square brackets, and never say the words NO_REPLY. A code they asked for is said in small groups, as Reason gives it."
+        : "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
+      "Stop speaking when they talk over you, and listen.",
+    ]),
+    ...(own ? (briefParts ?? (brief ? [section("brief", 6, brief)] : [])) : []),
+  ];
 }
 
 /**
@@ -670,6 +731,28 @@ export function unquoted(text) {
 // A quotation: opened at the start or after a space/bracket/dash, closed before a space, punctuation or the
 // end, one line, at most 400 characters. A 5" screen's inch mark does not open one.
 const QUOTED = /(?<=^|[\s([—–-])(?:"[^"\n]{1,400}"|“[^”\n]{1,400}”)(?=$|[\s.,!?;:…)\]—–-])/g;
+
+// The voice saying it has no memory of earlier calls (call 115: "I don't have the earlier bit", "I only
+// know what's been said in this call"). Untrue on every call: Reason keeps every call and text.
+const NO_MEMORY = [
+  /\bonly\s+(?:know|have|see|remember|got|hear)\b[^.?!]{0,60}\b(?:this|the\s+current|today(?:'|’)s)\s+(?:call|conversation|chat)\b/i,
+  /\b(?:don(?:'|’)?t|do\s+not|can(?:'|’)?t|cannot|can\s+not|won(?:'|’)?t)\s+(?:have|see|access|remember|recall|keep|retain|know)\b[^.?!]{0,40}\b(?:earlier|previous|past|last|other|prior|old)\b[^.?!]{0,25}\b(?:calls?|conversations?|chats?|talks?)\b/i,
+  // "I don't have the earlier bit" (never "I didn't catch the last bit", which is a bad line).
+  /\b(?:don(?:'|’)?t|do\s+not|can(?:'|’)?t|cannot|can\s+not)\s+(?:have|see|access|remember|recall|keep|retain|know)\b[^.?!]{0,30}\b(?:earlier|previous|prior)\s+(?:bit|part|stuff|one)\b/i,
+  /\b(?:no|don(?:'|’)?t\s+have\s+(?:a|any)|do\s+not\s+have\s+(?:a|any)|without\s+(?:a|any))\s+(?:memory|record)\s+of\b/i,
+  /\bi\s+(?:have|keep|retain)\s+no\s+memory\b|\bno\s+memory\s+(?:between|across|of\s+(?:past|previous|earlier))\b/i,
+  /\b(?:each|every)\s+call\s+(?:starts|is)\s+(?:fresh|new|from\s+scratch|blank)\b|\bstart(?:s|ing)?\s+(?:fresh|from\s+scratch)\s+(?:each|every)\s+(?:call|time)\b/i,
+  /\b(?:wasn(?:'|’)?t|was\s+not)\s+(?:on|in|part\s+of)\s+(?:that|the|our|your)\s+(?:earlier\s+|previous\s+|last\s+|other\s+)?(?:call|conversation)\b/i,
+  /\b(?:this|the\s+current)\s+(?:call|conversation)\s+is\s+all\s+(?:i|we)\s+(?:know|have|can\s+see|got)\b/i,
+  /\b(?:can(?:'|’)?t|cannot|don(?:'|’)?t|do\s+not)\s+(?:see|access|look\s+at|read|pull\s+up)\s+(?:your\s+|our\s+|the\s+)?(?:calls?|conversations?|chats?|call\s+history)\s+(?:before|from\s+before|from\s+earlier)\b/i,
+];
+/** Does this say or imply the voice has no memory of earlier calls? Exported for the tests. */
+export function saysNoMemory(text) {
+  const t = String(text ?? "").replace(/\s+/g, " ");
+  return !!t.trim() && NO_MEMORY.some(re => re.test(t));
+}
+/** In the call's record after one: the brain's next turn and the after-call text read it and set it right. */
+export const MEMORY_NOTE = "(Said on the call that it only knows this call or has no record of earlier ones: NOT true. Reason keeps every call and text; say what the earlier call actually left, from the record.)";
 
 /** Does this say something has been done? Exported for the tests. */
 export function claimsDone(text) {
@@ -4348,7 +4431,10 @@ export class GptLiveCall {
     }
     const seconds = this.seconds || Math.round((this.now() - this.startedAt) / 1000);
     this.screenTurns();
-    const turns = this.turns.map(t => ({ who: t.who, text: t.text.replace(/\s+/g, " ").trim() })).filter(t => t.text);
+    // A line of the voice's saying it has no memory of earlier calls is followed by the note that it is
+    // untrue (`saysNoMemory`), for the after-call text and the next read of the call. Nothing said changes.
+    const turns = this.turns.map(t => ({ who: t.who, text: t.text.replace(/\s+/g, " ").trim() })).filter(t => t.text)
+      .flatMap(t => (t.who === "reason" && saysNoMemory(t.text) ? (this.log({ gptlive_memory_claim: this.call.id, chars: t.text.length }), [t, { who: "reason", text: MEMORY_NOTE }]) : [t]));
     let recording = null;
     let recordingWhy = "";
     try {
