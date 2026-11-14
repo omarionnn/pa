@@ -9677,7 +9677,17 @@ export function runTool(name, rawInput, ctx) {
   return turnlink.enter(turn, () => zonescope.runFor(ctx?.conversationId, () => runToolOnTheirClock(name, rawInput, ctx)));
 }
 
+/**
+ * Never done on a call, whoever is on the line and whatever was verified: an account job (signed in
+ * with a saved login, money or a cancellation) and its proof picture. The call's own gate
+ * (src/calls/calltrust.js TEXT_ONLY) already defers these with the switch on; this holds with it off,
+ * and after a verified caller, too. Exported for the tests.
+ */
+export const NEVER_BY_VOICE = new Set(["account_bill_pay", "account_cancel", "account_cancel_confirm", "account_signin", "account_job_answer", "browser_proof"]);
+export const NEVER_BY_VOICE_WORDS = "Not done: this is never done on a call. Say in one line that you'll do it by text right after the call, and do it when they text.";
+
 async function runToolOnTheirClock(name, rawInput, ctx) {
+  if (ctx?.onCall && NEVER_BY_VOICE.has(String(name))) return { ok: false, blocked: "never_by_voice", error: NEVER_BY_VOICE_WORDS };
   // One thought, one answer (src/onethought.js). They texted while this turn was working, and the
   // text adds to what it is working on: a message about to go out was written without it, so it is
   // not sent — the model is handed the new text instead, to write the one message that uses it.

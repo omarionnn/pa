@@ -237,3 +237,30 @@ test("retention: a picture older than the content window goes, file and row, lik
   assert.equal(existsSync(out.file), false);
   assert.equal(proof.proofRow(OMARI, out.id), null);
 });
+
+test("another person's data: a crop naming someone they have on record is no picture; a name nobody has on record stays", async () => {
+  const FAMILY = `<!doctype html><html><head><title>Members</title></head><body style="margin:0;font:16px sans-serif"><main>
+  <section id="members" style="${SECTION}"><h3>Plan members</h3><p>Kwabena Asante — Premium, cancelled</p><p>${NOTICE}</p></section>
+  </main></body></html>`;
+  db.db.prepare("INSERT INTO people (conversation_id, name, key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(OMARI, "Kwabena Asante", "kwabena-asante", Date.now(), Date.now());
+  assert.ok(proof.otherNames(OMARI).includes("kwabena"));
+  assert.equal(proof.otherNames(AMA).includes("kwabena"), false, "only their own record");
+  await serve(page, "https://family.cardboard.test/members", FAMILY);
+  const out = await proof.captureProof(OMARI, page, { proves: "cancellation", focus: NOTICE });
+  assert.deepEqual(out, { ok: false, refused: "other_person" });
+  assert.match(proof.refusedLine("other_person"), /someone else's details/);
+  // Ama has no such person on record: the same page is her own picture to take.
+  const hers = await proof.captureProof(AMA, page, { proves: "cancellation", focus: NOTICE });
+  assert.equal(hers.ok, true, JSON.stringify(hers));
+  assert.equal(proof.namesOther("Kwabenaville plan", ["kwabena"]), false, "a whole name, not part of a word");
+});
+
+test("never by voice: account jobs and the proof picture are refused on a call, before anything runs", async () => {
+  const tools = await import("../src/tools.js");
+  for (const name of ["account_bill_pay", "account_cancel", "account_signin", "account_job_answer", "browser_proof"]) {
+    const out = await runTool(name, {}, { conversationId: OMARI, kind: "user", messages: [], onCall: 7 });
+    assert.equal(out.blocked, "never_by_voice", name);
+    assert.match(out.error, /by text right after/);
+  }
+  assert.ok(tools.NEVER_BY_VOICE.has("account_bill_pay"));
+});

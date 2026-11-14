@@ -38,6 +38,7 @@ import { config, clock } from "./config.js";
 import { shotPrefix } from "./ownfiles.js";
 import { sealInPlace, readPlain } from "./restfiles.js";
 import { inPage } from "./pagesecrets.js";
+import * as restcrypt from "./restcrypt.js";
 
 export const MAX_BYTES = 1_500_000;
 export const MAX_SIDE = 1600;
@@ -90,6 +91,29 @@ export function isSigninPage(url, title = "") {
   try { u = new URL(String(url)); } catch { return true; }
   if (u.protocol !== "https:" && u.protocol !== "http:") return true;
   return SIGNIN_PATH.test(u.pathname) || SIGNIN_PATH.test(u.hostname.split(".")[0]) || SIGNIN_TITLE.test(String(title ?? ""));
+}
+
+/**
+ * Names this person has on record for other people (their people and important people): a crop that
+ * shows one is another person's data (a family plan's member, a shared account), so no picture.
+ */
+export function otherNames(conversationId) {
+  const out = new Set();
+  const add = (v) => {
+    const s = String(restcrypt.openAny(v) ?? "").trim();
+    if (s.length < 3 || /\d/.test(s)) return;
+    out.add(s.toLowerCase());
+    for (const w of s.split(/\s+/)) if (w.length >= 3) out.add(w.toLowerCase());
+  };
+  try { for (const r of q("SELECT name FROM people WHERE conversation_id = ?").all(String(conversationId))) add(r.name); } catch { /* none */ }
+  try { for (const p of db.listImportantPeople(conversationId)) add(p.who); } catch { /* none */ }
+  return [...out];
+}
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Does the crop's text name one of them? */
+export function namesOther(text, names = []) {
+  const t = String(text ?? "");
+  return names.some((n) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(n)}(?![\\p{L}\\p{N}])`, "iu").test(t));
 }
 
 // ---------------------------------------------------------------- when a picture helps
@@ -176,6 +200,7 @@ const INSPECT = inPage((S, arg) => {
     if (!hits(c)) { out.clip = c; break; }
   }
   if (!out.clip) out.why = "kept_out";
+  else out.cropText = String(box.innerText || "").slice(0, 20000);
   return out;
 });
 
@@ -184,7 +209,7 @@ const INSPECT = inPage((S, arg) => {
  *   proves — a PICTURE_FOR key; anything else is text only (refused: "text_only")
  *   focus  — the page's own line the result quotes; the crop is built around it, and without it no picture
  *   → { ok: true, id, file, bytes, clip } | { ok: false, refused: "text_only" | "sign_in_page" | "secret_box" |
- *     "card_number" | "card_code" | "bank_number" | "blank" | "no_line" | "not_located" | "kept_out" | "too_big" | "failed" }
+ *     "card_number" | "card_code" | "bank_number" | "blank" | "no_line" | "not_located" | "kept_out" | "other_person" | "too_big" | "failed" }
  */
 export async function captureProof(conversationId, page, { proves = "", focus = "", what = "" } = {}) {
   if (!conversationId || !page) return { ok: false, refused: "failed" };
@@ -199,6 +224,8 @@ export async function captureProof(conversationId, page, { proves = "", focus = 
   if (why) return { ok: false, refused: why };
   // Never the whole page, never the screen: the proving block, or nothing.
   if (!look.clip) return { ok: false, refused: look.why || "not_located" };
+  // Another person's data: a name they have on record for someone else, inside the crop.
+  if (namesOther(look.cropText, otherNames(conversationId))) return { ok: false, refused: "other_person" };
   const clip = { x: Math.round(look.clip.x), y: Math.round(look.clip.y), width: Math.min(MAX_SIDE, Math.round(look.clip.width)), height: Math.min(MAX_SIDE, Math.round(look.clip.height)) };
   const file = resolve(join(config.shotRoot, `${shotPrefix(conversationId)}proof-${clock.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`));
   mkdirSync(dirname(file), { recursive: true });
@@ -263,6 +290,7 @@ export function refusedLine(why) {
     case "blank": return "I didn't take a picture: no page is open.";
     case "text_only": return "";
     case "no_line": case "not_located": return "I didn't send a picture: I couldn't find the exact part of the page that shows it.";
+    case "other_person": return "I didn't send a picture: that part of the page shows someone else's details.";
     case "kept_out": return "I didn't send a picture: that part of the page sits right against your payment or invoice details.";
     case "too_big": return "I didn't take a picture: it came out too large to send.";
     default: return "I couldn't take a picture of the page.";
