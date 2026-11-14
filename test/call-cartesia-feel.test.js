@@ -374,3 +374,16 @@ test("one deferral is said once, even when a second ask was running while it was
   assert.equal(s.lines.filter(l => l.cartesia_deferred_said).length, 1);
   s.stop();
 });
+
+test("call 116: 'hello?' right after a turn of theirs that got no answer is counted as a missed turn; after an answer it is not", () => {
+  const r = relay([]);
+  r.user("Yeah, um, remember the conversation about um, for events.");
+  r.user("Hello?");
+  const missed = r.lines.filter((l) => l.cartesia_missed_turn);
+  assert.equal(missed.length, 1);
+  assert.ok(!JSON.stringify(missed[0]).includes("events"), "no words in the log");
+  r.said("Sorry, the events conversation? Yes.");
+  r.user("Hello?");
+  assert.equal(r.lines.filter((l) => l.cartesia_missed_turn).length, 1, "an answered turn is not a miss");
+  r.stop();
+});

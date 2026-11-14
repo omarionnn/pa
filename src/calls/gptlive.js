@@ -475,7 +475,7 @@ export function liveSections({ name = "them", named = name !== "them", owner = f
     section("hearing", r(4), HEARING_LINES),
     section("own_call", r(5), own ? OWN_CALL_LINES.map(reword) : []),
     section("manner", r(5), mm ? manner.OWN_MANNER_LINES : []),
-    section("carry_lines", r(4), own && carry ? carryover.CARRY_VOICE_LINES.filter(l => !(acks && l.startsWith("When they are thinking out loud"))) : []),
+    section("carry_lines", r(4), own && carry ? carryover.CARRY_VOICE_LINES.filter(l => !(acks && l.startsWith("When they are thinking out loud"))) : [], { keep: 2 }), // the "bring up one live thing" and "never ask again" rules stay at 12k (call 116's brief)
     section("acks", r(4), acks ? turngate.ackVoiceLines({ repeatRule: !carry }) : []),
     section("honesty", 0, [
       "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",

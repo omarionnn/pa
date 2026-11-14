@@ -333,3 +333,36 @@ test("call 116: the turn rules skip only on a last-word filler, answer a finishe
   assert.match(setup.SKIP_TURN_DESCRIPTION, /never because you didn't catch it/);
   assert.ok(setup.SKIP_TURN_DESCRIPTION.length <= 2000);
 });
+
+test("call 114/116: what Reason texted after an earlier call rides with that call, so a delivered thing is never read as still open", () => {
+  const LEFT = "They told you: Wants total addressable market\nYou said you'd: Text the market sizing research when done\nLeft open: Total addressable market still unsized";
+  const c114 = pastCall({ endedAgo: 3 * HOUR, summary: LEFT });
+  text("assistant", carry.endOf(c114) + 20 * MIN, "Market sizing is done: about 1.2B a year in the US for small-venue ticketing, page here https://heyreason.com/p/abc?k=SECRETKEY");
+  const c115 = pastCall({ endedAgo: 1 * HOUR, summary: "They told you: Asked where we were" });
+  const now = thisCall();
+  const note = carry.earlierCallsNote(db.getCall(C, now.id));
+  const line114 = note.split("\n").find((l) => l.includes("still unsized"));
+  assert.ok(line114, note);
+  assert.match(line114, /Texted them after this call \(done, whatever is listed open above\): .*Market sizing is done/);
+  assert.ok(!/https?:|SECRETKEY/.test(note), "no link, no access key");
+  assert.match(note, /settles what it delivered: never call that still open/);
+  // The newest earlier call's after-texts are in SINCE YOUR LAST CALL instead, not doubled here.
+  assert.ok(!note.split("\n").find((l) => l.includes("Asked where we were"))?.includes("Texted them after"));
+  assert.ok(c115);
+});
+
+test("since the last call: a link inside a text comes out, the words stay; texts past the room stay as one-line gists, not dropped", () => {
+  const last = pastCall({ endedAgo: 2 * HOUR, summary: LAST });
+  const base = carry.endOf(last);
+  text("assistant", base + 1 * MIN, "MARKET-GIST the market numbers are in: 1.2B, see https://heyreason.com/p/x?k=KEY123 for the page");
+  for (let i = 0; i < 6; i++) text(i % 2 ? "user" : "assistant", base + (5 + i) * MIN, `Filler message number ${i} `.repeat(12));
+  const now = thisCall();
+  const note = carry.sinceLastCallNote(db.getCall(C, now.id));
+  assert.ok(!/https?:|KEY123/.test(note), note);
+  assert.match(note, /you texted: MARKET-GIST the market numbers are in: 1\.2B/, "the oldest text survives as a gist");
+  assert.match(note, /shortened to their first words/);
+  assert.ok(note.length <= 850 + 300 + 300, `bounded: ${note.length}`);
+  assert.equal(carry.withoutLinks("https://heyreason.com/p/x?k=1"), "");
+  assert.equal(carry.withoutLinks("Here it is: https://a.test/x."), "Here it is");
+  assert.equal(carry.withoutLinks("The page (https://a.test/x?k=1) has the numbers"), "The page has the numbers");
+});

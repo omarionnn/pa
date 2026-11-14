@@ -503,7 +503,7 @@ export class CartesiaAgentCall {
     this.endWhy = "";
     this.startedAt = now();
     // The numbers the first call is for (section 5): kept per reply, logged as they happen and at the end.
-    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0, memoryClaims: 0, markers: 0, checkIns: 0, unheard: 0, reoffered: 0, deferredSaid: 0 };
+    this.m = { replies: [], asks: [], overs: [], turnClock: [], laughs: 0, firstVoiceMs: null, unbacked: 0, memoryClaims: 0, markers: 0, checkIns: 0, unheard: 0, reoffered: 0, deferredSaid: 0, missedTurns: 0 };
     // Reason's latest answer handed to the voice, until the agent's next turn says how much of it was
     // spoken; one they talked over before its point, until it is said again (`turnEnded`, `spoken`).
     this.answerOut = null;
@@ -712,6 +712,13 @@ export class CartesiaAgentCall {
       this.turns.push({ who: "reason", text: MEMORY_NOTE, at: this.now() });
     }
     if (who === "them") {
+      // "Hello?" right after a turn of theirs that got no answer (call 116): the agent missed it. The voice is
+      // told to pick it back up (TURN_LINES); this counts it, so the next test call shows whether that happens.
+      const before = this.turns.at(-2);
+      if (text && text.length <= 40 && CHECK_IN.test(text) && before?.who === "them" && !CHECK_IN.test(before.text)) {
+        this.m.missedTurns += 1;
+        this.log({ cartesia_missed_turn: this.call.id, turn: Number(e.turn) || 0, after_ms: this.now() - Number(before.at || 0) });
+      }
       this.theirTurnEndAt = this.now();
       this.replyKind = "plain";
       this.askAnsweredAt = null;
@@ -1000,7 +1007,7 @@ export class CartesiaAgentCall {
       talked_over: this.m.overs.filter(o => o.playing).length, clears: this.m.overs.length,
       talked_over_ms: med(this.m.overs.filter(o => o.playing).map(o => o.sound_to_clear_ms)),
       asks_texted: this.m.asks.filter(a => a.to_text).length, laughs_written: this.m.laughs, unbacked_claims: this.m.unbacked, memory_claims: this.m.memoryClaims,
-      markers_spoken: this.m.markers, check_ins: this.m.checkIns, answers_unheard: this.m.unheard, answers_reoffered: this.m.reoffered, deferrals_said: this.m.deferredSaid,
+      markers_spoken: this.m.markers, check_ins: this.m.checkIns, answers_unheard: this.m.unheard, answers_reoffered: this.m.reoffered, deferrals_said: this.m.deferredSaid, missed_turns: this.m.missedTurns,
     });
     // Their copy goes whatever the settle does; both are waited for, neither stops the other.
     const deleting = this.agentCallId ? this.deleteAndCheck().catch(() => null) : Promise.resolve(null);
