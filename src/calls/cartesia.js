@@ -26,6 +26,7 @@ import { openingLineFor } from "./inbound.js";
 import { todaySoFar } from "./brief.js";
 import { NO_NAME } from "./voice-prompt.js";
 import * as calltrust from "./calltrust.js";
+import * as classic from "./callclassic.js";
 import * as zonescope from "../zonescope.js";
 import { zoneFor } from "../zone.js";
 
@@ -381,16 +382,28 @@ export function sessionVariables(call, { onFit = null } = {}) {
 
 function variablesOf(call, onFit) {
   const clip = (s, n) => { const t = String(s ?? ""); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  // REASON_CALL_FEEL=classic (./callclassic.js): call 112's words, greeting and keyterms.
+  const feelClassic = classic.classicFor(call);
   let name = "";
   // The name they gave, or nothing: never the stand-in an unnamed account reads as ("the person I work for").
   try { const me = accounts.ownerOf(call.conversation_id); name = me?.name && me.name !== NO_NAME ? me.name : ""; } catch { /* unknown */ }
   const greeting = call.direction === "in"
-    ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
+    ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id, classic: feelClassic })
     : String(call.announcement ?? "");
   // Names from their own chats today (this call's conversation only), the ones the brief tells GPT-Live a bad line often garbles: the recognizer
   // favours them. A slot with nothing for it says "Reason" (an empty keyterm is not known to be allowed).
   let names = [];
   try { names = (todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id })?.names ?? []).map(n => clip(n, 60)).filter(Boolean); } catch { /* none */ }
+  if (feelClassic) {
+    const fit = classic.classicReasonCall(call);
+    try { onFit?.(fit); } catch { /* the log is never the call's problem */ }
+    return {
+      ...classic.classicKeyterms(names, KEYTERM_SLOTS),
+      reason_call: fit.text,
+      greeting: clip(greeting || "Hey, it's Reason.", 400),
+      their_name: clip(name, 80),
+    };
+  }
   // Two slots are kept for the ways a time is said (TIME_KEYTERMS), whatever the names.
   const terms = [...names.slice(0, KEYTERM_SLOTS - 2), ...TIME_KEYTERMS.filter(t => !names.includes(t))];
   const keyterms = Object.fromEntries(Array.from({ length: KEYTERM_SLOTS }, (_, i) => [`keyterm_${i + 1}`, terms[i] ?? "Reason"]));
@@ -442,6 +455,10 @@ function reasonCall(call, clip, onFit = null) {
 /** Sizes and section names only (never their words), for the log and the deploy proof. */
 export function reasonCallReport(call) {
   return zonescope.runFor(call?.conversation_id, () => {
+    if (classic.classicFor(call)) {
+      const c = classic.classicReasonCall(call);
+      return { feel: "classic", size: c.size, base: c.base, max: c.max, kept: c.kept, trimmed: c.trimmed, dropped: c.dropped };
+    }
     const fit = reasonCallFit(call);
     return { size: fit.size, max: VARIABLE_MAX, kept: fit.kept, trimmed: fit.trimmed, dropped: fit.dropped };
   });
@@ -539,7 +556,7 @@ export class CartesiaAgentCall {
     }
     this.agent.on("open", () => {
       this.openedMs = this.now() - this.startedAt;
-      this.agent.send({ type: "session_create", audio: { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true }, dynamic_variables: sessionVariables(this.call, { onFit: (f) => this.log({ cartesia_prompt_fit: this.call.id, size: f.size, max: VARIABLE_MAX, kept: f.kept.map(k => k.split(":")[0]), trimmed: f.trimmed, dropped: f.dropped }) }) });
+      this.agent.send({ type: "session_create", audio: { input_format: "mulaw_8000", output_delivery: "speaking_pace", continuous_input: true }, dynamic_variables: sessionVariables(this.call, { onFit: (f) => this.log({ cartesia_prompt_fit: this.call.id, size: f.size, max: f.max ?? VARIABLE_MAX, ...(f.base ? { feel: "classic", base: f.base } : {}), kept: f.kept.map(k => k.split(":")[0]), trimmed: f.trimmed, dropped: f.dropped }) }) });
     });
     this.agent.on("event", (e) => this.fromAgent(e));
     this.agent.on("close", (code, said = "") => {
@@ -849,7 +866,8 @@ export class CartesiaAgentCall {
     }
     // This turn put something off until after the call: it is said now, in words, never a skip.
     // verify_deferred only grows on a call (verify.js queueForAfter); a growth another ask already said is not said twice.
-    const deferredAfter = this.deferredNow();
+    // Classic (call 112): no fixed deferral line; Reason's own words say it, as then.
+    const deferredAfter = classic.classicFor(this.call) ? "" : this.deferredNow();
     if (!reply?.error && deferredAfter && deferredAfter !== deferredBefore && deferredAfter !== this.deferredSaidFor) {
       this.deferredSaidFor = deferredAfter;
       const d = withDeferredLine(reply);
@@ -899,6 +917,7 @@ export class CartesiaAgentCall {
    * again ahead of the new one, and a slow one opens by owning the wait.
    */
   spoken(reply, { waitedMs = 0 } = {}) {
+    if (classic.classicFor(this.call)) return this.spokenClassic(reply);
     if (reply?.error && !reply?.text) return ["Reason could not answer that just now. Say so briefly and plainly; never offer to try again or ask if they want you to.", true];
     // An offer to try again is taken out; a set re-check is said as the text it will be (src/retry.js).
     const text = retry.callLine(forVoice(reply?.text), this.call?.conversation_id ?? null);
@@ -913,6 +932,19 @@ export class CartesiaAgentCall {
     const lead = [waitedMs >= SLOW_ACK_MS ? SLOW_ACK_LEAD : "", lost ? reofferLead(lost.short) : ""].filter(Boolean);
     if (lost) { this.unheard = null; this.m.reoffered += 1; this.log({ cartesia_answer_reoffered: this.call.id, by: "next_answer" }); }
     return [lead.length ? `${lead.join(" ")} Reason's answer: ${text}` : text, false];
+  }
+
+  /**
+   * Classic (call 112): Reason's words as they came, with only our own markers and tool names taken out
+   * (`forVoice`); a quiet turn gets NOTHING_TO_ADD (no fact, nothing done: call 113), never "Reply yourself".
+   * No offer of a lost answer, no slow-wait opening, no retry rewording.
+   */
+  spokenClassic(reply) {
+    if (reply?.error && !reply?.text) return [classic.ERROR_LINE, true];
+    const text = forVoice(reply?.text);
+    if (reply?.skip || !text) { this.skippedAt = this.now(); return [NOTHING_TO_ADD, false]; }
+    if (reply?.endCall) this.endWhy = "goodbye";
+    return [text, false];
   }
 
   /** Answering-machine detection is only asked for on third-party calls; their own call has nothing to do with a verdict. */

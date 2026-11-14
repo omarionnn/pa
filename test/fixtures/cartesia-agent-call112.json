@@ -1,0 +1,77 @@
+{
+ "note": "GET /v1/agents/{owner agent}/versions/av_f1C22VxgaAQd8zn2MFk8RS: the agent config live on call 112 (2026-11-13). Ids only, no key.",
+ "id": "av_f1C22VxgaAQd8zn2MFk8RS",
+ "created_at": "2026-11-13T15:58:18.518Z",
+ "config": {
+  "speculative_generation": true,
+  "instructions": "{{reason_call}}\n\n# On this line\nReason's backend is the ask_reason tool. Wherever the lines above say to hand something to Reason or the backend, call ask_reason with what they asked, in full, in their words.\nSay Reason's answer in your own voice, briefly, keeping every fact, number and name exactly as it came back. Never add a fact of your own.\nBefore a lookup or an action, one short line naming exactly what you're getting (\"Checking your Thursday.\"), then call ask_reason. Never \"let me check\" on its own.\nIf ask_reason says it could not answer, say so plainly and offer to try again.\nWhen something is genuinely funny, you may laugh: write [laughter] where the laugh goes. Never more than one in a reply, and never when they are upset.\nWhen you have both said goodbye, end the call.",
+  "prompt_optimization": true,
+  "initial_message": "{{greeting}}",
+  "initial_message_interruptions": "allow",
+  "model": {
+   "id": "gpt-5.4-mini",
+   "fallback_strategy": {
+    "type": "auto"
+   },
+   "temperature": null,
+   "max_output_tokens": 300
+  },
+  "language": {
+   "primary": "en-GB",
+   "additional": [],
+   "presets": {}
+  },
+  "audio": {
+   "input": {
+    "noise_suppression": "auto",
+    "keyterms": [
+     "Reason",
+     "{{keyterm_1}}",
+     "{{keyterm_2}}",
+     "{{keyterm_3}}",
+     "{{keyterm_4}}",
+     "{{keyterm_5}}",
+     "{{keyterm_6}}",
+     "{{keyterm_7}}",
+     "{{keyterm_8}}"
+    ]
+   },
+   "output": {
+    "voice_id": "62ae83ad-4f6a-430b-af41-a9bede9286ca",
+    "speed": null,
+    "volume": null,
+    "emotion": null,
+    "pronunciation_dictionary_id": null,
+    "background_sound": null
+   }
+  },
+  "tools": [
+   {
+    "id": "agent_tool_Rn5wF6HuSmddcaqeza1UWg"
+   }
+  ],
+  "knowledge_base_folders": [],
+  "knowledge_base_documents": [],
+  "system_tools": {
+   "end_call": {
+    "description": null,
+    "pre_tool_speech": "auto"
+   },
+   "send_dtmf": null,
+   "skip_turn": {
+    "description": "Say nothing this turn. Use it only when their words are plainly unfinished: they trailed off mid-sentence (\"and...\", \"so the thing is...\") or paused mid-thought, and anything you said would talk over them. Never when they asked something or finished a thought.",
+    "pre_tool_speech": "off",
+    "wait_timeout_secs": null
+   },
+   "voicemail_detection": null,
+   "transfer_to_number": null
+  },
+  "event_webhook_id": null,
+  "dynamic_variable_placeholders": {},
+  "timezone": "America/New_York",
+  "turn": {
+   "inactivity_check_in_secs": 8,
+   "inactivity_end_call_secs": 240
+  }
+ }
+}

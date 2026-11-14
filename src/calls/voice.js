@@ -31,6 +31,7 @@ import * as accounts from "../accounts.js";
 import * as harm from "../harm.js";
 import { ledgerWrite } from "../trust.js";
 import { config, clock, stamp } from "../config.js";
+import { cartesiaTrialFor } from "./calltrial.js";
 import { callRulesFor } from "./provider.js";
 import { mannerFor, callRecorded } from "./manner.js";
 import {
@@ -570,7 +571,8 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     `--- you are ON A PHONE CALL right now, not texting ---`,
     voiceRules({ manner: mannerFor(conversationId) }),
     ownerLanguageRule(lang.language || "en"),
-    ownerCallFrame({ name: me.name, identity: callIdentityFor(conversationId), manner: mannerFor(conversationId) }),
+    // REASON_CALL_FEEL=classic on a Cartesia call (src/calls/callclassic.js): call 112's frame, no time read-back.
+    ownerCallFrame({ name: me.name, identity: callIdentityFor(conversationId), manner: mannerFor(conversationId), readBack: !(config.callFeel === "classic" && cartesiaTrialFor(call)) }),
     // A call REASON placed to them — scheduled ("call me at 7 to get me up") or asked for by text —
     // has a reason, and the model answering the turns must know it: a wake-up call whose second
     // line is "what's up?" is Reason forgetting why it rang. The opening line already said it.

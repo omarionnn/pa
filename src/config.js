@@ -677,6 +677,9 @@ export const config = {
   // automatic fall-back. Calls to anyone else never do, in any mode (src/calls/calltrial.js). Before
   // setting on: section 5's list.
   callCartesia: (v => (v === "owner" || v === "on" ? v : "off"))(String(process.env.REASON_CALL_CARTESIA ?? "").trim().toLowerCase()),
+  // REASON_CALL_FEEL=classic: own Cartesia calls as on call 112, the one he loved (src/calls/callclassic.js:
+  // that build's words, greeting and quiet-turn line, plus a short keep-list). Default "current".
+  callFeel: String(process.env.REASON_CALL_FEEL ?? "").trim().toLowerCase() === "classic" ? "classic" : "current",
   cartesiaKey: process.env.CARTESIA_API_KEY || "",
   // Cartesia's own usage figure (GET /usage/agents, src/planmeter.js) needs an ADMIN key (sk_car_admin_...);
   // the agent key cannot read it. Unset: the ops page shows Reason's own count of Cartesia minutes only.
