@@ -21,6 +21,7 @@ process.env.REASON_TOKEN_KEY ||= "45".repeat(32);
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
+process.env.REASON_ACCOUNT_JOBS = "owner";
 
 const { chromium } = await import("playwright");
 const proof = await import("../src/proofshot.js");
@@ -263,4 +264,14 @@ test("never by voice: account jobs and the proof picture are refused on a call, 
     assert.match(out.error, /by text right after/);
   }
   assert.ok(tools.NEVER_BY_VOICE.has("account_bill_pay"));
+});
+
+test("the proof picture follows the account-jobs switch: owner-only as set, nobody with it off", async () => {
+  const tools = await import("../src/tools.js");
+  assert.equal(tools.proofAllowedFor(OMARI), true);
+  assert.equal(tools.proofAllowedFor(AMA), false);
+  const theirs = await runTool("browser_proof", { proves: "cancellation", say: "Set to cancel.", page_line: NOTICE }, { conversationId: AMA, messages: [] });
+  assert.equal(theirs.blocked, "not_enabled");
+  process.env.REASON_ACCOUNT_JOBS = "off";
+  try { assert.equal(tools.proofAllowedFor(OMARI), false); } finally { process.env.REASON_ACCOUNT_JOBS = "owner"; }
 });

@@ -9684,6 +9684,12 @@ export function runTool(name, rawInput, ctx) {
  * (src/calls/calltrust.js TEXT_ONLY) already defers these with the switch on; this holds with it off,
  * and after a verified caller, too. Exported for the tests.
  */
+/** The proof picture follows the account-jobs switch (REASON_ACCOUNT_JOBS off | owner | on), without the checkout service. */
+export function proofAllowedFor(conversationId) {
+  const v = String(process.env.REASON_ACCOUNT_JOBS ?? "").trim().toLowerCase();
+  if (["1", "true", "on", "yes"].includes(v)) return !!conversationId;
+  return v === "owner" && !!conversationId && accounts.featureOwner(conversationId);
+}
 export const NEVER_BY_VOICE = new Set(["account_bill_pay", "account_cancel", "account_cancel_confirm", "account_signin", "account_job_answer", "browser_proof"]);
 export const NEVER_BY_VOICE_WORDS = "Not done: this is never done on a call. Say in one line that you'll do it by text right after the call, and do it when they text.";
 
@@ -19902,6 +19908,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "browser_proof": {
       // One picture of the page that proves a finished job, into THIS thread only (src/proofshot.js has the rules).
       // The owner's rule: a picture only when it helps them check something; otherwise text is enough.
+      // Part of account jobs: on for whom REASON_ACCOUNT_JOBS is (owner = the owner only), the same switch.
+      if (!proofAllowedFor(c)) return { ok: false, blocked: "not_enabled", text_only: true, note: "No picture here: send the result line in words, quoting the page's line." };
       if (!proofshot.pictureHelps(input.proves)) return { ok: false, text_only: true, note: "Text is enough for this: no picture. Send the result line in words." };
       if (proofshot.sentRecently(c)) return { ok: false, text_only: true, note: "This result already has its one picture. Send anything else in words." };
       if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing goes to their phone from here. Say the result in your reply instead." };
