@@ -57,6 +57,7 @@ import * as emailRoute from "./signinemail.js";
 import { readSignedInState } from "./sites.js";
 import { launchProfile, launchOptions, guardContext, holdProfile, releaseProfile, closeBrowser as closeErrandBrowser } from "./browser.js";
 import * as restartGate from "./busy.js";
+import { saveOfferFor } from "./loginintake.js";
 import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
 import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
@@ -387,8 +388,17 @@ async function end(s, how) {
       ? ` Their ${entry.label} login is saved as ${s.provider === "apple" ? "an" : "a"} ${social.LABELS[s.provider]} sign-in${s.pressed ? "" : " (the site's own form had no such button, so this is what you were told rather than what was pressed)"}.`
         + ` After the task is done, say once what else that unlocks: any site of theirs that signs in with ${social.LABELS[s.provider]} can be opened the same way now without asking again.`
       : "";
+    // The one offer to save this login (owner decision 2026-11-13): only after a link sign-in that ended
+    // signed in, for someone the vault is on for, once per site ever (src/loginintake.js saveOfferFor).
+    let saveOffer = "";
+    if (s.ended.state === "signed_in" && !s.onEnd) {
+      try {
+        const o = saveOfferFor(c, entry, { provider: s.provider ?? "" });
+        if (o) saveOffer = ` In the same message, add this one line, word for word: "${o.line}" If they say yes, call saved_login_offer with site '${o.domain}'. If they say no or don't answer, drop it: it is never asked again.`;
+      } catch { /* no offer is the safe ending */ }
+    }
     note = s.ended.state === "signed_in"
-      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}${unlocked}`
+      ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). ${s.afterSignedIn ? s.afterSignedIn : `Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`}${unlocked}${saveOffer}`
       : how === "no_signin_page"
         ? `the ${entry.label} sign-in link you sent opened a page of ${entry.label}'s that is not a sign-in page, and Reason could not find a sign-in page from it, so they were shown no step and nothing was saved (${s.ended.why}). ${noLink} Say ONE plain line, like: "I can't find where to sign in on ${entry.label}." If they know the address of its sign-in page they can send it, and signin_link takes that address as the site.`
         // Replaced by a newer link and not signed in: the newer link is the one they have. There is
