@@ -226,3 +226,18 @@ test("call: the spoken answer drops the offer, and says it will text when a re-c
   db.createTimer(C, { fireAt: clock.now() + 600_000, note: "Re-check, once: web_search {}", label: retry.RECHECK_LABEL });
   assert.equal(retry.callLine(OFFER, C), "Looks like I haven't got a fresh confirmed update on it. I'll text you the answer when I have it.");
 });
+
+test("not offers: the call passphrase ask, the call deferral line, a team flag and a save-login question are never rewritten", async () => {
+  const { LINES } = await import("../src/calls/calltrust.js");
+  const { DEFERRED_LINE } = await import("../src/calls/cartesia.js");
+  const fixed = [DEFERRED_LINE, ...Object.values(LINES).filter((l) => typeof l === "string"),
+    "Can I flag this to Reason's team? I'd send: \"The Netflix sign-in failed twice and it is still not signed in.\"",
+    "Want me to save this login, so next time I can sign in to Netflix for you myself?"];
+  for (const line of fixed) {
+    assert.deepEqual(retry.offersInDraft(line), [], line);
+    assert.equal(retry.callLine(line, null), line, line);
+    assert.equal(retry.fixOffer({ draft: line, acts: [{ name: "weather", ok: false, result: "timed out" }] }), null, line);
+  }
+  // The control: a real offer is still caught.
+  assert.equal(retry.offersInDraft("It timed out. Want me to try again?").length, 1);
+});
