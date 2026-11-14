@@ -712,6 +712,17 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(out.status);
         return res.end(out.body);
       }
+      // The speaking brain's turn for the voice side (src/calls/brainfirst.js). Absent unless REASON_CALL_BRAIN is set.
+      if (config.callBrain !== "off" && req.method === "POST" && url.pathname === "/calls/brain/turn") {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const { brainTurnRequest } = await import("./calls/brainfirst.js");
+        const out = await brainTurnRequest({ rawBody, headers: req.headers, log });
+        res.writeHead(out.status, out.headers ?? {});
+        if (!out.stream) return res.end(out.body);
+        try { for await (const line of out.stream) res.write(line); } catch (e) { log({ brain_turn_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+        return res.end();
+      }
       // Twilio's answering-machine verdict for a third-party GPT-Live call (phase 3).
       if (gptlive.gptliveOn() && req.method === "POST" && url.pathname.startsWith(gptlive.AMD_PATH)) {
         const rawBody = await readBody(req);

@@ -677,6 +677,9 @@ export const config = {
   // automatic fall-back. Calls to anyone else never do, in any mode (src/calls/calltrial.js). Before
   // setting on: section 5's list.
   callCartesia: (v => (v === "owner" || v === "on" ? v : "off"))(String(process.env.REASON_CALL_CARTESIA ?? "").trim().toLowerCase()),
+  // The speaking brain (src/calls/brainfirst.js, docs/calls-brain-first.md): every sentence on a person's
+  // own call written by Reason. off | owner | on; unset or anything else is off, and off changes nothing.
+  callBrain: (v => (v === "owner" || v === "on" ? v : "off"))(String(process.env.REASON_CALL_BRAIN ?? "").trim().toLowerCase()),
   cartesiaKey: process.env.CARTESIA_API_KEY || "",
   // Cartesia's own usage figure (GET /usage/agents, src/planmeter.js) needs an ADMIN key (sk_car_admin_...);
   // the agent key cannot read it. Unset: the ops page shows Reason's own count of Cartesia minutes only.
