@@ -104,6 +104,7 @@ test("the vault cannot be forgotten: every logins.db table is in LOGINS_COVERAGE
     ld.prepare("INSERT INTO signin_routes (conversation_id, site, route, set_at) VALUES (?, 'doordash.test', 'google', 1)").run(c);
     ld.prepare("INSERT INTO call_passphrases (conversation_id, active_hash, active_set_how, active_set_at, active_words) VALUES (?, '{}', 'text', 1, 3)").run(c);
     ld.prepare("INSERT INTO call_passphrase_links (token_hash, conversation_id, purpose, expires_at) VALUES (?, ?, 'set', 1)").run(`t-${id}`, c);
+    ld.prepare("INSERT INTO save_offers (conversation_id, site, offered_at) VALUES (?, 'example.test', 1)").run(c);
   };
   row(GONE, 1); row(STAYS, 2);
   const shown = sl.exportFor(GONE);
