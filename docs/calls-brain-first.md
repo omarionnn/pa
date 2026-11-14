@@ -106,3 +106,14 @@ Measured on four replayed calls:
 - Class accuracy: rules 12/16 (14/16 after fixes made on the same turns); the tiny model 14/16.
 - Continuation's first sentence: p50 ~0.85 s, the same as without an opener.
 - Joins: 4/17 wrong before the fixes to `joinAfter` and the bank.
+
+## Bank, bucket A (`src/calls/brainbank.js`, `REASON_CALL_BRAIN_BANK`)
+
+Buckets of what a caller says, as data. Each bucket has cues to recognise it and lines to say. There are two kinds:
+
+- **instant (bucket A)**: presence checks, greetings, thanks, "give me a second". A complete line from the bank is said at once, and no model is called.
+  - It fires only when the whole turn is the cue.
+  - It never fires when an earlier turn of theirs is still unanswered: "Hello?" after dead air is owed an answer, and the brain gives it.
+- **opener (bucket B)**: a content-free opener, and the brain continues from it.
+
+`REASON_CALL_BRAIN_BANK` names a JSON file (the bank mined from the owner's own calls). Without one, a small placeholder of the same shape is used. Every line is checked as it loads, and claims, numbers, promises and yes/no are dropped. A bank file can never put a "done" in Reason's mouth.

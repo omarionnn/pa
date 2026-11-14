@@ -28,6 +28,7 @@ import { timingSafeEqual } from "node:crypto";
 import { saysDone, confirmsDone, forVoice, SECRETISH, withDeferredLine } from "./cartesia.js";
 import * as calltrust from "./calltrust.js";
 import * as opening from "./brainopener.js";
+import { instantReply } from "./brainbank.js";
 
 /** The fast model the speaking turn runs on (one the app already uses). REASON_CALL_BRAIN_MODEL overrides. */
 export const SPEAK_MODEL_DEFAULT = "claude-haiku-5-5";
@@ -388,6 +389,17 @@ export async function* brainTurn({ call, history, speak = speakTurn, full, strea
   // A line code owes now (after a passphrase check, or for a set-up) is said instead of a model turn.
   const owed = calltrust.trustOn(call) ? calltrust.owedLine(call, { theirWords: words, log }) : null;
   if (owed) { yield { type: "say", text: forVoice(owed), from: "trust" }; yield { type: "done", handoff: null, ms: now() - t0 }; return; }
+  // Bucket A (./brainbank.js): a turn that needs no brain ("are you with me?", "thanks") is answered at
+  // once from the bank, and no model is called. Never for screened passphrase words.
+  if (openers && !screened) {
+    const instant = instantReply(words, { history, recent });
+    if (instant) {
+      log({ brain_instant: call.id, bucket: instant.bucket });
+      yield { type: "say", text: instant.text, from: "bank", bucket: instant.bucket, delivery: instant.delivery };
+      yield { type: "done", handoff: null, instant: instant.bucket, ms: now() - t0 };
+      return;
+    }
+  }
   const messages = (history ?? []).map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content ?? "") })).filter(m => m.content.trim());
   if (screened && messages.at(-1)?.role === "user") messages[messages.length - 1] = { role: "user", content: words };
   let handoff = screened ? { ask: calltrust.SCREENED_REQUEST, why: "passphrase" } : null;

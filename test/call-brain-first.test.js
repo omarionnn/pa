@@ -21,6 +21,7 @@ process.env.REASON_CALL_BRAIN_OPENERS = "off";
 
 const bf = await import("../src/calls/brainfirst.js");
 const op = await import("../src/calls/brainopener.js");
+const bank = await import("../src/calls/brainbank.js");
 const db = await import("../src/db.js");
 const { config } = await import("../src/config.js");
 
@@ -261,4 +262,46 @@ test("'is it done?' gets a stand-alone opener at once, then the hold and the ful
   assert.equal(modelCalled, false);
   assert.deepEqual(out.map(e => e.type), ["say", "hold", "say", "done"]);
   assert.ok(op.STANDALONE.includes(out[0].text));
+});
+
+// ---------- the bank: bucket A answered with no brain (src/calls/brainbank.js) ----------
+
+test("the placeholder bank loads whole: every line passes its check", () => {
+  bank.resetBank();
+  const b = bank.bank({ path: "" });
+  assert.deepEqual(b.dropped, { lines: 0, cues: 0, buckets: 0 });
+  assert.ok(b.buckets.some(x => x.kind === "instant") && b.buckets.some(x => x.kind === "opener"));
+});
+
+test("a bank file can never put a claim, a number or a promise in Reason's mouth", () => {
+  const b = bank.checkBank({ version: "t", buckets: [
+    { id: "a", kind: "instant", cues: ["^thanks$", "("], lines: [{ text: "Of course." }, { text: "Done, it's booked." }, { text: "I'll text you at 8." }, { text: "Yes." }] },
+    { id: "b", kind: "opener", cues: [], lines: [{ text: "So," }, { text: "Sure, got it," }] },
+    { id: "c", kind: "weird", lines: [{ text: "x" }] },
+  ] });
+  assert.deepEqual(b.buckets.map(x => [x.id, x.lines.map(l => l.text)]), [["a", ["Of course."]], ["b", ["So,"]]]);
+  assert.deepEqual(b.dropped, { lines: 4, cues: 1, buckets: 1 });
+});
+
+test("bucket A: a whole-turn presence check, greeting, thanks or wait is answered from the bank", () => {
+  bank.resetBank();
+  for (const [t, id] of [["are you with me?", "presence_check"], ["Hello?", "presence_check"], ["You there?", "presence_check"], ["How are you?", "greeting"], ["hey, what's up", "greeting"], ["thanks so much", "thanks"], ["give me a second", "wait_ask"], ["hold on", "wait_ask"]]) {
+    assert.equal(bank.instantReply(t, { history: [{ role: "assistant", content: "Hi." }, { role: "user", content: t }] })?.bucket, id, t);
+  }
+});
+
+test("bucket A never takes a turn with more in it, or one that follows an unanswered turn of theirs", () => {
+  for (const t of ["how are you? also did you book it", "thanks, now text her the page", "are you with me on the pricing idea", "where were we?", "is it done?"]) assert.equal(bank.instantReply(t, { history: [] }), null, t);
+  const owed = [{ role: "user", content: "remember the events conversation" }, { role: "user", content: "Hello?" }];
+  assert.equal(bank.instantReply("Hello?", { history: owed }), null);
+});
+
+test("a bucket A turn calls no model and says the bank's line", async () => {
+  const row = ownCall();
+  let modelCalled = false;
+  const stream = async function* () { modelCalled = true; yield* fakeStream(["Hi."])(); };
+  const out = await run(bf.brainTurn({ call: row, history: [{ role: "assistant", content: "Hey." }, { role: "user", content: "are you with me?" }], full: async () => { throw new Error("no"); }, session, openers: true, stream, streamB: stream }));
+  assert.equal(modelCalled, false);
+  assert.equal(out[0].from, "bank");
+  assert.equal(out.at(-1).instant, "presence_check");
 });
