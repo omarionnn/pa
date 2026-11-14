@@ -33,8 +33,8 @@ export const SPEAK_MODEL_DEFAULT = "claude-haiku-5-5";
 export const speakModel = () => String(process.env.REASON_CALL_BRAIN_MODEL ?? "").trim() || SPEAK_MODEL_DEFAULT;
 /** A speaking turn is short: past this many tokens it is not a phone sentence any more. */
 export const SPEAK_MAX_TOKENS = 220;
-/** How long a speaking turn waits for the facts closest to their words before it starts without them. */
-export const TURN_RECALL_WAIT_MS = 250;
+// No per-turn memory search in front of the first word: measured 0.22-0.74 s (p50 ~0.29) and in time for
+// a 250 ms race on 3 of 17 replayed turns. The preload carries memory; the full brain searches its own.
 /** How many preloaded lines ride on the call (facts plus what Reason did and said). */
 export const PRELOAD_MAX = 14;
 
