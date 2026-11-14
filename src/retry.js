@@ -75,7 +75,10 @@ export async function retryTransient(run, { attempts = ATTEMPTS, pausesMs = PAUS
     const started = now();
     try { out = await run(tries); } catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
     tries++;
-    if (tries >= attempts || !isTransient(out)) break;
+    // `no_retry`: the tool already tried every source it has inside its own budget (nearby_places,
+    // weather), so another try only doubles the wait for the same answer. Still transient, so the
+    // one re-check is set as for any lookup that did not answer.
+    if (tries >= attempts || !isTransient(out) || out?.no_retry === true) break;
     const took = now() - started;
     const pause = Math.round((pausesMs[tries - 1] ?? pausesMs[pausesMs.length - 1] ?? 0) * (0.75 + random() * 0.5));
     if (now() - t0 + pause + took > capMs) break;

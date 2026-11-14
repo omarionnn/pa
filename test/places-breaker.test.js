@@ -65,12 +65,15 @@ test("right after a failure, the next ask skips the servers and answers at once"
   assert.match(out.error, /couldn't load nearby places/i);
 });
 
-test("a few minutes later it tries again, across all four servers", async () => {
+test("a few minutes later it tries again: two Overpass servers raced, and Nominatim and Photon beside them", async () => {
   clock.skip(6 * 60_000);
   calls.length = 0;
   const out = await nearby(refused);
   assert.equal(out.down, true);
-  assert.ok(new Set(calls).size >= 4, `servers tried: ${[...new Set(calls)].join(", ")}`);
+  const hosts = [...new Set(calls.map(u => new URL(u).host))];
+  assert.equal(hosts.filter(h => /overpass|mail\.ru/.test(h)).length, 2, `servers tried: ${hosts.join(", ")}`);
+  assert.ok(hosts.includes("nominatim.openstreetmap.org"), hosts.join(", "));
+  assert.ok(hosts.includes("photon.komoot.io"), hosts.join(", "));
 });
 
 test("a server that answers clears the way: places come back as before", async () => {
