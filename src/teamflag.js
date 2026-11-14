@@ -20,7 +20,6 @@ import * as restcrypt from "./restcrypt.js";
 import { scrub as opsScrub } from "./opsdigest.js";
 import { maskPhone, maskEmail } from "./logmask.js";
 import { HIDDEN } from "./pagesecrets.js";
-import * as callpass from "./callpass.js";
 
 export const MAX_CHARS = 400;
 export const MIN_CHARS = 20;
@@ -181,8 +180,12 @@ export function sentByEveryone(now = clock.now()) {
 }
 const BUSY_WORDS = "Reason's team has had a lot of reports today, so this one can't be sent right now. Nothing was sent. Say so plainly in one line, and that they can flag it tomorrow if it is still wrong.";
 
-/** Does the text hold their active call passphrase (src/callpass.js keeps only its hash)? */
-export function holdsPassphrase(conversationId, text) {
+/**
+ * Does the text hold their active call passphrase (src/callpass.js keeps only its hash)? `callpass` is
+ * handed in by the tool runner, so this file never imports the logins database (test/probe-setups).
+ */
+export function holdsPassphrase(conversationId, text, callpass) {
+  if (!callpass) return false;
   let rec = null;
   try { rec = callpass.activeFor(conversationId); } catch { return false; }
   if (!rec?.n) return false;
@@ -216,14 +219,14 @@ const EVENT_WORDS = "A report to Reason's team can only come from a turn they st
  * Step 1. Clean and store the report, open the ask, and hand back the fixed words. Sends nothing.
  * An earlier proposal of theirs still open is closed: one report is on the table at a time.
  */
-export function propose({ conversationId, report, kind = "event", ask }) {
+export function propose({ conversationId, report, kind = "event", ask, callpass = null }) {
   const c = String(conversationId);
   if (kind !== "user") return { ok: false, blocked: "not_their_turn", error: EVENT_WORDS };
   if (sentToday(c) >= PER_DAY) return { ok: false, blocked: "daily_limit", error: LIMIT_WORDS };
   if (sentByEveryone() >= ALL_PER_DAY) return { ok: false, blocked: "team_busy", error: BUSY_WORDS };
   const text = cleanReport(report, { names: namesOnRecord(c) });
   // Their call passphrase is never in a report, whatever words it is: every run of its length is checked against its hash.
-  if (holdsPassphrase(c, text)) return { ok: false, blocked: "holds_secret", error: "That report would carry something secret of theirs. Nothing was proposed or sent. Write it again from the facts only, with no words they use to prove who they are." };
+  if (holdsPassphrase(c, text, callpass)) return { ok: false, blocked: "holds_secret", error: "That report would carry something secret of theirs. Nothing was proposed or sent. Write it again from the facts only, with no words they use to prove who they are." };
   if (text.replace(/\[[^\]]*\]|…/g, "").replace(/\W+/g, "").length < MIN_CHARS) {
     return { ok: false, blocked: "too_short", error: "That report says too little once cleaned. Write one or two plain sentences: what they asked for, what happened, what is still wrong, what would fix it. Nothing was proposed." };
   }

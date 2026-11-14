@@ -12351,7 +12351,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (ctx.onCall) return { ok: false, blocked: "on_call", error: "A report to Reason's team is never made on a call. Nothing was proposed or sent. If it is still wrong after the call, it can be offered by text." };
       if (input.step === "propose") {
         return teamflag.propose({
-          conversationId: c, report: input.report, kind,
+          conversationId: c, report: input.report, kind, callpass: await import("./callpass.js"),
           ask: ({ summary, target }) => trust.requestConfirmation({ conversationId: c, messages: ctx.messages ?? [], historyId: ctx.historyId ?? null, action: "team_flag", summary, stakes: "", target }),
         });
       }
