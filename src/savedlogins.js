@@ -268,7 +268,7 @@ const siteVerdict = (hostOrUrl) => classifySite(hostOrUrl) ?? {};
 // Every save, open and removal writes one login_log row (reason.db, `purpose` sealed under the
 // person's key) and one action_ledger row, which ledger_list reads back. From fixed lists only:
 // never a username, a hint, a code or an address with a query string.
-export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_sent", "refused_never_list", "save_failed", "signin", "signed_out"];
+export const LOGIN_EVENTS = ["saved", "opened", "removed", "removed_all", "link_sent", "refused_never_list", "save_failed", "signin", "signed_out", "code_from_mail"];
 // The vault's own low-level outcomes (what withLogin's `opened` line carries), then the filler's
 // person-facing sign-in outcomes (what its `signin` line carries, vault PR 6). A result word the
 // filler returns to the model is in the second group so recordLoginEvent accepts it.
@@ -276,7 +276,7 @@ export const LOGIN_OUTCOMES = ["ok", "stopped", "wait", "origin_mismatch", "unwr
   "signed_in", "wrong_password", "blocked", "needs_code_sms", "needs_approval", "not_signin_page", "needs_face_id", "paused",
   "needs_code_email", "needs_authenticator", "code_not_found", "wrong_code", "busy", "not_accepted", "no_answer",
   "needs_google_login", "needs_google_tap", "needs_google_code", "consent_more", "google_property", "no_google_button", "waiting_face_id",
-  "site_trouble", "refuses_software"];
+  "site_trouble", "refuses_software", "mail_alert", "mail_not_signin"];
 const RECEIPT = {
   saved: (site) => `Saved a login for ${site}, sealed under its own key.`,
   opened: (site, outcome) => outcome === "ok" ? `Opened the saved login for ${site} to sign in.` : `Did not open the saved login for ${site} (${outcome.replace(/_/g, " ")}).`,
@@ -285,6 +285,8 @@ const RECEIPT = {
   link_sent: (site) => `Sent a link to save a login for ${site} on Reason's own page.`,
   refused_never_list: (site) => `Did not offer to save a login for ${site}: it is on the never list.`,
   save_failed: (site, outcome) => `Did not save the login for ${site} (${outcome.replace(/_/g, " ")}).`,
+  // REASON_SIGNIN_CODE_READ (src/signinemail.js codeFromMail): the one email the site just sent, read for its code.
+  code_from_mail: (site) => `Took the sign-in code from the email ${site} just sent, for the sign-in you asked for. Nothing else in your mail was read.`,
   // The filler's person-facing line (vault PR 6, design B10): what the sign-in did, in plain words,
   // never a username. One sentence per sign-in result word.
   // Forgetting a login (design B11, hard rule 6): whether signing out on the site itself was confirmed.
@@ -309,11 +311,17 @@ const RECEIPT = {
     no_answer: `Could not sign in to ${site}: the page did not answer the sign-in in time. I stopped and paused it for a day.`,
     refuses_software: `Did not sign in to ${site}: it turns away browsers run by software, so nothing was opened.`,
     site_trouble: `Could not sign in to ${site}: it answered with its own error before accepting or turning down the login (not a wrong password; the saved login looks fine).`,
+    mail_alert: `Stopped signing in to ${site}: the email it sent looked like a security alert, not a sign-in code, so it was not used.`,
+    mail_not_signin: `Stopped signing in to ${site}: the email it sent was about a password reset or an account change, not a sign-in code, so it was not used.`,
   }[outcome] ?? `Did not sign in to ${site} (${String(outcome).replace(/_/g, " ")}).`),
 };
 /** Words for `purpose`: one line, no control characters, links without their query or fragment. */
 function cleanPurpose(s) {
   return String(s ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/(https?:\/\/[^\s?#]*)[?#]\S*/gi, "$1").trim().slice(0, 160);
+}
+/** Has a sign-in code ever been taken from their mail? (Their login_log, read for the once-only sentence.) */
+export function mailCodeUsedBefore(conversationId) {
+  return !!reasonDb.prepare("SELECT 1 FROM login_log WHERE conversation_id = ? AND event = 'code_from_mail' LIMIT 1").get(String(conversationId ?? ""));
 }
 /**
  * Write the person's record of one vault event: a login_log row and an action_ledger row. Throws on
