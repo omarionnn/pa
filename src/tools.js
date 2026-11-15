@@ -10350,6 +10350,8 @@ function flightToday(c) {
 }
 
 let pictureLinkSeq = 0;
+// The replies (by their turnActs) whose invite_link_create already carried the card-name offer.
+const OFFERED_THIS_TURN = new WeakSet();
 /** Their own typed turn in their own thread: not an event, a task, research, a firing or a call. */
 const ownTurn = (ctx) => (ctx?.kind ?? "event") === "user" && !ctx?.onCall && ctx?.fromTimer == null && !ctx?.taskId && !ctx?.isGroup;
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
@@ -12960,8 +12962,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "invite_link_create": {
       const named = typeof input.for_name === "string" && input.for_name.trim() !== "";
+      // Several links asked for at once: the offer went out on this reply's first call, so this reply's
+      // other calls without a name wait for the answer instead of minting plain links beside the offer.
+      const turn = ctx?.turnActs && typeof ctx.turnActs === "object" ? ctx.turnActs : null;
+      if (!named && !input.for_nobody && turn && OFFERED_THIS_TURN.has(turn)) {
+        return { ok: false, needs_for: true, already_offered: true, error: "Nothing made: the offer is already in this reply and covers every link they asked for. Make no link until they answer; then one call per link, each with for_name or for_nobody: true." };
+      }
       const ask = named || input.for_nobody ? null : invites.askWhoFor(c);
       if (ask?.needs_for) {
+        if (turn) OFFERED_THIS_TURN.add(turn);
         return {
           ok: false, needs_for: true, ...(ask.needs_name ? { needs_name: true } : {}),
           error: ask.needs_name

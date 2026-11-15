@@ -32,7 +32,9 @@ const HAND = font("caveat-latin.woff2");
 // loud: the link is simply made plain, with today's card. Who the name is FOR is the model's read of
 // what they said; this only decides whether it is safe to draw.
 
-const RELATION = /^(?:(?:it'?s |its )?for )?(?:my |our )?(?:(?:little|big|baby|older|younger|best|good|old|new) )?(?:friend|mate|buddy|pal|bestie|bff|sister|sis|brother|bro|cousin|mom|mum|mother|dad|father|aunt|auntie|uncle|wife|husband|partner|girlfriend|boyfriend|roommate|coworker|colleague|neighbou?r|son|daughter|niece|nephew|grandma|grandpa|boss)?,? ?/i;
+// The relation word must be a whole word ("Sonia" is not "son" + "ia", "Mateo" not "mate" + "o"), and a
+// describing word goes only with one ("Big Sean" is a name, "my big sister" is not).
+const RELATION = /^(?:(?:it'?s |its )?for )?(?:my |our )?(?:(?:(?:little|big|baby|older|younger|best|good|old|new) )?(?:friend|mate|buddy|pal|bestie|bff|sister|sis|brother|bro|cousin|mom|mum|mother|dad|father|aunt|auntie|uncle|wife|husband|partner|girlfriend|boyfriend|roommate|coworker|colleague|neighbou?r|son|daughter|niece|nephew|grandma|grandpa|boss)(?=[\s,]|$),? ?)?/i;
 
 /** Longest name drawn, in characters, and most words. */
 export const INVITEE_MAX = 24;
@@ -41,15 +43,37 @@ const INVITEE_WORD_MAX = 20;
 // Words that make it a message, not a name: little words a sentence is built from, the words a scam
 // card would use, and insults. A name with one of these in it is not drawn.
 const NOT_A_NAME = new Set((
-  "a an the and or but if of to for from with without at on in into by as is are was were be been am im i me my mine "
+  // Not here although they are little words: an, so, won, win (An, So-yeon, Ji-won and Win are names).
+  "a the and or but if of to for from with without at on in into by as is are was were be been am im i me my mine "
   + "you your youre yours u ur we us our they them their he him his she her hers it its this that these those "
-  + "not no yes yeah yep nope just only very so too now here there hi hey hello dear friend friends someone somebody anyone everyone "
+  + "not no yes yeah yep nope just only very too now here there hi hey hello dear friend friends someone somebody anyone everyone "
   + "sister brother mom mum dad mother father cousin aunt uncle wife husband girlfriend boyfriend bestie bff "
-  + "join joined free win winner won prize gift cash money pay paid click tap link url www http https com net org "
+  + "join joined free winner prize gift cash money pay paid click tap link url www http https com net org "
   + "reason official support admin team staff verify verified account password code login bank scam "
-  + "love hate kill die dead death sucks suck stupid dumb idiot moron loser ugly fat gay lame trash "
-  + "fuck fucking fucker shit bitch bastard ass asshole dick cock cunt pussy whore slut hoe retard nazi hitler"
+  + "service customer helpdesk text txt visit site refund urgent alert warning locked suspended claim reward bonus offer "
+  + "paypal venmo zelle cashapp apple icloud amazon google microsoft netflix whatsapp crypto bitcoin irs fbi police "
+  + "wellsfargo fargo citibank coinbase binance usps fedex dhl facebook instagram tiktok snapchat telegram "
+  + "hate kill die dead death sucks suck stupid dumb idiot moron loser ugly fat gay lame trash "
+  + "fuck fucking fucker shit bitch bastard ass asshole dick cock cunt pussy whore slut hoe retard retarded nazi hitler "
+  + "nigger niggers nigga niggas kike faggot fag fags chink gook spic wetback beaner tranny dyke paki coon raghead towelhead"
 ).split(" "));
+const NUMBER_WORD = /^(?:zero|oh|one|two|three|four|five|six|seven|eight|nine|ten|hundred|thousand)$/i;
+// Slurs no name contains: refused inside a longer word too.
+const SLUR_INSIDE = /nigg|fagg/i;
+// Letters of other scripts that look Latin, read as the Latin they look like, so a refused word cannot
+// be spelled in lookalikes ("Рау" in Cyrillic reads "pay").
+const LOOKALIKE = {
+  а: "a", в: "b", е: "e", ё: "e", к: "k", м: "m", н: "h", о: "o", р: "p", с: "c", т: "t", у: "y", х: "x",
+  ѕ: "s", і: "i", ї: "i", ј: "j", һ: "h", ԁ: "d", ԛ: "q", ԝ: "w", ӏ: "l", ү: "y",
+  α: "a", β: "b", ε: "e", η: "n", ι: "i", κ: "k", ν: "v", ο: "o", ρ: "p", τ: "t", υ: "u", χ: "x", γ: "y", ϝ: "f", ω: "w",
+};
+const lookalike = (w) => [...w].map(ch => LOOKALIKE[ch] ?? ch).join("");
+const SCRIPTS = [/\p{Script=Latin}/u, /\p{Script=Greek}/u, /\p{Script=Cyrillic}/u];
+// Latin letters no name is typed in: IPA, small capitals and phonetic letters ("ᴘᴀʏ ɴᴏᴡ", "ʎɐd").
+const ODD_LATIN = /[ɐ-ʯᴀ-ᶿⱠ-Ɀ꜠-ꟿ]/u;
+// Characters drawn a full square wide (Chinese, Japanese, Korean): a name is a few of them, a sentence many.
+const WIDE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+const WIDE_WORD_MAX = 6;
 
 /**
  * The name to draw for the person a link is for, or "" when there is none or it is not plausibly one
@@ -74,18 +98,27 @@ export function cleanInviteeName(raw) {
     // "for my sister Ama" is Ama: who they are to the inviter is not drawn.
     .replace(RELATION, "").trim();
   if (!s || s.length > INVITEE_MAX) return "";
+  // One person's name is in one script: Latin mixed with Greek or Cyrillic lookalikes is a disguise.
+  if (SCRIPTS.filter(re => re.test(s)).length > 1 || ODD_LATIN.test(s)) return "";
+  // Marks stacked on one letter ("Zalgo") spill over the headline; real names need at most two.
+  if (/\p{M}{3,}/u.test(s) || SLUR_INSIDE.test(lookalike(s.toLowerCase()))) return "";
   const words = s.split(" ");
   if (words.length > INVITEE_WORDS) return "";
   const word = /^\p{L}[\p{L}\p{M}]*(?:['.\-]\p{L}[\p{L}\p{M}]*)*\.?$/u;
   for (const w of words) {
     if (w.length > INVITEE_WORD_MAX || !word.test(w)) return "";
-    if (NOT_A_NAME.has(w.toLowerCase().replace(/['.\-]/g, ""))) return "";
-    for (const part of w.toLowerCase().split(/['.\-]/)) if (NOT_A_NAME.has(part) && part.length > 2) return "";
+    if ((w.match(WIDE) ?? []).length > WIDE_WORD_MAX) return "";
+    const low = lookalike(w.toLowerCase());
+    if (NOT_A_NAME.has(low.replace(/['.\-]/g, ""))) return "";
+    for (const part of low.split(/['.\-]/)) if (NOT_A_NAME.has(part) && part.length > 2) return "";
   }
   // A run of one letter ("aaaaaaa") or a word in all one case shouting is tidied, not trusted as typed.
   if (/(\p{L})\1{3,}/u.test(s)) return "";
+  // Two number words are digits spelled out ("Five Five", a phone number a word at a time), not a name.
+  if (words.filter(w => NUMBER_WORD.test(w)).length > 1) return "";
   return words.map(w => w === w.toUpperCase() && w.length > 3 ? w[0] + w.slice(1).toLowerCase() : w)
-    .map(w => w.replace(/(^|[-'.])(\p{Ll})/gu, (_, at, ch) => at + ch.toLocaleUpperCase()))
+    // After an apostrophe only when a name goes on (O'brien → O'Brien; Nadia's stays Nadia's).
+    .map(w => w.replace(/(^|[-.]|'(?=\p{L}{2}))(\p{Ll})/gu, (_, at, ch) => at + ch.toLocaleUpperCase()))
     .join(" ");
 }
 
@@ -122,7 +155,9 @@ h1 .wordmark{font-size:1em;color:${PAPER.ink}}h1 .wm-bubble path{stroke:${BRAND_
  */
 export function inviteCardKey(name, invitee = "") {
   const forWho = cleanInviteeName(invitee);
-  const what = forWho ? `${INVITE_CARD_VERSION}\n${name}\nfor:${forWho}` : `${INVITE_CARD_VERSION}\n${name}`;
+  // Named: JSON, so no inviter name (which may hold a newline) reads as another inviter plus a name, and
+  // it never starts with the digit the unnamed key starts with. Unnamed: unchanged.
+  const what = forWho ? JSON.stringify([INVITE_CARD_VERSION, name, forWho]) : `${INVITE_CARD_VERSION}\n${name}`;
   return createHash("sha256").update(what).digest("hex").slice(0, 16);
 }
 

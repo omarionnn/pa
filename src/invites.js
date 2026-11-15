@@ -162,12 +162,14 @@ export function askWhoFor(conversationId, { now = clock.now() } = {}) {
  */
 export function makeLink(conversationId, { forName } = {}) {
   const name = inviterName(conversationId);
-  if (!name) return { ok: false, needs_name: true };
+  // Asking their own name is this go's one question: the call after it never also offers the card name.
+  if (!name) { askedFor.set(conversationId, clock.now()); return { ok: false, needs_name: true }; }
   const given = typeof forName === "string" && forName.trim() !== "";
   const forWho = given ? cleanInviteeName(forName) : "";
   const out = db.createInvite(conversationId, { forName: forWho || null });
   if (!out.ok) return { ok: false, none_left: true, invites_left: out.remaining, unused_links: out.unused };
-  askedFor.delete(conversationId);
+  // The offer stays spent for the window even once a link is made: their answer can name one link
+  // and leave the next plain in the same reply, and that plain one is never a second offer.
   return {
     ok: true, link: inviteUrl(out.invite.token), number: out.invite.id, shown_as: name,
     ...(forWho ? { for: forWho } : {}),
