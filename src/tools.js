@@ -4716,7 +4716,7 @@ export const tools = [
     name: "invites_list",
     description: "Their invites: every invite link they have made and its state (unused, canceled or redeemed), how many invites they have left, and any request for more that is still pending."
       + " Use when they ask about their invites in any words — 'my invites', 'how many invites do I have', 'did anyone use my link'. Read this rather than remembering; links and counts change."
-      + " Who claimed a link is deliberately not in it."
+      + " Who claimed a link is deliberately not in it. An unused link they made for somebody carries `for`, the name THEY gave it: say it that way (the one for <their name> hasn't been used yet). Never say or guess who used a claimed link."
       + " Answer in a line or two, the way a friend would: how many they have left, any link that's out and not used yet and roughly when it went (a day, not a timestamp), and offer to make another if they have any left."
       + " Never list links as numbered rows and never show a link's number; the number is only for invite_link_cancel.",
     input_schema: { type: "object", properties: {} },
@@ -4724,9 +4724,17 @@ export const tools = [
   {
     name: "invite_link_create",
     description: "Make one invite link for them to send a friend. Each link is single-use and gives whoever claims it their own Reason — not a waitlist spot. Links never expire; opening one does not use it up; it is spent only when someone joins with it."
-      + " Use when they want to invite someone or ask for a link. If it says needs_name, ask them once, warmly and in your own words, what name their friends should see on it. When they answer — read what they meant, however they put it — save it with my_name and call this again in that same reply, so the link goes out right then: never a second ask, never a dead end. The name on the card is the saved one; if they say they want a different name, save it with my_name and new links and cards use it."
+      + " Use when they want to invite someone or ask for a link."
+      + " THEIR FRIEND'S NAME ON THE CARD is a nice extra, never a step: a link made for somebody shows that first name on its card picture, and nowhere else. If they already said who (an invite for <a name>, one for my sister <a name>), pass that first name as for_name and the link goes out now, no question. If they did not say, call this with neither field: it says needs_for, and you OFFER once, lightly and in your own words, to put their friend's name on it so it feels personal, making clear it's totally fine if not (the spirit of: want me to put their name on it so it feels personal? totally fine if not). When they answer, read what they meant, however they put it, and call this again in that same reply: a name → for_name; no, 'just the link', 'doesn't matter', 'a few people', a shrug → for_nobody: true, a plain link, with no fuss and no second offer. Several people (two names at once, 'three links') → ONE offer covering them all, then one call per link, each with its own for_name when names were given."
+      + " If it says needs_name, ask them once, warmly and in your own words, what name their friends should see on it. When they answer — read what they meant, however they put it — save it with my_name and call this again in that same reply, so the link goes out right then: never a second ask, never a dead end. The name on the card is the saved one; if they say they want a different name, save it with my_name and new links and cards use it."
       + " Write one short line first saying it's an invite for a friend to pass on, in your own words (never quote a command), then the link exactly as returned, alone on its own line with nothing after it — it goes out as its own message, so forwarding it shows the card.",
-    input_schema: { type: "object", properties: {} },
+    input_schema: {
+      type: "object",
+      properties: {
+        for_name: { type: "string", description: "The first name of the ONE person this link is for, as they said it, for their card picture only. Just the name: not 'my sister', not a message." },
+        for_nobody: { type: "boolean", description: "True when they passed on the name or said it's for nobody in particular: a plain link, no question, no fuss." },
+      },
+    },
   },
   {
     name: "invite_link_cancel",
@@ -4737,6 +4745,7 @@ export const tools = [
       properties: {
         number: { type: "integer", description: "The link's number from invites_list." },
         replace: { type: "boolean", description: "Make a fresh link in its place. Default true; false only when they say they don't want a new one." },
+        for_name: { type: "string", description: "Who the replacement is for, when they said (a first name). The canceled link's name does not carry over." },
       },
       required: ["number"],
     },
@@ -7437,8 +7446,8 @@ const S = {
   ...TODO_SCHEMAS,
   ...CUE_SCHEMAS,
   invites_list: z.object({}),
-  invite_link_create: z.object({}),
-  invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
+  invite_link_create: z.object({ for_name: z.string().max(200).optional(), for_nobody: z.boolean().optional() }),
+  invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional(), for_name: z.string().max(200).optional() }),
   invite_request_more: z.object({ count: z.number().int().min(1).max(1_000_000), explanation: z.string().min(1).max(1000) }),
   invite_requests_pending: z.object({}),
   invite_request_decide: z.object({ request_number: z.number().int().min(1), decision: z.enum(["approve", "decline"]), count: z.number().int().min(1).max(1_000_000).optional() }),
@@ -10491,6 +10500,8 @@ function flightToday(c) {
 }
 
 let pictureLinkSeq = 0;
+// The replies (by their turnActs) whose invite_link_create already carried the card-name offer.
+const OFFERED_THIS_TURN = new WeakSet();
 /** Their own typed turn in their own thread: not an event, a task, research, a firing or a call. */
 const ownTurn = (ctx) => (ctx?.kind ?? "event") === "user" && !ctx?.onCall && ctx?.fromTimer == null && !ctx?.taskId && !ctx?.isGroup;
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
@@ -11153,7 +11164,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         out.send_contact_card = true;
         // The name was the one thing an invite link was waiting on (invite_link_create's
         // needs_name): the link goes out in this same reply, never on a second ask.
-        if (invitesOpenFor(c)) out.invite_link = "If they were waiting on an invite link, call invite_link_create now and send it in this same reply: one short line, then the link alone. The card shows this name from now on.";
+        if (invitesOpenFor(c)) out.invite_link = "If they were waiting on an invite link, call invite_link_create now and send it in this same reply (with for_name if they said who it's for, else for_nobody: true): one short line, then the link alone. The card shows this name from now on.";
       }
       if (wantsLanguage) {
         // "english" (or nothing) is the way back. A language nobody has written the words for is
@@ -13135,11 +13146,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
 
     case "invite_link_create": {
-      const out = invites.makeLink(c);
+      const named = typeof input.for_name === "string" && input.for_name.trim() !== "";
+      // Several links asked for at once: the offer went out on this reply's first call, so this reply's
+      // other calls without a name wait for the answer instead of minting plain links beside the offer.
+      const turn = ctx?.turnActs && typeof ctx.turnActs === "object" ? ctx.turnActs : null;
+      if (!named && !input.for_nobody && turn && OFFERED_THIS_TURN.has(turn)) {
+        return { ok: false, needs_for: true, already_offered: true, error: "Nothing made: the offer is already in this reply and covers every link they asked for. Make no link until they answer; then one call per link, each with for_name or for_nobody: true." };
+      }
+      const ask = named || input.for_nobody ? null : invites.askWhoFor(c);
+      if (ask?.needs_for) {
+        if (turn) OFFERED_THIS_TURN.add(turn);
+        return {
+          ok: false, needs_for: true, ...(ask.needs_name ? { needs_name: true } : {}),
+          error: ask.needs_name
+            ? "Nothing made yet. ONE message, warmly and in your own words (never quote a command): ask what name their friends should see as who invited them, and in the same breath OFFER, lightly, to put their friend's first name on the card so it feels personal, totally fine if not. The offer is a nice extra, never a step they must do. When they answer, read what they meant: save their own name with my_name, then call invite_link_create again in that same reply with for_name if they gave their friend's name, else for_nobody: true, and send the link. Never ask or offer again."
+            : "Nothing made yet. OFFER once, lightly and in your own words (never quote a command), to put their friend's first name on the card so it feels personal, and make clear it's totally fine if not (the spirit of: want me to put their name on it so it feels personal? totally fine if not). A nice extra, never a step they must do; for several links, one offer for all of them. When they answer, read what they meant and call invite_link_create again in that same reply: a name → for_name; no, no name, 'just the link', 'doesn't matter' → for_nobody: true, with no fuss. Either way the link goes out in that reply. Never offer again.",
+        };
+      }
+      const out = ask?.none_left ? ask : invites.makeLink(c, { forName: named ? input.for_name : undefined });
       if (out.needs_name) {
         return {
           ok: false, needs_name: true,
-          error: "Reason has no name for them to show on the invite page. Ask them once, warmly and in your own words, what name their friends should see on it (never quote a command). When they answer, read what they meant, save it with my_name, then call invite_link_create again in that same reply and send the link: one short line, then the link alone. Do not ask twice.",
+          error: "Reason has no name for them to show on the invite page. Ask them once, warmly and in your own words, what name their friends should see on it (never quote a command). When they answer, read what they meant, save it with my_name, then call invite_link_create again in that same reply (with the same for_name or for_nobody as before) and send the link: one short line, then the link alone. Do not ask twice.",
         };
       }
       if (out.none_left) {
@@ -13150,11 +13178,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             : "They have no invites left. They can ask for more — invite_request_more, once they have said how many and why.",
         };
       }
-      return { ...out, say: "One short line first, in your own words, saying it's an invite for a friend to pass on (never quote a command). Then the link exactly as it is, alone on its own line with nothing after it: it goes out as its own message, so forwarding it shows the card. It works once, never expires, and opening it does not use it up — only someone joining does." };
+      if (out.plain_card) delete out.plain_card; // a name not fit to draw: plain link, nothing said about it
+      return { ...out, say: (out.for ? `It's made for ${out.for}: their card greets them by name. ` : "") + "One short line first, in your own words, saying it's an invite for a friend to pass on (never quote a command). Then the link exactly as it is, alone on its own line with nothing after it: it goes out as its own message, so forwarding it shows the card. It works once, never expires, and opening it does not use it up — only someone joining does." };
     }
 
     case "invite_link_cancel": {
-      const out = invites.cancelLink(c, input.number, { replace: input.replace !== false });
+      const out = invites.cancelLink(c, input.number, { replace: input.replace !== false, forName: input.for_name });
       if (!out.ok) {
         return {
           ok: false,
