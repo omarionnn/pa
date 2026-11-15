@@ -633,12 +633,20 @@ export const PRICE_NOT_GIVEN = "I couldn't confirm a price for that, so I've lef
 // roughly 16 miles…": a reply about a number with no number in it. An estimate that says it is one,
 // with what it assumes, is an answer, not a fact presented as real; it stands. A live fare, a quote,
 // or a figure off their own records (a balance, what they paid) never stands on this.
-const ESTIMATE_LABEL = /\b(?:estimate[ds]?|estimating|ballpark|guesstimate|my (?:own |best |rough )?guess|rough (?:math|guess|figure)|back[- ]of[- ](?:the[- ])?envelope|not a (?:live|real|quoted|confirmed) (?:fare|price|quote|number))\b/i;
+// The label is Reason's own: "my estimate", "I'd guess". A bare "estimated" is anybody's ("Uber's
+// estimated fare is $64", "Joe's Taxi estimates $64") and labels nothing as Reason's.
+const ESTIMATE_LABEL = /\b(?:my (?:own |best |rough |quick )?(?:estimate|guess|math|ballpark)|I(?:'d|’d| would)? (?:estimate|guess|ballpark)|I'?m (?:estimating|guessing)|rough (?:estimate|guess|figure|math)|guesstimate|back[- ]of[- ](?:the[- ])?envelope|not a (?:live|real|quoted|confirmed) (?:fare|price|quote|number))\b/i;
 const ESTIMATE_BASIS = /\b(?:assum(?:es|ing|ed|ption)|based on|figuring|working from|going by|per (?:mile|minute|hour|night|day)|a (?:mile|minute)|\d+ (?:miles?|minutes?|mins?|hours?|nights?|days?))\b/i;
-const CLAIMS_REAL = /\b(?:right now|currently|quoted|exact(?:ly)?|confirmed|checked|listed at|on (?:the|their) (?:app|site|website))\b/i;
-const NEGATED_REAL = /(?:\bnot|\bnever|\bno|n't|n’t)\s+(?:(?:a|an|the|yet|been|really)\s+)*(?:live|quoted|exact|confirmed|checked)\b/gi;
-const THEIR_RECORDS = /\b(?:balance|account|statement|spent|paid|charged|owe[ds]?|receipts?|refund(?:ed)?|deposit(?:ed)?|invoice|order total|your total|payout|salary|paycheck|billed)\b/i;
-const ASKS_PRICE = /\b(?:how much|cost|costs|price[ds]?|pricing|fares?|estimate|run me|set me back|expensive|cheap(?:er|est)?)\b/i;
+// A figure said to come from somewhere (an app showing it, a site listing it, a business quoting it)
+// is a claim about that place, never Reason's own estimate.
+const CLAIMS_REAL = /\b(?:right now|currently|quot(?:e|es|ed|ing)|exact(?:ly)?|confirmed|checked|listed|lists?|listing|show(?:s|ing|n)|according to|on (?:the|their|its) (?:app|site|website|page|menu))\b/i;
+const NEGATED_REAL = /(?:\bnot|\bnever|\bno|n't|n’t)\s+(?:(?:a|an|the|yet|been|really)\s+)*(?:live|quoted?|exact|confirmed|checked)\b/gi;
+const THEIR_RECORDS = /\b(?:balances?|accounts?|statements?|spent|paid|charged|owe[ds]?|owing|receipts?|refunds?|refunded|deposits?|deposited|invoices?|order total|payouts?|salary|paychecks?|billed|bills?|checking|savings|bank|(?:credit|debit) card|subscriptions?|membership|rent|mortgage|your (?:total|share|cut|half|portion|part|card|plan|tab)|you(?: have|'ve got|’ve got) (?:about|around|roughly|maybe|\$))\b/i;
+// They asked what a thing or a trip costs. Not "how much time/longer", and never a question about
+// their own money or records ("how much is in my checking", "how much do I owe Sam"): a figure
+// there is a fact about them, and an estimate of it is an invented fact.
+const ASKS_PRICE = /\b(?:how much(?!\s+(?:time|longer|later|further|farther|more time|sleep|space|room|data|storage|battery|weight|water|left)\b)|cost|costs|price[ds]?|pricing|fares?|estimate|run me|set me back|expensive|cheap(?:er|est)?)\b/i;
+const ASKS_THEIRS = /\b(?:balances?|checking|savings|bank|statements?|owe[ds]?|owing|paid|spent|charged|refunds?|refunded|receipts?|deposits?|deposited|paychecks?|salary|invoices?|billed|payouts?|did (?:i|we) (?:pay|spend)|(?:in|on|from) (?:my|our) (?:account|card))\b|\b(?:my|our)\s+(?:[\w'’-]+\s+){0,3}?(?:accounts?|cards?|bills?|rent|mortgage|subscriptions?|membership|plan|orders?|total|budget|share|cut|tab|tuition|insurance|loan)\b/i;
 // A sentence that only means something about the one before it: "That assumes 16 miles" under a
 // dropped fare reads as if the fare were still there.
 const LEANS_BACK = /^(?:that|this|which|those|these)(?:'s|’s| is| was| would| assumes| includes| covers| comes| works| adds| does| doesn't| isn't)\b|^(?:assuming|based on)\b/i;
@@ -649,7 +657,10 @@ const LEANS_BACK = /^(?:that|this|which|those|these)(?:'s|’s| is| was| would| 
  */
 function labelledEstimate(all, i) {
   const s = all[i];
-  const near = `${s} ${all[i + 1] ?? ""}`;
+  // The sentence after labels this one only when it states no figure of its own: "My estimate for
+  // the cab is $64, assuming 16 miles" labels the cab, never "The hotel is $189" before it.
+  const next = all[i + 1] ?? "";
+  const near = new RegExp(REPLY_MONEY.source).test(next) ? s : `${s} ${next}`;
   if (!ESTIMATE_LABEL.test(near) || !ESTIMATE_BASIS.test(near)) return false;
   return !CLAIMS_REAL.test(s.replace(NEGATED_REAL, "")) && !THEIR_RECORDS.test(s);
 }
@@ -763,9 +774,12 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       }
     }
     for (const f of loose) if (!grouped.has(f.cents) && !figureKnown(f.fig, f.cents, worked, { approx: false })) unchecked.push(f.fig);
+    // They asked what a thing or a trip costs (ASKS_PRICE), and this is the turn's reply: the only
+    // place a labelled estimate of Reason's own may stand. A message_send is refused either way.
+    const askedPrice = turnReply && t.kind === "user" && ASKS_PRICE.test(ownWords(t.own)) && !ASKS_THEIRS.test(ownWords(t.own));
     if (unchecked.length) {
       flags.push({ rule: "dollar_unsourced", figures: unchecked });
-      if (!unread) fixes.push({ key: "dollar:" + unchecked.join(","), hard: true, line: `It states ${unchecked.length > 1 ? "figures" : "a figure"} nothing backs — ${unchecked.join(", ")}: no tool read ${unchecked.length > 1 ? "them" : "it"} this turn, and ${unchecked.length > 1 ? "they are" : "it is"} not something they said or sent or something you remember about them. If a quick tool can check it (web_search, offer_check, a quote), check it now and use what it says. If they asked what something costs and nothing can give a real price, you may give your own estimate: in the same sentence call it your estimate and say what it assumes (the distance, the time, the rates you used); it must never read as a live price, a quote, or a figure from their records. Otherwise leave the figure out: a price nothing backs that is not labelled that way is taken out of this rewrite before it is sent, hedged or not. Then say plainly, once and in your own words, that you can't give a number and that you'll check it if they want.` });
+      if (!unread) fixes.push({ key: "dollar:" + unchecked.join(","), hard: true, line: `It states ${unchecked.length > 1 ? "figures" : "a figure"} nothing backs — ${unchecked.join(", ")}: no tool read ${unchecked.length > 1 ? "them" : "it"} this turn, and ${unchecked.length > 1 ? "they are" : "it is"} not something they said or sent or something you remember about them. If a quick tool can check it (web_search, offer_check, a quote), check it now and use what it says. ${askedPrice ? "They asked what something costs: if nothing can give a real price, you may give your own estimate: in the same sentence call it your estimate (\"my estimate\") and say what it assumes (the distance, the time, the rates you used); it must never read as a live price, a quote, something an app or a business shows, or a figure from their records. " : ""}Otherwise leave the figure out: a price nothing backs${askedPrice ? " that is not labelled that way" : ""} is taken out of this rewrite before it is sent, hedged or not. Then say plainly, once and in your own words, that you can't give a number and that you'll check it if they want.` });
     }
     const staleNow = stale.filter(x => !new RegExp(`as of|${x.as_of.split(" ")[0]}`, "i").test(reply));
     if (staleNow.length) {
@@ -816,7 +830,6 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
         const parts = sentencesOf(text);
         const all = parts.filter(p => typeof p !== "string").flat();
         // Their own estimate, labelled as one, stands when they asked a price (see labelledEstimate).
-        const askedPrice = t.kind === "user" && ASKS_PRICE.test(ownWords(t.own));
         const estimates = new Set();
         const dropAt = new Set();
         all.forEach((x, i) => {
@@ -827,7 +840,8 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
           dropAt.add(i);
         });
         // What only leaned on a dropped sentence goes with it.
-        for (let i = 1; i < all.length; i++) if (dropAt.has(i - 1) && LEANS_BACK.test(all[i].trim())) dropAt.add(i);
+        // Never a sentence carrying a figure that stands: what is checked is a fact on its own.
+        for (let i = 1; i < all.length; i++) if (dropAt.has(i - 1) && LEANS_BACK.test(all[i].trim()) && !new RegExp(REPLY_MONEY.source).test(all[i])) dropAt.add(i);
         let n = 0;
         const left = joinBack(parts.map(p => (typeof p === "string" ? p : p.filter(() => !dropAt.has(n++)))));
         const dropped = unchecked.filter((fig, k) => all.some((x, i) => dropAt.has(i) && carries[k].test(x)));
