@@ -14646,3 +14646,22 @@ export function setFactSources(conversationId, id, messageIds) {
 // REASON_ENCRYPT_STRICT=1 (tests, shadow copies): SQLite itself refuses plaintext in a sealed column.
 if (restcrypt.flagOn() && process.env.REASON_ENCRYPT_STRICT === "1") restcrypt.installStrictTriggers(db);
 else restcrypt.dropStrictTriggers(db);
+
+// The greetings a person's calls open with (src/calls/greetings.js, 2026-11-15): a few written ahead
+// by the side model, per time of day, and the last three said. JSON; '{}' is none yet (the plain
+// "Hey <name>." until the first are written). Read with the account row at pickup: no wait, no model.
+addColumnIfMissing("accounts", "call_greetings", "TEXT NOT NULL DEFAULT '{}'");
+
+/** The greeting stock of one account, parsed; {} for none or a bad value. */
+export function callGreetings(conversationId) {
+  try {
+    const r = db.prepare("SELECT call_greetings FROM accounts WHERE conversation_id = ?").get(conversationId);
+    const v = JSON.parse(r?.call_greetings || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
+}
+
+/** Replace one account's greeting stock. False when there is no account row. */
+export function setCallGreetings(conversationId, value) {
+  return db.prepare("UPDATE accounts SET call_greetings = ? WHERE conversation_id = ?").run(JSON.stringify(value ?? {}), conversationId).changes > 0;
+}

@@ -151,7 +151,6 @@ export const CALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 // Phone networks need a few hundred ms after connect before audio passes through. Anything spoken
 // in that window gets clipped. A short throwaway lead-in absorbs it: if clipped, the real greeting
 // arrives clean; if not, it sounds like a natural pickup.
-const LEAD_INS = ["oh,", "ah,", "hey —", "yo,"];
 
 /**
  * What Reason says when it picks up.
@@ -160,21 +159,13 @@ const LEAD_INS = ["oh,", "ah,", "hey —", "yo,"];
  * model in the loop yet. It is short on purpose: the opening line's job is to hand the conversation
  * to them having already shown it knows what is going on, and then get out of the way.
  */
-export function openingLineFor({ person, conversationId = "", classic = false }) {
-  // Their own call, carry-over on: fitted to the time of day, never the last call's line (./carryover.js).
-  const varied = conversationId ? greetingFor({ conversationId, name: person?.name ?? "", direction: "in", classic }) : "";
-  // REASON_CALL_FEEL=classic (./callclassic.js): call 112's opening, any lead-in in front (as at 752a9e72).
-  if (classic) {
-    const lead = LEAD_INS[Math.floor(Math.random() * LEAD_INS.length)];
-    if (varied) return `${lead} ${varied}`;
-    const named = person?.name && person.name !== "the person I work for" ? `hey ${person.name}` : "hey";
-    return `${lead} ${named} — what's up?`;
-  }
-  // Never "hey — hey Omari" (calls 114-116): a line that opens on "hey" gets one of the other lead-ins.
-  const first = person.name && person.name !== "the person I work for" ? `hey ${person.name}` : "hey";
-  const line = varied || `${first} — what's up?`;
-  const leads = /^hey\b/i.test(line) ? LEAD_INS.filter(l => !/^hey\b/i.test(l)) : LEAD_INS;
-  return `${leads[Math.floor(Math.random() * leads.length)]} ${line}`;
+export function openingLineFor({ person, conversationId = "", classic = false, now = clock.now() }) {
+  // Written ahead by a model for this person, fitted to the time of day in their zone, never one of
+  // their last three (./greetings.js); the plain "Hey <name>." when none fits. No lead-in of code's
+  // ("yo,", "oh,"): the whole line is the written one. No wait and no model call here.
+  const first = person?.name && person.name !== "the person I work for" ? person.name : "";
+  if (!conversationId) return first ? `Hey ${first.split(/\s+/)[0]}.` : "Hey.";
+  return greetingFor({ conversationId, name: first, direction: "in", classic, now });
 }
 
 

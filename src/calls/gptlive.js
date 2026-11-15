@@ -21,6 +21,7 @@
 // Docs read 2026-10-31: developers.openai.com/api/docs/guides/live, live-delegation (client mode),
 // voice-websockets (pcmu 8k), voice-server-controls (playback control), live-conversations (greeting,
 // usage, close), voice-sip, live-partner-integrations (Twilio Media Streams).
+import { refillSoon } from "./greetings.js";
 import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import { writeSealed } from "../restfiles.js";
 import * as db from "../db.js";
@@ -4507,6 +4508,8 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   noteThirdPartyTurns({ row: settled, live });
   const noted = noteOnTask({ row: settled, live, log });
   fromcall.onCallEnded(settled, { log });
+  // Their next call's opening, written now while nobody waits on it (./greetings.js); never awaited.
+  if (Number(settled.is_owner) === 1) { try { refillSoon(settled.conversation_id, { name: accounts.ownerOf(settled.conversation_id)?.name ?? "", log }); } catch { /* the plain line still works */ } }
   // How the call went is the model's read (./goalmet.js, started by the settle): waited for, briefly,
   // so the owner is told what really happened — a mailbox that isn't set up is one text of its own.
   // Their own call is read for what it carries over (./carryover.js) in the same wait: the turn after

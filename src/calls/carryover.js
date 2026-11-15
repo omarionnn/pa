@@ -34,6 +34,7 @@ import { config, clock } from "../config.js";
 import { askStructured, sideAskAllowed } from "../backends/side.js";
 import { SPOKE_TO_SOMETHING } from "./provider.js";
 import { answeredByMachine } from "./outcome.js";
+import { pickGreeting } from "./greetings.js";
 
 /** Is the carry-over on for calls of this conversation's account? */
 export function carryoverFor(conversationId) {
@@ -589,24 +590,9 @@ export function brokeNote(row) {
 
 // ---------- how a call opens and closes ----------
 
-// 14 of 16 calls opened "hey Omari — what's up?" (call audit 11-11). The opening is still code's words —
-// it is said before any turn has run — but it fits the time of day, says "again" when they spoke a
-// little while ago, and is never the line the last call opened with.
-export const GREETINGS = {
-  morning: ["morning, {n} — what's up?", "hey {n}, good morning — how's it going?", "hey {n} — how's your morning?"],
-  afternoon: ["hey {n} — how's your afternoon going?", "afternoon, {n} — what's going on?", "hey {n}, good to hear from you — what's up?"],
-  evening: ["hey {n} — how's your evening?", "evening, {n} — what's up?", "hey {n}, good to hear from you — how was today?"],
-  night: ["hey {n} — you're up late. what's up?", "hey {n} — late one tonight? what's going on?", "hey {n}, what's up?"],
-  // Not "what did we miss?" (calls 115, 116): it asks them to fill Reason in, the one thing Reason should not need.
-  again: ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, good to hear from you again — what's up?"],
-};
-// A call Reason places keeps "…, what's up?" at the end: the voice swaps that for why it rang (`openingPurpose`).
-const SALUTES = {
-  morning: ["morning {n}", "hey {n}, good morning"], afternoon: ["hey {n}", "afternoon {n}"],
-  evening: ["hey {n}", "evening {n}"], night: ["hey {n}"], again: ["hey again {n}", "hey {n}"],
-};
-/** The "again" lines as on call 112 (752a9e72), for REASON_CALL_FEEL=classic. */
-export const CLASSIC_AGAIN = ["hey again, {n} — what's up?", "hey {n} — back so soon? what's going on?", "hey {n}, what did we miss?"];
+// 14 of 16 calls opened "hey Omari — what's up?" (call audit 11-11), and the fixed lists that replaced it
+// still opened three calls in a row almost the same way, once "what did we miss?" (2026-11-14). The
+// opening is now written ahead by a model and picked at pickup (./greetings.js).
 /** They spoke this recently: the opening says "again". */
 export const AGAIN_MS = 3 * 3600_000;
 /** They ring back this soon after a call with notes: the opening picks up from it. */
@@ -640,36 +626,24 @@ export function dayPart(ms, tz = config.tz) {
 }
 
 /**
- * The opening line for a person's own call, or "" (off for them: the caller keeps its old line).
- * `direction` "in": they rang. "out": Reason rang with no reason of its own to say.
+ * The opening line for a person's own call. `direction` "in": they rang. "out": Reason rang with no
+ * reason of its own to say ("<salute>, what's up?": the voice adds why it rang, gptlive.js openingPurpose).
+ * Current mode, carry-over on, ringing back within PICKUP_MS of a call with notes: it picks up from
+ * them (`pickUpLine`). Otherwise, and always in REASON_CALL_FEEL=classic (call 112's rule: what was left
+ * open is not recited unless they ask), the line written ahead for them (./greetings.js). For everyone.
  */
-export function greetingFor({ conversationId, name = "", direction = "in", now = clock.now(), tz = config.tz, classic = false } = {}) {
-  if (!conversationId || !carryoverFor(conversationId)) return "";
-  let rows = [];
-  try { rows = db.listCalls(conversationId, { limit: 8 }).filter(r => Number(r.is_owner) === 1 && Number(r.created_at) < now); } catch { rows = []; }
-  const talked = rows.filter(wasTheirCall);
-  const again = talked.some(r => now - Number(r.ended_at ?? r.created_at) < AGAIN_MS);
-  const part = again ? "again" : dayPart(now, tz);
-  const who = name && name !== "the person I work for" ? name : "";
-  // Ringing back soon after a call (call 115: six minutes on, "what did we miss?"): pick up from its notes.
-  // REASON_CALL_FEEL=classic (./callclassic.js): call 112's greeting (752a9e72): no pick-up line, its "again"
-  // lines, and the last call read off the newest row.
-  const picked = !classic && direction === "in" && talked[0] && now - endOf(talked[0]) < PICKUP_MS ? pickUpLine(talked[0], who) : "";
-  if (picked) return picked;
-  const fill = (l) => (who ? l.replace("{n}", who) : l.replace(/,? ?\{n\}/, "")).replace(/^[\s,—-]+/, "");
-  const options = (direction === "in" ? (classic && part === "again" ? CLASSIC_AGAIN : GREETINGS[part]) : SALUTES[part].map(s => `${s}, what's up?`)).map(fill);
-  // What the last call opened with, off its own transcript (an inbound row's greeting is not on the row).
-  // The newest row with words: the call being greeted is already a row, with none yet (call 116 read its own
-  // empty row and opened with call 115's line).
-  const prev = classic ? rows[0] : rows.find(r => String(r.transcript ?? "").trim() || String(r.announcement ?? "").trim());
-  const last = String(prev?.transcript ?? "").split("\n").find(l => /^Reason\s*:/.test(l)) ?? String(prev?.announcement ?? "");
-  const said = last.toLowerCase();
-  const start = rows.length % options.length;
-  for (let i = 0; i < options.length; i++) {
-    const o = options[(start + i) % options.length];
-    if (!said.includes(o.toLowerCase())) return o;
+export function greetingFor({ conversationId, name = "", direction = "in", now = clock.now(), classic = false, log = () => {} } = {}) {
+  if (!conversationId) return "";
+  if (!classic && direction === "in" && carryoverFor(conversationId)) {
+    let rows = [];
+    try { rows = db.listCalls(conversationId, { limit: 8 }).filter(r => Number(r.is_owner) === 1 && Number(r.created_at) < now); } catch { rows = []; }
+    const talked = rows.filter(wasTheirCall);
+    const who = name && name !== "the person I work for" ? name : "";
+    const picked = talked[0] && now - endOf(talked[0]) < PICKUP_MS ? pickUpLine(talked[0], who) : "";
+    if (picked) return picked;
   }
-  return options[start];
+  if (direction === "out") return `${pickGreeting({ conversationId, name, kind: "salute", now, log }).line}, what's up?`;
+  return pickGreeting({ conversationId, name, kind: "greet", now, log }).line;
 }
 
 /** Replaces "When you both say goodbye, sign off warmly and briefly." on their own call. */
