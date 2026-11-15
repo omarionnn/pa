@@ -34,6 +34,7 @@ import { config, clock, isOwnLine } from "./config.js";
 import { freshRideLinks } from "./ridelinks.js";
 import * as incidents from "./incidents.js";
 import { withoutNoReply } from "./plain.js";
+import { assistantNicknames, withoutNicknameVocative } from "./identity.js";
 import { effectPartIndex } from "./links.js";
 import { deliveryGatedOn } from "./trustflags.js";
 import { noteStatus as notePictureStatus } from "./pictureout.js";
@@ -58,6 +59,22 @@ export function backoffMs(attempts) {
 }
 
 /**
+ * The last line before a text to them: the name they gave Reason, used to address THEM ("…, Nimbus:"),
+ * is taken out; Reason naming itself ("Nimbus here") stays (src/identity.js withoutNicknameVocative).
+ * Only to the person whose Reason this is — to anybody else a name is theirs to have. Never throws.
+ */
+export function notByTheNickname(text, { conversationId, toOwner = false, log = () => {} } = {}) {
+  if (!toOwner || !conversationId || typeof text !== "string" || !text) return text;
+  try {
+    const names = assistantNicknames(conversationId);
+    if (!names.length) return text;
+    const r = withoutNicknameVocative(text, names);
+    if (r.changed) log({ nickname_vocative_dropped: conversationId });
+    return r.text;
+  } catch { return text; }
+}
+
+/**
  * One outbound message, durably.
  *
  * Returns the first attempt's result, so a caller that wants to know whether the text has gone
@@ -77,6 +94,7 @@ export async function sendDurable({ channel, router, conversationId, to, text, c
   }
   // A ride link goes out as today's builder makes it, wherever the words came from (src/ridelinks.js).
   text = await freshRideLinks(text, { conversationId, log });
+  text = notByTheNickname(text, { conversationId, toOwner, log });
   const idemKey = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
   const { fresh, row } = db.enqueueOutbound({
     idemKey, conversationId, channel, address: to, chatId,
@@ -120,7 +138,7 @@ export async function sendSequence({ channel, router, conversationId, to, parts,
   // marker is no part at all.
   const given = (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim());
   const clean = given.map(t => withoutNoReply(t, { path: "outbox_parts", log })).filter(q => !q.empty).map(q => q.text);
-  for (const t of clean) texts.push(await freshRideLinks(t, { conversationId, log }));
+  for (const t of clean) texts.push(notByTheNickname(await freshRideLinks(t, { conversationId, log }), { conversationId, toOwner, log }));
   if (!texts.length) return given.length ? { ...NOTHING_LEFT } : { ok: false, error: "there was nothing to send", retryable: false };
   if (texts.length === 1) {
     return await sendDurable({ channel, router, conversationId, to, text: texts[0], chatId, replyTo, sendStyle, idempotencyKey, toOwner, log });
