@@ -61,7 +61,7 @@ let fx;
 beforeEach(() => {
   at("2026-11-12T15:00:00Z");
   db.db.exec("DELETE FROM series; DELETE FROM timers; DELETE FROM outbox; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations;"
-    + " DELETE FROM plaid_items; DELETE FROM plaid_accounts; DELETE FROM plaid_transactions; DELETE FROM plaid_links; DELETE FROM plaid_reads; DELETE FROM plaid_slots;");
+    + " DELETE FROM bank_checkin_grants; DELETE FROM plaid_items; DELETE FROM plaid_accounts; DELETE FROM plaid_transactions; DELETE FROM plaid_links; DELETE FROM plaid_reads; DELETE FROM plaid_slots;");
   bankgrant._reset();
   db.upsertAccount({ conversationId: C, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertThread({ conversationId: C, channel: "fake", address: OWNER, isOwner: true, service: "iMessage" });

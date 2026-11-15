@@ -245,4 +245,4 @@ export function oweLine(timerId, line) { if (timerId != null) owed.set(Number(ti
 export function takeOwed(timerId) { const v = owed.get(Number(timerId)) ?? null; owed.delete(Number(timerId)); return v; }
 
 /** Tests only. */
-export function _reset() { q("DELETE FROM bank_checkin_grants").run(); owed.clear(); }
+export function _reset() { owed.clear(); }
