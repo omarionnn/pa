@@ -45,7 +45,7 @@ const written = (first, extra = {}) => ({
   morning: [`Morning, ${first}! How's it going?`, `Good morning, ${first}, nice to hear you.`],
   afternoon: [`Hey ${first}, good to hear from you!`, `Hi ${first}, how's your afternoon?`],
   evening: [`Evening, ${first}! How are you doing?`, `Hey ${first}, lovely to hear from you.`],
-  night: [`Hey ${first}, you're up late!`, `Hi ${first}, good to hear you.`],
+  night: [`Hey ${first}, good to hear from you!`, `Hi ${first}, nice to hear from you.`],
   again: [`Hey again, ${first}!`, `Oh hi again, ${first}.`],
   salute: [`Morning, ${first}`, `Hey ${first}`],
   ...extra,
@@ -119,7 +119,7 @@ test("the writer keeps only lines that pass the guard, per band, for their first
   const ask = async () => ({ value: {
     morning: ["Morning, Ana! How's it going?", "Hey Ana, what did we miss?", "Good morning, Ana, it's 8 already"],
     afternoon: ["Hey Ana, good to hear from you!"], evening: ["Evening, Ana!", "Hey Ana, I booked dinner"],
-    night: ["Hey Ana, you're up late!"], again: ["Hey again, Ana!"], salute: ["Hey Ana", "Morning Ana, how are you?"],
+    night: ["Hey Ana, good to hear from you!"], again: ["Hey again, Ana!"], salute: ["Hey Ana", "Morning Ana, how are you?"],
   } });
   const r = await g.writeGreetings(P.A, { name: NAME.A, ask });
   assert.equal(r.ok, true);
@@ -157,4 +157,35 @@ test("the nickname they gave the assistant is never how a written line addresses
   const line = g.pickGreeting({ conversationId: P.A, name: NAME.A, refill: () => {} }).line;
   assert.doesNotMatch(line, /Nimbus/);
   config.oneIdentity = "off";
+});
+
+// F (2026-11-15): late-evening lines read like a goodnight. A greeting is a hello at the start of a call.
+test("guard: no wind-down, no goodnight, nothing about how they are or what they should do, and always a hello", () => {
+  const why = (l) => g.greetingOk(l, { first: "Robin" }).why;
+  for (const [line, want] of [
+    ["Hello, Robin, hope you're settling in for a restful night.", "a wind-down"],
+    ["Robin, I hope you're able to slow down and unwind now.", "a wind-down"],
+    ["Hey Robin, good night!", "a wind-down"], ["Hi Robin, sweet dreams!", "a wind-down"], ["Hey Robin, time to relax?", "a wind-down"],
+    ["Hey Robin, off to bed soon?", "a wind-down"], ["Hi Robin, get some sleep!", "a wind-down"],
+    ["Hi Robin, still up? Good to hear from you!", "about how they are"], ["Hey Robin, you sound happy!", "about how they are"],
+    ["Hey Robin, take it easy tonight.", "telling them how to feel"], ["Hi Robin, enjoy your evening!", "telling them how to feel"],
+    ["Robin, I hope tonight is kind to you.", "no hello"],
+  ]) assert.equal(why(line), want, line);
+  assert.equal(g.greetingOk("Robin, wishing you well.", { first: "Robin" }).ok, false);
+  for (const ok of ["Evening, Robin!", "Hey Robin, good to hear from you!", "Hi Robin, how's it going?", "Morning, Robin! How are you?", "Robin, lovely to hear from you!"]) assert.equal(why(ok), "", ok);
+});
+
+test("purge: stored lines that fail today's check are taken out (counts only), and pickup never says one", () => {
+  db.setCallGreetings(P.A, { ...written("Ana"), night: ["Hello, Ana, hope you're settling in for a restful night.", "Ana, I hope you're able to slow down and unwind now.", "Hey Ana, good to hear from you!"], evening: ["Hi Ana, enjoy your evening!"] });
+  const r = g.purgeStock(P.A);
+  assert.deepEqual(r, { removed: 3, low: true });
+  const s = db.callGreetings(P.A);
+  assert.deepEqual(s.night, ["Hey Ana, good to hear from you!"]);
+  assert.deepEqual(s.evening, []);
+  assert.deepEqual(g.purgeStock(P.A), { removed: 0, low: true }, "nothing left to take out");
+  // An old line still in a stock is skipped at pickup and dropped from it.
+  db.setCallGreetings(P.A, { ...written("Ana"), evening: ["Ana, I hope you're able to slow down and unwind now.", "Evening, Ana!"] });
+  clock.skip(Date.parse("2026-11-16T23:30:00Z") - clock.now()); // 6:30pm New York
+  assert.equal(g.pickGreeting({ conversationId: P.A, name: NAME.A, refill: () => {} }).line, "Evening, Ana!");
+  assert.deepEqual(db.callGreetings(P.A).evening, []);
 });
