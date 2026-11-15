@@ -47,7 +47,7 @@ const SHOP = "+16468580667";
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM outbox; DELETE FROM threads; DELETE FROM accounts; DELETE FROM messages; DELETE FROM confirmations; DELETE FROM action_ledger;");
+  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM outbox; DELETE FROM threads; DELETE FROM accounts; DELETE FROM messages; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM held_actions;");
   db.saveConversation(C, []);
   db.saveConversation(OTHER, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari Test", isOperator: true });
@@ -489,4 +489,152 @@ test("delete my data: their recordings of calls they asked to be recorded go wit
   const one = await runTool("call_recording_delete", { call_id: three.id }, { conversationId: C, messages: [] });
   assert.equal(one.ok, true, one.error);
   assert.equal(existsSync(three.recording_file), false);
+});
+
+// ---------- calls with no question before them ----------
+//
+// Which calls to somebody else get what, before they dial (src/tools.js runTool → call_place):
+//   (a) a yes is asked (confirm_request): the offer rides in that question;
+//   (b) no yes asked — their request was the yes (src/askedcall.js), a standing permission, a to-do plan —
+//       but the undo window holds it: the offer rides in the "calling … in 30s" line;
+//   (c) neither (their call undo window set to 0): nothing waits; the text after the call carries a
+//       one-time tip.
+
+const undo = await import("../src/undo.js");
+const { runReleasedAction } = await import("../src/tools.js");
+const { tellTheOwner } = await import("../src/calls/postcall.js");
+const yesJudge = async () => ({ value: { asked: "yes", callee: "business", only_asks: "yes" } });
+const REQUEST = "call Luigi's and ask if they have a table at 8";
+
+async function plainAskCall(conv, { calls = new FakeCallProvider(), messages = [said(conv, REQUEST)], input = ASK } = {}) {
+  return runTool("call_place", input, { conversationId: conv, calls, messages, kind: "user", askedCallJudge: yesJudge });
+}
+async function release(calls) {
+  return undo.pass({ run: (row) => runReleasedAction(row, { calls }) });
+}
+function withWindow(seconds, fn) {
+  const was = config.undoWindowSeconds;
+  config.undoWindowSeconds = seconds;
+  return Promise.resolve().then(fn).finally(() => { config.undoWindowSeconds = was; });
+}
+
+test("(b) no question, undo window: the offer is IN the \"calling … in 30s\" line; \"record it\" inside the window records that call, which still goes on time", () => withWindow(30, async () => {
+  const calls = new FakeCallProvider();
+  const held = await plainAskCall(C, { calls });
+  assert.equal(held.undo_held, true, JSON.stringify(held).slice(0, 300));
+  assert.equal(manner.HOLD_RECORD_OFFER, ", or say \"record it\" if you want the audio (I'd tell them it's recorded)");
+  assert.match(held.say_exactly, /^calling .+ in 30s — just tell me if you want to stop it, or say "record it" if you want the audio \(I'd tell them it's recorded\)$/);
+  assert.match(held.note, /call call_place again with the same 'to' and record_said/);
+  assert.equal(calls.placed.length, 0);
+  const due = db.liveHolds(C)[0].due_at;
+  // Ten seconds in, they say "record it".
+  clock.skip(10_000);
+  const added = await runTool("call_place", { ...ASK, record_said: "record it" }, { conversationId: C, calls, messages: [said(C, REQUEST), said(C, "record it")], kind: "user" });
+  assert.equal(added.ok, true, JSON.stringify(added).slice(0, 300));
+  assert.equal(added.recording_added, true);
+  assert.equal(added.going_out_in_seconds, 20);
+  assert.match(added.say_exactly, /^ok, I'll record it and tell them at the start that it's recorded — still calling in 20s$/);
+  assert.equal(calls.placed.length, 0, "nothing new dialled");
+  assert.equal(db.liveHolds(C).length, 1);
+  assert.equal(db.liveHolds(C)[0].due_at, due, "no later than it would have gone");
+  // Not before its time; at its time, recorded, with the notice on the row.
+  assert.equal((await release(calls)).due, 0);
+  clock.skip(due - clock.now());
+  assert.equal((await release(calls)).sent, 1);
+  assert.equal(calls.placed.length, 1);
+  const row = db.db.prepare("SELECT * FROM calls WHERE conversation_id = ? ORDER BY id DESC").get(C);
+  assert.equal(Number(row.record_asked), 1);
+  assert.equal(row.record_said, "record it");
+  assert.equal(gl.lineAnnouncement(row), manner.recordNoticeLine("Omari"));
+  assert.equal(db.recordAskFor(C, SHOP), null, "used by that call");
+}));
+
+test("(b) no reply in the window: not recorded, and it goes exactly on time; \"record it\" after it went is too late and is not kept for a later call", () => withWindow(30, async () => {
+  const calls = new FakeCallProvider();
+  await plainAskCall(C, { calls });
+  const due = db.liveHolds(C)[0].due_at;
+  clock.skip(due - clock.now() - 1);
+  assert.equal((await release(calls)).due, 0);
+  clock.skip(1);
+  assert.equal((await release(calls)).sent, 1);
+  const row = db.db.prepare("SELECT * FROM calls WHERE conversation_id = ? ORDER BY id DESC").get(C);
+  assert.equal(Number(row.record_asked), 0);
+  assert.equal(row.record_offer, "hold");
+  const late = await runTool("call_place", { ...ASK, record_said: "record it" }, { conversationId: C, calls, messages: [said(C, REQUEST), said(C, "record it")], kind: "user" });
+  assert.equal(late.status, "too_late", JSON.stringify(late).slice(0, 300));
+  assert.equal(db.recordAskFor(C, SHOP), null, "never left for the next call to that number");
+  assert.equal(calls.placed.length, 1);
+}));
+
+test("(a) a question was asked: the offer was in it, so the \"calling … in 30s\" line is today's, word for word", () => withWindow(30, async () => {
+  const { out } = await askThenCall(C, { request: REQUEST, reply: "yes" });
+  assert.equal(out.undo_held, true);
+  assert.doesNotMatch(out.say_exactly, /record it/);
+  assert.match(out.say_exactly, /^calling .+ in 30s — just tell me if you want to stop it$/);
+}));
+
+test("switch off: the \"calling … in 30s\" line and its note are today's, byte for byte", () => withWindow(30, async () => {
+  config.callRecordAsk = "off";
+  const held = await plainAskCall(C);
+  assert.equal(held.undo_held, true);
+  assert.equal(held.say_exactly, undo.holdLine({ doing: undo.describe({ action: "call_place", input: ASK, conversationId: C, to: SHOP }).doing, seconds: 30 }));
+  assert.equal(held.note, "NOTHING HAS GONE YET. It goes in 30 seconds unless they stop it. Say the line in say_exactly, word for word, as your whole reply — do not add to it, do not explain the window, and do NOT say you sent it. If they say anything in the next 30 seconds that means stop, call undo_send.");
+}));
+
+test("(c) neither a question nor a window: it dials at once; the text after it says, ONCE per person ever, that next time they can say \"record it\"", async () => {
+  // Window 0 (this file's REASON_UNDO_SECONDS): nothing waits.
+  const calls = new FakeCallProvider();
+  const events = [];
+  const runtime = { event: async (_c, text) => { events.push(text); return events.length === 2 ? "" : "they have a table at 8"; } };
+  let n = 0;
+  const placeAndTell = async () => {
+    const out = await plainAskCall(C, { calls, input: { to: `+1646858070${n++}`, goal: "ask about a table for two at 8" } });
+    assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+    assert.ok(!out.undo_held, "no wait added");
+    db.updateCall(C, out.call_id, { state: "completed", recording_state: "not_applicable", recording_why: manner.NOT_RECORDED_WHY });
+    const row = db.getCall(C, out.call_id);
+    assert.equal(row.record_offer, "none");
+    await tellTheOwner({ row, live: {}, runtime });
+    return events.at(-1);
+  };
+  const first = await placeAndTell();
+  assert.ok(first.includes(`End the message with this one line, as written: ${manner.RECORD_TIP_LINE}`));
+  assert.equal(manner.RECORD_TIP_LINE, "Next time, just say \"record it\" when you ask me to call somewhere and I'll send you the audio (I'd tell them it's recorded).");
+  assert.ok(db.db.prepare("SELECT record_tip_told_at FROM accounts WHERE conversation_id = ?").get(C).record_tip_told_at, "kept on their account");
+  for (let i = 0; i < 3; i++) assert.ok(!(await placeAndTell()).includes(manner.RECORD_TIP_LINE), "never again");
+  // Another person gets theirs once too; a call they asked to be recorded never carries it.
+  const other = await plainAskCall(OTHER, { messages: [said(OTHER, REQUEST)], input: { to: "+16468580799", goal: "ask about a table" } });
+  db.updateCall(OTHER, other.call_id, { state: "completed" });
+  const otherRow = db.getCall(OTHER, other.call_id);
+  await tellTheOwner({ row: { ...otherRow, record_asked: 1 }, live: {}, runtime: { event: async (_c, t) => { events.push(t); return "ok"; } } });
+  assert.ok(!events.at(-1).includes(manner.RECORD_TIP_LINE));
+  await tellTheOwner({ row: otherRow, live: {}, runtime: { event: async (_c, t) => { events.push(t); return "ok"; } } });
+  assert.ok(events.at(-1).includes(manner.RECORD_TIP_LINE));
+});
+
+test("(c) a message that never went keeps the tip owed; switch off, never a tip and no offer marker", async () => {
+  const out = await plainAskCall(C);
+  db.updateCall(C, out.call_id, { state: "completed" });
+  await tellTheOwner({ row: db.getCall(C, out.call_id), live: {}, runtime: { event: async () => "" } });
+  assert.equal(db.db.prepare("SELECT record_tip_told_at FROM accounts WHERE conversation_id = ?").get(C).record_tip_told_at, null);
+  config.callRecordAsk = "off";
+  const off = await plainAskCall(C, { input: { to: "+16468580671", goal: "ask about a table" } });
+  const row = db.getCall(C, off.call_id);
+  assert.equal(row.record_offer, "");
+  const seen = [];
+  await tellTheOwner({ row: { ...row, state: "completed" }, live: {}, runtime: { event: async (_c, t) => { seen.push(t); return "ok"; } } });
+  assert.ok(!seen[0].includes(manner.RECORD_TIP_LINE));
+});
+
+test("Reason's own offer of a call may carry the recording option; \"yes, record it\" to it records the call that follows, now or later", async () => {
+  const def = toolsFor(C).find(t => t.name === "call_place");
+  assert.match(def.description, /When you offer a call yourself \("want me to call B&H and ask what they've got\?"\), you can add in the same offer, briefly, that you can record it; a "yes, record it" to that counts/);
+  assert.doesNotMatch(tools.find(t => t.name === "call_place").description, /When you offer a call yourself/, "not where the switch is off");
+  // Reason offered; they said "yes, record it"; the call goes on their own words.
+  const msgs = [said(C, "what lenses does B&H have?"), said(C, "yes, record it")];
+  const out = await runTool("call_place", { ...ASK, record_said: "record it" }, { conversationId: C, calls: new FakeCallProvider(), messages: msgs, kind: "user", askedCallJudge: yesJudge });
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+  assert.ok(out.call_id, JSON.stringify(out).slice(0, 300));
+  assert.equal(Number(db.getCall(C, out.call_id).record_asked), 1);
+  assert.equal(db.getCall(C, out.call_id).record_offer, "asked_for");
 });

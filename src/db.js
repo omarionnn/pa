@@ -2257,6 +2257,20 @@ addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
 // their own words that asked, as checked against what they wrote. 0 on every other call.
 addColumnIfMissing("calls", "record_asked", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("calls", "record_said", "TEXT NOT NULL DEFAULT ''");
+// How the recording was offered for this call, where the ask is on: 'question' (in the yes asked before it),
+// 'hold' (in the "calling … in 30s" line), 'asked_for' (they asked up front), 'none' (it went with no
+// message before it: the after-call text carries a one-time tip). '' where the ask is off.
+addColumnIfMissing("calls", "record_offer", "TEXT NOT NULL DEFAULT ''");
+// When this person was told, once ever, that they can say "record it" when asking for a call.
+addColumnIfMissing("accounts", "record_tip_told_at", "INTEGER");
+/** Claim the one-time "say record it next time" tip for this person: true once, ever. */
+export function claimRecordTip(conversationId, at = clock.now()) {
+  return db.prepare("UPDATE accounts SET record_tip_told_at = ? WHERE conversation_id = ? AND record_tip_told_at IS NULL").run(at, conversationId).changes === 1;
+}
+/** The tip did not go out after all (no message was sent): it is still owed. */
+export function unclaimRecordTip(conversationId, at) {
+  db.prepare("UPDATE accounts SET record_tip_told_at = NULL WHERE conversation_id = ? AND record_tip_told_at = ?").run(conversationId, at);
+}
 // What the Cartesia voice ran on a call, for the plan meter on /ops (src/planmeter.js): its seconds and
 // cents at the plan's rate, written when the Cartesia relay lets the call go — at its end, or when it
 // hands the call to GPT-Live (`cartesia_fell_back` 1), whose own cost then lands in cost_cents. Numbers
@@ -5873,7 +5887,7 @@ export function updateCall(conversationId, id, fields) {
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
     // A call they asked to be recorded (src/calls/manner.js `recordAskFor`).
-    "record_asked", "record_said",
+    "record_asked", "record_said", "record_offer",
     // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
     "cartesia_seconds", "cartesia_cents", "cartesia_fell_back", "cartesia_copy",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).

@@ -61,7 +61,7 @@ import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
-import { NOT_RECORDED_WHY, recordAskFor as recordAskOn, RECORD_ASK_OFFER, RECORD_WORDS, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, notRecordedAnswer } from "./calls/manner.js";
+import { NOT_RECORDED_WHY, recordAskFor as recordAskOn, RECORD_ASK_OFFER, HOLD_RECORD_OFFER, RECORD_WORDS, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, notRecordedAnswer } from "./calls/manner.js";
 import * as callTrial from "./calls/calltrial.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
@@ -591,6 +591,7 @@ export function toolsFor(conversationId) {
 export const CALL_NOT_RECORDED_WORDS = "Those calls are NOT audio-recorded: you get the summary and what was said, never audio, so never promise the owner a recording of one (the result's `recorded` says which).";
 export const CALL_RECORD_ASK_WORDS = "Those calls are NOT audio-recorded unless the owner asks for that one call to be: then it opens with \"Hi, this is Reason, an AI assistant calling for <first name>. Just so you know, this call is recorded.\", the audio comes to them afterwards automatically, and if the other side objects the recording stops and is deleted."
   + ` Whenever you ask them before a call to anyone but the owner ("want me to call?"), offer it IN THAT SAME MESSAGE, one message, never a second one: "${RECORD_ASK_OFFER}"`
+  + " When you offer a call yourself (\"want me to call B&H and ask what they've got?\"), you can add in the same offer, briefly, that you can record it; a \"yes, record it\" to that counts (pass their words as record_said), for a call now or one set up for later."
   + " If they already said to record it, don't ask again. A plain yes is NOT a yes to recording. Asked afterwards for audio of a call that was not recorded, say plainly it wasn't recorded and that next time they can ask you to record it.";
 const RECORD_SAID_PROP = Object.freeze({
   type: "string",
@@ -1844,7 +1845,7 @@ function olderCallIndex(conversationId, { skip = [], days = 60, limit = 40, now 
     }));
 }
 
-function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null }) {
+function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null, sayExtra = "", noteExtra = "" }) {
   if (ctx.releasedHold) return null;
   const held = holdFor(name, input, conversationId);
   if (!held) return null;
@@ -1869,10 +1870,10 @@ function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null }
     // for something else entirely (`react`). Two different holds in one codebase is fine; two
     // different holds under one key is how a receipt silently stops being written.
     ok: true, undo_held: true, held_id: row.id, going_out_in_seconds: seconds, to: d.toWhom || null,
-    say_exactly: undo.holdLine({ doing: d.doing, seconds }),
+    say_exactly: `${undo.holdLine({ doing: d.doing, seconds })}${sayExtra}`,
     note: `NOTHING HAS GONE YET. It goes in ${seconds} seconds unless they stop it. Say the line in say_exactly, word for word,`
       + ` as your whole reply — do not add to it, do not explain the window, and do NOT say you sent it.`
-      + ` If they say anything in the next ${seconds} seconds that means stop, call undo_send.`,
+      + ` If they say anything in the next ${seconds} seconds that means stop, call undo_send.${noteExtra}`,
     // The permission this is going out on travels with the hold, so a thing that went through
     // without asking still says so when it lands — the receipt is written at release and would
     // otherwise have lost the one sentence that answers "why did you do that".
@@ -8546,6 +8547,40 @@ export function recordChoice(c, to, input = {}, ctx = {}) {
   return { ok: false, why: mine.ok ? "those words do not ask for a recording" : mine.why };
 }
 
+/**
+ * "Record it", said while a call to `to` is waiting out its undo window (or already placed): the
+ * choice goes onto that call, or is refused as too late — never left lying around for a later call.
+ * Null when there is no such call (the ordinary path carries on).
+ */
+export function recordOntoWaitingCall(c, to, input = {}, ctx = {}) {
+  if (!to || !recordAskOn(c)) return null;
+  const held = db.liveHolds(c).find(h => h.action === "call_place" && normalizeNumber(h.input?.to) === to);
+  const live = held ? null : db.liveCallTo(to);
+  if (!held && !(live && live.conversation_id === c && Number(live.is_owner) !== 1)) return null;
+  const choice = recordChoice(c, to, input, ctx);
+  if (!choice || choice.ok === false) {
+    return {
+      ok: false, status: "record_not_accepted",
+      error: `The recording was NOT set up: ${choice?.why ?? "nothing asked for it"}. ${held ? "The waiting call still goes at the same time, not recorded." : "The call is already under way, not recorded."}`
+        + " A call is recorded only on their own words asking for it: put their words in record_said exactly as they wrote them.",
+    };
+  }
+  const still = held ? db.getHeldAction(held.id) : null;
+  if (!still || still.state !== "held") {
+    db.useRecordAsk(c, to);
+    return {
+      ok: false, status: "too_late",
+      error: "That call has already gone out, so it can't be recorded now. Say so plainly, in a line: it was already ringing, so this one isn't recorded; next time they can say \"record it\" when they ask.",
+    };
+  }
+  const seconds = Math.max(1, Math.round((still.due_at - clock.now()) / 1000));
+  return {
+    ok: true, recording_added: true, held_id: still.id, going_out_in_seconds: seconds,
+    say_exactly: `ok, I'll record it and tell them at the start that it's recorded — still calling in ${seconds}s`,
+    note: "Nothing new was dialled: the waiting call is now recorded and still goes at the same time. Say the line in say_exactly as your whole reply.",
+  };
+}
+
 /** What confirm_request hands back about recording for a call to `who` ("" where the ask is off, or for their own number). */
 export function recordOfferFor(c, who) {
   const to = normalizeNumber(who);
@@ -10215,7 +10250,12 @@ async function runToolInner(name, rawInput, ctx) {
     if (freeCalls) return freeCalls;
     // "Call them and record it", said up front: kept now, before any yes is asked, so the question that
     // follows does not ask about recording again (confirm_request `record_offer`).
-    if (String(input.record_said ?? "").trim() && !addressedToOwner(c, input.to)) recordChoice(c, normalizeNumber(input.to), input, ctx);
+    if (String(input.record_said ?? "").trim() && !addressedToOwner(c, input.to)) {
+      // "Record it" in reply to "calling … in 30s": onto the call that is waiting, which still goes on time.
+      const late = recordOntoWaitingCall(c, normalizeNumber(input.to), input, ctx);
+      if (late) return late;
+      recordChoice(c, normalizeNumber(input.to), input, ctx);
+    }
   }
 
   let confirmationId = null;
@@ -12300,7 +12340,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // record, payment details in the goal, the daily caps — and before the row and the dial. A
       // ringing phone is the least undoable thing Reason does, so the thirty seconds matter most
       // here; a call to their own number is not held, because that is them calling themselves.
-      const parkedCall = parkHeld({ name, input, conversationId: c, ctx, to });
+      // No yes was asked before this call (their request was the yes, a standing permission, a to-do
+      // plan): the recording is offered in the "calling … in 30s" line itself — same message, no wait.
+      const holdOffer = !toOwner && !recordAsk && !ctx.releasedHold && ctx.confirmationId == null && recordAskOn(c);
+      const parkedCall = parkHeld({
+        name, input, conversationId: c, ctx, to,
+        ...(holdOffer ? {
+          sayExtra: HOLD_RECORD_OFFER,
+          noteExtra: ` If they say "record it" (or anything asking for the audio) before it goes, call call_place again with the same 'to' and record_said set to their exact words:`
+            + " that records this waiting call, which still goes at the same time; nothing new is dialled. No reply, or anything else, and it goes unrecorded, exactly as now.",
+        } : {}),
+      });
       if (parkedCall) return parkedCall;
 
       // Which job this call is a step of, when it is one: what the model named, or the task this
@@ -12361,6 +12411,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (recordAsk) {
         db.updateCall(c, row.id, { record_asked: 1, record_said: recordAsk.said });
         db.useRecordAsk(c, to);
+      }
+      // How the recording was offered, where the ask is on: a call that went with no message before it
+      // gets a one-time tip in the text after it (src/calls/postcall.js `tellTheOwner`).
+      if (!toOwner && recordAskOn(c)) {
+        db.updateCall(c, row.id, { record_offer: recordAsk ? "asked_for" : ctx.confirmationId != null ? "question" : ctx.releasedHold ? "hold" : "none" });
       }
       ctx.spend?.(); // past this line a phone may already be ringing
 

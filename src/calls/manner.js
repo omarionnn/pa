@@ -120,6 +120,12 @@ export function recordAskFor(conversationId) {
 /** The offer, put into the same message that asks "want me to call?". */
 export const RECORD_ASK_OFFER = "I can record it and send you the audio if you like; I'd tell them at the start that it's recorded.";
 
+/** Added to the "calling … in 30s" line when no question was asked before the call (same message, no wait). */
+export const HOLD_RECORD_OFFER = ", or say \"record it\" if you want the audio (I'd tell them it's recorded)";
+
+/** Once per person, ever, after a call that went with no message before it (nowhere to offer the recording). */
+export const RECORD_TIP_LINE = "Next time, just say \"record it\" when you ask me to call somewhere and I'll send you the audio (I'd tell them it's recorded).";
+
 /** The first words to a person on a call they asked to be recorded. */
 export function recordNoticeLine(first) {
   return `Hi, this is Reason, an AI assistant calling for ${String(first || "the person I work for").trim()}. Just so you know, this call is recorded.`;

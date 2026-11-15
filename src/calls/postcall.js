@@ -23,7 +23,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
 import { SPOKE_TO_SOMETHING } from "./provider.js";
-import { NOT_RECORDED_WHY, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, recordAskFor } from "./manner.js";
+import { NOT_RECORDED_WHY, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, RECORD_TIP_LINE, recordAskFor } from "./manner.js";
 import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
@@ -233,7 +233,13 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
       log({ call_recap_capped: row.id });
       return { sent: false, why: "their proactive limit for today is used up" };
     }
-    const reply = await runtime.event(row.conversation_id, thirdPartyEvent({ row, live }), { forCall: row.id });
+    // A call that went with no message before it had nowhere to offer the recording (REASON_CALL_RECORD_ASK):
+    // the text after it says, once per person ever, that next time they can say "record it".
+    const tipAt = clock.now();
+    const recordTip = row.record_offer === "none" && Number(row.record_asked) !== 1 && recordAskFor(row.conversation_id)
+      && db.claimRecordTip(row.conversation_id, tipAt);
+    const reply = await runtime.event(row.conversation_id, thirdPartyEvent({ row, live, ...(recordTip ? { recordTip } : {}) }), { forCall: row.id });
+    if (recordTip && !reply) db.unclaimRecordTip(row.conversation_id, tipAt);
     if (reply) {
       accounts.countUse(row.conversation_id, "proactive");
       db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
@@ -302,7 +308,7 @@ export function tellUnreached({ row, log = () => {} }) {
  * The transcript goes in whole. It is the only record of what was actually said, and a summary of a
  * summary is how "they said Thursday or Friday" becomes "they said Thursday".
  */
-export function thirdPartyEvent({ row, live }) {
+export function thirdPartyEvent({ row, live, recordTip = false }) {
   const what = String(row.summary || live?.summary || "").trim();
   const outcome = String(row.outcome || live?.outcome || row.state).trim();
   const audio = row.recording_state === "stored"
@@ -347,7 +353,9 @@ export function thirdPartyEvent({ row, live }) {
     + ` as plain "- " lines when they really are separate points, with the one thing that needs HIS word`
     + ` last and as a question. Anything technical goes underneath, if it goes in at all.`
     + ` A link, an address or a reference number does not go in this message: say you are sending it`
-    + ` and it goes out on its own.`;
+    + ` and it goes out on its own.`
+    // Once per person, ever (`tellTheOwner` claims it): a call that went with no question before it.
+    + (recordTip ? `\nEnd the message with this one line, as written: ${RECORD_TIP_LINE}` : "");
 }
 
 /**
