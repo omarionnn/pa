@@ -13085,15 +13085,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const asked = requestOf(ctx.messages ?? []);
       // Their Google login: what is on record about Google turning the browser away is said first, as one
       // question, and the link is made only on their yes (still_save). Nothing on record: no claim, the link.
-      const googleLogin = refusing.siteKey(input.site) === "google.com";
+      // Exactly the Google login (google.com, as saved on accounts.google.com): not admin.google.com, Gmail
+      // or any other Google page, which code refuses below as it always has.
+      const googleLogin = ["google.com", "www.google.com", "accounts.google.com"].includes(String(input.site ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").split(/[/:?#]/)[0]);
       if (googleLogin && input.still_save !== true) {
         const w = googleSaveWarning();
         if (w) return { ok: false, result: "ask_first", say_exactly: w.say_exactly, record: w.record, seen: w.seen,
           note: "Send say_exactly as it is: it is one question. Only if they say yes, call saved_login_offer again with site google.com and still_save true. If they say no, leave it." };
       }
       // A site that turns away software-driven browsers: said up front, no save link made (src/refusing.js).
-      // Not for the Google login itself: what Google did is said above, and they chose to save it anyway.
-      if (!googleLogin) { const r = refusing.refusingSite(input.site); if (r) return refusing.refusalAnswer(r, { words: askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? asked, mail: mailFor(c) }); }
+      // Not on Google's own hosts: for the Google login what Google did is said above and they chose to
+      // save it anyway; every other Google page (admin.google.com, Gmail) gets the never-list answer below.
+      if (refusing.siteKey(input.site) !== "google.com") { const r = refusing.refusingSite(input.site); if (r) return refusing.refusalAnswer(r, { words: askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? asked, mail: mailFor(c) }); }
       const out = await offerSaveLink(c, input.site, asked, { locate: ctx.locateSigninPage ?? null });
       if (out.ok) return { ok: true, say_exactly: `${OFFER_SENTENCE}\n${out.link}`, note: "Send say_exactly as it is: the sentence, then the link on its own line. Never ask them to type a password in the chat." };
       if (out.say) return { ok: false, refused: true, say_exactly: out.say };

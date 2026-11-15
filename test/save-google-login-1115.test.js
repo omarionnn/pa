@@ -189,5 +189,11 @@ test("save my Google login, Google marked as turning the browser away: said with
   refusing.markRefusing("example-walled.test", "wall", now);
   const other = await ask({ site: "example-walled.test" }, "save my login for example-walled.test");
   assert.equal(other.result, "refuses_software");
+  // admin.google.com is not the Google login: no Google question, refused in code's words.
+  const admin = await ask({ site: "admin.google.com" }, "save my login for admin.google.com");
+  assert.equal(admin.ok, false);
+  assert.equal(admin.refused, true, JSON.stringify(admin));
+  assert.notEqual(admin.result, "ask_first");
+  assert.match(admin.say_exactly, /Continue with Google/);
   refusing._resetRefusals();
 });
