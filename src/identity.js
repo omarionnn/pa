@@ -81,14 +81,97 @@ export function setGivenName(conversationId, raw) {
 /** The heading the name rides under, the same words on every surface. */
 export const IDENTITY_HEADING = "WHO YOU ARE TO THEM:";
 
-/** The line every model that speaks for them reads, or "". */
+/**
+ * The line every model that speaks for them reads, or "". It says whose name it is in the same
+ * sentence the profile does (`assistantNameLine`): a turn Reason starts itself (a task's update, a
+ * reminder) is shown this line and not the profile, and on 2026-11-14 one opened "Back on the …
+ * setup, <the assistant's name>:" — addressed to them.
+ */
 export function identityNote(conversationId) {
   if (!oneIdentityFor(conversationId)) return "";
   const n = givenName(conversationId);
   if (!n) return "";
+  const whose = assistantNameLine(n, theirOwnName(conversationId));
   return `${IDENTITY_HEADING} they named you "${n}". With them you are ${n} — the same one in their texts, on the web and on a phone call, with one memory of all of it.`
     + ` Answer to ${n}, and when you say who you are to them, say ${n} (you are still their Reason; "${n}" is your name with them).`
+    + (whose ? ` ${whose}` : "")
     + ` To anybody else — a business you ring, somebody you message for them — you are "Reason", their assistant, exactly as before.`;
+}
+
+// ---------- the assistant's nickname is never their name ----------
+
+// A saved fact or profile line that gives the ASSISTANT a name, in the forms facts are written in
+// ("Wants the assistant to answer to the name Nimbus", "calls Reason Nimbus", "your name is Nimbus").
+const NAMES_THE_ASSISTANT = [
+  /\b(?:[Tt]he\s+assistant|[Rr]eason|[Yy]ou|(?:[Hh]is|[Hh]er|[Tt]heir)\s+assistant)\b[^.\n]{0,30}?\b(?:answer(?:s|ing)?\s+to|be\s+called|go(?:es)?\s+by|respond(?:s)?\s+to)\s+(?:the\s+name\s+|the\s+nickname\s+)?["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
+  /\b(?:[Cc]alls?|[Cc]alling|[Cc]alled|[Nn]ames?|[Nn]amed|[Nn]aming|[Nn]icknamed?)\s+(?:[Tt]he\s+assistant|[Rr]eason|[Yy]ou|(?:[Hh]is|[Hh]er|[Tt]heir)\s+assistant)\s+(?:by\s+the\s+name\s+|as\s+)?["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
+  /\b(?:[Tt]he\s+assistant(?:'|’)s|[Rr]eason(?:'|’)s|[Yy]our)\s+(?:nick)?name\s+(?:is|should\s+be)\s+["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
+];
+
+/** The name a profile line or saved fact gives the assistant, or "". */
+export function assistantNameIn(line) {
+  for (const re of NAMES_THE_ASSISTANT) { const m = re.exec(String(line ?? "")); if (m) return m[1].replace(/['’]s$/, ""); }
+  return "";
+}
+
+/**
+ * THE sentence that says a name is the assistant's and not theirs — the one helper every prompt that
+ * shows the nickname uses (src/memorynote.js PROFILE_READERS). "" when there is nothing to say: no
+ * name, "Reason", or a name that is their own too.
+ */
+export function assistantNameLine(nick, theirName = "") {
+  const n = String(nick ?? "").trim();
+  const own = String(theirName ?? "").trim();
+  if (!n || n.toLowerCase() === DEFAULT_CARD_NAME.toLowerCase() || (own && n.toLowerCase() === own.toLowerCase())) return "";
+  return `They call YOU, their assistant, "${n}": a nickname for you, not their name.${own ? ` Their own name is ${own}.` : ""} Never call them ${n}.`;
+}
+
+/** Their own name as the account has it, or "" (never a stand-in). */
+export function theirOwnName(conversationId) {
+  try {
+    const row = db.getAccount(conversationId);
+    const name = row?.name || (row?.is_operator || conversationId === config.ownerConversation ? config.ownerName : "");
+    return name && name !== "the person I work for" ? name : "";
+  } catch { return ""; }
+}
+
+/** Every name this person gave Reason: the one kept on the account, and any their profile gives it. */
+export function assistantNicknames(conversationId) {
+  const out = new Set();
+  const own = theirOwnName(conversationId).toLowerCase();
+  const add = (n) => { const x = String(n ?? "").trim(); if (x && x.toLowerCase() !== DEFAULT_CARD_NAME.toLowerCase() && x.toLowerCase() !== own) out.add(x); };
+  add(givenName(conversationId));
+  try { for (const line of String(db.getProfile(conversationId)?.block ?? "").split("\n")) add(assistantNameIn(line)); } catch { /* no profile */ }
+  return [...out];
+}
+
+const GREETING = "(?:hey|hi|hiya|hello|yo|ok|okay|alright|morning|good morning|good afternoon|good evening|evening|night|good night|thanks|thank you|sorry)";
+// Reason naming itself just before the name: "I'm your assistant, Nimbus", "it's me, Nimbus".
+const SELF_BEFORE = /\b(?:i'?m|i am|it'?s|this is|me|assistant|reason|called|call me|go by)\b[^,.!?\n]*$/i;
+const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The last line before a text goes to them: the assistant's nickname used to ADDRESS them is taken
+ * out — "Back on the setup, Nimbus:" → "Back on the setup:", "hey Nimbus, …" → "hey, …",
+ * "Nimbus, your …" → "Your …". Reason naming itself ("Nimbus here", "it's Nimbus", "— Nimbus") is
+ * left alone. `names`: the nicknames (`assistantNicknames`). Returns { text, changed }.
+ */
+export function withoutNicknameVocative(text, names = []) {
+  let out = String(text ?? "");
+  const before = out;
+  for (const n of names) {
+    if (!n) continue;
+    const N = `(?<![\\p{L}\\p{N}'’])${esc(n)}(?![\\p{L}\\p{N}'’])`;
+    // ", Nimbus:" / ", Nimbus!" / ", Nimbus." / ", Nimbus" at a line's end — not after a dash (a sign-off).
+    // "I'm your assistant, Nimbus." names itself: kept.
+    out = out.replace(new RegExp(`(?<![—–-]\\s?),\\s*${N}(?=\\s*(?:[:!?.,;)]|$))`, "gimu"), (m, at, all) =>
+      SELF_BEFORE.test(all.slice(Math.max(0, all.lastIndexOf("\n", at) + 1, at - 60), at)) ? m : "");
+    // "hey Nimbus, …" / "thanks Nimbus!" → "hey, …" / "thanks!"
+    out = out.replace(new RegExp(`(^|[\\n.!?]\\s*)(${GREETING})\\s+${N}(?=\\s*(?:[,:!?.;—–-]|$))`, "gimu"), "$1$2");
+    // "Nimbus, your car …" / "Nimbus: …" at the start of a line → "Your car …"
+    out = out.replace(new RegExp(`(^|[\\n.!?]\\s+)${N}\\s*[,:]\\s*(\\p{L})?`, "gimu"), (_, lead, c) => `${lead}${c ? (/^\p{Lu}/u.test(n) ? c.toUpperCase() : c) : ""}`);
+  }
+  return { text: out, changed: out !== before };
 }
 
 /** The voice their calls speak in. The one place a per-person pick would be read; today the install's. */
