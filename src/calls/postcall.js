@@ -234,7 +234,7 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
       return { sent: false, why: "their proactive limit for today is used up" };
     }
     // A call that went with no message before it had nowhere to offer the recording (REASON_CALL_RECORD_ASK):
-    // the text after it says, once per person ever, that next time they can say "record it".
+    // the text after it says, once per person ever, that next time they can ask for it to be recorded.
     const tipAt = clock.now();
     const recordTip = row.record_offer === "none" && Number(row.record_asked) !== 1 && recordAskFor(row.conversation_id)
       && db.claimRecordTip(row.conversation_id, tipAt);

@@ -522,14 +522,16 @@ test("(b) no question, undo window: the offer is IN the \"calling … in 30s\" l
   const calls = new FakeCallProvider();
   const held = await plainAskCall(C, { calls });
   assert.equal(held.undo_held, true, JSON.stringify(held).slice(0, 300));
-  assert.equal(manner.HOLD_RECORD_OFFER, ", or say \"record it\" if you want the audio (I'd tell them it's recorded)");
-  assert.match(held.say_exactly, /^calling .+ in 30s — just tell me if you want to stop it, or say "record it" if you want the audio \(I'd tell them it's recorded\)$/);
+  assert.equal(manner.HOLD_RECORD_OFFER, ", or if you want it recorded (I'd tell them it's recorded and send you the audio)");
+  assert.match(held.say_exactly, /^calling .+ in 30s — just tell me if you want to stop it, or if you want it recorded \(I'd tell them it's recorded and send you the audio\)$/);
   assert.match(held.note, /call call_place again with the same 'to' and record_said/);
+  // Plain words, never a phrase to type (the owner's copy rule, test/no-command-phrases.test.js).
+  for (const line of [manner.HOLD_RECORD_OFFER, manner.RECORD_TIP_LINE, held.note]) assert.doesNotMatch(line, /["“][^"”]*record[^"”]*["”]/i);
   assert.equal(calls.placed.length, 0);
   const due = db.liveHolds(C)[0].due_at;
   // Ten seconds in, they say "record it".
   clock.skip(10_000);
-  const added = await runTool("call_place", { ...ASK, record_said: "record it" }, { conversationId: C, calls, messages: [said(C, REQUEST), said(C, "record it")], kind: "user" });
+  const added = await runTool("call_place", { ...ASK, record_said: "yes record it" }, { conversationId: C, calls, messages: [said(C, REQUEST), said(C, "oh yes record it please")], kind: "user" });
   assert.equal(added.ok, true, JSON.stringify(added).slice(0, 300));
   assert.equal(added.recording_added, true);
   assert.equal(added.going_out_in_seconds, 20);
@@ -544,7 +546,7 @@ test("(b) no question, undo window: the offer is IN the \"calling … in 30s\" l
   assert.equal(calls.placed.length, 1);
   const row = db.db.prepare("SELECT * FROM calls WHERE conversation_id = ? ORDER BY id DESC").get(C);
   assert.equal(Number(row.record_asked), 1);
-  assert.equal(row.record_said, "record it");
+  assert.equal(row.record_said, "yes record it");
   assert.equal(gl.lineAnnouncement(row), manner.recordNoticeLine("Omari"));
   assert.equal(db.recordAskFor(C, SHOP), null, "used by that call");
 }));
@@ -599,7 +601,7 @@ test("(c) neither a question nor a window: it dials at once; the text after it s
   };
   const first = await placeAndTell();
   assert.ok(first.includes(`End the message with this one line, as written: ${manner.RECORD_TIP_LINE}`));
-  assert.equal(manner.RECORD_TIP_LINE, "Next time, just say \"record it\" when you ask me to call somewhere and I'll send you the audio (I'd tell them it's recorded).");
+  assert.equal(manner.RECORD_TIP_LINE, "Next time you ask me to call somewhere, tell me if you want it recorded and I'll send you the audio (I'd tell them it's recorded).");
   assert.ok(db.db.prepare("SELECT record_tip_told_at FROM accounts WHERE conversation_id = ?").get(C).record_tip_told_at, "kept on their account");
   for (let i = 0; i < 3; i++) assert.ok(!(await placeAndTell()).includes(manner.RECORD_TIP_LINE), "never again");
   // Another person gets theirs once too; a call they asked to be recorded never carries it.

@@ -8570,7 +8570,7 @@ export function recordOntoWaitingCall(c, to, input = {}, ctx = {}) {
     db.useRecordAsk(c, to);
     return {
       ok: false, status: "too_late",
-      error: "That call has already gone out, so it can't be recorded now. Say so plainly, in a line: it was already ringing, so this one isn't recorded; next time they can say \"record it\" when they ask.",
+      error: "That call has already gone out, so it can't be recorded now. Say so plainly, in a line: it was already ringing, so this one isn't recorded; next time they can ask for it to be recorded when they ask for the call.",
     };
   }
   const seconds = Math.max(1, Math.round((still.due_at - clock.now()) / 1000));
@@ -12347,7 +12347,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         name, input, conversationId: c, ctx, to,
         ...(holdOffer ? {
           sayExtra: HOLD_RECORD_OFFER,
-          noteExtra: ` If they say "record it" (or anything asking for the audio) before it goes, call call_place again with the same 'to' and record_said set to their exact words:`
+          noteExtra: ` If, before it goes, they ask for it to be recorded (in any words: wanting the audio counts), call call_place again with the same 'to' and record_said set to their exact words:`
             + " that records this waiting call, which still goes at the same time; nothing new is dialled. No reply, or anything else, and it goes unrecorded, exactly as now.",
         } : {}),
       });
