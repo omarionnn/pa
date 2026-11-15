@@ -90,7 +90,7 @@ import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
 import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool, hasBank as plaidHasBank, plaidOn } from "./plaid.js";
 import * as bankgrant from "./bankgrant.js";
-import { offerSaveLink, forgetSite, savedLoginsAllowedFor as saveLinkAllowedFor, OFFER_SENTENCE, rememberSigninRoute, savedLoginRoute, domainsOf, saveOfferFor } from "./loginintake.js";
+import { offerSaveLink, forgetSite, savedLoginsAllowedFor as saveLinkAllowedFor, OFFER_SENTENCE, rememberSigninRoute, savedLoginRoute, domainsOf, saveOfferFor, googleSaveWarning } from "./loginintake.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords, ACCOUNT_CANCEL_GATE } from "./accountjobtools.js";
 import * as shopConnect from "./shopconnect.js";
@@ -443,10 +443,13 @@ const SAVED_LOGIN_TOOLS = new Set(["saved_login_offer", "saved_login_forget", "a
 const SAVED_LOGIN_TOOL_DEFS = [{
   name: "saved_login_offer",
   description: "Let them save a site's login once, on Reason's own page, so you can sign in for jobs they ask for. Call it only when they ask to save a login, or say yes to the one-line offer to save it that comes after a sign-in through a link. Never before their first sign-in to a site: that goes through signin_link. "
-    + "Their Google login too: \"save my Google login\" is site google.com, kept only for Continue with Google on sites they name (never Gmail, Drive, admin.google.com or Google itself). Call it for that even when the thread is about a Google page, and say in the same reply that you still won't sign in to that page. "
+    + "Their Google login too: \"save my Google login\" is site google.com, kept only for Continue with Google on sites they name (never Gmail, Drive, admin.google.com or Google itself). Call it for that even when the thread is about a Google page, and say in the same reply that you still won't sign in to that page. For google.com it may answer with one question first (what is on record about Google turning Reason's browser away): send it, and only on their yes call again with still_save true. "
     + "Code checks the site first (banks, email, payment apps and the like are refused, with words to say) and opens the site's sign-in page itself; you pass only the site's domain. "
     + "Never ask for a password, username or code in the chat, and never repeat one they sent. On ok, send say_exactly as it is.",
-  input_schema: { type: "object", properties: { site: { type: "string", description: "The site's domain, e.g. xfinity.com" } }, required: ["site"] },
+  input_schema: { type: "object", properties: {
+    site: { type: "string", description: "The site's domain, e.g. xfinity.com" },
+    still_save: { type: "boolean", description: "Only for google.com, and only after they said yes to the question its first answer asked." },
+  }, required: ["site"] },
 }, {
   name: "saved_login_forget",
   description: "Delete their saved login for a site when they ask (\"forget my xfinity login\"). No Face ID needed. Code signs out on the site where it can, clears the site's cookies and stored data from Reason's browser, and deletes the login. Send say_exactly as it is.",
@@ -7406,7 +7409,7 @@ const S = {
   ...ACCOUNT_JOB_SCHEMAS,
   ...FOOD_SCHEMAS,
   ...PLAID_SCHEMAS,
-  saved_login_offer: z.object({ site: z.string().min(3).max(253) }),
+  saved_login_offer: z.object({ site: z.string().min(3).max(253), still_save: z.boolean().optional() }),
   saved_login_forget: z.object({ site: z.string().min(3).max(253) }),
   account_signin: z.object({ site: z.string().min(3).max(253) }),
   ...TODO_SCHEMAS,
@@ -12884,8 +12887,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if ((ctx.kind ?? "event") !== "user") return { ok: false, error: "not_asked", note: SAVE_LINK_NO.not_asked };
       // The job the link is for, in their own typed words: not a bare "yes" (src/resume.js requestOf).
       const asked = requestOf(ctx.messages ?? []);
+      // Their Google login: what is on record about Google turning the browser away is said first, as one
+      // question, and the link is made only on their yes (still_save). Nothing on record: no claim, the link.
+      const googleLogin = refusing.siteKey(input.site) === "google.com";
+      if (googleLogin && input.still_save !== true) {
+        const w = googleSaveWarning();
+        if (w) return { ok: false, result: "ask_first", say_exactly: w.say_exactly, record: w.record, seen: w.seen,
+          note: "Send say_exactly as it is: it is one question. Only if they say yes, call saved_login_offer again with site google.com and still_save true. If they say no, leave it." };
+      }
       // A site that turns away software-driven browsers: said up front, no save link made (src/refusing.js).
-      { const r = refusing.refusingSite(input.site); if (r) return refusing.refusalAnswer(r, { words: askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? asked, mail: mailFor(c) }); }
+      // Not for the Google login itself: what Google did is said above, and they chose to save it anyway.
+      if (!googleLogin) { const r = refusing.refusingSite(input.site); if (r) return refusing.refusalAnswer(r, { words: askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? asked, mail: mailFor(c) }); }
       const out = await offerSaveLink(c, input.site, asked, { locate: ctx.locateSigninPage ?? null });
       if (out.ok) return { ok: true, say_exactly: `${OFFER_SENTENCE}\n${out.link}`, note: "Send say_exactly as it is: the sentence, then the link on its own line. Never ask them to type a password in the chat." };
       if (out.say) return { ok: false, refused: true, say_exactly: out.say };
@@ -12915,7 +12927,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // for this one attempt, in fixed words, made here and sent with them; no "want me to…?" (owner
       // decision 2026-11-13). A wall before the form is not one: the link would meet the same wall.
       const host = String(input.site ?? "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
-      if (!out?.ok && PERSON_STEP[result] && !out?.walled && host) {
+      // Google turning the browser away is not a step for them on this site: it is said as Google's
+      // refusal, with what still works (src/federated.js turnedAway), never as a puzzle on the site.
+      if (!out?.ok && PERSON_STEP[result] && !out?.walled && !out?.google_refused && host) {
         const link = await runToolInner("signin_link", { site: linkSiteFor(c, host) }, ctx).catch((e) => ({ ok: false, error: e?.message }));
         if (link?.ok && link.link) {
           return { ok: false, result, person_step: true, link: link.link,
@@ -12927,7 +12941,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       return { ok: !!out?.ok, result, say_exactly: String(out?.say_exactly ?? ""),
         ...(out?.refused ? { refused: true } : {}),
+        ...(out?.google_refused ? { google_refused: true, instead: out.instead, ...(out.signin_page ? { signin_page: out.signin_page } : {}) } : {}),
         note: out?.ok ? "Signed in. Carry on with the job they asked for; the browser stays on that site."
+          : out?.google_refused ? `Send say_exactly as it is, once. Do not try Continue with Google again and do not call account_signin with with "google" for this site now. If they pick another way: the emailed code is signin_email for ${host || "that site"}; a password is saved_login_offer for ${host || "that site"}, then account_signin with with "password"; signing in themselves is signin_link for ${host || "that site"}.`
           : result === "resume_spent" ? "That approval was already used or ran out, so nothing was opened. Say nothing about it unless they asked something else."
           : result === "needs_google_login" ? "They sign in to that site with Google and their Google login isn't saved, so nothing was opened. Send say_exactly, then sign them in with signin_link for that site. Do not offer to save a login now: that is offered only after a sign-in, or when they ask."
           : result === "needs_google_tap" || result === "needs_google_code" ? "Send say_exactly as it is. Reason waits for Google's check by itself and texts how it ended; don't ask anything else."

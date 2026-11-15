@@ -50,6 +50,8 @@ const sl = await import("../src/savedlogins.js");
 const { toolsFor } = await import("../src/tools.js");
 const { mcpToolsFor } = await import("../src/backends/mcp-core.js");
 const diet = await import("../src/tooldiet.js");
+const refusing = await import("../src/refusing.js");
+const { runTool } = await import("../src/tools.js");
 
 const OWNER = { name: "Omari", isOperator: true, conversationId: "dm:owner" };
 const OTHER = { name: "Sam", isOperator: false, conversationId: "dm:someone-else" };
@@ -70,9 +72,12 @@ test("the owner, as live: saved logins are on for him and the prompt now says so
   assert.match(intake.SAVED_LOGIN_RULES, /Never tell them you don't keep passwords or can't save a login/);
   assert.match(intake.SAVED_LOGIN_RULES, /"save my Google login" is saved_login_offer with site google\.com/);
   assert.match(intake.SAVED_LOGIN_RULES, /admin\.google\.com/);
-  assert.match(intake.SAVED_LOGIN_RULES, /say both in your reply: yes, here is the page to save it .*and no, you won't sign in to that Google page/);
+  assert.match(intake.SAVED_LOGIN_RULES, /say both in your reply: yes, you can keep it for Continue with Google .*and no, you won't sign in to that Google page/);
   assert.match(intake.SAVED_LOGIN_RULES, /Never say Google or any other site blocks you on your own/);
   assert.match(intake.SAVED_LOGIN_RULES, /whatever the thread was about/);
+  // No promise that Continue with Google works, and no "Google refuses" without a record.
+  assert.match(intake.SAVED_LOGIN_RULES, /Never promise Continue with Google will work/);
+  assert.match(social.RULES_WITH_VAULT, /Never promise that works: Google can turn your browser away, and account_signin says when it has/);
   // The chat rule still stands: a password typed into the chat is refused.
   assert.match(p, /You never take a password\./);
   assert.match(intake.SAVED_LOGIN_RULES, /a password typed into the chat is still refused/);
@@ -134,4 +139,55 @@ test("the vault-variant social block differs from the old one only in its two Go
   // Owner mode with the vault on for the owner, social on for him: he gets the vault variant.
   assert.equal(social.rulesFor(OWNER.conversationId, { vault: true }), social.RULES_WITH_VAULT);
   assert.equal(social.rulesFor(OWNER.conversationId), social.RULES, "callers that don't say vault get the old block");
+});
+
+// The ask before a Google login is saved, read off the site-level refusal record (src/refusing.js).
+const at = async (entry) => ({ found: true, url: `${entry.signin_url.replace(/\/$/, "")}/signin`, form: "email_first", followed: false, ms: 1 });
+const ask = (input, content = "Save my Google login") => runTool("saved_login_offer", input, {
+  conversationId: OWNER.conversationId, messages: [{ role: "user", content }], locateSigninPage: at, kind: "user",
+});
+
+test("save my Google login, nothing on record: no claim either way, the save page", async () => {
+  refusing._resetRefusals();
+  assert.equal(intake.googleSaveWarning(), null);
+  const r = await ask({ site: "google.com" });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(r.say_exactly.startsWith(intake.OFFER_SENTENCE));
+  assert.doesNotMatch(r.say_exactly, /turn|block|refus|haven't been able/i);
+});
+
+test("save my Google login, one refusal on record: the neutral line, as one question, then the page on their yes", async () => {
+  refusing._resetRefusals();
+  refusing.markRefusing("google.com", "browser_refused");
+  const r = await ask({ site: "google.com" });
+  assert.equal(r.ok, false);
+  assert.equal(r.result, "ask_first");
+  assert.equal(r.say_exactly, "I can keep your Google login, but I haven't been able to use it with Google yet, so Continue with Google may not work for you. Still want to save it?");
+  assert.equal((r.say_exactly.match(/\?/g) ?? []).length, 1, "one question");
+  assert.match(r.note, /still_save true/);
+  const yes = await ask({ site: "google.com", still_save: true }, "yes save it");
+  assert.equal(yes.ok, true, JSON.stringify(yes));
+  assert.ok(yes.say_exactly.startsWith(intake.OFFER_SENTENCE));
+  refusing._resetRefusals();
+});
+
+test("save my Google login, Google marked as turning the browser away: said with the day, still theirs to choose", async () => {
+  refusing._resetRefusals();
+  const now = Date.now();
+  refusing.markRefusing("google.com", "browser_refused", now - 12 * 60_000);
+  refusing.markRefusing("google.com", "browser_refused", now);
+  const seen = refusing.refusingSite("google.com").seen;
+  const day = new Date(`${seen}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  const r = await ask({ site: "google.com" });
+  assert.equal(r.result, "ask_first");
+  assert.equal(r.say_exactly, `I can keep your Google login, but Google has been turning my browser away (last on ${day}), so Continue with Google may not work for you yet. Still want to save it?`);
+  // On their yes the page is made: not the Netflix-style refusal a marked site gets.
+  const yes = await ask({ site: "google.com", still_save: true }, "yes");
+  assert.equal(yes.ok, true, JSON.stringify(yes));
+  // Another site marked the same way is still refused up front, as before.
+  refusing.markRefusing("example-walled.test", "wall", now - 12 * 60_000);
+  refusing.markRefusing("example-walled.test", "wall", now);
+  const other = await ask({ site: "example-walled.test" }, "save my login for example-walled.test");
+  assert.equal(other.result, "refuses_software");
+  refusing._resetRefusals();
 });
