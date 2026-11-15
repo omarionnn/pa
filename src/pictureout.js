@@ -123,11 +123,11 @@ export function watch({ conversationId, outboxId, link, now = clock.now() }) {
 export const watchesOf = (c) => q("SELECT * FROM picture_watches WHERE conversation_id = ? ORDER BY id").all(c);
 
 /** The provider's callback on a watched picture's row (src/outbox.js noteDelivery). An error settles it on the next pass. */
-export function noteStatus(outboxId, status) {
+export function noteStatus(conversationId, outboxId, status) {
   const s = String(status ?? "").toUpperCase();
-  if (!outboxId || !s) return;
-  q(`UPDATE picture_watches SET status = ?, due_at = CASE WHEN ? = 'ERROR' THEN MIN(due_at, ?) ELSE due_at END WHERE outbox_id = ? AND settled_at IS NULL`)
-    .run(s, s, clock.now(), outboxId);
+  if (!conversationId || !outboxId || !s) return;
+  q(`UPDATE picture_watches SET status = ?, due_at = CASE WHEN ? = 'ERROR' THEN MIN(due_at, ?) ELSE due_at END WHERE conversation_id = ? AND outbox_id = ? AND settled_at IS NULL`)
+    .run(s, s, clock.now(), conversationId, outboxId);
 }
 
 const arrived = (s) => DELIVERED_STATUSES.has(String(s ?? "").toUpperCase());
@@ -153,12 +153,12 @@ export async function pass({ router, tell, now = clock.now(), log = () => {} }) 
         }
       }
       if (row?.state === "sent" && arrived(status)) {
-        q("UPDATE picture_watches SET settled_at = ?, outcome = 'delivered', status = ? WHERE id = ?").run(now, status, w.id);
+        q("UPDATE picture_watches SET settled_at = ?, outcome = 'delivered', status = ? WHERE id = ? AND conversation_id = ?").run(now, status, w.id, w.conversation_id);
         out.delivered++;
         continue;
       }
       // Claimed before the line, so a crash between the two never texts the link twice.
-      if (q("UPDATE picture_watches SET settled_at = ?, outcome = 'told', status = ? WHERE id = ? AND settled_at IS NULL").run(now, status, w.id).changes !== 1) continue;
+      if (q("UPDATE picture_watches SET settled_at = ?, outcome = 'told', status = ? WHERE id = ? AND conversation_id = ? AND settled_at IS NULL").run(now, status, w.id, w.conversation_id).changes !== 1) continue;
       // Their next turn would otherwise open with the same failure: they have been told.
       if (row && (row.state === "failed")) { try { db.markUndeliveredTold(row.id); } catch { /* the notice is a nicety */ } }
       const r = await tell(w.conversation_id, DIDNT_ARRIVE_LINE(w.link), { idempotencyKey: `picture-missed:${w.id}` });
@@ -173,4 +173,4 @@ export async function pass({ router, tell, now = clock.now(), log = () => {} }) 
 }
 
 /** Tests only. */
-export function _reset() { q("DELETE FROM picture_watches").run(); }
+export function _reset() { /* tests clear the table themselves */ }

@@ -337,7 +337,7 @@ export function noteDelivery({ channel, messageId, status, error = null, log = (
   if (!row) return { ignored: "no such message" };
   // A picture being watched until it arrives (src/pictureout.js) hears the provider's word whatever the
   // switch below says: whether it got there is the whole of that watch.
-  if (String(row.idem_key ?? "").startsWith("picture:")) { try { notePictureStatus(row.id, status); } catch { /* a watch never breaks the outbox */ } }
+  if (String(row.idem_key ?? "").startsWith("picture:")) { try { notePictureStatus(row.conversation_id, row.id, status); } catch { /* a watch never breaks the outbox */ } }
   if (!deliveryGatedOn(row.conversation_id)) return { ignored: "off", outbox_id: row.id };
   const s = String(status ?? "").toUpperCase();
   if (s === "ERROR") {
