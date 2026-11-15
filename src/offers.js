@@ -561,6 +561,15 @@ function figureKnown(figure, cents, amounts, { approx = true } = {}) {
 }
 
 const DAY = 86_400_000;
+/** The amount a receipt labels its total ("Total $40.10", the last one; never "Subtotal"), when it is one of its amounts. */
+function labelledTotal(text, amounts) {
+  let last = null;
+  for (const m of String(text).matchAll(/(?<![a-z])(?:grand )?total\b[^\d\n]{0,12}?(\d[\d,]*\.\d{2})(?!\d)/gi)) {
+    const c = Math.round(Number(m[1].replace(/,/g, "")) * 100);
+    if (amounts.has(c)) last = c;
+  }
+  return last;
+}
 /** How far back what they said or sent counts as theirs. */
 export const THEIR_WORDS_MS = 45 * DAY;
 /** A remembered price older than this is said with its date ("as of Oct 3"). */
@@ -693,7 +702,39 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       for (const p of pcts) { const part = Math.round(a * p); worked.add(part); worked.add(a + part); worked.add(a - part); for (let k = 2; k <= 10; k++) worked.add(Math.round((a + part) / k)); }
       for (const b of settled) { worked.add(a + b); if (a > b) worked.add(a - b); }
     }
-    for (const f of loose) if (!figureKnown(f.fig, f.cents, worked, { approx: false })) unchecked.push(f.fig);
+    // A total of several known figures ("that comes to $261.95" over six receipts) is arithmetic too:
+    // the sum of them all and each running subtotal in the order they stand, bounded at one value each.
+    let run = 0;
+    for (const a of settled.slice(0, 40)) worked.add(run += a);
+    // Receipts they sent on earlier turns are known but not restated in the reply, so they are no base
+    // above: a grand total or a per-store subtotal of them was sent back as nothing-backs. Each recent
+    // thing they said or sent (the last day, not memory) counts once, by its labelled total ("Total
+    // $40.10", not "Subtotal") or else its largest amount — a "Cash $50.00" tendered line is no total.
+    // Up to 8 of them: every subset sum (≤255 values), so any grouping by store stands. Up to 12:
+    // contiguous runs and pairs only (≤144). Never every amount on every receipt summed. Those
+    // groupings count only to the exact cent: with whole-dollar rounding, 255 sums under a $260 grand
+    // total cover most whole-dollar figures below it, so an invented "$150" would stand. The grand total
+    // of them all keeps the rounding ("about $262").
+    const seenText = new Set();
+    const totals = theirs.filter(s => s.kind !== "memory" && now - s.at < DAY && s.amounts.size && !seenText.has(s.text) && seenText.add(s.text))
+      .sort((x, y) => x.at - y.at).slice(-12).map(s => labelledTotal(s.text, s.amounts) ?? Math.max(...s.amounts));
+    const grouped = new Set();
+    if (totals.length >= 2) {
+      worked.add(totals.reduce((x, y) => x + y, 0));
+      if (totals.length <= 8) {
+        for (let mask = 1; mask < 1 << totals.length; mask++) {
+          let sum = 0;
+          for (let i = 0; i < totals.length; i++) if (mask & (1 << i)) sum += totals[i];
+          grouped.add(sum);
+        }
+      } else {
+        for (let i = 0; i < totals.length; i++) {
+          let sum = 0;
+          for (let j = i; j < totals.length; j++) { grouped.add(sum += totals[j]); if (j > i) grouped.add(totals[i] + totals[j]); }
+        }
+      }
+    }
+    for (const f of loose) if (!grouped.has(f.cents) && !figureKnown(f.fig, f.cents, worked, { approx: false })) unchecked.push(f.fig);
     if (unchecked.length) {
       flags.push({ rule: "dollar_unsourced", figures: unchecked });
       if (!unread) fixes.push({ key: "dollar:" + unchecked.join(","), hard: true, line: `It states ${unchecked.length > 1 ? "figures" : "a figure"} nothing backs — ${unchecked.join(", ")}: no tool read ${unchecked.length > 1 ? "them" : "it"} this turn, and ${unchecked.length > 1 ? "they are" : "it is"} not something they said or sent or something you remember about them. If a quick tool can check it (web_search, offer_check, a quote), check it now and use what it says. Otherwise leave the figure out: a price nothing backs is taken out of this rewrite before it is sent, hedged or not. Say plainly, once and in your own words, that you'll check it if they want.` });
