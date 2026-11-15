@@ -510,6 +510,8 @@ const SAVE_LINK_NO = {
 function withWhere(out, note) {
   if (!note || !out || typeof out !== "object" || out.ok === false) return out;
   return { where_from: note, ...out };
+}
+
 // ---------- saved facts as a tool hands them to the model ----------
 // A fact that names the assistant ("wants the assistant to answer to the name …") says whose name it
 // is (src/memorynote.js factForPrompt, PROFILE_READERS): read bare under their own name, it was taken
