@@ -138,25 +138,19 @@ test("no invites left: said plainly, never a question about who a link that can'
 
 // ---------- the card ----------
 
-test("the card greets them by name, escaped, in the existing design; the default wording is one constant", () => {
-  assert.equal(card.INVITEE_GREETING, "C");
+test("the card says who it's for in the pen above the unchanged headline, escaped, in the existing design", () => {
   const plain = card.inviteCardHtml("Kwame");
   const forHtml = card.inviteCardHtml("Kwame", "Dalen");
   assert.ok(forHtml.includes('<p class="for">For Dalen</p><h1>Kwame thinks you should join <span class="wordmark"'));
   assert.ok(forHtml.includes('<p class="hand">Free for you, for good.</p>'));
-  assert.ok(card.inviteCardHtml("Kwame", "Dalen", "A").includes("<h1>Dalen, Kwame thinks you should join"));
-  assert.ok(card.inviteCardHtml("Kwame", "Dalen", "B").includes("<h1>Hey Dalen. Kwame thinks you should join"));
   assert.equal(card.inviteCardHtml("Kwame", ""), plain, "no name: today's card, byte for byte");
   // Escaped all the same, even if something got past the shape check.
   assert.ok(/For O(&#39;|&#x27;|')Neil</.test(card.inviteCardHtml("Kwame", "O'Neil")));
-  // The long pair still steps the headline down (A/B carry both names in it).
+  // The headline keeps the inviter's own size step; a long name for somebody never shrinks it.
   const px = (html) => Number(/font:italic 400 (\d+)px/.exec(html)?.[1]);
-  assert.equal(px(card.inviteCardHtml("Kwame", "Dalen", "A")), 124);
-  assert.equal(px(card.inviteCardHtml("Oluwaseun", "Alexandria-Marie", "A")), 96);
-  assert.equal(px(card.inviteCardHtml("Oluwaseun Adebayo", "Alexandria-Marie", "A")), 84);
-  assert.equal(px(card.inviteCardHtml("Oluwaseun", "Alexandria-Marie", "B")), 96);
-  assert.equal(px(card.inviteCardHtml("Oluwaseun", "Alexandria-Marie", "C")), 124, "C keeps the inviter's own step");
-  assert.equal(px(card.inviteCardHtml("Oluwaseun Adebayo-Williams", "Dalen", "C")), 96);
+  assert.equal(px(card.inviteCardHtml("Oluwaseun", "Alexandria-Marie")), 124);
+  assert.equal(px(card.inviteCardHtml("Oluwaseun Adebayo-Williams", "Dalen")), 96);
+  assert.equal(px(card.inviteCardHtml("Oluwaseun Adebayo-Williams")), 96);
 });
 
 test("hostile names never reach the card: a plain link, quietly", async () => {

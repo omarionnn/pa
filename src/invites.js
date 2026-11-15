@@ -25,7 +25,7 @@
 import * as db from "./db.js";
 import { config, clock, normalizeNumber, normalizeHandle, stamp } from "./config.js";
 import { shell, esc, renderNotFound, foot } from "./pages/render.js";
-import { inviteCardKey, cleanInviteeName, INVITEE_GREETING } from "./invitecard.js";
+import { inviteCardKey, cleanInviteeName } from "./invitecard.js";
 import { CONFETTI_JS, CONFETTI_CSS } from "./pages/confetti.js";
 
 /** The path an invite link lives at. On the files domain Caddy rewrites `/i/x` to `/p/i/x`. */
@@ -399,8 +399,7 @@ export function renderInvite({ invite, name, lineNumber }) {
   // The forwarded link's card (owner, 2026-10-26): the inviter's own picture carries their name;
   // the title row says what Reason is, and the description what it costs them. src/invitecard.js draws the picture once per name.
   const forWho = invite.state === "unused" ? cleanInviteeName(invite.for_name) : "";
-  const cardTitle = !forWho || INVITEE_GREETING === "C" ? `${forWho ? `For ${forWho}. ` : ""}${name} thinks you should join Reason`
-    : INVITEE_GREETING === "B" ? `Hey ${forWho}. ${name} thinks you should join Reason` : `${forWho}, ${name} thinks you should join Reason`;
+  const cardTitle = `${forWho ? `For ${forWho}. ` : ""}${name} thinks you should join Reason`;
   const image = `${inviteUrl(invite.token)}/card.png?v=${forWho ? inviteCardKey(name, forWho) : inviteCardKey(name)}`;
   const head = [
     `<meta property="og:type" content="website">`,

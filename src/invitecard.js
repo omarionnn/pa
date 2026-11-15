@@ -20,13 +20,10 @@ const font = (f) => `data:font/woff2;base64,${readFileSync(new URL(`../assets/fo
 const SERIF = font("instrument-serif-italic-latin.woff2");
 const HAND = font("caveat-latin.woff2");
 
-// A link made FOR somebody (invite_link_create's for_name) greets them by name on the card. Three
-// wordings were drawn for the owner to pick from (media/invite-personal): this one line picks.
-//   A  "Dalen, Kwame thinks you should join reason"
-//   B  "Hey Dalen. Kwame thinks you should join reason"
-//   C  a small handwritten "For Dalen" above the unchanged "Kwame thinks you should join reason"
-// A link with no name for anybody draws exactly the card it always did, byte for byte.
-export const INVITEE_GREETING = "C"; // C: the headline stays exactly as it is, so a long pair never shrinks it
+// A link made FOR somebody (invite_link_create's for_name) carries a small handwritten "For Dalen"
+// above the unchanged headline (owner's pick, 2026-11-15): the headline is never touched, so a long
+// pair of names never shrinks it. A link with no name for anybody draws exactly the card it always
+// did, byte for byte.
 
 // ---------- the name a link is for ----------
 //
@@ -96,21 +93,14 @@ export function cleanInviteeName(raw) {
 export const INVITE_CARD_VERSION = 5; // 3: pen colour brick red (10-26); 4: assets/og.png fallback redrawn red, so a phone that kept the blue one under a v3 address fetches again; 5: pen #9c3b2e / #d46a5c (10-26)
 
 /**
- * The card's HTML. `invitee` is the person the link is for (already through cleanInviteeName); with
- * none, exactly the card it always was. With one, the greeting INVITEE_GREETING picks, and the
- * headline's size steps down on the two names together, so a long pair still fits.
+ * The card's HTML. `invitee` is the person the link is for; with none (or one cleanInviteeName will
+ * not draw), exactly the card it always was. With one, "For <name>" in the pen above the headline.
  */
-export function inviteCardHtml(name, invitee = "", greeting = INVITEE_GREETING) {
+export function inviteCardHtml(name, invitee = "") {
   const who = String(name || "A friend");
   const forWho = cleanInviteeName(invitee);
-  // Today's step (a long inviter name drops to 96px) holds on its own; with the greeting in the
-  // headline it reads the two names together.
-  const pair = forWho && greeting !== "C" ? forWho.length + who.length + (greeting === "B" ? 4 : 0) : who.length;
-  const size = !forWho ? (who.length > 18 ? 96 : 124) : pair > 30 ? 84 : pair > 18 ? 96 : 124;
-  const headline = !forWho || greeting === "C" ? `${esc(who)} thinks you should join ${wordmark()}`
-    : greeting === "B" ? `Hey ${esc(forWho)}. ${esc(who)} thinks you should join ${wordmark()}`
-    : `${esc(forWho)}, ${esc(who)} thinks you should join ${wordmark()}`;
-  const above = forWho && greeting === "C" ? `<p class="for">For ${esc(forWho)}</p>` : "";
+  const size = who.length > 18 ? 96 : 124;
+  const above = forWho ? `<p class="for">For ${esc(forWho)}</p>` : "";
   const forCss = above ? `\n.for{margin-bottom:22px;font:400 64px/1 "Card Hand",Caveat,cursive;color:${BRAND_PEN};transform:rotate(-2deg);transform-origin:left}` : "";
   return `<!doctype html><html><head><meta charset="utf-8"><style>
 @font-face{font-family:"Card Serif";font-style:italic;font-weight:400;src:url(${SERIF}) format("woff2")}
@@ -122,17 +112,17 @@ body{background:${PAPER_GRAIN} ${PAPER.bg};position:relative;overflow:hidden;-we
 h1{font:italic 400 ${size}px/1.02 "Card Serif","Instrument Serif",Georgia,serif;letter-spacing:-.02em;color:${PAPER.ink};text-wrap:balance}
 h1 .wordmark{font-size:1em;color:${PAPER.ink}}h1 .wm-bubble path{stroke:${BRAND_PEN}}
 .hand{margin-top:34px;font:400 76px/1.1 "Card Hand",Caveat,cursive;color:${BRAND_PEN};transform:rotate(-1.5deg);transform-origin:left}${forCss}
-</style></head><body><div class="in">${above}<h1>${headline}</h1><p class="hand">Free for you, for good.</p></div></body></html>`;
+</style></head><body><div class="in">${above}<h1>${esc(who)} thinks you should join ${wordmark()}</h1><p class="hand">Free for you, for good.</p></div></body></html>`;
 }
 
 /**
  * The cache key, and the `?v=` a link carries so a phone never shows a stale card. The person a link
- * is for is in it (and the greeting chosen), so one person's card is never served on another's link;
+ * is for is in it, so one person's card is never served on another's link;
  * with nobody, the key is exactly the one it always was, so every card already drawn is still used.
  */
 export function inviteCardKey(name, invitee = "") {
   const forWho = cleanInviteeName(invitee);
-  const what = forWho ? `${INVITE_CARD_VERSION}\n${name}\nfor:${INVITEE_GREETING}:${forWho}` : `${INVITE_CARD_VERSION}\n${name}`;
+  const what = forWho ? `${INVITE_CARD_VERSION}\n${name}\nfor:${forWho}` : `${INVITE_CARD_VERSION}\n${name}`;
   return createHash("sha256").update(what).digest("hex").slice(0, 16);
 }
 
