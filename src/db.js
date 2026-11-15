@@ -12694,11 +12694,12 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     // not a way back in round the master's stop (stoppedStateOf).
     if (stoppedStateOf(address)) return fail("already_member");
     const now = clock.now();
-    // The name the inviter said it was for has done its job once somebody joins: handed back below
-    // for their first hello only, and not kept on a row that now points at a real account.
-    const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ?, for_name = NULL WHERE id = ? AND state = 'unused'")
+    const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ? WHERE id = ? AND state = 'unused'")
       .run(conversationId, now, inv.id);
     if (won.changes !== 1) return fail("redeemed");
+    // The name the inviter said it was for has done its job once somebody joins: handed back below
+    // for their first hello only, and not kept on a row that now points at a real account.
+    db.prepare("UPDATE invites SET for_name = NULL WHERE conversation_id = ? AND id = ?").run(inv.conversation_id, inv.id);
     upsertAccount({ conversationId, channel, address, name, isOperator: false });
     db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(inv.conversation_id, conversationId);
     db.prepare("UPDATE invite_allowances SET remaining = MAX(remaining - 1, 0), updated_at = ? WHERE conversation_id = ?")
