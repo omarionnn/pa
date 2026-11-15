@@ -15961,9 +15961,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // company's own site (src/rides.js). Never a number from anywhere else.
       const cabs = input.pickup_latitude != null ? carServicesAt(input.pickup_latitude, input.pickup_longitude) : [];
       if (cabs.length) {
+        // The trip named both ends, the way they asked it: with only "to come get them" the offer once
+        // came out as a price "to the station" for a ride FROM the station (2026-11-15).
+        const from = String(input.pickup_address ?? "").trim(), to = String(input.address ?? "").trim();
+        const trip = from && to ? `from ${from} to ${to}` : from ? `from ${from}` : to ? `to ${to}` : "";
         out.also_offer = {
           car_services: cabs,
-          say: `Offer, in one line after the link: you can also call a car service to come get them (${cabs[0].name}). Only if they say yes: call_place to ${cabs[0].phone} with the pickup address and where they are going, and their name.`,
+          ...(trip ? { trip } : {}),
+          say: `Offer, in one line after the link: you can also call a car service to come get them (${cabs[0].name})${from && to ? `, for the trip ${trip}: the car picks them up at ${from} and takes them to ${to}, so say it in that direction` : trip ? `, for the trip ${trip}` : ""}. Only if they say yes: call_place to ${cabs[0].phone} with the pickup address and where they are going, and their name.`,
         };
       }
       if (!out.has_pickup) out.next = "You sent no pickup. If you have not asked get_location, do — or ask where they are — so the car comes to the right place.";
