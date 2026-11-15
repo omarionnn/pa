@@ -952,6 +952,28 @@ export class SendblueChannel extends Channel {
   }
 
   /**
+   * What became of one message: GET /api/status?handle=<message_handle>, the lookup the owner has run
+   * by hand. Read by src/pictureout.js when a picture has had its minute and no callback said it
+   * arrived. → { ok: true, status, error } or { ok: false, error }. Never throws.
+   */
+  async messageStatus(messageId) {
+    if (this.missing().length) return { ok: false, error: "Sendblue is not connected, so it cannot be asked" };
+    const handle = String(messageId ?? "").trim();
+    if (!handle) return { ok: false, error: "no message handle" };
+    let res;
+    try {
+      res = await this.fetch(`${this.base}/api/status?${new URLSearchParams({ handle })}`, { method: "GET", headers: { ...this.#authHeaders } });
+    } catch (e) {
+      return { ok: false, error: `Sendblue could not be reached to ask: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    }
+    let json = null;
+    try { json = JSON.parse(await res.text()); } catch { /* reported below */ }
+    const status = json?.status ?? json?.data?.status ?? null;
+    if (!res.ok || !status) return { ok: false, error: `Sendblue would not say (HTTP ${res.status})` };
+    return { ok: true, status: String(status).toUpperCase(), error: json?.error_message ?? json?.data?.error_message ?? null };
+  }
+
+  /**
    * Is this webhook really from Sendblue?
    *
    * A shared-secret comparison, because that is all Sendblue documents: a secret configured on the

@@ -280,6 +280,9 @@ const TABLES = [
   "plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks",
   // and that they asked to connect while connections were full (to be told when there is room).
   "plaid_waits",
+  // Pictures send_picture handed over, watched until they arrived (src/pictureout.js): the outbox row, the
+  // address the picture came from, and what the provider said.
+  "picture_watches",
 ];
 
 /**
