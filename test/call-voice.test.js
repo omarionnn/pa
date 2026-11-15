@@ -1570,3 +1570,60 @@ test("quiet line: stay quiet or carry on the task, never ask whether they are th
   assert.doesNotMatch(OWN_LINE_IS_QUIET, /check they are still there/i);
   assert.match(OWN_LINE_IS_QUIET, /never ask whether they are there/i);
 });
+
+// ---------- call 119 (2026-11-15): the brain forgot its own lookup and "corrected" a right answer ----------
+// nearby_places came back from Google with an unrelated, similarly named business first; its week of
+// hours, full address and links filled the 600 characters the record kept, so the turn after Reason
+// spoke the SECOND result saw no such result and said it had got the address wrong.
+const LONG_FIRST = {
+  name: "Brightline Party & Event Hall Rentals", type: "event_venue", address: "1 Long Plaza", city: "New York",
+  full_address: "1 Long Plaza, Suite 1200, Building C, Loading Dock Entrance, New York, NY 10001, USA",
+  opening_hours: "Monday: 8:00 AM – 11:00 PM; Tuesday: 8:00 AM – 11:00 PM; Wednesday: 8:00 AM – 11:00 PM; Thursday: 8:00 AM – 11:00 PM; Friday: 8:00 AM – 1:00 AM; Saturday: 8:00 AM – 1:00 AM; Sunday: 10:00 AM – 9:00 PM",
+  website: "https://www.brightline-party-and-event-hall-rentals.example/locations/new-york/long-plaza/suite-1200",
+  google_maps_url: "https://maps.google.com/?cid=111111111111111111", phone: "+1 212-555-0101", distance_m: 310, latitude: 40.75, longitude: -73.99,
+};
+const SPOKEN = {
+  name: "Brightline Party Supply", type: "store", address: "220 W 23rd St", city: "New York", full_address: "220 W 23rd St, New York, NY 10011, USA",
+  opening_hours: "Monday: 9:00 AM – 9:00 PM; Tuesday: 9:00 AM – 9:00 PM; Wednesday: 9:00 AM – 9:00 PM; Thursday: 9:00 AM – 9:00 PM; Friday: 9:00 AM – 9:00 PM; Saturday: 9:00 AM – 9:00 PM; Sunday: 10:00 AM – 7:00 PM",
+  open_now: true, phone: "+1 212-555-0123", google_maps_url: "https://maps.google.com/?cid=222222222222222222", distance_m: 640, latitude: 40.744, longitude: -73.996,
+};
+const PLACES = { ok: true, attribution: "Google Maps", results: [LONG_FIRST, SPOKEN, { ...SPOKEN, name: "Brightline Outlet", address: "9 Far Rd", google_maps_url: "https://maps.google.com/?cid=3", distance_m: 2900 }],
+  note: "These places are from Google Maps. When you send one, include its google_maps_url and say it is from Google Maps." };
+
+test("call 119: the turn after a places lookup sees the result it spoke, with its fields, next to what it said", async () => {
+  // Before the fix: the record kept the first 600 characters of the JSON, and the spoken result was not in them.
+  assert.ok(!JSON.stringify(PLACES).slice(0, 600).includes("220 W 23rd St"), "the fixture reproduces the cut");
+  const call = ownerCall();
+  voice.contextDeps.runTool = async () => PLACES;
+  let round = 0;
+  const first = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "assistant", content: "Hey, it's Reason." }, { role: "user", content: "where's the nearest brightline store?" }] }), headers: AUTH,
+    generate: async function* () {
+      round++;
+      if (round === 1) { yield { type: "tool_use", name: "nearby_places", id: "tu_p", input: { latitude: 40.74, longitude: -74, type: "shop", name: "Brightline" } }; return; }
+      yield { type: "text", text: "The closest is Brightline Party Supply at 220 West 23rd Street, about a ten-minute walk, open till 9." };
+    },
+  });
+  await drain(first.stream);
+  const seen = [];
+  const second = await llmRequest({
+    rawBody: bodyFor(call, { messages: [
+      { role: "assistant", content: "Hey, it's Reason." },
+      { role: "user", content: "where's the nearest brightline store?" },
+      { role: "assistant", content: "The closest is Brightline Party Supply at 220 West 23rd Street, about a ten-minute walk, open till 9." },
+      { role: "user", content: "can you text me the address" },
+    ] }),
+    headers: AUTH,
+    generate: async function* ({ messages, system }) { seen.push({ messages, system }); yield { type: "text", text: "Sent." }; },
+  });
+  await drain(second.stream);
+  const record = seen[0].messages.at(-1).content[0].text;
+  for (const want of ["Brightline Party Supply", "220 W 23rd St, New York, NY 10011", "640 m", "open now", "+1 212-555-0123", "https://maps.google.com/?cid=222222222222222222"]) assert.ok(record.includes(want), want);
+  assert.match(record, /2\. Brightline Party Supply[^\n]*← the one you said/);
+  assert.doesNotMatch(record, /1\. Brightline Party & Event Hall[^\n]*← the one you said/);
+  assert.match(record, /what you said from it: "The closest is Brightline Party Supply at 220 West 23rd Street/);
+  assert.match(record, /Never say you got it wrong[^\]]*unless a tool result you have in hand right now contradicts it/);
+  assert.equal(seen[0].messages.at(-1).content.at(-1).text, "can you text me the address", "their own words stay last");
+  // The brain's own frame carries the rule too.
+  assert.ok(seen[0].system.includes(voice.CALL_RECORD_FRAME ?? (await import("../src/calls/lookuprecord.js")).CALL_RECORD_FRAME));
+});

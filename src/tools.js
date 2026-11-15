@@ -19335,7 +19335,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "weather": {
-      const { weatherAt } = await import("./weather.js");
+      const { weatherAt: readAt, inTheirUnit, unitForZone } = await import("./weather.js");
+      // In THEIR unit only, named (src/weather.js inTheirUnit): their confirmed clock, else their number's, else the install's.
+      const unit = unitForZone(zone.confirmedZone(c) || zone.zoneFromPhone(db.getThread(c)?.address)?.zone || config.installTz);
+      const weatherAt = async (...a) => inTheirUnit(await readAt(...a), unit);
       // A saved place of THEIRS, by name (this conversation's own rows only), or the coordinates given.
       if (input.place && !(Number.isFinite(input.latitude) && Number.isFinite(input.longitude))) {
         const p = db.getPlace(c, input.place);
