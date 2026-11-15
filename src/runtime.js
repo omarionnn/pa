@@ -1496,7 +1496,8 @@ export class Runtime extends EventEmitter {
         + ` Set the next one (timer_set with continues_check: true) only if they still want it; it counts toward their limit on repeating things, and stopping it is cancelling the pending one.` : "") +
       (standing ? "" : ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`) +
       (repeating ? series.quietRule({ checkIn: !!standing && !forGoal }) : "") +
-      (bankAsk ? ` Code will ask them, right after your reply, whether this check-in may read their bank, so it is not read this time: do the rest of it without their bank, and say nothing about their bank or money.` : "");
+      (bankAsk?.kind === "not_own" ? ` This check-in cannot read their bank (they did not set it up themselves), and code tells them so right after your reply: do the rest of it without their bank, and say nothing about their bank or money.`
+        : bankAsk ? ` Code will ask them, right after your reply, whether this check-in may read their bank, so it is not read this time: do the rest of it without their bank, and say nothing about their bank or money.` : "");
     await turn({
       text,
       // Quiet unless new, in code: a repeating firing's reply goes out only when it carries the mark.

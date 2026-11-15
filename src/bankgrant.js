@@ -110,11 +110,22 @@ export function standingOf(c, timerOrId) {
   if (t.series_id != null) {
     const s = db.seriesById(t.series_id);
     if (!s || s.conversation_id !== c) return null;
-    return { key: `series:${s.id}`, words: String(s.what ?? ""), live: s.state === "active" };
+    return { key: `series:${s.id}`, words: String(s.what ?? ""), live: s.state === "active", own: s.origin === "self" };
   }
   const root = chainRoot(c, t);
-  return { key: `timer:${root.id}`, words: String(root.note ?? ""), live: !t.cancelled_at };
+  return { key: `timer:${root.id}`, words: String(root.note ?? ""), live: !t.cancelled_at, own: root.origin === "self" };
 }
+
+/** The words a grant recorded by the owner's own CLI carries (recordOwnerYes): the operator vouched in person. */
+export const OWNER_YES_WORDS = "(given to the operator directly)";
+/**
+ * A check-in somebody else's turn made (an email, a calendar item, a page, a task, a call; or one from
+ * before origins were kept) never asks and is never granted: its firings are refused as before (#568),
+ * and it says so once, in this line. The one exception is a grant the owner's CLI recorded for the
+ * operator's own check-in.
+ */
+export const notOwnLine = (what) => `Your check-in "${nameOf(what) || "this one"}" can't read your bank, because you didn't set it up yourself in a message to me. If you want one that does, text me what you'd like and when, like "every night at 9, recap my spending".`;
+const ownerVouched = (g) => !!g && g.state === "granted" && g.words === OWNER_YES_WORDS;
 
 // ---------------------------------------------------------------- rows
 const view = (r) => r ? { ...r, actions: JSON.parse(r.actions || "[]"), periods: JSON.parse(r.periods || "[]") } : null;
@@ -132,6 +143,13 @@ function bankItems(c) {
  */
 export function noteAsked(c, key, words, { kind = "setup", standingWords = "" } = {}) {
   const now = clock.now();
+  if (kind === "not_own") {
+    // Only ever replaces an ask (one recorded before origins were kept), never a yes or a no.
+    q(`INSERT INTO bank_checkin_grants (conversation_id, standing, state, words, asked_at, standing_words) VALUES (?, ?, 'not_own', ?, ?, ?)
+       ON CONFLICT (conversation_id, standing) DO UPDATE SET state = 'not_own', words = excluded.words, asked_at = excluded.asked_at, standing_words = excluded.standing_words WHERE state = 'asked'`)
+      .run(c, key, String(words), now, String(standingWords));
+    return;
+  }
   q(`INSERT INTO bank_checkin_grants (conversation_id, standing, state, words, asked_at, standing_words, fired_asked_at, reminded_at) VALUES (?, ?, 'asked', ?, ?, ?, ?, ?)
      ON CONFLICT (conversation_id, standing) DO UPDATE SET words = excluded.words, asked_at = excluded.asked_at, standing_words = excluded.standing_words,
        fired_asked_at = COALESCE(excluded.fired_asked_at, fired_asked_at), reminded_at = COALESCE(excluded.reminded_at, reminded_at) WHERE state = 'asked'`)
@@ -180,13 +198,20 @@ export function revokeForTimer(c, timer) {
  */
 export function recordOwnerYes(c, key, { standingWords, note }) {
   // The same rule as everyone's: the words and the banks it covers are those of today.
-  return decide(c, key, "granted", { words: "(given to the operator directly)", standingWords, note });
+  return decide(c, key, "granted", { words: OWNER_YES_WORDS, standingWords, note });
+}
+
+/** Was the standing thing behind this key set by the person themselves? Read off its own row. */
+function ownStanding(c, key) {
+  const [k, id] = String(key).split(":");
+  const row = k === "series" ? db.seriesById(Number(id)) : k === "timer" ? db.getTimer(c, Number(id)) : null;
+  return !!row && row.conversation_id === c && row.origin === "self";
 }
 
 // ---------------------------------------------------------------- the asks
 /** At set-up, on their own turn: the line to add to the reply, or null. Recorded as asked. */
 export function askAtSetup(c, key, words, { kind, bankConnected }) {
-  if (kind !== "user" || !bankConnected || !aboutMoney(words)) return null;
+  if (kind !== "user" || !bankConnected || !aboutMoney(words) || !ownStanding(c, key)) return null;
   const had = grantOf(c, key);
   if (had && had.state !== "asked") return null;
   const line = askSetupLine(words);
@@ -203,6 +228,12 @@ export function askAtSetup(c, key, words, { kind, bankConnected }) {
 export function askAtFire(c, timer, { bankConnected, now = clock.now() }) {
   const s = standingOf(c, timer);
   if (!s || !bankConnected || !aboutMoney(s.words)) return null;
+  if (!s.own && !ownerVouched(grantOf(c, s.key))) {
+    // Not theirs: no ask, ever. Told once that it can't read their bank (kept as a 'not_own' row).
+    const had = grantOf(c, s.key);
+    if (had?.state === "not_own") return null;
+    return { key: s.key, words: s.words, kind: "not_own", line: notOwnLine(s.words) };
+  }
   const had = current(c, s).row;
   if (had && had.state !== "asked") return null;
   const ask = { key: s.key, words: s.words };
@@ -254,6 +285,7 @@ export function answer(c, { answer: said, kind, onCall = false, messages = [], s
   if (kind !== "user" || onCall) return { ok: false, error: "not_their_turn", say: "Only their own typed answer, in their own thread, can let a check-in read their bank. Nothing was changed. Say nothing about it now." };
   const got = answeredAsk(c, messages);
   if (!got) return { ok: false, error: "no_open_ask", say: "Nothing was changed: their last message is not an answer to the bank question. If they want a check-in to read their bank, it asks them itself." };
+  if (!ownStanding(c, got.row.standing)) return { ok: false, error: "not_their_checkin", say: "Nothing was changed: that check-in wasn't set up by them in their own message, so it can't read their bank. If they want one that does, they can text what they want and when." };
   const nowWords = String(standingWordsOf(got.row.standing) ?? "");
   // Too long after the ask, or the check-in's words changed since it was shown: asked again, fresh.
   if (got.stale || got.row.standing_words !== nowWords) {
@@ -272,6 +304,23 @@ export function answer(c, { answer: said, kind, onCall = false, messages = [], s
 }
 
 // ---------------------------------------------------------------- a firing's read
+/**
+ * What a firing may still call after it read their bank: only what it needs to answer them in their own
+ * thread, and tools that read without writing anything lasting. Explicit, not derived from the harm
+ * screen's list: a tool added there later stays refused here until someone puts it here. Every writer
+ * (memory, places, notes, lists, tasks, files, pages, consents, pauses), every sender (a tapback too)
+ * and every undo is left out: bank figures must not be kept anywhere a later turn, a call or another
+ * context could surface them.
+ */
+export const AFTER_READ_ALLOWED = new Set([
+  "bank",
+  "time_zone", "capabilities", "recall", "my_name", "memory_page", "memory_search", "graph_lookup",
+  "media_reviewed", "photo_look", "ledger_list", "task_list", "timer_list", "series_list", "goal_list",
+  "event_list", "event_guests", "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list",
+  "caps_show", "spend_today", "subscription_show", "purchases_recent", "invites_list", "important_list",
+  "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
+  "page_list", "meal_query", "document_list", "transit_status", "weather",
+]);
 const NOT_ASKED = { ok: false, error: "not_asked", say: "Their bank is only read when they ask, in their own message. Say nothing about their bank or money now." };
 export const NOT_ASKED_RESULT = NOT_ASKED;
 // The turns that read a bank under a grant: every tool after it that could carry it out is refused.
@@ -288,6 +337,8 @@ export function firingRead(c, ctx, input) {
   if (ctx?.onCall || ctx?.fromTimer == null || !Number.isInteger(Number(ctx.fromTimer))) return NOT_ASKED;
   const s = standingOf(c, Number(ctx.fromTimer));
   if (!s || !s.live) return NOT_ASKED;
+  // Not set by them on their own turn: refused exactly as before (#568), unless the owner vouched in person.
+  if (!s.own && !ownerVouched(grantOf(c, s.key))) return NOT_ASKED;
   // Words changed since the answer, or a bank connected since the yes: no longer covered (asked again at the next firing).
   const g = current(c, s).row;
   if (!g) return NOT_ASKED;

@@ -9942,7 +9942,7 @@ async function runToolInner(name, rawInput, ctx) {
   // A check-in's firing that has read their bank (src/bankgrant.js): what it read goes only into the
   // reply to them, so nothing that reaches out of this machine runs after it on that turn. The same
   // allowlist as the harm screen's: a tool added later is held by default.
-  if (bankgrant.readThisTurn(ctx) && name !== "bank" && !SAFE_WHILE_SCREENED.has(name)) {
+  if (bankgrant.readThisTurn(ctx) && !(bankgrant.AFTER_READ_ALLOWED.has(name) && (name === "bank" || SAFE_WHILE_SCREENED.has(name)))) {
     return { ok: false, blocked: "bank_read", error: "Not on this turn: it read their bank for their check-in, so nothing else goes out from it. Put what they need in your reply to them." };
   }
 
@@ -10340,6 +10340,8 @@ function flightToday(c) {
 }
 
 let pictureLinkSeq = 0;
+/** Their own typed turn in their own thread: not an event, a task, research, a firing or a call. */
+const ownTurn = (ctx) => (ctx?.kind ?? "event") === "user" && !ctx?.onCall && ctx?.fromTimer == null && !ctx?.taskId && !ctx?.isGroup;
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
   switch (name) {
     case "plan_create": {
@@ -10397,6 +10399,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         trust.ledgerWrite({ conversationId: c, action: "series_set", input, out: started, target: String(input.note).slice(0, 120) });
         if (!started.ok) return started;
         // About their money, with a bank connected: asked in this same reply, in fixed words (src/bankgrant.js).
+        // Set by them, on their own typed turn in their own thread: the only check-ins that may ask to read their bank.
+        if (ownTurn(ctx)) db.markOrigin("series", c, started.series?.series_id, "self");
         const askBank = callGoal ? null : bankgrant.askAtSetup(c, `series:${started.series?.series_id}`, input.note, { kind: ctx.onCall ? "call" : (ctx.kind ?? "event"), bankConnected: plaidOn(c) && plaidHasBank(c) });
         return {
           ok: true, series: started.series, first: started.first, timer_id: started.timer_id,
@@ -10444,6 +10448,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const label = normTitle(input.title, { name: me.name });
       const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal, label, chainedFrom });
       if (!label) queueTitle("timer", c, made.id, input.note, { name: me.name });
+      if (chainedFrom == null && ownTurn(ctx)) db.markOrigin("timers", c, made.id, "self");
       const askBank = callGoal || chainedFrom != null ? null : bankgrant.askAtSetup(c, `timer:${made.id}`, input.note, { kind: ctx.onCall ? "call" : (ctx.kind ?? "event"), bankConnected: plaidOn(c) && plaidHasBank(c) });
       return {
         ok: true, timer: timerView(made),
