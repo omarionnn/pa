@@ -313,6 +313,8 @@ export function thirdPartyEvent({ row, live, recordTip = false }) {
   const outcome = String(row.outcome || live?.outcome || row.state).trim();
   const audio = row.recording_state === "stored"
     ? `The recording is saved and goes out attached to this message automatically — you do not attach it and you may say it is there.`
+      // Only part of it kept (a call recorded on request, `recordAskTape`): never implied to be the whole call.
+      + (row.recording_why ? ` It is NOT the whole call: ${row.recording_why}. Say that plainly.` : "")
     : row.recording_state === "missing"
       ? `There is NO audio for this call: ${row.recording_why || "the provider never gave it to Reason"}. Every call is meant to be recorded, so say that plainly rather than implying a recording exists.`
       // A call they asked to be recorded that has no audio (REASON_CALL_RECORD_ASK): said plainly, with why.

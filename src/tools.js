@@ -8533,18 +8533,53 @@ async function finishChecks({ c, task, outcome, ctx = {} }) {
  */
 export function recordChoice(c, to, input = {}, ctx = {}) {
   if (!to || !recordAskOn(c)) return null;
+  // A call asked for by voice during their own call, or anything in a group thread: never recorded,
+  // whatever was saved or quoted (review of #590: a saved ask leaked onto a voice-dialled call).
+  if (ctx.onCall || ctx.isGroup) return null;
   const quoted = String(input.record_said ?? "").trim();
-  const waiting = db.recordAskFor(c, to);
+  const waiting = usableRecordAsk(c, to, ctx);
   if (!quoted || ctx.releasedHold) return waiting ? { said: waiting.said } : null;
-  const mine = (ctx.kind ?? "event") === "user"
-    ? callNowSaid({ said: quoted, words: askedCall.theirWords(ctx.messages ?? [], { last: 5 }), kind: "user" })
+  const words = askedCall.theirWords(ctx.messages ?? [], { last: 2 });
+  const mine = ownTurn(ctx)
+    ? callNowSaid({ said: quoted, words, kind: "user" })
     : { ok: false, why: "this is not a turn they started" };
-  if (mine.ok && RECORD_WORDS.test(quoted)) {
+  const asks = mine.ok ? asksForRecording(quoted, words) : null;
+  if (asks?.ok) {
     db.noteRecordAsk(c, to, mine.said);
     return { said: mine.said };
   }
   if (waiting) return { said: waiting.said };
-  return { ok: false, why: mine.ok ? "those words do not ask for a recording" : mine.why };
+  return { ok: false, why: mine.ok ? asks.why : mine.why };
+}
+
+/** A saved ask is used on their own turn only while fresh, or for a yes asked after it was saved (that question said it'd be recorded). */
+export const RECORD_ASK_FRESH_MS = 30 * 60_000;
+function usableRecordAsk(c, to, ctx = {}) {
+  const waiting = db.recordAskFor(c, to);
+  if (!waiting || !ownTurn(ctx) || ctx.releasedHold) return waiting;
+  if (clock.now() - (waiting.at ?? 0) <= RECORD_ASK_FRESH_MS) return waiting;
+  const conf = ctx.confirmationId != null ? db.getConfirmation(c, ctx.confirmationId) : null;
+  return conf && Number(conf.asked_at) >= Number(waiting.at ?? 0) ? waiting : null;
+}
+
+/**
+ * Do their words really ask for a recording? The quote has to name one, and the sentence it came from
+ * must not negate it or ask about it: "don't record it", "no need to record", "is it recorded?" are
+ * not asks, even though "record it" is found inside the first (review of #590).
+ */
+const RECORD_NEGATED = /\b(?:don't|dont|do not|doesn't|does not|didn't|no|not|never|without|nah|nope|needn't|shouldn't|won't|wouldn't|can't|cannot|stop|skip)\b|n't\b/;
+const RECORD_STATE_Q = /\b(?:is|was|are|were|will|has|does|did)\s+(?:it|this|that|the call|this call|calls)\b(?:\s+\w+){0,3}\s+(?:record\w*|tap\w*)\b|\bare (?:you|they|we) (?:record|tap)\w*\b/;
+export function asksForRecording(quoted, words = []) {
+  if (!RECORD_WORDS.test(quoted)) return { ok: false, why: "those words do not ask for a recording" };
+  const norm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[‘’]/g, "'").replace(/[^\p{L}\p{N}'\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const q = norm(quoted);
+  const sentences = (words ?? []).flatMap(w => String(w).split(/[.!?\n;,]+/)).map(s => ({ raw: s, n: norm(s) }));
+  const hit = sentences.find(s => ` ${s.n} `.includes(` ${q} `));
+  if (!hit) return { ok: false, why: "those words are not one sentence of what they just wrote" };
+  const upTo = hit.n.slice(0, ` ${hit.n} `.indexOf(` ${q} `) + q.length);
+  if (RECORD_NEGATED.test(upTo)) return { ok: false, why: "their words say NOT to record it" };
+  if (RECORD_STATE_Q.test(hit.n)) return { ok: false, why: "their words ask whether it is recorded; that is a question, not an ask" };
+  return { ok: true };
 }
 
 /**
@@ -8645,7 +8680,8 @@ export async function fileRecording(conversationId, row, live, ctx = {}) {
     recording_seconds: saved.seconds ?? live.durationS ?? null,
     recording_bytes: saved.bytes,
     recording_sha256: saved.sha256,
-    recording_why: "",
+    // A call recorded on request that kept only part of the call says which part went (`recordAskTape`).
+    recording_why: live.recordingPartial || "",
   });
 }
 
@@ -9480,6 +9516,8 @@ function callView(r, who) {
         : clock.now() - (r.created_at ?? 0) < RECORDING_RIDES_MS
           ? `The audio is saved and goes out with your next message to ${who} automatically. Do not attach it and do not send it twice.`
           : `The audio is saved on this machine but was never sent to ${who}, and it will not go out on its own now: it only rides along in the hour after a call. Say exactly that if they ask for it. Do not say it is coming or that you are sending it.`)
+        // Only part of the call kept (a call recorded on request): never implied to be the whole call.
+        + (r.recording_why ? ` It is not the whole call: ${r.recording_why}.` : "")
       : going
         ? "The call has not finished, so there is no recording yet."
         // Deleted on purpose by the retention setting, which is not the provider losing it — said
@@ -11775,6 +11813,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       const stopped = db.stopHeldAction(c, named.id);
+      // A call they stopped takes its "record it" with it: never left for a later call to the same number.
+      if (stopped && named.action === "call_place") { try { db.useRecordAsk(c, normalizeNumber(named.input?.to)); } catch { /* nothing kept */ } }
       if (!stopped) {
         const now = db.getHeldAction(named.id);
         return {

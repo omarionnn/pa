@@ -134,16 +134,39 @@ export function recordNoticeLine(first) {
 /** Said again to a new person after a hold or a transfer. */
 export const RENOTICE_LINE = "Just so you know, this call is recorded.";
 
+/** The same two lines for a person who answers in Spanish (calls may switch into it, config.callLanguages). */
+export function recordNoticeLineEs(first) {
+  return `Hola, habla Reason, un asistente de inteligencia artificial que llama de parte de ${String(first || "la persona para quien trabajo").trim()}. Le aviso que esta llamada se está grabando.`;
+}
+export const RENOTICE_LINE_ES = "Le aviso que esta llamada se está grabando.";
+
 /** Words of theirs that ask for a recording ("record it", "get me the audio"): the quote has to carry one. */
 export const RECORD_WORDS = /\b(?:record|recording|recorded|audio|tape|taped)\b/i;
 
 /** Reason's words that count as the notice having been said: that the call IS recorded, not any word about recording. */
 export const NOTICE_SAID = /\b(?:this|the) call(?:'s|’s| is)(?: being)? recorded\b|\b(?:i'm|i’m|i am|we're|we’re|we are) recording (?:this|the) call\b/i;
+/** The same in Spanish ("esta llamada se está grabando", "la llamada está siendo grabada", "estoy grabando esta llamada"). */
+export const NOTICE_SAID_ES = /\b(?:esta|la) llamada (?:se )?(?:est[aá] (?:siendo )?)?(?:grabando|grabada|graba)\b|\b(?:estoy|estamos) grabando (?:esta|la) llamada\b/i;
+
+/**
+ * Did these words of Reason's tell them the call is recorded? A sentence that matches NOTICE_SAID and
+ * does not hedge or negate it before the match ("I'm not sure whether the call is recorded", "no, this
+ * call isn't …") — review of #590.
+ */
+export function noticeSaid(text) {
+  // A question ("is this call recorded?", "¿esta llamada se graba?") never tells them anything.
+  return String(text ?? "").replace(/[‘’]/g, "'").split(/(?<=[.!?\n;])/).filter(s => !/\?\s*$/.test(s)).map(s => s.replace(/[¿¡]/g, "")).some(s => {
+    const m = NOTICE_SAID.exec(s) ?? NOTICE_SAID_ES.exec(s);
+    return !!m && !/\b(?:whether|if|not|never|no|unsure|don't know|isn't|wasn't|aren't|nunca|si|tampoco)\b|n't\b/i.test(s.slice(0, m.index));
+  });
+}
 
 /** Voice quiet this long, then talking again: maybe someone new (a hold or a transfer), so the notice is owed again. */
 export const RENOTICE_GAP_MS = 20_000;
 
 /** Why an asked-for recording has no audio (the row's recording_why; call_status and the post-call note read them). */
+/** A call recorded on request whose audio after a long quiet or a new person was not kept (nobody there was told it is recorded). */
+export const RECORD_PART_WHY = "the part after a long hold or a new person coming on was not kept, because nobody there was told the call is recorded";
 export const RECORD_DECLINED_WHY = "the other side asked not to be recorded, so recording stopped and the audio captured so far was deleted";
 export const RECORD_UNCONFIRMED_WHY = "Reason could not confirm it told them the call was recorded, so no audio was kept";
 export const RECORD_NO_PERSON_WHY = "no person came on the line to be told the call was recorded (only a machine, a phone menu or voicemail), so no audio was kept";
@@ -204,18 +227,20 @@ const OBJECTION_SYSTEM = "You read the latest lines of a phone call an AI assist
   + " Answer only from what was said. Reply with the JSON asked for, nothing else.";
 const OBJECTION_SCHEMA = { type: "object", properties: { objects: { type: "boolean" } }, required: ["objects"], additionalProperties: false };
 
-export function objectionPrompt(transcript) {
+export function objectionPrompt(transcript, { recordAsked = false } = {}) {
   return `${transcript}\n\nReason said at the start that the call may be recorded.`
     + " In Them's LAST words, do they object to the call being recorded or ask for it not to be — in any words"
     + " (\"please don't record this\", \"we don't allow recording\", \"I'm not comfortable being recorded\", \"can you turn that off\")?"
     + " Also objects=true if Reason, in its latest words, agreed to stop or turn off the recording because Them asked for that (an offer Them did not take up is not it)."
-    + " objects=false for anything else, including a question about the recording that does not object, or an objection to something else.";
+    + " objects=false for anything else, including a question about the recording that does not object, or an objection to something else."
+    // A call recorded on request: their words may not be English (review of #590).
+    + (recordAsked ? " Their words may be in any language: an objection in Spanish (\"no me grabe\", \"no quiero que me graben\", \"apague la grabación\") or any other language counts the same." : "");
 }
 
 /** true / false, or null when it could not be asked (null never stops a recording). Subscription CLI via askJson. */
-export async function judgeObjection(transcript, { ask = null } = {}) {
+export async function judgeObjection(transcript, { ask = null, recordAsked = false } = {}) {
   try {
-    const q = { system: OBJECTION_SYSTEM, prompt: objectionPrompt(transcript), schema: OBJECTION_SCHEMA, feature: "gptlive_recording_objection" };
+    const q = { system: OBJECTION_SYSTEM, prompt: objectionPrompt(transcript, { recordAsked }), schema: OBJECTION_SCHEMA, feature: "gptlive_recording_objection" };
     const value = ask ? await ask(q) : (await (await import("../onethought.js")).askJson(q)).value;
     return typeof value?.objects === "boolean" ? value.objects : null;
   } catch { return null; }
