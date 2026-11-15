@@ -996,7 +996,8 @@ test("inbound pre-open: only after routing — a known caller's session opens he
     assert.equal(isVerified(db.getCall(OTHER, row.id)), false, "consequential tools still wait for the second check");
     opened[0].open();
     const start = opened[0].of("session.start")[0].session;
-    assert.match(start.input[0].content[0].text, /what's up\?/, "her inbound greeting");
+    // The line written ahead for her (src/calls/greetings.js); none yet in this test, so the plain one.
+    assert.match(start.input[0].content[0].text, /"Hey Ama\."/, "her inbound greeting");
     // The very session a cold stream would open for this row: same instructions, nothing more.
     const cold = fakeLive();
     const twilio = fakeTwilio();
