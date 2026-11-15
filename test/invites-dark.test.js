@@ -131,7 +131,7 @@ test("off: the backfill still gives everybody 2, invisibly", () => {
 });
 
 test("off: the master mints, the page opens, a friend texts the code in, they join and he is told", async () => {
-  const made = await tool("invite_link_create", {}, OWNER_C);
+  const made = await tool("invite_link_create", { for_nobody: true }, OWNER_C);
   assert.equal(made.ok, true, JSON.stringify(made));
   const inv = db.getInvite(OWNER_C, made.number);
   assert.match(made.link, /^https:\/\/files\.example\.test\/i\/[A-Za-z0-9_-]{32}$/);
@@ -168,7 +168,7 @@ test("on: everybody gets the invite tools with no code change; deciding stays th
   assert.deepEqual(names(mcpToolsFor(KOFI_C)).filter(n => INVITE_TOOLS.has(n)).sort(), ALL.filter(n => !INVITE_MASTER_TOOLS.has(n)).sort());
   assert.deepEqual(ALL.filter(n => !names(toolsFor(OWNER_C)).includes(n)), []);
 
-  const made = await tool("invite_link_create", {}, KOFI_C);
+  const made = await tool("invite_link_create", { for_nobody: true }, KOFI_C);
   assert.equal(made.ok, true, JSON.stringify(made));
   const listed = await tool("invites_list", {}, KOFI_C);
   assert.equal(listed.links.length, 1);
@@ -203,7 +203,7 @@ test("grant one person: dry run writes nothing; --apply turns invites on for the
     assert.deepEqual(list.filter(n => INVITE_TOOLS.has(n)).sort(), ["invite_link_cancel", "invite_link_create", "invite_request_more", "invites_list"], "Kofi gets his four, never the master's two");
   }
   assert.deepEqual(names(toolsFor(AMA_C)).filter(n => INVITE_TOOLS.has(n)), [], "nobody else does");
-  const link = await tool("invite_link_create", {}, KOFI_C);
+  const link = await tool("invite_link_create", { for_nobody: true }, KOFI_C);
   assert.equal(link.ok, true);
   assert.equal((await tool("invites_list", {}, KOFI_C)).invites_left, 3);
   assert.equal((await tool("invites_list", {}, AMA_C)).blocked, "not_available");

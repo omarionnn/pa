@@ -12538,6 +12538,12 @@ db.exec(`
 `);
 // Who brought this person in, if anybody: the inviter's conversation id.
 addColumnIfMissing("accounts", "invited_by", "TEXT");
+// The first name the INVITER said a link is for, already through invitecard.cleanInviteeName. It has
+// ONE use: the wording on that link's card picture (and the inviter's own "my invites"). It never
+// reaches the person who joins: not their hello, onboarding, profile or memory; they say their own
+// name. The inviter's data, so it lives on their row (and goes with their delete); blanked when the
+// link is canceled or claimed. NULL: nobody named, which every row from before this column is.
+addColumnIfMissing("invites", "for_name", "TEXT");
 
 /** What everybody who did not join through an invite starts with. Invitees start with none. */
 export const DEFAULT_INVITES = 2;
@@ -12611,7 +12617,7 @@ export function newInviteToken() {
  * Mint one link, if this person has a unit of allowance not already held by an unused link.
  * `{ ok: true, invite }` or `{ ok: false, reason: "none_left", remaining, unused }`.
  */
-export function createInvite(conversationId) {
+export function createInvite(conversationId, { forName = null } = {}) {
   const remaining = inviteAllowance(conversationId);
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -12626,8 +12632,8 @@ export function createInvite(conversationId) {
     // unlikely, and UNIQUE turns it into a retry rather than two links sharing a code.
     for (let i = 0; i < 5 && id === null; i++) {
       try {
-        id = Number(db.prepare("INSERT INTO invites (conversation_id, token, claim_code, state, created_at) VALUES (?, ?, ?, 'unused', ?)")
-          .run(conversationId, newInviteToken(), newClaimCode(), now).lastInsertRowid);
+        id = Number(db.prepare("INSERT INTO invites (conversation_id, token, claim_code, state, created_at, for_name) VALUES (?, ?, ?, 'unused', ?, ?)")
+          .run(conversationId, newInviteToken(), newClaimCode(), now, forName || null).lastInsertRowid);
       } catch (e) {
         if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
       }
@@ -12660,7 +12666,7 @@ export function inviteByClaimCode(code) {
 
 /** Cancel one of this person's own unused links. The allowance is untouched. */
 export function cancelInvite(conversationId, id) {
-  const r = db.prepare("UPDATE invites SET state = 'canceled', canceled_at = ? WHERE conversation_id = ? AND id = ? AND state = 'unused'")
+  const r = db.prepare("UPDATE invites SET state = 'canceled', canceled_at = ?, for_name = NULL WHERE conversation_id = ? AND id = ? AND state = 'unused'")
     .run(clock.now(), conversationId, id);
   return r.changes > 0;
 }
@@ -12691,6 +12697,9 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ? WHERE id = ? AND state = 'unused'")
       .run(conversationId, now, inv.id);
     if (won.changes !== 1) return fail("redeemed");
+    // The name the inviter said it was for was only ever for the card: once somebody joins it is
+    // gone, and nothing below hands it to their side.
+    db.prepare("UPDATE invites SET for_name = NULL WHERE conversation_id = ? AND id = ?").run(inv.conversation_id, inv.id);
     upsertAccount({ conversationId, channel, address, name, isOperator: false });
     db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(inv.conversation_id, conversationId);
     db.prepare("UPDATE invite_allowances SET remaining = MAX(remaining - 1, 0), updated_at = ? WHERE conversation_id = ?")
