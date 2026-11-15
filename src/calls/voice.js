@@ -53,6 +53,7 @@ import { peekForSignin } from "../savedlogins.js";
 import { rulesNote } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory } from "./callmemory.js";
 import { memoryHits, profileNote as profileForCall } from "../memorynote.js";
+import { lookupEntry, withCallRecord, answersIn, CALL_RECORD_FRAME } from "./lookuprecord.js";
 import { notByTheNickname } from "../outbox.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
@@ -377,37 +378,9 @@ export function endOnTheirSide(messages = [], { own = false } = {}) {
   return out;
 }
 
-/**
- * One tool run, as the call's record keeps it: when, what was asked, and the head of what came back.
- * Short, because every later turn of the call carries all of them in front of the first word.
- */
-export function lookupEntry({ name, input = {}, out, at = clock.now() }) {
-  return {
-    at,
-    name,
-    input: JSON.stringify(input ?? {}).slice(0, 200),
-    ok: out?.ok !== false,
-    got: JSON.stringify(out ?? null).slice(0, 600),
-  };
-}
-
-/**
- * The call's record of what Reason looked up, in front of the newest thing they said.
- *
- * The platform sends each turn back as spoken words only — the tool calls and their results are gone
- * by the next turn. On call 41 (2026-10-23) Reason searched, read a real Kitco gold price out, and one
- * turn later, seeing its own number with no search behind it, told him it had never looked and not to
- * trust it. This puts the searches back where the next turn can see them.
- */
-export function withCallRecord(messages = [], lookups = []) {
-  if (!lookups.length || !messages.length || messages.at(-1)?.role !== "user") return messages;
-  const lines = lookups.map(l => `- ${stamp(l.at)} ${l.name} ${l.input}${l.ok ? "" : " (failed)"} → ${l.got}`);
-  const record = `[Your own record of this call, kept by code — not something they said, and not something to mention.`
-    + ` Every lookup you have really run on this call, with the head of what came back:\n${lines.join("\n")}]`;
-  const last = messages.at(-1);
-  const theirs = typeof last.content === "string" ? [{ type: "text", text: last.content }] : last.content;
-  return [...messages.slice(0, -1), { role: "user", content: [{ type: "text", text: record }, ...theirs] }];
-}
+// The call's record of what Reason looked up (./lookuprecord.js): every result of each lookup, compact,
+// next to what Reason said from it. Re-exported here, where the call turn uses it.
+export { lookupEntry, withCallRecord, RECORD_RULE } from "./lookuprecord.js";
 
 // ---------- which call is this ----------
 
@@ -574,6 +547,9 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     ownerLanguageRule(lang.language || "en"),
     // REASON_CALL_FEEL=classic on a Cartesia call (src/calls/callclassic.js): call 112's frame, no time read-back.
     ownerCallFrame({ name: me.name, identity: callIdentityFor(conversationId), manner: mannerFor(conversationId), readBack: !(config.callFeel === "classic" && cartesiaTrialFor(call)) }),
+    // Call 119 (2026-11-15): a right answer "corrected" one turn later, then corrected back by text. In
+    // every mode, classic included: the brain's own frame, never the voice's words (./lookuprecord.js).
+    CALL_RECORD_FRAME,
     // A call REASON placed to them — scheduled ("call me at 7 to get me up") or asked for by text —
     // has a reason, and the model answering the turns must know it: a wake-up call whose second
     // line is "what's up?" is Reason forgetting why it rang. The opening line already said it.
@@ -1739,7 +1715,10 @@ export async function* voiceTurn({
     }
   }
 
-  const messages = withCallRecord(endOnTheirSide(context.messages, { own: context.kind === "owner" }), db.callLookups(call));
+  // Each lookup next to what Reason said from it, from the platform's own messages for this call.
+  const messages = withCallRecord(endOnTheirSide(context.messages, { own: context.kind === "owner" }), db.callLookups(call), { callMessages: context.callMessages ?? [] });
+  // How many answers Reason had given on this call before this turn: the answer this turn's lookups lead to is the next one.
+  const answeredBefore = answersIn(context.callMessages ?? []).length;
   // On their own call, what Reason remembers that is closest in meaning to what they just said — the
   // same search a text turn gets — riding in front of their words like the call record, never as theirs.
   const owned = context.kind === "owner";
@@ -2570,7 +2549,7 @@ export async function* voiceTurn({
         // if still to come. A last round with nothing to add says what is true now instead.
         if (SEND_TOOLS.has(String(t.name)) && out?.ok !== false && !out?.error && !out?.scheduled) lastLeadIn = [SENT_LINE];
         // Kept even when the platform has moved on: the search happened, and the next turn has to know.
-        try { db.addCallLookup(call.conversation_id, call.id, lookupEntry({ name: t.name, input: t.input, out })); }
+        try { db.addCallLookup(call.conversation_id, call.id, lookupEntry({ name: t.name, input: t.input, out, turn: answeredBefore })); }
         catch { /* the record is a help, never a reason for the turn to fail */ }
         // The platform stopped listening while the tool ran. The result is not for anybody now.
         if (superseded()) {
@@ -2749,6 +2728,7 @@ export async function llmRequest({
     // Where they usually are (./callmemory.js): read while it rang, so this is normally already done.
     if (kind === "owner") await Promise.race([Promise.all([prepareCallMemory(call, { log }), prepareCarry(call, { log })]), new Promise(r => setTimeout(r, CALL_MEMORY_WAIT_MS).unref?.())]);
     context = contextFor({ call, kind, callMessages: body.messages, now });
+    context.callMessages = Array.isArray(body.messages) ? body.messages : [];
   } catch (e) {
     const why = (e?.message ?? String(e)).split("\n")[0];
     log({ voice_context_failed: call.id, kind, why });
@@ -2758,6 +2738,7 @@ export async function llmRequest({
       return { status: 200, headers: SSEH, stream: refusalStream({ why: `context unavailable: ${why}`, model: body.model }) };
     }
     context = degradedContext({ call, callMessages: body.messages, why });
+    context.callMessages = Array.isArray(body.messages) ? body.messages : [];
   }
 
   // One turn in flight per call. The platform asks for a turn whenever the person speaks or the line
