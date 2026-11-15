@@ -310,15 +310,15 @@ test("call 116: the opener is never the last call's line (the call being greeted
   pastCall({ endedAgo: 2 * HOUR, seconds: 36, transcript: "Reason: hey — hey Omari, good to hear from you again — what's up?\nThem: where were we?" });
   for (let i = 0; i < 7; i++) pastCall({ endedAgo: (3 + i) * HOUR, transcript: "Reason: hey Omari\nThem: hi" });
   thisCall();
+  // Written ahead now (src/calls/greetings.js): with none written, the plain line; never a stutter, never "what did we miss".
   const line = carry.greetingFor({ conversationId: C, name: "Omari", direction: "in" });
-  assert.match(line, /again|back so soon/, "they spoke within three hours");
   assert.ok(!/good to hear from you again/.test(line), `not the last call's line: "${line}"`);
   assert.ok(!/what did we miss/.test(line));
-  for (const g of Object.values(carry.GREETINGS ?? {}).flat()) assert.ok(!/what did we miss/.test(g));
+  assert.equal(carry.GREETINGS, undefined, "no fixed list left to repeat");
   for (let i = 0; i < 40; i++) {
     const open = inbound.openingLineFor({ person: { name: "Omari" }, conversationId: C });
     assert.ok(!/^hey\s*—\s*hey\b/i.test(open), `stutter: "${open}"`);
-    assert.match(open, /^(oh,|ah,|yo,) /);
+    assert.doesNotMatch(open, /^(oh,|ah,|yo,) /, "no lead-in of code's");
   }
 });
 

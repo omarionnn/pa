@@ -450,49 +450,38 @@ test("what memory saved in the last three days — from a call or a text — is 
 
 const firstLine = (t) => `Reason: ${t}\nThem: hey, I wanted to ask you about something for tonight`;
 
-test("the opening fits the time of day, says 'again' after a recent call, and is never the last call's line", () => {
+test("the opening fits the time of day in their zone and says 'again' only after a call that reached them (written lines: src/calls/greetings.js)", () => {
   const at = (h, m = 0) => Date.UTC(2026, 10, 11, h + 5, m); // New York, Wed Nov 11
+  const stock = () => db.setCallGreetings(C, { for: "Omari", morning: ["Morning, Omari!"], afternoon: ["Hey Omari, good afternoon!"], evening: ["Evening, Omari!"], night: ["Hey Omari, up late?"], again: ["Hey again, Omari!"], salute: ["Hey Omari"] });
   const greet = (now, direction = "in") => carry.greetingFor({ conversationId: C, name: "Omari", direction, now });
-  assert.match(greet(at(7)), /morning/i);
-  assert.match(greet(at(14)), /afternoon|good to hear from you/);
-  assert.match(greet(at(19)), /evening|how was today/);
-  assert.match(greet(at(25)), /late|what's up/);
-  // Ten calls through one evening and the next days: no two in a row open the same way.
-  let last = "";
-  for (let i = 0; i < 10; i++) {
-    const now = at(18) + i * 26 * HOUR;
-    const line = greet(now);
-    assert.notEqual(line, last, `call ${i} repeated "${line}"`);
-    assert.doesNotMatch(line, /\{n\}/);
-    callAt(now, { transcript: firstLine(`oh, ${line}`), seconds: 60 });
-    last = line;
-  }
-  // Half an hour after a call: "again".
-  db.db.exec("DELETE FROM calls");
-  callAt(at(18), { transcript: firstLine("hey Omari — how's your evening?"), seconds: 60 });
-  assert.match(greet(at(18, 30)), /again|back so soon|what did we miss/);
-  // A voicemail or a dead line half an hour ago is not "again".
-  db.db.exec("DELETE FROM calls");
+  stock(); assert.equal(greet(at(7)), "Morning, Omari!");
+  stock(); assert.equal(greet(at(14)), "Hey Omari, good afternoon!");
+  stock(); assert.equal(greet(at(19)), "Evening, Omari!");
+  stock(); assert.equal(greet(at(25)), "Hey Omari, up late?");
+  // Half an hour after a call that reached them: the "again" line, if carry-over's pick-up has no notes to use.
+  db.db.exec("DELETE FROM calls"); stock();
+  callAt(at(18), { transcript: firstLine("Evening, Omari!"), seconds: 60 });
+  assert.match(greet(at(18, 15)), /again|picking up/);
+  // A voicemail or a dead line a quarter hour ago is not "again".
+  db.db.exec("DELETE FROM calls"); stock();
   callAt(at(18), { outcomeKind: "voicemail_no_message", transcript: "Them: The person you're trying to reach is not available" });
-  assert.doesNotMatch(greet(at(18, 30)), /again|back so soon|what did we miss/);
+  assert.doesNotMatch(greet(at(18, 15)), /again|back so soon|what did we miss/);
 });
 
-test("the opening: a call they ring gets it with its lead-in; a call Reason places keeps '…, what's up?' and passes the greeting guard; no name is no gap", () => {
+test("the opening: no lead-in of code's; a call Reason places keeps '…, what's up?' and passes the greeting guard; no name is no gap; everyone gets it", () => {
   clock.skip(WED_NIGHT - Date.now());
   const line = inbound.openingLineFor({ person: { name: "Omari" }, conversationId: C });
-  assert.match(line, /^(oh,|ah,|hey —|yo,) .*Omari/);
-  assert.doesNotMatch(line, /hey Omari — what's up\?$/, "not the one line every call used to open with");
+  assert.equal(line, "Hey Omari.", "none written yet: the plain line");
   for (const h of [7, 14, 19, 25]) {
     const out = carry.greetingFor({ conversationId: C, name: "Omari", direction: "out", now: Date.UTC(2026, 10, 11, h + 5) });
     assert.match(out, /Omari.*, what's up\?$/);
     assert.equal(requireAnnouncement({ announcement: out, ownerName: "Omari", toOwner: true }).ok, true);
   }
-  assert.equal(carry.greetingFor({ conversationId: C, name: "", direction: "in", now: Date.UTC(2026, 10, 11, 12) }), "morning — what's up?");
-  // Anyone else on 'owner', and everyone with it off: the line it always was.
-  assert.equal(carry.greetingFor({ conversationId: OTHER, name: "Ama" }), "");
-  assert.match(inbound.openingLineFor({ person: { name: "Ama" }, conversationId: OTHER }), /hey Ama — what's up\?$/);
+  assert.equal(carry.greetingFor({ conversationId: C, name: "", direction: "in", now: Date.UTC(2026, 10, 11, 12) }), "Hey.");
+  // Everyone, carry-over on or off.
+  assert.equal(inbound.openingLineFor({ person: { name: "Ama" }, conversationId: OTHER }), "Hey Ama.");
   config.callCarryover = "off";
-  assert.match(inbound.openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
+  assert.equal(inbound.openingLineFor({ person: { name: "Omari" }, conversationId: C }), "Hey Omari.");
 });
 
 test("a warmer goodbye: the voice's sign-off line and Reason's own turn, with the manner off; untouched when the switch is off", () => {

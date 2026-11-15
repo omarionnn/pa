@@ -130,10 +130,13 @@ test("the time read-back line is in Claude's call frame unless classic asks it o
   assert.doesNotMatch(ownerCallFrame({ name: "Sam", identity: true, readBack: false }), rule);
 });
 
-test("greeting: classic is call 112's (any lead-in, no pick-up line); current keeps its own", () => {
+// The greeting is the one owner-approved exception to call 112's words (2026-11-15): written ahead for
+// them by a model (src/calls/greetings.js), the plain "Hey <name>." with none written yet.
+test("greeting: classic opens with the line written for them (plain with none yet, no lead-in, no pick-up line); current keeps its pick-up", () => {
   const call = scenario("busy");
   const person = { name: "Sam" };
   assert.equal(openingLineFor({ person, conversationId: C, classic: true }), BASE.scenarios.busy.greeting);
+  assert.equal(BASE.scenarios.busy.greeting, "Hey Sam.");
   // Twenty-five minutes after a call with notes: current picks up from it, classic does not.
   assert.match(openingLineFor({ person, conversationId: C }), /picking up from just now/);
   assert.doesNotMatch(openingLineFor({ person, conversationId: C, classic: true }), /picking up/);

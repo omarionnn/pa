@@ -103,6 +103,7 @@ import * as cardroutes from "./cardroutes.js";
 import * as rhythms from "./rhythms.js";
 import * as identity from "./identity.js";
 import * as whereabouts from "./whereabouts.js";
+import { pickGreeting } from "./calls/greetings.js";
 import { factForPrompt } from "./memorynote.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
@@ -12113,6 +12114,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let announcement = announcementFor({ ownerName: me.name, toOwner, because });
       // No reason of its own to say: the plain greeting, fitted to the time of day (src/calls/carryover.js).
       if (toOwner && !because) announcement = carryover.greetingFor({ conversationId: c, name: me.name, direction: "out" }) || announcement;
+      // Why it rang, behind a salute written ahead for them (src/calls/greetings.js) rather than the same "hey <name>" every time.
+      else if (toOwner && because) {
+        const why = because.replace(/[.!?]+$/, "");
+        announcement = `${pickGreeting({ conversationId: c, name: me.name, kind: "salute" }).line} — ${why}.`;
+      }
       // The goal is the model's words, and the provider refuses an owner greeting that reads like
       // the stranger line ("...a call for the airport" trips "call for"). The plain greeting then,
       // and the voice turn still knows why it rang (placedCallNote in src/calls/voice.js).
