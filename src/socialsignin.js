@@ -607,9 +607,24 @@ export const RULES = [
   `- TRUST: use sign-in access only for tasks they asked for or approved — no curiosity browsing. Never change passwords, security settings, recovery emails or connected apps. Never grant a new third-party app access without asking. Money, a message sent as them, and anything permanent still need their go-ahead. If they ask what you can get into, answer honestly from signin_status and say how to revoke it (account_revoke, or the provider's own connected-apps page). Reading a sign-in code from their Gmail is for that one sign-in: signin_email reads only that site's code mail, and the code is never shown to you or repeated.`,
 ].join("\n");
 
-/** The block for one person's prompt, or "" where the flag does not reach them. */
-export function rulesFor(conversationId) {
-  return socialAllowedFor(conversationId) ? RULES : "";
+// Where saved logins are on for the person as well (src/savedlogins.js savedLoginsAllowedFor), the
+// two Google lines above are wrong for them: the owner decision of 2026-11-13 keeps their Google login
+// for Continue with Google on a site they name (src/federated.js), and "Google refuses Reason's
+// browser" is said only off a recorded refusal. Those two lines are swapped; every other line, and the
+// whole block for everybody else, stays byte for byte.
+const NO_GOOGLE_LINE = RULES.split("\n")[0];
+const GOOGLE_ONLY_TAIL = " A site that only offers Google cannot be signed in to here: say that plainly, and never say you will press or use their Google login.";
+export const VAULT_GOOGLE_LINE = `- GOOGLE: never offer a Google sign-in on your own, and Reason's browser is never signed in to Google itself. A site whose account uses Google is signed in to through that site's OWN email route — the code or link the site emails — which you read from their Gmail yourself; never say "check your email". The one exception is their saved Google login (see SAVED LOGINS below): when they say in their own words that a site signs in with Continue with Google, account_signin with with "google" uses it through that site's own Google button.`;
+const VAULT_GOOGLE_ONLY_TAIL = " A site that only offers Google is signed in to only with their saved Google login (account_signin with with \"google\"); if they have none saved, say so plainly and offer to save it (saved_login_offer, site google.com).";
+export const RULES_WITH_VAULT = RULES.replace(NO_GOOGLE_LINE, VAULT_GOOGLE_LINE).replace(GOOGLE_ONLY_TAIL, VAULT_GOOGLE_ONLY_TAIL);
+
+/**
+ * The block for one person's prompt, or "" where the flag does not reach them. `vault`: saved logins
+ * are on for them too (the caller asks src/savedlogins.js, which this file does not import).
+ */
+export function rulesFor(conversationId, { vault = false } = {}) {
+  if (!socialAllowedFor(conversationId)) return "";
+  return vault ? RULES_WITH_VAULT : RULES;
 }
 
 // ---------------------------------------------------------------- signing back in

@@ -46,6 +46,25 @@ const SEALED_MAX = 8_000; // base64url: RSA 4096 wrap (512) + the three fields, 
 /** What the tool returns, whatever happened: one fixed sentence (hard rule 2). The link is its own bubble. */
 export const OFFER_SENTENCE = "Here's a link to save that login on Reason's own page. Type it there, not here: I never see it.";
 
+/**
+ * What the model is told about saved logins, in the system prompt next to the sign-in rules
+ * (src/agent.js), only where the vault is on for this person. Everybody else's prompt stays exactly
+ * as it was: they are still told Reason never keeps a password. On 2026-11-15 the owner texted "Save
+ * my Google login" and was told "I can't save your Google login. Google blocks my browser … and I
+ * don't keep passwords anyway": the model had loaded saved_login_offer, but every line in its prompt
+ * said the opposite (no Google ever, never keep a password) and nothing said the vault was on.
+ */
+export const SAVED_LOGIN_RULES = [
+  `- SAVED LOGINS are on for this person: you DO keep their logins, sealed on Reason's own save page, never in this chat, a memory or a note. The lines above about never taking or keeping a password are about the chat and your memory: a password typed into the chat is still refused, never repeated and never saved. Never tell them you don't keep passwords or can't save a login.`,
+  `- "Save my login for X", "save my X password", "keep my X login": call saved_login_offer with X's domain, every time, whatever the thread was about, and send its say_exactly. Code decides which sites are refused and gives the words for it; never refuse one yourself first.`,
+  `- THEIR GOOGLE LOGIN: "save my Google login" is saved_login_offer with site google.com. It is kept for ONE use: "Continue with Google" on a site they name (account_signin with with "google"), typed only on accounts.google.com, with their Face ID every time. It is never used to sign in to Google itself: Gmail, Drive, Google account settings, admin.google.com, YouTube. So when the thread is about one of those, say both in your reply: yes, here is the page to save it for Continue with Google on sites they name; and no, you won't sign in to that Google page with it, that one stays theirs to do.`,
+  `- A site blocks your browser only when a tool told you so in this conversation (a sign-in tool answering blocked or refused, signin_status saying signin_here "blocked", site_playbook saying it does not load). Never say Google or any other site blocks you on your own.`,
+].join("\n");
+/** The saved-login block for one person's prompt, or "" where the vault is not on for them. */
+export function savedLoginRulesFor(conversationId) {
+  try { return conversationId && savedLoginsAllowedFor(conversationId) ? SAVED_LOGIN_RULES : ""; } catch { return ""; }
+}
+
 /** The forms a pin may be: the filler types into nothing else (src/signinpage.js loginFormOf). */
 const PIN_FORMS = new Set(["password", "email_first"]);
 /** Fixed words when no link is made because Reason's own visit found no sign-in form to pin. */

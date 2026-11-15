@@ -443,6 +443,7 @@ const SAVED_LOGIN_TOOLS = new Set(["saved_login_offer", "saved_login_forget", "a
 const SAVED_LOGIN_TOOL_DEFS = [{
   name: "saved_login_offer",
   description: "Let them save a site's login once, on Reason's own page, so you can sign in for jobs they ask for. Call it only when they ask to save a login, or say yes to the one-line offer to save it that comes after a sign-in through a link. Never before their first sign-in to a site: that goes through signin_link. "
+    + "Their Google login too: \"save my Google login\" is site google.com, kept only for Continue with Google on sites they name (never Gmail, Drive, admin.google.com or Google itself). Call it for that even when the thread is about a Google page, and say in the same reply that you still won't sign in to that page. "
     + "Code checks the site first (banks, email, payment apps and the like are refused, with words to say) and opens the site's sign-in page itself; you pass only the site's domain. "
     + "Never ask for a password, username or code in the chat, and never repeat one they sent. On ok, send say_exactly as it is.",
   input_schema: { type: "object", properties: { site: { type: "string", description: "The site's domain, e.g. xfinity.com" } }, required: ["site"] },
