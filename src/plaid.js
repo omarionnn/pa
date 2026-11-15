@@ -58,6 +58,7 @@ import * as secretbox from "./secretbox.js";
 import { sealCell } from "./restcrypt.js";
 import { config, clock, callbackUrl } from "./config.js";
 import { zoneFor } from "./zone.js";
+import { revokeAll as revokeCheckinGrants } from "./bankgrant.js";
 
 // ---------------------------------------------------------------- the switch
 /** off | owner | on. Read on every call, so a restart is the only switch. */
@@ -841,7 +842,7 @@ export async function disconnect(c, { itemId = "", all = false } = {}) {
     else { q("UPDATE plaid_items SET status = 'removing', cursor = '', institution = '' WHERE conversation_id = ? AND item_id = ?").run(c, it.itemId); pending.push(it.institution); }
     removed.push(it.institution);
   }
-  if (!itemsOf(c).length) { q("DELETE FROM plaid_links WHERE conversation_id = ?").run(c); q("DELETE FROM plaid_pay_checks WHERE conversation_id = ?").run(c); }
+  if (!itemsOf(c).length) { q("DELETE FROM plaid_links WHERE conversation_id = ?").run(c); q("DELETE FROM plaid_pay_checks WHERE conversation_id = ?").run(c);  revokeCheckinGrants(c); }
   return { ok: true, removed, ...(pending.length ? { plaid_removal_pending: pending } : {}) };
 }
 /** Removals Plaid has not confirmed, tried again. Called from the webhook path and the hourly sweep. */
@@ -962,6 +963,7 @@ export const PLAID_TOOL_DEFS = [{
     + "\"subscriptions\" lists recurring charges with what each costs, when it last went out and when the next is expected (gone_out_this_month answers \"has rent gone out yet\"). "
     + "\"balance\" fetches balances fresh from the bank (it takes a few seconds). "
     + "\"disconnect\" removes a connection at Plaid and deletes its stored token and everything synced from it. With more than one connected and none named, it answers with the list: ask which one, naming each by bank, account name and last four; `bank` takes the bank's name or an account's last four, `all` true is \"disconnect all\". Only when they ask. "
+    + "\"checkin_answer\" records their answer when their message answers Reason's question whether a check-in may read their bank (\"…will read your bank each time it runs. OK to do that every time?\", \"…needs your OK to read your bank…\", \"…is still waiting on your OK to read your bank…\"): `answer` yes or no, as they said it; send the say_exactly it gives. \"checkin_stop\" when they say a check-in should stop reading their bank (`series_id` or `timer_id`, or `all`). A check-in reads their bank only after their own yes. "
     + "They can connect several banks and cards; every answer covers all of them together, and moves between their own accounts and card payments are not counted twice. When it helps, say which account a charge came from, by the account label given (name and last four) and nothing more. "
     + "You keep only the last 60 days of transactions: asked about anything older, say so plainly (\"i only keep the last 60 days\"). A yearly subscription shows only when the bank data reports it. "
     + "A bank's transactions take a minute to arrive after it is connected: when an answer says still_loading, say so and give no number. "
@@ -969,21 +971,25 @@ export const PLAID_TOOL_DEFS = [{
   input_schema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["connect", "status", "spending", "transactions", "subscriptions", "balance", "disconnect"] },
+      action: { type: "string", enum: ["connect", "status", "spending", "transactions", "subscriptions", "balance", "disconnect", "checkin_answer", "checkin_stop"] },
+      answer: { type: "string", enum: ["yes", "no"], description: "For checkin_answer: what their own message said." },
+      series_id: { type: "integer", description: "For checkin_stop: the check-in (series_list) that should stop reading their bank." },
+      timer_id: { type: "integer", description: "For checkin_stop: a timer, instead of series_id." },
       period: { type: "string", enum: PERIODS, description: "For spending and transactions. Weeks start Monday, in their time zone. Default this_month." },
       from: { type: "string", description: "First day, YYYY-MM-DD, instead of period." },
       to: { type: "string", description: "Last day, YYYY-MM-DD, instead of period." },
       category: { type: "string", description: "For spending: one category or a word to narrow by." },
       search: { type: "string", description: "For transactions: a merchant or word to narrow by." },
       bank: { type: "string", description: "For connect (reconnect) and disconnect: the bank's name as status gave it, or an account's last four digits." },
-      all: { type: "boolean", description: "For disconnect: every connected bank." },
+      all: { type: "boolean", description: "For disconnect: every connected bank; for checkin_stop: every check-in." },
     },
     required: ["action"],
   },
 }];
 export const PLAID_SCHEMAS = {
   bank: z.object({
-    action: z.enum(["connect", "status", "spending", "transactions", "subscriptions", "balance", "disconnect"]),
+    action: z.enum(["connect", "status", "spending", "transactions", "subscriptions", "balance", "disconnect", "checkin_answer", "checkin_stop"]),
+    answer: z.enum(["yes", "no"]).optional(), series_id: z.number().int().optional(), timer_id: z.number().int().optional(),
     period: z.enum(PERIODS).optional(), from: z.string().regex(DAY_RE).optional(), to: z.string().regex(DAY_RE).optional(),
     category: z.string().max(60).optional(), search: z.string().max(60).optional(), bank: z.string().max(80).optional(), all: z.boolean().optional(),
   }),
