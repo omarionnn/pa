@@ -2253,6 +2253,10 @@ addColumnIfMissing("calls", "turn_log", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_opener", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_about", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
+// The person asked for this call to be recorded (REASON_CALL_RECORD_ASK, src/calls/manner.js): 1, and
+// their own words that asked, as checked against what they wrote. 0 on every other call.
+addColumnIfMissing("calls", "record_asked", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "record_said", "TEXT NOT NULL DEFAULT ''");
 // What the Cartesia voice ran on a call, for the plan meter on /ops (src/planmeter.js): its seconds and
 // cents at the plan's rate, written when the Cartesia relay lets the call go — at its end, or when it
 // hands the call to GPT-Live (`cartesia_fell_back` 1), whose own cost then lands in cost_cents. Numbers
@@ -5868,6 +5872,8 @@ export function updateCall(conversationId, id, fields) {
     "settle_started_at", "settled_at", "settle_resumes",
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
+    // A call they asked to be recorded (src/calls/manner.js `recordAskFor`).
+    "record_asked", "record_said",
     // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
     "cartesia_seconds", "cartesia_cents", "cartesia_fell_back", "cartesia_copy",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
@@ -9238,6 +9244,41 @@ export function setCallHours(conversationId, { hours = null, said = "", at = Dat
   db.prepare("UPDATE accounts SET call_hours = ?, call_hours_said = ?, call_hours_set_at = ? WHERE conversation_id = ?")
     .run(hours, String(said ?? "").trim().slice(0, 300), at, conversationId);
   return callHours(conversationId);
+}
+
+// A recording asked for a call that is not placed yet (REASON_CALL_RECORD_ASK): held by number on their
+// account, for the call that is dialled later (a timer, a task's wake) — the choice is made when the
+// call is agreed, never asked again at dial time. One call only, and only for a couple of days.
+addColumnIfMissing("accounts", "call_record_asks", "TEXT NOT NULL DEFAULT '{}'");
+export const RECORD_ASK_KEEP_MS = 48 * 60 * 60 * 1000;
+function recordAsks(conversationId) {
+  try {
+    const v = JSON.parse(db.prepare("SELECT call_record_asks FROM accounts WHERE conversation_id = ?").get(conversationId)?.call_record_asks || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
+}
+function setRecordAsks(conversationId, v) {
+  db.prepare("UPDATE accounts SET call_record_asks = ? WHERE conversation_id = ?").run(JSON.stringify(v), conversationId);
+}
+/** Keep their "record it" for the next call to this number. */
+export function noteRecordAsk(conversationId, number, said, at = clock.now()) {
+  if (!number) return;
+  const v = recordAsks(conversationId);
+  for (const [k, x] of Object.entries(v)) if (!(at - (x?.at ?? 0) < RECORD_ASK_KEEP_MS)) delete v[k];
+  v[number] = { said: String(said ?? "").trim().slice(0, 300), at };
+  setRecordAsks(conversationId, v);
+}
+/** Their "record it" for a call to this number, if one is waiting (not used up, not stale). */
+export function recordAskFor(conversationId, number, at = clock.now()) {
+  const x = number ? recordAsks(conversationId)[number] : null;
+  return x && at - (x.at ?? 0) < RECORD_ASK_KEEP_MS ? x : null;
+}
+/** Used by the call it was for. */
+export function useRecordAsk(conversationId, number) {
+  const v = recordAsks(conversationId);
+  if (!(number in v)) return;
+  delete v[number];
+  setRecordAsks(conversationId, v);
 }
 
 export function setPatterns(conversationId, { patterns, said, askedAt, setAt } = {}) {

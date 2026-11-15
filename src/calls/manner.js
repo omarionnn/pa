@@ -95,7 +95,57 @@ export const OWN_TURN_MANNER = [
 export function callRecorded(call) {
   if (!call || Number(call.is_owner) === 1) return true;
   if (String(call.provider ?? "") !== "gptlive") return true; // an older provider announces and records itself
+  // The person asked for THIS call to be recorded (REASON_CALL_RECORD_ASK; `recordAskFor`): told at the start.
+  if (Number(call.record_asked) === 1) return true;
   return config.thirdPartyRecording === true;
+}
+
+// ---------- a call recorded because they asked for it (REASON_CALL_RECORD_ASK) ----------
+//
+// A call Reason places for somebody to a business or another person is recorded only when that person
+// asked for that one call to be, in their own words (call_place `record_said`, checked against what they
+// wrote). The ask rides in the same question as "want me to call?" — never a second round trip. On the
+// call, the first words to a person say whose assistant this is and that the call is recorded; no audio
+// from before that is kept, a new person after a hold or transfer is told again, and if they object the
+// recording stops and everything captured so far is deleted.
+
+/** Is the ask on for calls of this conversation's account? off | owner (the operator only) | on. */
+export function recordAskFor(conversationId) {
+  const v = config.callRecordAsk;
+  if (v === "on") return true;
+  if (v !== "owner" || !conversationId) return false;
+  try { return accounts.ownerOf(conversationId)?.isOperator === true; } catch { return false; }
+}
+
+/** The offer, put into the same message that asks "want me to call?". */
+export const RECORD_ASK_OFFER = "I can record it and send you the audio if you like; I'd tell them at the start that it's recorded.";
+
+/** The first words to a person on a call they asked to be recorded. */
+export function recordNoticeLine(first) {
+  return `Hi, this is Reason, an AI assistant calling for ${String(first || "the person I work for").trim()}. Just so you know, this call is recorded.`;
+}
+
+/** Said again to a new person after a hold or a transfer. */
+export const RENOTICE_LINE = "Just so you know, this call is recorded.";
+
+/** Words of theirs that ask for a recording ("record it", "get me the audio"): the quote has to carry one. */
+export const RECORD_WORDS = /\b(?:record|recording|recorded|audio|tape|taped)\b/i;
+
+/** Reason's words that count as the notice having been said: that the call IS recorded, not any word about recording. */
+export const NOTICE_SAID = /\b(?:this|the) call(?:'s|’s| is)(?: being)? recorded\b|\b(?:i'm|i’m|i am|we're|we’re|we are) recording (?:this|the) call\b/i;
+
+/** Voice quiet this long, then talking again: maybe someone new (a hold or a transfer), so the notice is owed again. */
+export const RENOTICE_GAP_MS = 20_000;
+
+/** Why an asked-for recording has no audio (the row's recording_why; call_status and the post-call note read them). */
+export const RECORD_DECLINED_WHY = "the other side asked not to be recorded, so recording stopped and the audio captured so far was deleted";
+export const RECORD_UNCONFIRMED_WHY = "Reason could not confirm it told them the call was recorded, so no audio was kept";
+export const RECORD_NO_PERSON_WHY = "no person came on the line to be told the call was recorded (only a machine, a phone menu or voicemail), so no audio was kept";
+export const RECORD_ASKED_NONE = [RECORD_DECLINED_WHY, RECORD_UNCONFIRMED_WHY, RECORD_NO_PERSON_WHY];
+
+/** A call that was not recorded, said honestly where the ask is on: it wasn't, and next time it can be. */
+export function notRecordedAnswer(who = "them") {
+  return `No audio recording was made of this call: nobody asked for it to be recorded. That is how it works, not a fault. What you have is the summary and what was said; if ${who} asks for the audio, say plainly that this call wasn't recorded, and that next time they can ask you to record the call and you'll send them the audio.`;
 }
 
 /** Why a call with somebody else has no audio (the call row's `recording_why`; read by call_status and the post-call note). */

@@ -61,7 +61,7 @@ import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
-import { NOT_RECORDED_WHY } from "./calls/manner.js";
+import { NOT_RECORDED_WHY, recordAskFor as recordAskOn, RECORD_ASK_OFFER, RECORD_WORDS, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, notRecordedAnswer } from "./calls/manner.js";
 import * as callTrial from "./calls/calltrial.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
@@ -581,7 +581,27 @@ export function toolsFor(conversationId) {
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t))
     // Account jobs on for them: the cancelling rules on cancel_route name account_cancel, not the browser walk.
-    .map(t => (t.name === "cancel_route" && accountJobToolVisible("account_cancel", conversationId) ? { ...t, description: accountJobWords(t.description) } : t));
+    .map(t => (t.name === "cancel_route" && accountJobToolVisible("account_cancel", conversationId) ? { ...t, description: accountJobWords(t.description) } : t))
+    // A call they can ask to be recorded (REASON_CALL_RECORD_ASK): only where the switch reaches them.
+    .map(t => (t.name === "call_place" && recordAskOn(conversationId) ? callPlaceWithRecording(t) : t));
+}
+
+// REASON_CALL_RECORD_ASK (src/calls/manner.js): call_place's words about recording, and its record_said,
+// only for a person the switch reaches. Everybody else is shown the tool exactly as it was.
+export const CALL_NOT_RECORDED_WORDS = "Those calls are NOT audio-recorded: you get the summary and what was said, never audio, so never promise the owner a recording of one (the result's `recorded` says which).";
+export const CALL_RECORD_ASK_WORDS = "Those calls are NOT audio-recorded unless the owner asks for that one call to be: then it opens with \"Hi, this is Reason, an AI assistant calling for <first name>. Just so you know, this call is recorded.\", the audio comes to them afterwards automatically, and if the other side objects the recording stops and is deleted."
+  + ` Whenever you ask them before a call to anyone but the owner ("want me to call?"), offer it IN THAT SAME MESSAGE, one message, never a second one: "${RECORD_ASK_OFFER}"`
+  + " If they already said to record it, don't ask again. A plain yes is NOT a yes to recording. Asked afterwards for audio of a call that was not recorded, say plainly it wasn't recorded and that next time they can ask you to record it.";
+const RECORD_SAID_PROP = Object.freeze({
+  type: "string",
+  description: "ONLY when they asked, in their own words, for THIS call to be recorded ('yes, record it', 'call them and record the call', 'get me the audio'): those exact words, word for word."
+    + " Code checks they are in what they just wrote and refuses the call if not. A plain yes to the call is not a yes to recording: leave this out and the call is not recorded."
+    + " For a call that will be dialled later, pass it when the call is agreed (or on the first call_place try); the choice is kept for that call.",
+});
+function callPlaceWithRecording(t) {
+  const schema = t.input_schema;
+  if (!schema?.properties || !t.description.includes(CALL_NOT_RECORDED_WORDS)) return t;
+  return { ...t, description: t.description.replace(CALL_NOT_RECORDED_WORDS, CALL_RECORD_ASK_WORDS), input_schema: { ...schema, properties: { ...schema.properties, record_said: RECORD_SAID_PROP } } };
 }
 
 // One identity (src/identity.js, REASON_ONE_IDENTITY): only a person the switch covers is told that
@@ -3365,7 +3385,10 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       + ` Calling anyone but ${who} needs an explicit yes first, with the exact number and goal shown.`
       + (provider.name === "gptlive" && !config.thirdPartyRecording
         ? ` A call to anyone but ${who} starts like a normal caller and says it is an AI assistant calling for ${who} the moment they ask who or what is calling;`
-          + ` those calls are not audio-recorded, so ${who} gets the summary and what was said, never audio (their own calls with you are recorded and that audio does come to them)`
+          + (recordAskOn(conversationId)
+            // REASON_CALL_RECORD_ASK: recorded only when they ask for that one call to be.
+            ? ` those calls are not audio-recorded unless ${who} asks for that one call to be (you offer it in the same question as "want me to call?"): then the person who answers is told first that it is recorded, and the audio comes to ${who} afterwards (their own calls with you are recorded and that audio does come to them)`
+            : ` those calls are not audio-recorded, so ${who} gets the summary and what was said, never audio (their own calls with you are recorded and that audio does come to them)`)
         : ` Every call to anyone but ${who} opens by saying it is an AI assistant for ${who} and that it is recorded,`
           + ` and ${who} gets the audio along with the summary`)
       // The second direction, and only when it is really set up. A provider that can place calls
@@ -7338,6 +7361,8 @@ const S = {
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
     call_now_said: z.string().max(300).optional(),
+    // REASON_CALL_RECORD_ASK: their own words asking for this call to be recorded (`recordChoice`).
+    record_said: z.string().max(300).optional(),
     task_id: z.number().int().optional(),
     // The brief (2026-10-07): what this call may agree to, what it has to ask, and what it may wait for.
     // `may_book` is optional and its absence means NO, which is the cautious direction and the whole
@@ -8497,6 +8522,46 @@ async function finishChecks({ c, task, outcome, ctx = {} }) {
 }
 
 /**
+ * Is this call to `to` recorded because they asked (REASON_CALL_RECORD_ASK, src/calls/manner.js)?
+ *
+ * Only on their own words for it: `record_said` must be in what they just wrote, on a turn they started,
+ * and must ask for a recording ("record it", "get me the audio"). A yes to the call alone is not one. A
+ * choice made when a call was agreed for later is kept by number on their account (db.noteRecordAsk) and
+ * found again when that call is dialled — from a timer, a task's wake or the undo hold — so it is never
+ * asked twice. Returns null (not recorded), { said } (recorded), or { ok: false, why }.
+ */
+export function recordChoice(c, to, input = {}, ctx = {}) {
+  if (!to || !recordAskOn(c)) return null;
+  const quoted = String(input.record_said ?? "").trim();
+  const waiting = db.recordAskFor(c, to);
+  if (!quoted || ctx.releasedHold) return waiting ? { said: waiting.said } : null;
+  const mine = (ctx.kind ?? "event") === "user"
+    ? callNowSaid({ said: quoted, words: askedCall.theirWords(ctx.messages ?? [], { last: 5 }), kind: "user" })
+    : { ok: false, why: "this is not a turn they started" };
+  if (mine.ok && RECORD_WORDS.test(quoted)) {
+    db.noteRecordAsk(c, to, mine.said);
+    return { said: mine.said };
+  }
+  if (waiting) return { said: waiting.said };
+  return { ok: false, why: mine.ok ? "those words do not ask for a recording" : mine.why };
+}
+
+/** What confirm_request hands back about recording for a call to `who` ("" where the ask is off, or for their own number). */
+export function recordOfferFor(c, who) {
+  const to = normalizeNumber(who);
+  if (!to || !recordAskOn(c) || addressedToOwner(c, to)) return "";
+  const waiting = db.recordAskFor(c, to);
+  if (waiting) {
+    return `They already asked for this call to be recorded ("${waiting.said}"): do NOT ask about recording again. In the same question, say you'll record it and tell them at the start that it's recorded.`
+      + " When they say yes, place it as usual; the recording is already set up.";
+  }
+  return `Offer the recording IN THIS SAME MESSAGE as your question — one message, never a second one. Add, in these words: "${RECORD_ASK_OFFER}"`
+    + ` For example: "Want me to call them? ${RECORD_ASK_OFFER}"`
+    + " The recording is not part of this yes: confirm_record their reply as usual. If they just say yes, the call is NOT recorded."
+    + " Only when their reply asks for it (\"yes, record it\") put their words in record_said on call_place.";
+}
+
+/**
  * A finished call's audio, brought onto this machine and written down — or written down as
  * missing, which is a fault rather than a shrug.
  *
@@ -9389,8 +9454,12 @@ function callView(r, who) {
           ? `The audio is gone: ${r.recording_why || "it passed the retention window"}. Say so plainly if ${who} asks for it — it cannot be got back, and nothing went wrong.`
           : r.recording_state === "missing"
             ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${who} that the recording is missing. Do not imply one exists or is on the way.`
+            : RECORD_ASKED_NONE.includes(r.recording_why)
+              ? `There is NO audio of this call, though ${who} asked for it to be recorded: ${r.recording_why}. Say exactly that if they ask for it; there is no recording and none is coming.`
+                + (r.recording_why === RECORD_DECLINED_WHY ? " The transcript and the outcome are all there is." : "")
             : r.recording_why === NOT_RECORDED_WHY
-              ? `No audio recording was made of this call: ${NOT_RECORDED_WHY}. That is how it works, not a fault. What you have is the summary and what was said; if ${who} asks for the audio, say plainly that calls to other people aren't recorded.`
+              ? (recordAskOn(r.conversation_id) ? notRecordedAnswer(who)
+                : `No audio recording was made of this call: ${NOT_RECORDED_WHY}. That is how it works, not a fault. What you have is the summary and what was said; if ${who} asks for the audio, say plainly that calls to other people aren't recorded.`)
               : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
   };
 }
@@ -10144,6 +10213,9 @@ async function runToolInner(name, rawInput, ctx) {
   if (name === "call_place") {
     const freeCalls = await plan.callPlaceGate(c, { log: ctx.log ?? (() => {}) });
     if (freeCalls) return freeCalls;
+    // "Call them and record it", said up front: kept now, before any yes is asked, so the question that
+    // follows does not ask about recording again (confirm_request `record_offer`).
+    if (String(input.record_said ?? "").trim() && !addressedToOwner(c, input.to)) recordChoice(c, normalizeNumber(input.to), input, ctx);
   }
 
   let confirmationId = null;
@@ -12042,6 +12114,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             : `There is no number on file for ${me.name} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`)
           : `'${input.to}' is not a phone number. Use E.164, e.g. +12125551234.` };
       }
+      // Recorded because they asked for this call to be (REASON_CALL_RECORD_ASK), or not at all.
+      const recordAsk = toOwner ? null : recordChoice(c, to, input, ctx);
+      if (recordAsk && recordAsk.ok === false) {
+        return {
+          ok: false, status: "record_not_accepted",
+          error: `Nothing was dialled. The recording was NOT set up: ${recordAsk.why}. A call is recorded only on their own words asking for it, for this call:`
+            + ` put their words in record_said exactly as they wrote them, or place the call without record_said (it is then not recorded). Never decide it for them.`,
+        };
+      }
       // Every call is recorded, so a provider that cannot record is a provider Reason cannot call
       // through. Refused here rather than quietly placing a call with no audio to show for it.
       if (st.records === false) {
@@ -12276,6 +12357,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // The few words the pickup opener says it is calling about (src/calls/opener.js).
         ...(!toOwner && String(input.about ?? "").trim() ? { pickup_about: String(input.about).trim().slice(0, 200) } : {}),
       });
+      // The recording they asked for, on the row the call reads (src/calls/gptlive.js); used up by this call.
+      if (recordAsk) {
+        db.updateCall(c, row.id, { record_asked: 1, record_said: recordAsk.said });
+        db.useRecordAsk(c, to);
+      }
       ctx.spend?.(); // past this line a phone may already be ringing
 
       // The owner hears no recording line on the call. The disclosure still happens: once ever, by
@@ -12376,7 +12462,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + (brief.approved.book
             ? ` This call MAY agree to the thing it was approved for, and nothing beyond it: a fee or condition ${me.name} did not approve stops it and texts them.`
             : ` This call is ASKING only. It cannot book, hold or order anything, so do not tell ${me.name} it is arranged — the most it comes back with is an answer.`)
-          + ` It will wait on hold up to ${Math.round(brief.maxHoldSeconds / 60)} minute(s) and then ring off politely, which is not a failure.`,
+          + ` It will wait on hold up to ${Math.round(brief.maxHoldSeconds / 60)} minute(s) and then ring off politely, which is not a failure.`
+          + (recordAsk
+            ? ` Recorded because ${me.name} asked ("${recordAsk.said}"): the first thing a person hears is who it is for and that the call is recorded.`
+              + ` If they say they don't want it recorded, recording stops and what was captured is deleted, and you will be told. No audio exists until call_status says it is saved.`
+            : ""),
       };
     }
 
@@ -13479,10 +13569,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           offers.noteAsk(c, purchaseAsk);
         }
       }
+      // REASON_CALL_RECORD_ASK: the recording is offered in this same question (one message, never a
+      // second round trip), or — when they already asked for it — not asked about again.
+      const recordOffer = asked === "call_place" && put?.confirmation_id ? recordOfferFor(c, askedWho) : "";
       // How hard this is to take back goes back with the ask, from code's own table rather than
       // from anything the model said, so the sentence they are about to be shown can carry it.
       return {
         ...put,
+        ...(recordOffer ? { record_offer: recordOffer } : {}),
         ...(purchaseAsk ? {
           offer: purchaseAsk.record,
           say_with_ask: purchaseAsk.line,
