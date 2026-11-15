@@ -61,7 +61,7 @@ import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
-import { NOT_RECORDED_WHY } from "./calls/manner.js";
+import { NOT_RECORDED_WHY, recordAskFor as recordAskOn, RECORD_ASK_OFFER, HOLD_RECORD_OFFER, RECORD_WORDS, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, notRecordedAnswer } from "./calls/manner.js";
 import * as callTrial from "./calls/calltrial.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
@@ -585,7 +585,28 @@ export function toolsFor(conversationId) {
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t))
     // Account jobs on for them: the cancelling rules on cancel_route name account_cancel, not the browser walk.
-    .map(t => (t.name === "cancel_route" && accountJobToolVisible("account_cancel", conversationId) ? { ...t, description: accountJobWords(t.description) } : t));
+    .map(t => (t.name === "cancel_route" && accountJobToolVisible("account_cancel", conversationId) ? { ...t, description: accountJobWords(t.description) } : t))
+    // A call they can ask to be recorded (REASON_CALL_RECORD_ASK): only where the switch reaches them.
+    .map(t => (t.name === "call_place" && recordAskOn(conversationId) ? callPlaceWithRecording(t) : t));
+}
+
+// REASON_CALL_RECORD_ASK (src/calls/manner.js): call_place's words about recording, and its record_said,
+// only for a person the switch reaches. Everybody else is shown the tool exactly as it was.
+export const CALL_NOT_RECORDED_WORDS = "Those calls are NOT audio-recorded: you get the summary and what was said, never audio, so never promise the owner a recording of one (the result's `recorded` says which).";
+export const CALL_RECORD_ASK_WORDS = "Those calls are NOT audio-recorded unless the owner asks for that one call to be: then it opens with \"Hi, this is Reason, an AI assistant calling for <first name>. Just so you know, this call is recorded.\", the audio comes to them afterwards automatically, and if the other side objects the recording stops and is deleted."
+  + ` Whenever you ask them before a call to anyone but the owner ("want me to call?"), offer it IN THAT SAME MESSAGE, one message, never a second one: "${RECORD_ASK_OFFER}"`
+  + " When you offer a call yourself (\"want me to call B&H and ask what they've got?\"), you can add in the same offer, briefly, that you can record it; a \"yes, record it\" to that counts (pass their words as record_said), for a call now or one set up for later."
+  + " If they already said to record it, don't ask again. A plain yes is NOT a yes to recording. Asked afterwards for audio of a call that was not recorded, say plainly it wasn't recorded and that next time they can ask you to record it.";
+const RECORD_SAID_PROP = Object.freeze({
+  type: "string",
+  description: "ONLY when they asked, in their own words, for THIS call to be recorded ('yes, record it', 'call them and record the call', 'get me the audio'): those exact words, word for word."
+    + " Code checks they are in what they just wrote and refuses the call if not. A plain yes to the call is not a yes to recording: leave this out and the call is not recorded."
+    + " For a call that will be dialled later, pass it when the call is agreed (or on the first call_place try); the choice is kept for that call.",
+});
+function callPlaceWithRecording(t) {
+  const schema = t.input_schema;
+  if (!schema?.properties || !t.description.includes(CALL_NOT_RECORDED_WORDS)) return t;
+  return { ...t, description: t.description.replace(CALL_NOT_RECORDED_WORDS, CALL_RECORD_ASK_WORDS), input_schema: { ...schema, properties: { ...schema.properties, record_said: RECORD_SAID_PROP } } };
 }
 
 // One identity (src/identity.js, REASON_ONE_IDENTITY): only a person the switch covers is told that
@@ -1828,7 +1849,7 @@ function olderCallIndex(conversationId, { skip = [], days = 60, limit = 40, now 
     }));
 }
 
-function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null }) {
+function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null, sayExtra = "", noteExtra = "" }) {
   if (ctx.releasedHold) return null;
   const held = holdFor(name, input, conversationId);
   if (!held) return null;
@@ -1853,10 +1874,10 @@ function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null }
     // for something else entirely (`react`). Two different holds in one codebase is fine; two
     // different holds under one key is how a receipt silently stops being written.
     ok: true, undo_held: true, held_id: row.id, going_out_in_seconds: seconds, to: d.toWhom || null,
-    say_exactly: undo.holdLine({ doing: d.doing, seconds }),
+    say_exactly: `${undo.holdLine({ doing: d.doing, seconds })}${sayExtra}`,
     note: `NOTHING HAS GONE YET. It goes in ${seconds} seconds unless they stop it. Say the line in say_exactly, word for word,`
       + ` as your whole reply — do not add to it, do not explain the window, and do NOT say you sent it.`
-      + ` If they say anything in the next ${seconds} seconds that means stop, call undo_send.`,
+      + ` If they say anything in the next ${seconds} seconds that means stop, call undo_send.${noteExtra}`,
     // The permission this is going out on travels with the hold, so a thing that went through
     // without asking still says so when it lands — the receipt is written at release and would
     // otherwise have lost the one sentence that answers "why did you do that".
@@ -3369,7 +3390,10 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       + ` Calling anyone but ${who} needs an explicit yes first, with the exact number and goal shown.`
       + (provider.name === "gptlive" && !config.thirdPartyRecording
         ? ` A call to anyone but ${who} starts like a normal caller and says it is an AI assistant calling for ${who} the moment they ask who or what is calling;`
-          + ` those calls are not audio-recorded, so ${who} gets the summary and what was said, never audio (their own calls with you are recorded and that audio does come to them)`
+          + (recordAskOn(conversationId)
+            // REASON_CALL_RECORD_ASK: recorded only when they ask for that one call to be.
+            ? ` those calls are not audio-recorded unless ${who} asks for that one call to be (you offer it in the same question as "want me to call?"): then the person who answers is told first that it is recorded, and the audio comes to ${who} afterwards (their own calls with you are recorded and that audio does come to them)`
+            : ` those calls are not audio-recorded, so ${who} gets the summary and what was said, never audio (their own calls with you are recorded and that audio does come to them)`)
         : ` Every call to anyone but ${who} opens by saying it is an AI assistant for ${who} and that it is recorded,`
           + ` and ${who} gets the audio along with the summary`)
       // The second direction, and only when it is really set up. A provider that can place calls
@@ -4696,7 +4720,7 @@ export const tools = [
     name: "invites_list",
     description: "Their invites: every invite link they have made and its state (unused, canceled or redeemed), how many invites they have left, and any request for more that is still pending."
       + " Use when they ask about their invites in any words — 'my invites', 'how many invites do I have', 'did anyone use my link'. Read this rather than remembering; links and counts change."
-      + " Who claimed a link is deliberately not in it."
+      + " Who claimed a link is deliberately not in it. An unused link they made for somebody carries `for`, the name THEY gave it: say it that way (the one for <their name> hasn't been used yet). Never say or guess who used a claimed link."
       + " Answer in a line or two, the way a friend would: how many they have left, any link that's out and not used yet and roughly when it went (a day, not a timestamp), and offer to make another if they have any left."
       + " Never list links as numbered rows and never show a link's number; the number is only for invite_link_cancel.",
     input_schema: { type: "object", properties: {} },
@@ -4704,9 +4728,17 @@ export const tools = [
   {
     name: "invite_link_create",
     description: "Make one invite link for them to send a friend. Each link is single-use and gives whoever claims it their own Reason — not a waitlist spot. Links never expire; opening one does not use it up; it is spent only when someone joins with it."
-      + " Use when they want to invite someone or ask for a link. If it says needs_name, ask them once, warmly and in your own words, what name their friends should see on it. When they answer — read what they meant, however they put it — save it with my_name and call this again in that same reply, so the link goes out right then: never a second ask, never a dead end. The name on the card is the saved one; if they say they want a different name, save it with my_name and new links and cards use it."
+      + " Use when they want to invite someone or ask for a link."
+      + " THEIR FRIEND'S NAME ON THE CARD is a nice extra, never a step: a link made for somebody shows that first name on its card picture, and nowhere else. If they already said who (an invite for <a name>, one for my sister <a name>), pass that first name as for_name and the link goes out now, no question. If they did not say, call this with neither field: it says needs_for, and you OFFER once, lightly and in your own words, to put their friend's name on it so it feels personal, making clear it's totally fine if not (the spirit of: want me to put their name on it so it feels personal? totally fine if not). When they answer, read what they meant, however they put it, and call this again in that same reply: a name → for_name; no, 'just the link', 'doesn't matter', 'a few people', a shrug → for_nobody: true, a plain link, with no fuss and no second offer. Several people (two names at once, 'three links') → ONE offer covering them all, then one call per link, each with its own for_name when names were given."
+      + " If it says needs_name, ask them once, warmly and in your own words, what name their friends should see on it. When they answer — read what they meant, however they put it — save it with my_name and call this again in that same reply, so the link goes out right then: never a second ask, never a dead end. The name on the card is the saved one; if they say they want a different name, save it with my_name and new links and cards use it."
       + " Write one short line first saying it's an invite for a friend to pass on, in your own words (never quote a command), then the link exactly as returned, alone on its own line with nothing after it — it goes out as its own message, so forwarding it shows the card.",
-    input_schema: { type: "object", properties: {} },
+    input_schema: {
+      type: "object",
+      properties: {
+        for_name: { type: "string", description: "The first name of the ONE person this link is for, as they said it, for their card picture only. Just the name: not 'my sister', not a message." },
+        for_nobody: { type: "boolean", description: "True when they passed on the name or said it's for nobody in particular: a plain link, no question, no fuss." },
+      },
+    },
   },
   {
     name: "invite_link_cancel",
@@ -4717,6 +4749,7 @@ export const tools = [
       properties: {
         number: { type: "integer", description: "The link's number from invites_list." },
         replace: { type: "boolean", description: "Make a fresh link in its place. Default true; false only when they say they don't want a new one." },
+        for_name: { type: "string", description: "Who the replacement is for, when they said (a first name). The canceled link's name does not carry over." },
       },
       required: ["number"],
     },
@@ -7342,6 +7375,8 @@ const S = {
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
     call_now_said: z.string().max(300).optional(),
+    // REASON_CALL_RECORD_ASK: their own words asking for this call to be recorded (`recordChoice`).
+    record_said: z.string().max(300).optional(),
     task_id: z.number().int().optional(),
     // The brief (2026-10-07): what this call may agree to, what it has to ask, and what it may wait for.
     // `may_book` is optional and its absence means NO, which is the cautious direction and the whole
@@ -7415,8 +7450,8 @@ const S = {
   ...TODO_SCHEMAS,
   ...CUE_SCHEMAS,
   invites_list: z.object({}),
-  invite_link_create: z.object({}),
-  invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
+  invite_link_create: z.object({ for_name: z.string().max(200).optional(), for_nobody: z.boolean().optional() }),
+  invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional(), for_name: z.string().max(200).optional() }),
   invite_request_more: z.object({ count: z.number().int().min(1).max(1_000_000), explanation: z.string().min(1).max(1000) }),
   invite_requests_pending: z.object({}),
   invite_request_decide: z.object({ request_number: z.number().int().min(1), decision: z.enum(["approve", "decline"]), count: z.number().int().min(1).max(1_000_000).optional() }),
@@ -8501,6 +8536,115 @@ async function finishChecks({ c, task, outcome, ctx = {} }) {
 }
 
 /**
+ * Is this call to `to` recorded because they asked (REASON_CALL_RECORD_ASK, src/calls/manner.js)?
+ *
+ * Only on their own words for it: `record_said` must be in what they just wrote, on a turn they started,
+ * and must ask for a recording ("record it", "get me the audio"). A yes to the call alone is not one. A
+ * choice made when a call was agreed for later is kept by number on their account (db.noteRecordAsk) and
+ * found again when that call is dialled — from a timer, a task's wake or the undo hold — so it is never
+ * asked twice. Returns null (not recorded), { said } (recorded), or { ok: false, why }.
+ */
+export function recordChoice(c, to, input = {}, ctx = {}) {
+  if (!to || !recordAskOn(c)) return null;
+  // A call asked for by voice during their own call, or anything in a group thread: never recorded,
+  // whatever was saved or quoted (review of #590: a saved ask leaked onto a voice-dialled call).
+  if (ctx.onCall || ctx.isGroup) return null;
+  const quoted = String(input.record_said ?? "").trim();
+  const waiting = usableRecordAsk(c, to, ctx);
+  if (!quoted || ctx.releasedHold) return waiting ? { said: waiting.said } : null;
+  const words = askedCall.theirWords(ctx.messages ?? [], { last: 2 });
+  const mine = ownTurn(ctx)
+    ? callNowSaid({ said: quoted, words, kind: "user" })
+    : { ok: false, why: "this is not a turn they started" };
+  const asks = mine.ok ? asksForRecording(quoted, words) : null;
+  if (asks?.ok) {
+    db.noteRecordAsk(c, to, mine.said);
+    return { said: mine.said };
+  }
+  if (waiting) return { said: waiting.said };
+  return { ok: false, why: mine.ok ? asks.why : mine.why };
+}
+
+/** A saved ask is used on their own turn only while fresh, or for a yes asked after it was saved (that question said it'd be recorded). */
+export const RECORD_ASK_FRESH_MS = 30 * 60_000;
+function usableRecordAsk(c, to, ctx = {}) {
+  const waiting = db.recordAskFor(c, to);
+  if (!waiting || !ownTurn(ctx) || ctx.releasedHold) return waiting;
+  if (clock.now() - (waiting.at ?? 0) <= RECORD_ASK_FRESH_MS) return waiting;
+  const conf = ctx.confirmationId != null ? db.getConfirmation(c, ctx.confirmationId) : null;
+  return conf && Number(conf.asked_at) >= Number(waiting.at ?? 0) ? waiting : null;
+}
+
+/**
+ * Do their words really ask for a recording? The quote has to name one, and the sentence it came from
+ * must not negate it or ask about it: "don't record it", "no need to record", "is it recorded?" are
+ * not asks, even though "record it" is found inside the first (review of #590).
+ */
+const RECORD_NEGATED = /\b(?:don't|dont|do not|doesn't|does not|didn't|no|not|never|without|nah|nope|needn't|shouldn't|won't|wouldn't|can't|cannot|stop|skip)\b|n't\b/;
+const RECORD_STATE_Q = /\b(?:is|was|are|were|will|has|does|did)\s+(?:it|this|that|the call|this call|calls)\b(?:\s+\w+){0,3}\s+(?:record\w*|tap\w*)\b|\bare (?:you|they|we) (?:record|tap)\w*\b/;
+export function asksForRecording(quoted, words = []) {
+  if (!RECORD_WORDS.test(quoted)) return { ok: false, why: "those words do not ask for a recording" };
+  const norm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[‘’]/g, "'").replace(/[^\p{L}\p{N}'\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const q = norm(quoted);
+  const sentences = (words ?? []).flatMap(w => String(w).split(/[.!?\n;,]+/)).map(s => ({ raw: s, n: norm(s) }));
+  const hit = sentences.find(s => ` ${s.n} `.includes(` ${q} `));
+  if (!hit) return { ok: false, why: "those words are not one sentence of what they just wrote" };
+  const upTo = hit.n.slice(0, ` ${hit.n} `.indexOf(` ${q} `) + q.length);
+  if (RECORD_NEGATED.test(upTo)) return { ok: false, why: "their words say NOT to record it" };
+  if (RECORD_STATE_Q.test(hit.n)) return { ok: false, why: "their words ask whether it is recorded; that is a question, not an ask" };
+  return { ok: true };
+}
+
+/**
+ * "Record it", said while a call to `to` is waiting out its undo window (or already placed): the
+ * choice goes onto that call, or is refused as too late — never left lying around for a later call.
+ * Null when there is no such call (the ordinary path carries on).
+ */
+export function recordOntoWaitingCall(c, to, input = {}, ctx = {}) {
+  if (!to || !recordAskOn(c)) return null;
+  const held = db.liveHolds(c).find(h => h.action === "call_place" && normalizeNumber(h.input?.to) === to);
+  const live = held ? null : db.liveCallTo(to);
+  if (!held && !(live && live.conversation_id === c && Number(live.is_owner) !== 1)) return null;
+  const choice = recordChoice(c, to, input, ctx);
+  if (!choice || choice.ok === false) {
+    return {
+      ok: false, status: "record_not_accepted",
+      error: `The recording was NOT set up: ${choice?.why ?? "nothing asked for it"}. ${held ? "The waiting call still goes at the same time, not recorded." : "The call is already under way, not recorded."}`
+        + " A call is recorded only on their own words asking for it: put their words in record_said exactly as they wrote them.",
+    };
+  }
+  const still = held ? db.getHeldAction(held.id) : null;
+  if (!still || still.state !== "held") {
+    db.useRecordAsk(c, to);
+    return {
+      ok: false, status: "too_late",
+      error: "That call has already gone out, so it can't be recorded now. Say so plainly, in a line: it was already ringing, so this one isn't recorded; next time they can ask for it to be recorded when they ask for the call.",
+    };
+  }
+  const seconds = Math.max(1, Math.round((still.due_at - clock.now()) / 1000));
+  return {
+    ok: true, recording_added: true, held_id: still.id, going_out_in_seconds: seconds,
+    say_exactly: `ok, I'll record it and tell them at the start that it's recorded — still calling in ${seconds}s`,
+    note: "Nothing new was dialled: the waiting call is now recorded and still goes at the same time. Say the line in say_exactly as your whole reply.",
+  };
+}
+
+/** What confirm_request hands back about recording for a call to `who` ("" where the ask is off, or for their own number). */
+export function recordOfferFor(c, who) {
+  const to = normalizeNumber(who);
+  if (!to || !recordAskOn(c) || addressedToOwner(c, to)) return "";
+  const waiting = db.recordAskFor(c, to);
+  if (waiting) {
+    return `They already asked for this call to be recorded ("${waiting.said}"): do NOT ask about recording again. In the same question, say you'll record it and tell them at the start that it's recorded.`
+      + " When they say yes, place it as usual; the recording is already set up.";
+  }
+  return `Offer the recording IN THIS SAME MESSAGE as your question — one message, never a second one. Add, in these words: "${RECORD_ASK_OFFER}"`
+    + ` For example: "Want me to call them? ${RECORD_ASK_OFFER}"`
+    + " The recording is not part of this yes: confirm_record their reply as usual. If they just say yes, the call is NOT recorded."
+    + " Only when their reply asks for it (\"yes, record it\") put their words in record_said on call_place.";
+}
+
+/**
  * A finished call's audio, brought onto this machine and written down — or written down as
  * missing, which is a fault rather than a shrug.
  *
@@ -8549,7 +8693,8 @@ export async function fileRecording(conversationId, row, live, ctx = {}) {
     recording_seconds: saved.seconds ?? live.durationS ?? null,
     recording_bytes: saved.bytes,
     recording_sha256: saved.sha256,
-    recording_why: "",
+    // A call recorded on request that kept only part of the call says which part went (`recordAskTape`).
+    recording_why: live.recordingPartial || "",
   });
 }
 
@@ -9384,6 +9529,8 @@ function callView(r, who) {
         : clock.now() - (r.created_at ?? 0) < RECORDING_RIDES_MS
           ? `The audio is saved and goes out with your next message to ${who} automatically. Do not attach it and do not send it twice.`
           : `The audio is saved on this machine but was never sent to ${who}, and it will not go out on its own now: it only rides along in the hour after a call. Say exactly that if they ask for it. Do not say it is coming or that you are sending it.`)
+        // Only part of the call kept (a call recorded on request): never implied to be the whole call.
+        + (r.recording_why ? ` It is not the whole call: ${r.recording_why}.` : "")
       : going
         ? "The call has not finished, so there is no recording yet."
         // Deleted on purpose by the retention setting, which is not the provider losing it — said
@@ -9393,8 +9540,12 @@ function callView(r, who) {
           ? `The audio is gone: ${r.recording_why || "it passed the retention window"}. Say so plainly if ${who} asks for it — it cannot be got back, and nothing went wrong.`
           : r.recording_state === "missing"
             ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${who} that the recording is missing. Do not imply one exists or is on the way.`
+            : RECORD_ASKED_NONE.includes(r.recording_why)
+              ? `There is NO audio of this call, though ${who} asked for it to be recorded: ${r.recording_why}. Say exactly that if they ask for it; there is no recording and none is coming.`
+                + (r.recording_why === RECORD_DECLINED_WHY ? " The transcript and the outcome are all there is." : "")
             : r.recording_why === NOT_RECORDED_WHY
-              ? `No audio recording was made of this call: ${NOT_RECORDED_WHY}. That is how it works, not a fault. What you have is the summary and what was said; if ${who} asks for the audio, say plainly that calls to other people aren't recorded.`
+              ? (recordAskOn(r.conversation_id) ? notRecordedAnswer(who)
+                : `No audio recording was made of this call: ${NOT_RECORDED_WHY}. That is how it works, not a fault. What you have is the summary and what was said; if ${who} asks for the audio, say plainly that calls to other people aren't recorded.`)
               : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
   };
 }
@@ -10148,6 +10299,14 @@ async function runToolInner(name, rawInput, ctx) {
   if (name === "call_place") {
     const freeCalls = await plan.callPlaceGate(c, { log: ctx.log ?? (() => {}) });
     if (freeCalls) return freeCalls;
+    // "Call them and record it", said up front: kept now, before any yes is asked, so the question that
+    // follows does not ask about recording again (confirm_request `record_offer`).
+    if (String(input.record_said ?? "").trim() && !addressedToOwner(c, input.to)) {
+      // "Record it" in reply to "calling … in 30s": onto the call that is waiting, which still goes on time.
+      const late = recordOntoWaitingCall(c, normalizeNumber(input.to), input, ctx);
+      if (late) return late;
+      recordChoice(c, normalizeNumber(input.to), input, ctx);
+    }
   }
 
   let confirmationId = null;
@@ -10345,6 +10504,8 @@ function flightToday(c) {
 }
 
 let pictureLinkSeq = 0;
+// The replies (by their turnActs) whose invite_link_create already carried the card-name offer.
+const OFFERED_THIS_TURN = new WeakSet();
 /** Their own typed turn in their own thread: not an event, a task, research, a firing or a call. */
 const ownTurn = (ctx) => (ctx?.kind ?? "event") === "user" && !ctx?.onCall && ctx?.fromTimer == null && !ctx?.taskId && !ctx?.isGroup;
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
@@ -11007,7 +11168,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         out.send_contact_card = true;
         // The name was the one thing an invite link was waiting on (invite_link_create's
         // needs_name): the link goes out in this same reply, never on a second ask.
-        if (invitesOpenFor(c)) out.invite_link = "If they were waiting on an invite link, call invite_link_create now and send it in this same reply: one short line, then the link alone. The card shows this name from now on.";
+        if (invitesOpenFor(c)) out.invite_link = "If they were waiting on an invite link, call invite_link_create now and send it in this same reply (with for_name if they said who it's for, else for_nobody: true): one short line, then the link alone. The card shows this name from now on.";
       }
       if (wantsLanguage) {
         // "english" (or nothing) is the way back. A language nobody has written the words for is
@@ -11667,6 +11828,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       const stopped = db.stopHeldAction(c, named.id);
+      // A call they stopped takes its "record it" with it: never left for a later call to the same number.
+      if (stopped && named.action === "call_place") { try { db.useRecordAsk(c, normalizeNumber(named.input?.to)); } catch { /* nothing kept */ } }
       if (!stopped) {
         const now = db.getHeldAction(named.id);
         return {
@@ -12046,6 +12209,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             : `There is no number on file for ${me.name} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`)
           : `'${input.to}' is not a phone number. Use E.164, e.g. +12125551234.` };
       }
+      // Recorded because they asked for this call to be (REASON_CALL_RECORD_ASK), or not at all.
+      const recordAsk = toOwner ? null : recordChoice(c, to, input, ctx);
+      if (recordAsk && recordAsk.ok === false) {
+        return {
+          ok: false, status: "record_not_accepted",
+          error: `Nothing was dialled. The recording was NOT set up: ${recordAsk.why}. A call is recorded only on their own words asking for it, for this call:`
+            + ` put their words in record_said exactly as they wrote them, or place the call without record_said (it is then not recorded). Never decide it for them.`,
+        };
+      }
       // Every call is recorded, so a provider that cannot record is a provider Reason cannot call
       // through. Refused here rather than quietly placing a call with no audio to show for it.
       if (st.records === false) {
@@ -12223,7 +12395,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // record, payment details in the goal, the daily caps — and before the row and the dial. A
       // ringing phone is the least undoable thing Reason does, so the thirty seconds matter most
       // here; a call to their own number is not held, because that is them calling themselves.
-      const parkedCall = parkHeld({ name, input, conversationId: c, ctx, to });
+      // No yes was asked before this call (their request was the yes, a standing permission, a to-do
+      // plan): the recording is offered in the "calling … in 30s" line itself — same message, no wait.
+      const holdOffer = !toOwner && !recordAsk && !ctx.releasedHold && ctx.confirmationId == null && recordAskOn(c);
+      const parkedCall = parkHeld({
+        name, input, conversationId: c, ctx, to,
+        ...(holdOffer ? {
+          sayExtra: HOLD_RECORD_OFFER,
+          noteExtra: ` If, before it goes, they ask for it to be recorded (in any words: wanting the audio counts), call call_place again with the same 'to' and record_said set to their exact words:`
+            + " that records this waiting call, which still goes at the same time; nothing new is dialled. No reply, or anything else, and it goes unrecorded, exactly as now.",
+        } : {}),
+      });
       if (parkedCall) return parkedCall;
 
       // Which job this call is a step of, when it is one: what the model named, or the task this
@@ -12280,6 +12462,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // The few words the pickup opener says it is calling about (src/calls/opener.js).
         ...(!toOwner && String(input.about ?? "").trim() ? { pickup_about: String(input.about).trim().slice(0, 200) } : {}),
       });
+      // The recording they asked for, on the row the call reads (src/calls/gptlive.js); used up by this call.
+      if (recordAsk) {
+        db.updateCall(c, row.id, { record_asked: 1, record_said: recordAsk.said });
+        db.useRecordAsk(c, to);
+      }
+      // How the recording was offered, where the ask is on: a call that went with no message before it
+      // gets a one-time tip in the text after it (src/calls/postcall.js `tellTheOwner`).
+      if (!toOwner && recordAskOn(c)) {
+        db.updateCall(c, row.id, { record_offer: recordAsk ? "asked_for" : ctx.confirmationId != null ? "question" : ctx.releasedHold ? "hold" : "none" });
+      }
       ctx.spend?.(); // past this line a phone may already be ringing
 
       // The owner hears no recording line on the call. The disclosure still happens: once ever, by
@@ -12380,7 +12572,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + (brief.approved.book
             ? ` This call MAY agree to the thing it was approved for, and nothing beyond it: a fee or condition ${me.name} did not approve stops it and texts them.`
             : ` This call is ASKING only. It cannot book, hold or order anything, so do not tell ${me.name} it is arranged — the most it comes back with is an answer.`)
-          + ` It will wait on hold up to ${Math.round(brief.maxHoldSeconds / 60)} minute(s) and then ring off politely, which is not a failure.`,
+          + ` It will wait on hold up to ${Math.round(brief.maxHoldSeconds / 60)} minute(s) and then ring off politely, which is not a failure.`
+          + (recordAsk
+            ? ` Recorded because ${me.name} asked ("${recordAsk.said}"): the first thing a person hears is who it is for and that the call is recorded.`
+              + ` If they say they don't want it recorded, recording stops and what was captured is deleted, and you will be told. No audio exists until call_status says it is saved.`
+            : ""),
       };
     }
 
@@ -12967,11 +13163,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
 
     case "invite_link_create": {
-      const out = invites.makeLink(c);
+      const named = typeof input.for_name === "string" && input.for_name.trim() !== "";
+      // Several links asked for at once: the offer went out on this reply's first call, so this reply's
+      // other calls without a name wait for the answer instead of minting plain links beside the offer.
+      const turn = ctx?.turnActs && typeof ctx.turnActs === "object" ? ctx.turnActs : null;
+      if (!named && !input.for_nobody && turn && OFFERED_THIS_TURN.has(turn)) {
+        return { ok: false, needs_for: true, already_offered: true, error: "Nothing made: the offer is already in this reply and covers every link they asked for. Make no link until they answer; then one call per link, each with for_name or for_nobody: true." };
+      }
+      const ask = named || input.for_nobody ? null : invites.askWhoFor(c);
+      if (ask?.needs_for) {
+        if (turn) OFFERED_THIS_TURN.add(turn);
+        return {
+          ok: false, needs_for: true, ...(ask.needs_name ? { needs_name: true } : {}),
+          error: ask.needs_name
+            ? "Nothing made yet. ONE message, warmly and in your own words (never quote a command): ask what name their friends should see as who invited them, and in the same breath OFFER, lightly, to put their friend's first name on the card so it feels personal, totally fine if not. The offer is a nice extra, never a step they must do. When they answer, read what they meant: save their own name with my_name, then call invite_link_create again in that same reply with for_name if they gave their friend's name, else for_nobody: true, and send the link. Never ask or offer again."
+            : "Nothing made yet. OFFER once, lightly and in your own words (never quote a command), to put their friend's first name on the card so it feels personal, and make clear it's totally fine if not (the spirit of: want me to put their name on it so it feels personal? totally fine if not). A nice extra, never a step they must do; for several links, one offer for all of them. When they answer, read what they meant and call invite_link_create again in that same reply: a name → for_name; no, no name, 'just the link', 'doesn't matter' → for_nobody: true, with no fuss. Either way the link goes out in that reply. Never offer again.",
+        };
+      }
+      const out = ask?.none_left ? ask : invites.makeLink(c, { forName: named ? input.for_name : undefined });
       if (out.needs_name) {
         return {
           ok: false, needs_name: true,
-          error: "Reason has no name for them to show on the invite page. Ask them once, warmly and in your own words, what name their friends should see on it (never quote a command). When they answer, read what they meant, save it with my_name, then call invite_link_create again in that same reply and send the link: one short line, then the link alone. Do not ask twice.",
+          error: "Reason has no name for them to show on the invite page. Ask them once, warmly and in your own words, what name their friends should see on it (never quote a command). When they answer, read what they meant, save it with my_name, then call invite_link_create again in that same reply (with the same for_name or for_nobody as before) and send the link: one short line, then the link alone. Do not ask twice.",
         };
       }
       if (out.none_left) {
@@ -12982,11 +13195,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             : "They have no invites left. They can ask for more — invite_request_more, once they have said how many and why.",
         };
       }
-      return { ...out, say: "One short line first, in your own words, saying it's an invite for a friend to pass on (never quote a command). Then the link exactly as it is, alone on its own line with nothing after it: it goes out as its own message, so forwarding it shows the card. It works once, never expires, and opening it does not use it up — only someone joining does." };
+      if (out.plain_card) delete out.plain_card; // a name not fit to draw: plain link, nothing said about it
+      return { ...out, say: (out.for ? `It's made for ${out.for}: their card greets them by name. ` : "") + "One short line first, in your own words, saying it's an invite for a friend to pass on (never quote a command). Then the link exactly as it is, alone on its own line with nothing after it: it goes out as its own message, so forwarding it shows the card. It works once, never expires, and opening it does not use it up — only someone joining does." };
     }
 
     case "invite_link_cancel": {
-      const out = invites.cancelLink(c, input.number, { replace: input.replace !== false });
+      const out = invites.cancelLink(c, input.number, { replace: input.replace !== false, forName: input.for_name });
       if (!out.ok) {
         return {
           ok: false,
@@ -13496,10 +13710,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           offers.noteAsk(c, purchaseAsk);
         }
       }
+      // REASON_CALL_RECORD_ASK: the recording is offered in this same question (one message, never a
+      // second round trip), or — when they already asked for it — not asked about again.
+      const recordOffer = asked === "call_place" && put?.confirmation_id ? recordOfferFor(c, askedWho) : "";
       // How hard this is to take back goes back with the ask, from code's own table rather than
       // from anything the model said, so the sentence they are about to be shown can carry it.
       return {
         ...put,
+        ...(recordOffer ? { record_offer: recordOffer } : {}),
         ...(purchaseAsk ? {
           offer: purchaseAsk.record,
           say_with_ask: purchaseAsk.line,

@@ -23,7 +23,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
 import { SPOKE_TO_SOMETHING } from "./provider.js";
-import { NOT_RECORDED_WHY } from "./manner.js";
+import { NOT_RECORDED_WHY, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, RECORD_TIP_LINE, recordAskFor } from "./manner.js";
 import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
@@ -233,7 +233,13 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
       log({ call_recap_capped: row.id });
       return { sent: false, why: "their proactive limit for today is used up" };
     }
-    const reply = await runtime.event(row.conversation_id, thirdPartyEvent({ row, live }), { forCall: row.id });
+    // A call that went with no message before it had nowhere to offer the recording (REASON_CALL_RECORD_ASK):
+    // the text after it says, once per person ever, that next time they can ask for it to be recorded.
+    const tipAt = clock.now();
+    const recordTip = row.record_offer === "none" && Number(row.record_asked) !== 1 && recordAskFor(row.conversation_id)
+      && db.claimRecordTip(row.conversation_id, tipAt);
+    const reply = await runtime.event(row.conversation_id, thirdPartyEvent({ row, live, ...(recordTip ? { recordTip } : {}) }), { forCall: row.id });
+    if (recordTip && !reply) db.unclaimRecordTip(row.conversation_id, tipAt);
     if (reply) {
       accounts.countUse(row.conversation_id, "proactive");
       db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
@@ -302,15 +308,24 @@ export function tellUnreached({ row, log = () => {} }) {
  * The transcript goes in whole. It is the only record of what was actually said, and a summary of a
  * summary is how "they said Thursday or Friday" becomes "they said Thursday".
  */
-export function thirdPartyEvent({ row, live }) {
+export function thirdPartyEvent({ row, live, recordTip = false }) {
   const what = String(row.summary || live?.summary || "").trim();
   const outcome = String(row.outcome || live?.outcome || row.state).trim();
   const audio = row.recording_state === "stored"
     ? `The recording is saved and goes out attached to this message automatically — you do not attach it and you may say it is there.`
+      // Only part of it kept (a call recorded on request, `recordAskTape`): never implied to be the whole call.
+      + (row.recording_why ? ` It is NOT the whole call: ${row.recording_why}. Say that plainly.` : "")
     : row.recording_state === "missing"
       ? `There is NO audio for this call: ${row.recording_why || "the provider never gave it to Reason"}. Every call is meant to be recorded, so say that plainly rather than implying a recording exists.`
+      // A call they asked to be recorded that has no audio (REASON_CALL_RECORD_ASK): said plainly, with why.
+      : RECORD_ASKED_NONE.includes(row.recording_why)
+        ? (row.recording_why === RECORD_DECLINED_WHY
+          ? `They asked for this call to be recorded, but the other side said they didn't want to be recorded: recording stopped and the audio captured so far was deleted, and the call carried on. Tell them that plainly — there is no audio — and give them the outcome and what was said, below.`
+          : `They asked for this call to be recorded, but there is NO audio: ${row.recording_why}. Say that plainly; never imply a recording exists or is coming.`)
       : row.recording_why === NOT_RECORDED_WHY
-        ? `No audio recording was made of this call (${NOT_RECORDED_WHY}), and that is not a fault: do not mention a recording or offer one. What was said is below.`
+        ? (recordAskFor(row.conversation_id)
+          ? `No audio recording was made of this call: nobody asked for it to be recorded. That is not a fault; do not offer a recording of this call. If they ask for the audio, say it wasn't recorded and that next time they can ask you to record the call. What was said is below.`
+          : `No audio recording was made of this call (${NOT_RECORDED_WHY}), and that is not a fault: do not mention a recording or offer one. What was said is below.`)
         : `There is no audio, because nobody was on the call.`;
   // Only a machine answered (2026-10-27, call 45). Said outright, because the transcript's "Them:"
   // lines read like a person, and the next step is whatever the recording offered instead of a person.
@@ -340,7 +355,9 @@ export function thirdPartyEvent({ row, live }) {
     + ` as plain "- " lines when they really are separate points, with the one thing that needs HIS word`
     + ` last and as a question. Anything technical goes underneath, if it goes in at all.`
     + ` A link, an address or a reference number does not go in this message: say you are sending it`
-    + ` and it goes out on its own.`;
+    + ` and it goes out on its own.`
+    // Once per person, ever (`tellTheOwner` claims it): a call that went with no question before it.
+    + (recordTip ? `\nEnd the message with this one line, as written: ${RECORD_TIP_LINE}` : "");
 }
 
 /**

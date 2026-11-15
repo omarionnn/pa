@@ -839,6 +839,10 @@ export const config = {
   // audio of them is kept. =on brings back the notice at the start, the recording, and stopping it when
   // they object (src/calls/manner.js). A person's own calls with Reason are not touched by this.
   thirdPartyRecording: ["1", "true", "on", "yes"].includes(String(process.env.REASON_THIRDPARTY_RECORDING ?? "").trim().toLowerCase()),
+  // A call Reason places to a business or another person, recorded only because the person asked for
+  // THAT call to be (src/calls/manner.js `recordAskFor`): off (unset) | owner (the operator's own
+  // account) | on (everyone). Off, nothing is asked, nothing is recorded, and every prompt is as before.
+  callRecordAsk: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v) ? "on" : "off"))(String(process.env.REASON_CALL_RECORD_ASK ?? "").trim().toLowerCase()),
 
   // The languages a call may switch into. What the owner's spec named, and no more. 
   callLanguages: (process.env.REASON_CALL_LANGUAGES || "en,es").split(",").map(s => s.trim().toLowerCase()).filter(Boolean),

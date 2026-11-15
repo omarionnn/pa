@@ -326,7 +326,7 @@ test("my invites covers every state, how many are left, and the pending request"
 });
 
 test("a link needs a name to show: none on the account means ask once, then mint", async () => {
-  const out = await tool("invite_link_create", {}, AMA_C);
+  const out = await tool("invite_link_create", { for_nobody: true }, AMA_C);
   assert.equal(out.needs_name, true);
   assert.equal(db.listInvites(AMA_C).length, 0);
   assert.match(out.error, /ask them once/i);
@@ -337,7 +337,7 @@ test("a link needs a name to show: none on the account means ask once, then mint
   assert.equal(named.ok, true);
   assert.match(named.invite_link, /invite_link_create now/);
   assert.match(named.invite_link, /same reply/);
-  const made = await tool("invite_link_create", {}, AMA_C);
+  const made = await tool("invite_link_create", { for_nobody: true }, AMA_C);
   assert.equal(made.ok, true);
   assert.equal(made.shown_as, "Ama");
   assert.match(made.say, /alone on its own line/);
@@ -346,7 +346,7 @@ test("a link needs a name to show: none on the account means ask once, then mint
 
 test("rename: the saved name is the one shown, and a new name means a new card", async () => {
   await tool("my_name", { name: "Ama" }, AMA_C);
-  const made = await tool("invite_link_create", {}, AMA_C);
+  const made = await tool("invite_link_create", { for_nobody: true }, AMA_C);
   const token = made.link.split("/").pop();
   const page = () => inviteRequestFor({ token }).body;
   const v = () => /card\.png\?v=([0-9a-f]+)/.exec(page())[1];
@@ -429,7 +429,7 @@ test("approve raises the allowance by the approved count and tells them; decline
 });
 
 test("cancel by tool hands back a replacement and says the invite was not lost", async () => {
-  const made = await tool("invite_link_create", {}, KOFI_C);
+  const made = await tool("invite_link_create", { for_nobody: true }, KOFI_C);
   const out = await tool("invite_link_cancel", { number: made.number }, KOFI_C);
   assert.equal(out.ok, true);
   assert.ok(out.replacement.link);
