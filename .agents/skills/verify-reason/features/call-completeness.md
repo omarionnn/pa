@@ -30,6 +30,9 @@ files but not mapped here.
 
 ## Sub-features
 
+- **Calls remember the last call** (`REASON_CALL_CARRYOVER`, live `on`; `src/calls/carryover.js`): the
+  short after-call read on `calls.summary` and what was texted since open the next call; details and
+  tests (`test/call-carryover.test.js`, `test/call-memory.test.js`) in [cartesia-calls.md](cartesia-calls.md).
 - **Cross-channel proof.** Call turns go to `event_log` with `channel = 'call'` and are enqueued
   for extraction; a call fact appears in `remembered()`; `correctFact` supersedes a call-originated
   fact; one user's call fact is invisible to another; facts under 0.5 confidence are skipped.
@@ -184,13 +187,13 @@ the real turn with a scripted model seam) and the tests above; the model-backed 
 at `b2861c2`; to repeat it, drive the same four turns through `voice.llmRequest` in process on
 claude-cli against a throwaway database.
 
-**Live, read-only** (Hetzner is the live path; GPT-Live's Twilio webhooks go there):
+**Live, read-only** (the live server, OVH root@15.204.113.250; its Twilio webhooks go there):
 
 ```bash
-ssh root@91.98.19.150 "journalctl -u reason --no-pager --since '24 hours ago' \
+ssh root@15.204.113.250 "journalctl -u reason --no-pager --since '24 hours ago' \
   | grep -E 'voice_turn|call_written_into_thread|call_verify_deferred|call_llm_first_content_ms' | cut -c1-220 | tail -20"
-ssh root@91.98.19.150 "sqlite3 /opt/reason/data/reason.db \"select count(*), sum(length(content)<12) from event_log where channel='call'\""
-ssh root@91.98.19.150 "sqlite3 /opt/reason/data/reason.db \"select id, state, length(lookups) from calls order by id desc limit 3\""
+ssh root@15.204.113.250 "sqlite3 /opt/reason/data/reason.db \"select count(*), sum(length(content)<12) from event_log where channel='call'\""
+ssh root@15.204.113.250 "sqlite3 /opt/reason/data/reason.db \"select id, state, length(lookups) from calls order by id desc limit 3\""
 ```
 
 **End state that proves it:** after a real call, a `call_written_into_thread` log line, `event_log`
@@ -214,5 +217,5 @@ call after PR #59 (3.5–6.3s on call 38 before it).
   search.
 - `doctor.sh live` checksums every file under `src/` since 2026-10-24, `src/calls/*` included (SKILL.md, Launch C).
 - Never place a live call to prove this. Never forward `voicemail_detection` (see the voicemail work).
-- Hetzner timestamps are UTC; compare with ET carefully when matching a call to its rows.
+- Live-server timestamps are UTC; compare with ET carefully when matching a call to its rows.
 - Never read call transcripts out of the live database into a report.

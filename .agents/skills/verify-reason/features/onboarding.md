@@ -1,5 +1,13 @@
 # First-chat onboarding — `REASON_ONBOARDING` on (default) | test | off
 
+**Live now (switches 2026-11-14):** `REASON_ONBOARDING=on`, `REASON_WEB_SETUP=on`, `REASON_WELCOME_CARDS=on`,
+`REASON_INVITE_START=on`, `REASON_EVENT_ONBOARDING=on`. With the welcome cards on, the opener below gains the
+gallery: who Reason is, the seven picture cards, then "what's your name?"; a request first gets the turn,
+then "by the way", the pictures, the name ask; the web setup's hand-off is the page's line + the seven +
+"What would you like help with first?" (`src/onboarding.js:99`, `:479`). That is
+[welcome-cards.md](welcome-cards.md); this file describes the beats around it (and the exact flow with
+the cards switched off or `owner`).
+
 Somebody new texts Reason for the first time. With the switch covering them, their first chat is a few
 beats and nothing more (owner-approved wording, 2026-11-06 — the 7-day review found new people left
 during the old 3–5 question interview). One question per message; nothing ever asks what they do.
@@ -94,7 +102,13 @@ card route), `src/db.js` (`contact_card_name`, `contact_card_token`, `setContact
   no meaning) → whatever. 14 checks, including the served card's `FN:Jarvis`, the exact nickname ask, the try line after each card, and no
   phone-control wording. Needs `claude` logged in on this Mac (on 2026-11-06 it said "OAuth session
   expired", so the name-card PR was proved in-process: stated reads, real router/outbox/card route).
-- Never on live until deployed; `REASON_ONBOARDING=off` in `.env` turns it off.
+- On live since 2026-11-06; `REASON_ONBOARDING=off` in `.env` turns it off. The cage drive is a `model`
+  drive (subscription haiku reads + one turn); with the cards on, export `REASON_WELCOME_CARDS=on` and expect
+  one `/api/send-carousel` between the intro and the name ask.
+- 2026-11-14 (`7d5b5f54`): onboarding + web setup + welcome-card suites 137/137 (no model); the cage served
+  `/img/welcome/f498b171/01-calls.jpg` and `07-more.jpg` as `200 image/jpeg`, an old version 404
+  (evidence `20261114T232034Z-g4-cage-fake-ok`, `20261114T232702Z-g4-onboarding-welcome`). The model drive
+  was not run (no model turns this pass).
 
 ## Names get a capital on each word (#426, 2026-11-10)
 

@@ -2,15 +2,15 @@
 
 Signed in, `https://heyreason.com/web/settings` (desktop: typed index left, one page right; phone:
 one column, 8A then 8B). Every control is a plain form that posts to `POST /web/settings` with
-`do=reach|theme|browser|everywhere|notify|invite|cancel-invite|store-remove|card-remove|cap|cap-confirm|cap-keep`
-(dispatch src/pages/websettings.js:667-762; the three `cap*` are the daily spend cap, see [spend-cap.md](spend-cap.md)), the session's form secret (`c`) and
+`do=reach|theme|notify|ahead|browser|everywhere|invite|cancel-invite|store-remove|card-remove|cap|cap-confirm|cap-keep`
+(dispatch src/pages/websettings.js:687-790; the three `cap*` are the daily spend cap, see [spend-cap.md](spend-cap.md)), the session's form secret (`c`) and
 Reason's own origin, and comes back 303 to `/web/settings?done=<what>#<section>` ("got it.",
 role=status) or to an edit state. v2 edit states (handoff v2 §4c item 5, sheet-settings-edit 5A–5D),
 each its own `← SETTINGS` screen: `?edit=reach` (5A), `?saved=reach` (5B), `?confirm=everywhere`
 (5C), `?invite=<id>` (5D), `?edit=notify` (8C, see [web-notify.md](web-notify.md)). L8: every
 action button has `data-busy` ("Saving…", "Signing out everywhere…", "Making a link…"), goes muted
 and can't be pressed twice. The theme switch exists ONLY here (no footer/menu switch on /web). Behind
-`REASON_WEB` like the rest of Web (`owner` on live).
+`REASON_WEB` like the rest of Web (`on` on live).
 
 Source: `src/pages/websettings.js` (page + POSTs), `src/pages/websignin.js` (`sub === "settings"`,
 user agent noted in `sessionAccount`, `themedForAccount` on every signed-in page),
@@ -46,8 +46,14 @@ switch saves back), `src/deliver.js` (`keptOnWeb`), `src/db.js` (`accounts.web_r
   [shop-connect.md](shop-connect.md)): each store they signed into with SIGN OUT (`do=store-remove`
   with `s=<store>`, theirs only) → "signed out. i won't use it again."; the card with Replace card →
   and Forget it, which asks first (`?confirm=card#shopping`: Forget it / KEEP IT) → `do=card-remove` →
-  "card forgotten." (src/pages/websettings.js:380-423, 729-737). The daily spend cap sits here too.
-  With it the index has seven sections, not six.
+  "card forgotten." (`shoppingSection` src/pages/websettings.js:381, POSTs :757-764). The daily spend cap sits here too.
+  With it the index has seven sections, not six (eight with Thinking ahead).
+- **Thinking ahead** (#506, `aheadSection`, `SECTIONS` id `ahead`, between CONNECTED and SHOPPING) —
+  drawn only where `cues.covers(conv)` (`REASON_CUES` off | owner | on, default off; live `owner`, so
+  only the operator sees it). "On." + what Reason offers when a trip, a move, a birthday, an interview
+  or a guest comes up, TURN OFF (`do=ahead&on=0`, "Turning it off deletes what Reason was holding to
+  offer.") → `?done=ahead#ahead`, "Off." + TURN ON. A post from someone it does not cover changes
+  nothing (303 `#reach`). Log `web_settings: "ahead"`. Unit: `test/cues.test.js` (`aheadSection`).
 - **Invites** — shown only where `invitesOpenFor` (owner always; others when REASON_INVITES_OPEN or
   enabled). "N left" = links still makeable (allowance − unused). JOINED / UNUSED / CANCELED stamps.
   Make an invite link = `invites.makeLink` → 5D (`?invite=<id>`, only an unused link of theirs):
@@ -63,7 +69,7 @@ switch saves back), `src/deliver.js` (`keptOnWeb`), `src/db.js` (`accounts.web_r
 ```bash
 node --test test/web-settings.test.js test/web-settings-edit.test.js test/web-settings-migration.test.js   # 22 + 12 + 2
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
-  && REASON_DB_PATH=$(mktemp -d)/settings.db node bin/web-settings-drive.mjs   # 29 steps, all ok
+  && REASON_DB_PATH=$(mktemp -d)/settings.db node bin/web-settings-drive.mjs   # 32 steps (3 Thinking ahead, REASON_CUES=owner), all ok
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
   && REASON_DB_PATH=$(mktemp -d)/index.db node bin/web-settings-index-drive.mjs [outDir]   # 13 steps, Chromium
 ```
@@ -76,6 +82,6 @@ bottom over the last 70% of a viewport so short end sections each get the →. S
 under `prefers-reduced-motion: no-preference`; phones draw no index. `bin/web-settings-index-drive.mjs`
 wheels through all six in Chromium (Shopping off there); live: `REASON_INDEX_URL=… REASON_INDEX_COOKIE='reason_page=…'`.
 
-Live proof (Hetzner only): a throwaway owner `page_sessions` row → GET the public page and every
+Live proof (the live server, OVH `root@15.204.113.250`, only): a throwaway owner `page_sessions` row → GET the public page and every
 edit state, save a reach value and restore the original at once, revoke only a second throwaway session, make an invite and cancel it
 with `invites.cancelLink(..., { replace: false })`, delete the rows.

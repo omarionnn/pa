@@ -31,7 +31,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   space cannot be probed for real links. The one-time-code fallback is rate limited from the
   `page_attempts` table, not from memory, and counts attempts against guessed ids too.
 - **No sharing.** A page is only ever its owner's: there is no `page_share`, no share link, no
-  Share button and no `POST /p/<id>/share` (all removed 2026-10-23, PR #67, at Omari's ask). The
+  Share button and no `POST /p/<id>/share` (all removed 2026-10-23, PR #67, at the owner's ask). The
   bar shows no Private/Shared pill either.
 - **Nothing the model writes becomes markup.** Every string is escaped; no block takes HTML.
 - **A picture has to be real.** An image address the model typed from memory is refused — see
@@ -102,6 +102,16 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   copies. Pinned in `test/pages-paper.test.js`; the table-fade pixel tests in
   `test/pages-phone.test.js` measure "clean" against the paper card, not white. Visual check:
   `node bin/theme-all.mjs --shots dir` (`*-auto-light.png`) next to the site at 390.
+- **The paper glows (#493, 2026-11-11; no switch — every page once deployed).** The welcome cards'
+  peach glow from the top left and a faint brick one bottom right, under the grain: `PAPER_GLOW`, Night
+  `NIGHT_GLOW` (amber + dark pen, low), `SHEET_BG` = `var(--grain),var(--glow) var(--bg)` in
+  `src/pages/brand.js`; `GLOW_OFF` drops it for `prefers-contrast: more`. Used by `shell()`, action
+  cards, Spotify, remote sign-in and `brandedPage`. No offline test pins it; check with
+  `node bin/glow-contrast.mjs --pages` (event join/sign-in, files page, not-found, Spotify, remote
+  sign-in; 390/1440 × light/dark; text sampled on the real pixels, ≥4.5:1). 2026-11-14 at `7d5b5f54`:
+  24/24 ok, worst 4.69 (remote sign-in, light); a caged page served `--glow:radial-gradient` (2×),
+  the `prefers-contrast:more` rule and the `SHEET_BG` sheet. theme-all reads `backgroundColor` only and
+  cannot see the glow.
 - **One brand pen colour: brick red.** #9c3b2e on light pages, #d46a5c (lighter brick) on dark
   (owner, 2026-10-26; it was the 10-25 "trademark orange" #B8460B / #F26F2B, which is now pinned
   absent from src/ and assets/ in `test/pages-no-blue.test.js`) — both in `src/pages/brand.js` and nowhere else: `--mark` in
@@ -141,7 +151,7 @@ node --test test/pages.test.js test/pagekit.test.js test/pages-theme.test.js
 ```
 
 For a page you can actually open, create one against the caged database and fetch it over HTTP.
-`page_create` is not free by default: it fires `generateIllustration` (a paid Imagen/OpenAI call)
+`page_create` is not free by default: it fires `generateIllustration` (a paid OpenAI gpt-image-2 call)
 and code's own picture pass runs a paid Parallel image search. Blank the image keys and turn the
 search off for an in-process drive:
 
@@ -249,21 +259,25 @@ page's preview tags — and that is fine: only someone already holding the key c
 - The link Reason texts is built by `ownerUrl` → `pageUrl` in `src/pages/access.js` (re-grep
   `export function pageUrl`). When
   `REASON_PAGES_URL` is set the link is `{REASON_PAGES_URL}/{id}?k=<owner_key>`, verbatim — the
-  variable carries whatever prefix the host in front needs. On this Mac's `.env` **and** on Hetzner
-  it is `https://files.heyreason.com` (set 2026-10-26 when the domain moved; before that
-  `https://files.reason.omarinyarko.com`, and `https://reason.omarinyarko.com/p` until 2026-10-24), so a link reads
+  variable carries whatever prefix the host in front needs. On this Mac's `.env` **and** on the live
+  server (OVH, root@15.204.113.250) it is `https://files.heyreason.com` (set 2026-10-26 when the domain moved; before that
+  an older personal domain, with `/p` in the path until 2026-10-24), so a link reads
   `https://files.heyreason.com/<id>?k=…` — no `/p` in it; the host in front maps it to
-  Hetzner's `/p/<id>`. When only
+  the live server's `/p/<id>`. When only
   `REASON_PUBLIC_URL` is set, the fallback is `{REASON_PUBLIC_URL}/p/{id}?k=<owner_key>`. The caged
   instance inherits both from `.env`, so the `link` it hands back points at the **public site**,
   not at the caged port — driven 2026-10-24, `link: https://files.heyreason.com/0yKSptX1JR?k=…`.
   Replace `https://files.heyreason.com/` with `http://127.0.0.1:<caged port>/p/` before
   curling it (on 2026-10-24 that answered 401 with the "Text me the code" gate, as the table says).
+  In a worktree with no `.env` neither is set and the link is the cage's own
+  `http://127.0.0.1:<port>/p/<id>?k=…` (2026-11-14: create + update kept id and key, revision 1→2; key
+  on a new browser 401 with "Text me the code" and the private og, no title; no key / wrong key / ghost
+  id 401 with one hash; code POST 200 + cookie, title escaped; cookie GET 200).
 - `page_update` wants the **full** blocks you want the page to have now, not a patch.
 - Reaching the page over HTTP needs the server; `runTool` alone proves the row, not the render.
   Do both.
 - **`page_create` / `page_update` spend money unless told not to.** Both fire
-  `generateIllustration` (Imagen, else OpenAI) whenever an image key is set, and `page_create` runs
+  `generateIllustration` (OpenAI only, no fallback) whenever `OPENAI_API_KEY` is set, and `page_create` runs
   `preparePictures` → `sourcePictures`, a Parallel image search when a Parallel key is set.
   `caged.sh env` blanks neither. Export `GEMINI_API_KEY= OPENAI_API_KEY=` and pass
   `pictures: { search: null }` in `ctx` unless the illustration or the photos are what you are

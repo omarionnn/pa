@@ -14,7 +14,9 @@ pressed on Start, `cleanCodeFor` on typed text, provider to the check, the "unlo
 (`connected_accounts.provider`, written only with a signed-in reading; `liveSigninsFor`),
 `src/restcrypt.js` (that column in SENSITIVE2), `src/signin-window.js` + `src/signin-cli.js`
 (`REASON_SIGNIN_PROVIDER` / `--provider` into the window), `src/serve.js` (startup line).
-Tests: `test/social-signin.test.js` (24, offline), `test/social-signin-rest.test.js` (1, sealed at rest).
+Tests: `test/social-signin.test.js`, `test/social-signin-rest.test.js` (sealed at rest),
+`test/social-signin-uber.test.js`, `-anysite`, `-buttons`, `-step`; `test/signin-email.test.js` (17, the
+emailed code); `test/continue-with-google.test.js` (22, the saved Google login, below).
 
 ## Sub-features
 
@@ -55,14 +57,43 @@ Tests: `test/social-signin.test.js` (24, offline), `test/social-signin-rest.test
   is a wall (30 s), a loading page is open (10 min, `providers_offered`). `signin_link` / `signin_open`
   refuse with `checked_live: true`, the Google words and (Uber) the card named as `instead` while walled.
 
+- **Emailed sign-in codes (`signin_email`, #481, owner).** Same gate (`social.socialAllowedFor`; the
+  tool is not shown to anyone else). "Sign me in" for a site that mails a code: Reason types their
+  email on the site's own page and presses Continue (never a Google/provider button), then reads the
+  code from their connected Gmail — only the newest mail from the site's own DKIM-passing domain AFTER
+  the request, only from the asking conversation's tokens — and types it into the site's own page.
+  No Gmail: asked ONCE in one line; their reply is handed over at intake (before dedupe, history,
+  memory and the turn) and the thread keeps a placeholder. Email unknown → asks once "Which email do
+  you use for <Site>?". No mail came → nothing saved, plain line, never "check your email". The code is
+  never logged or noted. Source: `src/signinemail.js`, `src/tools.js` `case "signin_email"`.
+- **Continue with Google from the vault (#558, owner decision 2026-11-13).** Separate from the
+  provider button above: with saved logins on ([saved-logins.md](saved-logins.md)),
+  `account_signin { site, with: "google" }` (only when their own recent words say Google) remembers
+  the route and signs in through the site's OWN Google button with their saved Google login. The
+  Google login is used ONLY on exactly `https://accounts.google.com` as a step into a site they named
+  (`src/sitepolicy.js`: accounts.google.com `careful` = Face ID every time; Gmail, Drive, settings and
+  google.com stay `never`); the browser is held to that origin while it types, the one popup that
+  press opened is the only other tab, consent passes only basic profile + email (anything more, a
+  scope behind "See details", a birth date → stopped, nothing allowed), Google's tap or code is
+  relayed once in fixed words, a look-alike Google is never reached, and landing on any other Google
+  property ends the job and signs the browser out of Google. After every chain Google's cookies and
+  storage are cleared from the kept profile. No saved Google login → `needs_google_login`, the link.
+  Forgetting the Google login removes every site routed through it. Source: `src/federated.js`,
+  `src/filler.js` `googleCredentials`, `src/browser.js` `armIdp`/`watchGoogle`.
+
 ## Prove
 
-- Offline: `node --test test/social-signin.test.js test/social-signin-rest.test.js test/social-signin-uber.test.js`
-  → 32/32. The Uber file drives the REAL finder in real Chromium against `test/fixtures/uber-login.html`
+- Offline (slot gate): `node --import ./test/paid-key-guard.js --test test/social-signin.test.js
+  test/social-signin-rest.test.js test/social-signin-uber.test.js test/social-signin-anysite.test.js
+  test/social-signin-buttons.test.js test/social-signin-step.test.js test/signin-email.test.js
+  test/continue-with-google.test.js`. The Uber file drives the REAL finder in real Chromium against `test/fixtures/uber-login.html`
   (hand-made; see Unproven) — that is what caught the draft's string-not-function finder.
   Flag off: `systemFor` has no "your Google login", `toolsFor` has no `signin_provider`, a `provider`
   on a link is dropped, typed text is untouched.
-- Live: `grep REASON_SOCIAL_SIGNIN /opt/reason/.env` → `owner`; startup journal line
+- Cage: `REASON_SOCIAL_SIGNIN=owner caged.sh start` → `serve.log` has `social sign-in: owner only
+  (REASON_SOCIAL_SIGNIN)` (2026-11-14). No live drive of `signin_email` or the Google chain without a
+  real site and a real mailbox: offline only.
+- Live (the live server, OVH, root@15.204.113.250): `grep REASON_SOCIAL_SIGNIN /opt/reason/.env` → `owner`; startup journal line
   `social sign-in: owner only (REASON_SOCIAL_SIGNIN)`;
   `sqlite3 -readonly data/reason.db "SELECT name FROM pragma_table_info('connected_accounts')"` lists
   `provider`; `social_declines` exists.

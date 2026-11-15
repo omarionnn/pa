@@ -2,7 +2,7 @@
 
 Owner spec (~/Desktop/reason-food-1110/spec.txt): craving → food at the door in the fewest texts, never
 money without a yes on the exact total. Flag `REASON_FOOD` = off | owner | on (default off; `owner` =
-the operator's thread only, never a phone call's prompt).
+the operator's thread only, never a phone call's prompt). **Live: `REASON_FOOD=on`** (everyone).
 
 Source: `src/food.js` (all of it). Hooks: `src/shopconnect.js` (`sayPayment` → card picture + one line,
 `foodFor`, `holdMsFor` 15 min, placed text, `ended` on a failed end, `moveOn` never moves a food order,
@@ -13,7 +13,10 @@ of theirs in this conversation), `src/choicecards.js` (`queueCards`, `photoForOp
 (`foodRules`), `src/serve.js` (attach: say, picture, wake, channels).
 Already there before it and reused: Crossmint checkout job, confirm gate, Face ID, spend cap, choice
 sets, inbound 👍 = yes (threading), shipping record.
-Tests: `test/food-order.test.js` (16, offline; 10 source mutations, every money one caught).
+Tests: `test/food-order.test.js` (19 offline 2026-11-14; at launch 16, 10 source mutations, every money one caught),
+`test/food-direct.test.js` (direct ordering), `test/food-past-orders.test.js`, `test/food-receipts-real.test.js`,
+`test/food-receipts-square.test.js` (receipts). All green 2026-11-14 (g2 pass, batch of 182 with plaid/account jobs).
+`test/flow-food.test.js` needs a model.
 
 ## What it does
 - `food_order start` → ⏳ on their request message. Status after: ❓ at the ask / a failure, ✅ placed,
@@ -30,6 +33,31 @@ Tests: `test/food-order.test.js` (16, offline; 10 source mutations, every money 
   No order number. 15 min after the latest ETA the model is woken once to look (silent if delivered).
 - `history`, `note`, `options` (≤3 dishes, ONE numbered picture, only tool-returned photos, never
   files.heyreason.com).
+- **Direct first** (2026-11-10): the restaurant's own ordering (Toast, Square Online, ChowNow, Olo, Clover,
+  BentoBox, Owner.com, own site; `DIRECT_HOSTS` / `orderingRoute` in `src/food.js`) before an app. An app cart
+  is refused until the model looked for a direct link (`place` / `why_direct`); their own choice of the app is
+  respected; the first direct order's ask says once why it's cheaper (`whyDirectLine`); Caviar/Slice are apps.
+- **Past orders from their receipts** (`past_orders`, #517/#524): "what did I last order", "get that again",
+  "sign into my DoorDash and check" → `pastOrders` searches their connected mail a year back
+  (`RECEIPT_DAYS` 365, `receiptQuery`: confirmation/receipt subjects from the apps' and ordering hosts' own
+  addresses, never the bare word "order"); a receipt is an order only by its sender ADDRESS and subject (codes,
+  ads, rides, ratings, cancellations are not); restaurant, dishes and total read from the receipt
+  (`readReceiptText`: the order's total, never the subtotal, a fee or a card number); what it lacks is said,
+  nothing guessed; the receipt text is marked as someone else's words and a total in mail is never a price;
+  newest first, one row per order; nothing found → says what was searched, never asks for a screenshot.
+- **Square counts only when it's food** (#537, `foodReceipt`): Square takes any shop's payments, so its
+  receipt is a food order only with a food/drink line, a restaurant's kind of name (never "…Barbershop"), or a
+  place already in their food history.
+- **An app's wall answers with the working route** (#517, `wallInstead` in `src/socialsignin.js:388`): a
+  delivery app that walls Reason's browser gets "I can still order for you, from the restaurant's own site or
+  through my checkout, and I can read what you ordered before from your receipts." and the model is told not
+  to stop at the block or ask for a screenshot.
+
+## Driving it (no model)
+`money-probe.mjs` (2026-11-14, in process, throwaway DB, `REASON_FOOD=on`, every fetch throws): Square café
+yes / barber no / known place yes; the receipt total `$29.41` over subtotal, fee and a card number; the
+receipt query's subjects and a year back; the DoorDash wall line; `pastOrders` with an empty mailbox →
+`count: 0` with what was `searched`. A whole order needs Crossmint and a model turn: offline only.
 
 ## Can't
 DoorDash / Uber Eats answer Reason's browser and plain fetches with 403 (re-checked 11-10): menus, store

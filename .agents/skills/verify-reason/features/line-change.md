@@ -64,8 +64,14 @@ for that conversation with `card_ok = 0` and the why; the second message adds no
 conversations with pre-cutoff inbound were still due — the first of them to text the new number is
 the first real proof that the card is delivered.
 
+- 2026-11-14 (`7d5b5f54`, cage 8844, evidence `*-g4-line-change` + `*-g4-cage-fake-ok`): `contact-card.mjs --live`
+  all ok (`/reason.vcf` and the hashed path 200, brand PHOTO, NOTE, REV, `no-cache`) once the cage was
+  restarted with fakes (the first try against the earlier cage returned 404s); seeded pre-cutoff inbound →
+  `line_change_cards` row `card_ok=1`, a hand-moved one `card_why` "moved over by hand before this existed".
+  `test/linechange.test.js` (5) passes.
+
 ## Gotchas
 
-- **The card send is real on live.** Never drive this on Hetzner; a POST there texts a real person.
+- **The card send is real on live.** Never drive this on the live server (OVH, root@15.204.113.250); a POST there texts a real person.
 - **Only `sendblue` conversations count.** A Linq or console conversation never gets the card.
 - **Moving the cutoff** (`REASON_LINE_CHANGE_AT`) changes who is "returning" for everyone at once.

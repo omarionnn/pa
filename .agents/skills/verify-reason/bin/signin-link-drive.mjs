@@ -29,8 +29,12 @@ await new Promise(r => server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${server.address().port}`;
 const results = [];
 const check = (name, ok, extra = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"} ${name}${extra ? ` (${extra})` : ""}`); };
+// kind "user": each link here is one they asked for in their own message. Without it the turn is an event
+// turn, and after a cancelled link the no-link-loops rule (#525, signinPage.mayLinkAgain) answers
+// not_sent_again with no link, so steps 4-6 had no link to open (2026-11-14).
 const mint = async () => {
-  const out = await runTool("signin_link", { site: "amazon" }, { conversationId: CONV, messages: [], createRemoteSignin: (a) => remote.createRemoteSignin({ ...a, launch: stub, check: async () => ({ ok: true, state: "signed_out", why: "stub" }) }) });
+  const out = await runTool("signin_link", { site: "amazon" }, { conversationId: CONV, kind: "user", messages: [], createRemoteSignin: (a) => remote.createRemoteSignin({ ...a, launch: stub, check: async () => ({ ok: true, state: "signed_out", why: "stub" }) }) });
+  if (!out?.link) throw new Error(`signin_link made no link: ${JSON.stringify(out).slice(0, 200)}`);
   return new URL(out.link).pathname;
 };
 const post = (path, { cookie = "", body = "" } = {}) => fetch(`${base}${path}/start`, { method: "POST", redirect: "manual", headers: { ...(cookie ? { cookie } : {}), "Content-Type": "application/x-www-form-urlencoded" }, body });

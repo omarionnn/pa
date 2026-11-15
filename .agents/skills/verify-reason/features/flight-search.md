@@ -9,6 +9,8 @@ requests** (`DUFFEL_ACCESS_TOKEN`), then ONE honest "prices aren't available" an
 Fli sidecar (`src/fli.js`) was refused by Google from 2026-10-24 and is no longer called; only its
 `FliError` and answer shape remain (`src/flightsearch.js:1-5`, `src/flightproviders.js:1-27`). Design
 notes: `docs/flight-search.md`.
+**Live (2026-11-14):** `SERPAPI_API_KEY` is set, `DUFFEL_ACCESS_TOKEN` is not — searches go to SerpApi
+(counted against `SERPAPI_MONTHLY_LIMIT`), then the honest link answer.
 
 ## Sub-features
 

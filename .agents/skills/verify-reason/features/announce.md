@@ -1,6 +1,6 @@
 # Owner announcements — one text to everybody active, sent later, by the owner only
 
-A CLI the owner runs on the Hetzner box to tell active people about something new. No tool, page or
+A CLI the owner runs on the live server (OVH, root@15.204.113.250) to tell active people about something new. No tool, page or
 text reaches it. Dry run by default: it prints the recipient count, the counts left out by reason,
 and the bubbles, never a number or a name, and writes nothing. Two announcements ship
 (`ANNOUNCEMENTS`, scripts/announce.js:35-49): `events-1025`, the default (two bubbles: the Events
@@ -39,12 +39,17 @@ Source: `scripts/announce.js` (`ANNOUNCEMENTS`, `audience`, `sendAll`, `renderDr
 Owner only, on the server:
 
 ```bash
-ssh root@91.98.19.150 'cd /opt/reason && sudo -u reason node --env-file=.env scripts/announce.js'          # dry run
+ssh root@15.204.113.250 'cd /opt/reason && sudo -u reason node --env-file=.env scripts/announce.js'          # dry run
 # real send, ONLY on the owner's go:
-# ssh root@91.98.19.150 'cd /opt/reason && sudo -u reason node --env-file=.env scripts/announce.js --send --confirm=events-1025'
+# ssh root@15.204.113.250 'cd /opt/reason && sudo -u reason node --env-file=.env scripts/announce.js --send --confirm=events-1025'
 ```
 
 Options: `--id=<announcement>`, `--skip-owner`, `--gap-seconds=N`.
+
+Cage, 2026-11-14 (`7d5b5f54`, port 8844, fake Sendblue, evidence `*-g4-announce`): 4 seeded people → dry
+run "recipients: 2 · excluded: opted-out 1, quiet-hours 1", nothing written; `--send` without `--confirm`
+refused (exit 2, "add --confirm=events-1025"); with it, sent 2 (4 posts, 2 bubbles each); a second dry run
+→ recipients 0, already-sent 2. `test/announce.test.js` (15) passes in the misc group 122/122.
 
 ## Driving it with the harness
 

@@ -7,8 +7,10 @@ yet, for whom an event is their way in. **Behind `REASON_EVENTS`** (`off` | `own
 `REASON_FLIGHT_BOOKING`): off, nobody's model is told events exist; `owner`, only the owner may
 CREATE one, but anybody may join any event (the owner's links must work for every guest); on,
 anybody with a Reason creates. **Live since 2026-10-25 16:38: `REASON_EVENTS=on`,
-`REASON_EVENT_RIDES=on`** (owner: "on for everyone"); read them read-only with
-`ssh root@91.98.19.150 "grep -E '^REASON_EVENT(S|_RIDES)=' /opt/reason/.env"`.
+`REASON_EVENT_RIDES=on`** (owner: "on for everyone"); also on live (2026-11-14): `REASON_PAID_EVENTS=owner`
+(only the owner, or an early-access `paidEvents` account, may PRICE an event; anybody pays for one),
+`REASON_EVENT_ONBOARDING=on`, `REASON_EVENT_ALBUMS=1`, `REASON_EVENT_PAYWALL_TS` set. Read them read-only on the
+live server (OVH, root@15.204.113.250): `grep -E '^REASON_(EVENT|PAID_EVENTS)' /opt/reason/.env`.
 
 Source: `src/events.js` (the only reader of the event tables: passwords, matching, the attempt
 limit, every access rule, the guest/public/organizer views, deliveries), `src/db.js` (the `events`,
@@ -405,7 +407,12 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   `event_answers`/`event_question_asks` is on `test/fixtures/unscoped-sql-baseline.json` (scoped by event_id; the
   organizer is checked in `events.managed` first).
 - **Paid events (2026-11-11, `src/eventpay.js`, tools `event_price` / `event_payouts` / `event_refund`, tables `event_payments` /
-  `event_payout_accounts`, `events.price_cents` + `currency`, flag `REASON_PAID_EVENTS` off|owner|on, off on live)** —
+  `event_payout_accounts`, `events.price_cents` + `currency`, flag `REASON_PAID_EVENTS` off|owner|on, `owner` on live)** —
+  `owner` = `canPrice`: the owner or an early-access `paidEvents` account prices (src/eventpay.js:222-226, needs
+  `STRIPE_SECRET_KEY`); `priced(ev)` reads the row alone, so a switch turned off never makes a paid event free and every
+  guest of a priced event pays. The public **terms** (`/terms`, "Paid events" section) and **privacy** page (the Stripe
+  line) say who processes, the fee and what each kind of refund gives back (`src/pages/site.js`, #472; pinned by the last
+  test of `test/site.test.js`; cage `GET /terms` 200 with "Paid events").
   Stripe Connect Express + destination charges; Reason never holds funds. Per ticket at price P: the guest pays P plus
   Stripe's processing (2.9% + 30¢ of the total, one "Processing" line on the hosted Checkout, Apple Pay included); the
   organizer gets P less Reason's 2.5% of P; `application_fee_amount` = total − organizer's share (`quote()`:
@@ -475,7 +482,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   scheduled yet — $X still clearing" / "… ready", else "Not available yet"; Stripe down → "Not available right now".
   Account-wide (all their events). Pinned: `test/event-refund-sales.test.js` (10); drive: 4 more `pay:` steps (policy on
   Stripe + receipt; sales by text with the payout asked on the connected account; tightening spares Yaw's ticket; no
-  ticket → no guest refund). **Not provable offline:** a real Stripe custom_text render, real balance/payouts on a live
+  ticket → no guest refund). Tests: 16 in the file now. **Not provable offline:** a real Stripe custom_text render, real balance/payouts on a live
   connected account, a real refund.
 - **Buy for friends (2026-11-11, PR event-buy-friends, same flag `REASON_PAID_EVENTS` / early access `paidEvents`, tool
   `event_seats`, table `event_seats` (KEPT_ON_DELETE, `claim_token` a secret column), columns `events.ticket_max`,
@@ -517,7 +524,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   ("Not claimed yet · bought by X for a friend", "ticket from X"); cancel → `refundAll` refunds what stands on each
   payment (one Stripe refund each; friends told it went to the buyer's card). **Summary counts tickets** (seats):
   sold / standing / refunded / unclaimed; FOR FRIENDS row; `event_guests` `ticket_bought_by` + `unclaimed_tickets`.
-  Pinned: `test/event-buy-friends.test.js` (11); drive: 7 more `pay:` steps (quantity Checkout; seats + links; a friend
+  Pinned: `test/event-buy-friends.test.js` (18 with the ship-review ones); drive: 7 more `pay:` steps (quantity Checkout; seats + links; a friend
   claims, a second seat for someone in is refused; an unclaimed seat holds its place; buyer's partial seat refund; the
   friend gives back theirs to the buyer's card; cancel refunds the rest). **Not provable offline:** Stripe's real
   partial refund with reverse_transfer on a live connected account, Messages' rendering of the seat link card, a real
@@ -527,6 +534,25 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   as it lands, and the sweep's `refundOwed` re-asks for those and for payments still standing on a cancelled event (after 2
   min, `REFUND_RETRIES` = 5 definite noes at most; result key `refunds_owed_paid`); an account delete drops a seat invite owed
   to that person (`invite_conversation_id` cleared). Pinned by the last four tests of `test/event-buy-friends.test.js`.
+- **Event guests' own onboarding (2026-11-11, #487, `src/eventonboarding.js`, table `event_onboarding`, timer label
+  `event:after`; flag `REASON_EVENT_ONBOARDING` off|owner|on, `on` on live)** — for somebody NEW who came in through an
+  event (`covers`: a new account made by the join; `owner` = only the owner's numbers, the operator and
+  `REASON_TEST_NUMBERS`, even with an existing account). What they get: the organizer's welcome, then ONE line
+  (`JOIN_LINE`: "i'm Reason, i'll keep you posted on <event>. need the address, a ride, or to message <host first name |
+  the host>? just text me.") — no question, no contact card, no welcome cards. While the event lasts their turns are told
+  they're an event guest and not to pitch; the router's contact-card offer waits (`holdsCard`). At 10:00 their time (the
+  event's zone if theirs is unknown) the day after: "how was <event>?" (A) — only if still a guest, not stopped / paused /
+  muted / left, the event not cancelled, and not already a Reason user some other way (welcome cards already had, or
+  texted about non-event things: `usedForOtherThings`, a side-ask read, never a regex). Their reply gets the normal
+  answer, then "i can do more than events, here's some of what i do" (B), the seven welcome cards (one carousel or its
+  fall-backs), and "want to start with a surprise call from me to a friend?" (C); a yes goes through the normal call
+  flow, and that first call is on Reason (see [paywall.md](paywall.md), #494). No reply to A, a "no" to C, a reply days
+  later, or a reply the harm screen flags → nothing more, ever. Once per person across every event; an existing user
+  joining gets the welcome alone. The timer survives a restart and follows a moved event. A paid join registers on
+  payment (`onPendingPay` → `afterPaid`). Owner test on live: `scripts/event-after-now.js --event=<id> --confirm=event-after`
+  arms A now on the owner's own thread (refuses `off` and strangers) — the owner's tool, never a verification step.
+  Event guests' monthly free tier and "event lines never count" (#491, #494) are in [paywall.md](paywall.md).
+  Pinned: `test/event-onboarding.test.js` (19). No `bin/` drive: `events-drive.mjs` leaves the flag unset (off) on purpose.
 
 ## How to get to it (user POV)
 
@@ -566,7 +592,10 @@ node --test test/code-guards.test.js   # #134: every code text ends `@<live host
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
 node --test test/event-web.test.js    # the pages, the finishing text, existing users by session and by text, who's going
 node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js test/event-edit-limits.test.js test/event-guest-questions.test.js test/event-paid.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390), list privacy + cap after creation, guest questions, paid events (fake Stripe)
+node --test test/event-refund-sales.test.js test/event-buy-friends.test.js test/event-onboarding.test.js test/event-paywall.test.js test/event-paywall-tweaks.test.js test/site.test.js  # refund policy + sales, buy for friends, event guests' onboarding, event joiners' free tier, the terms' Paid events section
+# 2026-11-14 at 7d5b5f54: every test/event*.test.js but event-cover-live + event-album, plus numeric-codes, code-guards, caddy-marker, site: 386/386 pass.
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
+# 2026-11-14 at 7d5b5f54: 132 ok + "all ok" (28 `pay:` steps against its own loopback fake Stripe; REASON_EVENT_ONBOARDING left off)
 REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address
 ```
 
@@ -575,7 +604,8 @@ shows the tables made on start (`CREATE TABLE IF NOT EXISTS`, no data rewritten)
 `event_attendees`, `event_messages`, `event_deliveries`, `event_join_attempts`, `event_claims`, the
 four `ride_*` tables — and `event_log`, which is the conversation log, not an events table.
 
-Over HTTP on the cage (driven 2026-10-25 at `f3669e8`). The cage's own env does not set the flags,
+Over HTTP on the cage (driven 2026-10-25 at `f3669e8`; re-driven 2026-11-14 at `7d5b5f54`: the page / join / who probes below as written, sign-in for a stranger only, plus
+`/e/<id>/seat/<made-up token>` 404, `/e/<id>/payouts` signed out 404, `/terms` 200 with "Paid events"). The cage's own env does not set the flags,
 so start it as `REASON_EVENTS=owner REASON_EVENT_RIDES=owner bin/caged.sh start`, then make an event
 in its database in process (`runTool("event_create", {name, description, starts_at:
 "2026-10-31T20:00", location, password, show_time_on_join: true, show_location_on_join: false,

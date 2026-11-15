@@ -9,7 +9,7 @@ Code: `src/pages/webreply.js` (lookup, quote, button, chip, CSS, page script), `
 
 ## Sub-features
 
-- **Flag.** `off`: no button, no chip, no CSS/JS, `re` on a send ignored, Web turns get no `answering`.
+- **Flag.** Live: `on` (everyone). `off`: no button, no chip, no CSS/JS, `re` on a send ignored, Web turns get no `answering`.
   `owner`: only the operator's conversation (`accounts.ownerOf(...).isOperator`). `on`: everyone.
 - **Send.** The browser posts `re=<messages.id>` (digits only, else 400 `bad_reply`). The server
   resolves it in the SESSION's conversation (`handleOfRow`: theirs → `inbound_messages.external_id`,

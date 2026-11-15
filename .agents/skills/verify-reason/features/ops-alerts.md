@@ -50,7 +50,7 @@ in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.
   incident@<since>`. A `watchdog` row reads `data/watchdog.json`.
 - **`GET /alive`** — unauthenticated, cheap: `{ok, pid, up_s, loop_lag_ms, sweeping, sweep_age_ms,
   sweep_stuck, sweep_stuck_after_ms, open_alerts}`. `sweep_age_ms` is `null` for the first ~15s.
-- **The watchdog** (`scripts/watchdog.mjs`, systemd timer every minute on Hetzner): unit active?
+- **The watchdog** (`scripts/watchdog.mjs`, systemd timer every minute on the live server (OVH, root@15.204.113.250)): unit active?
   restarted on its own (`NRestarts` up)? `/alive` answers in 5s? sweep finishing? disk room? A
   problem must be seen on two runs in a row before it texts (a crash and a full disk text at once;
   event-loop lag over 5s needs three runs; a crash stays open 10 min after the last one, so a crash loop is one alert); then one text, at
@@ -166,6 +166,30 @@ incident opens and its text lands on the cage console; the body with `sb-signing
 $RUN/secret)` → 200 and "Resolved: …" on the console. Read `incidents` with `node:sqlite`
 (`readOnly`), not sqlite3 (guarded under `~/.openclaw`). **On live, never post two shaped refusals
 — that texts the owner;** one unsigned `{}` is safe.
+
+## A person's flag to the team (`team_flag`, `src/teamflag.js`, 5ba3abb2)
+
+What a person sees: when something is left wrong that Reason cannot fix itself (a sign-out that never
+took, a payment with no confirmation), Reason may ask "Can I flag this to Reason's team? I'd send: "…""
+with the exact words. Only their typed yes sends it; the operator's thread gets five lines: "Flag from a
+Reason user", the masked sender (`+…9876~<hash>`), the time, the quoted report, `Ref: TF-xxxxxx`.
+Live state: no switch, on for everyone (`team_flag` in the tool list, `src/tools.js:4480`), never on a
+call or an event turn; the operator's lookup `admin_flag_lookup` (`src/tools.js:4603`) is operator-only.
+
+- Code owns the words (`cleanReport`, `src/teamflag.js:121`): one paragraph, ≤400 chars, no links, no
+  card/password/code-like strings, no full number, email or street address, no names on record. At most 3
+  sent a person a day, 20 from everyone (`PER_DAY` / `ALL_PER_DAY`, `src/teamflag.js:26-28`). The text is
+  keyed as an operator notice (`ops:`), like the alerts above.
+- The cue is "something new they can choose", never a retry (`offerCue`); see
+  [retry-not-offer.md](retry-not-offer.md).
+- The operator texts "look up TF-xxxxxx" → `lookupForOperator` (`src/teamflag.js:262`): when proposed and
+  sent, the masked sender, the kinds of the last few things Reason did. Never a word of content.
+- Offline: `node --test test/team-flag.test.js` (17; all pass 2026-11-14 in the misc group 122/122).
+- Drive, no model, nothing sent: the evidence script `evidence/20261114T232201Z-g4-team-flag/team-flag-drive.mjs`
+  under `bin/caged.sh env` (or a throwaway `REASON_DB_PATH`): propose → nothing sent, a Ref; the card number
+  hidden in the shown words; send before a yes → `not_granted`; a typed yes → one operator text, five lines,
+  no full number; resend → `already_spent`; on a call → `on_call`; an event turn → `not_their_turn`; the
+  operator's lookup works, a user's → `master_only`. All ok on `7d5b5f54`.
 
 ## Gotchas
 

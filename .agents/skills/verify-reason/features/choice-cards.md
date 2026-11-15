@@ -1,6 +1,21 @@
 # Choice cards (src/choicecards.js) — REASON_CHOICE_CARDS off | owner | on
 
-2–4 real shopping or place options, each a numbered picture card in its own bubble, after one short line.
+2–4 real shopping or place options as numbered picture cards after one short line. On a line that has a
+stack (Sendblue V2, Linq) the whole set arrives as ONE swipeable stack, each card labelled "N OF X"; elsewhere
+(Web, console) each card is its own message.
+
+## One swipeable stack (#553, `fa55b63b`, 2026-11-13) — `REASON_PICTURE_STACKS` (default on; absent on live = on)
+- `src/stack.js`: a set of 2+ pictures goes as one outbox row `{ carousel, pictures }` → Sendblue
+  `POST /api/send-carousel` (2–20 HTTPS addresses, `src/channels/sendblue.js` `sendCarousel`, `stackMax` 20)
+  or one Linq multi-media message (2–40, `src/channels/linq.js` `sendCarousel`). Bigger sets split into as few,
+  as even stacks as fit (21 on a 20 line → 11 + 10); numbering runs across the whole set.
+- Each card says "N of X" (`src/choicecards.js` card HTML, `<span class="of">OF X</span>`); a card that cannot
+  be drawn, or kept at its public address, is left out and the rest are redrawn as "1 of 2, 2 of 2".
+- Stack refused for good (V1 line, refusal, out of tries) → the same pictures one by one, in order. A single
+  picture, or a picture with no public address, or `REASON_PICTURE_STACKS=off` → one by one, as before.
+- An inline reply on a stacked set does not say which card: Reason asks which unless the message names one
+  (`onStack` in the choice-set read line, `src/choicecards.js`). Web history draws a stacked set as its cards.
+- Offline: `test/picture-stacks.test.js` (16; in the 2026-11-14 C run, 290/290).
 
 ## Offline
 - `node --test test/choicecards.test.js` — flag, draw/send order, text-list fallback, unseen image refused,
@@ -77,14 +92,17 @@ the same ask → show_choices, `choice_cards_sent 2 of 2`, then "2" → option 2
    started as a long-lived background job, not `nohup … &` (the runner kills the group).
 2. `REASON_VERIFY_BACKEND=claude-cli REASON_TEST_NUMBERS=+12025551234 REASON_VERIFY_FAKE_SENDBLUE=http://127.0.0.1:<port> REASON_CHOICE_CARDS=on bin/caged.sh start`
 3. `bin/inbound.sh text "i have dry skin. which cerave cleanser should i get? want to see a couple to pick from"`
-   → log `choice_cards_sent … sent N of N`; the capture shows the line, then upload+send per card, in order.
+   → log `choice_cards_sent … sent N of N, stacked: true`; the capture shows the line, an upload per card,
+   then ONE `/api/send-carousel` with every card in order (the fake must answer that path too).
 4. A yes/no ("is cerave fragrance free?") → no `show_choices` call.
 5. `bin/inbound.sh text "2"` → Reason goes ahead with option 2. `"Loved an image"` → it asks which (the phone
-   does not say). An inline reply payload with `reply_to.message_handle` = card 3's handle (`choice_sets.handles`) → option 3.
+   does not say). An inline reply payload with `reply_to.message_handle` = card 3's handle (`choice_sets.handles`) → option 3
+   only when the cards went one by one; on a stack every card shares one handle, so Reason asks which.
 
 ## Web
 `node bin/web-choices-preview.mjs <outDir> card1.jpg card2.jpg card3.jpg` — one row of cards, every picture loads, 390/1280 × paper/night.
 
 ## Known limit
 A tapback on a picture reaches Sendblue as the words "Loved an image" with no handle, so with several cards up it
-cannot say which card; Reason asks. An inline reply on a card is exact.
+cannot say which card; Reason asks. An inline reply on a card is exact only when the cards went one by one;
+on one stack it cannot tell the card either.

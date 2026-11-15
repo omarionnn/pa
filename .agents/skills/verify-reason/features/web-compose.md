@@ -10,7 +10,10 @@ PDF, doc, or a mic recording; caps 20 MB each (`LIMITS`), a photo over 7 MB fitt
 upload link `https://<pages host>/web/media/u/<id>/<name>` and `localUpload(url)`, which src/media.js
 `fetchImage`/`fetchPdf` and src/voice.js `hear` use to read it from disk), `src/webmedia.js`
 (`POST /web/upload` same-origin + `X-Reason-Csrf`; `GET /web/media/u/<id>` and `/web/media/m/<row>/<n>`
-to the owning session only, same 404 otherwise, Range for audio; `prepareSend` — a voice note's
+to the owning session only, same 404 otherwise, Range for audio — one exception: an upload Reason itself marked
+`public: "table"` (a `render_table` picture, src/tableimage.js:352) or `public: "card"` (a choice card in a picture
+stack, src/choicecards.js:851, #553) is served with no session, because the texting provider fetches it; the 22-char
+random id is the secret (src/webmedia.js:300-307). A person's own uploads are never marked); `prepareSend` — a voice note's
 words from the browser, else heard by `voice.hear` (Gemini), marked so `hearInto` never hears it
 twice), `src/pages/webcompose.js` (composer markup, Listening overlay, 4B media markup, CSS, the
 page script: +, drop anywhere, slips, image shrink over 7 MB, the mic — tap = dictate on the line,
@@ -29,7 +32,12 @@ can listen — `window.REASON_WEB.hear`). Firefox on live: no live words, record
 - `node --test test/web-compose.test.js` (unit + real HTTP through src/http.js) and
   `node --test test/web-compose-browser.test.js` (Chromium, fake mic, stand-in SpeechRecognition:
   02, 04, errors, 03, D incl. pause-sends and NEVER MIND, 5A SENT · time / didn't go once, 9C, mic hidden, 320px).
-- Live (Hetzner, temporary owner session): POST a tiny PNG to `https://heyreason.com/web/upload`
+- The public exception, no model: `test/render-table.test.js` ("the public route serves a table picture with no
+  session and nothing else without one"); a `card` upload has no test of its own — 2026-11-14 at 7d5b5f54, in process
+  under `caged.sh env`, `webuploads.store(…{ extra: { public: "card" | "table" } })` then `webMediaRoute` with no
+  headers: card 200, table 200, an unmarked upload 404.
+- Live (the live server, OVH root@15.204.113.250, temporary owner session; the send runs a real turn on the shared
+  subscription, so it is a `model` drive — not for an upkeep pass): POST a tiny PNG to `https://heyreason.com/web/upload`
   with the cookie + csrf, POST `/web/send` with `files=<id>`, then `/web/history?after=<n>` shows the
   line with `<img src="/web/media/u/…">`, the image GETs 200 with the cookie and 404 without, and
   Reason's reply row is `channel=web` with no outbox row to sendblue.
@@ -63,7 +71,7 @@ can listen — `window.REASON_WEB.hear`). Firefox on live: no live words, record
   box takes it away.
 - Verify: `node --test test/web-compose.test.js test/web-uploads-voice.test.js test/web-compose-browser.test.js`.
   Previews: /tmp-free script in the builder's report; PNGs in ~/Desktop/reason-web-design-previews/v2/.
-- Live: temporary owner session on Hetzner → POST a throwaway .docx + an 8 MB photo to
+- Live (`model` drive, as above): temporary owner session on the live server (OVH, root@15.204.113.250) → POST a throwaway .docx + an 8 MB photo to
   https://heyreason.com/web/upload (doc kind, photo fitted ≤ 7 MB, .jpg), send with words that ask for
   nothing, poll `/web/history` for `doing` ("reading the …") and the reply on `channel=web`, check no
   outbox row to sendblue, then delete the proof rows, uploads and the session.

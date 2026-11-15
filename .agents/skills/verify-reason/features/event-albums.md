@@ -3,9 +3,9 @@
 Guests text Reason photos naming the event ("for Game Night"); the organizer ends the event and
 releases the album; the guests the organizer checked in open it, save photos or the whole album, and
 it closes a fixed time after release. **Behind `REASON_EVENT_ALBUMS`** (`off` | `owner` | `on`, on
-top of `REASON_EVENTS`; `owner` = only the owner's events have albums). Read it read-only with
-`ssh root@91.98.19.150 "grep -E '^REASON_EVENT_ALBUMS=' /opt/reason/.env"` — **`REASON_EVENT_ALBUMS=1` on live
-since 2026-10-26 08:08 UTC** (#163 merged as `5dabcf9`, deployed, flag appended as the last line of `.env`).
+top of `REASON_EVENTS`; `owner` = only the owner's events have albums). Read it read-only on the live server (OVH,
+root@15.204.113.250): `grep -E '^REASON_EVENT_ALBUMS=' /opt/reason/.env` — **`REASON_EVENT_ALBUMS=1` on live
+since 2026-10-26 08:08 UTC, still on 2026-11-14 (on for everyone)** (#163 merged as `5dabcf9`, deployed, flag appended as the last line of `.env`).
 
 Album links (`albumUrl`, `manageUrl`, photo and ZIP paths under `/e/<id>/album…`) are built on the
 event base, so they live on **`https://events.heyreason.com`** since the domain move (2026-10-26,
@@ -67,7 +67,9 @@ make an event + a page session in its database under `caged.sh env` (see `album-
 calls), then `curl -si "http://127.0.0.1:<port>/e/<id>/album/manage?t=<events.organizer_token>"` → the
 gate (200, "Text me a code"; without `?t=`, or `?t=nope`, it is 404), with `-H 'Cookie:
 reason_page=<token>'` for the organizer (no `?t=` needed) → 200 with `Check-in list`, and a
-stranger's token → 404. Re-driven 2026-10-27 over `00f3300`. Driven 2026-10-26 at the PR's head (see Baseline).
+stranger's token → 404. Re-driven 2026-10-27 over `00f3300`. 2026-11-14 at `7d5b5f54`: `album-drive.mjs` 35 ok + "all ok",
+`album-preview.mjs` three PNGs, `test/event-album.test.js` 15/15; cage curl: no `?t=` 404, `?t=nope` 404, the organizer
+token 200 with "Text me a code" (the cookie step not re-run). Driven 2026-10-26 at the PR's head (see Baseline).
 
 - **The organizer is nudged to check people in, never bypassed** (owner, 2026-10-26). `albums.release`
   returns `joined` / `checked_in` and, when not everyone who joined is in, `nudge` (`checkinNudge`):

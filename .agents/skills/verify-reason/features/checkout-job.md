@@ -52,6 +52,17 @@ Want me to start it now?`; a "never actually started" line with a run of the las
 `Actually, checking my record: the <store> checkout for <item> did start N min ago; now: <stageLine>.`
 in front (`src/offers.js:95`), and only on a turn where they asked about the checkout (`aboutCheckout`).
 
+**Status from the record (#501, 2026-11-12).** `shop_status` and every reply about a checkout agree with the
+newest run of the last two hours (`againstRecord` in `src/offers.js`; `chargedOf` / `stoppedByReason` in
+`src/shopconnect.js`): a reply saying "nothing's charged" after a payment went out (paid, being paid, or
+outcome unknown) is caught; "started / running" about a run that ended failed or cancelled (with nothing else
+running) is caught; "declined" about a payment Reason called off itself (a run switch, a ceiling, a corrected
+address: `shop_payments.stopped_by = 'reason'`) is caught. The contradicting sentences go and one line from the
+record goes first: `Actually, checking my record: the <store> checkout for <item>: <stageLine>.` A run Reason
+called off reads "cancelled …: I called it off myself, the store and the card had no part in it; nothing
+charged", never "declined". Their own no is `stopped_by = 'them'`. Pinned in `test/shop-status-truth.test.js`
+(the 10-31 14:10, 10-31 10:58 and 10-30 20:00 lines).
+
 ## Offline
 - `node --test test/checkout-job.test.js test/checkout-mail-read.test.js` (19 + 2 pass 2026-11-08 at #412; earlier: 16 pass 2026-11-07; the four "review" ones cover non-card payment, expired
   approval wording + wake retry, lost run + a pre-change row with stage '', and "review 11-06" Crossmint
@@ -60,8 +71,12 @@ in front (`src/offers.js:95`), and only on a turn where they asked about the che
   sign-in form never through `shop_answer`; expiry/blocked/cancelled/after-payment texts, once; stall once
   at 10 min; `shop_status` + note from the row; itemized ask; placed + mail watch + 24h bound; resume.
 - `node --test test/shopconnect.test.js test/passkey-pay.test.js test/crossmint-only-buys.test.js` still green.
+- 2026-11-14 (g2 pass): `checkout-job` + `shop-status-truth` + `shop-form-options` + `checkout-anticipate` +
+  `shopconnect` + `passkey-pay` in one 122/122 batch; `checkout-mail-read`, `crossmint-only-buys`,
+  `no-check-your-email` in the 601-pass batch. In process: `chargedOf` of a run with no payment → `no`.
+  A live stall/wake needs a real Crossmint run: offline only.
 
-## Live (read-only)
+## Live (read-only, on the live server: OVH, root@15.204.113.250)
 `sqlite3 -readonly /opt/reason/data/reason.db "SELECT run_id, store, stage, told, substr(question,1,60) FROM shop_runs ORDER BY created_at DESC LIMIT 5"`;
 the journal shows `{"checkouts_resumed":…}` on boot when a run was open, and the `[checkout]` event
 turns as ordinary `{"cli":…}` lines. Crossmint's own view of a run: `GET /api/unstable/agent-checkouts/<run>`

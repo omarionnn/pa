@@ -15,6 +15,7 @@ process.env.REASON_SITE_URL = "http://127.0.0.1";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_BURST_QUIET_MS = "0";
+process.env.REASON_CUES = "owner"; // live is owner: THINKING AHEAD for the operator only
 process.env.REASON_TOKEN_KEY ||= "44".repeat(32);
 delete process.env.REASON_SITE_PROXY_SECRET;
 delete process.env.REASON_INVITES_OPEN;
@@ -130,6 +131,16 @@ const th = await form(me, { do: "theme", theme: "night" });
 const other = await get(phoneB, "/web?thread");
 step("theme Night saved; another browser's page opens Night (server-drawn)", th.status === 303 && /<html lang="en" data-account-theme="night" data-c="[^"]+" data-theme="dark"/.test(other.body));
 await form(me, { do: "theme", theme: "auto" });
+
+// Thinking ahead (src/cues.js, REASON_CUES=owner here as on live): the owner's own switch; Kofi has none.
+const cues = await imp("src/cues.js");
+const ah0 = await get(me);
+step("THINKING AHEAD: the owner sees the section (On.) and its index entry; Kofi does not", /<section class="st-sec" id="ahead"[^>]*><h2 id="ah-h">THINKING AHEAD<\/h2><p class="nt-p">On\.<\/p>/.test(ah0.body) && ah0.body.includes('href="#ahead"') && !(await get(kofi)).body.includes('id="ahead"'));
+const ahOff = await form(me, { do: "ahead", on: "0" });
+step("TURN OFF: 303 to ?done=ahead#ahead, opted out, the page reads Off.", ahOff.location === "/web/settings?done=ahead#ahead" && cues.optedOut(OWNER_C) && /id="ah-h">THINKING AHEAD<\/h2><p class="nt-p">Off\.<\/p>/.test((await get(me)).body));
+const ahOn = await form(me, { do: "ahead", on: "1" });
+const kofiAh = await form(kofi, { do: "ahead", on: "0" });
+step("TURN ON puts it back; Kofi's post changes nothing (back to #reach)", ahOn.location === "/web/settings?done=ahead#ahead" && !cues.optedOut(OWNER_C) && kofiAh.location === "/web/settings#reach");
 
 // Invites: make one, then cancel it (no invite is spent).
 const before = db.listInvites(OWNER_C).length;

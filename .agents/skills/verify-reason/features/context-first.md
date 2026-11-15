@@ -2,7 +2,7 @@
 
 Owner spec (`~/.openclaw/workspace/specs/reason-context-first-1110.md`): before Reason asks the person
 anything it finds the answer itself, and when it does ask, the likely answer is inside the question.
-Flag `REASON_CONTEXT_FIRST` = off | owner | on (default off; `owner` = the operator's thread only,
+Flag `REASON_CONTEXT_FIRST` = off | owner | on (**live: `on`**, switches 2026-11-14; default off; `owner` = the operator's thread only,
 never a phone call's prompt). Prompt text only: no new tool, no new code path.
 
 Source: `src/contextfirst.js` (all of it), `src/agent.js` (`contextFirstRules(me)` appended after
@@ -31,8 +31,9 @@ Tests: `test/contextfirst.test.js` (6, offline).
 
 - Offline: `node --test test/contextfirst.test.js` → 6/6. Flag-off `systemFor` is byte-identical
   to the pre-change prompt (owner and non-owner); owner mode reaches only the operator's thread.
-- Live: `grep REASON_CONTEXT_FIRST /opt/reason/.env` → `owner`; a one-off `node -e` on the server
-  importing `src/contextfirst.js` with that env prints the block for `{isOperator:true}` and an empty
-  string for `{isOperator:false}` and for `{isOperator:true,onCall:true}`.
+- Live: on the live server (OVH, root@15.204.113.250) `grep REASON_CONTEXT_FIRST /opt/reason/.env` → `on`.
+  Under `on` the block is in every non-call prompt: a member's and the owner's, empty on a call.
+- No model, in process (2026-11-14, `7d5b5f54`, evidence `*-g4-switches`): with `on`, the block for a
+  member and the owner, empty on a call. `test/contextfirst.test.js` 6/6 in the misc group 122/122.
 - Real model: not driven (no paid runs, no live drive). What the model does with the rules is unproven
-  until the owner lives with it on his own thread.
+  until people live with it (it is `on` for everyone).

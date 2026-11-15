@@ -3,7 +3,13 @@
 Once a day, at 7:30 in the person's zone, a short note in the thread with a link to a page of one-tap
 offers ("Accept Dana's dinner invite for Friday"); a tap opens Messages with the request in
 their own voice; their text matches the open card by its words and runs as the normal turn. Live since
-2026-11-11 for the owner only (flag `owner`); the engine shipped the same day (PR action-cards-engine).
+2026-11-11 for the owner only (flag `owner`, still `owner` in the 2026-11-14 switches); the engine shipped
+the same day (PR action-cards-engine).
+
+2026-11-14 (`7d5b5f54`): the four action-card suites pass (cards group 114/114); no model, in process
+(evidence `*-g4-switches`): under `owner` the owner's tools include `action_card_source` and
+`action_card_forget`, a member's have neither. The `--dry` run below is a real model call (`model`); not
+run this pass.
 
 **A card is an offer to do the whole job (2026-11-12, #526).** The model names, per entry, the job and
 the route (`calendar | email | pay | call | site | none`); `src/cardroutes.js` `checkRoute` decides in

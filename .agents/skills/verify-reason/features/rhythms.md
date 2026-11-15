@@ -30,6 +30,11 @@ Tests: `test/rhythms.test.js` (15 pass), `test/rhythm-timing.test.js` (13 pass),
 - **Expiry.** A pattern nothing has borne out for 21 days is deleted rather than left shaping timing.
 - **The only effect.** `rhythmMoment` nudges non-urgent notice timing toward evidence hours; urgent
   things and quiet hours are untouched.
+- **A second kind: patterns noticed across days by the nightly review** (#515, `REASON_REVIEW_PATTERNS`,
+  live `owner`). Not a rhythm: read from their own words (two different days cited), kept as a
+  `guesses` row with `how = i_noticed_it_across_days` (`db.NOTICED_SOURCE`), never moves timing and is
+  never texted about. Same consent: `patterns_set off` deletes them too. Details and drive in
+  [memory-graph.md](memory-graph.md); `test/dream-coverage.test.js` (10)–(10e).
 - **Visible and correctable.** Memory page lists each pattern with an id; `memory_fix`/`memory_drop`
   work on it. "Why do you think that?" is answerable from the stored evidence.
 
@@ -54,7 +59,7 @@ sends nothing for a fresh install.
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh start
-bin/peek.sh sql "SELECT id, how, confirmed_at, substr(evidence,1,80) FROM guesses WHERE how LIKE '%pattern%'"   # empty
+bin/peek.sh sql "SELECT id, how, confirmed_at, substr(evidence,1,80) FROM guesses WHERE how LIKE '%pattern%' OR how LIKE '%noticed%'"   # empty
 bin/peek.sh sql "SELECT * FROM pattern_asks"                                                                      # empty
 bin/caged.sh stop
 ```

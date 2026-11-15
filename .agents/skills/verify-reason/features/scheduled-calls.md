@@ -3,7 +3,7 @@
 A timer can end in a phone call instead of a text. The person asks to be called, woken or rung at a
 time; Reason sets one timer that carries the call; when it fires, code places the call to the
 person's own number through the ordinary `call_place` path, and the call opens with why it is
-ringing ("hey Omari — you asked me to call at 7 to get you up."). Nothing is texted first. If the
+ringing ("hey <name> — you asked me to call at 7 to get you up."). Nothing is texted first. If the
 call cannot be placed (no phone line, the day's call cap, the provider failing) one text says it
 tried and why, in the person's words, never the model's. If the phone rings and nobody picks up (or
 voicemail answers), one text says so when the call settles, whichever path settles it. "Remind me"
@@ -59,7 +59,7 @@ Tests: `test/timer-call.test.js` (21 pass at `sec/lead31-leftovers`).
 
 ## How to get to it (user POV)
 
-Text "call me at 7 tomorrow to get me up" → "i'll ring you at 7." At 7 the phone rings: "hey Omari
+Text "call me at 7 tomorrow to get me up" → "i'll ring you at 7." At 7 the phone rings: "hey <name>
 — you asked me to call at 7 to get you up." Text "remind me at 7" → a text at 7. Text "never mind
 the call" → nothing rings. Set a wake-up for 6:30 → it rings at 6:30, not 8.
 
@@ -87,7 +87,7 @@ so the cap step rang instead of texting. Fixed in the drive 2026-11-07: call 1 i
 status callback would before step 4, and the drive sets `REASON_CALL_CAPS_EXEMPT=none`. 20 ok,
 `all ok` at `36db733`.
 
-**End state that proves it:** `calls.placed[0].announcement` is `hey Omari — <goal>.` and
+**End state that proves it:** `calls.placed[0].announcement` is `hey <name> — <goal>.` (`<name>` = `REASON_OWNER_NAME`, the drive sets a default) and
 `fake.sent` is empty after the firing; after the no-answer settle, one outbox row
 `timer:<id>:call_missed` and one text; the cap step places nothing and texts `today's call limit is
 used up`.
@@ -100,8 +100,8 @@ provider is registered switched off), so a model-driven "call me at 7" on the ca
 **Live, read-only:**
 
 ```bash
-ssh root@91.98.19.150 "journalctl -u reason --no-pager --since '24 hours ago' | grep -E 'scheduled_call|call_missed' | cut -c1-220 | tail -20"
-ssh root@91.98.19.150 "sqlite3 /opt/reason/data/reason.db \"select id, fire_at, call_goal, fired_at from timers where call_goal is not null order by id desc limit 5\""
+ssh root@15.204.113.250 "journalctl -u reason --no-pager --since '24 hours ago' | grep -E 'scheduled_call|call_missed' | cut -c1-220 | tail -20"
+ssh root@15.204.113.250 "sqlite3 /opt/reason/data/reason.db \"select id, fire_at, call_goal, fired_at from timers where call_goal is not null order by id desc limit 5\""
 ```
 
 ## Gotchas

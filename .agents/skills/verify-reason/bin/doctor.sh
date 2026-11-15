@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Is this Reason worth driving? Read-only: nothing here writes, sends or restarts.
 #
-# Usage:  doctor.sh            the LIVE instance — Hetzner, over ssh (same as `doctor.sh live`)
+# Usage:  doctor.sh            the LIVE instance — the OVH server, over ssh (same as `doctor.sh live`)
 #         doctor.sh 8796       a local port, normally the caged one
 #         doctor.sh 8787       a local dev instance on the Mac, if somebody started one
 #
-# THE LIVE REASON IS HETZNER (https://reason.tail3753c7.ts.net, ssh root@91.98.19.150 or
-# root@100.100.152.2 over Tailscale, systemd unit `reason`, rsync copy at /opt/reason). The
-# hostname `reason.tail3753c7.ts.net` moved from the Mac to Hetzner on 2026-10-12 and the old
-# `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` no longer resolves — this script answered "NO USABLE
-# ANSWER" for a healthy instance until the default below was changed (2026-10-13). The Mac's 8787
-# stopped being live on 2026-10-12; a process there is a dev checkout somebody launched, not what
-# people are texting.
+# THE LIVE REASON IS THE OVH SERVER (public https://app.heyreason.com, ssh root@15.204.113.250,
+# systemd unit `reason`, rsync copy at /opt/reason). It was Hetzner (root@91.98.19.150,
+# https://reason.tail3753c7.ts.net) until the move to OVH; on 2026-11-14 that Tailscale name
+# answered curl 000 from this Mac while app.heyreason.com/health answered 200 from
+# 15.204.113.250, and this script still defaulted to Hetzner. bin/idle.sh already defaulted to OVH.
+# Override with REASON_LIVE_SSH / REASON_LIVE_URL. The Mac's 8787 stopped being live on
+# 2026-10-12; a process there is a dev checkout somebody launched, not what people are texting.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,8 +40,8 @@ if (!h.sweeping) process.exitCode = 1;
 }
 
 if [ "$TARGET" = "live" ]; then
-  HOST="${REASON_LIVE_SSH:-root@91.98.19.150}"
-  URL="${REASON_LIVE_URL:-https://reason.tail3753c7.ts.net}"
+  HOST="${REASON_LIVE_SSH:-root@15.204.113.250}"
+  URL="${REASON_LIVE_URL:-https://app.heyreason.com}"
   say "target" "LIVE · $URL · ssh $HOST"
 
   # 1. The service, the process, and when it started. Sections are split by marker lines, so a

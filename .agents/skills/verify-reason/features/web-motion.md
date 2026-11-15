@@ -34,6 +34,10 @@ node --test test/web-4h-motion-browser.test.js   # Chromium: nothing at load; "o
                                                  # reduced motion; grain + contrast more; late night by page.clock
 ```
 
+On a cage (no model, 2026-11-14): a temp session for a `dm:<channel>:<number>` account, playwright
+Chromium `colorScheme: "dark"`, `page.clock.install` at 23:30 → `<html class=late>`, body rgb(34, 26, 19);
+at 15:00 → rgb(28, 24, 20); grain `data:image/svg+xml` both times (evidence `*-g7-web-motion`).
+
 Live proof: open https://heyreason.com/web signed in (short-lived owner session) in Chromium with
 `page.clock.install` at 23:30 local + colorScheme dark → body background rgb(34, 26, 19); at 15:00 →
 rgb(28, 24, 20); body `background-image` is the grain URI. Tab: with an approval pending,

@@ -32,10 +32,11 @@ workspace file. `systemFor` for a non-owner carries no operator name or email.
 2. The real CLI, on the wire, no model: `bin/cli-seal-probe.mjs` starts the real `claude` through
    Reason's own `runClaudeCli` for a non-owner system prompt, with `ANTHROPIC_BASE_URL` on a loopback
    stand-in that records the request and answers "ok". Nothing reaches Anthropic, nothing is billed,
-   nothing is sent to anyone. Run it on Hetzner as `reason` from `/opt/reason`:
+   nothing is sent to anyone. Run it on the live server (OVH, root@15.204.113.250) as `reason` from
+   `/opt/reason`:
 
    ```bash
-   ssh root@100.100.152.2 'cd /opt/reason && sudo -u reason -H node --env-file-if-exists=.env \
+   ssh root@15.204.113.250 'cd /opt/reason && sudo -u reason -H node --env-file-if-exists=.env \
      .agents/skills/verify-reason/bin/cli-seal-probe.mjs --unsealed; \
      sudo -u reason -H node --env-file-if-exists=.env .agents/skills/verify-reason/bin/cli-seal-probe.mjs'
    ```
@@ -68,7 +69,10 @@ workspace file. `systemFor` for a non-owner carries no operator name or email.
    `run_ok: true`, 1 request, every field false, `working_dir` = `$REASON_CLI_HOME/cwd`.
    `node --test test/cli-sealed.test.js` 4/4. Re-run 2026-11-07 at `8113bcf` (sealed run only,
    `env -i HOME PATH REASON_CLI_HOME=$(mktemp -d)/rc CLAUDE_CODE_OAUTH_TOKEN=probe-not-a-key`):
-   `run_ok: true`, 1 request, every field false; test 4/4.
+   `run_ok: true`, 1 request, every field false; test 4/4. Again 2026-11-14 at `7d5b5f54` (sealed run
+   only, same env): `run_ok: true`, 1 request, `any_email: 0`, every field false, `working_dir` =
+   `$REASON_CLI_HOME/cwd`; `test/cli-sealed.test.js` + `test/capabilities-city.test.js` pass. The
+   `--unsealed` control was not run on the Mac: it uses this Mac's own login.
 
 Evidence 2026-11-06 (branch code on the box, CLI 2.1.296): control → 1 email (the operator's),
 userEmail block, AGENTS.md, repo path; sealed → 0 emails, none of the rest, run ok.
@@ -87,5 +91,5 @@ Prove it: `node --test test/capabilities-city.test.js` (2 of its 3 tests fail on
 the fix). Drive 2 against the cage, `REASON_OWNER_CITY=Testville`: upsert a non-operator account,
 `runTool("capabilities", {}, { conversationId, messages: [] })` for it and for
 `config.ownerConversation`. 2026-11-07 at `2874b92` (cage on 8864): non-operator →
-`owner: "Kofi"`, no `city`, "Testville" nowhere in the result; operator → `owner: "Omari"`,
+`owner: "<their name>"`, no `city`, "Testville" nowhere in the result; operator → `owner: "<operator's name>"`,
 `city: "Testville"`.

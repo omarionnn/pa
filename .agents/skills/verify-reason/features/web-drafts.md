@@ -9,8 +9,8 @@ arrive animation. iMessage is unchanged.
 everyone; otherwise a comma list of conversation ids. (Not `REASON_WEB_STREAM`: that one names the
 live stream's origin.) Only a user turn from Web, cleared by the harm screen, on the claude-cli
 backend, with no `shouldSend` hold. Never the said-check rewrite. The backend test is
-`this.runTurn !== realRunTurn` (src/runtime.js:235,548), so on `REASON_BACKEND=api` (live since
-2026-11-03) no draft streams whatever the flag says.
+`this.runTurn !== realRunTurn` (src/runtime.js:257,605), so on `REASON_BACKEND=api` no draft streams
+whatever the flag says. Live (2026-11-14): backend `claude-cli`, `REASON_WEB_DRAFTS` unset → off for everyone.
 
 **What can never reach the tab** (`src/webdraft.js`, pinned in `test/web-stream.test.js`, 14 tests):
 - anything before the said check (`src/said.js checkDraft`) passed THAT text — each piece is checked
@@ -25,8 +25,14 @@ The finished reply's own said check is the matching piece's check, shared (one c
 claims: no call). Since #227 it is on the subscription only, never the API (`src/said.js` `checkDraft`
 → `askJson` with `config.saidCheckCliModel`, the turn's warm CLI from `warmCheck` when it has one;
 a cold `claude -p` is ~3 s, so pieces come in fewer, bigger steps; 3–4 s each seen 2026-10-27).
+A draft turn starts no `warmCheck` (src/runtime.js:609), and its pieces are checked without `fast`
+(src/webdraft.js:118), so `REASON_FAST_REPLY`'s "nothing to match" skip (`said.cannotMatch`) never
+applies to a streamed piece — only to a reply checked whole (src/runtime.js:648).
 
-## Drive (real claude-cli turn, scratch instance on this Mac — never Hetzner, never `.env`)
+## Drive (real claude-cli turn, scratch instance on this Mac — never the live server, never `.env`)
+
+This is a subscription turn (`model`: $0 metered, spends the shared 5-hour limit live Reason runs on).
+Without it, the proof is `node --test test/web-stream.test.js` (14, scripted drafter + said check).
 
 ```bash
 S=$(mktemp -d); mkdir -p $S/data

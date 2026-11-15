@@ -1,5 +1,15 @@
 # The free trial and the subscription (src/plan.js, src/stripe.js — REASON_PAYWALL)
 
+**What live runs now (switches 2026-11-14):** `REASON_PAYWALL=on` and `REASON_FREE_TIER` set (the
+monthly tier, `src/plan.js:31`). So a walk-in gets **20 conversations + 2 calls of up to 5 minutes a
+month**, not the 25/30 trial described next (that trial only runs with `REASON_FREE_TIER` unset; see
+"The monthly free tier" below). Free for good: accounts from before the flip, the operator, test numbers,
+and somebody whose number first came in through an invite (or a pre-`REASON_EVENT_PAYWALL_TS` event) from
+a member who is free for good themselves (`grandfathered` → `viaFree`, `src/plan.js:205-232`). An invite
+from somebody on the free tier or paying makes nobody free, and people on the free tier get no invite
+tools at all (`invitesOpenFor`, `src/tools.js:697`). `REASON_INVITES_OPEN` is unset on live, so invites
+are otherwise the operator's plus whoever was turned on one by one (`scripts/grant-invites.js`).
+
 Shipped 2026-10-31 (PR #323). **ON on live since 2026-11-07 23:37 UTC (`REASON_PAYWALL=on`, owner's
 go; `paywall_on_since` = 1794094636519 = the flip is the cut-off).** In one line, what a person gets:
 everybody who had an account before the flip (14 on live), anybody who joined through an invite or (before
@@ -11,7 +21,7 @@ OFF — Reason free for everyone.) Off = nothing counted (no `plan` row), nothin
 capabilities / note, `/pay/done` + `/pay/back` 302 to the site home, Stripe's webhook acts on nothing. With it on, a Stripe event for
 somebody the paywall does not reach (everyone but the operator under `owner`) or somebody grandfathered
 changes nothing and texts nothing (e875fbb) — an old test subscription cannot lapse or hold them.
-`owner` reaches only the operator's own thread (his grandfather rules skipped there, so he can try it);
+`owner` reaches only the operator's own thread (their grandfather rules skipped there, so they can try it);
 `on` reaches everybody who is not grandfathered — the operator, `REASON_TEST_NUMBERS`, anybody who joined
 through an invite or a member's event (`accounts.invited_by` / `joined_via_event` on the number's first
 account; owner 2026-11-05, whenever they joined), and every account with `created_at` before the FLIP MOMENT (`ops_state` key `paywall_on_since`, written the first time a
@@ -106,7 +116,7 @@ asking Stripe for `cancel_at_period_end=true` and saying the date, the `/ops` ta
 past-the-30th backlog label; 8 of the first 9 fail on c67e5c9): what a win is, win → asked at 25, no win → runs on
 (label, note, view, 26th and 27th quiet), win at 27 → asked on the next text and the 28th lapses, no win
 → asked at 30 with the softer line and the 31st lapses, a 40-session backlog asked at once, grandfather
-untouched at 30 and 31, `owner` mode follows the rule on his thread only, `plan-set.js --last-inbound
+untouched at 30 and 31, `owner` mode follows the rule on the operator's thread only, `plan-set.js --last-inbound
 none` + `win` in its output. `test/paywall.test.js` (25 since 2026-11-08: + a forged Payment Link reference binds nobody, a second checkout keeps live ids; everyone who reaches the ask has one done task): the 29-vs-31-minute gap, the 25th trigger exactly once (unit, and down the
 real Router with a FakeChannel: the 25th turn ran before the three bubbles), grandfather (operator, test
 number, pre-ship account), `owner` and `off` modes, the ship-time rule, lapsed gating (which tools, once
@@ -138,8 +148,8 @@ Stripe test mode: a recurring $24.99/month price (`STRIPE_PRICE_ID`), a secret k
 (`STRIPE_SECRET_KEY`), a webhook endpoint at `https://<REASON_PUBLIC_URL>/stripe/webhook` for
 `checkout.session.completed`, `invoice.paid`, `customer.subscription.updated`,
 `customer.subscription.deleted` (`STRIPE_WEBHOOK_SECRET`); optionally `STRIPE_PAYMENT_LINK_URL` for the
-pricing page. Then `REASON_PAYWALL=owner`, a restart, and 25 of his own sessions (or
-`scripts/plan-set.js dm:owner trial --sessions 24 --last-inbound none --apply`, so his very next text is
+pricing page. Then `REASON_PAYWALL=owner`, a restart, and 25 of their own sessions (or
+`scripts/plan-set.js dm:owner trial --sessions 24 --last-inbound none --apply`, so their very next text is
 the 25th; the output's `win` says whether the bubbles go then or the trial runs on) to see the bubbles for real.
 
 ## The monthly free tier (REASON_FREE_TIER=monthly; #423 merged 2026-11-10, live with the flag from 2026-11-10)
@@ -162,8 +172,18 @@ and an invite / event from anybody not free for good makes nobody free. Auto-adm
 default https://heyreason.com/access) and the approval queue — see [access-list.md](access-list.md). A tool
 refused over the 20 tells the model the reset date before the price, and the second ask in a conversation
 is only "can't do that part right now".
-Prove: `node --test test/free-tier-monthly.test.js` (15) + `bin/free-tier-drive.mjs` (muted, real router +
-inbound TwiML, prints the texts; 7 ok + all ok on 11-09).
+Prove: `node --test test/free-tier-monthly.test.js` (16) + `bin/free-tier-drive.mjs` (muted, real router +
+inbound TwiML, prints the texts; 7 ok + all ok on 11-09 and again 2026-11-14 on `7d5b5f54`: 20
+conversations answered, the 21st gets the 3 bubbles with no model turn, a 2nd text there gets nothing,
+the 3rd call gets one line + hang-up + the link texted, 4:30 wrap-up / 5:00 close, a free-tier user is
+offered no invites, 25 admitted and the 26th queued with the access-list text).
+Invites: `node --test test/invites.test.js` (19, in the 2026-11-14 paywall run, all pass);
+`test/paywall.test.js` "flip on: invited after the flip → free; joined via a member's event after the flip →
+free; uninvited after the flip → trial".
+
+2026-11-14 (`7d5b5f54`): `bin/paywall-drive.mjs` all ok (the 25/30 trial path, fake Stripe); the paywall
+suites 130/131 with `test/paywall.test.js` "the cut-off is the flip moment" failing once and 25/25 on a
+rerun of that file: flaky (clock-bound), not a product bug.
 
 ## Event joiners pay like walk-ins (REASON_EVENT_PAYWALL_TS; pa #491, owner 2026-11-11)
 

@@ -120,12 +120,11 @@ From the chat: the approval card's "Review details →", or the pen "needs a yes
 - `node .agents/skills/verify-reason/bin/web-talkdraft-preview.mjs` — detail → thread with Reason's first
   line (sample words; the live words are the model's) into reason-web-design-previews/v2.
 - `node .agents/skills/verify-reason/bin/web-ongoing-preview.mjs [outDir] [refDir]` — ongoing-<state>-<390|1280>-
-  <paper|night>.png + compare-ongoing-<state>.png into ~/Desktop/reason-web-design-previews. Pass
-  `refDir` = `"$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference"`: the
-  script's default `~/Desktop/reason-web-handoff-2026-10-26/reference` (bin/web-ongoing-preview.mjs:17) is
-  gone, and without it the run still prints `ok: 10 screens` but every compare's reference half is a 404
-  (bin/web-ongoing-preview.mjs:53; 2026-11-07). With it: `ok: 10 screens`, ten compares with the real sheets.
-- Live (Hetzner only, read-only): temporary owner `page_sessions` row (conversation `dm:owner`),
+  <paper|night>.png + compare-ongoing-<state>.png into `outDir` (default ~/Desktop/reason-web-design-previews;
+  pass an evidence dir). The default `refDir` is now `~/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference`
+  (bin/web-ongoing-preview.mjs:17). If the reference dir is missing the run still prints `ok: 10 screens`
+  but every compare's reference half is a 404 (bin/web-ongoing-preview.mjs:53) — look at one compare.
+- Live (the live server (OVH, root@15.204.113.250) only, read-only): temporary owner `page_sessions` row (conversation `dm:owner`),
   `curl -b reason_page=<tok> https://heyreason.com/web?tab=ongoing` and each
   `/web/ongoing/<kind>/<id>` the owner really has, `/web/ongoing/hand` and `/web/ongoing/back` (?f=…); `/web/ongoing/state` → `{count, needs}`; another
   id → 404. DELETE the session row after. A kind with no real row: make a far-future timer on
@@ -138,3 +137,7 @@ From the chat: the approval card's "Review details →", or the pen "needs a yes
 - A series' pending firing is a timer row with `series_id`; it is drawn once, as the series.
 - Approvals older than 24 h drop off (same window as the chat's card) even if still open.
 - "2 OF 3" = the step in hand (done + 1 when one is `doing`), matching the reference.
+- `test/web-ongoing.test.js` test 5 is clock-bound: it adds a timer 50 h out and expects it to sort
+  before the fixture's "every Monday 9:00" series, which is false from about Saturday 07:00 to Monday
+  09:00 New York time (fails there on clean main; passes with the clock shifted to a Wednesday). A
+  failure of only test 5 in that window is the test, not Ongoing's sort.

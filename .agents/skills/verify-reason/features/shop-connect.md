@@ -24,13 +24,14 @@ Reason texts Crossmint's own amount, and `shop_pay` pays only on a yes to that e
 - `cardLink(c)` returns the bare 32-char token (a string, not a URL or object); the page is `/web/connect/<token>`.
   The expired screens are HTTP 410. A throwaway key works for the cage:
   `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out <tmp>/k.pem`.
+  JWKS again 2026-11-14 (g2 pass): one RS256 key, kid `reason-1`, no `d`/`p`.
   Driven so 2026-11-07 (rel/verify-maint): owner 200 with `apiKey`/`jwt` and `frame-src https://www.crossmint.com
   https://*.crossmint.com`; non-owner link and made-up token 410 "expired"; JWKS 1 key, kid as set, no private parts.
 
 ## Live (muted; owner only until 2026-10-31)
 The real proof is heyreason.com: open a fresh `cardLink(owner)` in headless Chromium and see Crossmint's
 iframes (`frame-src` www.crossmint.com) where the card fields are — never a plain `<input>` for a card
-number or a store password. Never submit anything: Omari adds his own card.
+number or a store password. Never submit anything: the owner adds their own card.
 
 ## Server env
 `CROSSMINT_SERVER_KEY`, `CROSSMINT_CLIENT_KEY` (prod, from ~/.openclaw/secrets/crossmint-prod.env),
@@ -96,7 +97,11 @@ made-up link → 410 "This link has expired. Ask me for a new one." The sign-in 
 approve page's paying step (`payingLines`, src/pages/webapprove.js) carry the same block.
 - Offline: `node --test test/signin-progress.test.js` (10 pass 2026-11-07).
 - Drive (cage, muted, no Crossmint key, real Chromium): `bin/shop-connect-live-drive.mjs` under
-  `caged.sh env` — 18 checks: boot/`/state` waited, the words at 95 s, clock ticks, sweep moves, pageshow
+  `caged.sh env` — **the cage server must be started with the shop path on** (`REASON_SHOP_CONNECT=owner
+  REASON_WEB=on CROSSMINT_JWT_KEY_FILE=<throwaway pem> CROSSMINT_JWT_KID=reason-1 bin/caged.sh start`, the same
+  key file exported for the drive). On a default cage every `/web/connect` page is 404: four FAILs, then a
+  `TimeoutError` on `#cx-live` (2026-11-14). The drive now refuses without `CROSSMINT_JWT_KEY_FILE` instead of
+  defaulting to the operator's real key file. 18/18 ok so on 2026-11-14 (g2 pass). 18 checks: boot/`/state` waited, the words at 95 s, clock ticks, sweep moves, pageshow
   polls at once, a new question and the run dying each redraw the open page, 410s. Shots in
   `~/Desktop/signin-progress-1031/` (cage-checking-95s, cage-code, cage-failed).
 - Look: `node scripts/connect-staging.mjs --deploy` → walmart-checking-{0,12,45,100,200}, walmart-failed-{timeout,stopped,lost}.
@@ -162,3 +167,12 @@ Journal: `{"shop_fit":"<verdict>"}`.
   returned no valid shape — 3 of 12 calls, once on the dry-skin Foaming mismatch), which fails open, so a
   mismatched variant can still start. The PR reported 6/6. Every verdict that did come back was right.
 - The 30-minute approval, the re-ask and the reminder are in [passkey-pay.md](passkey-pay.md) "Thirty minutes".
+
+## Since 11-12 (each in its own file)
+- Free-text form answers mapped to the store's option, else a re-ask with the options (#498):
+  [checkout-anticipate.md](checkout-anticipate.md).
+- What Reason says about a checkout agrees with the record: charged / failed / called off by Reason (#501):
+  [checkout-job.md](checkout-job.md) "Status from the record".
+- An open Face ID link is kept, not replaced, on a second `shop_pay` (#499): [passkey-pay.md](passkey-pay.md).
+- Flights through the same path, owner only (#508): [flight-booking.md](flight-booking.md); account jobs
+  (cancel / pay a bill inside their account, owner only, #528/#554): [account-jobs.md](account-jobs.md).

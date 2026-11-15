@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 // Drive the live sign-in page (never a dead page, 2026-10-31) against the caged Reason (muted): the record moves, the open
-// page follows. Run from the worktree under `caged.sh env`:
-//   cd /private/tmp/pa-signinprog && eval "$(REASON_VERIFY_RUN=/tmp/reason-verify-signinprog REASON_VERIFY_PORT=8809 .agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && node .agents/skills/verify-reason/bin/shop-connect-live-drive.mjs
+// page follows. The cage SERVER must have the shop path on, or every /web/connect page is 404 (four FAILs then a
+// TimeoutError): start it with REASON_SHOP_CONNECT=owner REASON_WEB=on and a throwaway JWT key, then run this from the
+// repo root under `caged.sh env` with the same key exported:
+//   K=$(mktemp -d)/k.pem && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out $K
+//   REASON_SHOP_CONNECT=owner REASON_WEB=on CROSSMINT_JWT_KEY_FILE=$K CROSSMINT_JWT_KID=reason-1 .agents/skills/verify-reason/bin/caged.sh start
+//   eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && CROSSMINT_JWT_KEY_FILE=$K node .agents/skills/verify-reason/bin/shop-connect-live-drive.mjs
+// Without CROSSMINT_JWT_KEY_FILE it refuses: it never signs with the operator's real key.
 import { createRequire } from "node:module";
 for (const k of ["SENDBLUE_API_KEY_ID", "LINQ_API_KEY", "TWILIO_AUTH_TOKEN", "CROSSMINT_SERVER_KEY"]) if (process.env[k]) { console.error(`refusing: ${k} is set`); process.exit(2); }
 process.env.REASON_WEB = "on"; process.env.REASON_CONVERSATION = "dm:owner"; process.env.REASON_SHOP_CONNECT = "owner";
-process.env.REASON_MASTER_NUMBER ||= "+12025551234"; process.env.REASON_OWNER_NAME ||= "Omari"; process.env.REASON_TZ ||= "America/New_York";
-process.env.CROSSMINT_JWT_KEY_FILE ||= `${process.env.HOME}/.openclaw/secrets/crossmint-jwt-private.pem`; process.env.CROSSMINT_JWT_KID ||= "reason-1";
+process.env.REASON_MASTER_NUMBER ||= "+12025551234"; process.env.REASON_OWNER_NAME ||= "Owner"; process.env.REASON_TZ ||= "America/New_York";
+if (!process.env.CROSSMINT_JWT_KEY_FILE) { console.error("refusing: set CROSSMINT_JWT_KEY_FILE to a throwaway key (see the header)"); process.exit(2); }
+process.env.CROSSMINT_JWT_KID ||= "reason-1";
 const root = new URL("../../../../", import.meta.url).href;
 const imp = (p) => import(new URL(p, root));
 const shop = await imp("src/shopconnect.js");
