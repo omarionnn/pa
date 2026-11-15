@@ -132,9 +132,9 @@ test("the writer keeps only lines that pass the guard, per band, for their first
 
 test("within half an hour of their last call: an 'again' line (no recital of what was left open), in classic", () => {
   db.setCallGreetings(P.A, written("Ana"));
-  const ended = clock.now() - 10 * 60_000;
   const row = db.createCall(P.A, { provider: "cartesia", toNumber: "+12025550111", isOwner: true, goal: "x", facts: [], direction: "in", externalId: "e1", state: "completed" });
-  db.updateCall(P.A, row.id, { ended_at: ended, transcript: "Them: hi\nReason: hey", summary: "open: the trip plan" });
+  clock.skip(15 * 60_000);
+  db.updateCall(P.A, row.id, { ended_at: clock.now() - 10 * 60_000, transcript: "Them: hi\nReason: hey", summary: "open: the trip plan" });
   const line = inbound.openingLineFor({ person: { name: NAME.A }, conversationId: P.A, classic: true });
   assert.match(line, /again, Ana/);
   assert.doesNotMatch(line, /picking up|trip/);
@@ -146,7 +146,7 @@ test("a call Reason places: a written salute, then why it rang; with nothing to 
   assert.match(out, /^(?:Morning, Ana|Hey Ana), what's up\?$/);
   const a = g.pickGreeting({ conversationId: P.A, name: NAME.A, kind: "salute", refill: () => {} });
   assert.ok(["Morning, Ana", "Hey Ana"].includes(a.line));
-  assert.equal(g.pickGreeting({ conversationId: P.C, name: "", kind: "salute", refill: () => {} }).line, "Hey");
+  assert.equal(g.pickGreeting({ conversationId: P.C, name: "", kind: "salute", refill: () => {} }).line, "hey");
 });
 
 test("the nickname they gave the assistant is never how a written line addresses them", () => {

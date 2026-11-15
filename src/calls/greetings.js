@@ -100,7 +100,8 @@ function talkedRecently(conversationId, now) {
  */
 export function pickGreeting({ conversationId, name = "", kind = "greet", now = clock.now(), refill = refillSoon, log = () => {} } = {}) {
   const first = firstName(name);
-  const plain = { line: kind === "salute" ? (first ? `Hey ${first}` : "Hey") : plainGreeting(first), from: "plain" };
+  // A salute with nothing written is "hey <name>": a call Reason places opens exactly as it did before (provider.js announcementFor).
+  const plain = { line: kind === "salute" ? (first ? `hey ${first}` : "hey") : plainGreeting(first), from: "plain" };
   if (!conversationId) return { ...plain, band: "" };
   let tz = "";
   try { tz = zoneFor(conversationId); } catch { tz = ""; }

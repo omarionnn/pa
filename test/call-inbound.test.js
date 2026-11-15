@@ -118,16 +118,16 @@ test("the opening line is a clean greeting, never a context dump", async () => {
   const { runTool } = await import("../src/tools.js");
   await runTool("task_start", { title: "book Carbone for Saturday", goal: "a table for four" }, { conversationId: C, messages: [] });
 
-  // The lead-in ("ah," / "hey —" …) is drawn at random on every call.
-  assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
+  // The line written ahead for them, or with none yet the plain one (src/calls/greetings.js): never the task.
+  assert.equal(openingLineFor({ person: { name: "Omari" }, conversationId: C }), "Hey Omari.");
   db.db.exec("DELETE FROM tasks");
-  assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
+  assert.doesNotMatch(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /Carbone|table/);
 });
 
 test("the greeting never mentions open tasks, no matter how fresh", async () => {
   const { runTool } = await import("../src/tools.js");
   await runTool("task_start", { title: "book the dentist", goal: "a slot" }, { conversationId: C, messages: [] });
-  assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
+  assert.doesNotMatch(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /dentist|slot/);
 });
 
 test("the recording note goes out once, ever, and never recites itself on the call", () => {

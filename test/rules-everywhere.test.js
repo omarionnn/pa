@@ -81,6 +81,7 @@ const NOT_SPEAKING = {
   "src/background.js": "the background queue's bookkeeping",
   "src/calls/goalmet.js": "judges whether a call met its goal",
   "src/calls/carryover.js": "reads a finished call for what it carries into the next one; says nothing to anyone",
+  "src/calls/greetings.js": "writes a few call openings ahead from their first name only; each line passes a code guard (no names, facts, claims or times)",
   "src/calls/manner.js": "judges whether a business objected to the call being recorded",
   "src/food.js": "the allergy check reads a cart against saved facts; it writes no words to anyone",
   "src/channels/router.js": "one-thought bookkeeping (no model call of its own)",
