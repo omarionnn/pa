@@ -158,6 +158,7 @@ export function askAtFire(c, timer, { bankConnected }) {
 // ---------------------------------------------------------------- their answer
 const textOf = (m) => typeof m?.content === "string" ? m.content
   : Array.isArray(m?.content) ? m.content.filter(b => b?.type === "text").map(b => String(b.text ?? "")).join("\n") : "";
+const flat = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}']+/gu, " ").trim();
 const YES_MORE = /^(yes|yeah|yep|yup|ok|okay|sure|go ahead|fine)\b[\s,.!]*((you can|that'?s fine|do that|every time|each time|all the time|always|please|for this one|sounds good)[\s,.!]*)*$/i;
 const NO_MORE = /^(no|nope|nah|don'?t|do not|no thanks|no thank you)\b/i;
 export const typedYes = (t) => isBareYes(t) || YES_MORE.test(String(t ?? "").trim());
@@ -169,14 +170,16 @@ export const typedNo = (t) => isBareRefusal(t) || NO_MORE.test(String(t ?? "").t
  */
 function answeredAsk(c, messages) {
   const list = Array.isArray(messages) ? messages : [];
+  // Their newest message in the thread (a tool's result inside this turn is not a message: not a string).
   let i = list.length - 1;
-  while (i >= 0 && !(list[i]?.role === "user" && ownerTexts([list[i]]).length === 1)) i--;
-  if (i < 0 || i !== list.map(m => m?.role).lastIndexOf("user")) return null;
+  while (i >= 0 && !(list[i]?.role === "user" && typeof list[i]?.content === "string")) i--;
+  if (i < 0 || ownerTexts([list[i]]).length !== 1) return null;
   let j = i - 1;
   while (j >= 0 && list[j]?.role !== "assistant") j--;
   if (j < 0) return null;
-  const before = textOf(list[j]);
-  if (!before.includes(ASK_SETUP) && !before.includes(ASK_FIRED)) return null;
+  // The model writes in its own lowercase voice: the ask is matched on its words, not its case or punctuation.
+  const before = flat(textOf(list[j]));
+  if (!before.includes(flat(ASK_SETUP)) && !before.includes(flat(ASK_FIRED))) return null;
   const open = q("SELECT * FROM bank_checkin_grants WHERE conversation_id = ? AND state = 'asked' AND asked_at >= ? ORDER BY asked_at DESC LIMIT 1").get(c, clock.now() - ASK_TTL_MS);
   return open ? { row: view(open), typed: ownerTexts([list[i]])[0] ?? "" } : null;
 }

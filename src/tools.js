@@ -10352,7 +10352,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         trust.ledgerWrite({ conversationId: c, action: "series_set", input, out: started, target: String(input.note).slice(0, 120) });
         if (!started.ok) return started;
         // About their money, with a bank connected: asked in this same reply, in fixed words (src/bankgrant.js).
-        const askBank = callGoal ? null : bankgrant.askAtSetup(c, `series:${started.series?.series_id}`, input.note, { kind: ctx.kind ?? "event", bankConnected: plaidOn(c) && plaidHasBank(c) });
+        const askBank = callGoal ? null : bankgrant.askAtSetup(c, `series:${started.series?.series_id}`, input.note, { kind: ctx.onCall ? "call" : (ctx.kind ?? "event"), bankConnected: plaidOn(c) && plaidHasBank(c) });
         return {
           ok: true, series: started.series, first: started.first, timer_id: started.timer_id,
           ...(askBank ? { ask_bank: askBank, ask_bank_note: "End your reply with ask_bank word for word, on its own line. When they answer it, call bank checkin_answer." } : {}),
@@ -10399,7 +10399,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const label = normTitle(input.title, { name: me.name });
       const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal, label, chainedFrom });
       if (!label) queueTitle("timer", c, made.id, input.note, { name: me.name });
-      const askBank = callGoal || chainedFrom != null ? null : bankgrant.askAtSetup(c, `timer:${made.id}`, input.note, { kind: ctx.kind ?? "event", bankConnected: plaidOn(c) && plaidHasBank(c) });
+      const askBank = callGoal || chainedFrom != null ? null : bankgrant.askAtSetup(c, `timer:${made.id}`, input.note, { kind: ctx.onCall ? "call" : (ctx.kind ?? "event"), bankConnected: plaidOn(c) && plaidHasBank(c) });
       return {
         ok: true, timer: timerView(made),
         ...(askBank ? { ask_bank: askBank, ask_bank_note: "End your reply with ask_bank word for word, on its own line. When they answer it, call bank checkin_answer." } : {}),

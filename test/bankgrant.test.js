@@ -122,6 +122,19 @@ test("a typed yes on their own turn, answering the ask, grants read-only for tha
   assert.ok(g.decided_at && g.asked_at);
 });
 
+test("the ask is matched in the model's own lowercase voice, and a tool's result inside the turn is not their message", async () => {
+  await connect(C);
+  const out = await setUpRecap();
+  const lower = bankgrant.ASK_SETUP.toLowerCase().replace("?", "");
+  const msgs = [...thread(`every day at 9pm. ${lower}`, `${stamp} Omari: yep`), { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "series_list", input: {} }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "yes" }] }];
+  const yes = await runTool("bank", { action: "checkin_answer", answer: "yes" }, { conversationId: C, kind: "user", messages: msgs });
+  assert.equal(yes.ok, true, JSON.stringify(yes));
+  assert.equal(bankgrant.grantOf(C, `series:${out.series.series_id}`).state, "granted");
+  // Asked on a call: nothing is asked there (a yes on a call never counts).
+  const onCall = await runTool("timer_set", { note: "what i spent today", repeat: daily }, { conversationId: C, kind: "user", onCall: true, messages: [] });
+  assert.equal(onCall.ask_bank, undefined);
+});
+
 test("never a grant from anything but their own typed yes: an attachment, an event line, an unverified call, a call, an event turn, a stale or missing ask", async () => {
   await connect(C);
   const out = await setUpRecap();
