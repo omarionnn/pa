@@ -280,6 +280,8 @@ const TABLES = [
   "plaid_items", "plaid_accounts", "plaid_transactions", "plaid_links", "plaid_reads", "plaid_pay_checks",
   // and that they asked to connect while connections were full (to be told when there is room).
   "plaid_waits",
+  // Which of their check-ins they said may read their bank, with the words they were asked and when (src/bankgrant.js).
+  "bank_checkin_grants",
 ];
 
 /**

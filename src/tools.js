@@ -86,7 +86,8 @@ import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } fr
 import { TABLE_TOOL_DEFS, TABLE_SCHEMAS, tableToolVisible, runTableTool } from "./tableimage.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
 import { FOOD_TOOL_DEFS, FOOD_SCHEMAS, foodToolVisible, runFoodTool, foodOn } from "./food.js";
-import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool } from "./plaid.js";
+import { PLAID_TOOL_DEFS, PLAID_SCHEMAS, plaidToolVisible, runPlaidTool, hasBank as plaidHasBank, plaidOn } from "./plaid.js";
+import * as bankgrant from "./bankgrant.js";
 import { offerSaveLink, forgetSite, savedLoginsAllowedFor as saveLinkAllowedFor, OFFER_SENTENCE, rememberSigninRoute, savedLoginRoute, domainsOf, saveOfferFor } from "./loginintake.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import { ACCOUNT_JOB_TOOL_DEFS, ACCOUNT_JOB_SCHEMAS, ACCOUNT_JOB_TOOLS, ACCOUNT_JOB_REFUSAL, accountJobToolVisible, accountCancelTarget, runAccountJobTool, BROWSER_CANCEL_TOOLS, BROWSER_CANCEL_REFUSAL, browserCancelToolVisible, signinLinkRefusal, accountJobWords, ACCOUNT_CANCEL_GATE } from "./accountjobtools.js";
@@ -9894,6 +9895,13 @@ async function runToolInner(name, rawInput, ctx) {
     };
   }
 
+  // A check-in's firing that has read their bank (src/bankgrant.js): what it read goes only into the
+  // reply to them, so nothing that reaches out of this machine runs after it on that turn. The same
+  // allowlist as the harm screen's: a tool added later is held by default.
+  if (bankgrant.readThisTurn(ctx) && name !== "bank" && !SAFE_WHILE_SCREENED.has(name)) {
+    return { ok: false, blocked: "bank_read", error: "Not on this turn: it read their bank for their check-in, so nothing else goes out from it. Put what they need in your reply to them." };
+  }
+
   // A call's brief is never refused for being long (call 66/67, 2026-11-01: a 700-character goal
   // failed "at most 600", the turn retried, and the retry raced a second turn into a second call).
   // The overflow moves into facts, where the call still has every word of it.
@@ -10343,8 +10351,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (started.ok && !label) queueTitle("series", c, started.series?.series_id, input.note, { name: me.name });
         trust.ledgerWrite({ conversationId: c, action: "series_set", input, out: started, target: String(input.note).slice(0, 120) });
         if (!started.ok) return started;
+        // About their money, with a bank connected: asked in this same reply, in fixed words (src/bankgrant.js).
+        const askBank = callGoal ? null : bankgrant.askAtSetup(c, `series:${started.series?.series_id}`, input.note, { kind: ctx.kind ?? "event", bankConnected: plaidOn(c) && plaidHasBank(c) });
         return {
           ok: true, series: started.series, first: started.first, timer_id: started.timer_id,
+          ...(askBank ? { ask_bank: askBank, ask_bank_note: "End your reply with ask_bank word for word, on its own line. When they answer it, call bank checkin_answer." } : {}),
           say_back: callGoal
             ? `Say the schedule back to them ONCE, in their words, as a call: "${started.series.schedule}, i'll ring you". Then leave it — no list, no explanation of how it works.`
             : `Say the schedule back to them ONCE, in their words, with what it is about: "${started.series.schedule}, i'll ask ${started.series.what}". Then leave it — no list, no explanation of how it works.`,
@@ -10388,8 +10399,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const label = normTitle(input.title, { name: me.name });
       const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal, label, chainedFrom });
       if (!label) queueTitle("timer", c, made.id, input.note, { name: me.name });
+      const askBank = callGoal || chainedFrom != null ? null : bankgrant.askAtSetup(c, `timer:${made.id}`, input.note, { kind: ctx.kind ?? "event", bankConnected: plaidOn(c) && plaidHasBank(c) });
       return {
         ok: true, timer: timerView(made),
+        ...(askBank ? { ask_bank: askBank, ask_bank_note: "End your reply with ask_bank word for word, on its own line. When they answer it, call bank checkin_answer." } : {}),
         ...(chainedFrom != null ? {
           repeating: true, ...(replaced ? { replaced_timer: replaced } : {}),
           note: `Set from a firing, so this is a repeating check you keep going yourself. It counts toward their limit on repeating things, its firings are quiet unless something is new, and cancelling it stops it. Say nothing about setting it.`,
@@ -10402,6 +10415,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "timer_cancel": {
       const r = db.cancelTimer(c, input.timer_id);
       if (!r.ok) return r;
+      // A one-off's or a chain's permission to read their bank goes with it (src/bankgrant.js).
+      bankgrant.revokeForTimer(c, r.timer);
       // One firing of a standing check-in, skipped. The series is untouched and comes round again,
       // and saying so here is what stops "cancel the monday one" being reported as stopping the lot.
       const standing = r.timer.series_id ? db.seriesById(r.timer.series_id) : null;
@@ -10439,6 +10454,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "series_end": {
       const r = series.end({ conversationId: c, seriesId: input.series_id, why: input.why ?? null });
+      if (r.ok) bankgrant.revoke(c, `series:${input.series_id}`);
       trust.ledgerWrite({ conversationId: c, action: "series_end", input, out: r, target: `series:${input.series_id}` });
       return r;
     }
@@ -12750,11 +12766,41 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
 
     // ---------- their bank, read-only (src/plaid.js, REASON_PLAID) ----------
-    case "bank":
+    case "bank": {
+      // A check-in's permission (src/bankgrant.js): given or refused only by their own typed answer to
+      // Reason's fixed ask, on their own turn; taken back by them. Never by anything the model read.
+      if (input.action === "checkin_answer") {
+        if (!plaidOn(c)) return { ok: false, error: "Not available." };
+        return bankgrant.answer(c, { answer: input.answer, kind: ctx.kind ?? "event", onCall: !!ctx.onCall, messages: ctx.messages ?? [],
+          standingWordsOf: (key) => { const [k, id] = String(key).split(":"); return k === "series" ? String(db.getSeries(c, Number(id))?.what ?? "") : String(db.getTimer(c, Number(id))?.note ?? ""); } });
+      }
+      if (input.action === "checkin_stop") {
+        if ((ctx.kind ?? "event") !== "user") return bankgrant.NOT_ASKED_RESULT;
+        const granted = bankgrant.grantsOf(c).filter(g => g.state === "granted");
+        const key = input.series_id != null ? `series:${input.series_id}` : input.timer_id != null ? (bankgrant.standingOf(c, input.timer_id)?.key ?? `timer:${input.timer_id}`) : granted.length === 1 ? granted[0].standing : input.all ? "*" : null;
+        if (!key) return granted.length ? { ok: false, error: "which_checkin", checkins: granted.map(g => g.standing), say: "Nothing was changed. Ask in one line which check-in, or whether they mean all of them (all: true)." } : { ok: true, removed: 0, say: "No check-in reads their bank. Say so in one line." };
+        const n = key === "*" ? bankgrant.revokeAll(c) : bankgrant.revoke(c, key);
+        return n ? { ok: true, removed: n, say_exactly: bankgrant.STOPPED } : { ok: true, removed: 0, say: "That check-in doesn't read their bank. Say so in one line." };
+      }
       // Only on a turn they started with their own words (a text, or their own call): an email, a
-      // timer or the nightly review never reads their bank or sends a connect link.
-      if ((ctx.kind ?? "event") !== "user") return { ok: false, error: "not_asked", say: "Their bank is only read when they ask, in their own message. Say nothing about their bank or money now." };
+      // timer or the nightly review never reads their bank or sends a connect link. The one exception
+      // is the firing of a check-in they said yes to (src/bankgrant.js): the timer's id is code's
+      // (ctx.fromTimer, src/runtime.js), and the grant only covers its own read-only actions.
+      if ((ctx.kind ?? "event") !== "user") {
+        const may = bankgrant.firingRead(c, ctx, input);
+        if (!may.ok) return may;
+        const out = await runPlaidTool(name, may.input, { conversationId: c });
+        if (out?.ok === false) {
+          bankgrant.oweLine(ctx.fromTimer, bankgrant.failedLine(out));
+          return { ok: false, error: out.error, say_exactly: bankgrant.failedLine(out),
+            note: `Your reply is say_exactly as it is (start it with ${series.SEND_MARK}), and nothing else: no number, no guess, no offer to try again.` };
+        }
+        // From here on this turn reaches nobody else: what was read goes only into the reply to them.
+        bankgrant.markRead(ctx);
+        return { ...out, checkin_read: true, note: "Read for this check-in, which they said may read their bank. It goes only in your reply to them: never in a message to anyone else, a page, an email, a card, a memory or a search." };
+      }
       return await runPlaidTool(name, input, { conversationId: c });
+    }
 
     // ---------- saved logins: the save link (src/loginintake.js, REASON_SAVED_LOGINS) ----------
     // Code decides whether a link may exist and pins the sign-in page from its own visit; the result is
