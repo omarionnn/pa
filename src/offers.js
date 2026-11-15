@@ -693,6 +693,32 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       for (const p of pcts) { const part = Math.round(a * p); worked.add(part); worked.add(a + part); worked.add(a - part); for (let k = 2; k <= 10; k++) worked.add(Math.round((a + part) / k)); }
       for (const b of settled) { worked.add(a + b); if (a > b) worked.add(a - b); }
     }
+    // A total of several known figures ("that comes to $261.95" over six receipts) is arithmetic too:
+    // the sum of them all and each running subtotal in the order they stand, bounded at one value each.
+    let run = 0;
+    for (const a of settled.slice(0, 40)) worked.add(run += a);
+    // Receipts they sent on earlier turns are known but not restated in the reply, so they are no base
+    // above: a grand total or a per-store subtotal of them was sent back as nothing-backs. Each recent
+    // thing they said or sent (the last day, not memory) counts once, by its largest amount (a
+    // receipt's total). Up to 8 of them: every subset sum (≤255 values), so any grouping by store
+    // stands. Up to 12: contiguous runs and pairs only. Never every amount on every receipt summed.
+    const seenText = new Set();
+    const totals = theirs.filter(s => s.kind !== "memory" && now - s.at < DAY && s.amounts.size && !seenText.has(s.text) && seenText.add(s.text))
+      .sort((x, y) => x.at - y.at).slice(-12).map(s => Math.max(...s.amounts));
+    if (totals.length >= 2) {
+      if (totals.length <= 8) {
+        for (let mask = 1; mask < 1 << totals.length; mask++) {
+          let sum = 0;
+          for (let i = 0; i < totals.length; i++) if (mask & (1 << i)) sum += totals[i];
+          worked.add(sum);
+        }
+      } else {
+        for (let i = 0; i < totals.length; i++) {
+          let sum = 0;
+          for (let j = i; j < totals.length; j++) { worked.add(sum += totals[j]); if (j > i) worked.add(totals[i] + totals[j]); }
+        }
+      }
+    }
     for (const f of loose) if (!figureKnown(f.fig, f.cents, worked, { approx: false })) unchecked.push(f.fig);
     if (unchecked.length) {
       flags.push({ rule: "dollar_unsourced", figures: unchecked });

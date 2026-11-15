@@ -415,3 +415,23 @@ test("review 11-07: an unchecked $1 left in the rewrite drops its sentence, not 
   assert.deepEqual(g.flags.find(f => f.rule === "dollar_dropped")?.figures, ["$1"]);
   assert.equal(g.text, "the tv's $1,299 at best buy.");
 });
+
+// A person sends several receipt photos over a few turns and asks for the total. The receipts are
+// theirs, but none is restated in the reply, so their grand total and per-store subtotals were sent
+// back as figures nothing backs. They are arithmetic on what they sent; an invented figure is not.
+test("the total of several receipts they sent, and per-store subtotals of them, are worked out; an invented figure is not", () => {
+  const receipts = [["Store A", "38.00", "2.10", "40.10"], ["Store B", "8.50", "0.50", "9.00"], ["Store C", "95.00", "6.19", "101.19"],
+    ["Store A", "24.00", "1.45", "25.45"], ["Store B", "5.90", "0.31", "6.21"], ["Store C", "75.00", "5.00", "80.00"]];
+  receipts.forEach(([store, sub, tax, total], i) => db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, description, description_from, at)
+    VALUES (?, 'test', ?, 0, 'image', 'looked', ?, 'photo', ?)`).run(C, `rcpt-${i}`, `A receipt from ${store}. Words in it, verbatim:\nSubtotal $${sub}\nTax $${tax}\nTotal $${total}`, clock.now() - (30 - i * 4) * 60_000));
+  offers.beginTurn(C, "what's the total of all of them");
+  const g = offers.guardReply(C, "All six come to $261.95: Store A $65.55, Store B $15.21, Store C $181.19.");
+  assert.equal(g.flags.find(f => f.rule === "dollar_unsourced"), undefined, JSON.stringify(g.flags));
+  assert.equal(g.recompose, null);
+  offers.beginTurn(C, "what's the total of all of them");
+  const bad = offers.guardReply(C, "All six come to $212.37.");
+  assert.deepEqual(bad.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$212.37"], JSON.stringify(bad.flags));
+  offers.beginTurn(C, "what's the total of all of them");
+  const listed = offers.guardReply(C, "$40.10 + $9.00 + $101.19 + $25.45 + $6.21 + $80.00 = $261.95");
+  assert.equal(listed.recompose, null, JSON.stringify(listed.flags));
+});
