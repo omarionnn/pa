@@ -243,6 +243,7 @@ test("fired with no answer yet: code sends the one ask line, the bank is not rea
   await connect(C);
   // Set up before a bank question existed (no ask at set-up, the way the existing recap was made).
   const s = series.start({ conversationId: C, what: "recap of my day's transactions", repeat: daily });
+  db.markOrigin("series", C, s.series.series_id, "self"); // set by them, on their own turn
   let seen = null;
   const { runtime, fake } = harness(async (call) => { seen = await runTool("bank", { action: "balance" }, call); return "NO_REPLY"; });
   const before = balanceCalls() + fx.callsTo("/transactions/sync").length;
@@ -447,7 +448,8 @@ test("a bank connected after the yes is not covered: no read until a new yes", a
 
 test("a mixed check-in: the ask goes after the turn's own reply, so it is the last thing they see", async () => {
   await connect(C);
-  series.start({ conversationId: C, what: "recap my calendar and my spending today", repeat: daily });
+  const mixed = series.start({ conversationId: C, what: "recap my calendar and my spending today", repeat: daily });
+  db.markOrigin("series", C, mixed.series.series_id, "self");
   const { runtime, fake } = harness(async () => `${series.SEND_MARK} two meetings tomorrow`);
   clock.skip(12 * HOUR);
   await runtime.sweep();
@@ -463,4 +465,83 @@ test("A's grant never reads B's bank, and B's check-in is asked on its own", asy
   const tb = db.listTimers(A).find(t => t.series_id === sb.series.series_id);
   assert.equal((await runTool("bank", { action: "balance" }, { conversationId: A, kind: "event", fromTimer: tb.id, turnActs: [] })).error, "not_asked");
   assert.equal((await runTool("bank", { action: "balance" }, { conversationId: A, kind: "event", fromTimer: firingOf(sid).id, turnActs: [] })).ok, false);
+});
+
+// ---------------------------------------------------------------- tightening (2026-11-14)
+test("after a bank read, every tool that writes anything lasting is refused: memory, places, notes, lists, tasks, pages, consents", async () => {
+  const sid = await granted();
+  const turnActs = [];
+  const ctx = { conversationId: C, kind: "event", fromTimer: firingOf(sid).id, turnActs };
+  assert.equal((await runTool("bank", { action: "balance" }, ctx)).ok, true);
+  const tools = await import("../src/tools.js");
+  for (const [name, input] of [
+    ["memory_fix", { id: 1, fact: "balance is 1234" }], ["memory_drop", { id: 1 }], ["forget", { about: "x" }], ["set_place", { name: "bank", address: "x" }],
+    ["let_go", { what: "x" }], ["undo_send", {}], ["permission_revoke", { id: 1 }], ["react", { emoji: "👍" }], ["meal_log_consent", { choice: "yes" }],
+    ["pause_everything", {}], ["resume_everything", {}], ["remember", { about: "money", fact: "balance 1234" }], ["task_start", { title: "x" }],
+    ["timer_set", { note: "x", fire_at: new Date(clock.now() + HOUR).toISOString() }], ["page_create", { title: "x", body: "1234" }], ["document_create", { title: "x" }],
+  ]) {
+    const r = await runTool(name, input, ctx);
+    assert.equal(r.blocked, "bank_read", name);
+  }
+  // Read-only helpers still answer.
+  assert.notEqual((await runTool("timer_list", {}, ctx)).blocked, "bank_read");
+  assert.notEqual((await runTool("memory_search", { query: "x" }, ctx)).blocked, "bank_read");
+  // The list is explicit, and holds nothing the harm screen's own list does not.
+  for (const n of bankgrant.AFTER_READ_ALLOWED) assert.ok(n === "bank" || tools.SAFE_WHILE_SCREENED.has(n), n);
+  for (const n of ["memory_fix", "memory_drop", "forget", "set_place", "let_go", "undo_send", "permission_revoke", "react", "meal_log_consent", "pause_everything", "resume_everything"]) {
+    assert.equal(bankgrant.AFTER_READ_ALLOWED.has(n), false, n);
+  }
+});
+
+test("a check-in made on an event turn (an email, a page, a task, a call) never asks and never reads; it says once that it can't", async () => {
+  await connect(C);
+  // Set on an event turn: no ask at set-up, no origin.
+  const ev = await runTool("timer_set", { note: "recap of my spending today", repeat: daily }, { conversationId: C, kind: "event", messages: [] });
+  assert.equal(ev.ok, true, JSON.stringify(ev));
+  assert.equal(ev.ask_bank, undefined);
+  assert.equal(db.seriesById(ev.series.series_id).origin, null);
+  const call = await runTool("timer_set", { note: "weekly spending summary", repeat: daily }, { conversationId: C, kind: "user", onCall: true, messages: [] });
+  assert.equal(db.seriesById(call.series.series_id).origin, null, "a call is not their typed turn");
+  db.rawPrepare("UPDATE series SET state = 'ended' WHERE id = ?").run(call.series.series_id);
+  db.rawPrepare("UPDATE timers SET cancelled_at = ? WHERE series_id = ?").run(clock.now(), call.series.series_id);
+  let seen = null;
+  const { runtime, fake } = harness(async (c) => { seen = await runTool("bank", { action: "balance" }, c); return "NO_REPLY"; });
+  const before = balanceCalls();
+  clock.skip(12 * HOUR);
+  await runtime.sweep();
+  assert.deepEqual(seen, bankgrant.NOT_ASKED_RESULT, "refused exactly as before (#568)");
+  assert.equal(balanceCalls(), before, "Plaid was not asked");
+  const line = bankgrant.notOwnLine("recap of my spending today");
+  assert.deepEqual(sentTexts(fake), [line], "not silent: the one honest line");
+  assert.doesNotMatch(line, /OK to|want me to|try again/i, "no ask, no offer");
+  // A yes now (the model says the ask's words itself) grants nothing.
+  const key = `series:${ev.series.series_id}`;
+  const r = await runTool("bank", { action: "checkin_answer", answer: "yes" }, { conversationId: C, kind: "user", messages: thread(line, `${stamp} Omari: yes`) });
+  assert.equal(r.ok, false);
+  bankgrant.noteAsked(C, key, bankgrant.askFiredLine("recap of my spending today"), { kind: "fired", standingWords: "recap of my spending today" });
+  assert.equal(bankgrant.grantOf(C, key).state, "not_own", "an ask is never recorded over it");
+  // The next day: still refused, and quiet (said once).
+  clock.skip(DAY);
+  await runtime.sweep();
+  assert.deepEqual(sentTexts(fake), [line]);
+  assert.deepEqual(seen, bankgrant.NOT_ASKED_RESULT);
+});
+
+test("a check-in from before origins were kept is not theirs, except one the owner's CLI granted; a self-made one is unchanged", async () => {
+  await connect(C);
+  const old = series.start({ conversationId: C, what: "recap of my day's transactions", repeat: daily });
+  const oldTimer = firingOf(old.series.series_id);
+  assert.equal((await runTool("bank", { action: "balance" }, { conversationId: C, kind: "event", fromTimer: oldTimer.id, turnActs: [] })).error, "not_asked");
+  assert.equal(bankgrant.askAtFire(C, oldTimer, { bankConnected: true }).kind, "not_own");
+  // The owner's CLI grant on the operator's own (origin unknown) check-in stands.
+  assert.equal(cli.run(["--series", String(old.series.series_id), "--apply"]).ok, true);
+  assert.equal((await runTool("bank", { action: "balance" }, { conversationId: C, kind: "event", fromTimer: oldTimer.id, turnActs: [] })).ok, true);
+  assert.equal(bankgrant.askAtFire(C, oldTimer, { bankConnected: true }), null);
+  // Set by them on their own typed turn: marked, asked, and granted by their yes as before.
+  const mine = await setUpRecap(C, "tell me what i spent today");
+  assert.equal(db.seriesById(mine.series.series_id).origin, "self");
+  assert.equal(mine.ask_bank, bankgrant.askSetupLine("tell me what i spent today"));
+  const yes = await runTool("bank", { action: "checkin_answer", answer: "yes" }, { conversationId: C, kind: "user", messages: thread(mine.ask_bank, `${stamp} Omari: yes`) });
+  assert.equal(yes.ok, true, JSON.stringify(yes));
+  assert.equal((await runTool("bank", { action: "balance" }, { conversationId: C, kind: "event", fromTimer: firingOf(mine.series.series_id).id, turnActs: [] })).ok, true);
 });

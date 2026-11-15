@@ -1973,6 +1973,16 @@ addColumnIfMissing("timers", "chained_from", "INTEGER");
 // anything could fire it (a pause, a lapse, a stopped process). Why, in a word, for the record.
 addColumnIfMissing("timers", "skipped_why", "TEXT");
 addColumnIfMissing("series", "call_goal", "TEXT");
+// How a timer or a series came to be (src/bankgrant.js): 'self' = the person set it themselves on their
+// own typed turn in their own thread. NULL is anything else, and every row from before the column:
+// unknown is never treated as theirs. Only a 'self' check-in may ask to read their bank.
+addColumnIfMissing("timers", "origin", "TEXT");
+addColumnIfMissing("series", "origin", "TEXT");
+/** Marks a timer or series the person set themselves (tools.js timer_set on their own typed turn). */
+export function markOrigin(table, conversationId, id, origin) {
+  if (!["timers", "series"].includes(table) || id == null) return 0;
+  return db.prepare(`UPDATE ${table} SET origin = ? WHERE conversation_id = ? AND id = ?`).run(String(origin), conversationId, Number(id)).changes;
+}
 addColumnIfMissing("calls", "timer_id", "INTEGER");
 // The one text a scheduled call that reached nobody is owed, stamped so it goes exactly once
 // whichever settle path (webhook, call_status, the lost-calls sweep) found out how the call ended.
