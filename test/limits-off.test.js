@@ -179,3 +179,42 @@ test("voice: the free tier's 2 calls a month still count and still gate; what th
   assert.match(v.note, /20 conversations and 2 calls a month/);
   assert.doesNotMatch(JSON.stringify(v), /minutes each|up to 5/);
 });
+
+// Review 2026-11-15: freeForGood is exactly "the plan says free for good" (or the owner), on every way in
+// and every way not in, so no monthly-free or paying account reads as uncapped and no invited one as capped.
+test("review: freeForGood on every way in matches the plan's own 'free', and nobody else", () => {
+  const add = (c, n) => { db.upsertAccount({ conversationId: c, channel: "fake", address: n, name: "Kit", isOperator: false }); return c; };
+  const ship = plan.shipTs();
+  const viaFreeTier = add("dm:fake:+13475550011", "+13475550011");   // invited by somebody on the monthly free tier
+  db.db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(FREE, viaFreeTier);
+  const viaInvitee = add("dm:fake:+13475550012", "+13475550012");    // invited by the owner's invitee: free down the chain
+  db.db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(INVITED, viaInvitee);
+  const early = add("dm:fake:+13475550013", "+13475550013");         // here before the paywall
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(ship - 86_400_000, early);
+  const byHand = add("dm:fake:+13475550014", "+13475550014");        // made free by hand
+  db.db.prepare("INSERT INTO plan (conversation_id, status, first_seen_at, updated_at) VALUES (?, 'free', ?, ?)").run(byHand, clock.now(), clock.now());
+  const tester = add("dm:fake:+13475550015", "+13475550015");        // a test number
+  const lapsedPaid = add("dm:fake:+13475550016", "+13475550016");    // cancelled after paying
+  db.db.prepare("INSERT INTO plan (conversation_id, status, first_seen_at, updated_at) VALUES (?, 'cancelled', ?, ?)").run(lapsedPaid, clock.now(), clock.now());
+  for (const c of [FREE, PAID, viaFreeTier, viaInvitee, byHand, tester, lapsedPaid]) db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(ship + 1000, c);
+  const was = config.testNumbers;
+  config.testNumbers = ["+13475550015"];
+  try {
+    const want = { [OWNER]: true, [INVITED]: true, [viaInvitee]: true, [early]: true, [byHand]: true, [tester]: true, [FREE]: false, [PAID]: false, [viaFreeTier]: false, [lapsedPaid]: false };
+    for (const [c, yes] of Object.entries(want)) {
+      assert.equal(plan.freeForGood(c), yes, c);
+      if (c !== OWNER) assert.equal(plan.status(c).status === "free", yes, `${c}: the plan's own word agrees`);
+    }
+    assert.equal(plan.freeForGood(""), false);
+    assert.equal(plan.freeForGood("dm:fake:+19995550000"), false, "no account: capped");
+  } finally { config.testNumbers = was; }
+});
+
+test("review: nobody else's call changed, and nothing a stranger hears still says 5 minutes", async () => {
+  for (const c of [OWNER, INVITED, PAID]) assert.equal(plan.callLimitSeconds(c), null, c);
+  for (const c of [OWNER, INVITED, PAID, FREE]) assert.equal(trial.cartesiaTrialFor({ conversation_id: c, is_owner: 1 }), true, c);
+  const { PUBLIC_FACTS } = await import("../src/calls/stranger.js");
+  const price = PUBLIC_FACTS.find(l => /^Price/.test(l));
+  assert.match(price, /20 conversations and 2 calls free every month/);
+  assert.doesNotMatch(PUBLIC_FACTS.join(" "), /\b5 minutes\b|five minutes/);
+});

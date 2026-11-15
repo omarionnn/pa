@@ -1085,12 +1085,53 @@ test("the trial's cap: checked before a link is made, counting every bank ever c
   });
 });
 
-test("links open right now hold a slot: two people cannot both take the last one; asking again for your own fresh link is fine", async () => {
+test("links open right now hold a slot: two people cannot both take the last one; asking again at the last slot keeps your own link", async () => {
   await limits(2, async () => {
     await connect(A);
     assert.equal((await bank(B, { action: "connect" })).ok, true, "the last slot, B's link open");
     assert.equal((await bank(A, { action: "connect" })).error, "connections_full", "A cannot take the slot B's open link holds");
-    assert.equal((await bank(B, { action: "connect" })).ok, true, "B's fresh link replaces B's own open one");
+    // B's first link still works and is B's place: a second would let two Items in where there is room for one.
+    const again = await bank(B, { action: "connect" });
+    assert.equal(again.error, "link_open");
+    assert.match(again.say_exactly, /still works for about 30 more minutes/);
+    assert.equal(raw("SELECT COUNT(*) AS n FROM plaid_links WHERE conversation_id = ?", B)[0].n, 1, "no second link made");
+    assert.equal(raw("SELECT COUNT(*) AS n FROM plaid_waits WHERE conversation_id = ?", B)[0].n, 0, "B is not waiting: B has a working link");
+  });
+});
+
+test("review 11-15: one person cannot hold the plan's places with links never finished, and links made never add up past the plan", async () => {
+  await limits(20, async () => {
+    await connect("dm:owner");
+    // A asks again and again and finishes none: two open at most, the rest are refused before Plaid is asked.
+    const made = fx.state.links.size;
+    const outs = [];
+    for (let i = 0; i < 19; i++) outs.push(await bank(A, { action: "connect" }));
+    assert.equal(outs.filter(o => o.ok).length, plaid.OPEN_LINKS_PER_PERSON);
+    assert.ok(outs.slice(plaid.OPEN_LINKS_PER_PERSON).every(o => o.error === "link_open" && /still works/.test(o.say_exactly)), JSON.stringify(outs.at(-1)));
+    assert.equal(fx.state.links.size - made, plaid.OPEN_LINKS_PER_PERSON, "no link token made for a refused ask");
+    // Everybody else still has room.
+    assert.equal((await bank(B, { action: "connect" })).ok, true, "B is not locked out");
+    assert.equal(raw("SELECT COUNT(*) AS n FROM ops_digest WHERE key = 'plaid:connections_full'")[0].n, 0, "nobody was turned away");
+  });
+  // Once A's links run out, A may ask again.
+  clock.skip(31 * 60_000);
+  try {
+    await limits(20, async () => { assert.equal((await bank(A, { action: "connect" })).ok, true); });
+  } finally { clock.skip(-31 * 60_000); }
+  // No per-person bank limit: links that finish free their place, so the same person connects more.
+  d.db.exec("DELETE FROM plaid_links");
+  await limits(20, async () => {
+    for (let i = 0; i < 5; i++) await connect(A, { institution: `More ${i}`, mask: `90${i}1` });
+    assert.equal(plaid.itemsOf(A).length, 5);
+  });
+  // Near the total, own open links count: used + every open link never passes the plan.
+  d.db.exec("DELETE FROM plaid_links");
+  await limits(plaid.slotsUsed() + 2, async () => {
+    assert.equal((await bank(A, { action: "connect" })).ok, true);
+    assert.equal((await bank(A, { action: "connect" })).ok, true, "the second open link takes the last place");
+    assert.equal((await bank(B, { action: "connect" })).error, "connections_full");
+    const open = raw("SELECT COUNT(*) AS n FROM plaid_links WHERE item_id = '' AND finished_at IS NULL")[0].n;
+    assert.ok(plaid.slotsUsed() + open <= config.plaidPlanItems, `${plaid.slotsUsed()} + ${open} > ${config.plaidPlanItems}`);
   });
 });
 

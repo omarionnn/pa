@@ -270,10 +270,27 @@ const openLinks = (exceptC = "") => Number(q("SELECT COUNT(*) AS n FROM plaid_li
 export const FULL_WORDS = "i can't connect a new bank right now: reason has used every bank connection its current plan allows. that's a limit for everyone, not just you. i'll text you as soon as there's room";
 /** The owner's line in the daily digest (src/opsdigest.js) when somebody was turned away: numbers only. */
 export const FULL_OWNER_LINE = (used, cap) => `Plaid: somebody asked to connect a bank and was told connections are full (${used} of ${cap} bank connections on the plan used). They are texted once there is room: raise REASON_PLAID_PLAN_ITEMS after raising the Plaid plan.`;
-/** May `c` connect one more bank now? A fresh link of theirs replaces their own open one, so that is not counted. */
+/**
+ * New-bank links one person may have open (made, not finished, not expired) at once. Not a limit on
+ * banks: each one that finishes frees its place, so anybody can connect as many as the plan has room
+ * for. It stops one person holding the plan's last places with links they never finish (review
+ * 2026-11-15: 19 untouched links locked everybody else out for 30 minutes at a time).
+ */
+export const OPEN_LINKS_PER_PERSON = 2;
+/** This person's own open new-bank links, newest first. */
+const ownLinks = (c) => q("SELECT expires_at FROM plaid_links WHERE item_id = '' AND finished_at IS NULL AND expires_at > ? AND conversation_id = ? ORDER BY expires_at DESC").all(clock.now(), c);
+const minutesLeft = (links) => Math.max(1, Math.ceil((Number(links[0]?.expires_at ?? 0) - clock.now()) / 60_000));
+/** Said when they already have a link open that still works, instead of making another. */
+export const LINK_OPEN_WORDS = (minutes) => `the bank link i already sent you still works for about ${minutes} more minute${minutes === 1 ? "" : "s"}, so use that one. if it runs out before you're done, ask me and i'll send a fresh one`;
+/**
+ * May `c` connect one more bank now? Every open link counts toward the plan's total, their own too: each
+ * may become an Item, so links made can never add up to more than the plan has room for.
+ */
 export function connectRoom(c) {
-  const cap = config.plaidPlanItems, used = slotsUsed();
-  if (used + openLinks(c) + 1 > cap) return { ok: false, why: "full", used, cap };
+  const cap = config.plaidPlanItems, used = slotsUsed(), mine = ownLinks(c);
+  if (mine.length >= OPEN_LINKS_PER_PERSON) return { ok: false, why: "link_open", used, cap, minutes: minutesLeft(mine) };
+  // At the plan's last place with a link of theirs open: that link is their place.
+  if (used + openLinks(c) + mine.length + 1 > cap) return mine.length ? { ok: false, why: "link_open", used, cap, minutes: minutesLeft(mine) } : { ok: false, why: "full", used, cap };
   return { ok: true, used, cap };
 }
 const wait = (c) => q("INSERT INTO plaid_waits (conversation_id, asked_at) VALUES (?, ?) ON CONFLICT (conversation_id) DO UPDATE SET asked_at = excluded.asked_at, told_at = NULL").run(c, clock.now());
@@ -304,6 +321,8 @@ const firstTime = (c) => slotsOf(c) === 0 && !q("SELECT 1 FROM plaid_items WHERE
 export async function createLink(c, { itemId = "" } = {}) {
   if (!itemId) {
     const room = connectRoom(c);
+    // Their own link still open: nobody was turned away, so no waiting and no line for the owner.
+    if (room.why === "link_open") { logFn({ plaid_link_still_open: true, minutes: room.minutes }); return { ok: false, error: "link_open", minutes: room.minutes }; }
     if (!room.ok) {
       wait(c); logFn({ plaid_connect_refused: room.why, used: room.used, cap: room.cap });
       // The owner hears it in the next daily digest, one line however many asked (keyed); the plan
@@ -1037,6 +1056,9 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
         const target = pickBank(c, mine, input.bank) ?? (stale.length === 1 && !input.bank ? stale[0] : null);
         const first = !target && firstTime(c);
         const link = target ? await askReconnect(c, target.itemId, { force: true }) : await createLink(c);
+        if (link.error === "link_open") {
+          return { ok: false, error: link.error, say_exactly: LINK_OPEN_WORDS(link.minutes), say: "No new link was made: their earlier one still works. Send say_exactly as it is, and nothing else about connecting a bank." };
+        }
         if (link.error === "connections_full") {
           return { ok: false, error: link.error, say_exactly: FULL_WORDS, say: "No link was made. Send say_exactly as it is, and nothing else about connecting a bank." };
         }

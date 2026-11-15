@@ -12,10 +12,10 @@ Cartesia `off`, feel `current`, music off, carryover `off`.
   people were not told). `owner` = the operator only, and only after he chose it with `call_voice_trial`;
   `off`/unset = never. GPT-Live carries the call as the automatic fall-back (agent not ready, refused,
   failed: `cartesia.js` `fallBack`, Twilio stream handed over by `passableSocket`).
-- **Monthly free-tier callers stay on GPT-Live** with a 5-minute limit (`src/plan.js` `callLimitSeconds`,
-  `FREE_CALL_SECONDS` = `REASON_FREE_CALL_MINUTES` default 5) and a wrap-up cue 30 s before the end
-  (`FREE_CALL_GRACE_SECONDS`): GPT-Live is told "Time check: this is a free call…", the line closes at
-  5:00 with `endWhy="free_call_limit"` (`src/calls/gptlive.js:1964`). Paying, free-for-good, the operator,
+- **Monthly free-tier callers are on Cartesia too, with no cut** (owner, 2026-11-15): `FREE_CALL_SECONDS` is null
+  unless `REASON_FREE_CALL_MINUTES` sets one (unset live). With it set, those calls go back to GPT-Live with that
+  limit and a wrap-up cue 30 s before the end (`FREE_CALL_GRACE_SECONDS`), the line closing with
+  `endWhy="free_call_limit"` (`src/calls/gptlive.js`). The 2 calls a month still count and gate. Paying, free-for-good, the operator,
   strangers and errand calls: no limit. Every Cartesia call has the same platform ceiling as GPT-Live
   (`callPlatformCapSeconds`, `cartesia.js:550`).
 - **Classic feel** (`REASON_CALL_FEEL=classic`, `src/calls/callclassic.js`, 07bc056b #574): every
@@ -47,8 +47,7 @@ Cartesia `off`, feel `current`, music off, carryover `off`.
 
 ## How to get to it (user POV)
 Call Reason's number from your own phone, or text "call me" / set a scheduled call. A paying or
-free-for-good account hears the Cartesia voice; a monthly free-tier account hears GPT-Live, which wraps
-up in a sentence or two about 30 s before the line closes at 5 minutes and says the rest goes by text. Ask for a lookup ("what's the weather")
+free-for-good account and a monthly free-tier account both hear the Cartesia voice, with no 5-minute cut. Ask for a lookup ("what's the weather")
 and soft music plays while it runs. Ring back within half an hour and the opening picks up from the last call.
 
 ## Driving it with the harness
@@ -64,7 +63,7 @@ No-model probe (routing matrix incl. free tier, done-claim words, music delay; t
 
 Live: **paid**. Only a real call proves the voice, the music and the wrap-up cue: one own call on the live
 server (OVH, root@15.204.113.250) from a test phone, ~2–3 min ≈ $0.30–0.50 (Cartesia agent minutes +
-Twilio); a monthly free-tier account's 5-minute GPT-Live call ≈ $1–1.50. Read-only after a call:
+Twilio); a free-tier call is no longer cut, so it is bounded only by the platform ceiling (60 min). Read-only after a call:
 `journalctl -u reason | grep -E 'cartesia_|gptlive_free_call_wrap|free_call_limit'` on that server.
 
 ## Gotchas

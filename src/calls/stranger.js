@@ -42,7 +42,7 @@ export const PUBLIC_FACTS = [
   "It can ring you so you can plan your week out loud together.",
   "Its rules: Face ID before every purchase (no tap, no charge); it confirms before it acts on your behalf (calling, texting, booking); your own calls with it are recorded and it tells you so; calls it makes for you to a business or another person are not audio-recorded; when it calls for you it speaks normally, says it is an AI assistant calling for you the moment anyone asks, and never pretends to be you or to be a person.",
   "Signing up is one text: go to heyreason.com and tap Text Reason. If you're already texting it you can sign in on the web there too.",
-  "Price, as heyreason.com/pricing lists it: free to start, no card needed, with 20 conversations and 2 calls of up to 5 minutes free every month. One plan, $24.99 a month, takes the limits off. You pay with Apple Pay or a card through Stripe, and cancel any time by texting Reason.",
+  "Price: free to start, no card needed, with 20 conversations and 2 calls free every month. One plan, $24.99 a month, takes the limits off. You pay with Apple Pay or a card through Stripe, and cancel any time by texting Reason.",
 ];
 
 /** The prompt behind the call. Nothing in it is about anybody. */
