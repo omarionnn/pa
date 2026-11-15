@@ -32,7 +32,11 @@ import { DELIVERED_STATUSES } from "./outbox.js";
 export const MAX_BYTES = 10 * 1024 * 1024;
 export const FETCH_TIMEOUT_MS = 10_000;
 export const WATCH_MS = 75_000;
-/** The most pictures one person's turns may fetch and keep here in a day: Reason's host is not a mirror. */
+/**
+ * The most pictures one person's turns may fetch and keep here in a day: Reason's host is not a mirror.
+ * Not for the owner or anybody free for good (src/plan.js freeForGood: came in by invite), owner
+ * 2026-11-15: "no cap on their pictures". It still holds for the monthly free tier and paying accounts.
+ */
 export const PICTURES_PER_DAY = 40;
 
 export const FETCH_FAILED_LINE = (link) => `I couldn't send that picture here, so here's the link:\n${link}`;
@@ -87,9 +91,10 @@ async function readCapped(res, max) {
  * Fetch a picture somebody else hosts and keep it on Reason's own host. → { ok: true, url, file, mime,
  * filename, bytes } or { ok: false, why, refused? } (`refused`: an address the guard will not fetch at all).
  */
-export async function rehost({ url, conversationId, fetchImpl = null, timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_BYTES, store = uploads.store }) {
+export async function rehost({ url, conversationId, fetchImpl = null, timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_BYTES, store = uploads.store, capped = true }) {
   // Counted before anything is fetched: past the day's number nothing leaves this machine for it.
-  if (uploads.countSince(conversationId, clock.now() - 24 * 60 * 60_000, (m) => m.public === "picture") >= PICTURES_PER_DAY) {
+  // `capped: false` (the caller's plan.freeForGood) skips the count; every other check below stays.
+  if (capped && uploads.countSince(conversationId, clock.now() - 24 * 60 * 60_000, (m) => m.public === "picture") >= PICTURES_PER_DAY) {
     return { ok: false, limited: true, why: `${PICTURES_PER_DAY} pictures in a day is the most Reason sends from its own copies` };
   }
   const ac = new AbortController();

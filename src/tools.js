@@ -2692,7 +2692,7 @@ export const CAPABILITIES = [
   // Rewritten by capabilitiesNow() from REASON_PAYWALL and this person's own plan row (src/plan.js):
   // absent while the switch is off or for somebody Reason is free for.
   { name: "your_plan", status: "live", what: plan.monthly()
-    ? `Reason's own plan: free each month for ${plan.FREE_CONVERSATIONS} conversations and ${plan.FREE_CALLS} calls (up to ${Math.round(plan.FREE_CALL_SECONDS / 60)} minutes each), unlimited for ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)`
+    ? `Reason's own plan: free each month for ${plan.FREE_CONVERSATIONS} conversations and ${plan.freeCallsWords()}, unlimited for ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)`
     : `Reason's own plan: ${plan.TRIAL_SESSIONS} free sessions, then ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)` },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "github", status: "not connected", what: "GitHub" },
@@ -12154,7 +12154,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const chatId = thread?.chat_id ?? null;
       // Fetched here and kept on Reason's own host first, then sent through the outbox and watched until
       // it arrives (src/pictureout.js). A shop's CDN link is never handed to the provider as it is.
-      const kept = await pictureout.rehost({ url, conversationId: c, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}), ...(ctx.store ? { store: ctx.store } : {}) });
+      // No daily count for the owner or anybody free for good (came in by invite): src/plan.js freeForGood.
+      const kept = await pictureout.rehost({ url, conversationId: c, capped: !plan.freeForGood(c), ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}), ...(ctx.store ? { store: ctx.store } : {}) });
       if (!kept.ok && kept.refused) return { ok: false, refused: true, error: `Not sent: ${kept.why}. Nothing went to them. Don't send this address in any form.` };
       if (!kept.ok) {
         // No picture, and no pretending: the link as text, with a line that says so. Code's words.
@@ -12265,7 +12266,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      // On the free tier a call to them runs up to its 5 minutes (FREE_CALL_SECONDS), goodbye included.
+      // On the free tier, when a cut is set (FREE_CALL_SECONDS), a call to them runs up to it, goodbye included.
       // Only a call to them: an errand call to a business is not cut at 5 (review 2026-11-10).
       const freeCallS = toOwner ? plan.callLimitSeconds(c) : null;
       const maxSeconds = Math.min((input.max_minutes ?? config.callMaxMinutes) * 60, freeCallS || Infinity);
