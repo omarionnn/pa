@@ -100,6 +100,7 @@ import * as cardroutes from "./cardroutes.js";
 import * as rhythms from "./rhythms.js";
 import * as identity from "./identity.js";
 import * as whereabouts from "./whereabouts.js";
+import { factForPrompt } from "./memorynote.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
 import * as goals from "./goals.js";
@@ -509,6 +510,34 @@ const SAVE_LINK_NO = {
 function withWhere(out, note) {
   if (!note || !out || typeof out !== "object" || out.ok === false) return out;
   return { where_from: note, ...out };
+// ---------- saved facts as a tool hands them to the model ----------
+// A fact that names the assistant ("wants the assistant to answer to the name …") says whose name it
+// is (src/memorynote.js factForPrompt, PROFILE_READERS): read bare under their own name, it was taken
+// for theirs. The stored fact, and what their memory page shows, are unchanged.
+
+/** The recall tool's people and facts. */
+function recallResult(c, about) {
+  const own = identity.theirOwnName(c);
+  return db.recall(c, about).map(p => ({
+    about: p.about,
+    facts: p.facts.map(f => ({ fact: factForPrompt(f.fact, own), saved: stamp(f.saved_at) })),
+  }));
+}
+
+/** memory_search's facts, from its hits. */
+function memorySearchFacts(c, hits) {
+  const own = identity.theirOwnName(c);
+  return hits.map(h => {
+    const f = db.getFact(c, h.factId);
+    if (!f) return null;
+    return { id: f.id, about: f.about, fact: factForPrompt(f.fact, own), source: f.source, confidence: f.confidence, score: Math.round(h.score * 100) / 100 };
+  }).filter(Boolean);
+}
+
+/** memory_page's sections as the model reads them (the page blocks are built from the stored words). */
+function memoryPageForModel(c, got) {
+  const own = identity.theirOwnName(c);
+  return { ...got, facts: (got.facts ?? []).map(f => ({ ...f, fact: factForPrompt(f.fact, own) })) };
 }
 
 export function toolsFor(conversationId) {
@@ -11141,10 +11170,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
     case "recall": {
-      const people = db.recall(c, input.about ?? "").map(p => ({
-        about: p.about,
-        facts: p.facts.map(f => ({ fact: f.fact, saved: stamp(f.saved_at) })),
-      }));
+      const people = recallResult(c, input.about ?? "");
       return {
         people, count: people.length,
         note: people.length
@@ -11264,11 +11290,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const { search: memSearch, embed } = await import("./embedding.js");
         const [vector] = await embed(input.query);
         const hits = await memSearch(c, input.query, { limit, minScore: 0.3, vector });
-        const facts = hits.map(h => {
-          const f = db.getFact(c, h.factId);
-          if (!f) return null;
-          return { id: f.id, about: f.about, fact: f.fact, source: f.source, confidence: f.confidence, score: Math.round(h.score * 100) / 100 };
-        }).filter(Boolean);
+        const facts = memorySearchFacts(c, hits);
         const history = recallIndex.searchHistory(c, vector, { limit, minScore: 0.3 });
         const count = facts.length + history.length;
         return {
@@ -11320,7 +11342,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const got = memory.remembered({ conversationId: c });
       return {
         ok: true,
-        ...got,
+        ...memoryPageForModel(c, got),
         page_blocks: memory.pageBlocks(got, { ownerName: me.name }),
         how_to_correct: `Every row has an id. memory_fix changes exactly one of them from their own words; memory_drop`
           + ` deletes one. A standing permission is the exception: taking one back is permission_revoke.`
