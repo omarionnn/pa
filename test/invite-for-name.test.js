@@ -1,7 +1,8 @@
-// An invite made FOR somebody (owner, 2026-11-15): Reason asks once who it's for, the link's card
-// greets them by name, their first hello uses it as the inviter's guess, and "my invites" can say
-// which unused link was for whom. The name is free text that lands on a branded picture and in a
-// stranger's first message, so code owns its shape: anything not plausibly a name is a plain card.
+// An invite made FOR somebody (owner, 2026-11-15): Reason offers once, lightly, to put their friend's
+// name on it; the link's card shows that name, and "my invites" can say which unused link was for
+// whom. That is all the name is for: it never reaches the person who joins (test/onboarding.test.js
+// proves it). It is free text on a branded picture, so code owns its shape: anything not plausibly a
+// name is a plain card.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -62,13 +63,19 @@ test("the name said up front: no question, the link goes out at once, made for t
   assert.equal(db.getInvite(KOFI_C, out.number).for_name, "Dalen");
 });
 
-test("nobody named: asked once, nothing made; the answer makes the link in that same reply", async () => {
+test("nobody named: offered once, lightly, nothing made; the answer makes the link in that same reply", async () => {
   const ask = await tool("invite_link_create", {}, KOFI_C);
   assert.equal(ask.ok, false);
   assert.equal(ask.needs_for, true);
-  assert.equal(ask.needs_name, undefined, "Kofi has a name, so only who it's for is asked");
-  assert.match(ask.error, /ONCE/);
+  assert.equal(ask.needs_name, undefined, "Kofi has a name, so only the offer goes");
+  assert.match(ask.error, /OFFER once, lightly/);
+  assert.match(ask.error, /totally fine if not/, "declining is made to feel normal");
+  assert.match(ask.error, /never a step they must do/);
   assert.match(ask.error, /same reply/);
+  const desc = TOOLS.find(t => t.name === "invite_link_create").description;
+  assert.match(desc, /nice extra, never a step/);
+  assert.match(desc, /totally fine if not/);
+  assert.doesNotMatch(desc + ask.error, /\b(must give|required|need(s)? (the|a) name)\b/i);
   assert.equal(db.listInvites(KOFI_C).length, 0, "nothing minted on the ask");
   const made = await tool("invite_link_create", { for_name: "my sister Ama" }, KOFI_C);
   assert.equal(made.ok, true);
@@ -96,8 +103,9 @@ test("no name of their own either: both asked in ONE message, then the link in t
   const ask = await tool("invite_link_create", {}, AMA_C);
   assert.equal(ask.needs_for, true);
   assert.equal(ask.needs_name, true);
-  assert.match(ask.error, /ONE question/);
-  assert.match(ask.error, /covering both/);
+  assert.match(ask.error, /ONE message/);
+  assert.match(ask.error, /OFFER, lightly/);
+  assert.match(ask.error, /totally fine if not/);
   assert.match(ask.error, /my_name/);
   const named = await tool("my_name", { name: "Ama" }, AMA_C);
   assert.match(named.invite_link, /for_name/);
@@ -110,14 +118,14 @@ test("no name of their own either: both asked in ONE message, then the link in t
 test("several at once: one ask, then a link each with its own name", async () => {
   db.setInvitesEnabled(KOFI_C, { enabled: true, count: 3 });
   const ask = await tool("invite_link_create", {}, KOFI_C);
-  assert.match(ask.error, /one question for all of them/);
+  assert.match(ask.error, /one offer for all of them/);
   const a = await tool("invite_link_create", { for_name: "Dalen" }, KOFI_C);
   const b = await tool("invite_link_create", { for_name: "Esi" }, KOFI_C);
   const c = await tool("invite_link_create", { for_nobody: true }, KOFI_C);
   assert.deepEqual([a.for, b.for, c.for], ["Dalen", "Esi", undefined]);
   assert.equal(new Set([a.link, b.link, c.link]).size, 3);
   const desc = TOOLS.find(t => t.name === "invite_link_create").description;
-  assert.match(desc, /ONE question covering them all, then one call per link/);
+  assert.match(desc, /ONE offer covering them all, then one call per link/);
 });
 
 test("no invites left: said plainly, never a question about who a link that can't be made is for", async () => {
@@ -151,13 +159,12 @@ test("the card greets them by name, escaped, in the existing design; the default
   assert.equal(px(card.inviteCardHtml("Oluwaseun Adebayo-Williams", "Dalen", "C")), 96);
 });
 
-test("hostile names never reach the card or the hello: a plain link, quietly", async () => {
+test("hostile names never reach the card: a plain link, quietly", async () => {
   const plain = card.inviteCardHtml("Kofi");
   for (const bad of HOSTILE) {
     assert.equal(card.cleanInviteeName(bad), "", bad);
     assert.equal(card.inviteCardHtml("Kofi", bad), plain, `plain card for ${bad}`);
     assert.equal(card.inviteCardKey("Kofi", bad), card.inviteCardKey("Kofi"), `plain key for ${bad}`);
-    assert.equal(invites.welcomeLine("Kofi", bad), "You're in, invited by Kofi.");
   }
   db.setInvitesEnabled(KOFI_C, { enabled: true, count: HOSTILE.length });
   for (const bad of HOSTILE) {
@@ -240,7 +247,6 @@ test("my invites says which unused link was for whom, and never who claimed one"
   const b = await tool("invite_link_create", { for_name: "Esi" }, KOFI_C);
   const out = db.redeemInvite({ claimCode: db.getInvite(KOFI_C, b.number).claim_code, channel: "fake", address: "+16465550199", name: "Someone Else" });
   assert.equal(out.ok, true);
-  assert.equal(out.forName, "Esi", "handed to the welcome once");
   const list = await tool("invites_list", {}, KOFI_C);
   const unused = list.links.find(l => l.number === a.number);
   const claimed = list.links.find(l => l.number === b.number);

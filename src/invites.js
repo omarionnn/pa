@@ -270,16 +270,6 @@ export function inviteInText(text) {
   return null;
 }
 
-/**
- * The first line somebody who joined through a link is sent. `guess` is the name the INVITER said
- * the link was for: a hello and nothing more. It is never saved as their name; the first chat asks
- * their name as it always does (src/onboarding.js), and what they say is the name that is kept.
- */
-export function welcomeLine(inviterShown, guess = "") {
-  const hi = cleanInviteeName(guess);
-  return hi ? `Hey ${hi}! You're in, invited by ${inviterShown}.` : `You're in, invited by ${inviterShown}.`;
-}
-
 /** What somebody whose claim did not go through is told. */
 export const ALREADY_CLAIMED = "this invite has already been claimed. ask whoever sent it for a new one.";
 export const CANCELED = "this invite was canceled by the person who sent it. ask them for a new one.";
@@ -307,8 +297,7 @@ export function claimByText({ channel, address, text, name = "" }) {
     conversationId: out.account.conversation_id,
     inviteId: inv.id,
     inviter,
-    welcome: welcomeLine(inviterShown, out.forName),
-    guessedName: cleanInviteeName(out.forName) || null,
+    welcome: `You're in, invited by ${inviterShown}.`,
     // Their name or the end of their number, and nothing else. No word of either conversation
     // crosses in either direction.
     toInviter: `${joiner} just joined with your invite 🎉`,

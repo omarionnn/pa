@@ -768,25 +768,39 @@ test("an invite's joiner gets the same first chat, right after the inviter's wel
   assert.equal(state(num), "complete");
 });
 
-test("a link made for somebody: the hello uses the inviter's guess, the first chat still asks, and only their answer is saved", async () => {
+test("the name a friend put on the invite never reaches the person who joins: not their hello, first chat, prompt, profile or memory", async () => {
   const invites = await import("../src/invites.js");
   config.autoAdmit = false;
   const inviter = newNumber();
   db.upsertAccount({ conversationId: conv(inviter), channel: "fake", address: inviter, name: "Yaw" });
   db.backfillInviteAllowances();
+  // The friend's guess is Dalen; the person who joins goes by Dale.
   const made = invites.makeLink(conv(inviter), { forName: "Dalen" });
   assert.equal(made.for, "Dalen");
-  const code = db.getInvite(conv(inviter), made.number).claim_code;
-  const hello = invites.joinText(code);
-  const h = harness((said) => said === hello ? { kind: "greeting" } : said === "it's dale actually" ? { kind: "answer", name: "Dale" } : null);
+  const inv = db.getInvite(conv(inviter), made.number);
+  const hello = invites.joinText(inv.claim_code);
+  const h = harness((said) => said === hello ? { kind: "greeting" } : said === "dale" ? { kind: "answer", name: "Dale" } : said === "jarvis" ? { kind: "answer", card_name: "Jarvis" } : null);
   const num = newNumber();
   await h.router.deliver(text(num, hello));
-  const got = words(h, num);
-  assert.equal(got[0], "Hey Dalen! You're in, invited by Yaw.", "greeted by the name the inviter gave");
-  assert.deepEqual(got.slice(1, 3), ob.OPENER, "and still asked their name: the guess is not taken as theirs");
-  assert.ok(!db.getAccount(conv(num)).name, "the guess is not saved as their name");
-  assert.equal(state(num), "awaiting_name");
-  assert.equal(db.getInvite(conv(inviter), made.number).for_name, null, "the name is not kept on the claimed link");
-  await h.router.deliver(text(num, "it's dale actually"));
-  assert.equal(db.getAccount(conv(num)).name, "Dale", "what they said is their name");
+  await h.router.deliver(text(num, "dale"));
+  await h.router.deliver(text(num, "jarvis"));
+  const me = conv(num);
+  const sent = words(h, num).join("\n");
+  assert.match(sent, /^You're in, invited by Yaw\./, "the welcome is the one it always was");
+  assert.doesNotMatch(sent, /dalen/i, "no message to them carries the friend's name");
+  assert.ok(h.asked.length > 0, "the first chat really ran its reads");
+  assert.doesNotMatch(JSON.stringify(h.asked), /dalen/i, "nor any read or prompt the first chat sent");
+  assert.doesNotMatch(JSON.stringify(h.turns), /dalen/i, "nor any turn the model ran for them");
+  assert.equal(db.getAccount(me).name, "Dale", "the only name kept is the one they said");
+  assert.doesNotMatch(systemFor(accounts.ownerOf(me)), /dalen/i, "their standing prompt never has it");
+  // Nowhere in the database: their rows, facts, history, outbox, and the claimed link itself.
+  const tables = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all().map(t => t.name);
+  const hits = [];
+  for (const t of tables) {
+    let rows;
+    try { rows = db.db.prepare(`SELECT * FROM "${t}"`).all(); } catch { continue; }
+    if (/dalen/i.test(JSON.stringify(rows))) hits.push(t);
+  }
+  assert.deepEqual(hits, [], "the name is gone from every table once the link is claimed");
+  assert.equal(db.getInvite(conv(inviter), made.number).for_name, null);
 });

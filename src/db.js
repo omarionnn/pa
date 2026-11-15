@@ -12538,11 +12538,11 @@ db.exec(`
 `);
 // Who brought this person in, if anybody: the inviter's conversation id.
 addColumnIfMissing("accounts", "invited_by", "TEXT");
-// The first name the INVITER said a link is for ("make one for Dalen"), already through
-// invitecard.cleanInviteeName: their card greets that person, and the joiner's first hello uses it as
-// the inviter's guess, never as a name the joiner gave. The inviter's data, so it lives on their row
-// (and goes with their delete); blanked when the link is canceled or claimed. NULL: nobody named,
-// which every row from before this column is.
+// The first name the INVITER said a link is for, already through invitecard.cleanInviteeName. It has
+// ONE use: the wording on that link's card picture (and the inviter's own "my invites"). It never
+// reaches the person who joins: not their hello, onboarding, profile or memory; they say their own
+// name. The inviter's data, so it lives on their row (and goes with their delete); blanked when the
+// link is canceled or claimed. NULL: nobody named, which every row from before this column is.
 addColumnIfMissing("invites", "for_name", "TEXT");
 
 /** What everybody who did not join through an invite starts with. Invitees start with none. */
@@ -12697,8 +12697,8 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ? WHERE id = ? AND state = 'unused'")
       .run(conversationId, now, inv.id);
     if (won.changes !== 1) return fail("redeemed");
-    // The name the inviter said it was for has done its job once somebody joins: handed back below
-    // for their first hello only, and not kept on a row that now points at a real account.
+    // The name the inviter said it was for was only ever for the card: once somebody joins it is
+    // gone, and nothing below hands it to their side.
     db.prepare("UPDATE invites SET for_name = NULL WHERE conversation_id = ? AND id = ?").run(inv.conversation_id, inv.id);
     upsertAccount({ conversationId, channel, address, name, isOperator: false });
     db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(inv.conversation_id, conversationId);
@@ -12707,7 +12707,7 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     db.prepare(`INSERT INTO invite_allowances (conversation_id, remaining, updated_at) VALUES (?, 0, ?)
       ON CONFLICT(conversation_id) DO UPDATE SET remaining = 0, updated_at = excluded.updated_at`).run(conversationId, now);
     db.exec("COMMIT");
-    return { ok: true, invite: db.prepare("SELECT * FROM invites WHERE id = ?").get(inv.id), forName: inv.for_name ?? null, account: getAccount(conversationId) };
+    return { ok: true, invite: db.prepare("SELECT * FROM invites WHERE id = ?").get(inv.id), account: getAccount(conversationId) };
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
     throw e;

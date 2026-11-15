@@ -30,8 +30,7 @@ export const INVITEE_GREETING = "C"; // C: the headline stays exactly as it is, 
 
 // ---------- the name a link is for ----------
 //
-// Free text from one person that ends up on a Reason-branded picture and in a first hello to a
-// stranger, so code owns its shape: one person's name, in letters, short. Anything else (a link, a
+// Free text from one person that ends up on a Reason-branded picture a stranger sees, so code owns its shape: one person's name, in letters, short. Anything else (a link, a
 // handle, a number, a sentence, an insult, two people on one single-use link) is not refused out
 // loud: the link is simply made plain, with today's card. Who the name is FOR is the model's read of
 // what they said; this only decides whether it is safe to draw.
