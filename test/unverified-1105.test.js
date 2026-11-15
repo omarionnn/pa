@@ -415,3 +415,49 @@ test("review 11-07: an unchecked $1 left in the rewrite drops its sentence, not 
   assert.deepEqual(g.flags.find(f => f.rule === "dollar_dropped")?.figures, ["$1"]);
   assert.equal(g.text, "the tv's $1,299 at best buy.");
 });
+
+// A person sends several receipt photos over a few turns and asks for the total. The receipts are
+// theirs, but none is restated in the reply, so their grand total and per-store subtotals were sent
+// back as figures nothing backs. They are arithmetic on what they sent; an invented figure is not.
+test("the total of several receipts they sent, and per-store subtotals of them, are worked out; an invented figure is not", () => {
+  const receipts = [["Store A", "38.00", "2.10", "40.10"], ["Store B", "8.50", "0.50", "9.00"], ["Store C", "95.00", "6.19", "101.19"],
+    ["Store A", "24.00", "1.45", "25.45"], ["Store B", "5.90", "0.31", "6.21"], ["Store C", "75.00", "5.00", "80.00"]];
+  receipts.forEach(([store, sub, tax, total], i) => db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, description, description_from, at)
+    VALUES (?, 'test', ?, 0, 'image', 'looked', ?, 'photo', ?)`).run(C, `rcpt-${i}`, `A receipt from ${store}. Words in it, verbatim:\nSubtotal $${sub}\nTax $${tax}\nTotal $${total}`, clock.now() - (30 - i * 4) * 60_000));
+  offers.beginTurn(C, "what's the total of all of them");
+  const g = offers.guardReply(C, "All six come to $261.95: Store A $65.55, Store B $15.21, Store C $181.19.");
+  assert.equal(g.flags.find(f => f.rule === "dollar_unsourced"), undefined, JSON.stringify(g.flags));
+  assert.equal(g.recompose, null);
+  offers.beginTurn(C, "what's the total of all of them");
+  const bad = offers.guardReply(C, "All six come to $212.37.");
+  assert.deepEqual(bad.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$212.37"], JSON.stringify(bad.flags));
+  offers.beginTurn(C, "what's the total of all of them");
+  const listed = offers.guardReply(C, "$40.10 + $9.00 + $101.19 + $25.45 + $6.21 + $80.00 = $261.95");
+  assert.equal(listed.recompose, null, JSON.stringify(listed.flags));
+});
+
+// Review of the receipts fix: the groupings are exact to the cent. With whole-dollar rounding the 63
+// sums of six receipts covered most whole dollars under their total, so an invented "$150" stood.
+test("receipt groupings count only to the cent: an invented whole-dollar subtotal, or a total with an unstated figure mixed in, is caught", () => {
+  offers.beginTurn(C, "and stores a and c together?");
+  const round = offers.guardReply(C, "Store A and Store C together come to about $150.");
+  assert.deepEqual(round.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$150"], JSON.stringify(round.flags));
+  offers.beginTurn(C, "what's the total of all of them");
+  const mixed = offers.guardReply(C, "All six come to $274.29."); // 261.95 + an unstated 12.34
+  assert.deepEqual(mixed.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$274.29"], JSON.stringify(mixed.flags));
+});
+
+test("a receipt counts by its labelled total, not a larger cash-tendered line", () => {
+  const C2 = "conv-receipt-cash";
+  [["Total $40.10\nCash $50.00\nChange $9.90"], ["Subtotal $8.50\nTax $0.50\nTotal $9.00"]].forEach(([words], i) => db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, description, description_from, at)
+    VALUES (?, 'test', ?, 0, 'image', 'looked', ?, 'photo', ?)`).run(C2, `cash-${i}`, `A receipt. Words in it, verbatim:\n${words}`, clock.now() - (20 - i) * 60_000));
+  offers.beginTurn(C2, "total of both?");
+  const g = offers.guardReply(C2, "Both come to $49.10.");
+  assert.equal(g.flags.find(f => f.rule === "dollar_unsourced"), undefined, JSON.stringify(g.flags));
+  offers.beginTurn(C2, "total of both?");
+  const wrong = offers.guardReply(C2, "Both come to $59.00.");
+  assert.deepEqual(wrong.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$59.00"], JSON.stringify(wrong.flags));
+  offers.beginTurn(C2, "total of both?");
+  const about = offers.guardReply(C2, "Both come to about $49."); // the grand total, rounded, still stands
+  assert.equal(about.flags.find(f => f.rule === "dollar_unsourced"), undefined, JSON.stringify(about.flags));
+});
