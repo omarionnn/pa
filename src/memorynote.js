@@ -11,21 +11,14 @@ import { search, vectorsFor } from "./embedding.js";
 import { distinct } from "./samefact.js";
 import { savedOn } from "./extract.js";
 import { rulesNote } from "./rules.js";
+import { assistantNameIn, assistantNameLine, theirOwnName as ownNameOf } from "./identity.js";
 
-// A saved fact that gives the ASSISTANT a name ("Wants the assistant to answer to the name Hewie"),
-// shown under their own name in the profile, read by a model as THEIR name: the text after call 115
-// opened with it. The name it gives, in the forms facts are written in.
-const NAMES_THE_ASSISTANT = [
-  /\b(?:[Tt]he\s+assistant|[Rr]eason|[Yy]ou|(?:[Hh]is|[Hh]er|[Tt]heir)\s+assistant)\b[^.\n]{0,30}?\b(?:answer(?:s|ing)?\s+to|be\s+called|go(?:es)?\s+by|respond(?:s)?\s+to)\s+(?:the\s+name\s+|the\s+nickname\s+)?["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
-  /\b(?:[Cc]alls?|[Cc]alling|[Cc]alled|[Nn]ames?|[Nn]amed|[Nn]aming|[Nn]icknamed?)\s+(?:[Tt]he\s+assistant|[Rr]eason|[Yy]ou|(?:[Hh]is|[Hh]er|[Tt]heir)\s+assistant)\s+(?:by\s+the\s+name\s+|as\s+)?["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
-  /\b(?:[Tt]he\s+assistant(?:'|’)s|[Rr]eason(?:'|’)s|[Yy]our)\s+(?:nick)?name\s+(?:is|should\s+be)\s+["“'‘]?([A-Z][\p{L}'’-]{1,30})/u,
-];
-
-/** The name a profile line gives the assistant, or "". Exported for tests. */
-export function assistantNameIn(line) {
-  for (const re of NAMES_THE_ASSISTANT) { const m = re.exec(String(line ?? "")); if (m) return m[1].replace(/['’]s$/, ""); }
-  return "";
-}
+// A saved fact that gives the ASSISTANT a name ("Wants the assistant to answer to the name Nimbus"),
+// shown under their own name, is read by a model as THEIR name. The reading and the one sentence that
+// says whose name it is live in src/identity.js (`assistantNameIn`, `assistantNameLine`), so the
+// profile, a recalled fact, a call's notes and the identity line all say it the same way.
+// PROFILE_READERS below is the contract (test/assistant-name-everywhere.test.js).
+export { assistantNameIn } from "./identity.js";
 
 /**
  * The profile block as a prompt is shown it: a line that names the assistant says outright whose name
@@ -33,13 +26,17 @@ export function assistantNameIn(line) {
  * Every other line is as stored; the stored block is never changed. `theirName`: the account's own name.
  */
 export function profileForPrompt(block, theirName = "") {
-  const own = String(theirName ?? "").trim();
   return String(block ?? "").split("\n").map(line => {
-    const nick = assistantNameIn(line);
-    if (!nick || /^reason$/i.test(nick) || (own && nick.toLowerCase() === own.toLowerCase())) return line;
+    const said = assistantNameLine(assistantNameIn(line), theirName);
+    if (!said) return line;
     const tag = /\(([^()]*)\)\s*$/.exec(line)?.[1];
-    return `- They call YOU, their assistant, "${nick}": a nickname for you, not their name.${own ? ` Their own name is ${own}.` : ""} Never call them ${nick}.${tag ? ` (${tag})` : ""}`;
+    return `- ${said}${tag ? ` (${tag})` : ""}`;
   }).join("\n");
+}
+
+/** One saved fact as a model is shown it (a tool result, a call's notes): `profileForPrompt` for a bare fact. */
+export function factForPrompt(fact, theirName = "") {
+  return assistantNameLine(assistantNameIn(fact), theirName) || String(fact ?? "");
 }
 
 /** The profile note a turn or a call is shown ("" with no profile): the heading, then `profileForPrompt`. */
@@ -49,14 +46,27 @@ export function profileNote(conversationId) {
   return `WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty; where two disagree, the later date wins):\n${profileForPrompt(block, ownNameOf(conversationId))}`;
 }
 
-/** Their own name as the account has it, or "" (never a stand-in). */
-function ownNameOf(conversationId) {
-  try {
-    const row = db.getAccount(conversationId);
-    const name = row?.name || (row?.is_operator || conversationId === config.ownerConversation ? config.ownerName : "");
-    return name && name !== "the person I work for" ? name : "";
-  } catch { return ""; }
-}
+/**
+ * Every place a model is shown their profile, a saved fact about them, or the name they gave Reason,
+ * and the helper it goes through. The contract test reads each function's source for one of
+ * profileForPrompt / factForPrompt / profileNote / identityNote / rulesNote / assistantNameLine, and
+ * scans src/ for raw reads of facts, the profile or the given name: every file with one is here or in
+ * the test's exempt list, with why. Found 2026-11-14: a task's event turn carried only the identity
+ * line ("they named you …, answer to …") and called the person by the assistant's nickname.
+ */
+export const PROFILE_READERS = Object.freeze([
+  { path: "text turn: the profile and the closest saved facts", file: "src/memorynote.js", fn: "memoryNotes" },
+  { path: "text turn: the closest saved facts", file: "src/memorynote.js", fn: "memoryHits" },
+  { path: "every turn and call: who they named you (rides in rulesNote)", file: "src/identity.js", fn: "identityNote" },
+  { path: "the recall tool's result", file: "src/tools.js", fn: "recallResult" },
+  { path: "the memory_search tool's result", file: "src/tools.js", fn: "memorySearchFacts" },
+  { path: "the memory_page tool's result (the page itself shows the stored words)", file: "src/tools.js", fn: "memoryPageForModel" },
+  { path: "a call's schedule facts", file: "src/calls/callmemory.js", fn: "prepareCallMemory" },
+  { path: "a call's recently saved facts", file: "src/calls/carryover.js", fn: "recentMemoryNote" },
+  { path: "Claude's turn on their own call: the profile", file: "src/calls/voice.js", fn: "ownerProfileNote" },
+  { path: "the GPT-Live voice's brief: the profile", file: "src/calls/gptlive.js", fn: "briefSections" },
+  { path: "the classic call voice's brief: the profile", file: "src/calls/callclassic.js", fn: "classicBrief" },
+]);
 
 /** How many matches ride on a turn. Enough to catch the thing they mean, few enough to stay cheap. */
 const HITS = 3;
@@ -114,8 +124,8 @@ export async function memoryHits(conversationId, text, { find = search, vectors 
     const vec = vectors(conversationId, [...found, ...shown].map(f => f.id));
     const lines = distinct(found, vec, { max: HITS, seen: shown }).map(f => {
       const tags = [f.source === "inferred" ? "inferred" : "", `saved ${savedOn(f.created_at)}`].filter(Boolean).join(", ");
-      // A fact naming the assistant says whose name it is, as the profile does (`profileForPrompt`).
-      return profileForPrompt(`- ${f.about}: ${f.fact} (${tags})`, ownNameOf(conversationId));
+      // A fact naming the assistant says whose name it is, as the profile does (`factForPrompt`).
+      return `- ${f.about}: ${factForPrompt(f.fact, ownNameOf(conversationId))} (${tags})`;
     });
     log({ memory_hits: lines.length, conversation: conversationId });
     return lines;
