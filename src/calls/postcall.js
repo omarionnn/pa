@@ -17,6 +17,7 @@
 //   4. **A job hears what its own call said.** A call placed as a step of a task is stamped with that
 //      task (`calls.task_id`), and the outcome goes onto the task's log — so the job knows, four
 //      hours and sixty trimmed messages later, what the call came back with.
+import { afterCallLines } from "./lookuprecord.js";
 import { assumedOnCall } from "../whereabouts.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
@@ -142,8 +143,9 @@ export function writeCallIntoThread({ row, live, log = () => {} }) {
     messages.push({
       role: "user",
       content: `[${stamp(at)}] [your own record of that call, kept by code: the lookups you really ran on it — `
-        + lookups.map(l => `${l.name} ${l.input}${l.ok ? "" : " (failed)"}`).join("; ")
-        + `. What you said from them was checked.]`,
+        // With what came back (./lookuprecord.js), so a text after the call reads the result it spoke from (call 119).
+        + afterCallLines(lookups).join("; ")
+        + `. What you said from them was checked: do not contradict it without a new tool result that says otherwise.]`,
     });
   }
   // A thread must not end on a user turn that nothing answered, or the next turn reads as a reply to
@@ -372,6 +374,8 @@ export function ownerEvent({ row, live = null }) {
     // call itself can; it is written down and never texted about: one offer waits for their next reply.
     + (cues.active(row.conversation_id) ? `\n${cues.AFTER_CALL_LINE}` : "")
     // What the call's own read says Reason said it would do (./carryover.js; call 85's checklist was never made).
+    // Call 119 (2026-11-15): the text after the call contradicted the call with nothing behind it.
+    + `\nNever contradict or "correct" what you said on the call unless a tool result you have in hand now says otherwise; if you are unsure, run the lookup again first.`
     + promisedNote(row)
     + brokeNote(row)
     // An answer on the call went by a saved place for where they were (../whereabouts.js): the card the call could not show.

@@ -165,3 +165,45 @@ export async function weatherAt(lat, lng, { fetchImpl = fetch, now = clock.now()
     note: "A live reading for these coordinates. Say it plainly — the temperature, the sky, and today's high or rain only if it matters. Use °F for someone in the US, °C elsewhere.",
   };
 }
+
+// ---------- their unit (call 117 and 119, 2026-11-14/15) ----------
+// The reading came back in both units with "°F for someone in the US, °C elsewhere", and nothing on a
+// call said where they are: a US caller heard "6 degrees". The voice is told not to name the unit, so
+// a bare number went out. The tool now decides the unit for the person and hands back only that one.
+
+// Where Fahrenheit is the everyday unit: the US and its territories, and the few others that use it.
+const FAHRENHEIT_ZONES = /^(?:America\/(?:New_York|Detroit|Kentucky\/.+|Indiana\/.+|Chicago|Menominee|North_Dakota\/.+|Denver|Boise|Phoenix|Los_Angeles|Anchorage|Juneau|Sitka|Metlakatla|Yakutat|Nome|Adak|Puerto_Rico|St_Thomas|Cayman|Nassau|Belize)|Pacific\/(?:Honolulu|Guam|Saipan|Pago_Pago|Palau|Majuro|Kwajalein|Pohnpei|Chuuk|Kosrae)|Africa\/Monrovia|US\/.+)$/;
+
+/** "F" or "C" for a person whose clock is `tz` (an IANA zone). Unknown: Fahrenheit, the install's. */
+export function unitForZone(tz) {
+  const z = String(tz ?? "").trim();
+  if (!z) return "F";
+  return FAHRENHEIT_ZONES.test(z) ? "F" : "C";
+}
+
+/**
+ * A weather result in ONE unit, theirs: the other unit's fields off, `temperature_unit` on, and a note
+ * that says the unit by name every time ("43 degrees Fahrenheit" out loud, "43°F" in a text).
+ */
+export function inTheirUnit(out, unit = "F") {
+  if (!out?.ok || !out.now) return out;
+  const u = unit === "C" ? "C" : "F";
+  const c = (f) => (Number.isFinite(f) ? Math.round((f - 32) * 5 / 9) : null);
+  const now = u === "F"
+    ? { temp_f: out.now.temp_f, feels_like_f: out.now.feels_like_f, conditions: out.now.conditions, wind_mph: out.now.wind_mph, precipitation_mm: out.now.precipitation_mm }
+    : { temp_c: out.now.temp_c ?? c(out.now.temp_f), feels_like_c: c(out.now.feels_like_f), conditions: out.now.conditions, wind_mph: out.now.wind_mph, precipitation_mm: out.now.precipitation_mm };
+  const t = out.today ?? {};
+  const today = u === "F"
+    ? { high_f: t.high_f, low_f: t.low_f, conditions: t.conditions, rain_chance_pct: t.rain_chance_pct }
+    : { high_c: t.high_c ?? c(t.high_f), low_c: t.low_c ?? c(t.low_f), conditions: t.conditions, rain_chance_pct: t.rain_chance_pct };
+  const name = u === "F" ? "Fahrenheit" : "Celsius";
+  const deg = (n) => (Number.isFinite(n) ? `${n}°${u}` : null);
+  return {
+    ...out,
+    temperature_unit: u,
+    now, today,
+    say: { now: deg(u === "F" ? now.temp_f : now.temp_c), high: deg(u === "F" ? today.high_f : today.high_c), low: deg(u === "F" ? today.low_f : today.low_c) },
+    note: `A live reading for these coordinates, in ${name} — their unit. Say it plainly — the temperature, the sky, and today's high or rain only if it matters.`
+      + ` Always name the unit with the number: "${deg(u === "F" ? now.temp_f : now.temp_c)?.replace(`°${u}`, ` degrees ${name}`) ?? `N degrees ${name}`}" out loud on a call, "${deg(u === "F" ? now.temp_f : now.temp_c) ?? `N°${u}`}" in a text. Never a bare number, and never the other unit unless they ask.`,
+  };
+}

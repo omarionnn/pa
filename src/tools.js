@@ -77,6 +77,8 @@ import * as accounts from "./accounts.js";
 import * as tapbackack from "./tapbackack.js";
 import * as verifications from "./verifications.js";
 import { deliveryGatedOn } from "./trustflags.js";
+import * as pictureout from "./pictureout.js";
+import { Channel } from "./channels/channel.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
 import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor, settingsNeedYes, settingsTarget, settingsRefusal, settingsAsks, questionsNeedYes, questionsTarget, questionsRefusal, questionsAsks, refundTarget, refundRefusal, ticketRefundTarget, ticketRefundRefusal, seatsNeedYes, seatsTarget, seatsRefusal } from "./eventtools.js";
@@ -4403,7 +4405,7 @@ export const tools = [
   },
   {
     name: "send_picture",
-    description: "Send a picture to the person you are talking to — a listing photo, a product image, anything with a real https URL. The URL must be publicly accessible: Sendblue fetches it and delivers it as a native photo in their iMessage thread. A caption goes alongside it as text in the same bubble. Use browser_images or web_lookup to find real image URLs first; never type one from memory.",
+    description: "Send a picture to the person you are talking to — a listing photo, a product image, anything with a real https URL. The URL must be publicly accessible: Reason fetches it, keeps a copy on its own host, and sends that as a native photo in their iMessage thread. It is on its way, not delivered, until the texting service confirms it: never say it was sent or that it should come through; if it does not arrive, Reason texts them the link itself. A caption goes alongside it as text in the same bubble. Use browser_images or web_lookup to find real image URLs first; never type one from memory.",
     input_schema: {
       type: "object",
       properties: {
@@ -10337,6 +10339,7 @@ function flightToday(c) {
   try { return new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: tz }); } catch { return accounts.today(); }
 }
 
+let pictureLinkSeq = 0;
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
   switch (name) {
     case "plan_create": {
@@ -11980,20 +11983,37 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const to = ownAddress(c, thread);
       if (!to) return { ok: false, error: "No address to send to." };
       const chatId = thread?.chat_id ?? null;
+      // Fetched here and kept on Reason's own host first, then sent through the outbox and watched until
+      // it arrives (src/pictureout.js). A shop's CDN link is never handed to the provider as it is.
+      const kept = await pictureout.rehost({ url, conversationId: c, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}), ...(ctx.store ? { store: ctx.store } : {}) });
+      if (!kept.ok && kept.refused) return { ok: false, refused: true, error: `Not sent: ${kept.why}. Nothing went to them. Don't send this address in any form.` };
+      if (!kept.ok) {
+        // No picture, and no pretending: the link as text, with a line that says so. Code's words.
+        let t;
+        try {
+          t = await router.send({ channel: channelName, to, text: pictureout.FETCH_FAILED_LINE(url), chatId, conversationId: c, toOwner: true, idempotencyKey: `picture-link:${c}:${clock.now()}:${++pictureLinkSeq}` });
+        } catch (e) { t = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+        if (!t?.ok && !t?.queued) return { ok: false, error: t?.error ?? "not sent", note: "Neither the picture nor its link went. Say that plainly." };
+        return { ok: false, picture_sent: false, link_sent: true, why: kept.why,
+          note: `The picture could not be fetched (${kept.why}), so Reason texted them the link with a line saying so. Do not say a picture was sent, and do not send the link again.` };
+      }
+      // By address only on a channel that really fetches one (Sendblue); any other gets the file.
+      const ch = router.get?.(channelName);
+      const byUrl = typeof ch?.sendMediaUrl === "function" && ch.sendMediaUrl !== Channel.prototype.sendMediaUrl;
       let r;
       try {
-        r = await router.sendMediaUrl({ channel: channelName, to, text: input.caption ?? "", mediaUrl: url, chatId });
+        r = await router.sendMedia({
+          channel: channelName, to, text: input.caption ?? "", chatId, conversationId: c, toOwner: true,
+          ...(byUrl ? { mediaUrl: kept.url } : { file: kept.file }), mimeType: kept.mime, filename: kept.filename,
+          idempotencyKey: `picture:${c}:${kept.id}`,
+        });
       } catch (e) {
         r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
-      if (!r.ok) return { ...r, note: "The picture did not go. Say that plainly." };
-      const gatedUrl = deliveryNote(c, router, channelName, r);
-      return {
-        ok: true, sent_to: to, url, delivered: r.delivered,
-        ...(gatedUrl
-          ? { delivery: "pending", note: `A picture, on its way into their iMessage thread, and ${gatedUrl}` }
-          : { note: "That went as a picture in their iMessage thread. You may say you sent it." }),
-      };
+      if (!r?.ok && !r?.queued) return { ok: false, error: r?.error ?? "not sent", note: "The picture did not go. Say that plainly." };
+      // Watched only where the provider can say whether it arrived; elsewhere it is still only "on its way".
+      if (r.outbox_id && (ch?.reportsDelivery || typeof ch?.messageStatus === "function")) pictureout.watch({ conversationId: c, outboxId: r.outbox_id, link: url });
+      return { ok: true, delivery: "pending", sent_to: to, ...(r.queued ? { queued: true } : {}), note: pictureout.ON_ITS_WAY_NOTE };
     }
 
     case "call_place": {
@@ -19381,7 +19401,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "weather": {
-      const { weatherAt } = await import("./weather.js");
+      const { weatherAt: readAt, inTheirUnit, unitForZone } = await import("./weather.js");
+      // In THEIR unit only, named (src/weather.js inTheirUnit): their confirmed clock, else their number's, else the install's.
+      const unit = unitForZone(zone.confirmedZone(c) || zone.zoneFromPhone(db.getThread(c)?.address)?.zone || config.installTz);
+      const weatherAt = async (...a) => inTheirUnit(await readAt(...a), unit);
       // A saved place of THEIRS, by name (this conversation's own rows only), or the coordinates given.
       if (input.place && !(Number.isFinite(input.latitude) && Number.isFinite(input.longitude))) {
         const p = db.getPlace(c, input.place);

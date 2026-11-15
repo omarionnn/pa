@@ -282,6 +282,9 @@ const TABLES = [
   "plaid_waits",
   // Which of their check-ins they said may read their bank, with the words they were asked and when (src/bankgrant.js).
   "bank_checkin_grants",
+  // Pictures send_picture handed over, watched until they arrived (src/pictureout.js): the outbox row, the
+  // address the picture came from, and what the provider said.
+  "picture_watches",
 ];
 
 /**
@@ -791,6 +794,12 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     catch (e) { proof_pictures.failed.push({ file: f, error: String(e?.message ?? e).split("\n")[0] }); }
   }
 
+  // What they sent or Reason kept for them on its own file host (src/webuploads.js): pictures Reason
+  // re-hosted to send (src/pictureout.js), table pictures, choice cards, web uploads. Before the key goes,
+  // while the records naming them can still be read.
+  let uploadsGone = { listed: 0, files_deleted: 0, failed: [] };
+  try { uploadsGone = (await import("./webuploads.js")).forget(conversation); } catch (e) { uploadsGone.failed.push({ error: String(e?.message ?? e).split("\n")[0] }); }
+
   // Encryption at rest (src/restcrypt.js): their key goes too, so every backup taken before today
   // holds their words with no key. What a scoped delete keeps (KEPT_ON_DELETE) is re-sealed first.
   const sealedKey = conversation
@@ -798,7 +807,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     : { shredded: restcrypt.destroyAllKeys() > 0 };
 
   return {
-    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, proof_pictures, profiles, builds, event_photos: eventPhotos,
+    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, proof_pictures, uploads: uploadsGone, profiles, builds, event_photos: eventPhotos,
     saved_logins: savedLogins,
     key_destroyed: !!sealedKey.shredded,
     // Banks let go of at Plaid (/item/remove). A failure is said: the token is deleted here either

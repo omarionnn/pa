@@ -501,6 +501,7 @@
  "src/passkey.js | UPDATE UPDATE pay_approvals SET state = 'used', used_at = ?, credential_id = ? WHERE id = ? AND state = 'open'": 1,
  "src/passkey.js | UPDATE UPDATE pay_approvals SET state = ? WHERE id = ? AND state = 'open'": 1,
  "src/passkey.js | UPDATE UPDATE pay_passkeys SET counter = ?, last_used_at = ? WHERE id = ?": 1,
+ "src/pictureout.js | SELECT SELECT * FROM picture_watches WHERE settled_at IS NULL AND due_at <= ? ORDER BY id LIMIT 50": 1,
  "src/plaid.js | DELETE DELETE FROM plaid_transactions WHERE date < ?": 1,
  "src/plaid.js | SELECT SELECT COUNT(*) AS n FROM plaid_items": 1,
  "src/plaid.js | SELECT SELECT finished_at, outcome, expires_at FROM plaid_links WHERE id = ?": 1,

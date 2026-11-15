@@ -37,6 +37,7 @@ import { withoutNoReply } from "./plain.js";
 import { assistantNicknames, withoutNicknameVocative } from "./identity.js";
 import { effectPartIndex } from "./links.js";
 import { deliveryGatedOn } from "./trustflags.js";
+import { noteStatus as notePictureStatus } from "./pictureout.js";
 
 /** What a send returns when the silence marker was all there was: nothing went, on purpose. */
 const NOTHING_LEFT = Object.freeze({ ok: false, not_sent: true, silent: true, retryable: false, error: "Not sent: once NO_REPLY was taken off there was nothing left to send." });
@@ -352,6 +353,9 @@ export const DELIVERED_STATUSES = new Set(["DELIVERED", "SENT"]);
 export function noteDelivery({ channel, messageId, status, error = null, log = () => {} }) {
   const row = db.outboundByMessageId(channel, messageId);
   if (!row) return { ignored: "no such message" };
+  // A picture being watched until it arrives (src/pictureout.js) hears the provider's word whatever the
+  // switch below says: whether it got there is the whole of that watch.
+  if (String(row.idem_key ?? "").startsWith("picture:")) { try { notePictureStatus(row.conversation_id, row.id, status); } catch { /* a watch never breaks the outbox */ } }
   if (!deliveryGatedOn(row.conversation_id)) return { ignored: "off", outbox_id: row.id };
   const s = String(status ?? "").toUpperCase();
   if (s === "ERROR") {
