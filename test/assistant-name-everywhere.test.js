@@ -110,6 +110,7 @@ const SHOWS_NO_MODEL = {
   "src/pages/webmemory.js": "the Web memory page: their stored words, to them",
   "src/ios/memory.js": "the iOS memory API: their stored words, to them",
   "src/onboarding.js": "fixed welcome words and the contact card under the name; no model",
+  "src/whereabouts.js": "reads their working hours out of facts; only a time range reaches a model",
 };
 test("contract: every src/ file that reads facts, the profile or the given name raw is a reader or says why not", () => {
   const readers = new Set(memorynote.PROFILE_READERS.map(r => r.file));

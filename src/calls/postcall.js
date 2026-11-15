@@ -17,6 +17,7 @@
 //   4. **A job hears what its own call said.** A call placed as a step of a task is stamped with that
 //      task (`calls.task_id`), and the outcome goes onto the task's log — so the job knows, four
 //      hours and sixty trimmed messages later, what the call came back with.
+import { assumedOnCall } from "../whereabouts.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
@@ -373,6 +374,11 @@ export function ownerEvent({ row, live = null }) {
     // What the call's own read says Reason said it would do (./carryover.js; call 85's checklist was never made).
     + promisedNote(row)
     + brokeNote(row)
+    // An answer on the call went by a saved place for where they were (../whereabouts.js): the card the call could not show.
+    + (assumedOnCall(row.id)
+      ? `\nOn the call you went by their saved place "${assumedOnCall(row.id)}" for where they were (there was no live location). If an answer you gave depended on where they are,`
+        + ` something IS owed: call get_location with action 'request' to send the Share My Location card, with one short line ("so i'm not guessing next time"). If nothing depended on it, leave it.`
+      : "")
     + (String(row.verify_deferred ?? "").trim()
       ? `\nSomething IS owed: on the call they asked for something that could not be done by voice and waits for this text:`
         + ` "${String(row.verify_deferred).replace(/"/g, "'")}". Pick it up now, in one short message: the caller was not verified,`

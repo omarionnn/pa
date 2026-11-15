@@ -101,6 +101,7 @@ import * as actionengine from "./actionengine.js";
 import * as cardroutes from "./cardroutes.js";
 import * as rhythms from "./rhythms.js";
 import * as identity from "./identity.js";
+import * as whereabouts from "./whereabouts.js";
 import { factForPrompt } from "./memorynote.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
@@ -503,6 +504,15 @@ const SAVE_LINK_NO = {
   not_reached: "Reason's browser couldn't reach that site's sign-in page just now, so no link was made. Run it once more yourself now; if it still can't reach the page, say so in one line and that you'll open it again the next time they ask. Never offer to try again.",
 };
 
+
+/**
+ * A place-dependent result with the note on where its position came from (src/whereabouts.js
+ * whereNote), first, so it is read before the answer is. Unchanged when there is no note.
+ */
+function withWhere(out, note) {
+  if (!note || !out || typeof out !== "object" || out.ok === false) return out;
+  return { where_from: note, ...out };
+}
 
 // ---------- saved facts as a tool hands them to the model ----------
 // A fact that names the assistant ("wants the assistant to answer to the name …") says whose name it
@@ -12736,8 +12746,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return await runAlbumTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- walking directions (src/directionstools.js) ----------
-    case "directions":
-      return await runDirectionsTool(name, input, { ...ctx, conversationId: c });
+    case "directions": {
+      const out = await runDirectionsTool(name, input, { ...ctx, conversationId: c });
+      // A start that is a saved place, with no fresh location, is said as an assumption (src/whereabouts.js).
+      return out?.ok ? withWhere(out, whereabouts.whereNote(c, { latitude: input.from_latitude, longitude: input.from_longitude, place: input.from }, { onCall: ctx?.onCall ?? null })) : out;
+    }
 
     // ---------- cues: one offer when something comes up (src/cues.js) ----------
     case "cue_note": case "cue_offer": case "cue_answer": case "cue_end": case "cues_setting":
@@ -19334,7 +19347,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!out.ok) return out;
       // A place's number is timed by the place's own clock if it is rung later (zone.calleeZone).
       for (const r of out.results ?? []) if (r?.phone) try { zone.notePlace(r); } catch { /* the area code still answers */ }
-      return markOutside(out, {
+      return markOutside(withWhere(out, whereabouts.whereNote(c, { latitude: input.latitude, longitude: input.longitude }, { onCall: ctx?.onCall ?? null })), {
         source: out.attribution === "Google Maps" ? "Google Maps nearby-places results" : "OpenStreetMap nearby-places results",
         text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),
       });
@@ -19349,7 +19362,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           const names = db.listPlaces(c).map(x => x.name);
           return { ok: false, error: `No saved place called "${String(input.place).slice(0, 40)}".`, saved_places: names, next: "Use one of those names, or get_location for their position — and if neither gives you a place, ask them out loud where they are." };
         }
-        return weatherAt(Number(p.lat), Number(p.lng), { fetchImpl: ctx.fetchImpl, label: `${p.name} (${p.address})` });
+        return withWhere(await weatherAt(Number(p.lat), Number(p.lng), { fetchImpl: ctx.fetchImpl, label: `${p.name} (${p.address})` }), whereabouts.whereNote(c, { place: p.name }, { onCall: ctx?.onCall ?? null }));
       }
       if (!Number.isFinite(input.latitude) || !Number.isFinite(input.longitude)) {
         // Drive 11-08 (OVH, no saved places): "call get_location first" after get_location had already
@@ -19357,7 +19370,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // no question. Nothing to go on is a question for them.
         return { ok: false, error: "Give coordinates or a saved place.", next: "If you have not called get_location yet this turn, call it. If it has already come back without a position, stop calling tools: ask them out loud where they are (a neighbourhood or a cross street is enough)." };
       }
-      return weatherAt(input.latitude, input.longitude, { fetchImpl: ctx.fetchImpl });
+      return withWhere(await weatherAt(input.latitude, input.longitude, { fetchImpl: ctx.fetchImpl }), whereabouts.whereNote(c, { latitude: input.latitude, longitude: input.longitude }, { onCall: ctx?.onCall ?? null }));
     }
 
     case "get_location": {
@@ -19396,7 +19409,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         //    enough depends on what it is for, and that is the model's call, not this tool's.
         const last = db.lastSharedLocation(c);
         const ageMin = last ? Math.max(0, Math.round((clock.now() - last.at) / 60_000)) : null;
-        if (last && ageMin <= 24 * 60) {
+        if (last && ageMin <= whereabouts.RECENT_PIN_MIN) {
           const geo = await (ctx.reverseGeocode ?? reverseGeocode)(last.latitude, last.longitude).catch(() => null);
           return withPlaces({
             ok: true, sharing: false, source: "sent_in_a_message",
