@@ -483,6 +483,9 @@ test("a ride request is uber_link with their pickup, and needs no Uber connectio
     assert.equal(pickup.longitude, -73.8312);
     assert.equal(dropOf(out.url).addressLine1, "430 W 17th St, New York");
     assert.equal(out.has_pickup, true);
+    // The car service offer names the trip in the direction they asked it, pickup first.
+    assert.equal(out.also_offer.trip, "from 3247 Bruner Ave, Bronx to 430 W 17th St, New York");
+    assert.match(out.also_offer.say, /picks them up at 3247 Bruner Ave, Bronx and takes them to 430 W 17th St, New York/);
     // A pickup alone is a ride too: "get me an uber" with no destination.
     const bare = await call("uber_link", { pickup_latitude: 40.8569, pickup_longitude: -73.8312 });
     assert.equal(bare.ok, true);
