@@ -30,7 +30,9 @@ export function run(argv) {
   const owner = config.ownerConversation;
   if (argv.includes("--list")) {
     if (!isOperatorsOwn(owner)) return { ok: false, error: "the owner conversation is not the operator's account on this install" };
-    const series = db.listSeries(owner).map(s => ({ series_id: s.id, state: s.state, rule: s.rule, about_money: bankgrant.aboutMoney(s.what) }));
+    // The money words a check-in's own words carry (e.g. "transactions"), never the words themselves.
+    const moneyWords = (w) => [...new Set((String(w ?? "").toLowerCase().match(/\b(bank|banking|spend|spending|spent|transactions?|purchases?|charges?|balances?|budget|expenses?|money|plaid|daily|weekly|monthly|recap|summary)\b/g) ?? []))];
+    const series = db.listSeries(owner).map(s => ({ series_id: s.id, state: s.state, rule: s.rule, next_at: s.next_at ? new Date(s.next_at).toISOString() : null, about_money: bankgrant.aboutMoney(s.what), money_words: moneyWords(s.what) }));
     const grants = bankgrant.grantsOf(owner).map(g => ({ standing: g.standing, state: g.state, actions: g.actions, periods: g.periods, note: g.note }));
     return { ok: true, series, grants };
   }

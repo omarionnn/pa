@@ -1479,16 +1479,11 @@ export class Runtime extends EventEmitter {
     const chained = !standing && t.chained_from != null;
     const repeating = !!standing || chained;
     // A check-in about their money that they have not yet said may read their bank (src/bankgrant.js):
-    // code asks, once, in fixed words, and the bank is not read this time. Never silence instead.
-    // Sent then claimed under its own key, like every other line of code's here.
+    // code asks in fixed words naming the check-in, and the bank is not read this time; one reminder a
+    // day or more later if still unanswered, then quiet. Never silence instead. Sent AFTER the turn, so
+    // the ask is the last thing in the thread and their yes answers it (src/bankgrant.js answeredAsk).
     let bankAsk = null;
     try { bankAsk = plaid.plaidOn(t.conversation_id) ? bankgrant.askAtFire(t.conversation_id, t, { bankConnected: plaid.hasBank(t.conversation_id) }) : null; } catch { bankAsk = null; }
-    let asked = null;
-    if (bankAsk) {
-      asked = await this._tell(t.conversation_id, bankAsk.line, { fromTimer: t.id, idempotencyKey: `${key}:bank-ask` });
-      if (asked?.ok === false) throw new Error(`the bank ask could not be handed over: ${asked.error ?? "no reason given"}`);
-      bankgrant.noteAsked(t.conversation_id, bankAsk.key, bankAsk.line);
-    }
     const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
       (plan ? ` plan #${plan.id} is now: ${JSON.stringify({ title: plan.title, status: plan.status, when: plan.when, where: plan.where, who: plan.who, open_questions: plan.open_questions })}.` : "") +
       (standing ? series.frameFor(standing) : "") +
@@ -1500,7 +1495,7 @@ export class Runtime extends EventEmitter {
         + ` Set the next one (timer_set with continues_check: true) only if they still want it; it counts toward their limit on repeating things, and stopping it is cancelling the pending one.` : "") +
       (standing ? "" : ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`) +
       (repeating ? series.quietRule({ checkIn: !!standing && !forGoal }) : "") +
-      (bankAsk ? ` Code has just asked them whether this check-in may read their bank, so it is not read this time: do the rest of it without their bank, and say nothing about their bank or money.` : "");
+      (bankAsk ? ` Code will ask them, right after your reply, whether this check-in may read their bank, so it is not read this time: do the rest of it without their bank, and say nothing about their bank or money.` : "");
     await turn({
       text,
       // Quiet unless new, in code: a repeating firing's reply goes out only when it carries the mark.
@@ -1511,14 +1506,21 @@ export class Runtime extends EventEmitter {
       ...(forGoal ? { keep: goals.checkKept(forGoal) } : {}),
       meta: { fromTimer: t.id, ...(standing ? { fromSeries: standing.id } : {}), ...(forGoal ? { fromGoal: forGoal.id } : {}) },
     });
+    // The bank ask (or its one reminder), last, under its own key: recorded as asked only once it has gone.
+    let asked = null;
+    if (bankAsk) {
+      asked = await this._tell(t.conversation_id, bankAsk.line, { fromTimer: t.id, idempotencyKey: `${key}:bank-${bankAsk.kind}` });
+      if (asked?.ok === false && !asked.queued) this.log({ timer: t.id, bank_ask_not_sent: asked.error ?? "no reason given" });
+      else bankgrant.noteAsked(t.conversation_id, bankAsk.key, bankAsk.line, { kind: bankAsk.kind, standingWords: bankAsk.words });
+    }
     // A granted read that failed: one honest line, by code, when the turn itself said nothing.
     const owedLine = bankgrant.takeOwed(t.id);
     if (owedLine && (!sent || sent.silent || sent.ok === false)) {
       const told = await this._tell(t.conversation_id, owedLine, { fromTimer: t.id, idempotencyKey: `${key}:bank-failed` });
       if (told?.ok !== false) return told;
     }
-    // The ask went: the firing said something, whatever the turn decided after it.
-    if (asked && (!sent || sent.silent || sent.ok === false)) return asked;
+    // The ask went: the firing said something, whatever the turn decided before it.
+    if (asked && asked.ok !== false && (!sent || sent.silent || sent.ok === false)) return asked;
     return sent;
   }
 
