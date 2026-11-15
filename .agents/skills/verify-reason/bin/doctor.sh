@@ -10,6 +10,7 @@
 # https://reason.tail3753c7.ts.net) until the move to OVH; on 2026-11-14 that Tailscale name
 # answered curl 000 from this Mac while app.heyreason.com/health answered 200 from
 # 15.204.113.250, and this script still defaulted to Hetzner. bin/idle.sh already defaulted to OVH.
+# The Hetzner server is being decommissioned (2026-11-15); the Hetzner STORAGE BOX (off-site backups) stays.
 # Override with REASON_LIVE_SSH / REASON_LIVE_URL. The Mac's 8787 stopped being live on
 # 2026-10-12; a process there is a dev checkout somebody launched, not what people are texting.
 set -euo pipefail
@@ -58,7 +59,7 @@ if [ "$TARGET" = "live" ]; then
     echo "@@watchdog"; systemctl show reason-watchdog.timer -p ActiveState -p LastTriggerUSec 2>/dev/null
     stat -c "state written %y" /opt/reason/data/watchdog.json 2>/dev/null || echo "no data/watchdog.json yet"
     P="$(grep -E "^REASON_PORT=" /opt/reason/.env 2>/dev/null | head -1 | cut -d= -f2 | tr -dc 0-9)"
-    echo "@@alive"; curl -s -m 5 "http://127.0.0.1:${P:-8787}/alive" 2>/dev/null | head -c 300
+    echo "@@alive"; curl -s -m 5 "http://127.0.0.1:${P:-8788}/alive" 2>/dev/null | head -c 300
   ' 2>/dev/null)" || { say "ssh" "COULD NOT REACH $HOST — not provable from here"; exit 1; }
   section() { echo "$remote" | awk -v s="@@$1" '$0 ~ /^@@/ { on = ($0 == s); next } on'; }
   active="$(section service | sed -n 1p)"; pid="$(section service | sed -n 2p)"; started="$(section service | sed -n 3p)"
@@ -172,8 +173,8 @@ if echo "$h" | grep -q '"name":"sendblue","status":"live"' && [ -f "$CAGE_RUN/fa
   echo "         but every send lands on this Mac. Safe to drive."
 elif echo "$h" | grep -q '"name":"sendblue","status":"live"'; then
   echo "VERDICT  this local instance holds LIVE texting credentials — a POST to its webhook texts a"
-  echo "         real phone, and if its number is the Hetzner number it is a DUPLICATE of the live"
-  echo "         Reason. It is not what people are texting (that is Hetzner: bin/doctor.sh live)."
+  echo "         real phone, and if its number is the live number it is a DUPLICATE of the live"
+  echo "         Reason. It is not what people are texting (that is the OVH server: bin/doctor.sh live)."
   echo "         Do not drive it. To drive anything: bin/caged.sh start"
   fail=1
 else
