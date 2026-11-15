@@ -695,10 +695,8 @@ export const config = {
   // Production Items and removing one does not give it back (plaid.com/docs/account/billing, read
   // 2026-11-13). The cap a new connection is checked against (src/plaid.js connectRoom) and the plan
   // meter on /ops. Lower it if Plaid's dashboard shows Items made before Reason counted them.
+  // There is no per-person bank limit (owner, 2026-11-15): this total is the only one.
   plaidPlanItems: Math.round(positive(process.env.REASON_PLAID_PLAN_ITEMS, 10)),
-  // How many banks one person may connect (ever, same counting), so one person cannot use up the
-  // plan. The owner is exempt.
-  plaidPerPerson: Math.round(positive(process.env.REASON_PLAID_PER_PERSON, 2)),
   // The agent made once by scripts/cartesia-agent-setup.mjs; the voice is set on it (Gemma, en-GB).
   cartesiaAgentId: String(process.env.REASON_CARTESIA_AGENT_ID ?? "").trim(),
   cartesiaVoice: String(process.env.REASON_CARTESIA_VOICE ?? "").trim() || "62ae83ad-4f6a-430b-af41-a9bede9286ca",

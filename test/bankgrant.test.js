@@ -28,7 +28,6 @@ process.env.REASON_TOKEN_KEY = "44".repeat(32);
 process.env.REASON_PUBLIC_URL = "https://reason.test";
 process.env.REASON_PLAID = "on";
 process.env.REASON_PLAID_PLAN_ITEMS = "1000";
-process.env.REASON_PLAID_PER_PERSON = "1000";
 process.env.PLAID_CLIENT_ID = "client_id_fixture";
 process.env.PLAID_SECRET = "secret_fixture_never_printed";
 delete process.env.PLAID_ENV;

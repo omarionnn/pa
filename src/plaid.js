@@ -59,6 +59,7 @@ import { sealCell } from "./restcrypt.js";
 import { config, clock, callbackUrl } from "./config.js";
 import { zoneFor } from "./zone.js";
 import { revokeAll as revokeCheckinGrants } from "./bankgrant.js";
+import * as digest from "./opsdigest.js";
 
 // ---------------------------------------------------------------- the switch
 /** off | owner | on. Read on every call, so a restart is the only switch. */
@@ -256,23 +257,23 @@ export const webhookUrl = () => (config.publicUrl ? `${config.publicUrl}/plaid/w
 // Plaid's Trial is 10 Production Items EVER: "Removing Items created on a Trial plan (using
 // /item/remove) will not allow you to create more Items" (plaid.com/docs/account/billing, read
 // 2026-11-13). So a new connection is checked BEFORE its link is made, against every bank ever
-// connected (plaid_slots) plus links other people have open right now, and one person may use at
-// most REASON_PLAID_PER_PERSON of them (the owner is exempt). Signing in again to a bank already
-// connected (update mode) makes no new Item and is never checked.
+// connected (plaid_slots) plus links other people have open right now. There is no per-person limit
+// (owner, 2026-11-15: "don't put any cap on any bank limit for anybody"): anybody may connect as many
+// banks as the plan has room for. Signing in again to a bank already connected (update mode) makes no
+// new Item and is never checked.
 /** Banks ever connected through Reason, removed or not. */
 export const slotsUsed = () => Math.max(Number(q("SELECT COUNT(*) AS n FROM plaid_slots").get().n), Number(q("SELECT COUNT(*) AS n FROM plaid_items").get().n));
 const slotsOf = (c) => Number(q("SELECT COUNT(*) AS n FROM plaid_slots WHERE who = ?").get(clientUserId(c)).n);
 /** New-bank links still open (not finished, not expired), other than this person's: each may become an Item. */
 const openLinks = (exceptC = "") => Number(q("SELECT COUNT(*) AS n FROM plaid_links WHERE item_id = '' AND finished_at IS NULL AND expires_at > ? AND conversation_id != ?").get(clock.now(), exceptC).n);
-export const FULL_WORDS = "bank connections are full right now; I'll let you know when there's room";
-export const PER_PERSON_WORDS = () => `that's the most banks i can connect for one person right now (${config.plaidPerPerson}); I'll let you know when there's room`;
+/** Said when the plan's total is used up: a limit on all of Reason, not on this person. */
+export const FULL_WORDS = "i can't connect a new bank right now: reason has used every bank connection its current plan allows. that's a limit for everyone, not just you. i'll text you as soon as there's room";
+/** The owner's line in the daily digest (src/opsdigest.js) when somebody was turned away: numbers only. */
+export const FULL_OWNER_LINE = (used, cap) => `Plaid: somebody asked to connect a bank and was told connections are full (${used} of ${cap} bank connections on the plan used). They are texted once there is room: raise REASON_PLAID_PLAN_ITEMS after raising the Plaid plan.`;
 /** May `c` connect one more bank now? A fresh link of theirs replaces their own open one, so that is not counted. */
 export function connectRoom(c) {
   const cap = config.plaidPlanItems, used = slotsUsed();
   if (used + openLinks(c) + 1 > cap) return { ok: false, why: "full", used, cap };
-  let owner = false;
-  try { owner = !!accounts.ownerOf(c).isOperator; } catch { owner = false; }
-  if (!owner && slotsOf(c) + 1 > config.plaidPerPerson) return { ok: false, why: "per_person", used, cap };
   return { ok: true, used, cap };
 }
 const wait = (c) => q("INSERT INTO plaid_waits (conversation_id, asked_at) VALUES (?, ?) ON CONFLICT (conversation_id) DO UPDATE SET asked_at = excluded.asked_at, told_at = NULL").run(c, clock.now());
@@ -303,7 +304,13 @@ const firstTime = (c) => slotsOf(c) === 0 && !q("SELECT 1 FROM plaid_items WHERE
 export async function createLink(c, { itemId = "" } = {}) {
   if (!itemId) {
     const room = connectRoom(c);
-    if (!room.ok) { wait(c); logFn({ plaid_connect_refused: room.why, used: room.used, cap: room.cap }); return { ok: false, error: room.why === "full" ? "connections_full" : "per_person_limit" }; }
+    if (!room.ok) {
+      wait(c); logFn({ plaid_connect_refused: room.why, used: room.used, cap: room.cap });
+      // The owner hears it in the next daily digest, one line however many asked (keyed); the plan
+      // meter's 50/80/100% texts (src/planmeter.js) still come live as the count climbs.
+      try { digest.hold({ key: "plaid:connections_full", text: FULL_OWNER_LINE(room.used, room.cap) }); } catch (e) { logFn({ plaid_full_notice_failed: String(e?.message ?? e).split("\n")[0].slice(0, 120) }); }
+      return { ok: false, error: "connections_full" };
+    }
   }
   const api = await client();
   const state = randomBytes(18).toString("base64url");
@@ -1030,8 +1037,8 @@ export async function runPlaidTool(name, input = {}, { conversationId: c, now = 
         const target = pickBank(c, mine, input.bank) ?? (stale.length === 1 && !input.bank ? stale[0] : null);
         const first = !target && firstTime(c);
         const link = target ? await askReconnect(c, target.itemId, { force: true }) : await createLink(c);
-        if (link.error === "connections_full" || link.error === "per_person_limit") {
-          return { ok: false, error: link.error, say_exactly: link.error === "connections_full" ? FULL_WORDS : PER_PERSON_WORDS(), say: "No link was made. Send say_exactly as it is, and nothing else about connecting a bank." };
+        if (link.error === "connections_full") {
+          return { ok: false, error: link.error, say_exactly: FULL_WORDS, say: "No link was made. Send say_exactly as it is, and nothing else about connecting a bank." };
         }
         if (!link.ok) return { ok: false, error: link.error, say: "The link could not be made just now. Say so in one line and offer to try again in a minute." };
         return { ok: true, url: link.url, minutes: LINK_TTL_S / 60, ...(target ? { reconnecting: target.institution } : {}), ...(first ? { tell_first: CONSENT_WORDS } : {}),
