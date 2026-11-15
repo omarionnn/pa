@@ -137,6 +137,43 @@ export function update(id, patch) {
 
 /** What one conversation may keep here at once (30 days of it). */
 export const QUOTA_BYTES = 300 * 1024 * 1024;
+/** How many of this conversation's uploads were kept since `since` and pass `pred` (src/pictureout.js's day count). */
+export function countSince(conversationId, since, pred = () => true) {
+  let n = 0;
+  let names = [];
+  try { names = readdirSync(dir()); } catch { return 0; }
+  for (const f of names) {
+    if (!f.endsWith(".json")) continue;
+    try { const m = JSON.parse(readPlain(join(dir(), f)).toString("utf8")); if (m.conversationId === conversationId && Number(m.at) >= since && pred(m)) n++; } catch { /* half-written; skip */ }
+  }
+  return n;
+}
+
+/**
+ * Their delete (src/data.js deleteData): every upload of theirs, file and record, or every upload of
+ * everybody's when `conversationId` is null. → { listed, files_deleted, failed }
+ */
+export function forget(conversationId = null) {
+  const out = { listed: 0, files_deleted: 0, failed: [] };
+  let names = [];
+  try { names = readdirSync(dir()); } catch { return out; }
+  for (const f of names) {
+    if (!f.endsWith(".json")) continue;
+    const id = f.slice(0, -5);
+    if (!ID.test(id)) continue;
+    let m = null;
+    try { m = JSON.parse(readPlain(join(dir(), f)).toString("utf8")); } catch { m = null; }
+    if (conversationId && m?.conversationId !== conversationId) continue;
+    out.listed++;
+    try {
+      if (m?.ext) rmSync(filePath(m), { force: true });
+      rmSync(join(dir(), f), { force: true });
+      out.files_deleted++;
+    } catch (e) { out.failed.push({ id, error: String(e?.message ?? e).split("\n")[0] }); }
+  }
+  return out;
+}
+
 /** The bytes this conversation's uploads take now. */
 export function keptBytes(conversationId) {
   let total = 0;

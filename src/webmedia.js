@@ -304,6 +304,8 @@ export async function webMediaRoute({ path, method, headers = {}, readBody, log 
   // picture send_picture fetched and kept so the provider sends Reason's copy (src/pictureout.js, `public: "picture"`).
   if (!account && (m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/[^/]*)?$/.exec(path))) {
     const rec = uploads.meta(m[1]);
+    // Past its 30 days it is not served, whether or not the hourly prune has got to it yet.
+    if (rec && !(clock.now() - Number(rec.at) <= uploads.KEEP_MS)) return notFound();
     return rec?.public === "table" || rec?.public === "card" || rec?.public === "picture" ? serveUpload(rec, { headers, method }) : notFound();
   }
   if (!account) return notFound();

@@ -32,6 +32,8 @@ import { DELIVERED_STATUSES } from "./outbox.js";
 export const MAX_BYTES = 10 * 1024 * 1024;
 export const FETCH_TIMEOUT_MS = 10_000;
 export const WATCH_MS = 75_000;
+/** The most pictures one person's turns may fetch and keep here in a day: Reason's host is not a mirror. */
+export const PICTURES_PER_DAY = 40;
 
 export const FETCH_FAILED_LINE = (link) => `I couldn't send that picture here, so here's the link:\n${link}`;
 export const DIDNT_ARRIVE_LINE = (link) => `That picture didn't go through, here's the link:\n${link}`;
@@ -86,6 +88,10 @@ async function readCapped(res, max) {
  * filename, bytes } or { ok: false, why, refused? } (`refused`: an address the guard will not fetch at all).
  */
 export async function rehost({ url, conversationId, fetchImpl = null, timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_BYTES, store = uploads.store }) {
+  // Counted before anything is fetched: past the day's number nothing leaves this machine for it.
+  if (uploads.countSince(conversationId, clock.now() - 24 * 60 * 60_000, (m) => m.public === "picture") >= PICTURES_PER_DAY) {
+    return { ok: false, limited: true, why: `${PICTURES_PER_DAY} pictures in a day is the most Reason sends from its own copies` };
+  }
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   timer?.unref?.();
@@ -131,6 +137,15 @@ export function noteStatus(conversationId, outboxId, status) {
 }
 
 const arrived = (s) => DELIVERED_STATUSES.has(String(s ?? "").toUpperCase());
+// Sendblue: DELIVERED is iMessage's (and RCS's) last word; SENT is the last word only for SMS, or for a
+// phone not on iMessage. So an iMessage picture still at SENT after its minute has not been seen to arrive.
+// When the service is not known (the lookup did not say), SENT counts, as it does for every text.
+const arrivedBy = (s, service, downgraded) => {
+  const st = String(s ?? "").toUpperCase();
+  if (st === "DELIVERED") return true;
+  if (st !== "SENT") return false;
+  return !(/^imessage$/i.test(String(service ?? "")) && !downgraded);
+};
 
 /**
  * Settle every watch that is due. `tell(conversationId, text, meta)` is the runtime's code line
@@ -144,15 +159,17 @@ export async function pass({ router, tell, now = clock.now(), log = () => {} }) 
     try {
       const row = w.outbox_id ? db.getOutbound(w.outbox_id) : null;
       let status = String(row?.delivery_status || w.status || "").toUpperCase();
-      // No word yet on a row the provider took: ask it (Sendblue GET /api/status), once, now.
-      if (!arrived(status) && status !== "ERROR" && row?.state === "sent" && row.message_id) {
+      let service = null, downgraded = false;
+      // Not DELIVERED yet on a row the provider took: ask it (Sendblue GET /api/status), once, now. SENT is
+      // asked about too: whether it is the last word depends on the service it went by.
+      if (status !== "DELIVERED" && status !== "ERROR" && row?.state === "sent" && row.message_id) {
         const ch = router?.get?.(row.channel);
         if (typeof ch?.messageStatus === "function") {
           const asked = await ch.messageStatus(row.message_id).catch(() => null);
-          if (asked?.ok && asked.status) status = String(asked.status).toUpperCase();
+          if (asked?.ok && asked.status) { status = String(asked.status).toUpperCase(); service = asked.service ?? null; downgraded = !!asked.was_downgraded; }
         }
       }
-      if (row?.state === "sent" && arrived(status)) {
+      if (row?.state === "sent" && arrived(status) && arrivedBy(status, service, downgraded)) {
         q("UPDATE picture_watches SET settled_at = ?, outcome = 'delivered', status = ? WHERE id = ? AND conversation_id = ?").run(now, status, w.id, w.conversation_id);
         out.delivered++;
         continue;

@@ -10331,6 +10331,7 @@ function flightToday(c) {
   try { return new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: tz }); } catch { return accounts.today(); }
 }
 
+let pictureLinkSeq = 0;
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
   switch (name) {
     case "plan_create": {
@@ -11974,7 +11975,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // No picture, and no pretending: the link as text, with a line that says so. Code's words.
         let t;
         try {
-          t = await router.send({ channel: channelName, to, text: pictureout.FETCH_FAILED_LINE(url), chatId, conversationId: c, toOwner: true, idempotencyKey: `picture-link:${c}:${clock.now()}` });
+          t = await router.send({ channel: channelName, to, text: pictureout.FETCH_FAILED_LINE(url), chatId, conversationId: c, toOwner: true, idempotencyKey: `picture-link:${c}:${clock.now()}:${++pictureLinkSeq}` });
         } catch (e) { t = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
         if (!t?.ok && !t?.queued) return { ok: false, error: t?.error ?? "not sent", note: "Neither the picture nor its link went. Say that plainly." };
         return { ok: false, picture_sent: false, link_sent: true, why: kept.why,

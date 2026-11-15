@@ -970,7 +970,10 @@ export class SendblueChannel extends Channel {
     try { json = JSON.parse(await res.text()); } catch { /* reported below */ }
     const status = json?.status ?? json?.data?.status ?? null;
     if (!res.ok || !status) return { ok: false, error: `Sendblue would not say (HTTP ${res.status})` };
-    return { ok: true, status: String(status).toUpperCase(), error: json?.error_message ?? json?.data?.error_message ?? null };
+    const service = json?.service ?? json?.data?.service ?? null;
+    const downgraded = json?.was_downgraded ?? json?.data?.was_downgraded ?? null;
+    return { ok: true, status: String(status).toUpperCase(), error: json?.error_message ?? json?.data?.error_message ?? null,
+      ...(service ? { service: String(service) } : {}), ...(downgraded ? { was_downgraded: true } : {}) };
   }
 
   /**

@@ -231,3 +231,88 @@ test("Sendblue's status lookup is GET /api/status?handle=, read without throwing
     Object.assign(config, { sendblueKeyId: was.k, sendblueSecretKey: was.s, sendblueFrom: was.f, sendblueWebhookSecret: was.w });
   }
 });
+
+// ---------------------------------------------------------------- review holes (security review, 2026-11-14)
+test("iMessage: SENT is not arrived (DELIVERED is its last word); SMS: SENT is its last word", async () => {
+  // Sendblue: SENT is terminal for SMS (or a phone not on iMessage); DELIVERED is terminal for iMessage.
+  const h = harness();
+  await send(h, CDN, fetchWith());
+  const row = db.outboundUnder(`picture:${C}:`)[0];
+  outbox.noteDelivery({ channel: "fake", messageId: row.message_id, status: "SENT" });
+  h.fake.messageStatus = async (id) => { h.fake.lookups.push(id); return { ok: true, status: "SENT", service: "iMessage" }; };
+  clock.skip(pictureout.WATCH_MS + 1000);
+  const r = await pictureout.pass({ router: h.router, tell: h.tell });
+  assert.equal(h.fake.lookups.length, 1, "SENT alone: the provider is asked which service it went by");
+  assert.equal(r.told, 1, "an iMessage picture still only SENT after its minute gets the link");
+  assert.deepEqual(h.told.map(t => t.text), [pictureout.DIDNT_ARRIVE_LINE(CDN)]);
+
+  const h2 = harness();
+  await send(h2, CDN, fetchWith());
+  const row2 = db.outboundUnder(`picture:${C}:`).at(-1);
+  outbox.noteDelivery({ channel: "fake", messageId: row2.message_id, status: "SENT" });
+  h2.fake.messageStatus = async (id) => { h2.fake.lookups.push(id); return { ok: true, status: "SENT", service: "SMS" }; };
+  clock.skip(pictureout.WATCH_MS + 1000);
+  const r2 = await pictureout.pass({ router: h2.router, tell: h2.tell });
+  assert.equal(r2.delivered, 1, "SMS: SENT is as far as it goes");
+  assert.deepEqual(h2.told, []);
+});
+
+test("a kept copy is gone with their data, and is not served past its 30 days", async () => {
+  const uploads = await import("../src/webuploads.js");
+  const { deleteData } = await import("../src/data.js");
+  const mine = await pictureout.rehost({ url: CDN, conversationId: C, fetchImpl: fetchWith() });
+  const theirs = await pictureout.rehost({ url: CDN, conversationId: "dm:someone-else", fetchImpl: fetchWith() });
+  assert.equal(mine.ok && theirs.ok, true);
+  const path = (k) => new URL(k.url).pathname;
+  assert.equal((await webMediaRoute({ path: path(mine), method: "GET", headers: {} })).status, 200);
+  const served = await webMediaRoute({ path: path(mine), method: "GET", headers: {} });
+  assert.equal(served.headers["Content-Type"], "image/png");
+  assert.equal(served.headers["X-Content-Type-Options"], "nosniff");
+  const out = await deleteData({ conversation: C, fetchImpl: async () => new Response("{}") });
+  assert.equal(uploads.meta(mine.id), null, "their kept picture's record is gone");
+  assert.equal((await webMediaRoute({ path: path(mine), method: "GET", headers: {} })).status, 404, "and it is no longer served");
+  assert.ok(out.uploads?.files_deleted >= 1, JSON.stringify(out.uploads));
+  assert.notEqual(uploads.meta(theirs.id), null, "somebody else's is untouched");
+  // Past its 30 days it is not served, whether or not the hourly prune has run yet.
+  clock.skip(uploads.KEEP_MS + 60_000);
+  assert.equal((await webMediaRoute({ path: path(theirs), method: "GET", headers: {} })).status, 404);
+});
+
+test("at most PICTURES_PER_DAY kept per person in a day; past that nothing is fetched", async () => {
+  const other = "dm:bulk";
+  for (let i = 0; i < pictureout.PICTURES_PER_DAY; i++) {
+    const r = await pictureout.rehost({ url: CDN, conversationId: other, fetchImpl: fetchWith() });
+    assert.equal(r.ok, true, `picture ${i + 1}`);
+  }
+  const f = fetchWith();
+  const over = await pictureout.rehost({ url: CDN, conversationId: other, fetchImpl: f });
+  assert.equal(over.ok, false);
+  assert.equal(over.limited, true);
+  assert.deepEqual(f.calls, [], "not even fetched");
+  assert.equal((await pictureout.rehost({ url: CDN, conversationId: "dm:another", fetchImpl: fetchWith() })).ok, true, "somebody else is unaffected");
+  clock.skip(24 * 60 * 60_000 + 1000);
+  assert.equal((await pictureout.rehost({ url: CDN, conversationId: other, fetchImpl: fetchWith() })).ok, true, "a day later, again");
+});
+
+test("an SVG, or HTML served as an image, is never kept", async () => {
+  for (const [why, f] of [
+    ["svg", fetchWith({ type: "image/svg+xml", body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>') })],
+    ["html as jpeg", fetchWith({ type: "image/jpeg", body: Buffer.from("<!doctype html><script>alert(1)</script>") })],
+  ]) {
+    const r = await pictureout.rehost({ url: CDN, conversationId: C, fetchImpl: f });
+    assert.equal(r.ok, false, why);
+  }
+});
+
+test("address forms that reach a private machine are refused (decimal, octal, hex, IPv6-mapped, a name resolving private)", async () => {
+  const { publicAddresses } = await import("../src/netguard.js");
+  for (const url of ["https://2130706433/a.png", "https://0177.0.0.1/a.png", "https://0x7f.1/a.png", "https://[::ffff:127.0.0.1]/a.png", "https://[::ffff:a9fe:a9fe]/a.png", "https://[fd00:ec2::254]/a.png", "https://[::1]/a.png", "https://0/a.png", "https://user:pw@cdn.shop.example/a.png", "http://cdn.shop.example/a.png"]) {
+    const f = fetchWith();
+    const r = await pictureout.rehost({ url, conversationId: C, fetchImpl: f });
+    assert.equal(r.ok, false, url);
+    assert.equal(r.refused, true, url);
+    assert.deepEqual(f.calls, [], `${url}: never fetched`);
+  }
+  // A public-looking name whose DNS answer is private (rebinding) is refused; the fetch is pinned to what was checked.
+  assert.equal(await publicAddresses("rebind.example", { lookup: async () => [{ address: "93.184.216.34", family: 4 }, { address: "169.254.169.254", family: 4 }] }), null);
+});
