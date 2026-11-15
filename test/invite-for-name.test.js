@@ -251,7 +251,7 @@ test("my invites says which unused link was for whom, and never who claimed one"
   assert.doesNotMatch(all, /Esi|Someone Else|6465550199|redeemed_by/, "nothing about who joined");
   assert.equal(db.getInvite(KOFI_C, b.number).for_name, null, "and the name is not kept once it is claimed");
   const desc = TOOLS.find(t => t.name === "invites_list").description;
-  assert.match(desc, /the one for Dalen hasn't been used yet/);
+  assert.match(desc, /the one for <their name> hasn't been used yet/);
   assert.match(desc, /Never say or guess who used a claimed link/);
 });
 

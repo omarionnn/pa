@@ -4692,7 +4692,7 @@ export const tools = [
     name: "invites_list",
     description: "Their invites: every invite link they have made and its state (unused, canceled or redeemed), how many invites they have left, and any request for more that is still pending."
       + " Use when they ask about their invites in any words — 'my invites', 'how many invites do I have', 'did anyone use my link'. Read this rather than remembering; links and counts change."
-      + " Who claimed a link is deliberately not in it. An unused link they made for somebody carries `for`, the name THEY gave it: say it that way ('the one for Dalen hasn't been used yet'). Never say or guess who used a claimed link."
+      + " Who claimed a link is deliberately not in it. An unused link they made for somebody carries `for`, the name THEY gave it: say it that way (the one for <their name> hasn't been used yet). Never say or guess who used a claimed link."
       + " Answer in a line or two, the way a friend would: how many they have left, any link that's out and not used yet and roughly when it went (a day, not a timestamp), and offer to make another if they have any left."
       + " Never list links as numbered rows and never show a link's number; the number is only for invite_link_cancel.",
     input_schema: { type: "object", properties: {} },
@@ -4701,13 +4701,13 @@ export const tools = [
     name: "invite_link_create",
     description: "Make one invite link for them to send a friend. Each link is single-use and gives whoever claims it their own Reason — not a waitlist spot. Links never expire; opening one does not use it up; it is spent only when someone joins with it."
       + " Use when they want to invite someone or ask for a link."
-      + " WHO IT'S FOR: a link made for somebody greets them by name on its card. If they already said who ('make an invite for Dalen', 'one for my sister Ama'), pass that first name as for_name and the link goes out now, no question. If they did not say, call this with neither field: it says needs_for, and you ask ONCE, warmly and in your own words, who it's for (a first name is enough) so you can make it for them. When they answer, read what they meant, however they put it, and call this again in that same reply: a name → for_name; 'just the link', 'doesn't matter', 'a few people', a shrug → for_nobody: true, a plain link. Never ask twice, never a dead end. Several people ('Kofi and Ama', 'three links') → ONE question covering them all, then one call per link, each with its own for_name when names were given."
+      + " WHO IT'S FOR: a link made for somebody greets them by name on its card. If they already said who (an invite for <a name>, one for my sister <a name>), pass that first name as for_name and the link goes out now, no question. If they did not say, call this with neither field: it says needs_for, and you ask ONCE, warmly and in your own words, who it's for (a first name is enough) so you can make it for them. When they answer, read what they meant, however they put it, and call this again in that same reply: a name → for_name; 'just the link', 'doesn't matter', 'a few people', a shrug → for_nobody: true, a plain link. Never ask twice, never a dead end. Several people (two names at once, 'three links') → ONE question covering them all, then one call per link, each with its own for_name when names were given."
       + " If it says needs_name, ask them once, warmly and in your own words, what name their friends should see on it. When they answer — read what they meant, however they put it — save it with my_name and call this again in that same reply, so the link goes out right then: never a second ask, never a dead end. The name on the card is the saved one; if they say they want a different name, save it with my_name and new links and cards use it."
       + " Write one short line first saying it's an invite for a friend to pass on, in your own words (never quote a command), then the link exactly as returned, alone on its own line with nothing after it — it goes out as its own message, so forwarding it shows the card.",
     input_schema: {
       type: "object",
       properties: {
-        for_name: { type: "string", description: "The first name of the ONE person this link is for, as they said it ('Dalen', 'Ama'). Just the name: not 'my sister', not a message." },
+        for_name: { type: "string", description: "The first name of the ONE person this link is for, as they said it. Just the name: not 'my sister', not a message." },
         for_nobody: { type: "boolean", description: "True when they said it's for nobody in particular or would rather not say: a plain link, no question." },
       },
     },
