@@ -1000,8 +1000,11 @@ export const config = {
   // it: one reply ≈120k input tokens, a p50 active person ≈6 turns a day (≈0.8M), p90 ≈1.6M, and a
   // Pro plan carries ~6–11 people with the WEEKLY cap the one that binds. A follow-up is ~1–2 extra
   // turns, so 2 a day is at most a ~4-turn (~0.5M) bump on a heavy research day, and only on days
-  // someone asks big questions. The owner gets 5 because the owner tests it and pays for it. Past the
-  // cap the answer is what it always was: based on what it got, with an offer to look further.
+  // someone asks big questions. Past the cap the answer is what it always was: based on what it got,
+  // with an offer to look further. Since 2026-11-15 the owner and anybody free for good (invited) have
+  // no daily count at all (src/tools.js researchFollowUp): these two numbers bind the monthly free tier
+  // and paying accounts only. The owner one is kept for REASON_PAYWALL=owner, where the owner tries the
+  // paywall on himself and is not free for good.
   researchContinuePerDay: Number(process.env.REASON_RESEARCH_CONTINUE_PER_DAY || 2),
   researchContinuePerDayOwner: Number(process.env.REASON_RESEARCH_CONTINUE_PER_DAY_OWNER || 5),
   researchMaxRetries: Number(process.env.REASON_RESEARCH_MAX_RETRIES || 2),

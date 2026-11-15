@@ -117,7 +117,7 @@ export async function rehost({ url, conversationId, fetchImpl = null, timeoutMs 
     if (body.over) return { ok: false, why: `the picture is bigger than ${Math.round(maxBytes / 1048576)} MB` };
     const mime = sniff(body.bytes);
     if (!READABLE.has(mime)) return { ok: false, why: "that address is not a picture" };
-    const m = store({ conversationId, bytes: body.bytes, name: `picture.${EXT[mime]}`, extra: { public: "picture" } });
+    const m = store({ conversationId, bytes: body.bytes, name: `picture.${EXT[mime]}`, extra: { public: "picture" }, quota: capped });
     if (!m || m.error) return { ok: false, why: `it could not be kept (${m?.error ?? "no record"})` };
     return { ok: true, url: uploads.uploadUrl(m.id, m.name), file: uploads.filePath(m), id: m.id, mime, filename: m.name, bytes: body.bytes.length };
   } finally {

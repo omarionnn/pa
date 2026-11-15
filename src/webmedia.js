@@ -31,6 +31,7 @@ import { fitPhoto, FIT_BYTES } from "./webshrink.js";
 import { readCookie } from "./pages/access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount } from "./pages/websignin.js";
 import { readPlain } from "./restfiles.js";
+import * as plan from "./plan.js";
 
 /** Uploads per conversation per ten minutes. */
 export const UPLOAD_LIMIT = 40;
@@ -111,10 +112,11 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
     body = f.bytes;
     if (f.changed) name = (name.replace(/\.[A-Za-z0-9]{2,5}$/, "") || "photo") + ".jpg";
   }
-  const m = uploads.store({ conversationId: conv, bytes: body, name: voice ? `voice-note` : name, voice, extra: voice && seconds ? { seconds } : {} });
+  // No per-person total for the owner or anybody free for good (src/plan.js freeForGood).
+  const m = uploads.store({ conversationId: conv, bytes: body, name: voice ? `voice-note` : name, voice, extra: voice && seconds ? { seconds } : {}, quota: !plan.freeForGood(conv) });
   if (m.error) {
     log({ web_upload_refused: m.error, bytes: bytes.length });
-    return json(m.error === "too_big" ? 413 : m.error === "unsupported" ? 415 : 400, { ok: false, error: m.error, ...(m.kind ? { kind: m.kind } : {}) });
+    return json(m.error === "too_big" ? 413 : m.error === "unsupported" ? 415 : m.error === "disk_full" ? 507 : 400, { ok: false, error: m.error, ...(m.kind ? { kind: m.kind } : {}), ...(m.say ? { say: m.say } : {}) });
   }
   let rec = m;
   if (m.kind === "pdf") { const pages = await pagesOf(bytes, readPdf); if (pages) rec = uploads.update(m.id, { pages }) ?? m; }

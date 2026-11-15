@@ -217,12 +217,24 @@ test("per-day cap: a third follow-up is refused for a non-owner, and the next da
   clock.skip(24 * 60 * 60_000);
   assert.equal((await ask(4)).follow_up?.scheduled, true, "a new day, a new allowance");
 
-  // The owner's allowance is bigger.
-  const own = [];
-  for (let i = 0; i < 6; i++) {
-    own.push((await call(OWNER, { question: `owner ${i}?`, kind: "fact", queries: ["o1", "o2"], new_subject: true }, deps(p, { maxSearches: 1 }))).follow_up?.scheduled);
+  // The owner and anybody invited have no daily count (owner 2026-11-15): an eighth is still scheduled.
+  const INVITED = "dm:research-room-invited";
+  db.upsertAccount({ conversationId: INVITED, channel: "test", address: "+12025550103", name: "Kofi", isOperator: false });
+  db.db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(OWNER, INVITED);
+  for (const who of [OWNER, INVITED]) {
+    const got = [];
+    for (let i = 0; i < 8; i++) {
+      got.push((await call(who, { question: `${who} ${i}?`, kind: "fact", queries: ["o1", "o2"], new_subject: true }, deps(p, { maxSearches: 1 }))).follow_up?.scheduled);
+    }
+    assert.deepEqual(got, Array(8).fill(true), who);
   }
-  assert.deepEqual(own, [true, true, true, true, true, false]);
+  // A paying account (and the monthly free tier, which is not free for good either) keeps the 2 a day.
+  const PAYER = "dm:research-room-payer";
+  db.upsertAccount({ conversationId: PAYER, channel: "test", address: "+12025550104", name: "Efua", isOperator: false });
+  db.db.prepare("INSERT INTO plan (conversation_id, status, first_seen_at, updated_at) VALUES (?, 'paid', ?, ?)").run(PAYER, clock.now(), clock.now());
+  const paid = [];
+  for (let i = 0; i < 3; i++) paid.push((await call(PAYER, { question: `payer ${i}?`, kind: "fact", queries: ["o1", "o2"], new_subject: true }, deps(p, { maxSearches: 1 }))).follow_up?.scheduled);
+  assert.deepEqual(paid, [true, true, false]);
 });
 
 // ---------------------------------------------------------------------------

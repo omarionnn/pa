@@ -8888,16 +8888,21 @@ function researchTaskLive(run) {
  * a WHERE so it can never be set twice — which is also why a follow-up's own carry-on cannot start
  * another); a deep run never gets one (its task already wakes for it); and a person gets
  * researchContinuePerDay of them a day on the install's day (owner: researchContinuePerDayOwner),
- * because each one is another turn or two on the subscription. Past the cap: today's behaviour.
+ * because each one is another turn or two on the subscription. Past the cap: today's behaviour. The
+ * owner and anybody free for good (src/plan.js freeForGood) have no daily count, so for them only the
+ * one-per-run rule bounds it.
  */
 function researchFollowUp(c, out, ctx) {
   if (!out?.ok || !out.more || !out.queries_left?.length) return {};
   const run = db.getResearch(c, out.research_id);
   if (!run || run.state !== "open" || run.task_id || run.continue_task_id) return {};
   const day = trust.spendDay();
+  // No daily count for the owner or anybody free for good (came in by invite), owner 2026-11-15: "lift
+  // the research limits". Each run still gets at most one follow-up (continue_task_id, below).
+  const uncapped = plan.freeForGood(c);
   const cap = accounts.ownerOf(c).isOperator ? config.researchContinuePerDayOwner : config.researchContinuePerDay;
   const used = db.researchContinuationsOn(c, day);
-  if (used >= cap) {
+  if (!uncapped && used >= cap) {
     return {
       follow_up: { scheduled: false, why: "daily_limit", used_today: used, limit: cap },
       follow_up_note: "Nothing more will run on this by itself today: the background follow-ups for today are used up."

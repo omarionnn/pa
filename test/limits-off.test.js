@@ -218,3 +218,65 @@ test("review: nobody else's call changed, and nothing a stranger hears still say
   assert.match(price, /20 conversations and 2 calls free every month/);
   assert.doesNotMatch(PUBLIC_FACTS.join(" "), /\b5 minutes\b|five minutes/);
 });
+
+// ---------------------------------------------------------------- uploads (owner 2026-11-15: "lift the upload limits")
+
+const uploads = await import("../src/webuploads.js");
+const GB = 1024 ** 3;
+const roomyDisk = () => ({ blocks: 1000 * GB / 4096, bsize: 4096, bavail: 500 * GB / 4096 });
+const big = (mb) => { const b = Buffer.alloc(mb * 1024 * 1024, 7); PNG.copy(b); return b; };
+
+test("uploads: past 300 MB kept, the owner's and the invited person's next file is kept; the monthly free tier and a payer are refused as before; the 20 MB a file stays for everyone", async () => {
+  const was = uploads.diskStats.statfs;
+  uploads.diskStats.statfs = roomyDisk;
+  try {
+    assert.equal(uploads.QUOTA_BYTES, 300 * 1024 * 1024);
+    for (const c of [OWNER, INVITED, FREE, PAID]) {
+      // 300 MB already kept (16 files of ~19 MB), stored without the quota so the count is the same for all four.
+      for (let i = 0; i < 16; i++) assert.ok(!uploads.store({ conversationId: c, bytes: big(19), name: `p${i}.png`, quota: false }).error);
+      assert.ok(uploads.keptBytes(c) > uploads.QUOTA_BYTES - 19 * 1024 * 1024);
+      const next = uploads.store({ conversationId: c, bytes: big(19), name: "next.png", quota: !plan.freeForGood(c) });
+      if (c === OWNER || c === INVITED) assert.ok(next.id && !next.error, `${c}: kept past 300 MB`);
+      else assert.deepEqual([next.error, next.limit], ["too_big", uploads.QUOTA_BYTES], `${c}: the 300 MB still holds`);
+      // The quota is on by default: a caller that says nothing is capped, as before.
+      assert.equal(uploads.store({ conversationId: c, bytes: big(19), name: "default.png" }).error, "too_big");
+      // The per-file size is not what was lifted.
+      assert.equal(uploads.store({ conversationId: c, bytes: big(21), name: "huge.png", quota: false }).error, "too_big", `${c}: 20 MB a file`);
+    }
+    assert.equal(uploads.KEEP_MS, 30 * 24 * 60 * 60_000, "kept 30 days, as before");
+  } finally { uploads.diskStats.statfs = was; uploads.forget(null); }
+});
+
+test("uploads: the disk floor is for everyone, the owner too, and lifts by itself; REASON_UPLOAD_DISK_FLOOR_GB moves it", () => {
+  const was = uploads.diskStats.statfs;
+  try {
+    assert.equal(uploads.diskFloorBytes(), 5 * GB, "5 GB by default");
+    uploads.diskStats.statfs = () => ({ blocks: 72 * GB / 4096, bsize: 4096, bavail: 4.5 * GB / 4096 });
+    for (const c of [OWNER, INVITED, FREE, PAID]) {
+      const r = uploads.store({ conversationId: c, bytes: PNG, name: "a.png", quota: false });
+      assert.equal(r.error, "disk_full", c);
+      assert.equal(r.say, uploads.DISK_FULL_WORDS);
+    }
+    process.env.REASON_UPLOAD_DISK_FLOOR_GB = "4";
+    assert.ok(!uploads.store({ conversationId: INVITED, bytes: PNG, name: "b.png", quota: false }).error, "a lower floor lets it through");
+    process.env.REASON_UPLOAD_DISK_FLOOR_GB = "0";
+    assert.equal(uploads.diskFloorBytes(), 0);
+    delete process.env.REASON_UPLOAD_DISK_FLOOR_GB;
+    uploads.diskStats.statfs = () => { throw new Error("no statfs here"); };
+    assert.ok(!uploads.store({ conversationId: INVITED, bytes: PNG, name: "c.png", quota: false }).error, "a disk that can't be read is not a reason to refuse");
+    uploads.diskStats.statfs = roomyDisk;
+    assert.ok(!uploads.store({ conversationId: FREE, bytes: PNG, name: "d.png" }).error, "room again");
+  } finally { uploads.diskStats.statfs = was; delete process.env.REASON_UPLOAD_DISK_FLOOR_GB; uploads.forget(null); }
+});
+
+test("pictures Reason keeps to send ride the same rule: no 300 MB for the invited person, still for the monthly free tier", async () => {
+  const was = uploads.diskStats.statfs;
+  uploads.diskStats.statfs = roomyDisk;
+  try {
+    for (const c of [INVITED, FREE]) for (let i = 0; i < 16; i++) uploads.store({ conversationId: c, bytes: big(19), name: `p${i}.png`, quota: false });
+    assert.equal((await pictureout.rehost({ url: CDN, conversationId: INVITED, fetchImpl: fetchWith(), capped: false })).ok, true);
+    const free = await pictureout.rehost({ url: CDN, conversationId: FREE, fetchImpl: fetchWith(), capped: true });
+    assert.equal(free.ok, false);
+  } finally { uploads.diskStats.statfs = was; uploads.forget(null); }
+
+});
