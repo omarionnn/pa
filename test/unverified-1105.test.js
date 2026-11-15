@@ -435,3 +435,29 @@ test("the total of several receipts they sent, and per-store subtotals of them, 
   const listed = offers.guardReply(C, "$40.10 + $9.00 + $101.19 + $25.45 + $6.21 + $80.00 = $261.95");
   assert.equal(listed.recompose, null, JSON.stringify(listed.flags));
 });
+
+// Review of the receipts fix: the groupings are exact to the cent. With whole-dollar rounding the 63
+// sums of six receipts covered most whole dollars under their total, so an invented "$150" stood.
+test("receipt groupings count only to the cent: an invented whole-dollar subtotal, or a total with an unstated figure mixed in, is caught", () => {
+  offers.beginTurn(C, "and stores a and c together?");
+  const round = offers.guardReply(C, "Store A and Store C together come to about $150.");
+  assert.deepEqual(round.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$150"], JSON.stringify(round.flags));
+  offers.beginTurn(C, "what's the total of all of them");
+  const mixed = offers.guardReply(C, "All six come to $274.29."); // 261.95 + an unstated 12.34
+  assert.deepEqual(mixed.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$274.29"], JSON.stringify(mixed.flags));
+});
+
+test("a receipt counts by its labelled total, not a larger cash-tendered line", () => {
+  const C2 = "conv-receipt-cash";
+  [["Total $40.10\nCash $50.00\nChange $9.90"], ["Subtotal $8.50\nTax $0.50\nTotal $9.00"]].forEach(([words], i) => db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, description, description_from, at)
+    VALUES (?, 'test', ?, 0, 'image', 'looked', ?, 'photo', ?)`).run(C2, `cash-${i}`, `A receipt. Words in it, verbatim:\n${words}`, clock.now() - (20 - i) * 60_000));
+  offers.beginTurn(C2, "total of both?");
+  const g = offers.guardReply(C2, "Both come to $49.10.");
+  assert.equal(g.flags.find(f => f.rule === "dollar_unsourced"), undefined, JSON.stringify(g.flags));
+  offers.beginTurn(C2, "total of both?");
+  const wrong = offers.guardReply(C2, "Both come to $59.00.");
+  assert.deepEqual(wrong.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$59.00"], JSON.stringify(wrong.flags));
+  offers.beginTurn(C2, "total of both?");
+  const about = offers.guardReply(C2, "Both come to about $49."); // the grand total, rounded, still stands
+  assert.equal(about.flags.find(f => f.rule === "dollar_unsourced"), undefined, JSON.stringify(about.flags));
+});
