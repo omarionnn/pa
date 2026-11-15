@@ -57,6 +57,9 @@ function harness() {
   return { router, fake };
 }
 
+// send_picture fetches the picture first and sends Reason's own copy (src/pictureout.js): a stub, never the network.
+const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005000201e2b4cd2a0000000049454e44ae426082", "hex");
+const pngFetch = async () => new Response(PNG, { status: 200, headers: { "content-type": "image/png" } });
 const LINK = "google flights, SEA to DC: https://www.google.com/travel/flights?q=SEA%20to%20DCA";
 
 for (const to of ["owner", "me", "self", "OWNER"]) {
@@ -89,14 +92,14 @@ test("a tester's thread with no number on file sends nothing, rather than fallin
 
 test("send_picture in a tester's thread goes to the tester", async () => {
   const { router, fake } = harness();
-  const out = await runTool("send_picture", { url: "https://example.com/cabin.jpg", caption: "the cabin" }, { conversationId: YAW_C, channels: router, messages: [] });
+  const out = await runTool("send_picture", { url: "https://example.com/cabin.jpg", caption: "the cabin" }, { conversationId: YAW_C, channels: router, messages: [], fetchImpl: pngFetch });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.deepEqual(fake.sent.map(s => s.to), [YAW]);
 });
 
 test("send_picture with a NO_REPLY caption sends the picture and no marker", async () => {
   const { router, fake } = harness();
-  const out = await runTool("send_picture", { url: "https://example.com/cabin.jpg", caption: "NO_REPLY" }, { conversationId: YAW_C, channels: router, messages: [] });
+  const out = await runTool("send_picture", { url: "https://example.com/cabin.jpg", caption: "NO_REPLY" }, { conversationId: YAW_C, channels: router, messages: [], fetchImpl: pngFetch });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(fake.sent.length, 1, "the picture still went");
   assert.doesNotMatch(JSON.stringify(fake.sent), /NO_REPLY/);

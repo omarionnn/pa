@@ -31,6 +31,7 @@ import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
 import * as tapbackack from "./tapbackack.js";
 import * as verifications from "./verifications.js";
+import * as pictureout from "./pictureout.js";
 import * as choices from "./choicecards.js";
 import * as tables from "./tableimage.js";
 import * as todo from "./todo.js";
@@ -2015,12 +2016,20 @@ export class Runtime extends EventEmitter {
     // never corrected again (the key prefix is skipped here).
     for (const row of db.ownUndeliveredUntold()) {
       if (String(row.idem_key ?? "").startsWith("delivery-failed:")) { db.markUndeliveredTold(row.id); continue; }
+      // A picture is watched by src/pictureout.js, which tells them with its link; never two lines about it.
+      if (String(row.idem_key ?? "").startsWith("picture:")) continue;
       if (!db.markUndeliveredTold(row.id)) continue;
       const r = await this._tell(row.conversation_id, outboxLib.undeliveredLine(row), { idempotencyKey: `delivery-failed:${row.id}` });
       if (r?.ok || r?.queued) { out.owner_told++; this.log({ outbox: row.id, undelivered_told: row.conversation_id }); }
       else this.log({ outbox: row.id, could_not_tell_undelivered: r?.error ?? "no reason given" });
     }
     return out;
+  }
+
+  /** Pictures send_picture handed over: DELIVERED says nothing more; anything else, one line with the link (src/pictureout.js). */
+  async pictureWatches({ now = clock.now() } = {}) {
+    try { return await pictureout.pass({ router: this.turnExtras?.channels ?? null, tell: (c, text, meta) => this._tell(c, text, meta), now, log: this.log }); }
+    catch (e) { this.log({ picture_watch_error: (e?.message ?? String(e)).split("\n")[0] }); return { error: true }; }
   }
 
   /** Checks left after an outward action, and the "quick correction:" line when one did not hold (src/verifications.js). */
@@ -2990,6 +2999,8 @@ export class Runtime extends EventEmitter {
     // Did what went out hold up? An email that bounced, an event that is gone, a text the carrier
     // refused: one "quick correction:" line each (REASON_QUICK_CORRECTION, src/verifications.js).
     const verified = await this.verifications();
+    // A picture that has had its minute: arrived, or one line with the link (src/pictureout.js).
+    const pictures = await this.pictureWatches();
     // Then anybody who is actually waiting on an answer right now.
     const held = await this.held();
     // Before the timers fire, so an occurrence that is already due goes out on this pass rather than
@@ -3074,7 +3085,7 @@ export class Runtime extends EventEmitter {
     const action_cards = this.cards();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, verified, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_scheduled, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, action_cards, retention };
+    return { undone, outbox, verified, pictures, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_scheduled, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, action_cards, retention };
   }
 
   start(everyMs = 15_000) {
