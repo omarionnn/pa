@@ -140,6 +140,9 @@ test("fitSections: rank 0 is never touched, order is kept, a section that runs o
 });
 
 test("a newest call with no notes still says when it was", () => {
+  // Midday in New York: on the real clock the call (begun about nine minutes before "now") fell on
+  // yesterday for the first minutes after midnight, and "today" did not match.
+  clock.skip(Date.UTC(2026, 10, 14, 17, 0) - clock.now());
   pastCall({ endedAgo: 6 * MIN, summary: "", transcript: "Them: hi\nReason: Hey." });
   const note = carry.earlierCallsNote(thisCall());
   assert.match(note, /today .*they called.*no notes were kept/);

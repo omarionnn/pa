@@ -452,12 +452,12 @@ const firstLine = (t) => `Reason: ${t}\nThem: hey, I wanted to ask you about som
 
 test("the opening fits the time of day in their zone and says 'again' only after a call that reached them (written lines: src/calls/greetings.js)", () => {
   const at = (h, m = 0) => Date.UTC(2026, 10, 11, h + 5, m); // New York, Wed Nov 11
-  const stock = () => db.setCallGreetings(C, { for: "Omari", morning: ["Morning, Omari!"], afternoon: ["Hey Omari, good afternoon!"], evening: ["Evening, Omari!"], night: ["Hey Omari, up late?"], again: ["Hey again, Omari!"], salute: ["Hey Omari"] });
+  const stock = () => db.setCallGreetings(C, { for: "Omari", morning: ["Morning, Omari!"], afternoon: ["Hey Omari, good afternoon!"], evening: ["Evening, Omari!"], night: ["Hey Omari, how's it going?"], again: ["Hey again, Omari!"], salute: ["Hey Omari"] });
   const greet = (now, direction = "in") => carry.greetingFor({ conversationId: C, name: "Omari", direction, now });
   stock(); assert.equal(greet(at(7)), "Morning, Omari!");
   stock(); assert.equal(greet(at(14)), "Hey Omari, good afternoon!");
   stock(); assert.equal(greet(at(19)), "Evening, Omari!");
-  stock(); assert.equal(greet(at(25)), "Hey Omari, up late?");
+  stock(); assert.equal(greet(at(25)), "Hey Omari, how's it going?");
   // Half an hour after a call that reached them: the "again" line, if carry-over's pick-up has no notes to use.
   db.db.exec("DELETE FROM calls"); stock();
   callAt(at(18), { transcript: firstLine("Evening, Omari!"), seconds: 60 });

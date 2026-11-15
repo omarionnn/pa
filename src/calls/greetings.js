@@ -55,6 +55,15 @@ const MONEYISH = /[$£€]|\b(?:dollars?|bucks|price|cost|paid|pay)\b/i;
 const PLACEISH = /\b(?:home|work|office|gym|school|store|shop|street|avenue|road|downtown|city|airport|station)\b/i;
 const CLAIMISH = /\b(?:done|booked|sent|ordered|scheduled|confirmed|found|finished|ready|already|reminder|news|update|i'?ve|i have|i got|i'?ll|i will|we'?ll|promise|checked|looked)\b/i;
 const MISSED = /\bmiss(?:ed|ing)?\b|what did we|what'd we|catch me up|fill me in/i;
+// A greeting is a hello at the start of a call, at any hour: never a wind-down or a goodnight (2026-11-15:
+// "hope you're settling in for a restful night", "I hope you're able to slow down and unwind now").
+const WINDDOWN = /\b(?:rest|restful|resting|sleep|sleepy|asleep|bed|bedtime|unwind(?:ing)?|wind(?:ing)? down|slow(?:ing)? down|settl(?:e|ing) in|goodnight|good night|nighty|sweet dreams|relax(?:ed|ing)?|tired|exhausted|nap|cozy|cosy|calm)\b/i;
+// About how they are ("still up?", "you sound tired"): a hello does not comment on them.
+const THEIR_STATE = /\b(?:still up|up late|you'?re up|awake|you sound|you seem|you look|you must be|long day|busy day|hard day|rough day|late one)\b/i;
+// Telling them how to feel or what to do.
+const TELLING = /\b(?:you should|you need to|you deserve|make sure|don'?t forget|remember to|be sure to|try to|take it easy|take care|go easy|enjoy (?:your|the|it)|get some|treat yourself|hope you(?:'re| are)? (?:able|feeling|getting|having|doing|enjoying|taking|settling|easing))\b/i;
+// The hello: a greeting word, or "good / nice / great / lovely to hear from you", or "how's it going".
+const HELLO = /\b(?:hey|hi|hiya|hello|howdy|yo|morning|afternoon|evening|good to (?:hear|have|talk)|nice to (?:hear|have|talk)|great to (?:hear|have|talk)|lovely to (?:hear|have|talk)|glad (?:you|to)|how(?:'s| is) it going|how are you|how(?:'s| is) (?:your|the|everything|things|life))\b/i;
 
 /**
  * May this line open their call? ≤ 12 words (≤ 5 for a salute); no number, time, price, place or claim
@@ -67,7 +76,9 @@ export function greetingOk(line, { first = "", nicknames = [], recent = [], salu
   const words = t.split(/\s+/);
   if (words.length > (salute ? 5 : 12)) return { ok: false, why: "too long" };
   if (/[\n"“”<>{}[\]]/.test(t)) return { ok: false, why: "markup" };
-  for (const [re, why] of [[NUMBERISH, "a number"], [TIMEISH, "a time"], [MONEYISH, "a price"], [PLACEISH, "a place"], [CLAIMISH, "a claim"], [MISSED, "what was missed"]]) if (re.test(t)) return { ok: false, why };
+  for (const [re, why] of [[NUMBERISH, "a number"], [TIMEISH, "a time"], [MONEYISH, "a price"], [PLACEISH, "a place"], [CLAIMISH, "a claim"], [MISSED, "what was missed"], [WINDDOWN, "a wind-down"], [THEIR_STATE, "about how they are"], [TELLING, "telling them how to feel"]]) if (re.test(t)) return { ok: false, why };
+  // A wish with no hello in it ("Robin, I hope tonight is kind to you") is no greeting.
+  if (!HELLO.test(t)) return { ok: false, why: "no hello" };
   if (salute && /\?/.test(t)) return { ok: false, why: "a salute asks nothing" };
   for (const n of nicknames) if (n && new RegExp(`(?<![\\p{L}])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "iu").test(t)) return { ok: false, why: "their name for the assistant" };
   // Any capitalised word after the first is their first name (or "I"): nobody else's name is said.
@@ -118,7 +129,8 @@ export function pickGreeting({ conversationId, name = "", kind = "greet", now = 
   const at = sameName ? lines.findIndex(l => greetingOk(l, { first, nicknames, recent, salute: kind === "salute" }).ok) : -1;
   const chosen = at >= 0 ? { line: lines[at], from: "written" } : plain;
   try {
-    const left = at >= 0 ? lines.filter((_, i) => i !== at) : lines;
+    // Lines that no longer pass the check go (written under an older instruction); one held back only as a recent repeat stays.
+    const left = lines.filter((l, i) => i !== at && (greetingOk(l, { first, nicknames, recent: [], salute: kind === "salute" }).ok));
     db.setCallGreetings(conversationId, { ...stock, [key]: left, recent: [chosen.line, ...recent].slice(0, RECENT) });
     if (!sameName || left.length < LOW) refill(conversationId, { name, log });
   } catch { /* the stock is a help; the plain line still goes */ }
@@ -129,7 +141,8 @@ export function pickGreeting({ conversationId, name = "", kind = "greet", now = 
 // ---------- written ahead, off the call's path ----------
 
 const SYSTEM = `You write the first words a friendly personal assistant says when it picks up (or places) a phone call with someone it knows well.`
-  + ` It opens the call: a hello, never a goodbye or a goodnight wish. Warm and natural, like a friend glad to hear from them, in plain everyday spoken English, not poetic. Each line is ONE short sentence of at most 12 words, ending in a full stop, an exclamation mark or one easy open question ("how's it going?").`
+  + ` Sound like a friend picking up the phone, glad to hear from them: short, upbeat and plain, 3 to 8 words, always with a hello in it ("Hey Sam, good to hear from you!").`
+  + ` It is the START of a conversation at any hour: the time of day may colour it lightly ("Evening, Sam!") but it never comments on how they are or should be, never tells them to rest, relax or wind down, and is never a goodbye, a goodnight or a wish on its own. Each line is ONE short sentence, ending in a full stop, an exclamation mark or one easy open question ("how's it going?").`
   + ` Use their first name in most lines (or none, if none is given), and never any other name or nickname.`
   + ` Never a fact, a number, a time, a price, a place, a claim that something was done, a promise, or anything about news.`
   + ` Never ask what you missed or ask them to catch you up. Every line different in wording from the others and from the recent ones given.`;
@@ -179,6 +192,28 @@ export async function writeGreetings(conversationId, { name = "", log = () => {}
   db.setCallGreetings(conversationId, next);
   log({ call_greetings_written: conversationId, kept: BANDS.map(b => next[b].length).concat(next.salute.length).join("/") });
   return { ok: true, stock: next };
+}
+
+/**
+ * Take out of one account's stock every line that fails today's check (written ahead under an older
+ * instruction). Returns { removed, low } — `low`: a band or the salutes left below LOW, to be written again.
+ */
+export function purgeStock(conversationId) {
+  const stock = db.callGreetings(conversationId);
+  const first = String(stock.for ?? "");
+  let nicknames = [];
+  try { nicknames = assistantNicknames(conversationId); } catch { nicknames = []; }
+  let removed = 0, low = false;
+  const next = { ...stock };
+  for (const key of [...BANDS, "salute"]) {
+    const lines = Array.isArray(stock[key]) ? stock[key] : [];
+    const kept = lines.filter(l => greetingOk(l, { first, nicknames, salute: key === "salute" }).ok);
+    removed += lines.length - kept.length;
+    if (kept.length < LOW) low = true;
+    next[key] = kept;
+  }
+  if (removed) db.setCallGreetings(conversationId, next);
+  return { removed, low };
 }
 
 /** For tests: forget the background writes in flight. */
