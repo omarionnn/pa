@@ -27,11 +27,11 @@ cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed '
   && REASON_DB_PATH=$(mktemp -d)/x.db node -e '
   const { runTool } = await import("./src/tools.js");
   const r = await runTool("timer_set", { fire_at: new Date(Date.now() + 864e5).toISOString(), note: "word ".repeat(500) },
-    { conversationId: "dm:owner", messages: [{ role: "user", content: "[Sat, Nov 7, 2026, 3:00 PM] Omari: remind me tomorrow" }] });
+    { conversationId: "dm:owner", messages: [{ role: "user", content: "[Sat, Nov 7, 2026, 3:00 PM] Owner: remind me tomorrow" }] });
   console.log(r.ok, r.input_shortened); process.exit(0)'
 ```
 
 Proves it: `true` and the "Shortened to fit … (2500 → 2000 …)" line. Also `fitLongText` directly with a
 small zod schema: an over-cap `note` is cut, an over-cap `then_call` is left for zod to refuse, and
 `confirm_request` cuts nothing. Driven 2026-11-07 (rel-1107): all three as stated; `test/fit-long.test.js`
-in a 70/70 run with the other #376 test files.
+in a 70/70 run with the other #376 test files. Again 2026-11-14 at `7d5b5f54`: the drive printed `true` + the line; `test/fit-long.test.js` 8/8.

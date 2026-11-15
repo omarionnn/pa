@@ -80,6 +80,9 @@ $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one tex
   "Could not resolve authentication method" (the key is blanked): the turn went to the API path, i.e.
   the call was not moved or stopped.
 
+- 2026-11-14 (`7d5b5f54`, evidence `*-g4-api-caps`): `spend-alert-drive.mjs` all ok again (same recipe); the
+  api-caps suites 49/49 (no paid call constructed on any backend).
+
 ## Gotchas
 
 - `caged.sh env` prints the DEFAULT run dir unless `REASON_VERIFY_RUN` is exported in the same

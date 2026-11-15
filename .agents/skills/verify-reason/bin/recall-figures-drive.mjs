@@ -5,7 +5,7 @@
 // that never name the operator (src/trust.js receiptFor), and own-files-only (src/ownfiles.js).
 //
 //   cd <repo> && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
-//     && REASON_DB_PATH=$(mktemp -d)/rf.db OPENAI_API_KEY= REASON_OWNER_NAME=Omari \
+//     && REASON_DB_PATH=$(mktemp -d)/rf.db OPENAI_API_KEY= REASON_OWNER_NAME=Owner \
 //        node .agents/skills/verify-reason/bin/recall-figures-drive.mjs        # "all ok"
 //
 // OPENAI_API_KEY blank on purpose: memory_search then answers by words (keywordHistory), which runs
@@ -81,7 +81,7 @@ for (const n of [1, 2]) {
 }
 
 // 5. Receipts say "them", never the operator's name.
-const owner = process.env.REASON_OWNER_NAME || "Omari";
+const owner = process.env.REASON_OWNER_NAME || "Owner";
 const rec = [
   trust.receiptFor("call_recording", { call_id: 73 }, { ok: true, seconds: 40, bytes: 4096, format: "m4a", file: "/x/call-73.m4a" }),
   trust.receiptFor("vault_enroll", {}, { ok: true, already_enrolled: true, card: "a Visa" }),

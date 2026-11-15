@@ -1,4 +1,4 @@
-# Flight booking — through Crossmint on the airline's own site; DARK; never "booked" without a ticket
+# Flight booking — through Crossmint on the airline's own site; owner only on live; never "booked" without a ticket
 
 Somebody picks a flight from a flight search and asks Reason to book it. `flight_book` re-checks the
 fare, checks the travelers were read back and confirmed, and starts a Crossmint Agent Checkout on the
@@ -9,11 +9,14 @@ An order the airline took is "not a ticket yet"; the e-ticket check makes it boo
 Design and the recorded real run: `docs/flight-booking.md`. AgentCard's flight route was removed
 2026-11-11.
 
-**It is DARK.** On for a person only with `REASON_FLIGHT_BOOKING` (off | owner | on; off on live)
-AND the shopping path on for them (`REASON_SHOP_CONNECT` + Crossmint keys): `flightbook.bookingEnabled(c)`.
+**Live: `REASON_FLIGHT_BOOKING=owner`** (off | owner | on; code default off): the owner's own thread only.
+On for a person only with the switch AND the shopping path on for them (`REASON_SHOP_CONNECT` + Crossmint
+keys): `flightbook.bookingEnabled(c)` (`src/flightbook.js:40`); the route is `crossmint`
+(`src/flightcheckout.js`). Everyone else's `flight_search` reads "SEARCH ONLY" (`src/tools.js:678`).
 Tests may force a route with `flightbook._setRoute("test")`; `_setRoute(undefined)` is the real rule.
 
-Offline proof: `node --test test/flight-crossmint.test.js test/flight-booking.test.js test/ticket-check.test.js`.
+Offline proof: `node --test test/flight-crossmint.test.js test/flight-booking.test.js test/ticket-check.test.js`
+(15 + 14 + 19, one skipped: the live ticket reader; green 2026-11-14).
 What they pin: tools shown only with flag + shopping path; the checkout's start URL and instruction
 (no passenger detail in it); the recorded JetBlue passenger form auto-answered; the recorded exact
 $118.40 payment with `travelers [fp]` in its target; a corrected traveler or a switched-off flag
@@ -67,15 +70,18 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js test/ticket-check.test.js   # 36 + 17 offline (1 skipped: the live reader) at f3669e8; 35 + 17 when merged with #115/#116; 36 + 17 (1 skipped) on 2026-11-07
+node --test test/flight-crossmint.test.js test/flight-booking.test.js test/ticket-check.test.js   # 15 + 14 + 19 (1 skipped) on 2026-11-14
 REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli ANTHROPIC_API_KEY= node --import ./test/paid-key-guard.js --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails, on the subscription (~42 s through the lane; passed 2026-10-25)
-REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```
 
-The smoke script is the ONE live check: by hand, after an install or upgrade, never scheduled. It
-reads only the `AGENTCARD_SANDBOX_*` credentials, refuses unless the token says `sandbox: true`, and
-ends at the sandbox decline. The sandbox user id is the `user_id` in `/opt/reason-sandbox`'s
-`agentcard_users` (`dm:sandbox`).
+There is no live smoke script any more: `scripts/flight-booking-smoke.mjs` (AgentCard sandbox) went with the
+AgentCard route in #504. The switch, no network (2026-11-14, `money-probe.mjs` in the g2 evidence,
+`REASON_FLIGHT_BOOKING=owner REASON_SHOP_CONNECT=on`, fake Crossmint keys, every fetch throws): owner →
+`bookingRoute` `crossmint`, all 5 `FLIGHT_BOOKING_TOOLS`; another account 0; the owner has no
+`purchase`/`purchase_confirm`/`vault_enroll`. A real Crossmint flight checkout is the owner's to start.
+
+**The older cage drives below were run on the AgentCard route (2026-10-25 … 11-07)**; tool counts and
+`not_configured` wording are history, the booking-tool count (0 or 5) is what still holds.
 
 On the cage every AgentCard credential is blank and the flag is off: `flight_book` answers
 `not_available` (flag off) or `not_configured`. That is the cage holding. Driven 2026-10-25:

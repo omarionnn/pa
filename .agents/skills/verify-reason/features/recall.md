@@ -12,8 +12,8 @@ and PR #335's forget commit (`01a4e27`).
 
 Source: `src/recallindex.js` (`saidNothing` `:306`, `rankAndCut` `:334`, `searchHistory` `:354`,
 `keywordHistory` `:374`, `notForgotten` `:99`, `snippetFor` `:222`, the `recall_reindex` pass `:137`), `src/db.js` (`forgetPerson`
-`:2752`, `forgetFromRecall` `:2895`, tables `recall_forgotten` `:10672` and `recall_reindex` `:10682`, `BUSY_TIMEOUT_MS` `:21`),
-`src/tools.js` (`case "forget"` `:10428`, `case "memory_search"` `:10512`), `src/data.js:212,215`
+`:2910`, `forgetFromRecall` `:3059`, tables `recall_forgotten` `:11169` and `recall_reindex` `:11179`, `BUSY_TIMEOUT_MS` `:88`),
+`src/tools.js` (`case "forget"` `:11146`, `case "memory_search"` `:11236`), `src/data.js:262,265`
 (`recall_forgotten` and `recall_reindex` deleted with the person).
 Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all pass at `36db733` (release head, branch `rel/unverified-fix`).
 
@@ -30,7 +30,7 @@ Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all
   bookings, orders) goes ahead of a LOOKUP (`web_search`, `web_lookup`, `research`, `nearby_places`,
   `flight_search`, `offer_check`, `shop_status` …). The kind comes from the record's action name,
   never its words. The word fallback (`keywordHistory`) now has a reach too: a done thing needs at
-  least half the best match's word hits (`hits * 2 >= best`, `:390`) to rank above the thread. Not
+  least half the best match's word hits (`hits * 2 >= best`, in `keywordHistory`) to rank above the thread. Not
   checked against live embeddings: the test's call sits 0.28 below the searches; further apart than
   0.3 and the call still ranks under them (`test/recall-history.test.js`).
 - **"Nothing saved" replies are never handed back.** A thread match whose LAST Reason line opens with
@@ -47,10 +47,10 @@ Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all
   carries `recall_cleared: { calls, exchanges, actions, reminders }`. With no fact saved about them
   but recall hits, `ok: true, forgot: 0` and "Gone from recall: N …" — only for a specific subject: with nobody saved, a vague one ("that", "it", "work", "money": the `VAGUE` set, `specificSubject`) clears nothing and answers "… too general to clear from recall on its own — nothing was cleared"; two-letter names ("Jo") and non-Latin names count. With neither, still
   `Nothing is on record about '<name>'.` Sealed: one conversation only. `capabilitiesNow`'s
-  "your_data" line says forget reaches recall (`src/tools.js:2531`). The nightly memory review reads
+  "your_data" line says forget reaches recall (`src/tools.js`, `name: "your_data"`). The nightly memory review reads
   through the same tombstone, and forget also retires how-to-treat-me rules naming the subject
   (`rules_dropped`; R2-H, see `memory-graph.md`).
-- **`busy_timeout` 5000 ms on every connection** (`src/db.js:24`, `scripts/call-report.js:28`,
+- **`busy_timeout` 5000 ms on every connection** (`src/db.js:91`, `scripts/call-report.js:28`,
   `scripts/web-migrate-dry-run.mjs:47`): `scripts/recall-backfill.mjs` writing beside the server
   failed twice on live 11-06 with "database is locked".
 
@@ -69,9 +69,13 @@ wording ([confirm-gate.md](confirm-gate.md)) and own-files-only ([security-bound
 
 ```bash
 cd <repo> && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
-  && REASON_DB_PATH=$(mktemp -d)/rf.db OPENAI_API_KEY= REASON_OWNER_NAME=Omari \
-     node .agents/skills/verify-reason/bin/recall-figures-drive.mjs        # 19 steps, "all ok"
+  && REASON_DB_PATH=$(mktemp -d)/rf.db OPENAI_API_KEY= REASON_OWNER_NAME=Sam \
+     node .agents/skills/verify-reason/bin/recall-figures-drive.mjs        # 18 steps, "all ok"
 ```
+
+2026-11-14 at `7d5b5f54`: 18 ok, "all ok" (the drive prints 18 lines; earlier notes said 19).
+The nightly memory review reads through the same tombstone (#515 adds call lines, still skipped
+when forgotten — [memory-graph.md](memory-graph.md)).
 
 2026-11-07: 19 ok at `8113bcf` and at the release head `36db733`. The same drive at `8a1fe18` (before the release): "the spa call is
 first" FAIL (top hit `you: I don't have any spa place saved.`), "forget Yaw … clears recall" FAIL,

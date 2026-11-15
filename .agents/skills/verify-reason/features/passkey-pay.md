@@ -14,7 +14,7 @@ cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed '
   && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/pk.db node --no-warnings .agents/skills/verify-reason/bin/passkey-drive.mjs [--shots=DIR] [--headed] [--non-owner]
 ```
 
-`--non-owner` (2026-10-31, shopping for everyone): the flags `on`, the person paying is Ama (an account
+`--non-owner` (2026-10-31, shopping for everyone): the flags `on`, the person paying is a second account (an account
 that is not the operator) and "the other person" is a third account, whose setup page is then its own
 (200) rather than a 404. Both runs 23/23 ok on 2026-10-31 (wt/shopping-everyone), muted, and again on 2026-11-07
 (rel/verify-maint, `caged.sh env`, throwaway DB; `test/passkey-pay.test.js` 15 pass).
@@ -35,7 +35,14 @@ The drive runs the real `src/http.js` on loopback, opened in Chromium as `http:/
 | (g) | A made-up approve token gets 404 with no options on GET, verify and decline. Signed out, setup GET and POST should get 404 with no options. With the real link, anyone can view the page (it is a bearer link), but a credential that isn't the owner's gets `unknown_passkey`. With the flag off, approve gets 404. For a non-owner, or with the flag off, setup gets 404 or the Connect page for an unknown link (no options) |
 | log | `pay_approval_log` has paid, declined and rejected entries, and no card detail |
 
-A link is marked `used` the moment the assertion verifies, before the order intent. If the payment fails to start (no order intent: `order_intent_failed`, `no_card`, …) `passkey.reopenApproval` sets it back to `open` under a NEW nonce/challenge, so the same URL works for another tap and the first assertion is dead; the five-minute deadline does not move. Once the card may have reached the store (`unknown_outcome`) the link stays used — never paid twice; since #357 the amount counts against the day's cap ("(OUTCOME UNKNOWN)" ledger line) and `payByPasskey` writes the same `trust.noteUnknownOutcome` record (`shop_pay`, the payment's target) as the texted-yes path. `shop_status` (`approvalHint`) hands the model a fresh `approve_url` only when no open link exists for an asked payment whose Crossmint window is still open; an open link is named with its minutes left; a passed window says to start again. Accepted origins: the site and its `www.` form (`passkey.ORIGINS()`); the RP ID is the apex host. The expired-checkout texts (`endText`, `stageLine`) name what the store wanted from the form's fields — "your shipping address and phone number" — via `askedFor(run)`, never the store's prompt.
+A link is marked `used` the moment the assertion verifies, before the order intent. If the payment fails to start (no order intent: `order_intent_failed`, `no_card`, …) `passkey.reopenApproval` sets it back to `open` under a NEW nonce/challenge, so the same URL works for another tap and the first assertion is dead; the deadline (30 min from the first ask) does not move.
+
+**One link per payment while it is open (#499, 2026-11-12).** `shop_pay` on a payment whose Face ID link is
+still open and in its time (`passkey.openApprovalFor(row.id)`, `src/shoptools.js`) mints nothing: it answers
+`approve_with_face_id: true, link_still_open: true` and tells the model to point them to the link already
+sent, which still pays. Before, a second `shop_pay` minted a new link and closed the first under them
+(11-08, `link_replaced`). A new link only once the first ran out or was used. Pinned in
+`test/passkey-pay.test.js` ("shop_pay while a Face ID link is still open reuses it…"). Once the card may have reached the store (`unknown_outcome`) the link stays used — never paid twice; since #357 the amount counts against the day's cap ("(OUTCOME UNKNOWN)" ledger line) and `payByPasskey` writes the same `trust.noteUnknownOutcome` record (`shop_pay`, the payment's target) as the texted-yes path. `shop_status` (`approvalHint`) hands the model a fresh `approve_url` only when no open link exists for an asked payment whose Crossmint window is still open; an open link is named with its minutes left; a passed window says to start again. Accepted origins: the site and its `www.` form (`passkey.ORIGINS()`); the RP ID is the apex host. The expired-checkout texts (`endText`, `stageLine`) name what the store wanted from the form's fields — "your shipping address and phone number" — via `askedFor(run)`, never the store's prompt.
 
 Notes: the approve page is a bearer link by design, not signed-in only: it opens on a phone that may not be signed in to Web, and paying still needs the owner's passkey. Signed out, a non-owner, or the flag off, `/web/connect/passkey` is a plain 404 (http.js keeps it out of the Connect store-link route).
 
@@ -65,6 +72,9 @@ link lasted 5 min, cut further to Crossmint's `expires_at`; the run ended "didn'
   from `itemizedParts` `:1326` — Crossmint's structured breakdown, or the question's words when the parts
   add up). A missing shipping/tax row reads "none listed"; one number → "Item, shipping and tax: all in the
   total" + "<Store> gave one number, with shipping and tax in it." The bound challenge is unchanged.
+- Driven 2026-11-14 (g2 pass, `caged.sh env`, throwaway DB): `bin/passkey-drive.mjs` 27/27 ok, and `--non-owner`
+  27/27 ok; `test/passkey-pay.test.js` + `test/cvc-recollect-1108.test.js` green in a 122/122 batch. On the cage
+  (shop path on): `/web/connect/passkey` signed out → 404, a made-up `/web/approve/<32 x>` → 404.
 - Driven 2026-11-07 (rel-1107): `bin/passkey-drive.mjs` 23/23 ok rc 0 (step (e) now labelled thirty
   minutes); in-process probe: `APPROVAL_TTL_MS` 1800000, `RENEW_MAX` 2, `REMIND_BEFORE_MS` 300000,
   `itemizedParts` from words and from a structured breakdown both `item 15.97 / shipping 6.99 / tax 2.04`,
@@ -111,11 +121,11 @@ snag):** Reason says what is happening, what it can do and what it already has, 
 the decision — never a bare question, never silence. `shipping.knownEmails` lists every email on
 record (shipping record, connected Gmail accounts, own facts, earlier checkout instructions);
 `receiptEmail` in `src/shopconnect.js` applies it: the record's email is used as is; exactly one
-known anywhere is kept on the record and used, and the outcome line names it ("Card ••••1929 is set
+known anywhere is kept on the record and used, and the outcome line names it ("Card ••••<last4> is set
 up to pay. Receipts go to …"); none → "… is saved, but it can't pay until I have an email for its
 receipts. Which one should I use?"; two or more → "… I need an email for its receipts, and I have A
 and B on record. Which one?" (`emailAsk`; the Face ID wording adds "Tell me here, then tap the link
-again"). Setup is complete at save time: "Card ••••1929 is set up to pay" is said only when the
+again"). Setup is complete at save time: "Card ••••<last4> is set up to pay" is said only when the
 registration succeeded; another refusal says it couldn't be set up just now and will be retried at
 pay time. `shop_pay`/`shop_card` hand the model `emails` and the same instruction; a paid result
 carries `receipts_email` when Reason picked it at pay time. Tests: `test/card-email-rule.test.js`
@@ -126,7 +136,7 @@ save-time refusal text).
 
 Live check after deploy: `journalctl -u reason` shows `card_registrations_swept` with
 `registered: 1` for the owner's card (saved 2026-10-30, registered by hand 2026-10-31), and
-`sqlite3 data/reason.db "SELECT last4, registered, reg_error FROM shop_cards"` reads `1929|1|`.
+`sqlite3 data/reason.db "SELECT last4, registered, reg_error FROM shop_cards"` reads `<last4>|1|`.
 
 ## The card's CVC after Face ID (wt/cvc-recollect, 2026-11-08)
 
@@ -181,5 +191,5 @@ Unproven: Crossmint's real field on a phone; whether the production client key h
 
 - Signed in as the owner (headless with the `reason_page` cookie): `https://heyreason.com/web/connect/passkey` returns 200, and the `var B=` boot holds options with `rp.id` = `heyreason.com` and `authenticatorSelection.userVerification` = `required`.
 - `curl -s -o /dev/null -w '%{http_code}' https://heyreason.com/web/connect/passkey`: signed out gives 404, with no `var B=`.
-- `curl -s -o /dev/null -w '%{http_code}' https://heyreason.com/web/approve/$(printf 'x%.0s' {1..32})` gives 404 with no options. A real approve page (`rpId` heyreason.com) only exists for a real pending payment. Check it on one Omari starts, never by making one.
+- `curl -s -o /dev/null -w '%{http_code}' https://heyreason.com/web/approve/$(printf 'x%.0s' {1..32})` gives 404 with no options. A real approve page (`rpId` heyreason.com) only exists for a real pending payment. Check it on one the owner starts, never by making one.
 - As a non-owner, or with the flag off: no setup options on either route.

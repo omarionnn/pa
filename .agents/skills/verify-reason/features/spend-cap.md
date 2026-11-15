@@ -98,12 +98,14 @@ uncounted `unknown` row counted once by `backfillSpend`, a second run adds 0. 10
 still counted, a third $90 refused; `expired` with $0 spent → the unknown $90 released (row `failed`,
 $0 note line), the next $90 paid, spent stays $90; a second `settleUnknownPayments` releases 0. 14 steps, all ok (cage port 8882 doctor-clean first, 2026-11-07).
 Re-run 2026-11-07 on rel-1107 `8bbcb96` (#374/#376/#379 merged), `caged.sh env` + throwaway DB, no
-cage started: 14/14 ok, rc 0.
+cage started: 14/14 ok, rc 0. Again 2026-11-14 (g2 pass, `caged.sh env`, throwaway DB): 14/14 ok; the offline
+files above green (spend-cap-1031, shop-unknown-spend in a 601-pass batch; shopping-everyone-1031,
+passkey-pay in a 122/122 batch).
 
 Not this file's: the install-wide **paid-API** caps and their 80% heads-up (#374) are
 [api-caps.md](api-caps.md) — a different "spend cap".
 
-## Live (muted; read-only)
+## Live (muted; read-only, on the live server: OVH, root@15.204.113.250)
 
 - `.env` has `REASON_MAX_SPEND_PER_DAY=100` as a later line (a later line wins under `--env-file`).
 - `sqlite3 -readonly /opt/reason/data/reason.db "SELECT name FROM pragma_table_info('pay_approvals')"`

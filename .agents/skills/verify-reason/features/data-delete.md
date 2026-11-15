@@ -54,6 +54,10 @@ exist (137 that way), which reads like lost coverage and is not.
 Never run it against live: it writes to the database it is pointed at, and it refuses unless
 `REASON_DB_PATH` looks like a cage.
 
+- 2026-11-14 (`7d5b5f54`, evidence `*-g4-data-delete`): on a throwaway DB the drive refuses ("not a cage
+  database", as designed); on the cage DB 219 tables seeded, 181 rows deleted, `unexplained: []`,
+  `control_rows_lost: []`.
+
 ## Gotchas
 
 - A scoped delete keeps the number in `GLOBAL_TABLES` (`access_requests`, `blocked_numbers`,

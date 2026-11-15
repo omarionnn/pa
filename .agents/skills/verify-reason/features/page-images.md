@@ -51,7 +51,7 @@ HEIC→JPEG and `checkUrl` — not this feature.)
 - **A picture has to be real.** A page refuses an image address the model typed from memory. The URL
   must have come back from a tool in this conversation.
 - **It is a generated picture, and says so.** Never presented as a photo of a real thing. This is
-  the line Omari drew: *"a picture has to be real"* — generated art is fine, a fake photo is not.
+  the line the owner drew: *"a picture has to be real"* — generated art is fine, a fake photo is not.
 - **A `.docx` and a `.pptx` cannot carry a picture** and `document_create` refuses one rather than
   shipping a file with a hole in it. The PDF is the page printed, so it can.
 
@@ -99,7 +99,8 @@ origin does (2026-11-07, 8113bcf, `REASON_PUBLIC_URL=https://example.test` — n
 drive at all): `send:false` → `ok, sent:false, …/img/verifyimg….png`; without it → `ok:false,
 status:"not_connected"`; `/img/<file>` 200 `image/png`, 70 bytes = the file on disk; the page with
 that block opens with the `<img>`; `https://example.com/x.png` refused ("has not come back from any
-tool in this conversation").
+tool in this conversation"). Same again 2026-11-14 at `7d5b5f54` (status `connected:false,
+missing:["OPENAI_API_KEY"]`, `/img/` 200 66 bytes, `/img/ab.png` and the `..%2f` path 404).
 
 **Export `OPENAI_API_KEY=` before using the fake.** There is no fallback any more, but a blank key stops the
 `generateIllustration` that every `page_create` / `page_update` fires, and pass
@@ -146,7 +147,7 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
 
 - **The URL the tool hands back points at the LIVE instance, so never curl it verbatim.** The URL is
   built from `config.publicUrl` (in `case "image_generate"`, `src/tools.js`) — `https://reason.tail3753c7.ts.net/img/…`
-  on 2026-10-13, which is Hetzner — and the caged instance inherits
+  on 2026-10-13, which was the live instance — and the caged instance inherits
   `REASON_PUBLIC_URL` from this Mac's `.env`. Swap the host for `127.0.0.1:<caged port>` before
   fetching. Same trap as the page `link`; see [pages.md](pages.md).
 - **The `<img src>` on a caged page carries that live host too**, because the absolute URL is stored
@@ -171,7 +172,7 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
   `REASON_DATA_DIR`, default `data`). The cage sets `REASON_DATA_DIR` to its own run dir, so caged
   illustrations, cards and previews stay out of the checkout's `data/cards`. `cardHtml` picks it up
   when present; absent means the solid-colour fallback. It is a paid call on every create and on
-  every update that changes title or blocks, whenever an image key is set — blank the keys unless
-  it is the thing under test. If Imagen fails and an OpenAI key is set it retries there. Privacy:
+  every update that changes title or blocks, whenever `OPENAI_API_KEY` is set — blank it unless
+  it is the thing under test. One gpt-image-2 call (`imageModelFor`), no other provider. Privacy:
   dollar amounts, phone numbers, addresses, zip codes, and emails are stripped from the
   illustration prompt before it reaches the image model.

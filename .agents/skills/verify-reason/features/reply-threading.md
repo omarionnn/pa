@@ -37,5 +37,6 @@ Tests: `test/threading.test.js` (13, offline), `test/flow-threading.test.js` (4,
   copy after. 2026-11-10: 4/4 (👍 → "took your 👍 as a yes", reminder moved to 4pm; ❤️ on a recipe
   → nothing sent; "the morning one" → "the TAP at 9:10 or the United at 9:40?"; 7pm then 9pm → one
   9pm reminder, "not 7").
-- Live: `grep REASON_THREADING /opt/reason/.env` → `owner`; a reaction shows in the turn as
+- Live (the live server, OVH, root@15.204.113.250): `grep REASON_THREADING /opt/reason/.env` → `on` for
+  everyone (2026-11-14; it was `owner` at launch); a reaction shows in the turn as
   "[this is a tapback, not a typed message".

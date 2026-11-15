@@ -28,8 +28,9 @@ wrong-code digits, L6/L7), `src/pages/webedge.js` (E1, E5, the maintenance switc
   place. Redirect (signed out) → the browser follows. Back/forward: the server's page
   (`location.replace`). Ruled lines `var(--hair)`, 1.6 s opacity fade, none under reduced motion.
 - **E1.** Any other `/web/...` GET: 404 torn slip, "This page isn’t here. Nothing’s lost.",
-  "Back to the thread →" only when the session is good, `OR GO TO HEYREASON.COM`. A gone Ongoing row
-  is the same page.
+  "Back to the thread →" only when the session is good, `OR GO TO HEYREASON.COM` (the host of
+  `REASON_SITE_URL`; unset — a cage with no `.env` — the line is not drawn, src/pages/webedge.js:96-101).
+  A gone Ongoing row is the same page.
 - **E5.** `ops_state` key `web:maintenance` = `{until, by, at}`; lapses at `until` (≤ 24 h ahead).
   While on, every `/web` path answers 503 + Retry-After (JSON `{error:"maintenance"}` for
   `Accept: application/json`), fonts excepted; `BACK BY ABOUT {h:mm AM} ET`, Text Reason → + hint
@@ -47,6 +48,14 @@ node --test test/web-edge.test.js test/web-edge-browser.test.js   # 12 + 9, all 
 node scripts/web-maintenance.mjs status                            # on the box: sudo -u reason node --env-file=.env …
 ```
 
-Live proof (Hetzner only, owner session row made and deleted): `GET https://heyreason.com/web/nope`
+On a cage (no model, 2026-11-14): under `caged.sh env`, a throwaway account whose conversation id is
+`dm:<channel>:<number>` (any other id makes every signed-in /web GET 500: sign-in re-admits the account
+under that id and hits `UNIQUE(channel, address)`), a `startPageSession` row as the cookie; then
+`/web/nope` → 404 + Back to the thread (signed out: no back link); `run(["on","20"])` from
+`scripts/web-maintenance.mjs` against the cage DB → `/web` 503 + `Retry-After: 1200` + BACK BY ABOUT …
+ET, `Accept: application/json` → `{"ok":false,"error":"maintenance",…}`; `run(["off"])` → 200 at once
+(the server reads `ops_state` per request). Evidence `*-g7-web-edge-daily`.
+
+Live proof (the live server (OVH, root@15.204.113.250) only, owner session row made and deleted): `GET https://heyreason.com/web/nope`
 → 404 E1 with Back to the thread; `/web?tab=ongoing` click from the thread shows L3 then the real
 tab; maintenance on for one fetch (503, BACK BY ABOUT) then off at once.

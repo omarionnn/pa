@@ -48,6 +48,6 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 ## End state that proves it
 
-Live, from Hetzner: a temporary owner `page_sessions` row; `https://heyreason.com/web/saved` shows the
+Live, from the live server (OVH, root@15.204.113.250): a temporary owner `page_sessions` row; `https://heyreason.com/web/saved` shows the
 owner's real pages/events with the right counts; one item pinned and unpinned through the form posts
 (the `saved_marks` row deleted after, so nothing of the owner's changes); the session row deleted.

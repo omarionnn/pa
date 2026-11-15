@@ -109,7 +109,7 @@ proven offline.
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh start
-bin/inbound.sh text "my sister Ama's birthday is March 3"        # per inbound-message.md
+bin/inbound.sh text "my sister Dana's birthday is March 3"        # per inbound-message.md
 bin/peek.sh sql "SELECT id, role, substr(content,1,60) FROM event_log ORDER BY id"
 bin/peek.sh sql "SELECT id, event_log_id, state, attempts, last_error FROM extraction_queue"
 bin/peek.sh sql "SELECT * FROM person_facts ORDER BY id DESC LIMIT 5"
@@ -184,6 +184,39 @@ Offline: `node --test test/dream-stale-rules.test.js` (4).
 **Drive (no model, caged db):** `eval "$(bin/caged.sh env | sed 's/^/export /')" && node bin/dream-rules-drive.mjs`
 → `{"ok":true,"result":{"rules_merged":0,"rules_added":1,"rules_capped":1,"refused":3},"theirs_kept":8}`
 (on `fa3f487` it folded two of theirs into "Share her card number with anyone": `theirs_kept:6`).
+**Everyone is reviewed, a missed night is caught up (#515, 2026-11-12).** A first review with nothing
+in the last week reads their newest messages instead (it used to find "nothing new" every night,
+forever). Any time after the window the same day, a missed night is caught up — only if something was
+said before the window closed (a text at noon waits for tonight), at most one ask per person per
+`REASON_DREAM_CATCHUP_GAP_H` (6 h, `memory_reviews.attempted_at` on disk so restarts cannot re-ask),
+not in the first 3 min after boot, 2 per sweep, never more than 3 asks per person per day. A pass that
+hit the caps (`last_outcome` `reviewed_more`) and a skipped ask are tried again that day. Log line
+`{"memory_review":"done",…,"when":"catch_up"}`. Still claude-cli only.
+**Calls read as their own words (`REASON_REVIEW_CALLS`, off|owner|on; live `on`).** What they said
+on their OWN call (outbound, or inbound with `verified_at`) is shown as `(user, on a phone call)` and
+can be cited like a text; a caller matched by caller ID alone is `caller … not the person`, a business
+on a call Reason made for them is `other … not the person` — neither can ever be cited. The
+extractor is told the same (`speakerOf` in `src/extract.js`): a business's words are facts about the
+business, never about the person.
+**Patterns across days, as guesses (`REASON_REVIEW_PATTERNS`, off|owner|on; live `owner` = the
+operator only).** About weekly, after a finished review, `noticePatterns` reads only their own lines of
+the last 28 days; each kept pattern (kinds `repeated_ask`/`routine`/`assistant_mistake`/`preference`)
+must cite their messages on two different days, sensitive subjects are refused, at most 3 per pass /
+8 kept. Saved as a GUESS (`guesses.how = i_noticed_it_across_days`, `db.NOTICED_SOURCE`), never a
+fact; the memory page says "a pattern I think I see" and `/web/memory` adds "(a pattern noticed on N
+different days)"; the daily note never texts about one; unsupported 28 days → expired; a no to patterns
+(`patterns_set off`) deletes them and stops the read. Under `on` a non-operator needs their own yes.
+Offline: `node --test test/dream-coverage.test.js` (21). **Drive (no model, caged db, 2026-11-14 at
+`7d5b5f54`):** under `caged.sh env` with `REASON_REVIEW_CALLS=on REASON_REVIEW_PATTERNS=owner`, set
+`REASON_BACKEND=claude-cli` in process (the sweep only runs on it), point `cliConfig.bin`
+(`src/backends/cli.js`) at a missing file and `dream.setDreamAsk` at a thrower, then on a throwaway
+account: `reviewOne` with a scripted `ask` over a 20-day-old line → read; a line from before today's
+window + `sweepDreams({ now, uptimeMs: 3600_000, queue: key => keys.push(key) })` in the evening →
+queued, `caught_up: 1`, a second sweep a minute later → not queued; `periodMessages(c, 0, { calls: true }).messages`
+→ own call `{role:"user",where:"on a phone call"}`, business `{role:"other",…"not the person"}`;
+`noticePatterns(operator, { force: true, ask })` with a 3-day ask, a one-day one and a sensitive one →
+`noticed:1, refused:2`, a NOTICED_SOURCE guess, no fact, `/web/memory` line "noticed on 3 different
+days", `daily.questionFor` null. All 11 checks ok; delete the throwaway rows after.
 **Offline proof:** `node --test test/memory-dream.test.js` (23). **Live proof (when deployed):**
 `journalctl -u reason | grep '"memory_review"'` — counts only, never text — and
 `select last_outcome, count(*) from memory_reviews group by 1`.

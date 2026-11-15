@@ -13,8 +13,10 @@ Source: `src/signin-remote.js` (`createRemoteSignin`, `remoteRequest`, `provedOw
 `src/http.js` (the `/s/<32–64 chars>` block; passes `runtime._tell` as `tell`), `src/pages/access.js`
 (the code rules and the `reason_page` cookie), `src/db.js` (`page_codes`, `page_attempts`,
 `pageSessionOwner`).
-Tests: `test/signin-remote.test.js` (53), `test/signin-flow-1112.test.js` (25: the right page, no
-phantom steps, no link loops, positive evidence, the step log).
+Tests: `test/signin-remote.test.js`, `test/signin-flow-1112.test.js` (the right page, no
+phantom steps, no link loops, positive evidence, the step log), `test/signin-link-reprompt.test.js`
+(12: the site's answer, the code box, approve-on-phone, repeated answer, password cap),
+`test/signin-route.test.js` (when a saved login goes first, [saved-logins.md](saved-logins.md)).
 
 ## Sub-features
 
@@ -58,11 +60,31 @@ phantom steps, no link loops, positive evidence, the step log).
   the site's own sign-in page passing the browser through (`sites.readSignedInState`); else
   `unknown` with `no_evidence`. The session stops itself only after a submit, off the sign-in page,
   with that control present.
+- **The site's answer, shown (#569, on for everyone).** After a submit the page shows what the site
+  said, masked (`maskSiteWords`: addresses → `[email]`, numbers and codes → `[number]`): "<Site> says:
+  “…”", or "<Site> showed this step again and said: “…”" / "…without a message I can read. Tap “Show
+  me the page”…". The same step answered the same way twice (`SAME_ANSWER_STOP` 2) ends the link as
+  `site_repeated` with the site's words in the thread note and no "try again". At most 3 passwords per
+  link (`MAX_PASSWORD_SUBMITS`): a fourth Enter on a password page is refused before the site hears
+  it ("I've stopped sending passwords to <Site> on this link so repeated tries don't lock your
+  account."). A code box beside the password is its own labelled box, typed before one Enter. "Approve
+  the notification" shows fixed words + an **I approved it** button that watches the page up to 20 s
+  and presses nothing. A link that runs out after submits says what the site showed last. One
+  `signin_link_diag` log line per submit: kinds, counts, classes, the masked alert, never a value.
+- **When the link is not the way (#570).** For the owner with the vault on, a site with a saved login
+  goes to `account_signin`, not a link; the link comes back for a step only the person can do, and a
+  link that ends signed in brings one save offer ([saved-logins.md](saved-logins.md)).
+- **Back to Messages (#551) is not on these pages.** The shared ending (`src/pages/backlink.js`) is on
+  the vault pages, purchase approval, bank done and the Google return; `src/signin-remote.js` does not
+  use it, so the sign-in link's result page still ends without that button.
 - **Step log.** `signinlog.logStep`: `link_opened`, `start_pressed`, `page_kind` (+`kind`),
   `signin_link_followed`, `submitted`, `signed_in`, `expired`, `ended`; host, timing and a session
   tag only. Read on live with `journalctl -u reason | grep signin_step`.
 
 ## Live verification
+
+Offline (slot gate): `node --import ./test/paid-key-guard.js --test test/signin-remote.test.js
+test/signin-flow-1112.test.js test/signin-link-reprompt.test.js test/signin-route.test.js`.
 
 ```bash
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')"
@@ -75,4 +97,6 @@ owner's thread only; other person's Reason session + wrong code → refused; rig
 cookie + remembered `reason_page` (connect: source) → `/view` 200; next link on that browser → 303
 with no text; a different browser with only the link → 401; own Reason Web browser → 303 with no
 text. Against the running cage, an unknown
-`/s/<32 chars>` → 404. Driven 2026-11-07 on sec/lead6.
+`/s/<32 chars>` → 404. Driven 2026-11-07 on sec/lead6; again 2026-11-14 at 7d5b5f54 (ALL 10 PASS)
+after the drive's links were made on a `kind: "user"` turn: as an event turn, the second link after a
+cancelled one is `not_sent_again` (no link loops, #525) and the drive died at step 4.

@@ -8,7 +8,7 @@ The owner opens `/ops` and sees how close each Claude subscription is to its lim
 
 ## Sub-features
 
-- **Reason's subscription** (`subscription:reason`) — the `claude` CLI logged in on Hetzner as
+- **Reason's subscription** (`subscription:reason`) — the `claude` CLI logged in on the live server (OVH, root@15.204.113.250) as
   `reason`. `5-hour N% · resets … · week N% · resets … · K CLI runs today · read Xm ago`. Amber at
   ≥80% of the 5-hour window ("nearly full — Reason stops replying at 100%"), red at 100% of either
   window or `status: rejected`. Amber/red go through `settle`, so the owner is texted once per
@@ -24,7 +24,7 @@ The owner opens `/ops` and sees how close each Claude subscription is to its lim
 - **A window that has reset since the reading reads 0% · reset** (nothing used in the new one yet).
 - **The coding subscription (Mac)** (`subscription:coding`) — pushed every 10 min by the launchd
   agent `com.reason.usage-reporter`, HMAC-SHA256 over `<ts>.<body>` with
-  `REASON_USAGE_INGEST_SECRET` (Hetzner `/opt/reason/.env`; Mac `~/.config/reason-usage/.env`).
+  `REASON_USAGE_INGEST_SECRET` (live `/opt/reason/.env`; Mac `~/.config/reason-usage/.env`).
   Always `ok` and `quiet`: never amber, never texted. Older than 25 min → "last seen X ago (the Mac
   is asleep or offline)". Never pushed → `off` ("the Mac has never reported"; "not set up" is only the ingest's 404 text).
 - **The ingest** — 204 kept; 401 bad signature or clock >5 min off; 409 replay (timestamp not newer
@@ -57,10 +57,14 @@ bin/peek.sh sql "SELECT source, five_pct, week_pct, turns_today FROM subscriptio
 Seen exactly so on 2026-10-25. The row text: run `ops.runChecks({probe:async()=>({ok:true,status:200})})`
 from a module file with `caged.sh env` exported and print `checks.filter(c=>c.id.startsWith("subscription:"))`.
 
-Live (read-only): the rows in `/ops.json` after sign-in, or on Hetzner
+Live (read-only): the rows in `/ops.json` after sign-in, or on the live server (OVH, root@15.204.113.250)
 `sqlite3 -readonly /opt/reason/data/reason.db "select source,datetime(at/1000,'unixepoch'),five_pct,week_pct,via from subscription_usage order by at desc limit 4"`.
 Mac: `launchctl list | grep com.reason.usage-reporter` and `tail ~/.config/reason-usage/reporter.log`
 (`pushed 204 · 5h N% · week N% · K requests today`).
+
+- 2026-11-14 (`7d5b5f54`, cage 8844, evidence `*-g4-cage-fake-ok`): a signed push to `/ops/usage` → 204, the
+  same replayed → 409, a bad signature → 401; the `subscription_usage` row reads coding 36% / 45% / 7 today.
+  `test/subusage.test.js` in the ops group 136/136.
 
 ## Gotchas
 
@@ -69,8 +73,9 @@ Mac: `launchctl list | grep com.reason.usage-reporter` and `tail ~/.config/reaso
   only extra request and it is not a model call. The cage's Reason row therefore reads `off · not on
   the CLI backend`; the coding row is the one a cage drive proves (seen 2026-10-25 after #115:
   `5-hour 36% · week 45% · 7 requests today · pushed 20s ago`, `quiet`).
-- **The Mac pushes to the Hetzner address, not the website.** `REASON_USAGE_URL` is
-  `https://reason.tail3753c7.ts.net/ops/usage`: the website's Netlify proxy forwards `/ops` and
+- **The Mac pushes to the server's own address, not the website.** `REASON_USAGE_URL` was
+  `https://reason.tail3753c7.ts.net/ops/usage` (a tailnet name; after the move to OVH check that it reaches
+  the live server): the website's Netlify proxy forwards `/ops` and
   `/ops.json` only, so `heyreason.com/ops/usage` is a 404.
 - `caged.sh env` does not export `REASON_BACKEND`, so a `node --env-file=.env` script beside the cage
   reads `.env`'s `claude-cli` and the Reason row says "no reading yet" rather than "not on the CLI

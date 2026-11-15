@@ -26,6 +26,12 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   (A fifth, `spent`, comes back when the yes was already used — the `consumed_at` check at the top of
   `recordConfirmation` in `src/trust.js`. It is a refusal, not a go.)
 - **The model cannot grant it for them.** It calls `confirm_record`; the guard decides.
+- **Only what they typed is a reply (#544, 2026-11-12).** `ownerTexts` keeps only the typed lines of their
+  message (`typedOnly`): a PDF, a document or a video's words riding under it in [brackets] are never their
+  yes, however much they look like one; a reply that was only an attachment → `waiting_for_yes` ("nothing
+  typed in it… Ask once, plainly, for a yes"), nothing spent; Reason's own stamped note in the thread (a
+  call's lookup record, `reasonsOwnLine`) is not a message from them and does not move the count. Pinned in
+  `test/owner-texts-typed-only.test.js` (11; green 2026-11-14 with `test/trust-event-notice.test.js`).
 - **Only the owner's own line is a reply; an event turn never is.** `ownerTexts` (`src/trust.js`)
   tells them apart by the line's opening: `[event …]` is a timer/sweep, `[<stamp>] <Name>:` is them.
   So `userMessageFor` (`src/agent.js`) always puts that prefix first and a `[delivery failure]`
@@ -56,7 +62,7 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   first (as before), anybody else's reads their account then their thread, and with neither nothing
   is sent. Covers `message_send`, `voice_note_send`, `send_picture` and every document handover;
   `call_place` already used `me.address`. Before 10-28 all four read `config.ownerNumbers[0]` first,
-  so testers' "on it" texts and Yaw's flight link went to Omari (outbox 443, 1850, 1901). Drive:
+  so testers' "on it" texts and a tester's flight link went to the owner (outbox 443, 1850, 1901). Drive:
   `node --test test/owner-means-this-thread.test.js`, then the claude-cli lane
   `test/flow-owner-thread.test.js`. The cage cannot prove a send (blanked channels), so the fake
   channel's `sent[].to` is the proof.
@@ -142,7 +148,7 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   `authorizeConfirmation` / `retryBlocked` lines say "them"/"they" — "Sent them the recording of
   call #73", "Told them, unprompted: …", "they already have a Visa stored with AgentCard", access
   grants "In their words: …" (`src/trust.js:156,245,293,948,1188,1260,1264,1302`). Before, every
-  line read `config.ownerName`, so "Sent Omari the recording of call #73" landed in another person's
+  line read `config.ownerName`, so "Sent <owner's name> the recording of call #73" landed in another person's
   own ledger. Pinned in `test/receipts-no-owner-name-1107.test.js` (3); driven by
   `bin/recall-figures-drive.mjs` step "receipts never name the operator" (command in
   [recall.md](recall.md)).
@@ -183,7 +189,7 @@ eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')"
 node --env-file-if-exists=.env -e '
   const { runTool } = await import("./src/tools.js");
   const db = await import("./src/db.js");
-  const owner = (t) => ({ role: "user", content: `[Sat, Oct 10, 2026, 3:00 PM] Omari: ${t}` });
+  const owner = (t) => ({ role: "user", content: `[Sat, Oct 10, 2026, 3:00 PM] Owner: ${t}` });
 
   for (const reply of ["perfect, lock it in", "nah leave it", "ok but make it 9 instead"]) {
     const conversationId = "dm:owner";            // the owner conversation: no account row needed
@@ -192,7 +198,7 @@ node --env-file-if-exists=.env -e '
     const req = await runTool("confirm_request", {
       action: "browser_submit", stakes: "both", amount: 100,
       target: "Carbone, Fri Oct 9 2026 8:00 PM, party of 4",
-      summary: "Book Carbone, party of 4, Fri Oct 9 2026 at 8:00 PM, under Omari. $25 per person cancellation hold.",
+      summary: "Book Carbone, party of 4, Fri Oct 9 2026 at 8:00 PM, under Sam. $25 per person cancellation hold.",
     }, ctx);
     if (!req.ok) { console.log("REQUEST REFUSED:", JSON.stringify(req)); continue; }
     messages.push(owner(reply));
@@ -240,7 +246,7 @@ node --env-file-if-exists=.env -e '
   const db = await import("./src/db.js");
   const C = "dm:owner", KOFI = "+14155559876";
   db.addImportantPerson(C, { who: "Kofi", contact: KOFI });
-  const owner = (t) => ({ role: "user", content: `[Sat, Nov 7, 2026, 3:00 PM] Omari: ${t}` });
+  const owner = (t) => ({ role: "user", content: `[Sat, Nov 7, 2026, 3:00 PM] Owner: ${t}` });
   const messages = [owner("you can text kofi without asking me")];
   const ctx = { conversationId: C, messages, judge: async () => ({ verdict: "yes" }) };
   const G = { text: "you can text kofi without asking me", scope: { action: "texts", target: KOFI } };

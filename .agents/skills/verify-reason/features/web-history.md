@@ -36,8 +36,11 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
   && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # steps 7A/7B/search/refusals
 ```
 
+Run the drive from the repo root (it imports `./src`); 27 `ok`, exit 0 (2026-11-14). A fresh account
+with no messages on a cage: `/web/memory/history` → 200 "Nothing here yet."
+
 ## End state that proves it
 
-Live, read-only on the owner's account: on Hetzner, a temporary owner `page_sessions` row, fetch
+Live, read-only on the owner's account: on the live server (OVH, root@15.204.113.250), a temporary owner `page_sessions` row, fetch
 `https://heyreason.com/web/memory/history`, a day, and `?q=`; the session row deleted after. Nothing
 here writes.

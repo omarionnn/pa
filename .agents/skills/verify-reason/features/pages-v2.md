@@ -2,8 +2,8 @@
 
 The pages Reason makes, redrawn as the 2026-10-27 handoff (§4 "Pages Reason makes", reference
 `sheet-pages-*` P1–P6, `sheet-pages-desk-*` PD1–PD6, `sheet-edge-*` E2–E4, `preview-private`,
-`preview-event`). **Live**: #196 merged as `dd4299c`, `REASON_PAGES_V2=1` on Hetzner since 2026-10-27
-(rollback `.env.bak-pagesv2`). With the flag unset (the cage's default, and this worktree's) every
+`preview-event`). **Live**: #196 merged as `dd4299c`, `REASON_PAGES_V2=1` on live since 2026-10-27
+(then Hetzner, rollback `.env.bak-pagesv2`; still `=1` on the live server, OVH root@15.204.113.250, 2026-11-14). With the flag unset (the cage's default, and this worktree's) every
 page, event and album draws exactly as before and the new blocks are refused — start the cage with
 `REASON_PAGES_V2=1` to drive v2. Read-only live proof: `/og/private.png` and `/fonts/serif.woff2` on
 `files.heyreason.com` answer 200 only when the flag is on (`config.pagesV2` guard in `src/http.js`).
@@ -29,7 +29,9 @@ Source: `src/pages/made.js` (frame + P1–P6 + E2–E4 + the two og cards, view 
 - **LP2**: every private page's og = "A page Reason made for you" + `/og/private.png`.
   **LP3**: an event's drawn card carries only public facts. **E2**: cancelled event / closed album.
 
-Drive: `node --test test/pages-v2.test.js` (13 pinned). Pictures: `node scripts/pages-v2-preview.mjs
+Drive: `node --test test/pages-v2.test.js` (13 pinned). Cage started with `REASON_PAGES_V2=1`
+(2026-11-14): the key on a new browser carries "A page Reason made for you" and none of the page's
+words; `/og/private.png` 200; `/p/ab` the raw JSON 404. Pictures: `node scripts/pages-v2-preview.mjs
 <dir>` (sample data, throwaway DB, real routes) then `node scripts/pages-v2-compare.mjs
 <handoff>/reference <dir> <dir>`.
 
@@ -44,7 +46,7 @@ at the foot (`pageUrl(id)`, `eventUrl(ev)`, `…/album`). Web (`webPage`) gets o
 (Paper tokens + no grain), placed before the page CSS (Web tests forbid hex after `.mh{`).
 Prove: `node --test test/pages-print.test.js`; pictures `node scripts/pages-v2-preview.mjs <dir>
 --print` → `4h-print-<kind>-<paper|night>.{png,pdf}` (print-media screenshot + `page.pdf()`).
-Live: fetch a real page with a short-lived owner session on Hetzner, `emulateMedia({media:"print"})`
+Live: fetch a real page with a short-lived owner session on the live server (OVH, root@15.204.113.250), `emulateMedia({media:"print"})`
 + `page.pdf()`; the foot must read `files.heyreason.com/<id>` with no `?k=`.
 
 ## Gotchas

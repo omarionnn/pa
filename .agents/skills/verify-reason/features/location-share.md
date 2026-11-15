@@ -49,6 +49,9 @@ thing that is easiest to break.
   read", which left the model ignoring it.
 - **The branch order.** Real coordinates win: the `app_card` line is the `else`, so a payload
   carrying both does not get the apologetic hint.
+- **What it is used for next.** `nearby_places` (three free OSM sources in one budget, Google first only
+  with a key — not set on live) and `weather` (Open-Meteo, then MET Norway) are mapped in
+  [nearby-places.md](nearby-places.md).
 - **The model connects it up.** There is no longer a dedicated prompt paragraph for this: the
   instruction rides in the `describe` lines themselves — "use this as their current position for
   anything location-related", "Use nearby_places with these coordinates", and for the card "If
@@ -99,7 +102,9 @@ Nominatim answered only the first of four posts 5 s apart, so the rest got the b
 With no model at all (2026-11-07, `rel/verify-maint`): the four payloads through `Router.webhook` →
 `SendblueChannel.receive` in process, `runTurn` stubbed, sends on a stub fetch, a throwaway
 `REASON_DB_PATH` — all four `requests.text` lines as below (geocoded every time, posts 2.5 s apart),
-the both-keys line with no app-card sentence, `db.lastSharedLocation` kept.
+the both-keys line with no app-card sentence, `db.lastSharedLocation` kept. Re-driven 2026-11-14 at
+`7d5b5f54` the same way with Nominatim stubbed (evidence `*-g5a-places`): all four lines, plus Nominatim
+down → the bare-coordinates line; and on a cage (`*-g5a-inbound` 08) a location post → `delivered: 1`.
 
 **End state that proves it.** In `bin/peek.sh thread`, the `user` message for the location payload
 carries the parsed coordinates and the `assistant` reply places them. The run on 2026-10-10 against
@@ -163,7 +168,8 @@ node --test test/location-known.test.js  # 6 pass at 226ff17 (test/sendblue.test
 ## Gotchas
 
 - `12.5` renders as `~13m` — `Math.round`. Do not assert the input back.
-- **This is the one inbound path that reaches the internet.** `describe` calls Nominatim, so the caged instance is not offline for location shares. A slow or
+- **This is the one inbound path that reaches the internet.** `describe` calls Nominatim (through the
+  process-wide one-a-second queue `nominatimTurn` in `src/places.js`, shared with `nearby_places`), so the caged instance is not offline for location shares. A slow or
   blocked Nominatim adds up to 3s and silently drops you onto the bare-coordinates line — which
   looks identical to a regression in the address feature. Drive it twice, or replace `globalThis.fetch` as `test/location-known.test.js` does — `describe`
   calls `reverseGeocode(lat, lng)` with no fetch argument, so nothing can be injected through `receive`.

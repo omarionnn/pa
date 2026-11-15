@@ -5,13 +5,15 @@ checkout" or "I made you walking directions". Two real incidents: 10-31 "I've st
 checkout…" with no checkout running, 11-03 "I made you walking directions…" with no link. Shipped in
 #337 (claim check, on main before this release).
 
-Source: `src/said.js` (`checkDraft` `:278`, the claim-check gate `:288`, `unbacked` filtered to quotes
-really in the draft `:316`, the rewrite lines `:322-330`, `noteAct` `:197`), `src/config.js:520`
-(`REASON_CLAIM_CHECK`: unset = `acting`, `all`, `0/off/false/no` = off), `src/tools.js:9129` (every
-`runTool` notes the act; `CLAIM_CHECK_READS` `:400` — searches/lookups such as `web_search`,
-`offer_check`, `shop_status`, `flight_search` — never count as acting), `src/runtime.js:586`
-(`Runtime._turn` runs the check before the send and recomposes once on a hit).
-Tests: `test/no-false-done.test.js` (12) — 12/12 at `8113bcf` (said.js unchanged at `36db733`).
+Source (lines at 7d5b5f54): `src/said.js` (`checkDraft` `:301`, the claim-check gate `:311`, `unbacked`
+filtered to quotes really in the draft `:346-348`, `noteAct` `:197`), `src/config.js:546`
+(`REASON_CLAIM_CHECK`: unset = `acting`, `all`, `0/off/false/no` = off; not set on live = `acting`),
+`src/tools.js:9818` (every `runTool` notes the act; `CLAIM_CHECK_READS` `:657` — searches/lookups such as
+`web_search`, `nearby_places` — never count as acting), `src/runtime.js:648` (the turn runs the check
+before the send and recomposes once on a hit).
+Tests: `test/no-false-done.test.js` (12) — 12/12 on 2026-11-14 (timer-todo-nfd.log).
+On a call the same rule is a separate check: the Cartesia voice's "it's done" with nothing behind it is
+flagged into the call record (`src/calls/cartesia.js` `saysDone`), see [cartesia-calls.md](cartesia-calls.md).
 
 ## Sub-features
 

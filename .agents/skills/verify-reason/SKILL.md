@@ -1,6 +1,6 @@
 ---
 name: verify-reason
-description: Launch, doctor, drive, deploy and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate, shopping, AgentCard, flight search and events — and before and after deploying to Hetzner.
+description: Launch, doctor, drive, deploy and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate, shopping, AgentCard, flight search and events — and before and after deploying to the live server (OVH).
 ---
 
 # Verify Reason
@@ -10,10 +10,13 @@ because you changed something and need to show it works, or because something lo
 need to know whether the instance is worth driving at all.
 
 **The one thing to understand first.** The primary surface is a real phone, and **the live Reason
-is on Hetzner** — `https://reason.tail3753c7.ts.net`, ssh `root@91.98.19.150` (or
-`root@100.100.152.2` over Tailscale), systemd unit `reason`, an rsync copy at `/opt/reason`. That
-hostname moved from the Mac to Hetzner on 2026-10-12; the old `ubuntu-4gb-nbg1-2.tail3753c7.ts.net`
-no longer resolves (curl 000), and anything still naming it is dead. Nothing on this Mac is live:
+is on the OVH server** — public `https://app.heyreason.com` (`/health` answers there), ssh
+`root@15.204.113.250`, systemd unit `reason`, an rsync copy at `/opt/reason`. It moved there from
+Hetzner (`root@91.98.19.150`, whose `reason` unit is now inactive and disabled, read 2026-11-14);
+the Tailscale name `reason.tail3753c7.ts.net` now points at the OVH node but answered curl 000
+from this Mac on 2026-11-14, so use the public address. Wherever this skill or a feature file
+still says "Hetzner" in an instruction, read "the live server"; dated history stays as written.
+The even older `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` is dead. Nothing on this Mac is live:
 the Mac's 8787 instance was stopped on 2026-10-12. The live instance holds live Sendblue
 credentials and the production AgentCard credentials; one POST to its webhook runs a real turn and
 sends a real iMessage to a real person, and a purchase there spends real money. So verification
@@ -118,7 +121,7 @@ and it is what makes a drive readable: `{"inbound":…,"auto_admitted":"+1…"}`
 around a drive. Message bodies are **not** in there (that needs `REASON_LOG_CONTENT=1`, which
 `caged.sh` deliberately does not set) — `bin/peek.sh thread` is where to read those.
 
-**C — Attach to the live instance on Hetzner, read-only.** Only to answer "is the thing people are
+**C — Attach to the live instance (the OVH server), read-only.** Only to answer "is the thing people are
 using healthy, and is the fix actually deployed". `bin/doctor.sh live` (ssh + the public `/health`
 + a checksum of **every file under `src/`** against this tree, the `data/` backups, any `.env.bak*`,
 and the rolling-backup timer), `GET /p/<id>` on the public address, `journalctl -u reason` and
@@ -139,7 +142,7 @@ token and his card connection had to be made again. What AgentCard has is read o
 rows and the journal (`agentcard_purchases`, `agentcard_events`, `{"tool":"purchase_track",…}`),
 and the money paths are proved offline against `test/fixture-agentcard.js`.
 
-**Hetzner has a second unit, `reason-sandbox`** (`/opt/reason-sandbox`, port 8799, AgentCard
+**The live server has a second unit, `reason-sandbox`** (`/opt/reason-sandbox`, port 8799, AgentCard
 sandbox, no messaging). It is normally `inactive`. Never start it to verify something here; it is
 not the cage and is not this skill's to drive.
 
@@ -150,7 +153,7 @@ runs `/usr/local/bin/reason-rolling-backup` at 04:00 and 16:00 New York time: a 
 shows `rolling backup ok: <bytes> at <UTC>`. `doctor.sh live` reports the file list and the timer's
 last/next run.
 
-### Deploying to Hetzner
+### Deploying to the live server (OVH)
 
 Only when code changed — a change to this skill's docs or `bin/` never needs a deploy or a
 restart. Every step below is from a lesson learned the hard way; skip none.
@@ -170,7 +173,7 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    ```
 
 2. **Back up live once, under a name that says it is temporary.** As `reason`, WAL-safe:
-   `ssh root@91.98.19.150 'cd /opt/reason/data && sudo -u reason sqlite3 reason.db ".backup reason.db.bak-predeploy"'`.
+   `ssh root@15.204.113.250 'cd /opt/reason/data && sudo -u reason sqlite3 reason.db ".backup reason.db.bak-predeploy"'`.
    **Never** `cp .env .env.bak…` or any other copy of `.env` — it is every secret in one more
    file, and none is needed: `.env` is never touched by a deploy.
 
@@ -181,10 +184,10 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    Record the PID before and the time the copy finished.
 
    ```bash
-   PID0=$(ssh root@91.98.19.150 systemctl show reason -p MainPID --value)
+   PID0=$(ssh root@15.204.113.250 systemctl show reason -p MainPID --value)
    rsync -a --delete --exclude data/ --exclude .env --exclude node_modules --exclude .git \
-     ./ root@91.98.19.150:/tmp/reason-deploy/
-   COPIED=$(ssh root@91.98.19.150 'rsync -a --chown=reason:reason --exclude data/ --exclude .env \
+     ./ root@15.204.113.250:/tmp/reason-deploy/
+   COPIED=$(ssh root@15.204.113.250 'rsync -a --chown=reason:reason --exclude data/ --exclude .env \
      --exclude node_modules --exclude .git /tmp/reason-deploy/ /opt/reason/ && rm -rf /tmp/reason-deploy \
      && date -u +%s')
    echo "copy finished $COPIED"
@@ -254,8 +257,8 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    gave it away. A plain `kill` loses to `Restart=always`.
 
    ```bash
-   ssh root@91.98.19.150 systemctl restart reason
-   ssh root@91.98.19.150 'systemctl show reason -p MainPID --value; \
+   ssh root@15.204.113.250 systemctl restart reason
+   ssh root@15.204.113.250 'systemctl show reason -p MainPID --value; \
      date -u -d "$(systemctl show reason -p ExecMainStartTimestamp --value)" +%s'
    # → a PID that is not $PID0, and a start time ≥ $COPIED. Either one wrong: it did not restart.
    ```
@@ -265,7 +268,7 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    `watchdog timer` `ActiveState=active` with a recent `LastTrigger`, `GET /alive` JSON. Watch
    `journalctl -u reason -f` through one real turn if the change is on the turn path. **Only then**
    delete the pre-deploy copy, so `data/` holds `reason.db.bak-rolling` alone:
-   `ssh root@91.98.19.150 'rm -f /opt/reason/data/reason.db.bak-predeploy; ls /opt/reason/data'`,
+   `ssh root@15.204.113.250 'rm -f /opt/reason/data/reason.db.bak-predeploy; ls /opt/reason/data'`,
    and `git worktree remove "$W"`.
 
 Both B and C need `.env` at the repo root (it holds `ANTHROPIC_API_KEY` or
@@ -277,7 +280,7 @@ this machine. The caged instance reads it and then overrides the dangerous parts
 Run this first, every time, before concluding anything from a drive.
 
 ```bash
-bin/doctor.sh          # the LIVE instance — Hetzner, over ssh (same as `bin/doctor.sh live`)
+bin/doctor.sh          # the LIVE instance — the OVH server, over ssh (same as `bin/doctor.sh live`)
 bin/doctor.sh caged    # the caged one, on whatever port `caged.sh start` wrote (or `bin/doctor.sh 8796`)
 bin/doctor.sh 8787     # a local dev instance on this Mac, if somebody started one — NOT live
 ```
@@ -300,6 +303,11 @@ cage left running from `~/Desktop/pa-speed6` for eight days read all clear again
 `caged.sh start` answers `already running` for any cage in the default run dir, whoever started it —
 leave somebody else's alone and start your own beside it: `export REASON_VERIFY_RUN=$TMPDIR/reason-verify-<name>
 REASON_VERIFY_PORT=<free port>` for `caged.sh start|env|stop` and `doctor.sh caged` alike.
+`caged.sh start` wipes its run dir first: keep helper scripts and fixtures outside it. With no
+`.env` the cage has `REASON_WEB` off, so `/web` and `/web/signal` answer 404 — start it with
+`REASON_WEB=on` to drive Web routes. A throwaway Web account's conversation id must be
+`dm:<channel>:<number>` (sign-in re-admits the account under that id; any other id turns every
+signed-in page into a 500), and must not reuse the cage owner's number.
 On live it also reports the outside watchdog (`reason-watchdog.timer` state + last run,
 `data/watchdog.json`'s age) and the server's own `GET /alive` on its `REASON_PORT` (8788);
 `ActiveState=inactive` with no last run, or `/alive` → `not found`, means that code is not deployed.
@@ -979,7 +987,10 @@ says what was asked as well as what came back. **It runs the command from the sk
 as `cd ~/Desktop/pa && node --env-file-if-exists=.env -e 'import("./src/tools.js")'` dies with
 ".env not found" and `ERR_MODULE_NOT_FOUND` under `.agents/skills/verify-reason/src`. Run those
 with `REASON_EVIDENCE_CWD="$REPO" bin/evidence.sh run …`, or give the env file and the imports
-absolute paths (2026-10-13: the whole in-process pass went into evidence this way). `00-provenance.txt` carries the UTC time, the exact
+absolute paths (2026-10-13: the whole in-process pass went into evidence this way). With
+`REASON_EVIDENCE_CWD` set, pass the evidence dir as an **absolute** path: a relative one
+resolves against the new cwd and silently writes nothing. A suite started with `&` inside one
+agent command dies when that command ends; run it in the foreground or as its own background job. `00-provenance.txt` carries the UTC time, the exact
 `HEAD`, the uncommitted-file list, the node version and the caged pid/port — a proof that cannot be
 pinned to a commit is an anecdote.
 
@@ -1025,7 +1036,7 @@ live Reason shares the command line. It waits for the process to go, confirms th
 (and fails loudly if something still holds it), and removes `$TMPDIR/reason-verify/` with the
 throwaway database, profiles, shots and images.
 
-It does not touch: `data/reason.db`, the live instance on Hetzner, `.env`, or
+It does not touch: `data/reason.db`, the live instance, `.env`, or
 `evidence/` — proof survives teardown. After cleanup, confirm it: `ls evidence/<your-dir>/`.
 
 Run cleanup after a **failed** iteration too. A caged instance left behind holds the port and the
@@ -1041,12 +1052,13 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
 | `bin/delete-coverage-drive.mjs` | Under `caged.sh env`, from the repo root: seeds every table for a test + control person, runs `deleteData`, scans for anything of theirs left. Exit 0 = nothing unexplained, control untouched. See [features/data-delete.md](features/data-delete.md). |
 | `bin/recall-figures-drive.mjs` | Under `caged.sh env`, from the repo root, `OPENAI_API_KEY=` and a mktemp `REASON_DB_PATH`: recall ranking + the "nothing saved" filter, forget clearing recall (sealed), the figures gate on the reply and `message_send`, receipts without the operator's name, own-files-only. 19 steps, no model, no network. See [features/recall.md](features/recall.md). |
-| `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh: service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`, `reason-watchdog.timer` + `data/watchdog.json` age, `GET /alive`. A port = a local instance. |
+| `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = the OVH server over ssh (`REASON_LIVE_SSH`, `REASON_LIVE_URL` override; defaults `root@15.204.113.250`, `https://app.heyreason.com`): service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`, `reason-watchdog.timer` + `data/watchdog.json` age, `GET /alive`. A port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
 | `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. Background it under setsid like `caged.sh` (a bare `&` dies with the agent's command). |
 | `bin/cli-seal-probe.mjs [--unsealed]` | What a non-owner's CLI turn puts in front of the model, read off the wire: the real `claude` via `runClaudeCli`, `ANTHROPIC_BASE_URL` on a loopback stand-in (no model, no bill, no message). Must show 0 emails, no AGENTS.md, no repo path; `--unsealed` is the control. See [features/cli-sealed.md](features/cli-sealed.md). |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
+| `bin/call-probe.mjs cartesia\|trust\|recordings\|todo [cagePort]` | No-model call probe from the repo root: throwaway database, fake keys, prints one line per check and `all ok`. With a cage port, `trust` keeps the cage database only when `REASON_DB_PATH` is under `REASON_VERIFY_RUN`. |
 | `bin/onboarding-drive.sh [outdir] [before]` | The first-chat onboarding end to end: its own fake Sendblue + cage (claude-cli, two test numbers), seven texts, 13 checks, `transcript.txt` with both sides and the gaps; `before` = flag off. Tears both down. |
 | `bin/tagline.mjs [--out <dir>] \| --live <url>` | Tagline "Your personal concierge" on the home page + an invite page (body and og:description), old "lives in your texts" gone. In-process uses its own temp DB and a fake channel; `--live` is one read-only GET /. |
 
@@ -1102,10 +1114,12 @@ To-do list (`REASON_TODO` off/`owner`/on; the plan, the one yes, the list's call
   of texts, not a burst.
 - **The design handoffs moved** to `~/Desktop/Project files/Reason/handoffs/` (2026-10-30). Pass the
   folder explicitly to `bin/web-thread-preview.mjs` and `bin/web-preview.mjs` if their defaults miss.
-- **The live instance is Hetzner, not a port on this Mac.** Since 2026-10-12 nothing on this
+- **The live instance is the OVH server (was Hetzner), not a port on this Mac.** Since 2026-10-12 nothing on this
   machine is live; a process on 8787 here is a dev checkout somebody started, and if its `/health`
   says `sendblue: live` it is a *duplicate* on the live number — stop it, do not drive it.
   **8799 is already taken** by the local ticket-delivery sandbox; the caged default is 8796.
+- `bin/call-event-gate-drive.mjs`, `bin/delete-coverage-drive.mjs` and the other database-seeding drives refuse a `REASON_DB_PATH` outside a cage (`refusing: REASON_DB_PATH is not a cage database`): run them under `caged.sh env` of a started cage, or with a `mktemp -d -t rv-gate` path.
+- `caged.sh` blanks `PLAID_*`, `CARTESIA_*` and `REASON_GOOGLE_PLACES_KEY` in the server and in `env`, so a checkout whose `.env` holds those keys never reaches Plaid, Cartesia or Google from a cage.
 - `caged.sh` blanks `AGENTCARD_*` as well as the texting and calling credentials. On the cage every
   purchase tool answers `not_configured` and `/agentcard/webhook` answers 401 — that is the cage
   holding, and the money paths are proved in `test/agentcard.test.js` against the fixture.

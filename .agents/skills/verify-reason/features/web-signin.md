@@ -2,7 +2,7 @@
 
 The same Reason, reached from a browser at **`https://heyreason.com/web`** (owner's domain rule,
 2026-10-26): the website (Netlify) rewrites `/web` and `/web/*` to `files.heyreason.com/web…` on
-Hetzner, **signed** (`signed = "REASON_SITE_PROXY_SECRET"`, HS256 JWS in `x-nf-sign`;
+the live server (OVH, root@15.204.113.250), **signed** (`signed = "REASON_SITE_PROXY_SECRET"`, HS256 JWS in `x-nf-sign`;
 `src/pages/siteproxy.js`). Direct hits to `files.heyreason.com/web…` answer **301** to
 `heyreason.com/web` + same path and query (`webMovedTo`, only once `REASON_SITE_PROXY_SECRET` is set;
 the website's own signed request on that host is served). W1 is sign-in alone: a person
@@ -43,8 +43,8 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   per-message history by its key prefix.
 - **Wrong tries** — `events.tryKeyedCode` under `wsign:<conv>` (person) and `wsignb:<actor>`
   (browser): 5 wrong per browser per 15 min — the only limit ever said (on Web: "let's pause a
-  minute." + `TRY AGAIN IN m:ss`, src/pages/websignin.js:367; "Too many wrong codes from this browser"
-  is the events page's wording, src/pages/event.js:463) — plus the silent 20 per person per 15 min and 40 per person per day. The ceiling
+  minute." + `TRY AGAIN IN m:ss`, src/pages/websignin.js:370; "Too many wrong codes from this browser"
+  is the events page's wording, src/pages/event.js:758) — plus the silent 20 per person per 15 min and 40 per person per day. The ceiling
   bounds guessing, never the person (lead 25): under it the newest code (or this browser's own)
   works in any browser; past it a code opens only in the browser that asked for it and gets one try
   there (a wrong one ends it), so strangers typing the number never stop the person's own fresh
@@ -146,6 +146,9 @@ eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && 
 node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default outDir ~/Desktop/reason-web-design-previews; the default referenceDir is now "$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference", bin/web-preview.mjs:20)
 ```
 
+2026-11-14 at `7d5b5f54`: the three test files pass (slot gate), `web-drive.mjs` 15 ok / 0 FAIL,
+cage `/web` 200 with `reason_web_form` + CSP / `X-Frame-Options: DENY` / `Referrer-Policy: same-origin`.
+
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,
 the form, a `Set-Cookie: reason_web_form=…` and the security headers; without the flag the cage
 answers `{"error":"not found"}` exactly as `/no-such-thing`. The cage's texting channels are
@@ -189,7 +192,8 @@ connected); a stranger's number mints nothing and answers the same bytes.
 - A browser with a session row that Web no longer allows (paused account, switch back to `owner`)
   sees the sign-in form and has no sign-out; the row stays and reopens when allowed again. The
   browsers list in W2 is where it gets a revoke.
-- Deferred to W2+: token hashing and 24h rotation (§4.2), a browsers list with per-row revoke, the
+- Session tokens are hashed since 2026-11-08 (`page_sessions.token` = sha256; SKILL.md Drive).
+  Deferred to W2+: 24h rotation (§4.2), a browsers list with per-row revoke, the
   once-only boundary notice column (`web_notice_seen_at`; W1 shows the notice statically on the
   landing), the `(web)` hint after a Web→text switch (decision 9).
 

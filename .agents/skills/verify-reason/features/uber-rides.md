@@ -143,11 +143,13 @@ live: it books a real car.
 ## Gotchas
 
 - The redirect URI (`<public host>/uber/callback`) must be registered in the Uber developer
-  dashboard, and `UBER_CLIENT_SECRET` must be present in Hetzner's `.env`. Missing either means the
+  dashboard, and `UBER_CLIENT_SECRET` must be present in the live server's `.env` (OVH, root@15.204.113.250, `/opt/reason`;
+  both `UBER_CLIENT_ID` and `UBER_CLIENT_SECRET` are set there on 2026-11-14). On a keyless cage `uber_options`
+  is `not_connected` (`missing: [UBER_CLIENT_ID, UBER_CLIENT_SECRET]`) and `/uber/callback` with no state is 400. Missing either means the
   link opens and the callback fails; the tests cannot see that.
 - `identity_only` is a success from Uber's side and a dead end for rides: check `can_book`.
-- Browser sign-in (the old "log into Uber in Reason's browser" path) is dead from Hetzner; don't
-  suggest it. See `signin*.js`.
+- Browser sign-in (the old "log into Uber in Reason's browser" path) was dead from the old Hetzner
+  server and is not retried on the live server (OVH); don't suggest it. See `signin*.js`.
 - The link was tapped on a real iPhone on 2026-10-23 (`docs/unverified.md`, "The Uber ride link —
   verified on a phone"). Still unproven: an iPhone not signed in to Uber, and Android. The Uber
   *app* ignores pre-filled trips, which is why the link is the web page (#78).

@@ -25,7 +25,10 @@ Source: `src/db.js` (`page_sessions.web_seen_at / web_away_from / web_away_to`, 
   message with a 1 px pen line `scaleX(1→0)`, `transform-origin:left`, 5 s linear. Tap → `POST /web/send/cancel`
   (same-origin + csrf). Won → "taken back. nothing sent." for 2 s, line removed, no turn, no history row.
   Too late → 409 `too_late`, control gone, `SENT · time`. Reduced motion: same window, no line.
-  In practice the window is the burst quiet (`REASON_BURST_QUIET_MS`, live default 4 s).
+  In practice a won take-back needs the tap inside the Web hold: `REASON_BURST_QUIET_WEB_MS` (default
+  0.5 s, never longer than the text window `REASON_BURST_QUIET_MS`, `src/channels/router.js:98`; unset on
+  live, so 0.5 s) or before the send is held (`Router.preHold`); after that the 5 s button answers 409
+  `too_late`. The old 4 s text window went to 2.5 s (texts) / 0.5 s (Web) on 2026-10-28.
 - **Working line counts (6).** Only from a real loop: a turn handed 2+ PDFs/documents shows
   "reading the lease… 2 of 3 files" as each is read (pdfsFor then docsFor), then back to the turn's own line.
   A single PDF has NO page count: pdftotext/PDFKit return all pages in one call (`src/pdf.js`). No
@@ -46,7 +49,7 @@ win and deliver drops it right before `holdInbound` (synchronous check). Keys ar
 
 - Offline: `env -i PATH=$PATH HOME=$HOME node --test test/web-4h-plumbing.test.js` (19).
 - Staging: `npm run web:staging` → `take-it-back.html`, `taken-back.html`, `while-you-were-out.html`, `working-counts.html`.
-- Live (Hetzner): throwaway account + short-lived page_session row; set its `web_seen_at` 4 h back and finish a
+- Live (the live server (OVH, root@15.204.113.250)): throwaway account + short-lived page_session row; set its `web_seen_at` 4 h back and finish a
   throwaway task, then GET `/web?thread` (line once, gone on refresh). Take-back: POST /web/send then
   /web/send/cancel within the burst window → `{cancelled:true}`, no `messages` row; after the turn → 409.
   Counts: a Web send with 2+ uploaded PDFs; `/web/stream` `doing` events carry "… N of M files".

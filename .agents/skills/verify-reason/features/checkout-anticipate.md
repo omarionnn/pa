@@ -12,14 +12,14 @@ What code does now:
 - **the record** — `shop_shipping`, one row per person: first/last name, street, apt, city, state, zip, phone,
   email. `shipping.profileFor(c)` reads it and, while it is short, gathers from: earlier checkout instructions
   (`shop_run_asks.what`, newest first), facts about shipping/delivery (never "lives at"; an address without a
-  ZIP is not trusted — "3247 Brauna Avenue" is a voice-note mishearing on live), the account's name and
+  ZIP is not trusted — a street with no ZIP, misheard in a voice note, was seen on live), the account's name and
   number, the default connected Gmail (or the only one). What they type into a form (`shop_answer`) is learned
   and never overwritten by a gathered value.
 - **the instruction** — `startCheckout` writes the record's address into `what` where it says to ship
-  ("…shipped to the address on file. Ship to Omari Nyarko, 3247 Bruner Ave, Apt 1, Bronx, NY 10469."), so the
+  ("…shipped to the address on file. Ship to <first last>, <street>, Apt 1, <city>, <ST> <zip>."), so the
   form often never comes.
 - **a plain form the record covers** → answered by code in `step()` (no model turn), one text:
-  `Shipping to 3247 Bruner Ave Apt 1, Bronx, the usual. Say if that's wrong.` ("as you gave it to me before" the
+  `Shipping to <street> Apt 1, <city>, the usual. Say if that's wrong.` ("as you gave it to me before" the
   first time). A choice field gets the option's VALUE (`shipping.matchOption`: by value, label, state code or
   name; placeholders never). `told` carries `auto:<request>`.
 - **a form it covers in part** → the model is woken once naming what is filled and the ONLY keys still needed,
@@ -30,7 +30,7 @@ What code does now:
   the typed values; a correction after an auto-answer (`auto:<request>` on `told`, stage in_progress, unpaid)
   fixes the record, marks the run `superseded` (its payment request is declined without a word, its end is not
   texted) and starts the same checkout again with the corrected instruction.
-- **somebody else's address** — an instruction that ships to another ZIP ("shipped to my mom Ama Nyarko, 12
+- **somebody else's address** — an instruction that ships to another ZIP ("shipped to my mom <name>, 12
   Other St, Newark, NJ 07102") is left exactly as written, its form is answered with THAT address (the buyer's
   phone and email stay theirs), and the line says "as you asked"; the record is not changed by it. The same
   ZIP is the person's own address as the record now has it (a corrected street number). Names are read only
@@ -40,9 +40,17 @@ What code does now:
   store refused (`refused:<request>` on `told`) is not merged in again, and the wake carries only the HTTP
   status, never the store's message; a superseded run never retries signed in; `matchOption` takes one
   word-start hit or nothing; only the person's own facts (self subjects + the account's name) seed the record.
+- **free words to the form's exact option (#498, 2026-11-12)** — `shapeAnswers` (`src/shopconnect.js`): a
+  choice answered in words becomes the option's VALUE: first `shipping.matchOption`, then `looseOption` (the
+  same amount of money — "$2 tip" / "2 dollars" → the `$2.00` option, never a `%` one — else every word given,
+  minus filler like "it/my/at/tip", is in the label: "leave at door" → "Leave it at my door"). A tie or no hit
+  is not sent: `shop_answer` returns `no_matching_option` with `options` and a `say` listing them, nothing is
+  posted, the run stays `needs_input` (Chipotle 11-10 had a store refuse the raw words). Pinned in
+  `test/shop-form-options.test.js`; driven in process 2026-11-14 (`money-probe.mjs`): "leave at door" /
+  "$2 tip" → `option-2` / `tip-2`; "put it in the mailbox" left as given.
 - **the words** — `offers.guardReply` drops "Here's the page if you'd rather just buy it yourself" and the
   bare link under it while a run of theirs is open or just ran (rule `self_buy_hedge`); `checkoutNote` says a
-  started checkout is Reason's to finish and names the card on file ("Mastercard ••••1929 … never ask whether
+  started checkout is Reason's to finish and names the card on file ("Mastercard ••••<last4> … never ask whether
   they have a card").
 
 ## Offline
@@ -52,13 +60,13 @@ What code does now:
   choice, `email` required, `phone` optional) with the record → posted by code, `state: "option-33"`, one
   line, no wake; a size form still wakes the model; email unknown → wake names only `email`, clock-time
   deadline, `shop_answer {email}` merges 7 keys from the record, record learns, next form whole; "NY" shaped,
-  400 `detail`; correction → new run with `3249 Bruner Ave`, old run's payment declined silently; hedge +
+  400 `detail`; correction → new run with the corrected street number, old run's payment declined silently; hedge +
   link dropped only with a run; card on file in the note; parser cases (the Walmart instruction, the typed
-  "Nyarko, 3247 Bruner Ave, Bronx 10469 apt1", "apartment one", no-ZIP refused) and gather() from rows.
+  "<last>, <street>, <city> <zip> apt1", "apartment one", no-ZIP refused) and gather() from rows.
 - `test/checkout-job.test.js` wording pin updated (clock time, not "expires in"); both fixtures clear
   `shop_shipping`.
 
-## Live (read-only)
+## Live (read-only, on the live server: OVH, root@15.204.113.250)
 `sqlite3 -readonly /opt/reason/data/reason.db "SELECT conversation_id, length(address1)>0, length(email)>0, used, source FROM shop_shipping"`
 — counts and flags only, never the values. A covered form shows in the journal as `{"shop_auto_answered":…}`-less:
 look for the one `Shipping to …` outbound and no `[checkout]` cli turn for that request.

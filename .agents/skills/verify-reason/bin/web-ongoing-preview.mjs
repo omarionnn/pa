@@ -14,7 +14,7 @@ import { join } from "node:path";
 import http from "node:http";
 
 const outDir = process.argv[2] || join(homedir(), "Desktop", "reason-web-design-previews");
-const refDir = process.argv[3] || join(homedir(), "Desktop", "reason-web-handoff-2026-10-26", "reference");
+const refDir = process.argv[3] || join(homedir(), "Desktop", "Project files", "Reason", "handoffs", "reason-web-handoff-2026-10-26", "reference");
 mkdirSync(outDir, { recursive: true });
 const dir = mkdtempSync(join(tmpdir(), "reason-og-preview-"));
 Object.assign(process.env, { REASON_DB_PATH: join(dir, "reason.db"), REASON_DATA_DIR: dir, REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner", REASON_WEB: "on" });

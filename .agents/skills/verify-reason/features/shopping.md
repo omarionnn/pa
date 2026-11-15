@@ -35,27 +35,27 @@ the figures gate since #335: `test/unverified-1105.test.js` (33 incl. subtests) 
 - **Offers → carts.** `purchase` with an `offer_id` checks the AgentCard cart against that exact
   product (`matchCartToOffer`); a cart for something else is a mismatch, not a purchase.
 - **The figures check on everything Reason sends — no "(unverified)" tag, ever (PR #335, 11-05/11-07).**
-  `guardReply` (`src/offers.js:606`) never writes a hedge into the text. A money figure (`$`/`£`/`€`,
-  `USD`, "95 dollars/bucks", `REPLY_MONEY` `:451`) is known when a tool read it this turn, when it is
+  `guardReply` (`src/offers.js:634`) never writes a hedge into the text. A money figure (`$`/`£`/`€`,
+  `USD`, "95 dollars/bucks", `REPLY_MONEY` `:479`) is known when a tool read it this turn, when it is
   **theirs** (their message, minus the line code puts over an inline reply — a quote of Reason's own
-  words is not theirs, `QUOTED_LINE` `:456`; what they sent: a photo note only when the photo read wrote it (`media_items.description_from = 'photo'`, never Reason's fallback reply) and transcripts, `db.theirOwnWords` (`src/db.js:11071`); this turn's photo words ride on the turn (`offers.notePhotos`/`photoWords`), so the rewrite and `message_send` read them too;
+  words is not theirs, `QUOTED_LINE` `:484`; what they sent: a photo note only when the photo read wrote it (`media_items.description_from = 'photo'`, never Reason's fallback reply) and transcripts, `db.theirOwnWords` (`src/db.js:11071`); this turn's photo words ride on the turn (`offers.notePhotos`/`photoWords`), so the rewrite and `message_send` read them too;
   their thread history), when Reason remembers it about them (older than 14 days → "as of <date>",
-  `STALE_MEMORY_MS` `:539`), or when it is arithmetic on known figures (sums, ×/÷ 2–10, a percent
+  `STALE_MEMORY_MS` `:567`), or when it is arithmetic on known figures (sums, ×/÷ 2–10, a percent
   of theirs — "18% tip on $84 is $15.12"). A bare number of theirs counts only when they used it as
   money (`MONEY_BEFORE`/`MONEY_AFTER`, `NOT_MONEY_UNIT` `:491-494`, a money word within `NEAR_WORDS` (4) words of it, never after a label like zip/room/flight — `NOT_MONEY_LABEL`; "I'm 30, 2 kids" and "my zip is 10001, rent's high" back nothing; "ran a 5k" is no $5,000). Their purchase record backs its own amounts but is never a base for sums (`records`).
   Anything else is `dollar_unsourced`: the turn's reply goes back to the model **once**
-  (`recompose`, taken by `Runtime._turn` via `takeRecompose`, `src/runtime.js:583`) to check it or
+  (`recompose`, taken by `Runtime._turn` via `takeRecompose`, `src/runtime.js:643`) to check it or
   leave it out; on the rewrite (`beginTurn(..., { carry: true })`) a price still unchecked is
   **dropped** sentence by sentence — the sentence holding that whole figure (`dollar_dropped`), and a reply left empty becomes `PRICE_LEFT_OUT`
   "I couldn't confirm the price, so I've left it out rather than guess. Want me to look it up?"
-  (`:590`). Coupons/deals the same (`discount_unsourced` → `discount_dropped`; a concrete code/
+  (`:618`). Coupons/deals the same (`discount_unsourced` → `discount_dropped`; a concrete code/
   amount must match a source; BOGO/free shipping/"$N off" are deals). "best"/"cheapest" needs two
-  priced offers (or a flight search's fares). A purchase ask must carry AgentCard's total. The
+  priced offers (or a flight search's fares). A purchase ask must carry AgentCard's total (AgentCard route; dormant where Shop Connect is on). The
   history read happens only when the reply has a figure or a deal. `message_send`
-  (`src/tools.js:10763`): an unchecked price or deal is refused **every** try
-  (`blocked: "unchecked_figures"`, `offers.sendBack` `:776`, "never a bracketed tag like
+  (`src/tools.js`, grep `unchecked_figures`): an unchecked price or deal is refused **every** try
+  (`blocked: "unchecked_figures"`, `offers.sendBack` `:804`, "never a bracketed tag like
   "(unverified)""), to their own person too; other fixes are sent back once. `offer_check`'s note
-  says a field the page lacks is "doesn't say" in plain words, never a tag (`src/tools.js:13728`).
+  says a field the page lacks is "doesn't say" in plain words, never a tag (`src/tools.js`, grep `the page doesn't say`).
 - **The handoff.** `shop_handoff` (and every failed purchase) gives one link with plain words for
   what it opens, what was verified (field, value, where, when), what was not, one next step, and
   `cart_transferred: false` always. A Shopify cart permalink only when the page pins one variant;
@@ -91,7 +91,7 @@ cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed '
 node --env-file-if-exists=.env -e '
   const { runTool } = await import("./src/tools.js");
   const offers = await import("./src/offers.js");
-  const ctx = (t) => ({ conversationId: "dm:owner", messages: [{ role: "user", content: "[Sat, Oct 24, 2026, 11:58 AM] Omari: " + t }] });
+  const ctx = (t) => ({ conversationId: "dm:owner", messages: [{ role: "user", content: "[Sat, Oct 24, 2026, 11:58 AM] Owner: " + t }] });
   const o = await runTool("offer_check", { url: "https://www.allbirds.com/products/mens-tree-runners" }, ctx("how much is this"));
   const id = o.offer.offer_id;                                   // note: o.offer.offer_id, not o.offer_id
   console.log(JSON.stringify(await runTool("shop_handoff", { offer_id: id, why: "buying is not set up here" }, ctx("just send me the link"))));

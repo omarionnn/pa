@@ -9,7 +9,7 @@ Code: `src/stamps.js` (catalog, tables `stamps` + `stamp_shares`, awarding, back
 1200×630 card), `src/pages/webdailyhead.js` (`dailyHeader`, shared with the daily Home),
 `scripts/stamps-backfill.mjs`. Completion hooks: `db.completionBus` emitted by `finishTask` (done),
 `updateCall` (outcome_kind written), `markAgentcardPurchase` (placed / ticket issued), research
-(src/db.js:6431, 6452) and a store checkout's placed order (`"order"`, src/shopconnect.js:1695);
+(src/db.js:6949, 6970; all through `emitCompletion`, src/db.js:11459) and a store checkout's placed order (`"order"`, src/shopconnect.js:2401);
 listeners src/stamps.js:373-381 (research/order seals only with `REASON_STAMPS_EVERYDAY`).
 
 ## Sub-features
@@ -49,10 +49,11 @@ shared `heyreason.com/s/…` link from iMessage.
 `REASON_DB_PATH=$(mktemp -d)/stamps.db node bin/web-stamps-drive.mjs [outDir]` under `caged.sh env`:
 empty → a real `finishTask` earns First errand → many pages → share via the endpoint (cross-site 403)
 → public page + real Chromium og.png (1200×630) → Stop sharing → the 404 page; PNGs at 390/1280 Paper/Night and
-`compare-stamps.png`. Tests: `test/stamps.test.js`, `test/stamps-web.test.js`.
+`compare-stamps.png` (11 ok, "all ok"). The reference is read from `~/Desktop/Project files/Reason/handoffs/reason-daily-handoff-2026-10-27/`
+(old `~/Desktop/reason-daily-handoff-2026-10-27/` as fallback); with neither, the compare is skipped silently. Tests: `test/stamps.test.js`, `test/stamps-web.test.js`.
 
 ## Live proof
-From Hetzner: short-lived owner `page_sessions` row → `https://heyreason.com/web/stamps`; share proof
+From the live server (OVH, root@15.204.113.250): short-lived owner `page_sessions` row → `https://heyreason.com/web/stamps`; share proof
 only on a throwaway account (created then deleted with its stamps, shares and sessions).
 
 ## End state that proves it

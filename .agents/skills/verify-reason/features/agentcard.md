@@ -1,5 +1,14 @@
 # AgentCard — a card kept in a vault, and buying things with it
 
+**Live: dormant for everyone.** With `REASON_SHOP_CONNECT=on` (live since 2026-10-31) Crossmint is the only
+way to buy, so `vault_enroll`, `purchase`, `purchase_confirm`, `purchase_track` and `purchases_recent`
+(`AGENTCARD_BUY_TOOLS`, `src/shoptools.js`) are hidden from every account and refused in `runTool` with
+`blocked: "not_available"` and a pointer to `store_checkout` / `shop_card` (driven on the cage
+2026-11-14 with the shop path on: both `vault_enroll` and `purchases_recent` → `not_available`). The
+AgentCard flight route was removed 2026-11-11 (#504; [flight-booking.md](flight-booking.md)). The rows,
+the webhook route (unsigned → 401) and the code stay; everything below is how it works where Shop
+Connect is off (a bare install, the cage by default).
+
 Somebody stores a card once, on AgentCard's own page, locked with their own passkey. Reason never
 sees the number. After that Reason can shop real shops — show the real cart with the real total,
 ask, and only then pay — with two answers between wanting something and paying for it: the
@@ -17,11 +26,11 @@ The rest of the shopping loop (offers, handoff, price watches) is in [shopping.m
 
 **Production credentials went live on the Hetzner instance on 2026-10-12 ~03:03 ET.** The org token
 answers `"sandbox":false`. The webhook destination was registered at AgentCard as
-`https://reason.tail3753c7.ts.net/agentcard/webhook` — Hetzner, never the Mac. **Re-check it at
+`https://reason.tail3753c7.ts.net/agentcard/webhook` — the live server (Hetzner then; not re-checked that this name follows the move to OVH), never the Mac. **Re-check it at
 AgentCard before relying on it: on 2026-10-14 it had never delivered a single event** (the
 registered URL carried a trailing dot and the subscribed events were not the `vault.*` ones).
 Nothing in source can prove this either way; only AgentCard's dashboard and an `agentcard_events`
-row on Hetzner can. (An older destination on `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` is dead: that
+row on the live server can. (An older destination on `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` is dead: that
 hostname no longer resolves.)
 
 ## Sub-features
@@ -126,7 +135,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "http://127.0.0.1:$P/agentcard/
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh stop
 ```
 
-**The live instance, read-only.** Three things say whether AgentCard is really wired on Hetzner,
+**The live instance, read-only.** Three things say whether AgentCard is really wired on the live server (OVH, root@15.204.113.250),
 none of which writes anything:
 (The unsigned POST below writes nothing, but it is still a POST to a live webhook: leave it out of
 any pass run under a no-POST-to-live rule — `bin/doctor.sh live` skips it unless
@@ -138,10 +147,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   https://reason.tail3753c7.ts.net/agentcard/webhook \
   -H 'content-type: application/json' -d '{}'
   # → 401 {"error":"rejected: no AgentCard-Signature header"}
-  #   (if it says "no AGENTCARD_WEBHOOK_SECRET on this machine", the Hetzner .env lost the secret)
-ssh root@91.98.19.150 "journalctl -u reason --no-pager --since '24 hours ago' \
+  #   (if it says "no AGENTCARD_WEBHOOK_SECRET on this machine", the live .env lost the secret)
+ssh root@15.204.113.250 "journalctl -u reason --no-pager --since '24 hours ago' \
   | grep -E 'vault_enroll|agentcard_webhook|\"purchase' | cut -c1-240 | tail -20"
-ssh root@91.98.19.150 "sqlite3 /opt/reason/data/reason.db \"select id, state, datetime(created_at/1000,'unixepoch'), substr(body,1,60) \
+ssh root@15.204.113.250 "sqlite3 -readonly /opt/reason/data/reason.db \"select id, state, datetime(created_at/1000,'unixepoch'), substr(body,1,60) \
   from outbox where body like '%vault.agentcard%' order by id desc limit 5\""
 ```
 
@@ -161,7 +170,7 @@ check. Done 2026-10-12 after the destination was created:
 ```bash
 node -e '
 const { createHmac } = require("node:crypto");
-const secret = process.env.AGENTCARD_WEBHOOK_SECRET;           # from Hetzner .env, never typed here
+const secret = process.env.AGENTCARD_WEBHOOK_SECRET;           # from the live server's .env, never typed here
 const t = Math.floor(Date.now()/1000);
 const body = JSON.stringify({ id: "evt_sigcheck_"+t, type: "vault.session_linked", created: t, livemode: true,
   data: { vault_session_id: "vs_sigcheck_does_not_exist", user_id: "usr_sigcheck" } });
@@ -192,7 +201,7 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
 - **The webhook secret is per destination.** Creating a new destination at AgentCard means a new
   `whsec_…`; the one in `.env` must be the one shown for *this* URL, or every delivery is 401
   `rejected: the signature did not match` and nothing in the thread ever says "card saved".
-- **`.env` is never rsync'd.** The Hetzner `.env` is edited in place; a restart is
+- **`.env` is never rsync'd.** The live server's `.env` (OVH, `/opt/reason/.env`) is edited in place; a restart is
   `systemctl restart reason` as root (a plain `kill` + `nohup` loses to `Restart=always` with
   EADDRINUSE). The restart does load a freshly edited `.env`.
 - **`sandbox_mode` on a confirm is not a refused card.** `DECLINE_REASONS` says so; sending
@@ -366,7 +375,7 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
 ## Sandbox proof (step 4, 2026-10-23) — not run live; what it needs
 
 **This install has no sandbox credentials.** The `AGENTCARD_CLIENT_ID`/`AGENTCARD_CLIENT_SECRET`
-pair in `~/Desktop/pa/.env` is the same client as Hetzner's, and a token minted from it
+pair in `~/Desktop/pa/.env` is the same client as the live server's, and a token minted from it
 introspects (`GET https://api.agentcard.sh/api/v2`, read-only, a one-off on 2026-10-23 — never a routine probe, see "Never probe AgentCard itself") as `test_mode: false`,
 `mode: production`. Key prefixes do not tell the modes apart (`acs_…`, `whsec_…` either way),
 and the host is the same for both; introspection is the only check. Never run the loop on these.
@@ -380,7 +389,7 @@ answer dropped → reconciled by one `GET /buy/conversations/{id}`, never resent
 `order.placed`/`order.confirmed` keyed on `data.order_id`. Plus the dropped confirm with no order
 behind it: stays `outcome_unknown`, says "not proof nothing was charged", retry refused.
 
-**To run it live in sandbox, Omari has to provide** (in `~/Desktop/pa/.env`, never Hetzner):
+**To run it live in sandbox, the owner has to provide** (in `~/Desktop/pa/.env`, never the live server):
 - `AGENTCARD_SANDBOX_CLIENT_ID` and `AGENTCARD_SANDBOX_CLIENT_SECRET` — dashboard → Commerce SDK →
   Start implementing, step 1 (labelled Sandbox); or Settings → Developers → Credentials with the
   mode switch on Sandbox (docs.agentcard.com/commerce-sdk/quickstart,
@@ -405,7 +414,7 @@ not `/api/v2/connect/refresh`, not introspection, not `/buy/*`. `/api/v2/connect
 the refresh token it is given and answers the only pair that works from then on; a probe that
 throws the answer away has killed that person's connection. On 2026-10-24 a probe spent the
 owner's last refresh token that way. The introspection described under "Sandbox proof" above was a
-one-off on 2026-10-23 and is not a check to repeat. Live AgentCard state is read from Hetzner's
+one-off on 2026-10-23 and is not a check to repeat. Live AgentCard state is read from the live server's
 own rows and journal; the API's behaviour is pinned in `test/fixture-agentcard.js`.
 
 ## Keeping the connection alive (2026-10-24)
@@ -437,11 +446,11 @@ What the record on Hetzner showed, with no AgentCard call and no POST except the
 probe in `doctor.sh` (counts only; never print tokens, numbers or bodies):
 
 ```bash
-ssh root@91.98.19.150 "sqlite3 -readonly /opt/reason/data/reason.db \"
+ssh root@15.204.113.250 "sqlite3 -readonly /opt/reason/data/reason.db \"
   SELECT status, count(*), sum(cancel_reason != ''), sum(cancel_told_at IS NOT NULL) FROM agentcard_purchases GROUP BY status;
   SELECT count(*), sum(access_token LIKE 'enc:v1:%'), sum(access_token != '' AND access_token NOT LIKE 'enc:v1:%') FROM agentcard_users;
   SELECT type, count(*) FROM agentcard_events GROUP BY type;\""
-ssh root@91.98.19.150 "journalctl -u reason --no-pager --since today -o cat | grep -o '\"tool\":\"purchase[a-z_]*\"' | sort | uniq -c"
+ssh root@15.204.113.250 "journalctl -u reason --no-pager --since today -o cat | grep -o '\"tool\":\"purchase[a-z_]*\"' | sort | uniq -c"
 ```
 
 - **Cancel reconcile (#92, #96):** the one `cancelled` row has a `cancel_reason` and `cancel_told_at`.

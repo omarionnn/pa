@@ -71,7 +71,7 @@ cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh stop
 `set_place` writes `MTWTF..` (weekdays), `MTWTFSS` (every day, and the default when `arrive_by` is
 set), `.....SS` (weekends), or a per-letter mask. Confirm columns with `bin/peek.sh schema saved_places`.
 
-**Live, read-only:** `ssh root@91.98.19.150 "sqlite3 /opt/reason/data/reason.db 'select conversation_id,name,mode,arrive_by from saved_places'"`.
+**Live, read-only** (the live server, OVH, root@15.204.113.250; check the DB path under `/opt/reason` first): `ssh root@15.204.113.250 "sqlite3 /opt/reason/data/reason.db 'select conversation_id,name,mode,arrive_by from saved_places'"`.
 Candidates are not logged as `calendar_leave_by`; the sweep writes them to `notice_seen`
 (`db.recordNotice`; UNIQUE on conversation, kind, key), so read
 `sqlite3 … "select key,moment_at,said_at from notice_seen where kind='calendar_leave_by'"`. The only

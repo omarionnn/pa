@@ -38,6 +38,9 @@ They pick by position or name, counting from the top of the first picture.
   footer, the comment on the last.
 
 ## Delivery
+- **Live: `REASON_TABLE_IMAGES=on`** for everyone (live switch list, 2026-11-14).
+- Table pictures are NOT a swipeable stack: only choice cards use `src/stack.js` (#553); a split table
+  goes one picture per message, "1 of 2" in the footer (`grep -rln sendPictureSet src` → choicecards + stack only).
 - Each picture → `webuploads.store(..., extra: { public: "table" })` (random 22-char id, pruned after
   `KEEP_MS` = 30 days) → `uploads.uploadUrl` → `router.sendMedia({ mediaUrl })` (new: durable through the
   outbox, `sendNow` → the channel's `sendMediaUrl`; Sendblue posts it as `media_url`). A channel with no

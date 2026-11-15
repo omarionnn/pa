@@ -37,6 +37,10 @@ background filer), `src/db.js` (`person_facts.memory_group`, `MEMORY_GROUPS`, `m
   `dropFact` (`deleted`, so the extractor cannot revive it) + `outOfProfile` (the saved profile
   block goes now if it carried the fact) + scrub + embedding removed. The `messages` history is
   untouched.
+- **Patterns noticed across days** (#515, `src/dream.js`): a guess with `how = db.NOTICED_SOURCE`
+  reads `<line> (a pattern noticed on N different days)`, N = distinct `evidence[].day`
+  (src/pages/webmemory.js:56,80-86). It is listed here only: never the daily edition's One question,
+  never texted (`test/dream-coverage.test.js` 10a; cage drive 2026-11-14, `*-g7-web-edge-daily`).
 - **Guesses.** `listGuesses({ includePatterns: true })`. Yes → `remember(..., user_stated)` +
   `confirmGuess`; No → `dismissGuess` (row kept with `dismissed_at`, so `noteGuess` of the same words
   returns it and nothing lists or uses it again — patterns included).
@@ -61,12 +65,13 @@ background filer), `src/db.js` (`person_facts.memory_group`, `MEMORY_GROUPS`, `m
 
 ```bash
 node --test test/web-memory.test.js test/web-memory-volume.test.js test/web-history.test.js   # 11 + 10 + 7 pinned
+node --test test/dream-coverage.test.js                                                       # 10a: the noticed-pattern line
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
   && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 27 steps over real HTTP (memory, volume, history), no model
 ```
 
 ## End state that proves it
 
-Live: on Hetzner, a throwaway fact on the owner's account, corrected and forgotten through
+Live: on the live server (OVH, root@15.204.113.250), a throwaway fact on the owner's account, corrected and forgotten through
 `https://heyreason.com/web/memory` with a temporary owner `page_sessions` row; the throwaway rows and
 the session row hard-deleted after. Never touch the owner's real facts.

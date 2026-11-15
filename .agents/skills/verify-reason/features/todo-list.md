@@ -9,7 +9,11 @@ calls, research and timers; keeps a checklist page that ticks itself off; and se
 ## How a person reaches it
 Text the list (or a photo of it) to Reason. `owner` = the operator's conversation only (`accounts.is_operator`).
 Off (the default): the four tools are hidden and refused before the gate, the grant covers nothing,
-no page is drawn, the sweep sends nothing.
+no page is drawn, the sweep sends nothing. Live (2026-11-14): **`on` for everyone**. The live `.env`
+(OVH, root@15.204.113.250) has `REASON_TODO=owner` at line 111 and `=on` at line 160, and the later
+line wins under `--env-file`. `todo_approve` is never done by voice on a call ([call-trust.md](call-trust.md)).
+No-model probe (non-operator account has `todo_plan`, plan names every business and the money, approve
+without a yes refused): `node .agents/skills/verify-reason/bin/call-probe.mjs todo` → `all ok`.
 
 ## What is enforced in code
 - **The plan text is code's** (`planText`): the model's reading (`todo_plan` items, groups, `money`,

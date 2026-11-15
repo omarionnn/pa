@@ -7,6 +7,7 @@ prototype/, screens/ — 24 states × Paper and Night; the screens win on look, 
 
 Held behind `REASON_DIRECTIONS` (off: every `/d/` path answers nothing and falls through to not-found;
 `owner`: only the owner's conversation is told about the `directions` tool and only the owner's trips open).
+**Live: `REASON_DIRECTIONS=owner`** (live switch list, 2026-11-14).
 `REASON_DIRECTIONS_SAMPLE` also serves the hand-off's made-up trip at `/d/sample` (The Garden Room, Osu).
 `REASON_DIRECTIONS_ROUTING_URL` is an OSRM-compatible foot router, default FOSSGIS's free keyless foot profile
 (`https://routing.openstreetmap.de/routed-foot`); the trip and every reroute call it from the server, so no
@@ -112,3 +113,7 @@ and vibration (feature-detected only).
 - The `#escort/<state>` previews only exist on demo trips (`trip.demo`); a real trip ignores them.
 - Trip making, steps, the map fill and the gate are tested in `test/trips.test.js` (no network). A live smoke:
   `makeTrip` against the real FOSSGIS / Nominatim / Overpass (see the PR) — Overpass is often slow or down.
+- The real-walk "40 min before an arrive-by, You're early." step in `bin/directions-drive.mjs` is
+  timing-bound (fixed 400 ms waits per reading, 4.5 s at the end): on a loaded Mac (2026-11-14) it
+  caught the last-50 m door line instead; alone on rerun the whole drive was 154/154. Rerun before
+  calling it a regression.

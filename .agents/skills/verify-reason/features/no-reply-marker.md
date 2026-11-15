@@ -20,7 +20,11 @@ so history is clean too), `send_now` and `media_url` (`src/channels/router.js`).
 deliver returns `silent` and the turn ends the way a held-back turn does (`silent_reply` log, said
 record with an empty reply); a reminder is not retried for it. A queued row that is only markers is
 `skipped` (`db.markOutboundSkipped`), never `failed` — no failure notice, and a part queued behind it
-still goes. Calls are separate: `withoutSilenceMarker` in `src/calls/voice.js` (#68, #265).
+still goes. Calls are separate: `withoutSilenceMarker` in `src/calls/voice.js` (#68, #265) on GPT-Live,
+and on Cartesia calls (live `REASON_CALL_CARTESIA=on`) `forVoice` in `src/calls/cartesia.js` (#564):
+`VOICE_MARKERS` — `NO_REPLY`, `[silence]`, `[no reply]`, spoken skip sentences, tool names — come out
+of Reason's words before the voice gets them; other snake_case words are said as words. Pinned in
+`test/call-cartesia-feel.test.js`.
 
 ## Drive
 
@@ -43,3 +47,5 @@ End state (2026-10-30, #272): capture POSTs `booked for 7\nsee you there`, the l
 `the real words`; rows sent / **skipped** ("only NO_REPLY: nothing to send") / sent / sent; serve.log
 `{"no_reply_stripped":"send_now"}`, `{"no_reply_stripped":"send_now","dropped":true}`,
 `{"outbox":2,"skipped":"only NO_REPLY"}`. Then `bin/caged.sh stop` and stop the fake.
+Same end state 2026-11-14 at `7d5b5f54` (rows 1–4 sent/skipped/sent/sent, the three capture bodies
+exactly as above, the three log lines).

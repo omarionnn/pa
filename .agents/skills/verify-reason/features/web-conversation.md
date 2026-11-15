@@ -102,7 +102,7 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 - **Decision 9** — a TEXT inbound whose thread `last_channel` was `web` within 12 h sets
   `threads.web_hint_due`; the next text to them (`deliver`, not web/console, `toOwner`, no media, not a
   `pcode:`/`esign:`/`wsign:` key, `webAllowedFor`, and **only from their third day** — `accountDay(conv)
-  >= WEB_HINT_FROM_DAY` = 3, day 1 = the account's `created_at` date, src/deliver.js:113,119,197; since
+  >= WEB_HINT_FROM_DAY` = 3, day 1 = the account's `created_at` date, src/deliver.js:113,119,204; since
   `7a1476d`, 2026-11-06) takes it atomically and ends with
   `\n\nOur full conversation, the Web part included, is on Reason Web.` Once per PERSON, ever
   (owner 10-27): taking it sets `threads.web_hint_told_at`, and a told thread is never made due again.
@@ -140,7 +140,9 @@ node --test test/web-w0.test.js test/web-signin.test.js test/domains.test.js   #
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-convo-drive.mjs   # 18 steps
 # 2026-11-07: at 8113bcf 16 ok + both decision-9 steps FAIL (the drive made its accounts "today", so
 # accountDay was 1 and the day-3 rule held the line back — stale drive, not a product bug). The drive now
-# ages its accounts 3 days, as test/web-convo.test.js:70 does: 18 ok at 36db733.
+# ages its accounts 3 days, as test/web-convo.test.js:70 does: 18 ok at 36db733; 18 ok again 2026-11-14 at 7d5b5f54.
+# 2026-11-14 at 7d5b5f54: web-convo (20), web-design (34), web-ongoing2, web-chats, web-hint-once, web-w0, web-signin, domains all pass;
+# web-preview.mjs wrote 72 screens + compare-*.png, no CSP violation printed.
 node .agents/skills/verify-reason/bin/web-preview.mjs   # every screen, 390/1280 × Paper/Night, + compare-*.png vs the handoff (see web-signin.md)
 ```
 

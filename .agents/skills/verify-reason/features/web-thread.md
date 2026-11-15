@@ -62,6 +62,6 @@ on), `src/tools.js` `runTool` (`ctx.turnTasks` from task_start / task_update / t
 
 ## Live proof
 
-From Hetzner with a temporary owner `page_sessions` row (delete it after): GET `/web?thread` shows
+From the live server (OVH, root@15.204.113.250) with a temporary owner `page_sessions` row (delete it after): GET `/web?thread` shows
 `OPENING YOUR THREAD…` + `class="where"`; GET `/web/history` returns `html` with `data-where`, and
 `work`; headless Chromium on the box with the cookie screenshots the opened thread.

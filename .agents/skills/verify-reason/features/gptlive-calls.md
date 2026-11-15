@@ -1,8 +1,15 @@
-# GPT-Live calls — the only voice Reason has
+# GPT-Live calls — the call provider; Cartesia voices own calls on top
 
-**Now (2026-11-07, ElevenLabs removed):** `REASON_CALL_PROVIDER=gptlive` makes GPT-Live the call
-provider (`GptLiveCallProvider` in `src/calls/gptlive.js`): every call — own, business, ring-back,
-inbound — is OpenAI GPT-Live (`gpt-live-1`; voice `REASON_GPTLIVE_VOICE`, live = `willow`, default
+**Now (2026-11-14):** with `REASON_CALL_CARTESIA=on` (live) every account's own call is voiced by
+Cartesia; GPT-Live carries own calls of monthly free-tier callers (5-minute limit + wrap-up cue), every
+call to a business or another person, and any Cartesia call that falls back. See
+[cartesia-calls.md](cartesia-calls.md) and [call-trust.md](call-trust.md). Live switches (switches.txt):
+`REASON_CALL_PROVIDER=gptlive`, `REASON_CALL_VOICE=gptlive`, `REASON_CALL_IDENTITY=on`,
+`REASON_CALL_TURN_GATE=on`, `REASON_GPTLIVE_PRERING=on`, `REASON_GPTLIVE_INBOUND_PREOPEN=on`.
+
+**2026-11-07, ElevenLabs removed:** `REASON_CALL_PROVIDER=gptlive` makes GPT-Live the call
+provider (`GptLiveCallProvider` in `src/calls/gptlive.js`): every call Cartesia does not voice — business, ring-back,
+free-tier own calls — is OpenAI GPT-Live (`gpt-live-1`; voice `REASON_GPTLIVE_VOICE`, live = `willow`, default
 `marin`) over Twilio. Live once `missingForGptlive()` is empty: OPENAI_API_KEY, TWILIO_ACCOUNT_SID,
 TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, REASON_PUBLIC_URL (no ElevenLabs key of any kind). The
 `/calls/elevenlabs/*` routes are gone (404). Inbound never redirects anywhere: a caller GPT-Live
@@ -11,6 +18,18 @@ cannot take (keys missing, routing threw) gets Twilio `<Reject/>`. `REASON_CALL_
 dial it cannot make returns `{ok:false}` rather than falling back. Proof: `test/no-elevenlabs.test.js`.
 The sections below are the build history (2026-10-31); where they say "ElevenLabs" for the
 non-GPT-Live branch, that branch no longer exists.
+
+## Delete my call recordings (#552, `call_recording_delete`) — on for everyone
+
+"Delete the recording of my last call" / "delete all my call recordings": `src/calls/recordingdelete.js`,
+tool at `src/tools.js:4464`. One call (id from `call_status`, never guessed) or all; "all" needs an
+explicit yes (confirmation gate); on a call it is a passphrase-level action ([call-trust.md](call-trust.md)).
+The audio file and its copies (.caf, Reason Web's .m4a) go; the row moves to `recording_state='deleted'`
+with pointers cleared; who/when/how long, summary and transcript stay. Twice → `already_deleted`; another
+account's id → "No call #N of theirs… nothing was deleted"; a call still going or settling → `still_going`.
+The result says what it cannot reach: a copy already sent to them and older off-site backups.
+Tests: `test/call-recording-delete.test.js` (in calls-all 2026-11-14, pass). No-model drive:
+`node .agents/skills/verify-reason/bin/call-probe.mjs recordings` → `all ok` (throwaway db, fixture mp3).
 
 GPT-Live is only the voice. It delegates with **client delegation**; each `session.delegation.created`
 runs Reason's own call turn (`llmRequest`, the same one ElevenLabs' custom-LLM requests run: context,
@@ -68,7 +87,7 @@ Tests: `node --test test/gptlive.test.js` (45 at `8113bcf`, 2026-11-07; 27 at fi
 Who made Reason (#295, superseded by #296 maker.js): `agent.js builtByLine(me)` — "built by Omarion Nyarko" only to the operator; every other user hears "made by the Reason team", no name (text and both call voices, via `systemFor`; GPT-Live via `whoFor().operator`). Drives: `gptlive-drive made.ulaw 16 --expect made --as user|owner`; `call-identity-drive.mjs` cases `user-made` / `owner-made`. Not changed: the first-chat onboarding classifier (src/onboarding.js, dark) still names him.
 
 Drive (real GPT-Live session + Reason's real turn on claude-cli, fake Twilio stream through the real
-upgrade route, throwaway db, no phone; ~2¢ of OpenAI voice) — on Hetzner from a copy of the code, as
+upgrade route, throwaway db, no phone; ~2¢ of OpenAI voice) — on the live server (OVH, root@15.204.113.250) from a copy of the code, as
 the `reason` user, keys read from `/opt/reason/.env`:
 
 ```bash
@@ -317,7 +336,7 @@ own `gptlive-drive bye.ulaw 30 --expect goodbye --cold` mutual goodbye, first vo
 The goal is Reason's note from the owner's side ("ask Yaw whether he has heard…"); call 74 read it down the line as "Has Yaw heard…?" — to Yaw. Both third-party voices now carry `speakToThem({ ownerName })` (`src/calls/voice-prompt.js`) right after the goal — Reason's call turn (`thirdPartyFrame`) and GPT-Live talking for itself (`lineTalkInstructions`, `src/calls/gptlive.js`): whoever answers is who the errand is about, so "you"/"your"; their name only to greet or check it is them; somebody else answers → ask for that person, give the message only to them.
 
 - Offline: `node --test test/call-speaks-to-callee.test.js` (4; reads both prompts). 4/4 on 2026-11-06 at `c6ce172`.
-- Real voice: `bin/gptlive-line-drive.mjs <clips> --scene hello --goal "Ask Yaw whether he has heard how United are doing" [--fact "…"]` on Hetzner (real GPT-Live + claude-cli, no phone); read Reason's first line for "you". Not runnable from the cage (no model there).
+- Real voice: `bin/gptlive-line-drive.mjs <clips> --scene hello --goal "Ask Yaw whether he has heard how United are doing" [--fact "…"]` on the live server (OVH, root@15.204.113.250) (real GPT-Live + claude-cli, no phone); read Reason's first line for "you". Not runnable from the cage (no model there).
 
 ## Pickup opener — first word ~0.6 s after pickup (#379, 2026-11-07) — `REASON_PICKUP_OPENER` (default on; `off` = the opening above exactly)
 
@@ -362,7 +381,7 @@ can you hear me?" or hung up. Own calls (1.7–2.8 s) are unchanged and keep the
 
 Tests: `test/call-pickup.test.js` (15: words, μ-law, silent pickup, hello first, long greeting skipped,
 replay, cut, no clip, /ops row, outcome mapping, calls 62/63). Real voice: `bin/gptlive-line-drive.mjs
-<clips> --scene greet|hello|quiet` on Hetzner (real GPT-Live + OpenAI TTS + claude-cli; needs a real
+<clips> --scene greet|hello|quiet` on the live server (OVH, root@15.204.113.250) (real GPT-Live + OpenAI TTS + claude-cli; needs a real
 `OPENAI_API_KEY`, so **not runnable offline or on the cage**). PR run: greet 4.74 s → 0.64 s, hello
 2.72 → 0.65 s, quiet 4.07 → 0.65 s; their greeting end → first word greet 0.39 s ×3. Known: one drive
 run leaked a stray fragment ("low back") of the voice's dropped reply after the clip.
@@ -411,7 +430,7 @@ Recipes:
 - Offline: `node --test test/call-hearing.test.js` (16: lift, loud untouched, hiss/gust not lifted,
   noisy-line ceiling, limiter, echo cap, fast drop, long stretch, flag off byte-for-byte, recording raw,
   turn_log + no words in the journal, retention, prompt lines).
-- Levels on a real call, **on Hetzner only** (a recording never leaves the box):
+- Levels on a real call, **on the live server (OVH, root@15.204.113.250) only** (a recording never leaves the box):
   `node bin/call-hearing-levels.mjs /opt/reason/data/recordings/call-N.wav --repo <checkout>`, run as
   `reason`, which prints each speech stretch before and after the lift. Call 76: quiet stretches
   −45.0 → −30.4 dBFS median (6), loud −26.1 → −25.6 (6), silence ≥1 s from speech −78.7 → −78.7,
@@ -486,7 +505,7 @@ own pick by text that day; "I'm —" over his "how are | you" at 0:07; first ans
 Recipes:
 - Offline: `node --test test/call79-fixes.test.js` (30: each behaviour above, incl. byte-identical warm/first-turn
   prefix, nobody else's thread, the silence-keeps-drop-alive regression).
-- Whole-call replay, **on Hetzner** (real GPT-Live + Reason's real turn on claude-cli, fake Twilio, throwaway db
+- Whole-call replay, **on the live server (OVH, root@15.204.113.250)** (real GPT-Live + Reason's real turn on claude-cli, fake Twilio, throwaway db
   seeded with a "today" thread; ~3–4 min, ~15¢ of voice): `bin/call-quality-drive.mjs <clips-dir> --out x.json`
   from a copy of main and of the branch (keys via `bin/drive-env.sh` + `node --env-file`, never on argv). Clips 1–6 = call 79's
   lines (`say -v Samantha`, "how are [[slnc 450]] you?" for the cut-in). Prints per reply latency, seconds of

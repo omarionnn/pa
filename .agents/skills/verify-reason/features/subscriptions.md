@@ -86,8 +86,8 @@ not on the list" — that is the expected answer, not a failure. To get past it,
 **Registry coverage** (does a merchant have a rail?):
 `node -e 'import("./src/cancel-routes.js").then(m=>console.log(m.match("Hulu")))'`.
 
-**Live, read-only:** `bin/doctor.sh live`, then on Hetzner
-`sqlite3 /opt/reason/data/reason.db "select merchant,status,cancel_route,next_renewal_at from subscriptions"`
+**Live, read-only:** `bin/doctor.sh live`, then on the live server (OVH, root@15.204.113.250)
+`sqlite3 -readonly /opt/reason/data/reason.db "select merchant,status,cancel_route,next_renewal_at from subscriptions"`
 (`next_renewal_at` is UTC epoch ms; `next_renewal` is the TEXT the model wrote). The journal is thin
 here: `subscriptionWatch` logs nothing and the sweep result is not logged, so
 `journalctl -u reason --since '24 hours ago' | grep subscription` only shows tool-call lines
@@ -96,6 +96,16 @@ here: `subscriptionWatch` logs nothing and the sweep result is not logged, so
 **End state that proves a cancel:** a `confirmations` row `granted_at` + `consumed_at`, an
 `action_ledger` row, and the subscription row `cancelling` (then `cancelled` only with the service's
 confirmation text stored).
+
+**Driven 2026-11-14 (g2 pass, cage DB, in process, no browser):** `subscription_list` empty → count 0 with the
+"Nothing is on this list yet…" block; `subscription_cancel_start {merchant:"Hulu"}` → "'Hulu' is not on the
+list…"; `subscription_record` → created, `cancel_route: web`, `cancel_url` the registry's account page; the list
+then has it. `test/subscriptions.test.js` 52 green. (`subs-drive.mjs` in the evidence.)
+
+**Two neighbours since 11-13.** Recurring charges straight from their bank: `bank {action:"subscriptions"}`
+(Plaid's recurring list, everyone, [plaid.md](plaid.md)) — a different list from this receipts-based one.
+Reason cancelling inside their own account through a Crossmint checkout: `account_cancel` (owner only,
+[account-jobs.md](account-jobs.md)).
 
 ## Gotchas
 

@@ -30,6 +30,12 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   Prove: `node --test test/link-preview-attachment.test.js`; cage (subscription): `inbound.sh file`
   with `content` = a link + the card as `media_url` → the reply is about the link, no "file"; then
   the card alone on `<handle>_1` via `inbound.sh -` → `ignored`, `delivered:0`, no thread line.
+- **A bad request never takes the server down (#496, `8b2d5965`).** A URL that will not parse (the
+  scanner probe `//%2e%2e%2f%2eenv`) or a `Host` header that will not parse → `400 Bad request`, and
+  `/health` / `/alive` still answer after; a stray rejected promise is logged, never fatal
+  (`src/http.js`, `src/serve.js`). Offline: `test/http-bad-url.test.js` (3). Cage 2026-11-14
+  (`*-g5a-inbound` 05–07): `curl --path-as-is "$BASE//%2e%2e%2f%2eenv"` → 400, `-H 'Host: [bad'` → 400,
+  `/alive` → 200.
 - **Groups are never treated as one person's DM.** A non-empty `group_id` → 200, logged as ignored.
   Every account, ledger row and confirmation in Reason belongs to one person. Linq too (lead 32,
   `isGroupChat` in `src/channels/linq.js`): a `message.received` whose `data.chat.is_group` is true

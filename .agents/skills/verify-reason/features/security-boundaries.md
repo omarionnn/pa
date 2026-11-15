@@ -8,9 +8,9 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
 
 ## Sub-features
 
-- **Own files only (#345).** `src/ownfiles.js` `ownFile(conversationId, path)` (`:93`) is the only door
-  for a path the model hands a tool: `voice_note_send` (`src/tools.js:11030`) and `drive_upload`
-  (`:16575`). A path is theirs only when Reason can show it made or kept it for THIS conversation —
+- **Own files only (#345).** `src/ownfiles.js` `ownFile(conversationId, path)` (`:110`) is the only door
+  for a path the model hands a tool: `voice_note_send` (`src/tools.js:11862`) and `drive_upload`
+  (`:18112`). A path is theirs only when Reason can show it made or kept it for THIS conversation —
   a file a tool call of theirs wrote during that call (`noteMade` `:39`, an echoed path is never
   adopted), their `documents` row, their own call's recording (by the `calls` table), or an attachment
   already sent to them — and it sits inside Reason's file roots. The database, browser profiles and
@@ -21,21 +21,21 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   `/calls/elevenlabs/inbound`, `/llm` and `/post-call` all answer `404` now; every call is GPT-Live
   over Twilio (`test/no-elevenlabs.test.js`). Twilio's own signature check guards the inbound route
   ([gptlive-calls.md](gptlive-calls.md)).
-- **`/health` names nobody (#352).** `src/http.js:164` → `health({ full: operatorSignedIn(req.headers) })`
-  (`:2019`): without the operator's signed-in `reason_page` session `owner` is null, `holding` rows
+- **`/health` names nobody (#352).** `src/http.js:192` → `health({ full: operatorSignedIn(req.headers) })`
+  (`:2311`): without the operator's signed-in `reason_page` session `owner` is null, `holding` rows
   carry no `conversation_id`, contact limits read `scope: "contact"`, `why` loses addresses; every
   key and count stays. Doctor reads it that way (SKILL.md Doctor).
 - **Delete takes everything (#353).** [data-delete.md](data-delete.md).
 - **Connect links finish only in the asker's browser (lead 1, #358).** Every `*_connect` link
   (GitHub, Google, Spotify, X, Uber) is Reason's own start page `/connect/start?state=…`
-  (`src/connectgate.js` `startLink` `:37`, called from each provider's `authorizeUrl`); the provider's
+  (`src/connectgate.js` `startLink` `:39`, called from each provider's `authorizeUrl`); the provider's
   address sits on the state row (`oauth_states.authorize_url`) and is only handed out with a 302 to a
   browser whose `reason_page` session is the asker's and came from a trusted sign-in: Reason Web
   (`wsign:`) or this gate (`connect:`) only (`TRUSTED_SIGNIN`). An event, album, directions,
   private-page or /ops session, even the asker's own, gets the code step. Any other browser gets "Text me the code"
-  (`connectStartRequest` `:91`): a GET never texts, the POST texts a six-digit code to the thread that
+  (`connectStartRequest` `:121`): a GET never texts, the POST texts a six-digit code to the thread that
   asked for the link, POSTs must be same-origin (`sameOrigin`, else `403`, so a page elsewhere cannot sign a victim's browser in as the asker), the right code sets the session cookie (`Path=/`) and 303s on to the provider.
-  Every callback route in `src/http.js` calls `refuseForeignBrowser` (`:58`) first: a browser not
+  Every callback route in `src/http.js` calls `refuseForeignBrowser` (`src/connectgate.js:83`) first: a browser not
   signed in as the state's conversation → `400`, the state spent, no token exchange, nothing texted.
   A provider `error=` still answers as before. Old links (straight to the provider) are refused.
   The other gates that set the shared session at `Path=/` refuse a cross-site POST too (`403`): the
@@ -60,7 +60,7 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   GPT-Live line voice (`lineTalkInstructions`) and Reason's third-party call turn (`thirdPartyFrame`
   via `thirdPartyContext`) get it when THEY ask for a card; and the `say` of a declined proposal in
   `src/calls/commit.js`. It says: tell them, in your own words, Reason doesn't share or ask for card
-  or account details on calls, to keep their (or Omari's) money safe; not an error, no blame, not the
+  or account details on calls, to keep their (or the operator's) money safe (`calmWhy(whose)`); not an error, no blame, not the
   same way twice; then offer another way (call without them, a pay link). The declined proposal's
   `say` opens with "Tell them why," and the instruction — no fixed phrase in front of it (lead 31
   leftovers). The scheduled-call fallback text (`unplacedCallLine` in src/runtime.js) is sent by code
@@ -90,7 +90,9 @@ file works, nobody else's does); ringing Reason's number; asking for everything 
 Offline (`env -i HOME=$HOME PATH=$PATH node --import ./test/paid-key-guard.js --test …`):
 `test/driveorg.test.js` (37, own-files for `drive_upload`), `test/no-elevenlabs.test.js` (4),
 `test/health-redact.test.js` (5), `test/data-coverage.test.js` (5) — all pass at `8113bcf` and
-`36db733`.
+`36db733`; with `test/call-payments.test.js test/remote.test.js test/oauth-binding.test.js
+test/log-mask-phones.test.js` and the #531 files, all pass at `7d5b5f54` (2026-11-14). Cage that day:
+`/health` → `owner: null`, `holding: []`; `POST /calls/elevenlabs/inbound` → 404.
 
 No model: `bin/recall-figures-drive.mjs` ([recall.md](recall.md)) steps "ownFile(database) →
 not_theirs" and "voice_note_send of the database → refused, nothing sent".
@@ -146,6 +148,21 @@ conversation id in it; a connect callback from any browser but the asker's → `
   (`src/deliver.js` `whereTo`), and without one the code goes to the cage's console, not the fake.
 - The fake GitHub only exchanges `code=good-code`; any other code is `token_exchange_failed`.
 - `/health` on the cage still shows Reason's own line numbers (`channels[].number`); that is by design.
+
+## Nothing typed into a sign-in box reaches the AI, the log or the thread (#531, 2026-11-13)
+
+On for everyone. Until #531 a page reading returned the first 80 characters of every box, password
+boxes included. Now (`src/pagesecrets.js`): in the page, a secret box (password, one-time code, card
+number, by `secretWords.kindOf`, which prefers withholding) is reported as secret + `filled`, never its
+value, and any copy of it the site printed elsewhere (text, a name, another box, an address) is cut
+before the reading leaves the page; in the process, `scrubPageSecrets` runs under every tool result,
+log line, ledger row, saved thread and the data export. `browser_type` into a secret box echoes
+nothing; a picture of the page masks every secret box (a show-password toggle included); sign-in
+evidence and page addresses carry no query string; the hosted sign-in types only through
+`typeUnseen`. Prove: `node --import ./test/paid-key-guard.js --test test/typed-secrets.test.js
+test/pagesecrets-review.test.js test/no-browser-recording.test.js` (slot gate; pass 2026-11-14 at
+7d5b5f54). User POV: none — they would only notice it broken (their password quoted back).
+The sign-in link's own `/view` never carries values either (signin-link.md, "Nothing typed is kept").
 
 ## Phone numbers masked in every log line (#424, 2026-11-10)
 

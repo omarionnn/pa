@@ -13,6 +13,8 @@ on the sweep (C). Already there before it, not rebuilt: `src/expressive.js` + `s
 `REASON_NOTICE_QUIET_*`, read receipts, `undeliveredNotice` / `ownerFailureLine` in the outbox.
 Tests: `test/tapback-ack.test.js` (14), `test/delivery-gated.test.js` (9),
 `test/quick-correction.test.js` (9) — all offline, no model.
+**Live (2026-11-14): all three `on` for everyone** (`REASON_TAPBACK_ACK`, `REASON_DELIVERY_GATED`,
+`REASON_QUICK_CORRECTION` in the live switch list).
 
 ## Sub-features
 

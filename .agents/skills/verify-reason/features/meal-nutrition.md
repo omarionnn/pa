@@ -13,7 +13,9 @@ numbers churn; re-grep `grep -n 'case "meal_\|name: "meal_\|^  meal_' src/tools.
 there is no delete function). Preferences: `db.setOnlyPreference` writes and `db.latestPreference`
 reads one row per setting — category `meal_logging` for consent, category `meal_numbers` for the
 numbers opt-out (`stop_numbers` is only the value passed to `meal_log_consent`).
-Tests: **partial.** There is no `test/meal.test.js` (the tools shipped in `3ae6c51` without one),
+Tests: **partial.** `test/meal-today-zone.test.js` (2, #503): `meal_query` "today" is the person's own day
+in their confirmed zone, not the server's UTC day (an evening total keeps lunch, drops last night's dinner).
+There is no `test/meal.test.js` (the tools shipped in `3ae6c51` without one),
 but `test/memory-quality.test.js` (section "4. meal logging", added in #42) runs
 `meal_log_consent` and `meal_estimate` through `runTool`: yes → no → yes switches logging off and
 back on, and the numbers opt-out still holds after thirty newer preferences. Estimate

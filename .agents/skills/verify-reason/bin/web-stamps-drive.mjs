@@ -138,7 +138,9 @@ step(r.status === 404 && /This stamp isn’t here/.test(h) && h === await (await
 for (const width of [390, 1280]) await shot("share-revoked", `/s/${sid}`, { width, scheme: "light", cookie: false });
 
 // 6. Beside the reference.
-const ref = join(homedir(), "Desktop/reason-daily-handoff-2026-10-27/reason-daily-handoff/reference/stamps.html");
+// The handoffs moved under "Project files/Reason/handoffs"; the old Desktop path is the fallback.
+const ref = [join(homedir(), "Desktop/Project files/Reason/handoffs/reason-daily-handoff-2026-10-27/reason-daily-handoff/reference/stamps.html"),
+  join(homedir(), "Desktop/reason-daily-handoff-2026-10-27/reason-daily-handoff/reference/stamps.html")].find(existsSync) ?? "";
 if (existsSync(ref)) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
