@@ -28,6 +28,8 @@
 // business or another person (those are not this person's words).
 import * as accounts from "../accounts.js";
 import * as db from "../db.js";
+import { factForPrompt } from "../memorynote.js";
+import { theirOwnName } from "../identity.js";
 import { config, clock } from "../config.js";
 import { askStructured, sideAskAllowed } from "../backends/side.js";
 import { SPOKE_TO_SOMETHING } from "./provider.js";
@@ -538,7 +540,9 @@ export function recentMemoryNote(call) {
       WHERE p.conversation_id = ? AND f.status = 'active' AND f.created_at >= ? AND f.created_at <= ?
       ORDER BY f.created_at DESC, f.id DESC LIMIT ?`).all(call.conversation_id, until - MEMORY_HOURS * 3600_000, until, MEMORY_FACTS);
   } catch { rows = []; }
-  const lines = rows.reverse().map(r => clip(r.fact, 150)).filter(Boolean).map(f => `- ${f}`);
+  // A fact naming the assistant says whose name it is (../memorynote.js factForPrompt); every other fact as stored.
+  const own = theirOwnName(call.conversation_id);
+  const lines = rows.reverse().map(r => clip(factForPrompt(r.fact, own), 150)).filter(Boolean).map(f => `- ${f}`);
   const note = lines.length
     ? `Saved about them in the last ${MEMORY_HOURS / 24} days (your own memory, newest last; a plan in here may already have happened — check it against today's date):\n${lines.join("\n")}`
     : "";

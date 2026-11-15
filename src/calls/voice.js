@@ -53,6 +53,7 @@ import { peekForSignin } from "../savedlogins.js";
 import { rulesNote } from "../rules.js";
 import { whereaboutsNote, prepareCallMemory } from "./callmemory.js";
 import { memoryHits, profileNote as profileForCall } from "../memorynote.js";
+import { notByTheNickname } from "../outbox.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
 import * as callMetrics from "./metrics.js";
@@ -1004,7 +1005,8 @@ export function queueMidCall({ call, text, kind = "link", log = () => {} }) {
     // One row per call per thing, so a turn that is retried by the platform does not text twice.
     idemKey: `call:${call.id}:${kind}:${hashOf(text)}`,
     conversationId: call.conversation_id,
-    channel, address, body: String(text), toOwner: true,
+    // The name they gave Reason never addresses them (../outbox.js notByTheNickname).
+    channel, address, body: notByTheNickname(String(text), { conversationId: call.conversation_id, toOwner: true, log }), toOwner: true,
     maxAttempts: config.outboxMaxAttempts,
   });
   log({ call_midcall_text: call.id, outbox: row.id, fresh });

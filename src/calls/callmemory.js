@@ -13,6 +13,8 @@ import { config } from "../config.js";
 import * as db from "../db.js";
 import { search } from "../embedding.js";
 import { rulesNote } from "../rules.js";
+import { factForPrompt } from "../memorynote.js";
+import { theirOwnName } from "../identity.js";
 
 /** What the schedule search asks for, in meaning. */
 export const SCHEDULE_QUERY = "their work schedule and routine: which days and hours they work, their shifts, and where they usually are at different times of the week";
@@ -55,7 +57,9 @@ export function prepareCallMemory(call, { find = search, enabled = !!config.open
     try {
       const hits = await find(call.conversation_id, SCHEDULE_QUERY, { limit: SCHEDULE_HITS * 2, minScore: SCHEDULE_MIN_SCORE, timeoutMs });
       const facts = hits.map(h => db.getFact(call.conversation_id, h.factId)).filter(Boolean).slice(0, SCHEDULE_HITS);
-      return facts.map(f => `- ${String(f.fact).replace(/\s+/g, " ").trim().slice(0, 200)}`);
+      // A fact naming the assistant says whose name it is (../memorynote.js factForPrompt).
+      const own = theirOwnName(call.conversation_id);
+      return facts.map(f => `- ${factForPrompt(String(f.fact).replace(/\s+/g, " ").trim(), own).slice(0, 200)}`);
     } catch (e) {
       failed = true;
       log({ call_schedule_read_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] });
