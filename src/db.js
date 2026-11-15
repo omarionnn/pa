@@ -12538,6 +12538,12 @@ db.exec(`
 `);
 // Who brought this person in, if anybody: the inviter's conversation id.
 addColumnIfMissing("accounts", "invited_by", "TEXT");
+// The first name the INVITER said a link is for ("make one for Dalen"), already through
+// invitecard.cleanInviteeName: their card greets that person, and the joiner's first hello uses it as
+// the inviter's guess, never as a name the joiner gave. The inviter's data, so it lives on their row
+// (and goes with their delete); blanked when the link is canceled or claimed. NULL: nobody named,
+// which every row from before this column is.
+addColumnIfMissing("invites", "for_name", "TEXT");
 
 /** What everybody who did not join through an invite starts with. Invitees start with none. */
 export const DEFAULT_INVITES = 2;
@@ -12611,7 +12617,7 @@ export function newInviteToken() {
  * Mint one link, if this person has a unit of allowance not already held by an unused link.
  * `{ ok: true, invite }` or `{ ok: false, reason: "none_left", remaining, unused }`.
  */
-export function createInvite(conversationId) {
+export function createInvite(conversationId, { forName = null } = {}) {
   const remaining = inviteAllowance(conversationId);
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -12626,8 +12632,8 @@ export function createInvite(conversationId) {
     // unlikely, and UNIQUE turns it into a retry rather than two links sharing a code.
     for (let i = 0; i < 5 && id === null; i++) {
       try {
-        id = Number(db.prepare("INSERT INTO invites (conversation_id, token, claim_code, state, created_at) VALUES (?, ?, ?, 'unused', ?)")
-          .run(conversationId, newInviteToken(), newClaimCode(), now).lastInsertRowid);
+        id = Number(db.prepare("INSERT INTO invites (conversation_id, token, claim_code, state, created_at, for_name) VALUES (?, ?, ?, 'unused', ?, ?)")
+          .run(conversationId, newInviteToken(), newClaimCode(), now, forName || null).lastInsertRowid);
       } catch (e) {
         if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
       }
@@ -12660,7 +12666,7 @@ export function inviteByClaimCode(code) {
 
 /** Cancel one of this person's own unused links. The allowance is untouched. */
 export function cancelInvite(conversationId, id) {
-  const r = db.prepare("UPDATE invites SET state = 'canceled', canceled_at = ? WHERE conversation_id = ? AND id = ? AND state = 'unused'")
+  const r = db.prepare("UPDATE invites SET state = 'canceled', canceled_at = ?, for_name = NULL WHERE conversation_id = ? AND id = ? AND state = 'unused'")
     .run(clock.now(), conversationId, id);
   return r.changes > 0;
 }
@@ -12688,7 +12694,9 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     // not a way back in round the master's stop (stoppedStateOf).
     if (stoppedStateOf(address)) return fail("already_member");
     const now = clock.now();
-    const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ? WHERE id = ? AND state = 'unused'")
+    // The name the inviter said it was for has done its job once somebody joins: handed back below
+    // for their first hello only, and not kept on a row that now points at a real account.
+    const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ?, for_name = NULL WHERE id = ? AND state = 'unused'")
       .run(conversationId, now, inv.id);
     if (won.changes !== 1) return fail("redeemed");
     upsertAccount({ conversationId, channel, address, name, isOperator: false });
@@ -12698,7 +12706,7 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     db.prepare(`INSERT INTO invite_allowances (conversation_id, remaining, updated_at) VALUES (?, 0, ?)
       ON CONFLICT(conversation_id) DO UPDATE SET remaining = 0, updated_at = excluded.updated_at`).run(conversationId, now);
     db.exec("COMMIT");
-    return { ok: true, invite: db.prepare("SELECT * FROM invites WHERE id = ?").get(inv.id), account: getAccount(conversationId) };
+    return { ok: true, invite: db.prepare("SELECT * FROM invites WHERE id = ?").get(inv.id), forName: inv.for_name ?? null, account: getAccount(conversationId) };
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
     throw e;

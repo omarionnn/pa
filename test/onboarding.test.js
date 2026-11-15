@@ -767,3 +767,26 @@ test("an invite's joiner gets the same first chat, right after the inviter's wel
   assert.equal(to(h, num).at(-1).text, ob.TRY_LINE);
   assert.equal(state(num), "complete");
 });
+
+test("a link made for somebody: the hello uses the inviter's guess, the first chat still asks, and only their answer is saved", async () => {
+  const invites = await import("../src/invites.js");
+  config.autoAdmit = false;
+  const inviter = newNumber();
+  db.upsertAccount({ conversationId: conv(inviter), channel: "fake", address: inviter, name: "Yaw" });
+  db.backfillInviteAllowances();
+  const made = invites.makeLink(conv(inviter), { forName: "Dalen" });
+  assert.equal(made.for, "Dalen");
+  const code = db.getInvite(conv(inviter), made.number).claim_code;
+  const hello = invites.joinText(code);
+  const h = harness((said) => said === hello ? { kind: "greeting" } : said === "it's dale actually" ? { kind: "answer", name: "Dale" } : null);
+  const num = newNumber();
+  await h.router.deliver(text(num, hello));
+  const got = words(h, num);
+  assert.equal(got[0], "Hey Dalen! You're in, invited by Yaw.", "greeted by the name the inviter gave");
+  assert.deepEqual(got.slice(1, 3), ob.OPENER, "and still asked their name: the guess is not taken as theirs");
+  assert.ok(!db.getAccount(conv(num)).name, "the guess is not saved as their name");
+  assert.equal(state(num), "awaiting_name");
+  assert.equal(db.getInvite(conv(inviter), made.number).for_name, null, "the name is not kept on the claimed link");
+  await h.router.deliver(text(num, "it's dale actually"));
+  assert.equal(db.getAccount(conv(num)).name, "Dale", "what they said is their name");
+});

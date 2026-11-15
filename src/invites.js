@@ -23,9 +23,9 @@
 // verification and the claim at once (src/channels/router.js `#claimInvite`). The account is then
 // made through the ordinary admission path, so the harm screen and onboarding run as for anybody.
 import * as db from "./db.js";
-import { config, normalizeNumber, normalizeHandle, stamp } from "./config.js";
+import { config, clock, normalizeNumber, normalizeHandle, stamp } from "./config.js";
 import { shell, esc, renderNotFound, foot } from "./pages/render.js";
-import { inviteCardKey } from "./invitecard.js";
+import { inviteCardKey, cleanInviteeName, INVITEE_GREETING } from "./invitecard.js";
 import { CONFETTI_JS, CONFETTI_CSS } from "./pages/confetti.js";
 
 /** The path an invite link lives at. On the files domain Caddy rewrites `/i/x` to `/p/i/x`. */
@@ -97,6 +97,9 @@ function linkView(inv) {
     number: inv.id,
     state: inv.state,
     ...(inv.state === "unused" ? { link: inviteUrl(inv.token) } : {}),
+    // Who an unused link was made for, in the inviter's own words. Never on a claimed one: that
+    // would read as who joined, and who claimed a link is not in this list.
+    ...(inv.state === "unused" && inv.for_name ? { for: inv.for_name } : {}),
     made: stamp(inv.created_at),
     ...(inv.state === "redeemed" ? { claimed: stamp(inv.redeemed_at) } : {}),
     ...(inv.state === "canceled" ? { canceled: stamp(inv.canceled_at) } : {}),
@@ -126,31 +129,67 @@ export function myInvites(conversationId) {
   };
 }
 
+// Who a link is for is asked ONCE per go (invite_link_create's needs_for, src/tools.js). The next
+// call without a name, inside this window, is the answer "nobody in particular", and makes a plain
+// link: never a second ask, never a dead end, whatever the model does with the first one.
+export const ASK_FOR_WINDOW_MS = 30 * 60 * 1000;
+const askedFor = new Map();
+export function _resetAskedFor() { askedFor.clear(); }
+
+/**
+ * Before a link is made with nobody named: should Reason first ask who it is for? `null` means go
+ * ahead (asked already in this window, so this call is the answer). Otherwise what to ask: `needs_for`,
+ * with `needs_name` too when the inviter's own name is missing, so both go in ONE message; or
+ * `none_left`, said instead of a question about a link that cannot be made.
+ */
+export function askWhoFor(conversationId, { now = clock.now() } = {}) {
+  const at = askedFor.get(conversationId);
+  if (at != null && now - at < ASK_FOR_WINDOW_MS) return null;
+  const remaining = db.inviteAllowance(conversationId);
+  const unused = db.unusedInviteCount(conversationId);
+  if (unused >= remaining) return { ok: false, none_left: true, invites_left: remaining, unused_links: unused };
+  askedFor.set(conversationId, now);
+  return { ok: false, needs_for: true, ...(inviterName(conversationId) ? {} : { needs_name: true }) };
+}
+
 /**
  * Mint one link. Refuses without a display name, because the page a friend opens says who
  * invited them and Reason will not put a guess there.
+ *
+ * `forName`: who the inviter said it is for. Through cleanInviteeName: a plausible first name is
+ * kept on the row and greets them on the card; anything else (a link, a sentence, a number) makes a
+ * plain link, quietly (`plain_card`). None: a plain link, exactly as before.
  */
-export function makeLink(conversationId) {
+export function makeLink(conversationId, { forName } = {}) {
   const name = inviterName(conversationId);
   if (!name) return { ok: false, needs_name: true };
-  const out = db.createInvite(conversationId);
+  const given = typeof forName === "string" && forName.trim() !== "";
+  const forWho = given ? cleanInviteeName(forName) : "";
+  const out = db.createInvite(conversationId, { forName: forWho || null });
   if (!out.ok) return { ok: false, none_left: true, invites_left: out.remaining, unused_links: out.unused };
-  return { ok: true, link: inviteUrl(out.invite.token), number: out.invite.id, shown_as: name, invites_left: db.inviteAllowance(conversationId) };
+  askedFor.delete(conversationId);
+  return {
+    ok: true, link: inviteUrl(out.invite.token), number: out.invite.id, shown_as: name,
+    ...(forWho ? { for: forWho } : {}),
+    ...(given && !forWho ? { plain_card: true } : {}),
+    invites_left: db.inviteAllowance(conversationId),
+  };
 }
 
 /**
  * Cancel one unused link, and by default hand back a fresh one in its place. The invite itself is
  * not lost either way: the allowance is untouched, and the slot the old link held is free again.
  */
-export function cancelLink(conversationId, number, { replace = true } = {}) {
+export function cancelLink(conversationId, number, { replace = true, forName } = {}) {
   const inv = db.getInvite(conversationId, number);
   if (!inv) return { ok: false, reason: "not_yours" };
   if (inv.state !== "unused") return { ok: false, reason: inv.state };
   if (!db.cancelInvite(conversationId, number)) return { ok: false, reason: "changed" };
   const out = { ok: true, canceled: number, invites_left: db.inviteAllowance(conversationId) };
   if (!replace) return out;
-  const fresh = makeLink(conversationId);
-  return fresh.ok ? { ...out, replacement: { number: fresh.number, link: fresh.link } } : { ...out, replacement: null, why_no_replacement: fresh };
+  // The replacement is for whoever they now name, else nobody: a canceled link's name is gone with it.
+  const fresh = makeLink(conversationId, { forName });
+  return fresh.ok ? { ...out, replacement: { number: fresh.number, link: fresh.link, ...(fresh.for ? { for: fresh.for } : {}) } } : { ...out, replacement: null, why_no_replacement: fresh };
 }
 
 /** The line the master gets about one request, naming it by its real number. */
@@ -231,6 +270,16 @@ export function inviteInText(text) {
   return null;
 }
 
+/**
+ * The first line somebody who joined through a link is sent. `guess` is the name the INVITER said
+ * the link was for: a hello and nothing more. It is never saved as their name; the first chat asks
+ * their name as it always does (src/onboarding.js), and what they say is the name that is kept.
+ */
+export function welcomeLine(inviterShown, guess = "") {
+  const hi = cleanInviteeName(guess);
+  return hi ? `Hey ${hi}! You're in, invited by ${inviterShown}.` : `You're in, invited by ${inviterShown}.`;
+}
+
 /** What somebody whose claim did not go through is told. */
 export const ALREADY_CLAIMED = "this invite has already been claimed. ask whoever sent it for a new one.";
 export const CANCELED = "this invite was canceled by the person who sent it. ask them for a new one.";
@@ -258,7 +307,8 @@ export function claimByText({ channel, address, text, name = "" }) {
     conversationId: out.account.conversation_id,
     inviteId: inv.id,
     inviter,
-    welcome: `You're in, invited by ${inviterShown}.`,
+    welcome: welcomeLine(inviterShown, out.forName),
+    guessedName: cleanInviteeName(out.forName) || null,
     // Their name or the end of their number, and nothing else. No word of either conversation
     // crosses in either direction.
     toInviter: `${joiner} just joined with your invite 🎉`,
@@ -312,8 +362,17 @@ export function memberLine(inv, conversationId) {
 
 /** The inviter name a link's card shows, or null for a token that is not a link. A read. */
 export function inviteCardName(token) {
+  return inviteCardFor(token)?.name ?? null;
+}
+
+/**
+ * What a link's card draws: `{ name, invitee }` (invitee "" when the link is for nobody named, or no
+ * longer unused), or null for a token that is not a link. A read.
+ */
+export function inviteCardFor(token) {
   const inv = /^[A-Za-z0-9_-]{32}$/.test(String(token ?? "")) ? db.inviteByToken(token) : null;
-  return inv ? (inviterName(inv.conversation_id) || "A friend") : null;
+  if (!inv) return null;
+  return { name: inviterName(inv.conversation_id) || "A friend", invitee: inv.state === "unused" ? cleanInviteeName(inv.for_name) : "" };
 }
 
 /**
@@ -350,8 +409,10 @@ export function renderInvite({ invite, name, lineNumber }) {
   const title = `${name} invited you to Reason`;
   // The forwarded link's card (owner, 2026-10-26): the inviter's own picture carries their name;
   // the title row says what Reason is, and the description what it costs them. src/invitecard.js draws the picture once per name.
-  const cardTitle = `${name} thinks you should join Reason`;
-  const image = `${inviteUrl(invite.token)}/card.png?v=${inviteCardKey(name)}`;
+  const forWho = invite.state === "unused" ? cleanInviteeName(invite.for_name) : "";
+  const cardTitle = !forWho || INVITEE_GREETING === "C" ? `${forWho ? `For ${forWho}. ` : ""}${name} thinks you should join Reason`
+    : INVITEE_GREETING === "B" ? `Hey ${forWho}. ${name} thinks you should join Reason` : `${forWho}, ${name} thinks you should join Reason`;
+  const image = `${inviteUrl(invite.token)}/card.png?v=${forWho ? inviteCardKey(name, forWho) : inviteCardKey(name)}`;
   const head = [
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,

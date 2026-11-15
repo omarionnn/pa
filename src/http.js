@@ -103,7 +103,7 @@ import { actionCardsRequest, actionCardsOgRequest, PATH as ACTION_CARDS_PATH } f
 import { mimeForKind } from "./documents/store.js";
 import * as websetup from "./websetup.js";
 import { isContactPath, contactPathParts, vcard, lineNumber, liveLineNumber, cardName } from "./contact.js";
-import { inviteRequest, inviteCardName } from "./invites.js";
+import { inviteRequest, inviteCardFor } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
 import { webRequest, webFont, webSignedIn, sameOrigin, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
@@ -565,7 +565,8 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
 
       // ---------- an invite link's card picture ----------
-      // The forwarded link's preview (src/invitecard.js): one picture per inviter name, drawn once.
+      // The forwarded link's preview (src/invitecard.js): one picture per inviter name (and per person
+      // the link is for, when it was made for somebody), drawn once.
       // Public like the page itself, and a read: an unknown token is the same flat 404.
       const inviteCardRoute = /^(?:\/p)?\/i\/([A-Za-z0-9_-]{32})\/card\.png$/.exec(url.pathname);
       if (inviteCardRoute) {
@@ -573,10 +574,11 @@ export function createServer({ router, runtime, log = () => {} }) {
           res.writeHead(405, { Allow: "GET, HEAD", "Content-Type": "text/plain" });
           return res.end("method not allowed");
         }
-        const name = inviteCardName(inviteCardRoute[1]);
+        const drawn = inviteCardFor(inviteCardRoute[1]);
+        const name = drawn?.name;
         if (!name) { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("not found"); }
         // No browser to draw with: the site's own og picture rather than a preview with no image.
-        const png = await inviteCard(name).catch((e) => { log?.(`invite card: ${e?.message ?? e}`); return readFileSync(new URL("../assets/og.png", import.meta.url)); });
+        const png = await inviteCard(name, { invitee: drawn.invitee }).catch((e) => { log?.(`invite card: ${e?.message ?? e}`); return readFileSync(new URL("../assets/og.png", import.meta.url)); });
         res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length, "Cache-Control": "public, max-age=86400" });
         return res.end(req.method === "HEAD" ? "" : png);
       }
