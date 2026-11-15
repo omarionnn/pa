@@ -129,7 +129,7 @@ export function pickGreeting({ conversationId, name = "", kind = "greet", now = 
 // ---------- written ahead, off the call's path ----------
 
 const SYSTEM = `You write the first words a friendly personal assistant says when it picks up (or places) a phone call with someone it knows well.`
-  + ` Warm and natural, like a friend glad to hear from them, in plain spoken English. Each line is ONE short sentence of at most 12 words, ending in a full stop, an exclamation mark or one easy open question ("how's it going?").`
+  + ` It opens the call: a hello, never a goodbye or a goodnight wish. Warm and natural, like a friend glad to hear from them, in plain everyday spoken English, not poetic. Each line is ONE short sentence of at most 12 words, ending in a full stop, an exclamation mark or one easy open question ("how's it going?").`
   + ` Use their first name in most lines (or none, if none is given), and never any other name or nickname.`
   + ` Never a fact, a number, a time, a price, a place, a claim that something was done, a promise, or anything about news.`
   + ` Never ask what you missed or ask them to catch you up. Every line different in wording from the others and from the recent ones given.`;
