@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 const dir = mkdtempSync(join(tmpdir(), "reason-invite-for-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_DATA_DIR = join(dir, "data");
-process.env.REASON_OWNER_NAME = "Omari";
+process.env.REASON_OWNER_NAME = "Yaa";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_BURST_QUIET_MS = "0";
@@ -41,7 +41,7 @@ beforeEach(() => {
   clock.reset();
   invites._resetAskedFor();
   db.db.exec("DELETE FROM accounts; DELETE FROM invites; DELETE FROM invite_allowances; DELETE FROM invite_requests;");
-  db.upsertAccount({ conversationId: config.ownerConversation, channel: "fake", address: "+12025551234", name: "Omari", isOperator: true });
+  db.upsertAccount({ conversationId: config.ownerConversation, channel: "fake", address: "+12025551234", name: "Yaa", isOperator: true });
   db.upsertAccount({ conversationId: KOFI_C, channel: "fake", address: KOFI, name: "Kofi" });
   db.upsertAccount({ conversationId: AMA_C, channel: "fake", address: AMA, name: "" });
   db.backfillInviteAllowances();
@@ -132,18 +132,18 @@ test("no invites left: said plainly, never a question about who a link that can'
 
 test("the card greets them by name, escaped, in the existing design; the default wording is one constant", () => {
   assert.equal(card.INVITEE_GREETING, "C");
-  const plain = card.inviteCardHtml("Omari");
-  const forHtml = card.inviteCardHtml("Omari", "Dalen");
-  assert.ok(forHtml.includes('<p class="for">For Dalen</p><h1>Omari thinks you should join <span class="wordmark"'));
+  const plain = card.inviteCardHtml("Kwame");
+  const forHtml = card.inviteCardHtml("Kwame", "Dalen");
+  assert.ok(forHtml.includes('<p class="for">For Dalen</p><h1>Kwame thinks you should join <span class="wordmark"'));
   assert.ok(forHtml.includes('<p class="hand">Free for you, for good.</p>'));
-  assert.ok(card.inviteCardHtml("Omari", "Dalen", "A").includes("<h1>Dalen, Omari thinks you should join"));
-  assert.ok(card.inviteCardHtml("Omari", "Dalen", "B").includes("<h1>Hey Dalen. Omari thinks you should join"));
-  assert.equal(card.inviteCardHtml("Omari", ""), plain, "no name: today's card, byte for byte");
+  assert.ok(card.inviteCardHtml("Kwame", "Dalen", "A").includes("<h1>Dalen, Kwame thinks you should join"));
+  assert.ok(card.inviteCardHtml("Kwame", "Dalen", "B").includes("<h1>Hey Dalen. Kwame thinks you should join"));
+  assert.equal(card.inviteCardHtml("Kwame", ""), plain, "no name: today's card, byte for byte");
   // Escaped all the same, even if something got past the shape check.
-  assert.ok(/For O(&#39;|&#x27;|')Neil</.test(card.inviteCardHtml("Omari", "O'Neil")));
+  assert.ok(/For O(&#39;|&#x27;|')Neil</.test(card.inviteCardHtml("Kwame", "O'Neil")));
   // The long pair still steps the headline down (A/B carry both names in it).
   const px = (html) => Number(/font:italic 400 (\d+)px/.exec(html)?.[1]);
-  assert.equal(px(card.inviteCardHtml("Omari", "Dalen", "A")), 124);
+  assert.equal(px(card.inviteCardHtml("Kwame", "Dalen", "A")), 124);
   assert.equal(px(card.inviteCardHtml("Oluwaseun", "Alexandria-Marie", "A")), 96);
   assert.equal(px(card.inviteCardHtml("Oluwaseun Adebayo", "Alexandria-Marie", "A")), 84);
   assert.equal(px(card.inviteCardHtml("Oluwaseun", "Alexandria-Marie", "B")), 96);

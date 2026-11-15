@@ -22,9 +22,9 @@ const HAND = font("caveat-latin.woff2");
 
 // A link made FOR somebody (invite_link_create's for_name) greets them by name on the card. Three
 // wordings were drawn for the owner to pick from (media/invite-personal): this one line picks.
-//   A  "Dalen, Omari thinks you should join reason"
-//   B  "Hey Dalen. Omari thinks you should join reason"
-//   C  a small handwritten "For Dalen" above the unchanged "Omari thinks you should join reason"
+//   A  "Dalen, Kwame thinks you should join reason"
+//   B  "Hey Dalen. Kwame thinks you should join reason"
+//   C  a small handwritten "For Dalen" above the unchanged "Kwame thinks you should join reason"
 // A link with no name for anybody draws exactly the card it always did, byte for byte.
 export const INVITEE_GREETING = "C"; // C: the headline stays exactly as it is, so a long pair never shrinks it
 
