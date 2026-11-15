@@ -46,6 +46,7 @@ const sl = await import("../src/savedlogins.js");
 const { Secret } = await import("../src/secret.js");
 const filler = await import("../src/filler.js");
 const se = await import("../src/signinemail.js");
+const mc = await import("../src/mailcode.js");
 const slog = await import("../src/signinlog.js");
 const refusing = await import("../src/refusing.js");
 const db = await import("../src/db.js");
@@ -220,8 +221,8 @@ test("U: the audit row: site, time, sender domain, message-id hash; never the co
   const lines = [];
   const old = slog.setSink((l) => lines.push(l));
   try {
-    assert.equal(se.auditMailCode(ME, "acme.test", { sender: "acme.test", hash: "0123456789abcdef" }), true, "first time");
-    assert.equal(se.auditMailCode(ME, "acme.test", { sender: "acme.test", hash: "fedcba9876543210" }), false, "after that, not");
+    assert.equal(mc.auditMailCode(ME, "acme.test", { sender: "acme.test", hash: "0123456789abcdef" }), true, "first time");
+    assert.equal(mc.auditMailCode(ME, "acme.test", { sender: "acme.test", hash: "fedcba9876543210" }), false, "after that, not");
   } finally { slog.setSink(old); }
   const rows = db.db.prepare("SELECT * FROM login_log WHERE event = 'code_from_mail'").all();
   assert.equal(rows.length, 2);
@@ -238,18 +239,18 @@ test("U: the audit row: site, time, sender domain, message-id hash; never the co
 
 test("U: the switch: off by default; owner covers only the operator; on covers whom saved logins cover; never more", () => {
   setMode(null);
-  assert.equal(se.codeReadMode(), "off");
-  assert.equal(se.codeReadAllowedFor(ME), false);
+  assert.equal(mc.codeReadMode(), "off");
+  assert.equal(mc.codeReadAllowedFor(ME), false);
   setMode("owner");
-  assert.equal(se.codeReadAllowedFor(ME), true);
-  assert.equal(se.codeReadAllowedFor(OTHER), false);
+  assert.equal(mc.codeReadAllowedFor(ME), true);
+  assert.equal(mc.codeReadAllowedFor(OTHER), false);
   setMode("on");
-  assert.equal(se.codeReadAllowedFor(OTHER), true);
+  assert.equal(mc.codeReadAllowedFor(OTHER), true);
   process.env.REASON_SAVED_LOGINS = "owner";
-  try { assert.equal(se.codeReadAllowedFor(OTHER), false, "not a person the saved-login switch covers"); }
+  try { assert.equal(mc.codeReadAllowedFor(OTHER), false, "not a person the saved-login switch covers"); }
   finally { process.env.REASON_SAVED_LOGINS = "on"; }
   process.env.REASON_SAVED_LOGINS = "off";
-  try { assert.equal(se.codeReadAllowedFor(ME), false); } finally { process.env.REASON_SAVED_LOGINS = "on"; }
+  try { assert.equal(mc.codeReadAllowedFor(ME), false); } finally { process.env.REASON_SAVED_LOGINS = "on"; }
   setMode(null);
 });
 
@@ -408,7 +409,7 @@ test("I: a matching mail after the job asked: the code is typed into the site's 
     assert.equal(r.asked, 0, "they were not asked");
     assert.equal(r.out.code_from_mail, true);
     assert.match(r.out.say_exactly, /^Signed you in to acme\.test\. I took the code from the email acme\.test just sent you\. I only look at that one email/);
-    assert.match(r.out.say_exactly, /don't read my mail for codes/);
+    assert.match(r.out.say_exactly, /If you'd rather I didn't, tell me and I'll ask you for codes instead\.$/);
     nothingShown(r);
     assert.ok(r.logs.some((l) => /"signin_mail_code":"acme\.test"/.test(l)), "the audit line was written");
     assert.deepEqual(box.fullReads(), ["m-ok"], "only that one mail was opened");
@@ -703,7 +704,7 @@ const emailRun = async (gmail) => {
   await out.run;
   return { st, notes, logs };
 };
-const strictWith = (box) => (c, e, o) => se.strictGmail(c, e, { ...o, ...box.opts, waitMs: 60 });
+const strictWith = (box) => (c, e, o) => mc.strictGmail(c, e, { ...o, ...box.opts, waitMs: 60 });
 
 test("E: signin_email, covered: the site's code from its one mail, and the once-only sentence for the model to say", async () => {
   db.db.exec("DELETE FROM login_log WHERE event = 'code_from_mail'");
@@ -747,5 +748,5 @@ test("E: the signin_email tool hands over the narrow reader only where the switc
   } finally { setMode(null); if (prevSocial == null) delete process.env.REASON_SOCIAL_SIGNIN; else process.env.REASON_SOCIAL_SIGNIN = prevSocial; }
   assert.equal(started.length, 2, JSON.stringify(started.map(s => Object.keys(s))));
   assert.equal("gmail" in started[0], false, "off: startEmailSignin's own default reader, as on main");
-  assert.equal(started[1].gmail, se.strictGmail);
+  assert.equal(started[1].gmail, mc.strictGmail);
 });

@@ -34,6 +34,7 @@ import * as social from "./socialsignin.js";
 import * as findings from "./sitefindings.js";
 import * as refusing from "./refusing.js";
 import * as signinEmail from "./signinemail.js";
+import * as mailCode from "./mailcode.js";
 import * as signinPage from "./signinpage.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
@@ -578,7 +579,7 @@ export function toolsFor(conversationId) {
     && foodToolVisible(t.name, conversationId)
     && plaidToolVisible(t.name, conversationId)
     && (!SAVED_LOGIN_TOOLS.has(t.name) || saveLinkAllowedFor(conversationId))
-    && (!CODE_READ_TOOLS.has(t.name) || signinEmail.codeReadAllowedFor(conversationId))
+    && (!CODE_READ_TOOLS.has(t.name) || mailCode.codeReadAllowedFor(conversationId))
     && agentcardToolVisible(t.name, conversationId)
     && todoToolVisible(t.name, conversationId)
     && cueToolVisible(t.name, conversationId)
@@ -13142,7 +13143,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           : "Send say_exactly as it is and stop this job. Do not try another way in." };
     }
     case "signin_code_mail": {
-      if (!signinEmail.codeReadAllowedFor(c)) return { ok: false, error: "Not available." };
+      if (!mailCode.codeReadAllowedFor(c)) return { ok: false, error: "Not available." };
       // Turning it off narrows what Reason does and is taken from any turn; turning it back on only
       // from a turn they started themselves.
       if (input.read === true) {
@@ -15747,7 +15748,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         launch: ctx.launchSigninBrowser ?? signinRemote.launchProfileBrowser,
         closeBrowser: browser.closeBrowser,
         // REASON_SIGNIN_CODE_READ: the same narrow reader the saved-login sign-in uses (and their opt-out).
-        ...(signinEmail.codeReadAllowedFor(c) ? { gmail: signinEmail.strictGmail } : {}),
+        ...(mailCode.codeReadAllowedFor(c) ? { gmail: mailCode.strictGmail } : {}),
       });
       trust.ledgerWrite({ conversationId: c, action: "signin_email", input: { site: input.site }, out: { ok: out.ok, site: entry.site }, target: `site:${entry.site}` });
       if (!out.ok) return out;

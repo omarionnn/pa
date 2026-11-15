@@ -34,13 +34,11 @@ import * as signin from "./signin.js";
 import * as restartGate from "./busy.js";
 import * as findings from "./sitefindings.js";
 import * as signinPage from "./signinpage.js";
-import { logAttempt, logStep, logMailCode } from "./signinlog.js";
+import { logAttempt, logStep } from "./signinlog.js";
 import { typedOnly } from "./trust.js";
 import { createHash } from "node:crypto";
-import * as accounts from "./accounts.js";
 import { Secret } from "./secret.js";
 import { classifySite } from "./sitepolicy.js";
-import { savedLoginsAllowedFor, recordLoginEvent, mailCodeUsedBefore } from "./savedlogins.js";
 
 /** How long Gmail is polled for the site's mail, and how often. */
 export const MAIL_WAIT_MS = 90_000;
@@ -232,8 +230,8 @@ export async function codeFromGmail(conversationId, entry, { since, waitMs = MAI
 // emailed a code or a link: the code is taken from THAT one email, typed into the site's own page,
 // and nothing else in the mailbox is looked at.
 //
-// REASON_SIGNIN_CODE_READ = off | owner | on (default off). Off: every caller behaves exactly as
-// before this existed. It only ever adds to people the saved-login / sign-in switches already cover.
+// REASON_SIGNIN_CODE_READ = off | owner | on (default off; src/mailcode.js). Off: every caller behaves
+// exactly as before this existed. It only ever adds to people the saved-login / sign-in switches cover.
 //
 // What may be read, exactly:
 //   - only during that job, only after the site was asked to send the code (SKEW_MS of clock slack),
@@ -246,21 +244,6 @@ export async function codeFromGmail(conversationId, entry, { since, waitMs = MAI
 // registrable domain. Never the subject or body; nothing about it is logged except the site, the
 // sender's domain and a hash of the message id. The mail is only read (GET): never marked or moved.
 export const CODE_READ_WINDOW_MS = 5 * 60_000;
-
-export function codeReadMode() {
-  const v = String(process.env.REASON_SIGNIN_CODE_READ ?? "").trim().toLowerCase();
-  if (v === "owner") return "owner";
-  return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
-}
-/** Is reading the code on for this person? The switch, and the saved-login switch already covering them. */
-export function codeReadAllowedFor(conversationId) {
-  const c = String(conversationId ?? "");
-  if (!c) return false;
-  const mode = codeReadMode();
-  if (mode === "off") return false;
-  if (mode === "owner" && !(c === config.ownerConversation || accounts.featureOwner(c))) return false;
-  try { return savedLoginsAllowedFor(c); } catch { return false; }
-}
 
 // Their "don't read my mail for codes": one row, the latest answer wins (src/db.js setOnlyPreference).
 // A preference that only ever narrows what Reason does; it widens nothing.
@@ -424,46 +407,6 @@ export async function codeFromMail(conversationId, entry, { since, waitMs = MAIL
     if (now() + pollMs > deadline) return { status: "not_found" };
     await sleep(pollMs);
   }
-}
-
-/**
- * The audit line for one code taken from mail: the sign-in log (src/signinlog.js) and the person's
- * login_log row. Site, time, sender domain and a hash of the message id; never the code, subject or body.
- * → whether this was the first time for them (the caller says the longer sentence once).
- */
-export function auditMailCode(conversationId, site, { sender = "", hash = "" } = {}) {
-  const c = String(conversationId ?? "");
-  let first = false;
-  try { first = !mailCodeUsedBefore(c); } catch { first = false; }
-  try { logMailCode({ signin_url: `https://${site}/` }, { sender, hash }); } catch { /* a log never breaks a sign-in */ }
-  try { recordLoginEvent(c, { site, event: "code_from_mail", outcome: "ok", purpose: `from ${String(sender).replace(/[^a-z0-9.-]/g, "")}, mail ${String(hash).replace(/[^a-f0-9]/g, "")}` }); } catch { /* best effort */ }
-  return first;
-}
-
-/**
- * codeFromMail in the shape startEmailSignin's `gmail` takes (the signin_email route, when
- * REASON_SIGNIN_CODE_READ covers them): one reader for every sign-in that reads a code from mail.
- * The code leaves the Secret only here, for that route's own typing; it is never returned to a tool.
- */
-export async function strictGmail(conversationId, entry, { since, waitMs, ...rest } = {}) {
-  const got = await codeFromMail(conversationId, entry, { since, ...(waitMs != null ? { waitMs } : {}), ...rest }).catch(() => ({ status: "error" }));
-  if (got.status === "code" || got.status === "link") {
-    const notice = mailCodeNotice(entry?.label ?? entry?.site ?? "the site", auditMailCode(conversationId, entry?.site ?? "", { sender: got.sender, hash: got.hash }));
-    if (got.status === "link") return { connected: true, found: true, kind: "link", url: got.url, notice };
-    return { connected: true, found: true, kind: "code", code: got.secret.use((b) => b.toString("utf8")), notice };
-  }
-  if (got.status === "alert" || got.status === "not_signin") return { connected: true, found: false, stop: got.status === "alert" ? "mail_alert" : "mail_not_signin" };
-  if (got.status === "two") return { connected: false, ask: "two" };
-  if (got.status === "not_found") return { connected: true, found: false };
-  if (got.status === "opted_out") return { connected: false, ask: "opted_out" };
-  return { connected: false };
-}
-
-/** What they are told, in the result message: the whole of it the first time, then a few words. */
-export function mailCodeNotice(site, first) {
-  return first
-    ? `I took the code from the email ${site} just sent you. I only look at that one email (mail from ${site} that arrived in the last few minutes), nothing else in your inbox. If you'd rather I didn't, say "don't read my mail for codes" and I'll ask you for the code instead.`
-    : `Got the code from ${site}'s email.`;
 }
 
 // ---------------------------------------------------------------- the page
@@ -860,7 +803,7 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       const mail = await gmail(conversationId, entry, { since: asked.at });
       let got = mail?.found ? mail : null;
       log({ signin_email: "mail", site: entry.site, connected: !!mail?.connected, found: !!got, kind: got?.kind ?? "" });
-      // REASON_SIGNIN_CODE_READ (strictGmail): the one mail from the site was not a sign-in code.
+      // REASON_SIGNIN_CODE_READ (src/mailcode.js strictGmail): the one mail from the site was not a sign-in code.
       if (mail?.stop === "mail_alert") return finish(`the ${entry.label} sign-in stopped: the email ${entry.label} sent looked like a security alert (someone trying to sign in, a new device), not a sign-in code, so it was not used. Nothing was saved. Say it in ONE plain line, like: "The email ${entry.label} sent looks like a security alert, not a sign-in code, so I stopped. Have a look at it yourself." Never offer to try again.`, "no_mail", "mail_alert");
       if (mail?.stop === "mail_not_signin") return finish(`the ${entry.label} sign-in stopped: the email ${entry.label} sent was about a password reset or an account change, not a sign-in code, so it was not used and nothing was changed. Say it in ONE plain line, like: "The email ${entry.label} sent wasn't a sign-in code (it was about your password or account), so I didn't use it." Never offer to try again.`, "no_mail", "mail_not_signin");
       if (!got) {
