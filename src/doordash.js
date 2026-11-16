@@ -466,6 +466,7 @@ async function stopJob(c, r, kind, { browser }) {
 }
 
 const CONFIRMED = /\border (?:#|number|no\.?)\s*:?\s*([A-Z0-9][A-Z0-9-]{3,})|\b(order (?:placed|confirmed|received)|thanks for your order|your order is (?:on the way|being prepared|confirmed|in))\b/i;
+const ORDER_NO = /\border (?:#|number|no\.?)\s*:?\s*([A-Z0-9][A-Z0-9-]{3,})/i;
 
 async function place(c, input, { browser, trust, ctx, ownerName }) {
   // handoff (the default): never pressed, whatever asked for it.
@@ -474,9 +475,13 @@ async function place(c, input, { browser, trust, ctx, ownerName }) {
   if (!r || r.total_cents == null || !["asked", "read"].includes(r.state)) return { ok: false, error: "There is no read checkout waiting for a yes. Read it first (doordash_order checkout)." };
   // Only a yes on this exact order: a standing permission is never enough for a DoorDash charge.
   if (ctx.permission || !ctx.confirmationId) return { ok: false, needs_yes: true, error: `Placing a DoorDash order needs ${ownerName}'s yes on the exact total. Ask with confirm_request (target "${placeTarget(c, r.order_id)}").` };
-  const page = await browser.pageFor(c, { url: r.checkout_url || HOME });
-  if (r.checkout_url && (() => { try { const u = new URL(page.url()); return `${u.origin}${u.pathname}` !== r.checkout_url; } catch { return true; } })()) {
-    await page.goto(r.checkout_url, { waitUntil: "domcontentloaded" }).catch(() => {});
+  // The checkout loaded fresh, never the page as it was when they were asked: DoorDash recomputes the
+  // total on load, and a page left open shows the old one.
+  if (!r.checkout_url) return { ok: false, error: "The checkout's address was not kept. Read it again with doordash_order checkout." };
+  const page = await browser.pageFor(c, { url: r.checkout_url });
+  try { await page.goto(r.checkout_url, { waitUntil: "domcontentloaded" }); } catch {
+    await browser.closeBrowser(c).catch(() => {});
+    return { ok: false, error: "DoorDash's checkout would not load just now. Nothing was placed. Say so in one line; do not try again on your own." };
   }
   { const stop = await remote.stopIfChallenged(c, page); if (stop) return stop; }
   // The page again, just before the press: what they said yes to must be what would be charged.
@@ -537,7 +542,7 @@ async function place(c, input, { browser, trust, ctx, ownerName }) {
       say_exactly: `I pressed Place order on DoorDash, but the page didn't confirm it, so I don't know if it went through. I won't try again. Check your DoorDash app's orders; it'll be there if it did.`,
       note: "Send say_exactly as it is. Never retry: a second press can order twice." };
   }
-  const orderNumber = conf[1] ?? "";
+  const orderNumber = ORDER_NO.exec(after)?.[1] ?? "";
   const eta = post.eta || r.eta;
   trust.settleUnknownOutcome({ conversationId: c, action: "doordash_place", target: what, confirmationId: ctx.confirmationId ?? null });
   trust.noteSpend({ conversationId: c, cents: got.total, what, site: "doordash", confirmationId: ctx.confirmationId ?? null });
@@ -559,9 +564,11 @@ async function status(c, input, { browser, ownTurn }) {
   if (!ownTurn) return { ok: false, error: "A status check runs only when they ask for it." };
   const leftSec = remote.monthBudgetMinutes() * 60 - remote.monthSeconds();
   if (leftSec < 120) return { ok: false, say_exactly: "I'm out of hosted-browser time this month, so I can't check it. The DoorDash app shows where it is." };
-  const page = await browser.pageFor(c, { url: ORDERS_URL });
+  // Their orders page, on the same DoorDash origin the order was placed on.
+  const ordersUrl = (() => { try { return `${new URL(r.checkout_url).origin}/orders`; } catch { return ORDERS_URL; } })();
+  const page = await browser.pageFor(c, { url: ordersUrl });
   let text = "";
-  try { await page.goto(ORDERS_URL, { waitUntil: "domcontentloaded" }); { const stop = await remote.stopIfChallenged(c, page); if (stop) return stop; } text = await browser.pageText(page).catch(() => ""); } catch { text = ""; }
+  try { await page.goto(ordersUrl, { waitUntil: "domcontentloaded" }); { const stop = await remote.stopIfChallenged(c, page); if (stop) return stop; } text = await browser.pageText(page).catch(() => ""); } catch { text = ""; }
   await browser.closeBrowser(c).catch(() => {});
   db.db.prepare("UPDATE doordash_orders SET status_checks = status_checks + 1, updated_at = ? WHERE conversation_id = ? AND order_id = ?").run(clock.now(), String(c), r.order_id);
   const m = STATUS_WORDS.exec(text);

@@ -82,7 +82,7 @@ const page = (title, html) => `<!doctype html><html><head><title>${title}</title
 const siteServer = createServer(async (req, res) => {
   let body = ""; for await (const ch of req) body += ch;
   const u = new URL(req.url, "http://x");
-  const send = (html, st = 200) => { res.writeHead(st, { "content-type": "text/html" }); res.end(html); };
+  const send = (html, st = 200) => { res.writeHead(st, { "content-type": "text/html; charset=utf-8" }); res.end(html); };
   const go = (to) => { res.writeHead(303, { location: to }); res.end(); };
   const form = new URLSearchParams(body);
   if (req.method === "POST" && u.pathname === "/address") { S.address = form.get("address") || S.address; return go("/"); }
@@ -456,13 +456,14 @@ test("site_card: DoorDash asking for the card's CVV after the press stops it; no
   assert.equal(remote.remoteSessionsOpen(), 0);
 });
 
-test("site_card: their own spending limit applies unchanged", skip, async () => {
-  db.setSpendCaps(OWNER, { perPurchaseCents: 2_000, monthlyCents: 100_000, said: "twenty a thing" });
+test("site_card: the existing spending rules apply unchanged: no limits set means no DoorDash charge", skip, async () => {
+  db.db.prepare("DELETE FROM spend_caps WHERE conversation_id = ?").run(OWNER);
   try {
     const { d, read } = await readyToPlace();
     const id = await yes(d, read.use_target);
     const out = await d.call("doordash_place", { confirmation_id: id });
     assert.notEqual(out.ok, true);
+    assert.equal(out.blocked, "needs_caps", JSON.stringify(out).slice(0, 200));
     assert.equal(S.placeAttempts, 0);
   } finally { db.setSpendCaps(OWNER, { perPurchaseCents: 20_000, monthlyCents: 100_000, said: "two hundred a thing" }); }
 });
@@ -500,17 +501,17 @@ test("A5: a hosted email sign-in waiting for their texted-back code waits 5 minu
   const entry = remote.tagEntry(OWNER, { site: "doordash", label: "DoorDash", signin_url: DD("/consumer/login") });
   // Long waits are run short here (the code under test sets them; the test only does not sit through them).
   const realSet = globalThis.setTimeout; const asked = [];
-  globalThis.setTimeout = (fn, ms, ...rest) => { if (ms >= 60_000) { asked.push(ms); return realSet(fn, 20, ...rest); } return realSet(fn, ms, ...rest); };
+  globalThis.setTimeout = (fn, ms, ...rest) => { if (ms >= 60_000) asked.push(ms); if (ms === 5 * 60_000 || ms === 20 * 60_000) return realSet(fn, 20, ...rest); return realSet(fn, ms, ...rest); };
   try {
     const out = sie.startEmailSignin({
-      conversationId: OWNER, entry, email: "someone@example.com", log: () => {}, note: (c, t) => told.push(t), replyWaitMs: 20 * 60_000,
+      conversationId: OWNER, entry, email: "someone@example.com", log: (o) => told.push(JSON.stringify(o)), note: (c, t) => told.push(t), replyWaitMs: 20 * 60_000,
       launch: async ({ site }) => { const ctx = await remote.openRemote((await import("playwright")).chromium, OWNER, site); const pg = ctx.pages()[0] ?? await ctx.newPage(); await pg.goto(DD("/consumer/login")); return { page: pg, close: () => ctx.close() }; },
       gmail: async () => ({ connected: false }),
       check: async () => ({ ok: true, state: "unknown" }),
     });
     await out.run;
   } finally { globalThis.setTimeout = realSet; sie._resetJobs(); }
-  assert.ok(asked.includes(5 * 60_000), `the wait asked for: ${asked.join(",")}`);
+  assert.ok(asked.includes(5 * 60_000), `the wait asked for: ${asked.join(",")}; told: ${told.join(" | ").slice(0, 600)}`);
   assert.ok(!asked.includes(20 * 60_000));
   assert.ok(told.some((t) => t.includes("I can wait 5 minutes for it.")), told.join(" | ").slice(0, 400));
   assert.ok(told.some((t) => /waited 5 minutes for the code/.test(t)));
