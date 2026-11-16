@@ -171,15 +171,22 @@ async function captions(url, { lang, auto, run, timeoutMs }) {
  * That matters: `--extract-audio` would need it, and this machine does not have it. The video stream
  * is never asked for, and the file is deleted by the caller as soon as its transcript is stored.
  */
-async function audioOnly(url, { dir, run, timeoutMs }) {
+async function audioOnly(url, { dir, run, timeoutMs, maxBytes = 0 }) {
   const r = await run([
     "--no-playlist", "--no-warnings", "--socket-timeout", "20",
+    // Intake only: yt-dlp refuses before downloading when the size is known, and stops when it is not.
+    ...(maxBytes ? ["--max-filesize", String(maxBytes)] : []),
     "-f", config.audioFormat,
     "-o", "audio.%(ext)s", url,
   ], { cwd: dir, timeoutMs });
-  const file = readdirSync(dir).find(f => f.startsWith("audio."));
-  if (!file) return { ok: false, ...reason(r.stderr, url) };
+  const file = readdirSync(dir).find(f => f.startsWith("audio.") && !(maxBytes && f.endsWith(".part")));
+  const tooBig = { ok: false, cannot: "too_big", error: `The audio of ${url} is over ${Math.round(maxBytes / 1e6)} MB, so it was not downloaded.` };
+  if (!file) {
+    if (maxBytes && /larger than max-filesize/i.test(`${r.stdout ?? ""} ${r.stderr ?? ""}`)) return tooBig;
+    return { ok: false, ...reason(r.stderr, url) };
+  }
   const full = join(dir, file);
+  if (maxBytes && statSync(full).size > maxBytes) return tooBig;
   return { ok: true, file: full, bytes: statSync(full).size };
 }
 
@@ -423,7 +430,7 @@ export function isYouTube(meta, url) {
  */
 export async function modelAccount(url, {
   meta, run, model, status, from = null, to = null, question = "",
-  maxMinutes = config.videoMaxMinutes, timeoutMs, transcriber = null,
+  maxMinutes = config.videoMaxMinutes, timeoutMs, transcriber = null, maxBytes = 0,
 } = {}) {
   const youtube = isYouTube(meta, url);
   const tier = youtube ? "watch" : "listen";
@@ -460,7 +467,7 @@ export async function modelAccount(url, {
   // --- anywhere else: the audio track only, uploaded ---
   const dir = mkdtempSync(join(scratchRoot(), "audio-"));
   try {
-    const got = await audioOnly(url, { dir, run, timeoutMs });
+    const got = await audioOnly(url, { dir, run, timeoutMs, maxBytes });
     if (!got.ok) return { ok: false, tier, error: got.error, cannot: got.cannot };
 
     const mime = audioMimeFor(got.file);
@@ -526,7 +533,7 @@ export async function videoUnderstand(rawUrl, {
   timeoutMs = config.videoProbeTimeoutMs,
   // Video intake (REASON_VIDEO_INTAKE). Only `videoIntake` below passes these; with them unset every
   // result is what it always was.
-  intake = false, onLongFetch = null,
+  intake = false, onLongFetch = null, maxBytes = 0,
 } = {}) {
   let url;
   try { url = new URL(String(rawUrl)); } catch { return { ok: false, tier: "none", error: `'${rawUrl}' is not a URL.` }; }
@@ -560,7 +567,7 @@ export async function videoUnderstand(rawUrl, {
     // handed to the video model does not come from here, so that tier is tried next, and said.
     const ytId = youtubeIdOf(url.href);
     if (p.cannot === "login" && ytId && eyes.connected && brain) {
-      const got = await modelAccount(url.href, { meta: { extractor_key: "Youtube", id: ytId }, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra });
+      const got = await modelAccount(url.href, { meta: { extractor_key: "Youtube", id: ytId }, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra, maxBytes });
       if (got.ok) return { ...modelResult(got, { url: url.href, images: [] }, { eyes, from, to, meta: {}, maxChars, question }), details_failed: p.error };
     }
     const say = INTAKE_CANNOT_SAY[p.cannot];
@@ -604,10 +611,14 @@ export async function videoUnderstand(rawUrl, {
   // --- tier 2, when it was asked for or when there are no captions to read ---
   let got = null;
   if (watch || !track) {
-    got = await modelAccount(url.href, { meta, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra });
+    got = await modelAccount(url.href, { meta, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra, maxBytes });
     if (got.ok) {
       if (cacheId) cacheHeard(cacheId, got, base, { ranged: from !== null || to !== null });
       return modelResult(got, base, { eyes, from, to, meta, maxChars, question });
+    }
+    if (intake) {
+      const no = intakeModelRefusal(got, { meta, maxMinutes, maxBytes });
+      if (no) return { ok: false, tier: "none", ...base, ...no, retry: false, note: INTAKE_NO_RETRY };
     }
   }
   return captionsOrNothing();
@@ -648,11 +659,13 @@ export async function videoUnderstand(rawUrl, {
     // Intake: the captions would not come (a bot check on this address, most often) and the model
     // tier has not been tried. It is the next tier, so it is tried — and named in the result.
     if (intake && !got && brain) {
-      got = await modelAccount(url.href, { meta, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra });
+      got = await modelAccount(url.href, { meta, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra, maxBytes });
       if (got.ok) {
         if (cacheId) cacheHeard(cacheId, got, base, { ranged: from !== null || to !== null });
         return { ...modelResult(got, base, { eyes, from, to, meta, maxChars, question }), captions_failed: caps.ok ? "no readable lines" : caps.error };
       }
+      const no = intakeModelRefusal(got, { meta, maxMinutes, maxBytes });
+      if (no) return { ok: false, tier: "none", ...base, ...no, retry: false, note: INTAKE_NO_RETRY };
     }
     // Captions are listed but unusable. Say which, and what the model tier said if it was tried.
     return {
@@ -731,7 +744,23 @@ export const INTAKE_CANNOT_SAY = {
   live: "That's a live stream, so there's no finished video to get a transcript of yet.",
   upcoming: "That video hasn't started yet, so there's nothing in it to read.",
   too_long: null, // carries the length, so it is written where the length is known
+  too_big: null,  // carries the size, the same way
 };
+
+/**
+ * Intake: the paid tier would not take this one (too long to listen to, audio too big, or the video
+ * itself is shut), so it is one plain line, not the metadata fallback. Null for anything else.
+ */
+function intakeModelRefusal(got, { meta, maxMinutes, maxBytes }) {
+  if (!got || got.ok) return null;
+  if (got.too_long) {
+    const how = got.tier === "watch" ? "watch" : "listen to";
+    return { cannot: "too_long", say: `That video is ${timecode(Number(meta?.duration) || 0)} long and has no captions I can read, so I'd have to ${how} it, and I only ${how} up to ${maxMinutes} minutes of a video.` };
+  }
+  if (got.cannot === "too_big") return { cannot: "too_big", say: `That video's audio is over ${Math.round(maxBytes / 1e6)} MB, so I didn't download it.` };
+  if (got.cannot && INTAKE_CANNOT_SAY[got.cannot]) return { cannot: got.cannot, say: INTAKE_CANNOT_SAY[got.cannot] };
+  return null;
+}
 export const INTAKE_NO_RETRY = "Tell them that in one plain line (the `say` line is the meaning; put it in your own words). Do not try again, do not try another way, and do not guess at what is in it.";
 
 /** The 11-character YouTube id in any of its URL forms, or null. */
@@ -897,6 +926,22 @@ function fromCache(hit, { from, to, maxChars }) {
   };
 }
 
+/** One fresh watch or listen, into the paid-usage ledger. A cached account cost nothing and is not counted. */
+function noteVideoSpend(r, record) {
+  const used = r?.watched ?? r?.heard;
+  if (!r?.ok || !used || used.cached || !used.usage) return;
+  const u = used.usage;
+  try {
+    record({
+      feature: "video", model: String(used.by ?? ""),
+      usage: {
+        input_tokens: Number(u.promptTokenCount ?? u.input_tokens) || 0,
+        output_tokens: (Number(u.candidatesTokenCount ?? u.output_tokens) || 0) + (Number(u.thoughtsTokenCount) || 0),
+      },
+    });
+  } catch { /* counting never costs an answer */ }
+}
+
 /** How the transcript was got, in the few words Reason says it in. */
 export function howWeGotIt(tier, source = "") {
   if (tier === "captions") return source === "creator" ? "from the creator's captions" : "from the video's auto-generated captions";
@@ -938,7 +983,7 @@ export function transcriptBlocks(lines, { blockChars = 3_900, maxBlocks = 59 } =
  * inside a deadline. `find` turns the result into the matching moments rather than the whole text.
  */
 export async function videoIntake(rawUrl, opts = {}) {
-  const { find = "", deadlineMs = config.videoIntakeDeadlineMs, ...rest } = opts;
+  const { find = "", deadlineMs = config.videoIntakeDeadlineMs, spendCap = null, recordSpend = null, ...rest } = opts;
   const from = parseTime(rest.from), to = parseTime(rest.to);
   const key = normalizeVideoUrl(rawUrl).key;
   const link = key.startsWith("youtube:") ? (s) => `https://youtu.be/${key.slice(8)}?t=${Math.floor(s)}` : null;
@@ -951,10 +996,25 @@ export async function videoIntake(rawUrl, opts = {}) {
     }
   }
   if (!out) {
+    // The money: watching and listening are paid (Gemini), so they are counted in the same usage
+    // ledger every paid model call is (src/spend.js, feature "video") and held to the same daily and
+    // monthly caps. A cap already reached means only the free tier (captions) is tried, and said.
+    const spend = (spendCap && recordSpend) ? null : await import("./spend.js");
+    const capHit = (spendCap ?? spend.capReached)();
+    const record = recordSpend ?? spend.recordApi;
+    const understand = { ...rest, intake: true, maxBytes: rest.maxBytes ?? Math.round(config.videoAudioMaxMB * 1e6) };
+    if (capHit) {
+      understand.modelStatus = {
+        connected: false, missing: [], model: null,
+        why: `the spending limit on paid AI use is reached for ${capHit.which === "month" ? "this month" : "today"}, so nothing that costs money (watching it or listening to it) was tried.`,
+      };
+    }
+    // Counted when it finishes, even past the deadline: money spent late is still money spent.
+    const work = videoUnderstand(rawUrl, understand).then(r => { noteVideoSpend(r, record); return r; });
     let timer;
     const late = new Promise(res => { timer = setTimeout(() => res(null), deadlineMs); });
     try {
-      out = await Promise.race([videoUnderstand(rawUrl, { ...rest, intake: true }), late]);
+      out = await Promise.race([work, late]);
     } finally { clearTimeout(timer); }
     if (!out) {
       return {

@@ -935,6 +935,9 @@ export const config = {
   videoIntakeMaxSeconds: Number(process.env.REASON_VIDEO_INTAKE_MAX_SECONDS || 7_200),
   videoHeadsUpSeconds: Number(process.env.REASON_VIDEO_HEADS_UP_SECONDS || 600),
   videoIntakeDeadlineMs: Number(process.env.REASON_VIDEO_INTAKE_DEADLINE_MS || 300_000),
+  // Intake: the audio of a video with no captions is not downloaded past this size (an hour of audio
+  // is ~30-60 MB, so this only stops something unusual).
+  videoAudioMaxMB: Number(process.env.REASON_VIDEO_AUDIO_MAX_MB || 150),
   // Web search. One provider interface, three real providers: Parallel (5,000 searches a month
   // free, long excerpts per result), Context.dev (1,000 credits a month free, shared with page
   // scraping) and Tavily (1,000 credits a month free, no credit card). REASON_SEARCH_PROVIDER names
@@ -1227,6 +1230,10 @@ export const config = {
     "claude-opus-5-5": { in: 4, out: 20, cacheWrite: 5, cacheRead: 0.20 },
     "claude-opus-5": { in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50 },
     "claude-sonnet-4-5": { in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.30 },
+    // The video model (src/gemini.js), counted by video intake only. Google's introductory price,
+    // ai.google.dev/gemini-api/docs/pricing read 2026-11-16: $0.75 in / $3.75 out through 2026-12-31,
+    // then $1.50 / $7.50 — raise these then, or set REASON_API_PRICES.
+    "gemini-3.8-flash": { in: 0.75, out: 3.75 },
     ...(() => { try { return JSON.parse(process.env.REASON_API_PRICES || "{}"); } catch { return {}; } })(),
   },
   // After the API says the account is out of credit, the side checks go straight to their CLI
