@@ -92,11 +92,11 @@ before(async () => {
 after(async () => {
   await remote.closeAllRemote();
   await browser.closeAllBrowsers().catch(() => {});
-  cdp?.kill("SIGKILL");
+  if (cdp && cdp.exitCode == null) await new Promise(r => { cdp.once("exit", r); cdp.kill("SIGKILL"); });
   await new Promise(r => bbServer.close(r));
   await new Promise(r => siteServer.close(r));
   for (const k of ENV) delete process.env[k];
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 const set = (env) => { for (const k of ENV) delete process.env[k]; Object.assign(process.env, env); };
@@ -108,7 +108,7 @@ const consent = (c = OWNER) => {
 beforeEach(async () => {
   await browser.closeAllBrowsers().catch(() => {});
   set({});
-  bb.calls.length = 0; bb.status = {}; bb.delay = {}; bb.connectUrl = WS;
+  bb.calls.length = 0; bb.status = {}; bb.delay = {}; bb.connectUrl = WS; bb.n = 0;
   remote._resetRemote(); refusing._resetRefusals();
   db.db.exec("DELETE FROM ops_digest");
   clicked.length = 0;
@@ -363,7 +363,7 @@ test("the monthly budget: used up means no session is asked for", async () => {
   set({ ...ON(), REASON_REMOTE_BROWSER_MONTH_MINUTES: "2" });
   consent();
   const month = new Date().toISOString().slice(0, 7);
-  db.db.prepare("INSERT INTO remote_browser_month (month, seconds) VALUES (?, ?)").run(month, 61);
+  db.db.prepare("INSERT INTO remote_browser_month (month, seconds) VALUES (?, ?)").run(month, 60);
   assert.equal(remote.gate(OWNER, "doordash.com"), null, "a minute left: it may go");
   db.db.prepare("UPDATE remote_browser_month SET seconds = ? WHERE month = ?").run(119, month);
   const out = await runTool("browser_open", { url: DD("/") }, turn(OWNER, "open doordash"));
@@ -426,7 +426,7 @@ test("a delete Browserbase will not do: kept as a bare id with no person, said i
   const r = await remote.deleteContextsFor(OTHER, { orphan: true });
   assert.deepEqual(r, { deleted: 0, failed: 1 });
   assert.equal(remote.hasContext(OTHER, "doordash.com"), false, "their row goes with their data");
-  assert.deepEqual(db.db.prepare("SELECT context_id FROM remote_browser_orphans").all(), [{ context_id: "ctx_77" }]);
+  assert.deepEqual(db.db.prepare("SELECT context_id FROM remote_browser_orphans").all().map(r => ({ ...r })), [{ context_id: "ctx_77" }]);
   assert.ok(opsdigest.pending().some(x => /could not be deleted at Browserbase/.test(x.text)));
   bb.status = {};
   assert.equal(await remote.retryOrphans(), 1);
@@ -440,8 +440,6 @@ test("a delete Browserbase will not do: kept as a bare id with no person, said i
 
 test("no sign-in link or window for a hosted site; the email sign-in is tagged, gated and opened in the hosted browser", async () => {
   set(ON());
-  const { hostedNoLinkFor } = { hostedNoLinkFor: null };
-  void hostedNoLinkFor;
   const entry = remote.tagEntry(OWNER, { site: "doordash", label: "DoorDash", signin_url: "https://www.doordash.com/consumer/login" });
   assert.equal(entry.browser, "remote");
   assert.equal(entry.remote_site, "doordash.com");
