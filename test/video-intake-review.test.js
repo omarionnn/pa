@@ -103,6 +103,15 @@ test("a link can never be read as a yt-dlp option, and yt-dlp reads no config, c
     assert.equal(args.at(-1), "https://vimeo.com/76979871");
     assert.ok(!args.some(a => /cookies-from-browser=|--netrc|--cookies=/.test(a)));
   }
+  // A configured JS runtime is passed, with remote code fetching off.
+  config.ytDlpJsRuntime = "node:/usr/bin/node";
+  try {
+    const a = video.hardenArgs(["-J", "https://vimeo.com/1"]);
+    assert.equal(a[a.indexOf("--js-runtimes") + 1], "node:/usr/bin/node");
+    assert.ok(a.includes("--no-remote-components"));
+    assert.deepEqual(a.slice(-2), ["--", "https://vimeo.com/1"]);
+  } finally { config.ytDlpJsRuntime = ""; }
+  assert.ok(!video.hardenArgs(["-J", "https://vimeo.com/1"]).includes("--js-runtimes"));
   // Switch off: the old path's arguments are untouched (main's bytes).
   const old = recorder();
   await video.videoUnderstand("https://vimeo.com/76979871", { run: old, bin: "/fake/yt-dlp" });

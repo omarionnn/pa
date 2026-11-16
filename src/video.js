@@ -175,8 +175,13 @@ function runGroup(bin, args, { cwd, timeoutMs, signal, maxDirBytes, nice }) {
 // any redirect and fetches whatever a page embeds, which is how a public link could have walked
 // yt-dlp onto this machine's own network (src/netguard.js only ever saw the link as typed).
 export const INTAKE_YTDLP_FLAGS = Object.freeze(["--ignore-config", "--no-cookies", "--no-cookies-from-browser", "--use-extractors", "all,-generic"]);
+// A current yt-dlp needs a JavaScript runtime for YouTube; REASON_YTDLP_JS_RUNTIME names one already on
+// the machine ("node:/usr/bin/node"), passed on the command line because no config file is read. With
+// it set, yt-dlp is also told never to fetch code of its own from the network (the official binary
+// carries what it needs).
 export function hardenArgs(args) {
-  return [...INTAKE_YTDLP_FLAGS, ...args.slice(0, -1), "--", args.at(-1)];
+  const js = String(config.ytDlpJsRuntime ?? "").trim();
+  return [...INTAKE_YTDLP_FLAGS, ...(js ? ["--js-runtimes", js, "--no-remote-components"] : []), ...args.slice(0, -1), "--", args.at(-1)];
 }
 
 // The flags for the two read-only calls. --skip-download: these fetch text about the video and

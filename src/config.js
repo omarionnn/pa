@@ -940,6 +940,9 @@ export const config = {
   videoAudioMaxMB: Number(process.env.REASON_VIDEO_AUDIO_MAX_MB || 150),
   // Intake: videos fetched at once across everybody; a third waits its turn inside its own deadline.
   videoConcurrent: Number(process.env.REASON_VIDEO_CONCURRENT || 2),
+  // Intake: the JavaScript runtime a current yt-dlp uses for YouTube, as yt-dlp's --js-runtimes takes it
+  // ("node:/usr/bin/node"). Unset: none is passed (an older yt-dlp does not know the option).
+  ytDlpJsRuntime: process.env.REASON_YTDLP_JS_RUNTIME || "",
   // Intake: what watching and listening (feature "video" in the usage ledger) may spend in a day,
   // across everybody — a budget on the system, not a limit on any person, so a busy video day cannot
   // eat the whole daily API cap the rest of Reason runs on. Captions stay free once it is reached.
