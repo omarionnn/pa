@@ -495,7 +495,8 @@ const HOSTED_BROWSER_TOOL_DEFS = [{
 // A DoorDash order on their own DoorDash account in the hosted browser (src/doordash.js): shown only to a
 // person the hosted browser covers for DoorDash and food is on for; doordash_place only when
 // REASON_DOORDASH_PAY is site_card. Everybody else is shown the tool list exactly as before.
-export const DOORDASH_FOOD_WORDS = "For this person a delivery order goes on their own DoorDash account through doordash_order (start, address, checkout), not store_checkout; food_order start, history and note work as usual, and doordash_order records the cart itself.";
+export const DOORDASH_FOOD_WORDS = "For this person a delivery order goes on their own DoorDash account through doordash_order (start, address, checkout), not store_checkout; food_order start, history and note work as usual, and doordash_order records the cart itself."
+  + " If DoorDash can't be used for it (the hosted browser is not set up, out of time or busy, DoorDash stopped the job, or they said no to the hosted browser), the order goes the usual way when they want it: the restaurant's own ordering through store_checkout, with their yes on the exact total as always; never another way into DoorDash.";
 const DOORDASH_TOOL_DEFS = [{
   name: "doordash_order",
   description: "A food delivery order on their own DoorDash account, run in the hosted browser. For this person every food delivery order goes here (in place of store_checkout). Actions:"

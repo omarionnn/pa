@@ -117,36 +117,82 @@ function update(c, orderId, fields) {
 // ---------------------------------------------------------------- money and addresses
 const MONEY = /-?\$\s?\d{1,4}(?:,\d{3})*\.\d{2}/;
 const cents = (s) => { const m = MONEY.exec(String(s ?? "")); if (!m) return null; const neg = m[0].startsWith("-"); const n = Math.round(Number(m[0].replace(/[^0-9.]/g, "")) * 100); return neg ? -n : n; };
+/** An item's price as passed ("$14.95" or "14.95") → cents | null. */
+const priceCents = (s) => { const m = /^\s*\$?\s?(\d{1,4}(?:,\d{3})*(?:\.\d{1,2})?)\s*$/.exec(String(s ?? "")); return m ? Math.round(Number(m[1].replace(/,/g, "")) * 100) : null; };
 export const dollars = (n) => `${n < 0 ? "-" : ""}$${(Math.abs(n) / 100).toFixed(2)}`;
 
-const SUFFIX = { avenue: "ave", av: "ave", street: "st", road: "rd", boulevard: "blvd", drive: "dr", lane: "ln", place: "pl", court: "ct", terrace: "ter", parkway: "pkwy", highway: "hwy", square: "sq" };
-const DIR = new Set(["n", "s", "e", "w", "north", "south", "east", "west", "ne", "nw", "se", "sw"]);
+const SUFFIX = { avenue: "ave", av: "ave", street: "st", road: "rd", boulevard: "blvd", drive: "dr", lane: "ln", place: "pl", court: "ct", terrace: "ter", parkway: "pkwy", highway: "hwy", square: "sq",
+  circle: "cir", expressway: "expy", turnpike: "tpke", plaza: "plz", concourse: "concourse", way: "way", alley: "aly", row: "row", walk: "walk" };
+const SUFFIXES = new Set([...Object.keys(SUFFIX), ...Object.values(SUFFIX)]);
+const DIRS = { n: "n", s: "s", e: "e", w: "w", north: "n", south: "s", east: "e", west: "w", ne: "ne", nw: "nw", se: "se", sw: "sw", northeast: "ne", northwest: "nw", southeast: "se", southwest: "sw" };
+const DIR = new Set(Object.keys(DIRS));
+const UNIT = new Set(["apt", "apartment", "unit", "suite", "ste", "#", "fl", "floor", "rm", "room"]);
+const addrWords = (a) => String(a ?? "").toLowerCase().replace(/#\s*/g, " # ").replace(/[.,]/g, " ").split(/\s+/).filter(Boolean);
+const isNum = (w) => /^\d+[a-z]?$/.test(w ?? "");
 /**
- * An address's house number and street name, to compare two ways of writing it: "3247 Bruner Avenue,
- * Apt 1" and "3247 Bruner Ave" are the same; "3274 Bruner Ave" and "3247 Baychester Ave" are not.
- * → { num, street } | null
+ * An address read from where its house number is: the number, a direction ("W 4th St" is not "E 4th
+ * St"), the street's name (every word up to its suffix), the suffix ("Bruner Ave" is not "Bruner St")
+ * and the unit ("Apt 1" is not "Apt 4"). → { num, dir, name, suffix, unit } | null
+ */
+function addressAt(words, i) {
+  if (!isNum(words[i])) return null;
+  let j = i + 1;
+  let dir = "";
+  if (DIR.has(words[j]) && words[j + 1] && !SUFFIXES.has(words[j + 1])) { dir = DIRS[words[j]]; j += 1; }
+  const first = words[j];
+  if (!first || UNIT.has(first) || (/^\d/.test(first) && !/^\d+(st|nd|rd|th)$/.test(first))) return null;
+  const name = [first];
+  let suffix = "";
+  let k = j + 1;
+  for (; k < Math.min(words.length, j + 5); k++) {
+    const w = words[k];
+    if (SUFFIXES.has(w)) { suffix = SUFFIX[w] ?? w; k += 1; break; }
+    if (DIR.has(w) || UNIT.has(w) || /^\d/.test(w)) break;
+    name.push(w);
+  }
+  // No suffix within reach: the name is its first word only (what follows may be a city).
+  const street = suffix ? name.join(" ") : first;
+  if (!suffix && DIR.has(words[k]) && !dir) { dir = DIRS[words[k]]; }
+  let unit = "";
+  for (let u = k; u < Math.min(words.length, k + 6); u++) {
+    if (UNIT.has(words[u]) && words[u + 1] && /^[a-z]?\d+[a-z]?$|^[a-z]$/.test(words[u + 1])) { unit = words[u + 1]; break; }
+  }
+  return { num: words[i], dir, name: street, first, suffix, unit };
+}
+/**
+ * An address's house number and street, to compare two ways of writing it: "3247 Bruner Avenue, Apt 1"
+ * and "3247 Bruner Ave" are the same; "3274 Bruner Ave", "3247 Bruner St", "3247 Baychester Ave",
+ * "100 E 4th St" for "100 W 4th St" and "Apt 4" for "Apt 1" are not. → { num, street, ... } | null
  */
 export function addressKey(a) {
-  const words = String(a ?? "").toLowerCase().replace(/[.,#]/g, " ").split(/\s+/).filter(Boolean);
-  const i = words.findIndex((w) => /^\d+[a-z]?$/.test(w));
+  const words = addrWords(a);
+  const i = words.findIndex(isNum);
   if (i < 0) return null;
-  const rest = words.slice(i + 1).filter((w) => !DIR.has(w));
-  const street = rest.find((w) => !/^\d/.test(w) || /^\d+(st|nd|rd|th)$/.test(w));
-  return street ? { num: words[i], street: SUFFIX[street] ?? street } : null;
+  const k = addressAt(words, i);
+  return k ? { ...k, street: k.first } : null;
 }
-export function sameAddress(a, b) {
-  const x = addressKey(a); const y = addressKey(b);
-  return !!x && !!y && x.num === y.num && x.street === y.street;
+/** Two readings agree: what one leaves out is not a difference, what both say must match. */
+function agree(x, y, { unitRequired = false } = {}) {
+  if (!x || !y || x.num !== y.num || x.first !== y.first) return false;
+  if (x.suffix && y.suffix && (x.suffix !== y.suffix || x.name !== y.name)) return false;
+  if (x.dir && y.dir && x.dir !== y.dir) return false;
+  if (unitRequired && x.unit) return x.unit === y.unit;
+  if (x.unit && y.unit && x.unit !== y.unit) return false;
+  return true;
 }
-/** Does this page's text show that address (its number and street, in either spelling)? */
+export function sameAddress(a, b) { return agree(addressKey(a), addressKey(b)); }
+/**
+ * Does this page's text show that address? Its number and street in either spelling, the same
+ * direction and suffix where both say one, and, when the address has a unit, that same unit: food at
+ * the right building and the wrong door is still lost.
+ */
 export function pageShowsAddress(text, address) {
   const k = addressKey(address);
   if (!k) return false;
-  const words = String(text ?? "").toLowerCase().replace(/[.,#]/g, " ").split(/\s+/).filter(Boolean).map((w) => SUFFIX[w] ?? w);
+  const words = addrWords(text);
   for (let i = 0; i < words.length; i++) {
     if (words[i] !== k.num) continue;
-    const next = words.slice(i + 1, i + 4).filter((w) => !DIR.has(w));
-    if (next[0] === k.street) return true;
+    if (agree(k, addressAt(words, i), { unitRequired: true })) return true;
   }
   return false;
 }
@@ -168,9 +214,13 @@ const LABELS = [
   ["tip", /^(dasher )?tip$/i],
   ["discount", /^(discount|promotion|promo|credits?|dashpass savings|savings)\b/i],
   ["total", /^(order )?total$/i],
-  ["fee", /fee$/i],
+  // Any other fee by its short name ("Regulatory Response Fee"); a long line ending in "fee" is page text, not a line of the bill.
+  ["fee", /^[a-z][a-z &'/-]{0,38}fee$/i],
 ];
 const kindOf = (label) => (LABELS.find(([, re]) => re.test(label.trim())) ?? [""])[0];
+/** What a covered person hears when DoorDash can't be used now, and what the model does next. */
+export const FALLBACK_SAY = "I can try the restaurant's own online ordering instead, if you'd like.";
+export const FALLBACK_NOTE = "DoorDash can't be used for this right now. If they want it, the order goes the usual way: the restaurant's own ordering (store_checkout on the restaurant's own site, never DoorDash), which asks for their yes on the exact total as always. Nothing is paid without that yes.";
 export const STOPS = {
   // Checked in this order: the first one found is the one said.
   card: /\b(cvv|cvc|security code|card number|re-?enter (your )?card|verify (your )?card|confirm (your )?card|3-?d ?secure|3ds|authenticate (this|your) (payment|card))\b/i,
@@ -256,7 +306,9 @@ export const onDoordashUrl = (u) => !!u && remote.remoteSiteOf(u) === SITE && ((
 
 // ---------------------------------------------------------------- no other way to place
 /** Words a DoorDash button that places the order goes by (src/sites.js commit_labels, and the like). */
-export const PLACE_WORDS = /\b(place (your )?order|complete (your )?order|submit order|pay now|confirm (and|&) pay|order now)\b/i;
+export const PLACE_WORDS = /\b(place (your |the )?order|complete (your )?order|submit order|pay now|confirm (and|&) pay|order now)\b|\bplace\b|\bpay\b/i;
+/** Words of an offer that signs them up for something: never pressed on DoorDash, in any mode. */
+export const SIGNUP_WORDS = /\b(dash ?pass|membership|member|free trial|trial|subscribe|subscription|join|sign me up|enroll|donat\w*|round up|add (a )?donation)\b/i;
 /** Is this page DoorDash, in the hosted browser? */
 export function onHostedDoordash(page) {
   try { return remote.isRemoteContext(page.context()) && remote.remoteSiteOf(page.url()) === SITE; } catch { return false; }
@@ -274,6 +326,9 @@ export function refuseGenericCommit(page, { tool, name = "" } = {}) {
     : "On DoorDash, Reason never places the order: it is handed to them to place themselves.";
   if (tool === "browser_submit") return { ok: false, refused: true, blocked: "doordash_place_only", error: `Not pressed. ${why} Nothing was submitted.` };
   if (tool === "browser_click" && PLACE_WORDS.test(String(name))) return { ok: false, refused: true, blocked: "doordash_place_only", error: `Not pressed. ${why}` };
+  if (tool === "browser_click" && SIGNUP_WORDS.test(String(name)) && !/\b(no,? thanks|not now|skip|maybe later|close|dismiss)\b/i.test(String(name))) {
+    return { ok: false, refused: true, blocked: "doordash_no_signup", error: "Not pressed: on DoorDash Reason never accepts a DashPass or membership offer, a trial, or a donation. Close the offer (its No thanks / close control) and carry on with only what they asked for." };
+  }
   if (tool === "press_enter" && onCheckout(page)) return { ok: false, refused: true, blocked: "doordash_place_only", error: `Not pressed: Enter is never pressed on DoorDash's checkout. ${why} Type without press_enter.` };
   return null;
 }
@@ -304,8 +359,10 @@ async function start(c, input) {
       note: "Send say_exactly as it is. Nothing was opened." };
   }
   // Consent, the key, a site that turned the hosted browser away: asked before anything opens.
-  const held = remote.gate(c, SITE);
-  if (held) return held;
+  // Anything but their yes being asked for: DoorDash can't be had now, so the order goes the way it
+  // would without it (the restaurant's own ordering, with their yes as always), never another way into DoorDash.
+  const held = remote.gate(c, SITE, { alt: FALLBACK_SAY });
+  if (held) return held.hosted_browser === "consent_needed" ? held : { ...held, fallback: FALLBACK_NOTE };
   const o = food.openOrder(c) ?? food.ownOrder(c, (await food.startOrder(c)).order_id);
   if (!o?.id) return { ok: false, error: "The food order could not be started." };
   const now = clock.now();
@@ -402,6 +459,28 @@ async function checkout(c, input, { browser, shoot }) {
   const low = text.toLowerCase();
   const missing = items.filter((it) => !low.includes(String(it.name).toLowerCase().trim()));
   if (missing.length) return { ok: false, error: `The checkout doesn't show ${missing.map((m) => m.name).join(", ")}. Read the cart again (browser_read) and fix it before the checkout is read.` };
+  // Only what they asked for, and every charge accounted for. The breakdown must add up to the total:
+  // a charge it cannot name (a donation, a membership or trial, an add-on DoorDash put in) is asked
+  // about, never handed over or paid in silence. And the subtotal must be the items they asked for:
+  // something else in the cart (left from before, or an upsell) is never carried along.
+  if (!got.adds_up) {
+    await browser.closeBrowser(c).catch(() => {});
+    update(c, r.order_id, { state: "asked" });
+    return { ok: false, ask: true, unexplained: true,
+      say_exactly: `DoorDash's checkout shows ${dollars(got.total)}, but its lines don't add up to that, so there's a charge I can't account for (like a donation, a membership or an add-on). I stopped there; nothing was placed. Want me to look at the cart again and take out anything you didn't ask for?`,
+      note: "Send say_exactly as it is and wait. Never accept a DashPass or membership offer, a trial, a donation or an add-on they did not ask for." };
+  }
+  const priced = items.map((it) => ({ each: priceCents(it.price), qty: Math.max(1, Number.parseInt(String(it.qty ?? 1), 10) || 1) }));
+  if (got.subtotal != null && priced.every((p) => p.each != null)) {
+    // A cart shows either each item's price or its line's (quantity times price): either may be passed.
+    const asked = priced.reduce((n, p) => n + p.each * p.qty, 0);
+    const asLines = priced.reduce((n, p) => n + p.each, 0);
+    if (Math.abs(asked - got.subtotal) > 1 && Math.abs(asLines - got.subtotal) > 1) {
+      return { ok: false, extra: true, error: `The cart's subtotal is ${dollars(got.subtotal)} but the items you passed come to ${dollars(asked)}: the cart has something else in it (left from before, or an add-on). Read the cart (browser_read), remove anything they did not ask for, then call checkout again with every item and its price as the cart shows it.` };
+    }
+  } else if (got.subtotal != null) {
+    return { ok: false, error: "Pass each item's price as the cart shows it (price), so the subtotal can be checked against what they asked for." };
+  }
   // The tip: theirs, or DoorDash's default, said as which.
   const theirs = tipSaid(r.tip_said);
   let tipSource = "doordash_default";
@@ -434,7 +513,8 @@ async function checkout(c, input, { browser, shoot }) {
     await browser.closeBrowser(c).catch(() => {});
     update(c, r.order_id, { state: "handed_off" });
     try { await food.setStatus(food.ownOrder(c, r.order_id), "needs"); } catch { /* the words still go */ }
-    const store = (() => { try { const u = new URL(page.url()); return u.pathname.startsWith("/store/") ? `${u.origin}${u.pathname}` : ""; } catch { return ""; } })();
+    // The web page that shows this cart: the store page when that is where it was read, else the checkout page itself.
+    const store = (() => { try { const u = new URL(page.url()); return u.pathname.startsWith("/store/") ? `${u.origin}${u.pathname}` : checkoutUrl; } catch { return checkoutUrl; } })();
     return {
       ok: true, handed_off: true, order_id: r.order_id, total: dollars(got.total), tip_source: tipSource,
       say_exactly: `${flag}Your ${restaurant || "DoorDash"} order is ready in your DoorDash cart: ${dollars(got.total)} all in (${breakdown}), with ${tipWords}, to ${r.address}${eta}. I didn't place it: it's yours to place in the DoorDash app or on doordash.com.`
@@ -468,9 +548,17 @@ async function stopJob(c, r, kind, { browser }) {
 const CONFIRMED = /\border (?:#|number|no\.?)\s*:?\s*([A-Z0-9][A-Z0-9-]{3,})|\b(order (?:placed|confirmed|received)|thanks for your order|your order is (?:on the way|being prepared|confirmed|in))\b/i;
 const ORDER_NO = /\border (?:#|number|no\.?)\s*:?\s*([A-Z0-9][A-Z0-9-]{3,})/i;
 
-async function place(c, input, { browser, trust, ctx, ownerName }) {
+/** Conversations with a doordash_place under way: a second call while one runs is refused, never a second press. */
+const placing = new Set();
+async function place(c, input, deps) {
   // handoff (the default): never pressed, whatever asked for it.
   if (payMode() !== "site_card") return { ok: false, refused: true, error: "DoorDash orders are handed to them to place in this setup. Nothing was pressed." };
+  const key = String(c);
+  if (placing.has(key)) return { ok: false, refused: true, error: "A DoorDash order is being placed for them right now. Nothing more was pressed; wait for that one's answer." };
+  placing.add(key);
+  try { return await placeOnce(c, input, deps); } finally { placing.delete(key); }
+}
+async function placeOnce(c, input, { browser, trust, ctx, ownerName }) {
   const r = rowFor(c, input.order_id);
   if (!r || r.total_cents == null || !["asked", "read"].includes(r.state)) return { ok: false, error: "There is no read checkout waiting for a yes. Read it first (doordash_order checkout)." };
   // Only a yes on this exact order: a standing permission is never enough for a DoorDash charge.
@@ -556,7 +644,8 @@ async function place(c, input, { browser, trust, ctx, ownerName }) {
   };
 }
 
-const STATUS_WORDS = /\b(delivered|on (?:the|its) way|picked up|arriving(?: (?:at|by|in) [^.\n]{1,20})?|preparing|being prepared|heading to you|dasher is [^.\n]{1,40}|order (?:placed|confirmed)|cancell?ed)\b/i;
+// Fixed words and a time only: the status goes back to the model as an instruction, so no free page text rides along.
+const STATUS_WORDS = /\b(delivered|on (?:the|its) way|picked up|arriving(?: (?:at|by) \d{1,2}(?::\d{2})?\s?[ap]m| in \d{1,3} min)?|preparing|being prepared|heading to you|dasher is (?:on the way|nearby|at the restaurant|arriving)|order (?:placed|confirmed)|cancell?ed)\b/i;
 async function status(c, input, { browser, ownTurn }) {
   const r = rowFor(c, input.order_id);
   if (!r || r.state !== "placed") return { ok: false, error: "There is no DoorDash order Reason placed to check on." };
