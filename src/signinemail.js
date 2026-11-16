@@ -550,6 +550,10 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
   const old = jobs.get(conversationId);
   if (old && !old.done) return { ok: false, busy: true, error: `An email sign-in to ${old.entry.label} is already running for them.` };
   const tell = note ?? ((c, text) => db.createTimer(c, { fireAt: clock.now(), note: text }));
+  // The hosted browser keeps its session open while it waits for their code: capped at 5 minutes,
+  // and the ask says so (src/remotebrowser.js HOSTED_CODE_WAIT_MS).
+  const hostedWait = entry?.browser === "remote";
+  if (hostedWait) replyWaitMs = remote.hostedCodeWait(replyWaitMs);
   const job = { entry, state: "starting", done: false, reply: null, asked: 0 };
   jobs.set(conversationId, job);
   const id = `email:${conversationId}:${clock.now()}`;
@@ -632,7 +636,7 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
         const code = await new Promise((resolve) => {
           job.reply = resolve;
           job.asked += 1;
-          tell(conversationId, `${entry.label} just emailed a sign-in code to ${email}, and their Gmail is not connected, so the code has to come from them. Ask for it in ONE plain line, like: "What's the code ${entry.label} just sent to ${email}?" Nothing else, and do not ask again: their reply goes to ${entry.label} without you.`);
+          tell(conversationId, `${entry.label} just emailed a sign-in code to ${email}, and their Gmail is not connected, so the code has to come from them. Ask for it in ONE plain line, like: "What's the code ${entry.label} just sent to ${email}?${hostedWait ? ` ${remote.CODE_WAIT_WORDS}` : ""}" Nothing else, and do not ask again: their reply goes to ${entry.label} without you.`);
           const t = setTimeout(() => resolve(null), replyWaitMs);
           t.unref?.();
         });

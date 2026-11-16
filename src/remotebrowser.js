@@ -112,7 +112,15 @@ export const apiBase = () => String((process.env.NODE_TEST_CONTEXT && process.en
 /** The free plan's hour a month, unless the owner sets another budget. */
 export const monthBudgetMinutes = () => num(process.env.REASON_REMOTE_BROWSER_MONTH_MINUTES, 60);
 /** The free plan's longest session (15 minutes), unless set lower or higher. */
-export const sessionCapMinutes = () => num(process.env.REASON_REMOTE_BROWSER_SESSION_MINUTES, 15);
+/** Never more than 15 minutes (900 s) a session, whatever is set: the free plan's cap, and the most a job may run. */
+export const SESSION_CAP_MAX_MINUTES = 15;
+export const sessionCapMinutes = () => Math.min(SESSION_CAP_MAX_MINUTES, num(process.env.REASON_REMOTE_BROWSER_SESSION_MINUTES, 15));
+/** A setting above the ceiling is clamped, and said once in the ops digest (one line, kept per day). */
+function sayCapClamped() {
+  const asked = num(process.env.REASON_REMOTE_BROWSER_SESSION_MINUTES, 15);
+  if (asked <= SESSION_CAP_MAX_MINUTES) return;
+  try { opsdigest.hold({ key: "remote_browser:session_cap", text: `Hosted browser (Browserbase): REASON_REMOTE_BROWSER_SESSION_MINUTES is ${asked}, above the ${SESSION_CAP_MAX_MINUTES}-minute ceiling, so sessions are capped at ${SESSION_CAP_MAX_MINUTES} minutes.` }); } catch { /* best effort */ }
+}
 /** How long a session may take to start and connect before it is given up. */
 export const startTimeoutMs = () => num(process.env.REASON_REMOTE_BROWSER_START_MS, 30_000);
 const credentials = () => ({ key: String(process.env.BROWSERBASE_API_KEY ?? "").trim(), projectId: String(process.env.BROWSERBASE_PROJECT_ID ?? "").trim() });
@@ -148,6 +156,17 @@ export function sessionRequest({ projectId, contextId, site, timeoutSec }) {
     timeout: timeoutSec,
   };
 }
+
+/**
+ * The longest a hosted sign-in waits for a code the person texts back, with its session open. The
+ * session is NOT released while it waits: the code has to go into the same page step the site opened
+ * when it sent the code, and a reconnect to the kept Context brings back cookies and storage, not that
+ * step, so whether DoorDash's flow resumes on a fresh page is unproven. So the wait is capped instead,
+ * and the ask says so (src/signinemail.js, src/filler.js). Never longer than the code relay's own wait.
+ */
+export const HOSTED_CODE_WAIT_MS = 5 * 60_000;
+export const hostedCodeWait = (ms) => Math.min(Number(ms) > 0 ? Number(ms) : HOSTED_CODE_WAIT_MS, HOSTED_CODE_WAIT_MS);
+export const CODE_WAIT_WORDS = "I can wait 5 minutes for it.";
 
 // ---------------------------------------------------------------- failures, in plain words
 export const FAILURES = ["key_missing", "key_invalid", "unreachable", "out_of_minutes", "start_timeout", "busy", "consent_needed", "refused", "challenge", "session_ended"];
@@ -385,6 +404,23 @@ export async function deleteContextsFor(conversationId, { site = null } = {}) {
   }
   return { deleted, failed };
 }
+/**
+ * The once-a-day retry of deletes Browserbase did not confirm, hung on the ops pass that sends the
+ * daily digest (src/ops.js), with no timer of its own: from the digest hour on, once per day (kept in
+ * ops_state), just before the digest goes, so a delete still failing is in that same digest. Nothing
+ * waiting: no request.
+ */
+export async function dailyRetry({ now = clock.now() } = {}) {
+  if (opsdigest.localHourOf(now) < opsdigest.DIGEST_HOUR) return 0;
+  const day = opsdigest.localDayOf(now);
+  if (db.opsGet("remote_browser:retry_day") === day) return 0;
+  db.opsSet("remote_browser:retry_day", day);
+  const left = db.db.prepare("SELECT COUNT(*) AS n FROM remote_browser_orphans").get().n;
+  if (!left) return 0;
+  const done = await retryOrphans().catch(() => 0);
+  if (done < left) opsLine("delete_failed", "a kept sign-in");
+  return done;
+}
 /** Contexts whose delete failed after their owner's data went: tried again (on the next hosted session). */
 export async function retryOrphans() {
   const rows = db.db.prepare("SELECT context_id FROM remote_browser_orphans").all();
@@ -529,6 +565,7 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
   const { projectId } = credentials();
   { const code = gateCode(c, s); if (code) throw fail(code); }
   const left = monthBudgetMinutes() * 60 - monthSeconds();
+  sayCapClamped();
   const timeoutSec = Math.max(60, Math.min(sessionCapMinutes() * 60, left));
   // The cap is held against the month now, before any await: see charge().
   const held = { month: monthOf(clock.now()), seconds: timeoutSec };

@@ -986,7 +986,9 @@ export async function signIn(conversationId, site, {
       void (async () => {
         let end = "code_not_found";
         try {
-          const code = await awaitReply(c, entry, ...(waitMs != null ? [{ waitMs }] : []));
+          // The hosted browser holds its session while it waits: 5 minutes at most (src/remotebrowser.js).
+          const wait = via === "remote" ? remote.hostedCodeWait(waitMs) : waitMs;
+          const code = await awaitReply(c, entry, ...(wait != null ? [{ waitMs: wait }] : []));
           // Forgotten while the code was on its way (review 2026-11-13): the login is gone, so the code
           // is not typed and the sign-in is not finished after the person asked to forget it.
           if (!peekForSignin(c, host).some(r => r.id === row.id)) end = null;
@@ -1002,7 +1004,8 @@ export async function signIn(conversationId, site, {
         try { note(c, `[saved-login sign-in to ${host} ended: ${end}] ${say(end, host).say_exactly}`); } catch { /* best effort */ }
       })();
       recordLoginEvent(c, { site: host, event: "signin", outcome: asked, purpose: why });
-      return say(asked, host, "", { codeInstead });
+      const asking = say(asked, host, "", { codeInstead });
+      return via === "remote" ? { ...asking, say_exactly: `${asking.say_exactly} ${remote.CODE_WAIT_WORDS}` } : asking;
     }
 
     finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
@@ -1071,7 +1074,16 @@ export async function signIn(conversationId, site, {
       return say("site_trouble", host, "", { msg: first.diag.msg, retrying: true });
     }
     return await conclude(first);
-  } catch {
+  } catch (e) {
+    // The hosted browser could not be had after the start checks (unreachable, out of minutes, a
+    // session that would not start): its own fixed line, never "not a sign-in page". Nothing was
+    // typed, the login is not rested, and nothing is retried.
+    if (e instanceof remote.RemoteBrowserError) {
+      try { logAttempt({ signin_url: pinned }, { route: again ? "saved_login_again" : "saved_login", outcome: "failed", startedAt, detail: `hosted_${e.code}` }); } catch { /* best effort */ }
+      recordLoginEvent(c, { site: host, event: "signin", outcome: "stopped", purpose: why });
+      unpinSite(c);
+      return { ...e.answer, result: `hosted_${e.code}` };
+    }
     // Never the error's words: a page's or a browser's text does not go back to the model.
     try { finish(c, row, host, pinned, "not_signin_page", { why, again, startedAt, typed, at: now() }); } catch { /* best effort */ }
     return say("not_signin_page", host);
