@@ -649,7 +649,8 @@ const ASKS_PRICE = /\b(?:how much(?!\s+(?:time|longer|later|further|farther|more
 const ASKS_THEIRS = /\b(?:balances?|checking|savings|bank|statements?|owe[ds]?|owing|paid|spent|charged|refunds?|refunded|receipts?|deposits?|deposited|paychecks?|salary|invoices?|billed|payouts?|did (?:i|we) (?:pay|spend)|(?:in|on|from) (?:my|our) (?:account|card))\b|\b(?:my|our)\s+(?:[\w'’-]+\s+){0,3}?(?:accounts?|cards?|bills?|rent|mortgage|subscriptions?|membership|plan|orders?|total|budget|share|cut|tab|tuition|insurance|loan)\b/i;
 // A sentence that only means something about the one before it: "That assumes 16 miles" under a
 // dropped fare reads as if the fare were still there.
-const LEANS_BACK = /^(?:that|this|which|those|these)(?:'s|’s| is| was| would| assumes| includes| covers| comes| works| adds| does| doesn't| isn't)\b|^(?:assuming|based on)\b/i;
+// So does one that only qualifies it: "It assumes…", "The estimate assumes…", "Figure roughly 16 miles…".
+const LEANS_BACK = /^(?:that|this|which|those|these)(?:'s|’s| is| was| would| assumes| includes| covers| comes| works| adds| does| doesn't| isn't)\b|^(?:assuming|based on|figur(?:e|ing)|give or take|before (?:tip|tolls))\b|^it (?:assumes|includes|covers|adds)\b|^(?:the|my|that|this) (?:own |rough |best |quick )?(?:estimate|guess|fare|price|figure|number|math|ballpark)\b/i;
 /**
  * Is sentence i (of `all`, every sentence in order) Reason's own estimate, labelled as one: the label
  * and what it assumes in it or the sentence after, and in the sentence itself no claim that it is
