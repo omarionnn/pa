@@ -185,6 +185,28 @@ test("a follow-up never chains into another, even when its own slice is cut shor
   assert.equal(db.getResearch(OWNER, first.research_id).state, "done", "the run closes; no more digging on it");
 });
 
+// Review 2026-11-15: the owner and anybody invited have no daily count, so a NEW run started on a
+// follow-up's own wake must not schedule a follow-up of its own (that would be a chain with no end).
+test("a follow-up's wake that starts a NEW run schedules nothing more, for the owner and an invited person too", async () => {
+  const INV = "dm:research-room-chain-invited";
+  db.upsertAccount({ conversationId: INV, channel: "test", address: "+12025550109", name: "Ama", isOperator: false });
+  db.db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(OWNER, INV);
+  const p = fakeProvider({ answers: { "*": hits("k", 2) } });
+  for (const who of [OWNER, INV]) {
+    const first = await call(who, { question: `${who} chain?`, kind: "fact", queries: ["k1", "k2", "k3"], new_subject: true }, deps(p, { maxSearches: 1 }));
+    assert.equal(first.follow_up?.scheduled, true, who);
+    const taskId = first.follow_up.task_id;
+    // On that task's wake the model asks something new instead of carrying the run on.
+    const fresh = await call(who, { question: `${who} something else?`, kind: "fact", queries: ["z1", "z2", "z3"], new_subject: true }, { ...deps(p, { maxSearches: 1 }), taskId });
+    assert.equal(fresh.ok, true);
+    assert.equal(fresh.follow_up, undefined, `${who}: no second follow-up from the follow-up's own turn`);
+    assert.equal(tasksIn(who).filter(t => /^research, the rest/.test(t.title)).length, 1, `${who}: still one follow-up task`);
+    // An ordinary turn later is not a follow-up's: a new question there may get its own.
+    const later = await call(who, { question: `${who} later?`, kind: "fact", queries: ["y1", "y2", "y3"], new_subject: true }, deps(p, { maxSearches: 1 }));
+    assert.equal(later.follow_up?.scheduled, true, `${who}: an ordinary turn is unaffected`);
+  }
+});
+
 test("calling it enough cancels the follow-up: nothing is owed", async () => {
   const p = fakeProvider({ answers: { "*": hits("e", 2) } });
   const first = await call(OWNER, { question: "enough?", kind: "fact", queries: ["e1", "e2", "e3"] }, deps(p, { maxSearches: 1 }));

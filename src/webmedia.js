@@ -113,7 +113,7 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
     if (f.changed) name = (name.replace(/\.[A-Za-z0-9]{2,5}$/, "") || "photo") + ".jpg";
   }
   // No per-person total for the owner or anybody free for good (src/plan.js freeForGood).
-  const m = uploads.store({ conversationId: conv, bytes: body, name: voice ? `voice-note` : name, voice, extra: voice && seconds ? { seconds } : {}, quota: !plan.freeForGood(conv) });
+  const m = uploads.store({ conversationId: conv, bytes: body, name: voice ? `voice-note` : name, voice, extra: voice && seconds ? { seconds } : {}, quota: !plan.freeForGood(conv), inbound: true });
   if (m.error) {
     log({ web_upload_refused: m.error, bytes: bytes.length });
     return json(m.error === "too_big" ? 413 : m.error === "unsupported" ? 415 : m.error === "disk_full" ? 507 : 400, { ok: false, error: m.error, ...(m.kind ? { kind: m.kind } : {}), ...(m.say ? { say: m.say } : {}) });

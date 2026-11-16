@@ -8900,6 +8900,9 @@ function researchFollowUp(c, out, ctx) {
   if (!out?.ok || !out.more || !out.queries_left?.length) return {};
   const run = db.getResearch(c, out.research_id);
   if (!run || run.state !== "open" || run.task_id || run.continue_task_id) return {};
+  // A follow-up's own wake never schedules another, even for a NEW run it starts there: with no daily
+  // count for some people, this is what keeps one follow-up from chaining into the next (review 2026-11-15).
+  if (ctx?.taskId && db.isResearchFollowUpTask(c, ctx.taskId)) return {};
   const day = trust.spendDay();
   // No daily count for the owner or anybody free for good (came in by invite), owner 2026-11-15: "lift
   // the research limits". Each run still gets at most one follow-up (continue_task_id, below).

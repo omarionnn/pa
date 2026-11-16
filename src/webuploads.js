@@ -107,7 +107,7 @@ export const filePath = (m) => join(dir(), `${m.id}${m.ext}`);
  * Keep one file for one conversation. `extra` carries what is known about it already (a PDF's page
  * count, a voice note's length). Returns the record, or `{ error }`.
  */
-export function store({ conversationId, bytes, name = "", voice = false, extra = {}, quota = true }) {
+export function store({ conversationId, bytes, name = "", voice = false, extra = {}, quota = true, inbound = false }) {
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? []);
   if (!conversationId) return { error: "no_conversation" };
   if (!buf.length) return { error: "empty" };
@@ -121,8 +121,10 @@ export function store({ conversationId, bytes, name = "", voice = false, extra =
   prune();
   // `quota: false` (the caller's plan.freeForGood: the owner, anybody invited) skips the per-person total.
   if (quota && keptBytes(conversationId) + buf.length > QUOTA_BYTES) return { error: "too_big", kind: what.kind, limit: QUOTA_BYTES };
-  // Everyone, whoever they are: never fill the disk the whole service runs on.
-  const room = diskRoom(buf.length);
+  // Everyone, whoever they are: a file a PERSON sends (`inbound`, src/webmedia.js) never fills the disk the
+  // whole service runs on. What Reason makes or sends itself (a card, a table, a picture it sends) is not
+  // refused here: below the floor that would break replies, not slow uploads (review 2026-11-15).
+  const room = inbound ? diskRoom(buf.length) : { ok: true };
   if (!room.ok) {
     try { digest.hold({ key: "uploads:disk_floor", text: DISK_FLOOR_OWNER_LINE(room) }); } catch { /* the refusal stands either way */ }
     return { error: "disk_full", say: DISK_FULL_WORDS };

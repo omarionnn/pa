@@ -6920,6 +6920,12 @@ export function researchForFollowUp(taskId) {
 }
 
 /** How many background follow-ups this person has been given on this install day. */
+/** Is `taskId` some research run's follow-up task (src/tools.js researchFollowUp)? */
+export function isResearchFollowUpTask(conversationId, taskId) {
+  if (!taskId) return false;
+  return !!db.prepare("SELECT 1 FROM research WHERE conversation_id = ? AND continue_task_id = ?").get(conversationId, taskId);
+}
+
 export function researchContinuationsOn(conversationId, day) {
   return db.prepare("SELECT COUNT(*) n FROM research WHERE conversation_id = ? AND continue_day = ?").get(conversationId, day)?.n ?? 0;
 }

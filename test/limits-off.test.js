@@ -253,19 +253,21 @@ test("uploads: the disk floor is for everyone, the owner too, and lifts by itsel
     assert.equal(uploads.diskFloorBytes(), 5 * GB, "5 GB by default");
     uploads.diskStats.statfs = () => ({ blocks: 72 * GB / 4096, bsize: 4096, bavail: 4.5 * GB / 4096 });
     for (const c of [OWNER, INVITED, FREE, PAID]) {
-      const r = uploads.store({ conversationId: c, bytes: PNG, name: "a.png", quota: false });
+      const r = uploads.store({ conversationId: c, bytes: PNG, name: "a.png", quota: false, inbound: true });
       assert.equal(r.error, "disk_full", c);
       assert.equal(r.say, uploads.DISK_FULL_WORDS);
     }
     process.env.REASON_UPLOAD_DISK_FLOOR_GB = "4";
-    assert.ok(!uploads.store({ conversationId: INVITED, bytes: PNG, name: "b.png", quota: false }).error, "a lower floor lets it through");
+    assert.ok(!uploads.store({ conversationId: INVITED, bytes: PNG, name: "b.png", quota: false, inbound: true }).error, "a lower floor lets it through");
     process.env.REASON_UPLOAD_DISK_FLOOR_GB = "0";
     assert.equal(uploads.diskFloorBytes(), 0);
     delete process.env.REASON_UPLOAD_DISK_FLOOR_GB;
     uploads.diskStats.statfs = () => { throw new Error("no statfs here"); };
-    assert.ok(!uploads.store({ conversationId: INVITED, bytes: PNG, name: "c.png", quota: false }).error, "a disk that can't be read is not a reason to refuse");
+    assert.ok(!uploads.store({ conversationId: INVITED, bytes: PNG, name: "c.png", quota: false, inbound: true }).error, "a disk that can't be read is not a reason to refuse");
+    uploads.diskStats.statfs = () => ({ blocks: 72 * GB / 4096, bsize: 4096, bavail: 4.5 * GB / 4096 });
+    assert.equal(uploads.store({ conversationId: INVITED, bytes: PNG, name: "c2.png", quota: false, inbound: true }).error, "disk_full", "the next read works again: the guard was not switched off by the failed one");
     uploads.diskStats.statfs = roomyDisk;
-    assert.ok(!uploads.store({ conversationId: FREE, bytes: PNG, name: "d.png" }).error, "room again");
+    assert.ok(!uploads.store({ conversationId: FREE, bytes: PNG, name: "d.png", inbound: true }).error, "room again");
   } finally { uploads.diskStats.statfs = was; delete process.env.REASON_UPLOAD_DISK_FLOOR_GB; uploads.forget(null); }
 });
 
@@ -280,3 +282,23 @@ test("pictures Reason keeps to send ride the same rule: no 300 MB for the invite
   } finally { uploads.diskStats.statfs = was; uploads.forget(null); }
 
 });
+
+// Review 2026-11-15: below the floor only a file a PERSON sends is refused. What Reason makes or sends
+// itself still saves, or a full disk would quietly break replies.
+test("review: below the disk floor a person's upload is refused, while Reason's own card, table and picture still save", async () => {
+  const was = uploads.diskStats.statfs;
+  uploads.diskStats.statfs = () => ({ blocks: 72 * GB / 4096, bsize: 4096, bavail: 4.5 * GB / 4096 });
+  try {
+    for (const c of [OWNER, INVITED, FREE, PAID]) {
+      assert.equal(uploads.store({ conversationId: c, bytes: PNG, name: "theirs.png", inbound: true }).error, "disk_full", c);
+      for (const pub of ["card", "table", "picture"]) {
+        const m = uploads.store({ conversationId: c, bytes: PNG, name: `reason-${pub}.png`, extra: { public: pub } });
+        assert.ok(m.id && !m.error, `${c}: Reason's ${pub} still saves`);
+      }
+      assert.equal((await pictureout.rehost({ url: CDN, conversationId: c, fetchImpl: fetchWith(), capped: !plan.freeForGood(c) })).ok, true, `${c}: a picture Reason sends`);
+    }
+    assert.doesNotMatch(uploads.DISK_FULL_WORDS, /["“”`]|\btype\b|\btext (?:me|back)\b|\breply\b/i, "nothing for them to type");
+  } finally { uploads.diskStats.statfs = was; uploads.forget(null); }
+});
+
+// The web upload door (src/webmedia.js, inbound: true) refusing with 507 is test/web-compose.test.js.
