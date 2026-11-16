@@ -1,8 +1,8 @@
 // Classic feel for everyone (REASON_CALL_FEEL=classic with REASON_CALL_CARTESIA=on): every account's own call
 // gets the same call-112 rule words, and every personal slot (name, greeting, keyterms, brief, earlier-call
 // notes, texts since, their time, the passphrase line) is the caller's own or empty. Three made-up accounts:
-// the operator (A) and two invited ones (B in Los Angeles, C in London). Free-tier people stay on GPT-Live,
-// where their 5-minute limit and wrap-up cue live. A Cartesia call has the platform ceiling. No network.
+// the operator (A) and two invited ones (B in Los Angeles, C in London). Free-tier people are on Cartesia too
+// (no 5-minute cut since 2026-11-15). A Cartesia call has the platform ceiling. No network.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,7 +16,7 @@ Object.assign(process.env, {
   REASON_PUBLIC_URL: "https://reason.example.test", REASON_UNDO_SECONDS: "0", REASON_TZ_ASK: "on",
   REASON_CALL_IDENTITY: "on", REASON_CALL_CARRYOVER: "on", REASON_CALL_FEEL: "classic", REASON_CALL_CARTESIA: "on", REASON_CALL_TRUST: "owner",
 });
-for (const k of ["CARTESIA_API_KEY", "REASON_CALL_MANNER", "REASON_CARTESIA_EMOTION_TAGS", "REASON_CARTESIA_VARIABLE_MAX", "REASON_FREE_TIER", "REASON_PAYWALL"]) delete process.env[k];
+for (const k of ["CARTESIA_API_KEY", "REASON_CALL_MANNER", "REASON_CARTESIA_EMOTION_TAGS", "REASON_CARTESIA_VARIABLE_MAX", "REASON_FREE_TIER", "REASON_PAYWALL", "REASON_FREE_CALL_MINUTES"]) delete process.env[k];
 
 const cartesia = await import("../src/calls/cartesia.js");
 const classic = await import("../src/calls/callclassic.js");
@@ -132,14 +132,16 @@ test("classic for everyone: \"now\" is the caller's own time; the passphrase lin
   }
 });
 
-test("free tier: someone on the monthly free tier stays on the previous voice (its 5 minutes and wrap-up cue); paying, free for good and the operator are on Cartesia", () => {
+test("free tier: someone on the monthly free tier is on Cartesia like everyone (no 5-minute cut, owner 2026-11-15); paying, free for good and the operator are on Cartesia", () => {
   Object.assign(process.env, { REASON_PAYWALL: "on", REASON_FREE_TIER: "monthly" });
   // B came in on their own after the paywall went on, with no plan row: the monthly free tier. C is free
   // for good. A is the operator.
   db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(plan.shipTs() + 1000, B);
-  assert.equal(plan.callLimitSeconds(B), plan.FREE_CALL_SECONDS);
+  assert.equal(plan.onFreeTier(B), true, "B is on the monthly free tier");
+  assert.equal(plan.FREE_CALL_SECONDS, null, "no cut is set");
+  assert.equal(plan.callLimitSeconds(B), null);
   db.db.prepare("INSERT INTO plan (conversation_id, status, first_seen_at, updated_at) VALUES (?, 'free', ?, ?)").run(C, T0 - 86_400_000, T0);
-  assert.equal(trial.cartesiaTrialFor(ownIn(B)), false, "free tier: previous voice");
+  assert.equal(trial.cartesiaTrialFor(ownIn(B)), true, "free tier: Cartesia (the Gemma voice)");
   assert.equal(trial.cartesiaTrialFor(ownIn(C)), true, "free for good: Cartesia");
   assert.equal(trial.cartesiaTrialFor(ownIn(A)), true, "operator: Cartesia");
   db.db.prepare("INSERT INTO plan (conversation_id, status, first_seen_at, updated_at) VALUES (?, 'paid', ?, ?)").run(B, T0 - 86_400_000, T0);

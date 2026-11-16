@@ -1,7 +1,7 @@
 # GPT-Live calls — the call provider; Cartesia voices own calls on top
 
 **Now (2026-11-14):** with `REASON_CALL_CARTESIA=on` (live) every account's own call is voiced by
-Cartesia; GPT-Live carries own calls of monthly free-tier callers (5-minute limit + wrap-up cue), every
+Cartesia; GPT-Live carries own calls of monthly free-tier callers only when `REASON_FREE_CALL_MINUTES` sets a cut (unset live since 2026-11-15), every
 call to a business or another person, and any Cartesia call that falls back. See
 [cartesia-calls.md](cartesia-calls.md) and [call-trust.md](call-trust.md). Live switches (switches.txt):
 `REASON_CALL_PROVIDER=gptlive`, `REASON_CALL_VOICE=gptlive`, `REASON_CALL_IDENTITY=on`,

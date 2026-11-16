@@ -32,10 +32,11 @@
 // trial above for everybody it reaches (unset keeps the old trial, so a deploy that forgets the line
 // changes nothing):
 //   - People who came in on their own get, every month: 20 CONVERSATIONS (a conversation is the session
-//     above — a new one after 30 quiet minutes) and 2 PHONE CALLS of up to 5 minutes each. The month runs
+//     above — a new one after 30 quiet minutes) and 2 PHONE CALLS, not cut short (owner, 2026-11-15:
+//     the free tier's 5-minute cut is off; REASON_FREE_CALL_MINUTES brings one back). The month runs
 //     from the day they first texted (a monthly anniversary), and both counts start again at its end.
-//   - Soft: the 20th conversation runs to its natural end; the 21st's first text is where it stops. A
-//     call's 5 minutes are a wrap-up cue, then the line closes a minute later.
+//   - Soft: the 20th conversation runs to its natural end; the 21st's first text is where it stops. With
+//     REASON_FREE_CALL_MINUTES set, a call's minutes end in a wrap-up cue, then the line closes.
 //   - Over the 20: no model turn at all. Code sends ONE friendly line and the link (overTextReply), once a
 //     conversation; anything else they text in that conversation is left. Reason starts nothing for them
 //     (blocked(): no check-ins, their timers wait) until they pay or the month turns.
@@ -66,9 +67,16 @@ export const PRICE_LINE = `${PRICE} a month`;
 /** The monthly free tier's allowance (REASON_FREE_TIER=monthly). */
 export const FREE_CONVERSATIONS = Number(process.env.REASON_FREE_CONVERSATIONS || 20);
 export const FREE_CALLS = Number(process.env.REASON_FREE_CALLS || 2);
-export const FREE_CALL_SECONDS = Math.round(Number(process.env.REASON_FREE_CALL_MINUTES || 5) * 60);
-/** After the wrap-up cue at FREE_CALL_SECONDS, how long the call has to say goodbye before the line closes. */
-// The goodbye comes 30 s before the 5:00 cut, so a free call never runs past its 5 minutes (review 2026-11-10).
+// How long a free-tier call may run, or null for no cut (owner, 2026-11-15: the free-tier caller gets the
+// Gemma voice "without their five-minute cut"). Unset or 0: no cut, and their calls are on Cartesia like
+// everyone's. A number of minutes brings the cut back, and with it GPT-Live for those calls, the only
+// voice with the wrap-up cue (src/calls/calltrial.js). The 2 calls a month count either way.
+const freeCallMinutes = Number(process.env.REASON_FREE_CALL_MINUTES || 0);
+export const FREE_CALL_SECONDS = freeCallMinutes > 0 ? Math.round(freeCallMinutes * 60) : null;
+/** "2 calls", or "2 calls (up to 5 minutes each)" when a cut is set: how the free tier's calls are said. */
+export const freeCallsWords = () => `${FREE_CALLS} calls${FREE_CALL_SECONDS ? ` (up to ${Math.round(FREE_CALL_SECONDS / 60)} minutes each)` : ""}`;
+/** After the wrap-up cue at FREE_CALL_SECONDS (when set), how long the call has to say goodbye before the line closes. */
+// The goodbye comes 30 s before the cut, so a free call never runs past its minutes (review 2026-11-10).
 export const FREE_CALL_GRACE_SECONDS = 30;
 /** Is the monthly free tier the rule (REASON_FREE_TIER=monthly)? Read at call time. */
 export const monthly = () => String(process.env.REASON_FREE_TIER ?? "").trim().toLowerCase() === "monthly";
@@ -242,6 +250,20 @@ export function grandfathered(conversationId, seen = new Set()) {
     if (first && first < ship) return true;
   }
   return false;
+}
+
+/**
+ * Free for good, whatever the paywall switch says: the operator, anybody `grandfathered` (came in by an
+ * invite from somebody free for good, a test number, here before the flip), or made free by hand
+ * (plan.status = 'free'). The people Reason's own daily guards leave uncapped (src/pictureout.js).
+ */
+export function freeForGood(conversationId) {
+  if (!conversationId) return false;
+  try {
+    if (isOperator(conversationId)) return true;
+    if (grandfathered(conversationId)) return true;
+    return q("SELECT status FROM plan WHERE conversation_id = ?").get(planId(conversationId))?.status === "free";
+  } catch { return false; }
 }
 
 // ---------------------------------------------------------------- the row
@@ -701,8 +723,9 @@ export function noteCall(conversationId, now = clock.now()) {
   return { calls, left: Math.max(0, FREE_CALLS - calls) };
 }
 
-/** How long a call may run, in seconds, before it is wrapped up: FREE_CALL_SECONDS on the free tier, else null. */
+/** How long a call may run, in seconds, before it is wrapped up: FREE_CALL_SECONDS on the free tier when one is set, else null. */
 export function callLimitSeconds(conversationId, now = clock.now()) {
+  if (!FREE_CALL_SECONDS) return null;
   try { return conversationId && onFreeTier(conversationId, now) ? FREE_CALL_SECONDS : null; } catch { return null; }
 }
 
@@ -859,7 +882,7 @@ export function note(conversationId, now = clock.now()) {
     // Over the 20 the turn never runs (overTextReply), so only a reminder or a call of theirs gets here.
     if (st.status === "lapsed") return `PLAN: this month's ${FREE_CONVERSATIONS} free conversations are used up and they have not subscribed (${PRICE_LINE}, unlimited). Anything that acts is refused by the tool itself, which says what to say. Never "unlock" or "upgrade".`;
     const calls = st.calls_left <= 0 ? ` Their ${FREE_CALLS} free calls this month are used: call_place will refuse and tell you what to say.` : "";
-    if (st.left <= 0) return `PLAN: this is their last free conversation this month (free tier: ${FREE_CONVERSATIONS} conversations and ${FREE_CALLS} calls of up to ${Math.round(FREE_CALL_SECONDS / 60)} minutes a month; unlimited is ${PRICE_LINE}). Do not bring it up unless they ask (subscription_show has the facts); never push, never "unlock" or "upgrade".${calls}`;
+    if (st.left <= 0) return `PLAN: this is their last free conversation this month (free tier: ${FREE_CONVERSATIONS} conversations and ${freeCallsWords()} a month; unlimited is ${PRICE_LINE}). Do not bring it up unless they ask (subscription_show has the facts); never push, never "unlock" or "upgrade".${calls}`;
     return calls ? `PLAN:${calls} Do not bring up a plan or price otherwise.` : "";
   }
   if (st.status === "lapsed") {
@@ -1041,7 +1064,7 @@ export function view(conversationId, now = clock.now()) {
   if (st.status === "trial") { out.sessions_left = st.left; if (st.extended) out.extended = true; }
   if (st.monthly) {
     Object.assign(out, {
-      free_tier: `${FREE_CONVERSATIONS} conversations and ${FREE_CALLS} calls (up to ${Math.round(FREE_CALL_SECONDS / 60)} minutes each) a month`,
+      free_tier: `${FREE_CONVERSATIONS} conversations and ${freeCallsWords()} a month`,
       conversations_used: st.sessions_used, conversations_left: st.left, calls_used: st.calls_used, calls_left: st.calls_left,
       resets: when(st.resets_at, conversationId), resets_at: st.resets_at, monthly: true,
     });

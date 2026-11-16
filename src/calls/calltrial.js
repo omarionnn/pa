@@ -13,9 +13,10 @@ import { config } from "../config.js";
  *     "cartesia", set by `call_voice_trial`). As before `on` existed.
  *   - REASON_CALL_CARTESIA=on: every account's own call. There is no per-person choice: nothing stored
  *     is read, and nobody is offered the tool. GPT-Live carries a call only as the automatic fall-back
- *     (not ready in time, refused, failed: ./cartesia.js `fallBack`), and every call of someone on the
- *     monthly free tier (src/plan.js `callLimitSeconds`): its 5-minute limit and wrap-up cue live in
- *     GptLiveCall, and the agent's socket takes nothing mid-call to say "wrap up" with.
+ *     (not ready in time, refused, failed: ./cartesia.js `fallBack`), and every call that has a free-tier
+ *     limit (src/plan.js `callLimitSeconds`): its cut and wrap-up cue live in GptLiveCall, and the agent's
+ *     socket takes nothing mid-call to say "wrap up" with. There is no such limit unless
+ *     REASON_FREE_CALL_MINUTES sets one (owner, 2026-11-15), so the monthly free tier is on Cartesia too.
  *   - off or unset: never.
  * Never, in any mode, a call to a business or another person, a call on someone's behalf, an event
  * call or a stranger (who has no row and never reaches this): Cartesia keeps a recording of every

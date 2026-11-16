@@ -13,7 +13,7 @@
 // What is accepted is decided by the bytes, never the name or the browser's type: a photo the model
 // can read or this machine can convert (src/pictures.js sniff), a real PDF, or a recorded voice note.
 // Anything else is refused at the door. Kept like a text's media link is: 30 days.
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { config, clock } from "./config.js";
@@ -22,6 +22,7 @@ import { sniff, READABLE } from "./pictures.js";
 import { isPdfBytes } from "./pdf.js";
 import { isDocx, isPlainText } from "./docread.js";
 import { readPlain, writeSealed } from "./restfiles.js";
+import * as digest from "./opsdigest.js";
 
 /**
  * The ceilings, by kind: exactly what the failed slip types under it, "PHOTOS, PDFS, DOCS · UP TO
@@ -106,7 +107,7 @@ export const filePath = (m) => join(dir(), `${m.id}${m.ext}`);
  * Keep one file for one conversation. `extra` carries what is known about it already (a PDF's page
  * count, a voice note's length). Returns the record, or `{ error }`.
  */
-export function store({ conversationId, bytes, name = "", voice = false, extra = {} }) {
+export function store({ conversationId, bytes, name = "", voice = false, extra = {}, quota = true, inbound = false }) {
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? []);
   if (!conversationId) return { error: "no_conversation" };
   if (!buf.length) return { error: "empty" };
@@ -118,7 +119,16 @@ export function store({ conversationId, bytes, name = "", voice = false, extra =
   if (buf.length > LIMITS[what.kind]) return { error: "too_big", kind: what.kind, limit: LIMITS[what.kind] };
   mkdirSync(dir(), { recursive: true, mode: 0o700 });
   prune();
-  if (keptBytes(conversationId) + buf.length > QUOTA_BYTES) return { error: "too_big", kind: what.kind, limit: QUOTA_BYTES };
+  // `quota: false` (the caller's plan.freeForGood: the owner, anybody invited) skips the per-person total.
+  if (quota && keptBytes(conversationId) + buf.length > QUOTA_BYTES) return { error: "too_big", kind: what.kind, limit: QUOTA_BYTES };
+  // Everyone, whoever they are: a file a PERSON sends (`inbound`, src/webmedia.js) never fills the disk the
+  // whole service runs on. What Reason makes or sends itself (a card, a table, a picture it sends) is not
+  // refused here: below the floor that would break replies, not slow uploads (review 2026-11-15).
+  const room = inbound ? diskRoom(buf.length) : { ok: true };
+  if (!room.ok) {
+    try { digest.hold({ key: "uploads:disk_floor", text: DISK_FLOOR_OWNER_LINE(room) }); } catch { /* the refusal stands either way */ }
+    return { error: "disk_full", say: DISK_FULL_WORDS };
+  }
   const id = randomBytes(16).toString("base64url");
   const m = { id, conversationId, kind: what.kind, mime: what.mime, ext: what.ext, name: cleanName(name, what.ext), bytes: buf.length, at: clock.now(), ...extra };
   writeSealed(filePath(m), conversationId, buf); // sealed for them with REASON_ENCRYPT_REST2=on
@@ -135,8 +145,42 @@ export function update(id, patch) {
   return next;
 }
 
-/** What one conversation may keep here at once (30 days of it). */
+/**
+ * What one conversation may keep here at once (30 days of it). Not for the owner or anybody free for
+ * good (owner 2026-11-15: "lift the upload limits"); still for the monthly free tier and paying accounts.
+ */
 export const QUOTA_BYTES = 300 * 1024 * 1024;
+
+// ---------- the one system-wide guard: free disk on the data volume
+// With no per-person total for some people, what stops one person filling the disk (and taking the
+// service down for everyone) is this: a new file is refused while the data volume has less free than
+// the floor. Not a limit on anybody: it lifts by itself as space comes back (30-day prune, a bigger disk).
+// The floor: REASON_UPLOAD_DISK_FLOOR_GB, 5 GB by default. Flat rather than a share of the disk: a
+// share is too strict on a big disk and too loose on a small one, and room for the database, logs and
+// backups to keep working is what it protects. The status page's Server row turns amber at 20% free
+// and red at 10% (src/ops.js serverCheck), so the owner normally hears long before this.
+const GB = 1024 ** 3;
+/** Swapped by a test for a disk of its own, as src/ops.js serverStats is. */
+export const diskStats = { statfs: (d) => statfsSync(d) };
+export const DISK_FLOOR_GB_DEFAULT = 5;
+export function diskFloorBytes() {
+  const raw = String(process.env.REASON_UPLOAD_DISK_FLOOR_GB ?? "").trim();
+  const set = Number(raw);
+  return Math.round((raw !== "" && Number.isFinite(set) && set >= 0 ? set : DISK_FLOOR_GB_DEFAULT) * GB);
+}
+/** Is there room for `bytes` more above the floor? An unreadable disk is not a reason to refuse. */
+export function diskRoom(bytes = 0) {
+  let s;
+  try { s = diskStats.statfs(config.dataDir); } catch { return { ok: true, unknown: true }; }
+  const total = Number(s.blocks) * Number(s.bsize), free = Number(s.bavail) * Number(s.bsize);
+  if (!Number.isFinite(free) || !Number.isFinite(total) || total <= 0) return { ok: true, unknown: true };
+  const floor = diskFloorBytes();
+  return { ok: free - bytes >= floor, free, total, floor };
+}
+/** What the person is told: the machine, never them. */
+export const DISK_FULL_WORDS = "I can't take more files right now; that's on my side, not a limit on you.";
+/** The owner's line in the daily digest: numbers only. */
+export const DISK_FLOOR_OWNER_LINE = (r) => `Uploads refused: the data disk has ${(r.free / GB).toFixed(1)} GB free, under the ${(r.floor / GB).toFixed(1)} GB floor (REASON_UPLOAD_DISK_FLOOR_GB). New files are refused for everyone until space is freed.`;
 /** How many of this conversation's uploads were kept since `since` and pass `pred` (src/pictureout.js's day count). */
 export function countSince(conversationId, since, pred = () => true) {
   let n = 0;
