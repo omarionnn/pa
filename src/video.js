@@ -524,6 +524,9 @@ export async function videoUnderstand(rawUrl, {
   model = undefined, modelStatus = undefined, transcriber = undefined,
   maxMinutes = config.videoMaxMinutes,
   timeoutMs = config.videoProbeTimeoutMs,
+  // Video intake (REASON_VIDEO_INTAKE). Only `videoIntake` below passes these; with them unset every
+  // result is what it always was.
+  intake = false, onLongFetch = null,
 } = {}) {
   let url;
   try { url = new URL(String(rawUrl)); } catch { return { ok: false, tier: "none", error: `'${rawUrl}' is not a URL.` }; }
@@ -552,6 +555,17 @@ export async function videoUnderstand(rawUrl, {
   }
 
   const p = await probe(url.href, { run, timeoutMs });
+  if (!p.ok && intake) {
+    // A bot check on this server's address is this address's problem, not the video's: a YouTube link
+    // handed to the video model does not come from here, so that tier is tried next, and said.
+    const ytId = youtubeIdOf(url.href);
+    if (p.cannot === "login" && ytId && eyes.connected && brain) {
+      const got = await modelAccount(url.href, { meta: { extractor_key: "Youtube", id: ytId }, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra });
+      if (got.ok) return { ...modelResult(got, { url: url.href, images: [] }, { eyes, from, to, meta: {}, maxChars, question }), details_failed: p.error };
+    }
+    const say = INTAKE_CANNOT_SAY[p.cannot];
+    if (say) return { ok: false, tier: "none", url: url.href, ...p, say, retry: false, note: INTAKE_NO_RETRY };
+  }
   if (!p.ok) {
     const shut = ["private", "age_gate", "paywall", "login", "gone"].includes(p.cannot);
     return {
@@ -576,43 +590,36 @@ export async function videoUnderstand(rawUrl, {
   };
   if (!base.chapters.length) delete base.chapters;
 
+  if (intake) {
+    const no = intakeRefusal(meta);
+    if (no) return { ok: false, tier: "none", ...base, ...no, retry: false, note: INTAKE_NO_RETRY };
+    if (onLongFetch && Number(meta.duration) > config.videoHeadsUpSeconds) {
+      try { base.heads_up = await onLongFetch({ seconds: Number(meta.duration), title: base.title }); } catch { /* a heads-up that failed is not the video failing */ }
+    }
+  }
+
   const track = pickTrack(meta, lang);
+  const cacheId = intake ? normalizeVideoUrl(url.href).key : null;
 
   // --- tier 2, when it was asked for or when there are no captions to read ---
   let got = null;
   if (watch || !track) {
     got = await modelAccount(url.href, { meta, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra });
     if (got.ok) {
-      const watched = got.tier === "watch";
-      return {
-        ok: true, tier: got.tier,
-        how: (watched
-          ? `WATCHED this video — ${got.model ?? "a video model"} was given the link and looked at it, picture and sound. You may say you watched it. Anything visual you describe has to come from the account below, not from the title or the thumbnail.`
-          : `LISTENED to this video's audio and had it transcribed by ${got.model ?? "a video model"}. Audio only: nothing looked at the picture, so you do not know what was on screen or what anything looked like. Say "listened", never "watched". Machine-heard words can get names and numbers wrong, so do not quote them as exact.`)
-          + (got.cached ? " This came from an account already made for it, so it cost nothing this time." : ""),
-        ...base,
-        captions: null,
-        [watched ? "watched" : "heard"]: {
-          by: got.model ?? eyes.model,
-          cached: !!got.cached,
-          saw: watched ? "the video" : "the audio only",
-          ...(from !== null || to !== null ? { asked_for: `${timecode(from ?? 0)}–${timecode(to ?? (meta.duration ?? 0))}`, not_cached: "A stretch is never cached, so this was a fresh request." } : {}),
-          ...(got.usage ? { usage: got.usage } : {}),
-        },
-        account: trim(got.text, maxChars),
-        ...(got.text.length > maxChars ? { trimmed: { note: `The model's account was longer than ${maxChars} characters and is cut off at the end. Ask again with from and to for the stretch you still need.` } } : {}),
-        model_tier: eyes,
-        ...(question ? { question } : {}),
-      };
+      if (cacheId) cacheHeard(cacheId, got, base, { ranged: from !== null || to !== null });
+      return modelResult(got, base, { eyes, from, to, meta, maxChars, question });
     }
   }
+  return captionsOrNothing();
 
+  async function captionsOrNothing() {
   // --- tier 1, the captions ---
   if (track) {
     const caps = await captions(url.href, { lang: track.lang, auto: track.source !== "creator", run, timeoutMs });
     if (caps.ok) {
       const cues = parseCaptions(caps.text);
       if (cues.length) {
+        if (cacheId) cacheCues(cacheId, cues, base, { tier: "captions", source: track.source });
         const laid = layOutTranscript(cues, { from, to, maxChars });
         const words = SOURCE_WORDS[track.source] ?? SOURCE_WORDS.auto;
         return {
@@ -638,6 +645,15 @@ export async function videoUnderstand(rawUrl, {
         };
       }
     }
+    // Intake: the captions would not come (a bot check on this address, most often) and the model
+    // tier has not been tried. It is the next tier, so it is tried — and named in the result.
+    if (intake && !got && brain) {
+      got = await modelAccount(url.href, { meta, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra });
+      if (got.ok) {
+        if (cacheId) cacheHeard(cacheId, got, base, { ranged: from !== null || to !== null });
+        return { ...modelResult(got, base, { eyes, from, to, meta, maxChars, question }), captions_failed: caps.ok ? "no readable lines" : caps.error };
+      }
+    }
     // Captions are listed but unusable. Say which, and what the model tier said if it was tried.
     return {
       ok: true, tier: "metadata",
@@ -661,4 +677,315 @@ export async function videoUnderstand(rawUrl, {
     note: `There are no captions on this video, so the only way to know what is in it is a model that takes the video itself, and that did not happen: ${why} `
       + "Say that straight: you can tell them the title, the channel, the length and what the description claims, and no more. Do not infer the content from the title.",
   };
+  }
+}
+
+/** A model tier that answered, as the tool reports it. Unchanged from when it was inline. */
+function modelResult(got, base, { eyes, from, to, meta, maxChars, question }) {
+      const watched = got.tier === "watch";
+      return {
+        ok: true, tier: got.tier,
+        how: (watched
+          ? `WATCHED this video — ${got.model ?? "a video model"} was given the link and looked at it, picture and sound. You may say you watched it. Anything visual you describe has to come from the account below, not from the title or the thumbnail.`
+          : `LISTENED to this video's audio and had it transcribed by ${got.model ?? "a video model"}. Audio only: nothing looked at the picture, so you do not know what was on screen or what anything looked like. Say "listened", never "watched". Machine-heard words can get names and numbers wrong, so do not quote them as exact.`)
+          + (got.cached ? " This came from an account already made for it, so it cost nothing this time." : ""),
+        ...base,
+        captions: null,
+        [watched ? "watched" : "heard"]: {
+          by: got.model ?? eyes.model,
+          cached: !!got.cached,
+          saw: watched ? "the video" : "the audio only",
+          ...(from !== null || to !== null ? { asked_for: `${timecode(from ?? 0)}–${timecode(to ?? (meta.duration ?? 0))}`, not_cached: "A stretch is never cached, so this was a fresh request." } : {}),
+          ...(got.usage ? { usage: got.usage } : {}),
+        },
+        account: trim(got.text, maxChars),
+        ...(got.text.length > maxChars ? { trimmed: { note: `The model's account was longer than ${maxChars} characters and is cut off at the end. Ask again with from and to for the stretch you still need.` } } : {}),
+        model_tier: eyes,
+        ...(question ? { question } : {}),
+      };
+}
+
+
+// ---------------------------------------------------------------------------
+// Video intake (REASON_VIDEO_INTAKE = off | owner | on, default off)
+// ---------------------------------------------------------------------------
+//
+// Built on everything above, not beside it: the same probe, the same tiers, the same honesty about
+// which tier answered. What intake adds is a transcript cache keyed by the video (so a second
+// question is free and instant), `find` (search inside a long video instead of reading it all),
+// the lines a PDF of the transcript is made from, a heads-up for a long fetch, a five-minute ceiling,
+// and one plain line for a video that cannot be had (live, over two hours, private, age-gated).
+//
+// Nothing here disguises where a request comes from. A site that bot-checks this server fails that
+// tier honestly; the next tier is tried (a YouTube link goes to the video model, which does not
+// fetch from here); if none works, that is the answer.
+
+/** One plain line per reason a video cannot be had. Said once; nothing is retried. */
+export const INTAKE_CANNOT_SAY = {
+  private: "That video is private, so only the person who posted it can see it.",
+  age_gate: "That video is age-restricted, so it only plays to a signed-in account, and I don't sign in to get around that.",
+  paywall: "That one is for paying channel members only, so I can't get at it.",
+  gone: "That video isn't there any more. It's been taken down or was never public.",
+  region: "That video is blocked from where I'm fetching it, so I can't get at it.",
+  login: "That site wanted me to sign in before showing the video, so I couldn't get what's in it.",
+  live: "That's a live stream, so there's no finished video to get a transcript of yet.",
+  upcoming: "That video hasn't started yet, so there's nothing in it to read.",
+  too_long: null, // carries the length, so it is written where the length is known
+};
+export const INTAKE_NO_RETRY = "Tell them that in one plain line (the `say` line is the meaning; put it in your own words). Do not try again, do not try another way, and do not guess at what is in it.";
+
+/** The 11-character YouTube id in any of its URL forms, or null. */
+export function youtubeIdOf(raw) {
+  let u;
+  try { u = new URL(String(raw)); } catch { return null; }
+  const host = u.hostname.toLowerCase().replace(/^(www|m|music)\./, "");
+  const ok = (id) => (/^[A-Za-z0-9_-]{11}$/.test(id ?? "") ? id : null);
+  if (host === "youtu.be") return ok(u.pathname.split("/")[1]);
+  if (host === "youtube.com" || host === "youtube-nocookie.com") {
+    if (u.pathname === "/watch") return ok(u.searchParams.get("v"));
+    const m = /^\/(shorts|live|embed|v|e)\/([^/?#]+)/.exec(u.pathname);
+    return m ? ok(m[2]) : null;
+  }
+  return null;
+}
+
+/**
+ * The one id a video is cached under, whatever form the link arrived in: youtu.be, /shorts/, m.,
+ * a `t=` timestamp, `si=`/`utm_*` tracking — all the same video, so all the same key.
+ *
+ * @returns {{ key: string, site: string, id: string }}
+ */
+export function normalizeVideoUrl(raw) {
+  const yt = youtubeIdOf(raw);
+  if (yt) return { key: `youtube:${yt}`, site: "youtube", id: yt };
+  let u;
+  try { u = new URL(String(raw)); } catch { return { key: `url:${String(raw).trim()}`, site: "url", id: String(raw).trim() }; }
+  const host = u.hostname.toLowerCase().replace(/^(www|m|mobile|vm|web)\./, "");
+  const path = u.pathname.replace(/\/+$/, "");
+  const pick = (site, re, src = path) => { const m = re.exec(src); return m ? { key: `${site}:${m[1]}`, site, id: m[1] } : null; };
+  const found =
+    (host.endsWith("vimeo.com") && pick("vimeo", /(?:^|\/)(\d{5,})(?:\/|$)/))
+    || (host.endsWith("tiktok.com") && pick("tiktok", /\/video\/(\d+)/))
+    || (host.endsWith("instagram.com") && pick("instagram", /^\/(?:[^/]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/))
+    || ((host === "x.com" || host === "twitter.com" || host.endsWith(".twitter.com")) && pick("twitter", /\/status(?:es)?\/(\d+)/))
+    || (host.endsWith("loom.com") && pick("loom", /\/(?:share|embed)\/([a-f0-9]{16,})/i))
+    || ((host.endsWith("facebook.com") || host === "fb.watch") && (
+      (u.searchParams.get("v") && /^\d+$/.test(u.searchParams.get("v")) ? { key: `facebook:${u.searchParams.get("v")}`, site: "facebook", id: u.searchParams.get("v") } : null)
+      || pick("facebook", /\/(?:videos|reel|watch)\/(?:[^/]+\/)?(\d{6,})/)));
+  if (found) return found;
+  // Anything else: the address without its query, fragment or trailing slash. Not clever, and not
+  // meant to be: two forms of an unknown site's link simply cache twice.
+  return { key: `url:${host}${path}`, site: host, id: `${host}${path}` };
+}
+
+/** Why intake will not fetch this video at all, read off its metadata, or null. */
+export function intakeRefusal(meta, { maxSeconds = config.videoIntakeMaxSeconds } = {}) {
+  const live = String(meta?.live_status ?? "");
+  if (meta?.is_live || live === "is_live") return { cannot: "live", say: INTAKE_CANNOT_SAY.live };
+  if (live === "is_upcoming") return { cannot: "upcoming", say: INTAKE_CANNOT_SAY.upcoming };
+  const avail = String(meta?.availability ?? "");
+  if (avail === "private") return { cannot: "private", say: INTAKE_CANNOT_SAY.private };
+  if (avail === "subscriber_only" || avail === "premium_only") return { cannot: "paywall", say: INTAKE_CANNOT_SAY.paywall };
+  if (avail === "needs_auth" || Number(meta?.age_limit) >= 18) return { cannot: "age_gate", say: INTAKE_CANNOT_SAY.age_gate };
+  const s = Number(meta?.duration) || 0;
+  if (s > maxSeconds) {
+    return { cannot: "too_long", say: `That video is ${timecode(s)} long, and I only take videos up to ${timecode(maxSeconds).replace(/:00:00$/, "")} hours.` };
+  }
+  return null;
+}
+
+/** Cues with an end: each line ends where the next begins (the last one at the video's end). */
+function withEnds(cues, durationS) {
+  return cues.map((c, i) => ({ at: c.at, end: cues[i + 1]?.at ?? (Number(durationS) || c.at), text: c.text }));
+}
+
+function cacheCues(videoId, cues, base, { tier, source }) {
+  try {
+    db.saveVideoTranscript({
+      videoId, url: base.url, title: base.title ?? "", channel: base.channel ?? "",
+      durationS: base.duration_seconds ?? null, tier, source, lines: withEnds(cues, base.duration_seconds),
+    }, { maxChars: config.videoCacheMaxChars });
+  } catch { /* a cache that could not be written costs a re-fetch, nothing else */ }
+}
+
+/**
+ * The audio transcription, as lines. A model that watched the video wrote an ACCOUNT of it, not a
+ * transcript, so that is never cached as one: it already lives in video_accounts.
+ */
+function cacheHeard(videoId, got, base, { ranged }) {
+  if (ranged || got.tier !== "listen") return;
+  const cues = parseAccountLines(got.text);
+  if (cues.length) cacheCues(videoId, cues, base, { tier: "listen", source: got.model ?? "" });
+}
+
+/** "[1:02] words" / "1:02 words" / "(1:02:03) words" lines → cues; untimed lines join the one before. */
+export function parseAccountLines(text) {
+  const out = [];
+  for (const raw of String(text ?? "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = /^[[(]?(\d{1,2}:\d{2}(?::\d{2})?)(?:[.,]\d+)?[\])]?\s*[-–:]?\s*(.+)$/.exec(line);
+    if (m) { out.push({ at: parseTime(m[1]) ?? 0, text: m[2].trim() }); continue; }
+    if (out.length) out.at(-1).text += ` ${line}`;
+    else out.push({ at: 0, text: line });
+  }
+  return out;
+}
+
+const STOP = new Set("a an and are as at be but by do does did for from has have he her his how i if in is it its me my of on or our she so that the their them they this to was we were what when where which who why will with you your about said say says talk talks talking".split(" "));
+const words = (s) => String(s ?? "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").match(/[a-z0-9']+/g) ?? [];
+
+/**
+ * Where in the transcript they say something. Each hit is the matching line with the line either
+ * side of it, and the time it starts at. A phrase that appears as typed ranks first; otherwise every
+ * meaningful word of the query has to be within those three lines. Hits closer than 20 seconds to a
+ * better one are the same moment and are dropped.
+ */
+export function searchCues(cues, query, { max = 12, link = null } = {}) {
+  const phrase = words(query).join(" ");
+  let want = [...new Set(words(query).filter(w => !STOP.has(w)))];
+  if (!want.length) want = [...new Set(words(query))];
+  if (!want.length) return [];
+  const scored = [];
+  cues.forEach((c, i) => {
+    const win = cues.slice(Math.max(0, i - 1), i + 2);
+    const here = words(c.text).join(" ");
+    const around = words(win.map(x => x.text).join(" "));
+    const has = want.filter(w => around.some(a => a === w || (w.length > 3 && a.startsWith(w))));
+    const exact = phrase && ` ${here} `.includes(` ${phrase} `);
+    const inLine = want.filter(w => words(c.text).some(a => a === w || (w.length > 3 && a.startsWith(w)))).length;
+    if (!exact && (has.length < want.length || !inLine)) return;
+    scored.push({ i, score: (exact ? 100 : 0) + has.length * 2 + inLine });
+  });
+  scored.sort((a, b) => b.score - a.score || a.i - b.i);
+  const picked = [];
+  for (const s of scored) {
+    if (picked.length >= max) break;
+    if (picked.some(p => Math.abs(cues[p.i].at - cues[s.i].at) < 20)) continue;
+    picked.push(s);
+  }
+  return picked.sort((a, b) => a.i - b.i).map(({ i }) => {
+    const at = cues[i].at;
+    return {
+      at: timecode(at), seconds: Math.floor(at),
+      text: cues.slice(Math.max(0, i - 1), i + 2).map(x => x.text).join(" "),
+      ...(link ? { link: link(at) } : {}),
+    };
+  });
+}
+
+const HOW_CACHED = {
+  captions: (source) => `read the captions earlier (${SOURCE_WORDS[source] ?? SOURCE_WORDS.auto}) and kept them.${BLIND}`,
+  listen: (by) => `LISTENED to this video's audio earlier and had it transcribed${by ? ` by ${by}` : ""}. Audio only: nothing looked at the picture, so you do not know what was on screen. Say "listened", never "watched". Machine-heard words can get names and numbers wrong, so do not quote them as exact.`,
+};
+
+/** A cached transcript, laid out the way a fresh one is. Nothing was fetched. */
+function fromCache(hit, { from, to, maxChars }) {
+  const laid = layOutTranscript(hit.lines, { from, to, maxChars });
+  return {
+    ok: true, tier: hit.tier,
+    how: (HOW_CACHED[hit.tier] ?? HOW_CACHED.captions)(hit.source) + " It came from the transcript already fetched for this video, so it cost nothing and took no time.",
+    url: hit.url, title: hit.title || undefined, channel: hit.channel || undefined,
+    duration: hit.durationS ? timecode(hit.durationS) : undefined, duration_seconds: hit.durationS ?? undefined,
+    images: [],
+    cached: { fetched: new Date(hit.fetchedAt).toISOString().slice(0, 10), lines: hit.lines.length },
+    asked_for: laid.window ? `${timecode(laid.window.from)}–${timecode(laid.window.to)}` : undefined,
+    covers: laid.covers,
+    transcript: laid.transcript,
+    ...(laid.trimmed ? { trimmed: laid.trimmed } : {}),
+    captions: hit.tier === "captions" ? { source: hit.source, total_lines: hit.lines.length, full_length: hit.lines.length ? `${timecode(hit.lines[0].at)}–${timecode(hit.lines.at(-1).at)}` : null } : null,
+  };
+}
+
+/** How the transcript was got, in the few words Reason says it in. */
+export function howWeGotIt(tier, source = "") {
+  if (tier === "captions") return source === "creator" ? "from the creator's captions" : "from the video's auto-generated captions";
+  if (tier === "listen") return "by listening to the audio";
+  if (tier === "watch") return "by watching it";
+  return "";
+}
+
+/** The cached transcript for a link, or null. What a PDF of the transcript is made from. */
+export function cachedTranscriptFor(rawUrl) {
+  return db.getVideoTranscript(normalizeVideoUrl(rawUrl).key, { maxAgeMs: config.videoCacheDays * 86_400_000 });
+}
+
+/**
+ * Document blocks for a whole transcript as a PDF: each line "m:ss text", in text blocks under the
+ * document limits (src/pages/content.js: 4,000 characters a block, 60 blocks). A transcript that
+ * would not fit stops at a line, and says where, rather than being cut silently.
+ */
+export function transcriptBlocks(lines, { blockChars = 3_900, maxBlocks = 59 } = {}) {
+  const blocks = [];
+  let cur = [], size = 0, stoppedAt = null;
+  for (const l of lines) {
+    const row = `${timecode(l.at)} ${String(l.text).replace(/\s+/g, " ").trim()}`.slice(0, blockChars);
+    if (size + row.length + 1 > blockChars) {
+      blocks.push({ type: "text", text: cur.join("\n") });
+      cur = []; size = 0;
+      if (blocks.length >= maxBlocks) { stoppedAt = l.at; break; }
+    }
+    cur.push(row); size += row.length + 1;
+  }
+  if (stoppedAt === null && cur.length) blocks.push({ type: "text", text: cur.join("\n") });
+  if (stoppedAt !== null) blocks.push({ type: "text", text: `The transcript goes on past ${timecode(stoppedAt)}. This PDF stops there because a document can only hold so much.` });
+  return { blocks, stoppedAt };
+}
+
+/**
+ * The tool's entry point with intake on. A cached transcript answers with no fetch at all; otherwise
+ * the ordinary `videoUnderstand` runs (with intake's refusals, heads-up and caching switched on),
+ * inside a deadline. `find` turns the result into the matching moments rather than the whole text.
+ */
+export async function videoIntake(rawUrl, opts = {}) {
+  const { find = "", deadlineMs = config.videoIntakeDeadlineMs, ...rest } = opts;
+  const from = parseTime(rest.from), to = parseTime(rest.to);
+  const key = normalizeVideoUrl(rawUrl).key;
+  const link = key.startsWith("youtube:") ? (s) => `https://youtu.be/${key.slice(8)}?t=${Math.floor(s)}` : null;
+
+  let out = null;
+  if (!rest.watch) {
+    const hit = db.getVideoTranscript(key, { maxAgeMs: config.videoCacheDays * 86_400_000 });
+    if (hit?.lines?.length && (rest.from == null || from !== null) && (rest.to == null || to !== null)) {
+      out = fromCache(hit, { from, to, maxChars: rest.maxChars ?? config.videoTranscriptChars });
+    }
+  }
+  if (!out) {
+    let timer;
+    const late = new Promise(res => { timer = setTimeout(() => res(null), deadlineMs); });
+    try {
+      out = await Promise.race([videoUnderstand(rawUrl, { ...rest, intake: true }), late]);
+    } finally { clearTimeout(timer); }
+    if (!out) {
+      return {
+        ok: false, tier: "none", url: String(rawUrl), timed_out: true, retry: false,
+        say: `I couldn't get what's in that video within ${Math.round(deadlineMs / 60_000)} minutes, so I stopped.`,
+        note: INTAKE_NO_RETRY,
+      };
+    }
+  }
+  if (!out.ok) return out;
+
+  out.say_how = `Say in a few words how you know what is in it: ${howWeGotIt(out.tier, out.captions?.source) || "you only have what the page says about itself"}.`;
+
+  if (find && String(find).trim()) {
+    const hit = db.getVideoTranscript(key);
+    const cues = hit?.lines?.length ? hit.lines : parseAccountLines(out.transcript ?? out.account ?? "").map(c => ({ ...c, text: c.text }));
+    const found = cues.length ? searchCues(cues, find, { link }) : [];
+    const { transcript, account, trimmed, ...lean } = out;
+    return {
+      ...lean,
+      find: String(find),
+      searched: cues.length ? `the whole transcript, ${timecode(cues[0].at)}–${timecode(cues.at(-1).at)}` : "nothing: there is no transcript of this video to search",
+      found,
+      note: found.length
+        ? "These are the moments that match. Quote with the time against each (m:ss, or h:mm:ss), and give the link when there is one. Say only what these lines say."
+        : "Nothing in the transcript matches. Say that plainly; do not guess where in the video it might be.",
+    };
+  }
+  if (!rest.question && !rest.from && !rest.to) {
+    out.if_just_a_link = "If their message was only this link, with nothing asked: answer in 3 to 5 short lines (what it is, who it's from, the main points), "
+      + "say how you got it in a few words, then one short offer in plain words of what else you can do with it: the full transcript as a PDF, the key quotes, or finding where they talk about something. Never give them words to type.";
+  }
+  return out;
 }
