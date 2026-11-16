@@ -48,7 +48,7 @@ if (which === "cartesia") {
   db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(plan.shipTs() + 1000, C);
   db.db.prepare("INSERT INTO plan (conversation_id, status, first_seen_at, updated_at) VALUES (?, 'free', ?, ?)").run(C, Date.now() - 86_400_000, Date.now());
   ok(plan.callLimitSeconds(B) === plan.FREE_CALL_SECONDS, `monthly free tier: B's call limit ${plan.callLimitSeconds(B)} s`);
-  ok(trial.cartesiaTrialFor(own(B)) === false, "free tier caller → stays on GPT-Live");
+  ok(trial.cartesiaTrialFor(own(B)) === !plan.FREE_CALL_SECONDS, plan.FREE_CALL_SECONDS ? "free tier caller with a cut → GPT-Live" : "free tier caller, no cut → Cartesia");
   ok(trial.cartesiaTrialFor(own(C)) === true, "free-for-good caller → Cartesia");
   ok(trial.cartesiaTrialFor(own(A)) === true, "operator under the free tier → Cartesia");
   Object.assign(config, { callCartesia: "off" });

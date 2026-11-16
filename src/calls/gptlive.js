@@ -1998,8 +1998,9 @@ export class GptLiveCall {
     // The platform ceiling (`callPlatformCapSeconds`), so a call
     // never outlives the lost-call sweep's window and is written off while it is still going.
     this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
-    // The monthly free tier's 5 minutes a call (src/plan.js): a wrap-up cue 30 s before, the line closed
-    // at 5:00. Paying, free for good, a stranger on the line, or an errand call to a business: no limit.
+    // The monthly free tier's minutes a call, only when REASON_FREE_CALL_MINUTES sets one (src/plan.js; unset,
+    // the default since 2026-11-15: none): a wrap-up cue 30 s before, the line closed at the cut. Paying,
+    // free for good, a stranger on the line, or an errand call to a business: no limit.
     const freeS = (this.persona || this.line) ? null : plan.callLimitSeconds(this.call.conversation_id);
     if (freeS) {
       this.freeWrapTimer = this.timers.setTimeout(() => {

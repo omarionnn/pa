@@ -349,7 +349,7 @@ export async function runTableTool(name, input, ctx) {
     const drawn = await renderTable(table, { theme, shoot: ctx.shoot ?? shootWithChromium, log });
     pictures = drawn.map((d, i) => {
       const ext = d.mime === "image/jpeg" ? "jpg" : "png";
-      const m = (ctx.store ?? uploads.store)({ conversationId: c, bytes: d.png, name: `reason-table-${i + 1}.${ext}`, extra: { public: "table", table: true } });
+      const m = (ctx.store ?? uploads.store)({ conversationId: c, bytes: d.png, name: `reason-table-${i + 1}.${ext}`, extra: { public: "table", table: true }, quota: false }); // Reason's own: never counted against their total
       if (!m || m.error) throw new Error(`keeping the picture failed (${m?.error ?? "no record"})`);
       return { id: m.id, url: uploads.uploadUrl(m.id, m.name), file: uploads.filePath(m), mime: d.mime, filename: m.name, bytes: d.bytes, ms: d.ms };
     });
