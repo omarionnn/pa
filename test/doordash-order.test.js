@@ -642,3 +642,22 @@ test("the handoff says where the cart is on the web, and never that it is ordere
   assert.match(out.say_exactly, /it's on the web at http:\/\/www\.doordash\.com:\d+\/consumer\/checkout\/\./);
   assert.doesNotMatch(out.say_exactly, /\b(ordered|on its way|on the way|placed it)\b/i);
 });
+
+test("end to end, handoff: consent asked first, then the address, the cart, the exact total and breakdown; Place order never pressed", skip, async () => {
+  set(ON());
+  const d = driver(OWNER, "get me pad thai medium and spring rolls from thai palace to 3247 Bruner Ave");
+  const first = await d.call("doordash_order", { action: "start", restaurant: "Thai Palace" });
+  assert.equal(first.hosted_browser, "consent_needed", JSON.stringify(first).slice(0, 200));
+  assert.match(first.say_exactly, /hosted browser from another company \(Browserbase\)/);
+  assert.equal(sessionsMade(), 0, "nothing opened before their yes");
+  d.say("yes go ahead");
+  assert.equal((await d.call("hosted_browser_ok", { site: "doordash.com", their_words: "yes go ahead" })).ok, true);
+  await buildCart(d);
+  const out = await d.call("doordash_order", { action: "checkout", items: ITEMS });
+  assert.equal(out.handed_off, true, JSON.stringify(out).slice(0, 300));
+  assert.equal(out.total, money(totals().total));
+  assert.match(out.say_exactly, /all in \(Subtotal \$21\.90, Delivery Fee \$2\.99, Service Fee \$3\.29, Estimated Tax \$1\.94, Dasher Tip \$3\.00, Total/);
+  assert.match(out.say_exactly, /to 3247 Bruner Ave/);
+  assert.equal(S.placeAttempts, 0, "the fixture's own log: Place order was never pressed");
+  assert.equal(S.placed, 0);
+});
