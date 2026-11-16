@@ -39,6 +39,7 @@ const filler = await import("../src/filler.js");
 const fed = await import("../src/federated.js");
 const use = await import("../src/loginuse.js");
 const policy = await import("../src/sitepolicy.js");
+const refusing = await import("../src/refusing.js");
 const browser = await import("../src/browser.js");
 let chromium;
 try { ({ chromium } = await import("playwright")); } catch { /* no browser */ }
@@ -306,11 +307,53 @@ test("\"This browser or app may not be secure\": blocked, said exactly, the Goog
   use._resetAsks();
   const out = await signIn("insecure.test");
   assert.equal(out.result, "blocked", out.say_exactly);
-  assert.match(out.say_exactly, /This browser or app may not be secure/);
+  // Said as Google's refusal of the browser, once, with what still works for the site (2026-11-15).
+  assert.equal(out.say_exactly, fed.turnedAway("insecure.test", "https://insecure.test/login"));
+  assert.match(out.say_exactly, /^Google turned my browser away, so I can't use Continue with Google for you right now\. I stopped and won't retry\./);
+  assert.equal(out.google_refused, true);
+  assert.deepEqual(out.instead, ["emailed_code", "password", "their_own_signin"]);
   assert.equal(sl.listLogins(ME).find((r) => r.id === id).state, "refused");
+  // Recorded against google.com through the refusal record: one strike, not yet a mark.
+  assert.equal(refusing.strikeOn("google.com")?.evidence, "browser_refused");
+  assert.equal(refusing.refusingSite("google.com"), null);
   sl.setSigninRoute(ME, "happy.test", "google");
   const next = await filler.signIn(ME, "happy.test", { trigger: said("happy.test"), launch, locate });
   assert.equal(next.result, "paused");
+  refusing._resetRefusals();
+});
+
+test("Google turned away twice 10+ minutes apart: marked for 7 days, said up front with nothing opened; an account answer clears a strike", skip, async () => {
+  refusing._resetRefusals();
+  const t0 = Date.now();
+  assert.equal(refusing.markRefusing("google.com", "browser_refused", t0 - 11 * 60_000), null, "the first is a strike");
+  await saveGoogle();
+  use._resetAsks();
+  const out = await signIn("insecure.test");
+  assert.equal(out.result, "blocked", out.say_exactly);
+  const mark = refusing.refusingSite("google.com");
+  assert.equal(mark?.evidence, "browser_refused", "the second, 11 minutes on, marks Google");
+  assert.equal(mark.label, "Google");
+  // A fresh Google login, another site: nothing is opened, no Face ID is asked, the same plain line.
+  await saveGoogle();
+  use._resetAsks();
+  const before = typedAt.length;
+  sl.setSigninRoute(ME, "happy.test", "google");
+  const up = await filler.signIn(ME, "happy.test", { trigger: said("happy.test"), launch, locate, purpose: "check my order" });
+  assert.equal(up.result, "google_refused", up.say_exactly);
+  assert.equal(up.say_exactly, fed.turnedAway("happy.test"));
+  assert.equal(up.google_refused, true);
+  assert.equal(typedAt.length, before, "nothing typed anywhere");
+  // A strike alone (no mark) and then Google answering about the account: the record clears.
+  refusing._resetRefusals();
+  refusing.markRefusing("google.com", "browser_refused");
+  assert.ok(refusing.strikeOn("google.com"));
+  await saveGoogle();
+  use._resetAsks();
+  const ok = await signIn("happy.test");
+  assert.equal(ok.result, "signed_in", ok.say_exactly);
+  assert.equal(refusing.strikeOn("google.com"), null);
+  assert.equal(refusing.refusingSite("google.com"), null);
+  refusing._resetRefusals();
 });
 
 test("after sign-in the site sends the tab to mail.google.com: refused, the job ends, the browser is signed out of Google", skip, async () => {
