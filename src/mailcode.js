@@ -18,6 +18,17 @@ export function codeReadMode() {
   return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
 }
 /**
+ * REASON_SIGNIN_CODE_LINKS = off | on (default off): may the automatic reader (src/filler.js) open a
+ * sign-in LINK from the site's mail? Off: it only ever uses a code; a mail that carries only a link is
+ * "no usable code" and they are asked. A link can approve whichever browser asked for it, including
+ * somebody else's at the same moment (review 2026-11-15), so it waits for the owner's decision.
+ * The older signin_email route keeps what it does on main.
+ */
+export function codeLinksOn() {
+  return ["1", "true", "on", "yes"].includes(String(process.env.REASON_SIGNIN_CODE_LINKS ?? "").trim().toLowerCase());
+}
+
+/**
  * Is reading the code on for this person? The switch, and the saved-login switch already covering
  * them: it never reaches anybody saved logins and sign-in jobs do not.
  */

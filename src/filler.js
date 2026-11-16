@@ -27,7 +27,7 @@ import { refusingSite, refusalAnswer, markRefusing, reachedForm, clearRefusal } 
 import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs, signinDoor, followSigninDoor } from "./signinpage.js";
 import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply, openLink, codeFromMail } from "./signinemail.js";
-import { codeReadAllowedFor, auditMailCode, mailCodeNotice } from "./mailcode.js";
+import { codeReadAllowedFor, auditMailCode, mailCodeNotice, codeLinksOn } from "./mailcode.js";
 import { clearOriginInPage } from "./signin.js";
 import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants, faceIdState } from "./loginuse.js";
 import { requestOf } from "./resume.js";
@@ -977,6 +977,7 @@ export async function signIn(conversationId, site, {
       // The code goes from the mail to the site's own box and nowhere else: never a return value,
       // a log line or a word the model sees. Zero-filled after its one use (src/secret.js).
       const useMail = async (got) => {
+        if (got.status !== "code" && !codeLinksOn()) return "code_not_found"; // never a link with the sub-switch off
         const first = auditMailCode(c, host, { sender: got.sender, hash: got.hash });
         if (!told) told = mailCodeNotice(host, first);
         if (got.status === "code") return got.secret.use((b) => typeCodeOnce(page, row.signin_origin, b.toString("utf8"), enter));
@@ -993,7 +994,11 @@ export async function signIn(conversationId, site, {
         finish(c, row, host, pinned, end, { why, again, startedAt, typed, at: now() });
         return say(end, host);
       }
-      if (got.status === "code" || got.status === "link") {
+      // REASON_SIGNIN_CODE_LINKS off (the default): a mail with only a link is no usable code, so no
+      // link is opened and they are asked in today's words (askLine stays "").
+      if (got.status === "link" && !codeLinksOn()) {
+        /* asked below */
+      } else if (got.status === "code" || got.status === "link") {
         result = await useMail(got);
         // Turned down: one more look, and only at a NEW mail from the site (never a loop, never the same code twice).
         if (result === "wrong_code" && got.status === "code") {

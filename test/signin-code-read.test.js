@@ -497,8 +497,9 @@ test("I: two codes: stop and ask them for the newest", skip, async () => {
   } finally { setMode(null); }
 });
 
-test("I: a sign-in link on the site's own domain is followed in the same browser", skip, async () => {
+test("I: a sign-in link on the site's own domain is followed in the same browser (REASON_SIGNIN_CODE_LINKS on)", skip, async () => {
   setMode("owner");
+  process.env.REASON_SIGNIN_CODE_LINKS = "on";
   try {
     await save(ME, "/login/efcode");
     codeChecks = []; magicHits = 0;
@@ -507,7 +508,7 @@ test("I: a sign-in link on the site's own domain is followed in the same browser
     assert.equal(magicHits, 1);
     assert.deepEqual(codeChecks, []);
     assert.ok(!JSON.stringify(r.out).includes("t0k3n"), "the link is not in the words");
-  } finally { setMode(null); }
+  } finally { setMode(null); delete process.env.REASON_SIGNIN_CODE_LINKS; }
 });
 
 test("I: a link to another domain is not followed: they are asked instead", skip, async () => {
@@ -823,4 +824,52 @@ test("R: only Gmail's topmost Authentication-Results counts: a pass written lowe
   const box = fakeGmail([codeMail({ id: "m-lower", auth, at: T0 + 1_000 })]);
   assert.equal((await read(box)).status, "not_found");
   assert.deepEqual(box.fullReads(), []);
+});
+
+
+// ================================================================ L: codes only (REASON_SIGNIN_CODE_LINKS, default off)
+test("L: links sub-switch off (default): a mail with only a sign-in link opens nothing, and they are asked in today's words", skip, async () => {
+  setMode("owner");
+  delete process.env.REASON_SIGNIN_CODE_LINKS;
+  try {
+    await save(ME, "/login/efcode");
+    codeChecks = []; magicHits = 0;
+    const box = fakeGmail([fresh({ id: "m-only-link", subject: "Your Acme sign-in link", text: "Click to sign in", html: '<a href="https://acme.test/login/magic?token=t0k3n">Sign in</a>' })]);
+    assert.equal(se.readSigninMail({ subject: "Your Acme sign-in link", html: '<a href="https://acme.test/login/magic?token=t0k3n">Sign in</a>' }, "acme.test").kind, "link", "the mail is a real link mail");
+    const r = await run(ME, { box, reply: CODE_OK });
+    assert.equal(magicHits, 0, "no link opened");
+    assert.equal(r.out.result, "needs_code_email");
+    // Today's words for an emailed code (this fixture sends one instead of asking for the password).
+    assert.equal(r.out.say_exactly, "acme.test emailed you a sign-in code instead of asking for the password. Text me that code and I'll type it into acme.test, once.");
+    assert.equal(r.asked, 1);
+    assert.ok(!JSON.stringify(r.out).includes("t0k3n") && !r.logs.join("\n").includes("t0k3n"));
+    // The handed-over link shape too (a reader that returns a link): still nothing opened.
+    magicHits = 0;
+    const r2 = await run(ME, { readCode: async () => ({ status: "link", url: `https://acme.test:${PORT}/login/magic?token=t0k3n`, sender: "acme.test", hash: "00112233445566aa", seen: new Set() }), reply: CODE_OK });
+    assert.equal(magicHits, 0);
+    assert.equal(r2.out.result, "needs_code_email");
+    assert.equal(r2.asked, 1);
+  } finally { setMode(null); }
+});
+
+test("L: links sub-switch off (default): a code mail still has its code typed", skip, async () => {
+  setMode("owner");
+  delete process.env.REASON_SIGNIN_CODE_LINKS;
+  try {
+    await save(ME, "/login/efcode");
+    codeChecks = []; magicHits = 0;
+    const r = await run(ME, { box: fakeGmail([fresh({ id: "m-code-l" })]) });
+    assert.equal(r.out.result, "signed_in", r.out.say_exactly);
+    assert.deepEqual(codeChecks, [CODE_OK]);
+    assert.equal(r.asked, 0);
+    assert.equal(magicHits, 0);
+  } finally { setMode(null); }
+});
+
+test("L: the sub-switch reads only on/1/true/yes as on", () => {
+  for (const [v, want] of [[undefined, false], ["", false], ["off", false], ["owner", false], ["on", true], ["1", true], ["TRUE", true]]) {
+    if (v === undefined) delete process.env.REASON_SIGNIN_CODE_LINKS; else process.env.REASON_SIGNIN_CODE_LINKS = v;
+    assert.equal(mc.codeLinksOn(), want, String(v));
+  }
+  delete process.env.REASON_SIGNIN_CODE_LINKS;
 });
