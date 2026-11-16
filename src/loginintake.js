@@ -33,7 +33,7 @@ import {
   savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor, intakePublicKey, saveFromSealed, recordLoginEvent, listLogins, removeLogin,
   setSigninRoute, peekForSignin, signinRouteFor, markSaveOffered,
 } from "./savedlogins.js";
-import { refusingSite } from "./refusing.js";
+import { refusingSite, strikeOn } from "./refusing.js";
 
 export { savedLoginsMode, savedLoginsAllowedFor, intakeReadyFor };
 
@@ -45,6 +45,41 @@ const SEALED_MAX = 8_000; // base64url: RSA 4096 wrap (512) + the three fields, 
 
 /** What the tool returns, whatever happened: one fixed sentence (hard rule 2). The link is its own bubble. */
 export const OFFER_SENTENCE = "Here's a link to save that login on Reason's own page. Type it there, not here: I never see it.";
+
+/**
+ * What the model is told about saved logins, in the system prompt next to the sign-in rules
+ * (src/agent.js), only where the vault is on for this person. Everybody else's prompt stays exactly
+ * as it was: they are still told Reason never keeps a password. On 2026-11-15 the owner texted "Save
+ * my Google login" and was told "I can't save your Google login. Google blocks my browser … and I
+ * don't keep passwords anyway": the model had loaded saved_login_offer, but every line in its prompt
+ * said the opposite (no Google ever, never keep a password) and nothing said the vault was on.
+ */
+export const SAVED_LOGIN_RULES = [
+  `- SAVED LOGINS are on for this person: you DO keep their logins, sealed on Reason's own save page, never in this chat, a memory or a note. The lines above about never taking or keeping a password are about the chat and your memory: a password typed into the chat is still refused, never repeated and never saved. Never tell them you don't keep passwords or can't save a login.`,
+  `- "Save my login for X", "save my X password", "keep my X login": call saved_login_offer with X's domain, every time, whatever the thread was about, and send its say_exactly. Code decides which sites are refused and gives the words for it; never refuse one yourself first.`,
+  `- THEIR GOOGLE LOGIN: "save my Google login" is saved_login_offer with site google.com. It is kept for ONE use: "Continue with Google" on a site they name (account_signin with with "google"), typed only on accounts.google.com, with their Face ID every time. It is never used to sign in to Google itself: Gmail, Drive, Google account settings, admin.google.com, YouTube. So when the thread is about one of those, say both in your reply: yes, you can keep it for Continue with Google on sites they name; and no, you won't sign in to that Google page with it, that one stays theirs to do. Never promise Continue with Google will work: Google can turn your browser away, and only what the tools answer says whether it has. When saved_login_offer for google.com answers with a question first, send that question as it is and wait for their answer.`,
+  `- A site blocks your browser only when a tool told you so in this conversation (a sign-in tool answering blocked or refused, signin_status saying signin_here "blocked", site_playbook saying it does not load). Never say Google or any other site blocks you on your own.`,
+].join("\n");
+/**
+ * What to say before a Google login is saved, read off the site-level refusal record for google.com
+ * (src/refusing.js: what any Continue-with-Google job saw, never one person's details). A mark in force
+ * (two refusals 10+ minutes apart in 7 days): Google has been turning the browser away. One strike only:
+ * Reason hasn't been able to use it with Google yet. Nothing on record: null, and no claim is made.
+ */
+export function googleSaveWarning(now = clock.now()) {
+  const day = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  let mark = null, strike = null;
+  try { mark = refusingSite("google.com", now); } catch { mark = null; }
+  if (mark) return { record: "refusing", seen: mark.seen, say_exactly: `I can keep your Google login, but Google has been turning my browser away (last on ${day(mark.seen)}), so Continue with Google may not work for you yet. Still want to save it?` };
+  try { strike = strikeOn("google.com", now); } catch { strike = null; }
+  if (strike) return { record: "strike", seen: strike.seen, say_exactly: "I can keep your Google login, but I haven't been able to use it with Google yet, so Continue with Google may not work for you. Still want to save it?" };
+  return null;
+}
+
+/** The saved-login block for one person's prompt, or "" where the vault is not on for them. */
+export function savedLoginRulesFor(conversationId) {
+  try { return conversationId && savedLoginsAllowedFor(conversationId) ? SAVED_LOGIN_RULES : ""; } catch { return ""; }
+}
 
 /** The forms a pin may be: the filler types into nothing else (src/signinpage.js loginFormOf). */
 const PIN_FORMS = new Set(["password", "email_first"]);
