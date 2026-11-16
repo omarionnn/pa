@@ -61,6 +61,7 @@ const reactions = (fake) => fake.reactCalls.map(r => r.reaction);
 
 /** One text, its tools in order, then the reply going out; what landed on the text. */
 async function turn(text, tools, { acted = false, ctx = {}, before = null } = {}) {
+  db.db.prepare("DELETE FROM inbound_messages WHERE external_id = 'H-1'").run();
   arrived("H-1", text);
   const { router, fake } = harness();
   if (before) before(fake);
@@ -274,4 +275,30 @@ test("a Web message and an event turn still get nothing", async () => {
   assert.deepEqual(await turn("flights to miami", [["flight_search"]], { ctx: { channel: "web" } }), []);
   ack.reset();
   assert.deepEqual(await turn("flights to miami", [["flight_search"]], { ctx: { kind: "event" } }), []);
+});
+
+// ---------- the owner's table (research/ack-emoji-table-2026-11-16.md), through the real path ----------
+
+test("the 15 messages in the owner's table react the way the table says", async () => {
+  const TABLE = [
+    ["my laptop won't connect to the office wifi, help", "web_search", { query: "laptop won't connect wifi" }, "💻"],
+    ["can you buy me more of the protein powder i got last month", "purchases_recent", {}, "🛍️"],
+    ["need a dinner spot in soho for 4 tonight, nothing too loud", "nearby_places", { type: "restaurant" }, "🍽️"],
+    ["find me a flight to chicago friday after work", "flight_search", {}, "✈️"],
+    ["get me an uber to jfk, leaving in 20", "uber_options", {}, "🚕"],
+    ["how much did i spend on ubers this month", "bank", { action: "spending" }, "💳"],
+    ["am i free thursday afternoon for a call with priya?", "calendar_events", {}, "📅"],
+    ["did the recruiter from stripe ever email me back", "gmail_search", { query: "stripe recruiter" }, "✉️"],
+    ["call the dry cleaner and ask if my suits are ready", "call_place", {}, "📞"],
+    ["draft a cover letter for the product manager role", "document_create", {}, "📝"],
+    ["remind me to pay rent on the 1st", "timer_set", {}, "⏰"],
+    ["find me a spin class near the office tomorrow morning", "web_search", { query: "spin class" }, "💪"],
+    ["what's the weather in boston this weekend", "weather", {}, "🔍"],
+    ["book me a dentist appointment next week", "calendar_events", {}, "👀"],
+    ["log into my con ed account and pay the bill", "account_signin", {}, "👀"],
+  ];
+  for (const [text, tool, input, emoji] of TABLE) {
+    ack.reset();
+    assert.deepEqual(await turn(text, [[tool, input, { ok: true }]]), [emoji], text);
+  }
 });
