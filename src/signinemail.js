@@ -36,6 +36,9 @@ import * as findings from "./sitefindings.js";
 import * as signinPage from "./signinpage.js";
 import { logAttempt, logStep } from "./signinlog.js";
 import { typedOnly } from "./trust.js";
+import { createHash } from "node:crypto";
+import { Secret } from "./secret.js";
+import { classifySite } from "./sitepolicy.js";
 
 /** How long Gmail is polled for the site's mail, and how often. */
 export const MAIL_WAIT_MS = 90_000;
@@ -106,7 +109,17 @@ export function senderMatches({ from = "", auth = [] } = {}, allowed = []) {
   // (cold review, 2026-11-11).
   const top = String((Array.isArray(auth) ? auth : [auth])[0] ?? "").toLowerCase().trim();
   if (!/^mx\.google\.com\s*;/.test(top)) return false;
-  for (const m of top.matchAll(/dkim=pass[^;]*?header\.(?:i|d)=@?([a-z0-9.-]+)/g)) if (within(m[1], allowed)) return true;
+  // Gmail's own header still carries words the SENDER chose: the envelope address in the spf comment
+  // and in smtp.mailfrom ("dkim=pass.header.d=site.com@evil.com" is a valid address), an ARC comment.
+  // So: quoted strings and comments out, then only the dkim results Gmail lists FIRST (before any
+  // spf/arc/dmarc result), each one whole and in Gmail's own shape (review 2026-11-15).
+  const bare = top.replace(/"(?:[^"\\]|\\.)*"/g, "\"\"").replace(/\([^()]*\)/g, " ").replace(/\([^()]*\)/g, " ");
+  if (/[()"]/.test(bare.replace(/""/g, ""))) return false;
+  for (const seg of bare.split(";").slice(1).map(s => s.trim().replace(/\s+/g, " "))) {
+    if (!/^dkim=/.test(seg)) break;
+    const m = seg.match(/^dkim=pass header\.(?:i=[a-z0-9._+=-]*@|d=)([a-z0-9.-]+)(?: header\.[a-z]+=[a-z0-9._+\/=@-]+)*$/);
+    if (m && within(m[1], allowed)) return true;
+  }
   return false;
 }
 
@@ -217,6 +230,206 @@ export async function codeFromGmail(conversationId, entry, { since, waitMs = MAI
     }
     if (best) return { connected: true, found: true, kind: best.kind, ...(best.kind === "code" ? { code: best.code } : { url: best.url }) };
     if (now() + pollMs > deadline) return { connected: true, found: false };
+    await sleep(pollMs);
+  }
+}
+
+// ---------------------------------------------------------------- Reason reads the code itself
+// Owner decision 2026-11-15: "Reason reads the emailed sign-in code itself." A saved-login sign-in the
+// person started (they named the site; Face ID as the job already needs it) where the site says it
+// emailed a code or a link: the code is taken from THAT one email, typed into the site's own page,
+// and nothing else in the mailbox is looked at.
+//
+// REASON_SIGNIN_CODE_READ = off | owner | on (default off; src/mailcode.js). Off: every caller behaves
+// exactly as before this existed. It only ever adds to people the saved-login / sign-in switches cover.
+//
+// What may be read, exactly:
+//   - only during that job, only after the site was asked to send the code (SKEW_MS of clock slack),
+//     and only mail Gmail received within CODE_READ_WINDOW_MS of that moment;
+//   - only mail From the site's own registrable domain (or a subdomain of it), or a sender in
+//     SENDER_ALIASES above, AND whose topmost Authentication-Results (Gmail's own) has DKIM passing
+//     for one of those domains (senderMatches). Anything else is never fetched past its headers;
+//   - the Gmail query does the narrowing server-side: from:(those domains) after:<ask> before:<end>.
+// What is taken out of the one matching mail: one sign-in code, or one sign-in link on the site's own
+// registrable domain. Never the subject or body; nothing about it is logged except the site, the
+// sender's domain and a hash of the message id. The mail is only read (GET): never marked or moved.
+export const CODE_READ_WINDOW_MS = 5 * 60_000;
+
+// Their "don't read my mail for codes": one row, the latest answer wins (src/db.js setOnlyPreference).
+// A preference that only ever narrows what Reason does; it widens nothing.
+const OPT_CATEGORY = "signin_code_mail";
+export function codeReadOptedOut(conversationId) {
+  try { const p = db.latestPreference(String(conversationId ?? ""), OPT_CATEGORY); return !!p && !!String(p.turned_down ?? "").trim(); } catch { return false; }
+}
+export function setCodeRead(conversationId, read) {
+  const c = String(conversationId ?? "");
+  if (!c) return null;
+  return read
+    ? db.setOnlyPreference(c, { category: OPT_CATEGORY, words: "read my mail for sign-in codes", note: "They let Reason take a site's sign-in code from that site's email." })
+    : db.setOnlyPreference(c, { category: OPT_CATEGORY, words: "don't read my mail for codes", note: "They asked Reason to ask them for sign-in codes instead.", turnedDown: "declined" });
+}
+
+/** Sites whose mail is never read for a code: the never list, Google itself, and every mailbox provider. */
+export function mailReadRefused(site) {
+  const host = hostOf(/^https?:/.test(String(site ?? "")) ? site : `https://${site}`);
+  if (!host) return true;
+  const base = registrableOf(host);
+  if (!base.includes(".") || MAILBOX_DOMAINS.has(base) || /(^|\.)google\.[a-z.]+$/.test(host)) return true;
+  // registrableOf is a short rule, not the public suffix list: a country suffix it does not know
+  // (ne.jp, or.jp, me.uk, edu.au) would make every domain under it "the site", and a tenant on a
+  // shared platform (acme.zendesk.com, acme.atlassian.net) shares its mail domain with every other
+  // tenant. Neither is read for a code; they are asked for it (review 2026-11-15).
+  if (/^(ne|or|gr|ed|go|lg|ad|me|ltd|plc|nhs|sch|edu|gob|nom|mil|biz|info|int|res|gen|firm|ind|web|govt|asn|id|nic|nt|nsw|vic|qld)\.[a-z]{2}$/.test(base)) return true;
+  if (host !== base && host !== `www.${base}` && SHARED_TENANT_DOMAINS.has(base)) return true;
+  let v = {};
+  try { v = classifySite(host) ?? {}; } catch { return true; }
+  return v.policy === "never" || ["google", "google_property", "email", "apple_id", "password_manager", "bank", "carrier"].includes(v.category);
+}
+
+// Platforms whose customers each get a subdomain and send mail under the platform's own domain.
+const SHARED_TENANT_DOMAINS = new Set(["github.io", "gitlab.io", "herokuapp.com", "vercel.app", "netlify.app", "pages.dev", "workers.dev", "web.app", "firebaseapp.com", "appspot.com", "blogspot.com", "myshopify.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com", "wixsite.com", "onrender.com", "fly.dev", "zendesk.com", "freshdesk.com", "atlassian.net", "sharepoint.com", "wordpress.com", "substack.com", "force.com"]);
+
+// A mail about something else than signing in: a password reset, or a change to the account, its
+// email, phone or payment. Never a sign-in code, whatever number is in it.
+const NOT_SIGNIN = /reset (your |the )?password|password reset|forgot (your )?password|recover (your )?account|change (of |to )?your (account|e-?mail|email address|phone|payment|password|billing)|(e-?mail|email address|phone number|password|payment method) (was |has been )?(changed|updated)|confirm (your )?(new )?(e-?mail|email address|phone)|verify (your )?new (e-?mail|email address)|update (your )?(payment|billing|card)|confirm (this |the )?change/i;
+// A warning rather than a code: someone else signing in, a device it hasn't seen.
+const ALERT = /someone (else )?(tried|is trying|attempted|may have tried) to (sign|log) ?in|new (device|sign-?in|log-?in)|sign-?in (attempt|from a new)|log-?in (attempt|from a new)|was this you|unusual (activity|sign-?in|log-?in)|suspicious|security alert|unrecogni[sz]ed (device|sign-?in|log-?in)|we (blocked|stopped) a sign-?in/i;
+// The words a sign-in code stands next to.
+const CODE_LABEL = /\b(sign[- ]?in|log[- ]?in|login|verification|verify|one[- ]time|security|confirmation|access|authentication|temporary)\s+(code|passcode|pin)\b|\b(your|the) code\b|\bpasscode\b|\botp\b|\bcode is\b|\bcode:|\bis your\b[^.]{0,30}\bcode\b/i;
+const SIGNIN_WORD = /\b(sign[- ]?in|log[- ]?in|login|verif\w*|one[- ]time|confirm\w*)\b/i;
+const labelled = (l) => CODE_LABEL.test(l) || (/\bcode\b/i.test(l) && SIGNIN_WORD.test(l));
+// A link that is not for signing in, on any domain.
+const LINK_NOT_SIGNIN = /reset|password|recover|change|update|payment|billing|unsubscribe|preferences|settings|privacy|terms|help|support|policy|report|security|download|approve|authori[sz]e|allow|grant|consent|oauth|device|deny|decline|block|revoke|cancel|delete|remove|invite|accept|join|share|\.(png|jpe?g|gif)(\?|$)/i;
+// A mail whose link would act for SOMEBODY ELSE's sign-in or invite (approve another device, "is this
+// you", an invite or a share with words the inviter chose): its link is never opened, whatever its path.
+// Opening it in their browser could approve an attacker's login or sign them in to an attacker's
+// account (review 2026-11-15). Codes are not affected: a code only ever goes into this job's own box.
+const LINK_MAIL_NOT_SIGNIN = /\b(approve|authori[sz]e|allow|grant|deny|decline)\b|another (device|browser|computer|phone)|new (device|browser)|is (this|it) you|trying to (sign|log) ?in|invited you|shared\b.{0,60}\bwith you|mentioned you|commented/i;
+
+/** Every code-shaped token on a line: 4-8 digits ("123 456" too), or 4-8 letters and digits with a digit. */
+function codesOn(line) {
+  const out = [];
+  const l = String(line ?? "");
+  for (const m of l.matchAll(/(?<![\w.,/$#-])(\d{3,4})[ -](\d{3,4})(?![\w,/%-]|\.\d)/g)) { const d = m[1] + m[2]; if (d.length >= 6 && d.length <= 8) out.push(d); }
+  for (const m of l.matchAll(/(?<![\w.,/$#-])(\d{4,8})(?![\w,/%-]|\.\d)/g)) if (!/^(19|20)\d\d$/.test(m[1]) && !out.some(o => o.includes(m[1]))) out.push(m[1]);
+  for (const m of l.matchAll(/(?<![\w-])((?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{4,8})(?![\w-])/g)) out.push(m[1]);
+  return out;
+}
+
+/**
+ * What one mail from the site gives a sign-in, decided by code (the model never sees the mail).
+ * `own`: the site's registrable domain (a link must open there).
+ *   → { kind: "code", code } | { kind: "link", url } | { kind: "not_signin" } | { kind: "alert" }
+ *     | { kind: "two" } (more than one candidate) | { kind: "none", offSiteLink? }
+ */
+export function readSigninMail({ subject = "", text = "", html = "" } = {}, own = "") {
+  const body = `${text}\n${htmlToText(html)}`;
+  const lines = [subject, ...body.split(/\n+/)].map(l => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  // The head of the mail: the subject and every line up to the first one with a code on it (or the
+  // first six). A warning or a reset is said there; a footer's "change your password" link is not one.
+  const firstCode = lines.findIndex(labelled);
+  const head = lines.slice(0, firstCode >= 0 ? firstCode + 2 : 6).join("\n");
+  if (ALERT.test(head)) return { kind: "alert" };
+  if (NOT_SIGNIN.test(head)) return { kind: "not_signin" };
+  const codes = new Set();
+  for (let i = 0; i < lines.length; i++) {
+    if (!labelled(lines[i])) continue;
+    const parts = lines[i].split(CODE_LABEL);
+    const after = parts.length > 1 ? (parts.slice(-1)[0] ?? "") : "";
+    let got = after ? codesOn(after.replace(/^[\s:.\-–—]+/, "").replace(/^is\s+/i, "")) : [];
+    if (!got.length) got = codesOn(lines[i]);
+    if (!got.length && (lines[i + 1] ?? "").length <= 24) got = codesOn(lines[i + 1] ?? "");
+    for (const c of got) codes.add(c);
+  }
+  if (codes.size > 1) return { kind: "two" };
+  if (codes.size === 1) return { kind: "code", code: [...codes][0] };
+  if (LINK_MAIL_NOT_SIGNIN.test(lines.join("\n"))) return { kind: "none" };
+  const hrefs = [...String(html).matchAll(/href\s*=\s*["']([^"']+)["']/gi)].map(m => m[1].replace(/&amp;/g, "&"));
+  const bare = [...body.matchAll(/https:\/\/[^\s<>"')]+/g)].map(m => m[0]);
+  const links = new Set();
+  let offSiteLink = false;
+  for (const u of [...hrefs, ...bare]) {
+    let url; try { url = new URL(u); } catch { continue; }
+    if (url.protocol !== "https:" || url.username || url.password || url.port) continue;
+    // The sign-in word in the PATH: a query's token= alone (an invite, a share) is not a sign-in link.
+    if (!LINK_PATH.test(url.pathname)) continue;
+    if (!own || !within(url.hostname, [own])) { offSiteLink = true; continue; }
+    if (LINK_NOT_SIGNIN.test(url.pathname)) continue;
+    links.add(url.toString());
+  }
+  if (links.size > 1) return { kind: "two" };
+  if (links.size === 1) return { kind: "link", url: [...links][0] };
+  return { kind: "none", ...(offSiteLink ? { offSiteLink: true } : {}) };
+}
+
+const msgHash = (account, id) => createHash("sha256").update(`${account}\u0000${id}`).digest("hex").slice(0, 16);
+
+/**
+ * The site's code from the one mail it just sent, for a sign-in job that is running now.
+ *   → { status: "never" | "opted_out" | "no_mailbox" | "not_found" | "two" | "alert" | "not_signin" }
+ *   | { status: "code", secret (src/secret.js, zero-filled after its one use), sender, hash, seen }
+ *   | { status: "link", url, sender, hash, seen }
+ * `seen`: the message ids already looked at, in memory for this job only (a second look after a
+ * rejected code takes only a NEW mail). `once`: one look, no polling.
+ * `tokens(conv)` and `api(token, method, path, opts)` default to src/google.js, handed in by tests.
+ */
+export async function codeFromMail(conversationId, entry, { since, waitMs = MAIL_WAIT_MS, pollMs = MAIL_POLL_MS, seen = new Set(), tokens = null, api = null, sleep = (ms) => new Promise(r => setTimeout(r, ms)), now = () => clock.now() } = {}) {
+  const c = String(conversationId ?? "");
+  if (mailReadRefused(entry?.site ?? hostOf(entry?.signin_url))) return { status: "never" };
+  if (codeReadOptedOut(c)) return { status: "opted_out" };
+  const allowed = senderDomainsFor(entry);
+  const own = registrableOf(hostOf(entry?.signin_url) || String(entry?.site ?? ""));
+  if (!allowed.length || !own) return { status: "never" };
+  const google = (tokens && api) ? null : await import("./google.js");
+  const getTokens = tokens ?? ((x) => google.allAccessTokens(x, { scope: google.TOOL_SCOPES.gmail_search }));
+  const call = api ?? ((...a) => google.api(...a));
+  let got;
+  try { got = await getTokens(c); } catch { got = null; }
+  const accounts_ = got?.ok ? (got.accounts ?? []).filter(a => a?.token) : [];
+  if (!accounts_.length) return { status: "no_mailbox" };
+  const from = Number(since) - SKEW_MS;
+  const until = Number(since) + CODE_READ_WINDOW_MS;
+  // Server-side: only the site's senders, only from the ask on (Gmail's after:/before: take epoch seconds).
+  const q = `from:(${allowed.join(" OR ")}) after:${Math.max(0, Math.floor(from / 1000) - 1)} before:${Math.ceil(until / 1000) + 1}`;
+  const deadline = now() + Math.max(0, waitMs);
+  for (;;) {
+    const hits = [];
+    let stop = "";
+    for (const a of accounts_) {
+      const list = await call(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q, maxResults: 5 } }).catch(() => null);
+      for (const m of list?.ok ? (list.body?.messages ?? []) : []) {
+        const key = `${a.account}:${m?.id}`;
+        if (!m?.id || seen.has(key)) continue;
+        seen.add(key);
+        // Headers first (no body): a mail that is not the site's, or not this sign-in's, is never opened.
+        const head = await call(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, { query: { format: "metadata" } }).catch(() => null);
+        if (!head?.ok) continue;
+        const at = Number(head.body?.internalDate) || 0;
+        if (at < from || at > until) continue;
+        const hs = head.body?.payload?.headers ?? [];
+        const h = (name) => hs.filter(x => String(x?.name ?? "").toLowerCase() === name).map(x => String(x?.value ?? ""));
+        const sender = fromDomain(h("from")[0] ?? "");
+        if (!senderMatches({ from: h("from")[0] ?? "", auth: h("authentication-results") }, allowed)) continue;
+        const one = await call(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, { query: { format: "full" } }).catch(() => null);
+        if (!one?.ok) continue;
+        const r = readSigninMail({ subject: h("subject")[0] ?? "", ...partsOf(one.body?.payload) }, own);
+        if (r.kind === "alert" || r.kind === "not_signin" || r.kind === "two") { stop = stop || r.kind; continue; }
+        if (r.kind === "code" || r.kind === "link") hits.push({ ...r, at, sender, hash: msgHash(a.account ?? "", m.id) });
+      }
+    }
+    // A warning, a reset mail, or more than one candidate: never a guess.
+    if (stop === "alert") return { status: "alert" };
+    if (stop === "not_signin" && !hits.length) return { status: "not_signin" };
+    const values = new Set(hits.map(x => x.kind === "code" ? `c:${x.code}` : `l:${x.url}`));
+    if (stop === "two" || values.size > 1) return { status: "two" };
+    if (hits.length) {
+      const best = hits[0];
+      const out = { status: best.kind, sender: best.sender, hash: best.hash, seen };
+      if (best.kind === "code") out.secret = new Secret(Buffer.from(best.code, "utf8"));
+      else out.url = best.url;
+      return out;
+    }
+    if (now() + pollMs > deadline) return { status: "not_found" };
     await sleep(pollMs);
   }
 }
@@ -483,6 +696,9 @@ export async function openLink(page, url, entry, { settleMs = 3000 } = {}) {
   if (u.protocol !== "https:" || !within(u.hostname, allowed)) return { ok: false, why: "the link is not on the site" };
   await page.goto(u.toString(), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
   await wait(page, settleMs);
+  // A link that redirected off the site (an open redirect, a tracking wrapper): nothing on that page
+  // is read as a sign-in, and nothing more is done there.
+  if (!onSite(page, entry)) return { ok: false, why: "the link left the site" };
   return { ok: true };
 }
 
@@ -615,6 +831,9 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       const mail = await gmail(conversationId, entry, { since: asked.at });
       let got = mail?.found ? mail : null;
       log({ signin_email: "mail", site: entry.site, connected: !!mail?.connected, found: !!got, kind: got?.kind ?? "" });
+      // REASON_SIGNIN_CODE_READ (src/mailcode.js strictGmail): the one mail from the site was not a sign-in code.
+      if (mail?.stop === "mail_alert") return finish(`the ${entry.label} sign-in stopped: the email ${entry.label} sent looked like a security alert (someone trying to sign in, a new device), not a sign-in code, so it was not used. Nothing was saved. Say it in ONE plain line, like: "The email ${entry.label} sent looks like a security alert, not a sign-in code, so I stopped. Have a look at it yourself." Never offer to try again.`, "no_mail", "mail_alert");
+      if (mail?.stop === "mail_not_signin") return finish(`the ${entry.label} sign-in stopped: the email ${entry.label} sent was about a password reset or an account change, not a sign-in code, so it was not used and nothing was changed. Say it in ONE plain line, like: "The email ${entry.label} sent wasn't a sign-in code (it was about your password or account), so I didn't use it." Never offer to try again.`, "no_mail", "mail_not_signin");
       if (!got) {
         if (mail?.connected) {
           return finish(`${entry.label} was asked for a sign-in code for ${email}, but no mail from ${entry.label} reached their Gmail within ${Math.round(MAIL_WAIT_MS / 1000)} seconds. Nothing was saved. Say it in ONE plain line: what happened, and that a fresh code needs them to say go (signin_email). Never offer to try again. Never say "check your email".`, "no_mail");
@@ -624,7 +843,8 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
         const code = await new Promise((resolve) => {
           job.reply = resolve;
           job.asked += 1;
-          tell(conversationId, `${entry.label} just emailed a sign-in code to ${email}, and their Gmail is not connected, so the code has to come from them. Ask for it in ONE plain line, like: "What's the code ${entry.label} just sent to ${email}?" Nothing else, and do not ask again: their reply goes to ${entry.label} without you.`);
+          const whyThem = mail?.ask === "opted_out" ? "they asked Reason not to read their mail for codes" : mail?.ask === "two" ? `${entry.label} sent more than one code and Reason does not guess between them` : "their Gmail is not connected";
+          tell(conversationId, `${entry.label} just emailed a sign-in code to ${email}, and ${whyThem}, so the code has to come from them. Ask for it in ONE plain line, like: "What's the code ${entry.label} just sent to ${email}?" Nothing else, and do not ask again: their reply goes to ${entry.label} without you.`);
           const t = setTimeout(() => resolve(null), replyWaitMs);
           t.unref?.();
         });
@@ -647,7 +867,7 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       // Asked on the page this attempt was on, never one rebuilt from the site's bare name.
       const out = await check(page, conversationId, entry.site, { entry: signin.entryOnItsPage(conversationId, entry) });
       const state = out?.ok === false ? "unknown" : out?.state ?? "unknown";
-      if (state === "signed_in") return finish(`they are signed in to ${entry.label} now: Reason asked ${entry.label} for a code, read it ${mail?.found ? "from their Gmail" : "from their reply"} and entered it, and ${entry.label} says signed in (${out.why ?? ""}). Tell them in one short line, like "You're in to ${entry.label}." and pick up whatever they wanted it for. Never mention a code or their email being read unless they ask.`, "signed_in");
+      if (state === "signed_in") return finish(`they are signed in to ${entry.label} now: Reason asked ${entry.label} for a code, read it ${mail?.found ? "from their Gmail" : "from their reply"} and entered it, and ${entry.label} says signed in (${out.why ?? ""}). ${mail?.notice ? `Tell them in one short line, like "You're in to ${entry.label}.", then this sentence as it is: "${mail.notice}" Then pick up whatever they wanted it for. Never repeat or describe the code.` : `Tell them in one short line, like "You're in to ${entry.label}." and pick up whatever they wanted it for. Never mention a code or their email being read unless they ask.`}`, "signed_in");
       if (state === "signed_out") return finish(`the ${entry.label} email sign-in entered the code, but ${entry.label} still says NOT signed in (${out?.why ?? out?.error ?? ""}). Nothing is recorded as signed in. Say it in ONE plain line; a sign-in that was refused is not tried again on its own. Never offer to try again.`, state);
       // Unknown is said as unknown, and nothing is started again because of it: a second run would
       // only ask the site for another code and end on the same page.

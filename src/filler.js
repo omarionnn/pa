@@ -26,7 +26,8 @@ import { recordFinding } from "./sitefindings.js";
 import { refusingSite, refusalAnswer, markRefusing, reachedForm, clearRefusal } from "./refusing.js";
 import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs, signinDoor, followSigninDoor } from "./signinpage.js";
 import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
-import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
+import { codeFromGmail, enterCode, awaitCodeReply, openLink, codeFromMail } from "./signinemail.js";
+import { codeReadAllowedFor, auditMailCode, mailCodeNotice, codeLinksOn } from "./mailcode.js";
 import { clearOriginInPage } from "./signin.js";
 import { askFaceId, takeApproval, dropAsks, takeResume, spendSaveGrants, faceIdState } from "./loginuse.js";
 import { requestOf } from "./resume.js";
@@ -112,6 +113,9 @@ function say(result, site, extra = "", { msgClass = "", msg = "", retrying = fal
     no_login: `You don't have a saved login for ${site}.`,
     pick_one: `You have more than one saved login for ${site}. Tell me which one and I'll use it.`,
     busy: `I'm already using the browser for you right now. I'll sign in to ${site} once that's done.`,
+    // REASON_SIGNIN_CODE_READ: the one email the site sent was not a sign-in code, so it was not used.
+    mail_alert: `The email ${site} just sent looks like a security alert (like "someone tried to sign in" or a new-device warning), not a sign-in code, so I stopped and didn't use it. Have a look at that email yourself.`,
+    mail_not_signin: `The email ${site} just sent wasn't a sign-in code: it was about resetting your password or changing something on your account, so I didn't use it and didn't change anything.`,
     // The site sent a code INSTEAD of asking for the password (a browser it hasn't seen): relayed once,
     // through the texted-code intake; the code goes into the site's box only, never the thread.
     ...(codeInstead ? { [result]: `${site} ${codeInstead === "email" ? "emailed" : "texted"} you a sign-in code instead of asking for the password. Text me that code and I'll type it into ${site}, once.` } : {}),
@@ -336,6 +340,7 @@ async function fillAndSubmit(page, pinnedOrigin, form, { username, password }, {
     await page.waitForTimeout(OWN_STEP_MS).catch(() => {});
     ensure(); notOurs();
     const before = page.url();
+    diag.askedAt = clock.now(); // the moment the site may send a code (src/signinemail.js codeFromMail reads only mail after it)
     await form.user.press("Enter").catch(() => {});
     // The page's own "use password instead" is pressed only when there is a saved password to type.
     const canToggle = !!password?.live;
@@ -686,6 +691,7 @@ async function submitAndRead(page, form, { answerMs = ANSWER_MS, diag = {} } = {
   const startUrl = page.url();
   const startedAt = Date.now();
   diag.pressed = "enter";
+  diag.askedAt = clock.now();
   await form.pass.press("Enter").catch(async () => {
     diag.pressed = "submit_button";
     await page.locator('button[type="submit"]:visible, button:has-text("Sign in"):visible, button:has-text("Log in"):visible, button:has-text("Continue"):visible')
@@ -752,6 +758,7 @@ let signIns = 0;
 export async function signIn(conversationId, site, {
   trigger = null, purpose = "", launch = realLaunch, now = () => clock.now(),
   emailCode = codeFromGmail, enter = enterCode, awaitReply = awaitCodeReply, note = defaultNote, waitMs = undefined,
+  readCode = codeFromMail, follow = openLink,
   answerMs = ANSWER_MS, locate = undefined, tapWaitMs = undefined, stepMs = undefined, retryWaitMs = SITE_TROUBLE_RETRY_MS,
 } = {}) {
   const c = String(conversationId ?? "");
@@ -958,7 +965,56 @@ export async function signIn(conversationId, site, {
       else if (row.second_step === "sms") result = "needs_code_sms";
     }
     const entry = { site: host, label: host, signin_url: pinned };
-    if (result === "needs_code_email" && !codeInstead) {
+    // Reason reads the emailed code itself (REASON_SIGNIN_CODE_READ, src/signinemail.js codeFromMail):
+    // only the one mail the site sent for THIS sign-in, after it was asked, from the site's own domain.
+    // Off, or a person it does not cover: nothing here runs and every line below is as it was.
+    const readMail = result === "needs_code_email" && codeReadAllowedFor(c);
+    let askLine = ""; // the words for asking them when the mail could not be used ("" = today's words)
+    let told = ""; // the sentence that says the code came from their email
+    if (readMail) {
+      const since = Number.isFinite(diag.askedAt) ? diag.askedAt : startedAt;
+      const mailOpts = { since, ...(waitMs != null ? { waitMs } : {}) };
+      // The code goes from the mail to the site's own box and nowhere else: never a return value,
+      // a log line or a word the model sees. Zero-filled after its one use (src/secret.js).
+      const useMail = async (got) => {
+        if (got.status !== "code" && !codeLinksOn()) return "code_not_found"; // never a link with the sub-switch off
+        const first = auditMailCode(c, host, { sender: got.sender, hash: got.hash });
+        if (!told) told = mailCodeNotice(host, first);
+        if (got.status === "code") return got.secret.use((b) => typeCodeOnce(page, row.signin_origin, b.toString("utf8"), enter));
+        // A sign-in link on the site's own domain, opened in this same browser (follow checks the host again).
+        if (urlParts(page.url()).origin !== row.signin_origin) return "origin_mismatch";
+        const opened = await follow(page, got.url, entry).catch(() => ({ ok: false }));
+        if (!opened?.ok) return "code_not_found";
+        const after = await classifyAfterSubmit(page);
+        return after.startsWith("needs_code") ? "code_not_found" : after;
+      };
+      const got = await readCode(c, entry, mailOpts).catch(() => ({ status: "error" }));
+      if (got.status === "alert" || got.status === "not_signin") {
+        const end = got.status === "alert" ? "mail_alert" : "mail_not_signin";
+        finish(c, row, host, pinned, end, { why, again, startedAt, typed, at: now() });
+        return say(end, host);
+      }
+      // REASON_SIGNIN_CODE_LINKS off (the default): a mail with only a link is no usable code, so no
+      // link is opened and they are asked in today's words (askLine stays "").
+      if (got.status === "link" && !codeLinksOn()) {
+        /* asked below */
+      } else if (got.status === "code" || got.status === "link") {
+        result = await useMail(got);
+        // Turned down: one more look, and only at a NEW mail from the site (never a loop, never the same code twice).
+        if (result === "wrong_code" && got.status === "code") {
+          const next = await readCode(c, entry, { ...mailOpts, waitMs: 0, seen: got.seen }).catch(() => ({ status: "error" }));
+          if (next.status === "code") result = await useMail(next);
+        }
+      } else if (got.status === "not_found") {
+        askLine = `${host} said it emailed you a sign-in code, but nothing from ${host} reached your email in the last few minutes. If it's there, text me the code and I'll type it into ${host}, once.`;
+      } else if (got.status === "two") {
+        askLine = `${host} sent more than one code, so I didn't guess which one. Text me the newest code from ${host} and I'll type it in, once.`;
+      } else if (got.status === "opted_out" && !codeInstead) {
+        askLine = `${host} emailed a code to finish signing in. Send me that code and I'll type it in, once.`;
+      }
+      // no_mailbox, opted_out, never, error: asked for it, in today's words.
+    }
+    if (result === "needs_code_email" && !codeInstead && !readMail) {
       // The existing emailed-code reader: only mail from the site's own domains, from now on.
       const got = await emailCode(c, entry, { since: startedAt, ...(waitMs != null ? { waitMs } : {}) }).catch(() => ({ connected: false }));
       if (got?.connected && got.found && got.kind === "code" && got.code) result = await typeCodeOnce(page, row.signin_origin, String(got.code), enter);
@@ -991,14 +1047,16 @@ export async function signIn(conversationId, site, {
         try { note(c, `[saved-login sign-in to ${host} ended: ${end}] ${say(end, host).say_exactly}`); } catch { /* best effort */ }
       })();
       recordLoginEvent(c, { site: host, event: "signin", outcome: asked, purpose: why });
-      return say(asked, host, "", { codeInstead });
+      const words = say(asked, host, "", { codeInstead });
+      return askLine ? { ...words, say_exactly: askLine } : words;
     }
 
     finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
     // A human-check after the submit: the site turned the browser away (written down for the site).
     if (result === "blocked" && diag.challenge === true) { try { markRefusing(row.site || host, "challenge", now()); } catch { /* best effort */ } }
     if (result !== "signed_in") logDiag({ signin_url: pinned }, { ...diag, result });
-    return say(result, host, "", { msgClass: diag.msgClass, msg: diag.msg });
+    const words = say(result, host, "", { msgClass: diag.msgClass, msg: diag.msg });
+    return told ? { ...words, say_exactly: `${words.say_exactly} ${told}`, code_from_mail: true } : words;
   };
 
   try {

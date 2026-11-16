@@ -649,7 +649,11 @@ const ASKS_PRICE = /\b(?:how much(?!\s+(?:time|longer|later|further|farther|more
 const ASKS_THEIRS = /\b(?:balances?|checking|savings|bank|statements?|owe[ds]?|owing|paid|spent|charged|refunds?|refunded|receipts?|deposits?|deposited|paychecks?|salary|invoices?|billed|payouts?|did (?:i|we) (?:pay|spend)|(?:in|on|from) (?:my|our) (?:account|card))\b|\b(?:my|our)\s+(?:[\w'’-]+\s+){0,3}?(?:accounts?|cards?|bills?|rent|mortgage|subscriptions?|membership|plan|orders?|total|budget|share|cut|tab|tuition|insurance|loan)\b/i;
 // A sentence that only means something about the one before it: "That assumes 16 miles" under a
 // dropped fare reads as if the fare were still there.
-const LEANS_BACK = /^(?:that|this|which|those|these)(?:'s|’s| is| was| would| assumes| includes| covers| comes| works| adds| does| doesn't| isn't)\b|^(?:assuming|based on)\b/i;
+// So does one that only qualifies it: "It assumes…", "The estimate assumes…", "Figure roughly 16 miles…".
+const LEANS_BACK = /^(?:that|this|which|those|these)(?:'s|’s| is| was| would| assumes| includes| covers| comes| works| adds| does| doesn't| isn't)\b|^(?:assuming|based on|figur(?:e|ing)|give or take|before (?:tip|tolls))\b|^it (?:assumes|includes|covers|adds)\b|^(?:the|my|that|this) (?:own |rough |best |quick )?(?:estimate|guess|fare|price|figure|number|math|ballpark)\b/i;
+// A leaning sentence that also says something true of its own (a link, a clock time, a street address)
+// stays: it is more than a qualifier, and the figure it leaned on is said to be out (review 2026-11-16).
+const KEEPS_OWN = /https?:\/\/|\b\d{1,2}(?::\d{2})?\s?(?:am|pm|a\.m\.|p\.m\.)(?![a-z])|\b\d{1,2}:\d{2}\b|\b\d{1,6}\s+(?:[a-z0-9'.-]+\s+){1,4}(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|way|pl|place|ct|court|pkwy|parkway|hwy|highway|sq|square|ter|terrace)\b/i;
 /**
  * Is sentence i (of `all`, every sentence in order) Reason's own estimate, labelled as one: the label
  * and what it assumes in it or the sentence after, and in the sentence itself no claim that it is
@@ -841,7 +845,7 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
         });
         // What only leaned on a dropped sentence goes with it.
         // Never a sentence carrying a figure that stands: what is checked is a fact on its own.
-        for (let i = 1; i < all.length; i++) if (dropAt.has(i - 1) && LEANS_BACK.test(all[i].trim()) && !new RegExp(REPLY_MONEY.source).test(all[i])) dropAt.add(i);
+        for (let i = 1; i < all.length; i++) if (dropAt.has(i - 1) && LEANS_BACK.test(all[i].trim()) && !new RegExp(REPLY_MONEY.source).test(all[i]) && !KEEPS_OWN.test(all[i])) dropAt.add(i);
         let n = 0;
         const left = joinBack(parts.map(p => (typeof p === "string" ? p : p.filter(() => !dropAt.has(n++)))));
         const dropped = unchecked.filter((fig, k) => all.some((x, i) => dropAt.has(i) && carries[k].test(x)));
