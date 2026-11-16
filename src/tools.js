@@ -9884,7 +9884,7 @@ const liveWallFn = (ctx) => ctx.signinWall ?? (process.env.NODE_TEST_CONTEXT ? n
 const signinAccessFor = (entry, ctx) => findings.signinAccess(entry, { live: liveWallFn(ctx) });
 /**
  * A site the hosted browser covers for them gets no sign-in link and no window (src/remotebrowser.js):
- * those show a picture of a browser, and there is no live view of the hosted one. → answer | null
+ * those show a picture of a browser, and nothing shows a picture of the hosted one. → answer | null
  */
 function hostedNoLink(c, entry) {
   const site = hostedBrowser.remoteFor(c, entry?.signin_url || entry?.site) || hostedBrowser.remoteFor(c, entry?.site);

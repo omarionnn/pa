@@ -20,7 +20,7 @@
 //     solving by default for all sessions"). Recording and logging of the session are off too: no
 //     replay of a person's pages is kept at Browserbase. No code here or above changes the user
 //     agent, the webdriver flag, a fingerprint, a header or the timing to look human.
-//   - No live view. The service offers one; nothing here asks for it, builds it or names it.
+//   - Nothing shows anybody a picture of the hosted page: no link, no window, no mirror of it.
 //   - One attempt, then stop. A puzzle, a CAPTCHA, a "verify you are human" page, a block page or a
 //     refused sign-in ends the job there: the session is closed, the site is marked for the hosted
 //     browser in the refusal memory at once (not on a second strike), the person is told once, and
@@ -625,7 +625,7 @@ export function capabilityWords(conversationId) {
   return `${list} run in a hosted browser from another company (Browserbase) instead of Reason's own, because ${list} turns Reason's own browser away.`
     + " The first time, Reason says that in one plain sentence (the tool answer gives it) and goes ahead on their yes."
     + " Their sign-in for that site is kept there so they sign in once; forgetting the login deletes it there too."
-    + " Sign-in is only by the site's own code (texted or emailed) or their saved login; there is no sign-in link or live view for these sites."
+    + " Sign-in is only by the site's own code (texted or emailed) or their saved login; there is no sign-in link for these sites."
     + " If the site shows any check that they are a person, a puzzle or a block page, Reason stops there, says so once, and never tries again on its own."
     + ` The hosted browser has ${monthBudgetMinutes()} minutes a month and ${sessionCapMinutes()} minutes a session.`;
 }
