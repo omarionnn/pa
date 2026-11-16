@@ -26,7 +26,7 @@
 // Nothing here works around an age gate, a login, a paywall or a region block; those come back as
 // the reason the video could not be read.
 import { publicUrl } from "./netguard.js";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { setPriority } from "node:os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -109,20 +109,10 @@ export function videoCapability({ tool = ytDlpStatus(), model = geminiStatus() }
  */
 export function runYtDlp(args, { cwd, timeoutMs = 60_000, bin = findYtDlp(), signal = null, maxDirBytes = 0, nice = 0 } = {}) {
   if (!bin) return Promise.resolve({ ok: false, code: null, stdout: "", stderr: "yt-dlp is not installed" });
-  // Intake's runs: their own process group (so the deadline, a timeout or the size watchdog stops
-  // yt-dlp AND anything it started, ffmpeg included), lowered priority, a hard cap on what lands in
-  // the scratch directory. Every other caller keeps the old path, byte for byte.
-  if (signal || maxDirBytes || nice) return runGroup(bin, args, { cwd, timeoutMs, signal, maxDirBytes, nice });
-  return new Promise((resolve) => {
-    execFile(bin, args, { cwd, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({
-        ok: !err,
-        code: err?.code ?? (err ? 1 : 0),
-        stdout: String(stdout ?? ""),
-        stderr: String(stderr ?? "") + (err && err.killed ? `\nyt-dlp was still running after ${timeoutMs / 1000}s and was stopped.` : ""),
-      });
-    });
-  });
+  // Every run in its own process group, so a timeout (or intake's deadline, or its size watchdog)
+  // stops yt-dlp AND anything it started, ffmpeg included. Intake alone adds the lowered priority,
+  // the deadline signal and the size cap.
+  return runGroup(bin, args, { cwd, timeoutMs, signal, maxDirBytes, nice });
 }
 
 /** Bytes under `dir` (one level of subdirectories is plenty for yt-dlp's scratch). */
@@ -601,11 +591,12 @@ export async function videoUnderstand(rawUrl, {
   // result is what it always was.
   intake = false, onLongFetch = null, maxBytes = 0, signal = null,
 } = {}) {
-  if (intake) {
-    // Every yt-dlp run under intake: hardened flags, "--" before the link, its own process group that
-    // the deadline kills, and a lower CPU priority than the live calls on this machine.
+  {
+    // Every yt-dlp run, intake or not: no config, no cookies, the catch-all extractor off (it follows
+    // any redirect, so a public link could walk it onto this machine's own network) and "--" before
+    // the link. Intake alone adds the deadline that kills the process group and a lower CPU priority.
     const inner = run;
-    run = (args, o = {}) => inner(hardenArgs(args), { ...o, ...(signal ? { signal } : {}), nice: 10 });
+    run = (args, o = {}) => inner(hardenArgs(args), { ...o, ...(intake && signal ? { signal } : {}), ...(intake ? { nice: 10 } : {}) });
   }
   let url;
   try { url = new URL(String(rawUrl)); } catch { return { ok: false, tier: "none", error: `'${rawUrl}' is not a URL.` }; }
@@ -633,6 +624,8 @@ export async function videoUnderstand(rawUrl, {
     return { ok: false, tier: "none", url: url.href, missing: tool.missing, error: tool.error };
   }
 
+  // Scratch a killed process never got to delete (intake sweeps in videoIntake).
+  if (!intake) sweepScratch();
   const p = await probe(url.href, { run, timeoutMs });
   if (!p.ok && intake) {
     // A bot check on this server's address is this address's problem, not the video's: a YouTube link
