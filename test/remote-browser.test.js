@@ -19,7 +19,7 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:hosted-owner";
 process.env.REASON_TEST_ALLOW_PRIVATE_FETCH = "1"; // the browser guard lets 127.0.0.1 through, tests only
 const ENV = ["REASON_REMOTE_BROWSER", "REASON_REMOTE_BROWSER_SITES", "REASON_REMOTE_BROWSER_MONTH_MINUTES", "REASON_REMOTE_BROWSER_SESSION_MINUTES",
-  "REASON_REMOTE_BROWSER_START_MS", "REASON_REMOTE_BROWSER_TEST_CAP_MS", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_API_URL"];
+  "REASON_REMOTE_BROWSER_START_MS", "REASON_REMOTE_BROWSER_TEST_CAP_MS", "REASON_REMOTE_BROWSER_IDLE_MS", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_API_URL"];
 for (const k of ENV) delete process.env[k];
 
 let chromium = null;
@@ -403,6 +403,18 @@ test("the hard cap: a session is ended by itself at its cap, released, and the n
   const next = await runTool("browser_read", {}, turn(OWNER, "what does it say"));
   assert.equal(next.hosted_browser, "session_ended");
   assert.match(next.say_exactly, /ran out of time and closed/);
+});
+
+test("an errand's hosted session left alone is closed after the idle time, not left to run to its cap", skip, async () => {
+  set({ ...ON(), REASON_REMOTE_BROWSER_IDLE_MS: "500" });
+  consent();
+  assert.equal((await runTool("browser_open", { url: DD("/") }, turn(OWNER, "open doordash"))).ok, true);
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal((await runTool("browser_read", {}, turn(OWNER, "read it"))).ok, true, "used again: still open");
+  await new Promise(r => setTimeout(r, 1500));
+  assert.equal(remote.remoteSessionsOpen(), 0);
+  assert.equal(releases().length, 1);
+  assert.equal(browser.openConversations().includes(OWNER), false);
 });
 
 // ---------------------------------------------------------------- deleting

@@ -402,11 +402,39 @@ async function hostedErrand(conversationId, context, site) {
     const page = context.pages()[0] ?? await context.newPage();
     page.setDefaultTimeout(config.browserTimeoutMs);
     sessions.set(conversationId, { context, page, used: Date.now(), remoteSite: site });
+    hostedIdleSweep();
     return page;
   } catch (e) {
     await context.close().catch(() => {});
     throw e;
   }
+}
+
+/**
+ * A hosted errand session nobody used for this long is closed (REASON_REMOTE_BROWSER_IDLE_MS, default
+ * 2 minutes): the local browser may wait between turns, but a hosted one is billed by the minute.
+ */
+export function hostedIdleMs() {
+  const n = Number.parseInt(process.env.REASON_REMOTE_BROWSER_IDLE_MS ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 2 * 60_000;
+}
+let hostedTimer = null;
+export async function closeIdleHosted(now = Date.now()) {
+  const idle = [...sessions].filter(([, s]) => s.remoteSite && now - (s.used ?? 0) >= hostedIdleMs()).map(([c]) => c);
+  await Promise.all(idle.map(closeBrowser));
+  return idle.length;
+}
+let hostedEvery = 0;
+function hostedIdleSweep() {
+  const every = Math.max(250, Math.min(15_000, Math.floor(hostedIdleMs() / 4)));
+  if (hostedTimer && hostedEvery === every) return;
+  if (hostedTimer) clearInterval(hostedTimer);
+  hostedEvery = every;
+  hostedTimer = setInterval(() => {
+    closeIdleHosted().catch(() => {});
+    if (![...sessions.values()].some((s) => s.remoteSite)) { clearInterval(hostedTimer); hostedTimer = null; }
+  }, every);
+  hostedTimer.unref?.();
 }
 
 let idleTimer = null;
