@@ -44,6 +44,7 @@ import * as google from "./google.js";
 import { deleteAllFor, deleteEveryLogin, exportFor, exportRoutesFor } from "./savedlogins.js";
 import { exportFor as exportPassphraseFor } from "./callpass.js";
 import { deleteContextsFor as deleteHostedFor, deleteEveryContext as deleteEveryHosted } from "./remotebrowser.js";
+import "./doordash.js"; // its table exists before an export or a delete reads the list
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
@@ -72,6 +73,9 @@ const TABLES = [
   // them (the Context id, sealed; dropped from an export, deleted there and here on a delete), their
   // yes to it, and the browser seconds each job used.
   "remote_browser_contexts", "remote_browser_consent", "remote_browser_usage",
+  // Their DoorDash orders through the hosted browser (src/doordash.js): the address (sealed), the
+  // restaurant (sealed), the checkout's breakdown and total, the confirmation number (sealed).
+  "doordash_orders",
   // Which new features this person has been told about. Theirs like anything else keyed by
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.

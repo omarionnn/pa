@@ -615,5 +615,6 @@
  "src/verifications.js | SELECT SELECT * FROM verifications WHERE id = ?": 1,
  "src/verifications.js | SELECT SELECT * FROM verifications WHERE state = 'due' AND due_at <= ? ORDER BY due_at LIMIT ?": 1,
  "src/proofshot.js | SELECT SELECT file FROM proof_pictures": 1,
- "src/remotebrowser.js | DELETE DELETE FROM remote_browser_contexts; DELETE FROM remote_browser_consent; DELETE FROM remote_browser_usage; DELETE FROM remote_browser_month; DELETE FROM remote_": 1
+ "src/remotebrowser.js | DELETE DELETE FROM remote_browser_contexts; DELETE FROM remote_browser_consent; DELETE FROM remote_browser_usage; DELETE FROM remote_browser_month; DELETE FROM remote_": 1,
+ "src/doordash.js | DELETE DELETE FROM doordash_orders": 1
 }
