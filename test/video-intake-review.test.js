@@ -230,3 +230,31 @@ test("the model's account, the title and the description are scanned as outside 
   assert.equal(r2.cannot, "live");
   assert.ok(r2.untrusted_content && r2.flagged?.length >= 1);
 });
+
+test("the long-video heads-up lands in the conversation that asked: the owner's own thread, and a group's thread", async () => {
+  const { Runtime } = await import("../src/runtime.js");
+  const { Router } = await import("../src/channels/router.js");
+  const { FakeChannel } = await import("../src/channels/fake.js");
+  const router = new Router({ runtime: new Runtime({ runTurn: async () => "ok" }) });
+  const fake = router.register(new FakeChannel({ media: true }));
+  const long = (id) => {
+    const url = `https://www.youtube.com/watch?v=${id}`;
+    const m = { ...meta("nocaptions.meta.json"), id, webpage_url: url, duration: 1800, subtitles: {}, automatic_captions: {} };
+    return { url, run: recorder((args) => args.includes("-J") ? { ok: true, code: 0, stdout: JSON.stringify(m), stderr: "" } : { ok: false, code: 1, stdout: "", stderr: "no" }) };
+  };
+  db.upsertThread({ conversationId: C, channel: fake.name, address: "+12025551234", chatId: "dm-chat-1", service: "iMessage" });
+  const a = long("LongOwner01");
+  await runTool("video_understand", { url: a.url }, { conversationId: C, channels: router, videoRun: a.run, videoModel: null, videoTranscriber: null });
+  const one = fake.sent.filter(m => /pulling the transcript now/.test(m.text ?? ""));
+  assert.equal(one.length, 1);
+  assert.equal(one[0].chatId, "dm-chat-1", "the owner's own thread");
+
+  config.videoIntake = "on";
+  const G = "group:review-1";
+  db.upsertThread({ conversationId: G, channel: fake.name, address: "+14155550111", chatId: "grp-chat-1", service: "iMessage" });
+  const b = long("LongGroup01");
+  await runTool("video_understand", { url: b.url }, { conversationId: G, channels: router, videoRun: b.run, videoModel: null, videoTranscriber: null });
+  const two = fake.sent.filter(m => /pulling the transcript now/.test(m.text ?? ""));
+  assert.equal(two.length, 2);
+  assert.equal(two[1].chatId, "grp-chat-1", "the group's own thread, not the owner's DM");
+});
