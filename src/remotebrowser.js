@@ -232,10 +232,14 @@ db.db.exec(`
     month TEXT PRIMARY KEY,
     seconds INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS remote_browser_orphans (
+    context_id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL
+  );
 `);
 /** For tests. */
 export function _resetRemote() {
-  db.db.exec("DELETE FROM remote_browser_contexts; DELETE FROM remote_browser_consent; DELETE FROM remote_browser_usage; DELETE FROM remote_browser_month");
+  db.db.exec("DELETE FROM remote_browser_contexts; DELETE FROM remote_browser_consent; DELETE FROM remote_browser_usage; DELETE FROM remote_browser_month; DELETE FROM remote_browser_orphans");
   lastEnded.clear();
   counters.opens = 0; counters.api = 0;
 }
@@ -338,7 +342,7 @@ async function ensureContext(conversationId, site, projectId) {
  * kept to try again and said in the ops digest. Any open hosted session of theirs is closed first.
  *   → { deleted, failed }
  */
-export async function deleteContextsFor(conversationId, { site = null } = {}) {
+export async function deleteContextsFor(conversationId, { site = null, orphan = false } = {}) {
   const c = String(conversationId);
   const key = site ? keyOf(site) : null;
   const rows = key
@@ -357,15 +361,30 @@ export async function deleteContextsFor(conversationId, { site = null } = {}) {
     } catch {
       failed += 1;
       opsLine("delete_failed", r.site);
+      // Their data is being deleted: the row goes with it, and only the bare id is kept, with no
+      // person, until Browserbase confirms the delete (retryOrphans).
+      if (orphan && id) {
+        db.db.prepare("INSERT OR IGNORE INTO remote_browser_orphans (context_id, at) VALUES (?, ?)").run(id, clock.now());
+        db.db.prepare("DELETE FROM remote_browser_contexts WHERE conversation_id = ? AND site = ?").run(c, r.site);
+      }
     }
   }
   return { deleted, failed };
 }
+/** Contexts whose delete failed after their owner's data went: tried again (on the next hosted session). */
+export async function retryOrphans() {
+  const rows = db.db.prepare("SELECT context_id FROM remote_browser_orphans").all();
+  let deleted = 0;
+  for (const r of rows) {
+    try { await api("DELETE", `/v1/contexts/${encodeURIComponent(r.context_id)}`); db.db.prepare("DELETE FROM remote_browser_orphans WHERE context_id = ?").run(r.context_id); deleted += 1; } catch { /* next time */ }
+  }
+  return deleted;
+}
 /** Every person's kept sign-ins (a delete of the whole install). */
-export async function deleteEveryContext() {
+export async function deleteEveryContext({ orphan = false } = {}) {
   const people = db.db.prepare("SELECT DISTINCT conversation_id FROM remote_browser_contexts").all().map(r => r.conversation_id);
   let deleted = 0; let failed = 0;
-  for (const c of people) { const r = await deleteContextsFor(c); deleted += r.deleted; failed += r.failed; }
+  for (const c of people) { const r = await deleteContextsFor(c, { orphan }); deleted += r.deleted; failed += r.failed; }
   return { deleted, failed };
 }
 /** Their consent and metering rows, for a scoped delete (data.js takes the tables by conversation id). */
@@ -478,6 +497,7 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
   const timeoutSec = Math.max(60, Math.min(sessionCapMinutes() * 60, left));
   // One hosted session per person at a time: a Context is used by one session at once.
   await closeRemoteFor(c);
+  if (db.db.prepare("SELECT 1 FROM remote_browser_orphans LIMIT 1").get()) await retryOrphans().catch(() => 0);
   counters.opens += 1;
   let contextId;
   try { contextId = await ensureContext(c, s, projectId); } catch (e) { const err = withSite(e, s, alt); if (OPS_WORDS[err.code]) opsLine(err.code, s); throw err; }
