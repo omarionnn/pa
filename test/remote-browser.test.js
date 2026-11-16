@@ -69,6 +69,11 @@ const siteServer = createServer((req, res) => {
   if (req.url === "/clicked") { clicked.push(Date.now()); res.writeHead(204); return res.end(); }
   if (req.url === "/challenge") return page("<h1>Verify you are human</h1><p>Press and hold the button to continue.</p><button>Press and hold</button>");
   if (req.url === "/blocked") return page("<h1>Access denied</h1>", 403);
+  if (req.url.startsWith("/recaptcha") || req.url.startsWith("/fc/")) return page("<div>frame</div>");
+  // DoorDash's real sign-in page (live smoke 2026-11-15) carries an invisible anti-bot frame: still a form.
+  if (req.url === "/login-sensor") return page(`<h1>Login with email</h1><form><label for=e>Email</label><input id=e type=email name=email><label for=p>Password</label><input id=p type=password name=password><button type=submit>Continue to Sign In</button></form><iframe src="http://www.google.com:${SITE_PORT}/recaptcha/api2/anchor" width="0" height="0" style="border:0"></iframe><p>This site is protected by reCAPTCHA.</p>`);
+  // A puzzle in its own visible frame, nothing else on the page (Uber's Arkose, 2026-11-15 eval).
+  if (req.url === "/puzzle") return page(`<h1>Protecting your account</h1><iframe src="http://client-api.arkoselabs.com:${SITE_PORT}/fc/gc/" width="400" height="300"></iframe>`);
   if (req.url.startsWith("/consumer/login")) return page("<h1>Sign in or sign up</h1><form><label for=e>Email</label><input id=e type=email name=email><button type=submit>Continue</button></form>");
   return page("<h1>Restaurants near you</h1><p>Order delivery from local favourites.</p><button onclick=\"fetch('/clicked')\">Find food</button>");
 });
@@ -315,6 +320,18 @@ test("a page that turns into a challenge: browser_click presses nothing and stop
   assert.equal(out.hosted_browser, "challenge");
   await new Promise(r => setTimeout(r, 300));
   assert.equal(clicked.length, 0, "the button under the challenge was never pressed");
+  assert.equal(remote.remoteSessionsOpen(), 0);
+});
+
+test("an invisible anti-bot frame on a working sign-in form is not a challenge; a visible puzzle frame is (live smoke regression)", skip, async () => {
+  set(ON());
+  consent();
+  const form = await runTool("browser_open", { url: DD("/login-sensor") }, turn(OWNER, "sign me into doordash"));
+  assert.equal(form.ok, true, JSON.stringify(form).slice(0, 300));
+  assert.equal(remote.remoteSessionsOpen(), 1);
+  assert.equal(refusing.refusingSite("doordash.com", undefined, { browser: "remote" }), null);
+  const puzzle = await runTool("browser_open", { url: DD("/puzzle") }, turn(OWNER, "go on"));
+  assert.equal(puzzle.hosted_browser, "challenge");
   assert.equal(remote.remoteSessionsOpen(), 0);
 });
 

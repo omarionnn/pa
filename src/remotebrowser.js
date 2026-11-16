@@ -574,14 +574,27 @@ export async function challengeOn(page, { status = null } = {}) {
   let kind = "";
   try { const sp = await import("./signinpage.js"); kind = (await sp.readPage(page)).kind; } catch { kind = ""; }
   if (kind === "challenge") return "challenge";
+  // A page with a usable sign-in form, a signed-in page or a provider's own prompt is not a challenge,
+  // whatever it embeds: sites put an invisible reCAPTCHA or Arkose sensor on a normal sign-in form
+  // (DoorDash's, live 2026-11-15), and that frame is them watching, not a puzzle for the person.
+  if (kind === "signin_form" || kind === "signed_in" || kind === "provider_prompt") return "";
   let text = "";
   try { text = String(await page.evaluate(() => (document.body ? document.body.innerText : "")) ?? ""); } catch { text = ""; }
   if (text.trim().length <= 1500 && BLOCK_PAGE.test(text)) return "wall";
-  // A challenge drawn in its own frame on a page with almost nothing else on it.
-  try {
-    const framed = (page.frames?.() ?? []).some(f => f !== page.mainFrame?.() && CHALLENGE_FRAME.test(String(f.url?.() ?? "")));
-    if (framed && text.trim().length <= 1500) return "challenge";
-  } catch { /* gone */ }
+  // A challenge drawn in its own VISIBLE frame of a real size, on a page with little else on it.
+  if (text.trim().length <= 1500) {
+    try {
+      const shown = await page.evaluate((src) => {
+        const re = new RegExp(src, "i");
+        return [...document.querySelectorAll("iframe")].some((f) => {
+          if (!re.test(String(f.src || ""))) return false;
+          const r = f.getBoundingClientRect(); const st = getComputedStyle(f);
+          return r.width >= 200 && r.height >= 150 && st.visibility !== "hidden" && st.display !== "none" && st.opacity !== "0";
+        });
+      }, CHALLENGE_FRAME.source);
+      if (shown) return "challenge";
+    } catch { /* gone */ }
+  }
   return "";
 }
 /**
