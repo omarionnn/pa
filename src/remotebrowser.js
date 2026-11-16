@@ -437,6 +437,32 @@ export function takeEnded(conversationId, now = clock.now()) {
 }
 
 /**
+ * What stops a hosted job before anything is opened: no key, a site that turned the hosted browser
+ * away (not tried again until its mark is old), no consent yet (the question is noted as asked), or
+ * the month's minutes used up. → a FAILURES code, or null to go ahead. Makes no request.
+ */
+function gateCode(c, s) {
+  const { key, projectId } = credentials();
+  if (!key || !projectId) return "key_missing";
+  if (refusing.refusingSite(s, undefined, { browser: "remote" })) return "refused";
+  if (!consented(c, s)) { noteAsked(c, s); return "consent_needed"; }
+  if (monthBudgetMinutes() * 60 - monthSeconds() < 60) return "out_of_minutes";
+  return null;
+}
+/**
+ * For a tool that is about to start a hosted job in the background (the emailed-code sign-in, the
+ * saved-login filler): the answer to give now instead, or null. Off, or a site not covered: null.
+ */
+export function gate(conversationId, site, { alt = "" } = {}) {
+  const s = remoteFor(conversationId, site);
+  if (!s) return null;
+  const code = gateCode(String(conversationId), s);
+  if (!code) return null;
+  if (OPS_WORDS[code]) opsLine(code, s);
+  return { ...new RemoteBrowserError(code, s, { alt }).answer };
+}
+
+/**
  * Open a hosted session for this person and site and hand back its browser context, with `close`
  * releasing the session at Browserbase. `launcher` is Playwright's chromium (connectOverCDP).
  * Throws RemoteBrowserError, with the session already released, on every failure.
@@ -446,14 +472,9 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
   const s = remoteFor(c, site);
   if (!s) throw new Error("openRemote called for a site the switch does not cover"); // never: the caller checked
   const fail = (code) => { const e = new RemoteBrowserError(code, s, { alt }); if (OPS_WORDS[code]) opsLine(code, s); return e; };
-  const { key, projectId } = credentials();
-  if (!key || !projectId) throw fail("key_missing");
-  // A site that turned the hosted browser away is not tried again until its mark is old.
-  if (refusing.refusingSite(s, undefined, { browser: "remote" })) throw new RemoteBrowserError("refused", s, { alt });
-  if (!consented(c, s)) { noteAsked(c, s); throw new RemoteBrowserError("consent_needed", s, { alt }); }
-  const budget = monthBudgetMinutes() * 60;
-  const left = budget - monthSeconds();
-  if (left < 60) throw fail("out_of_minutes");
+  const { projectId } = credentials();
+  { const code = gateCode(c, s); if (code) throw fail(code); }
+  const left = monthBudgetMinutes() * 60 - monthSeconds();
   const timeoutSec = Math.max(60, Math.min(sessionCapMinutes() * 60, left));
   // One hosted session per person at a time: a Context is used by one session at once.
   await closeRemoteFor(c);

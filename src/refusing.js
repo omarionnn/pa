@@ -29,8 +29,10 @@ export const STRIKE_GAP_MS = 10 * 60_000;
 // the email step of a Continue-with-Google job (src/federated.js), kept against google.com. A strike,
 // like a wall: one is a bad moment, two 10+ minutes apart mark Google for 7 days, and any account-level
 // answer from Google (signed in, a tap or a code asked, a wrong password) clears it.
-export const EVIDENCE = ["seed_generic_error_two_networks", "generic_error_twice", "wall", "challenge", "browser_refused"];
-const STRIKES = new Set(["wall", "challenge", "browser_refused"]);
+// "hosted_refused": the hosted browser (src/remotebrowser.js) got the site's generic refusal once; it
+// does not try twice, so once is the mark (kept under the site's hosted key, believed 7 days).
+export const EVIDENCE = ["seed_generic_error_two_networks", "generic_error_twice", "wall", "challenge", "browser_refused", "hosted_refused"];
+const STRIKES = new Set(["wall", "challenge", "browser_refused", "hosted_refused"]);
 const maxAgeOf = (evidence) => (STRIKES.has(evidence) ? WALL_MAX_AGE_MS : REFUSAL_MAX_AGE_MS);
 
 /** Written down by hand, with the day it was seen. */

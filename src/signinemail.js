@@ -36,6 +36,7 @@ import * as findings from "./sitefindings.js";
 import * as signinPage from "./signinpage.js";
 import { logAttempt, logStep } from "./signinlog.js";
 import { typedOnly } from "./trust.js";
+import * as remote from "./remotebrowser.js";
 
 /** How long Gmail is polled for the site's mail, and how often. */
 export const MAIL_WAIT_MS = 90_000;
@@ -575,7 +576,8 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
     let browser = null;
     try {
       await closeBrowser(conversationId);
-      browser = await launch({ conversationId, url: entry.signin_url });
+      // An entry tagged for the hosted browser (src/remotebrowser.js tagEntry) is opened there.
+      browser = await launch({ conversationId, url: entry.signin_url, ...(entry.browser === "remote" ? { site: entry.remote_site } : {}) });
       const page = browser.page;
       job.state = "requesting";
       const asked = await requestCode(page, entry, email, { conversationId, log, settleMs, formWaitMs });
@@ -595,6 +597,12 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
           // until it is old, and said as what it is: never a wrong email, never another address.
           const kind = asked.detail === "wall_before_form" ? "walled" : "refuses_after_email";
           if (asked.detail !== "rate_limited") findings.recordFinding(entry, { kind, why: asked.why });
+          // The hosted browser: one attempt, then stop. The site is paused for it at once and the
+          // person is told once, in the fixed words; nothing tries again on its own.
+          if (entry.browser === "remote") {
+            const stop = await remote.stopForChallenge(conversationId, entry.remote_site, kind === "walled" ? "wall" : "challenge");
+            return finish(`the ${entry.label} sign-in in the hosted browser stopped: ${asked.why}. Nothing was saved and nothing will be retried. Send this as it is, once: "${stop.say_exactly}" Do not ask which email they use, do not try another address, and do not offer a sign-in link.`, "blocked");
+          }
           const w = findings.blockedWords(entry, { kind }, { instead: !social.isFoodApp(entry.site) && social.wallInstead(entry).say ? social.wallInstead(entry) : null });
           return finish(`the ${entry.label} email sign-in stopped: ${asked.why}. This is ${entry.label} blocking automated sign-in, NOT a wrong email. Nothing was saved. ${w.never} Say ONE honest line, like: "${w.say}" Then the best route left: ${w.instead}`, "blocked", asked.detail);
         }
@@ -654,6 +662,8 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       return finish(`the ${entry.label} email sign-in entered the code, but whether they are signed in is UNKNOWN: ${entry.label}'s page showed nothing that proves it either way (${out?.why ?? out?.error ?? ""}). Nothing is recorded as signed in. Say ONE plain line, like: "I entered the ${entry.label} code but I can't tell whether it signed you in." Do not start another sign-in or send a link on your own; signin_status with recheck asks the site again.`, state);
     } catch (e) {
       log({ signin_email: "error", site: entry.site, why: (e?.message ?? String(e)).split("\n")[0].slice(0, 160) });
+      // The hosted browser could not be had (unreachable, out of minutes, no key): its fixed words.
+      if (e instanceof remote.RemoteBrowserError) return finish(`the ${entry.label} sign-in did not start: the hosted browser said "${e.code}". Nothing was saved and nothing will be retried. Send this as it is, once: "${e.answer.say_exactly}"`, "error");
       return finish(`the ${entry.label} email sign-in broke on Reason's side before it finished. Nothing was saved. Say so in one plain line, and that a new sign-in needs them to say go. Never offer to try again.`, "error");
     } finally {
       if (browser) await browser.close?.().catch?.(() => {});

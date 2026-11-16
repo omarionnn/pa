@@ -24,6 +24,7 @@ import { dropIntake } from "./loginintake.js";
 import { classifySite, refusalFor, registrableOf } from "./sitepolicy.js";
 import { recordFinding } from "./sitefindings.js";
 import { refusingSite, refusalAnswer, markRefusing, reachedForm, clearRefusal } from "./refusing.js";
+import * as remote from "./remotebrowser.js";
 import { readPage, loginFormOf, waitFor, settleWatch, formWaitMs, signinDoor, followSigninDoor } from "./signinpage.js";
 import { logAttempt, logDiag, safeMessage } from "./signinlog.js";
 import { codeFromGmail, enterCode, awaitCodeReply } from "./signinemail.js";
@@ -132,11 +133,15 @@ export function liveAskOk(trigger) {
   return trigger?.kind === "user";
 }
 
+/** A finding about a site the hosted browser covers for them is its own (src/sitefindings.js). Off: nothing. */
+const hostedTag = (c, host) => (remote.browserKind(c, host) === "remote" ? { browser: "remote" } : {});
+
 /** Launch the person's own saved profile for the sealed step, headless and guarded. Injectable for tests. */
-async function realLaunch({ conversationId }) {
+async function realLaunch({ conversationId, site = "" }) {
   const { chromium } = await import("playwright");
   // The same launch as every flow: the real browser for a person it is on for, else today's (src/browser.js).
-  const context = await launchProfile(chromium, conversationId, { headless: true, viewport: { width: 1280, height: 900 } });
+  // `site`: a site the hosted browser covers for them (src/remotebrowser.js); never passed otherwise.
+  const context = await launchProfile(chromium, conversationId, { headless: true, viewport: { width: 1280, height: 900 } }, ...(site ? [{ site }] : []));
   return {
     context,
     close: async () => { await context.close().catch(() => {}); },
@@ -720,7 +725,7 @@ function finish(c, row, host, pinned, result, { why = "", again = false, started
   if (result === "signed_in") setState(c, row.id, { state: "working", failCount: 0, clearNextTry: true });
   else if (result === "wrong_password") setState(c, row.id, { state: "wrong_password", bumpFail: true });
   else if (REFUSED_BY_SITE.has(result)) {
-    recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "a wall after the password" });
+    recordFinding({ site: host, label: host, signin_url: pinned, ...hostedTag(c, host) }, { kind: "walled", why: "a wall after the password" });
     setState(c, row.id, { state: "refused" });
   } else if (typed) setState(c, row.id, { nextTryAt: (at ?? clock.now()) + (result === "site_trouble" ? SITE_TROUBLE_PAUSE_MS : RETRY_PAUSE_MS) });
   if (result !== "signed_in") unpinSite(c);
@@ -768,11 +773,17 @@ export async function signIn(conversationId, site, {
   }
   // A site that turns away software-driven browsers (src/refusing.js): said up front, before any row
   // is read, any Face ID ask or any page opened. The saved login is left exactly as it is.
-  const turnsAway = refusingSite(host);
+  // The hosted browser (src/remotebrowser.js) for a site it covers for them: its own refusal memory,
+  // its consent, its key and its minutes, all asked before anything is read or opened.
+  const via = remote.browserKind(c, host);
+  const hosted = { browser: via };
+  const turnsAway = refusingSite(host, undefined, hosted);
   if (turnsAway) {
     recordLoginEvent(c, { site: host, event: "signin", outcome: "refuses_software", purpose: why });
+    if (via === "remote") return { ...remote.gate(c, host), result: "refuses_software", refused: true };
     return refusalAnswer(turnsAway, { words: why });
   }
+  if (via === "remote") { const held = remote.gate(c, host); if (held) return { ...held, result: held.hosted_browser }; }
 
   // The saved Google login is never used to sign in to Google itself (Gmail, Drive, settings, or
   // accounts.google.com on its own): only as the Continue-with-Google step of a site they named.
@@ -867,7 +878,7 @@ export async function signIn(conversationId, site, {
   const attempt = async () => {
     unpinSite(c); // a new sign-in ends any earlier signed-in job
     await closeErrandBrowser(c);
-    session = await launch({ conversationId: c });
+    session = await launch({ conversationId: c, ...(via === "remote" ? { site: remote.remoteSiteOf(host) } : {}) });
     await guardContext(session.context, { conversationId: c });
     const page = session.context.pages()[0] ?? await session.context.newPage();
     page.setDefaultTimeout(20_000);
@@ -893,8 +904,8 @@ export async function signIn(conversationId, site, {
     // A human-check that wants a person, showing before anything is typed and not clearing by itself
     // within the wait: stop, never solve it, never offer to try again.
     if (got.verdict === "wall") {
-      try { markRefusing(row.site || host, "wall", now()); } catch { /* best effort */ }
-      recordFinding({ site: host, label: host, signin_url: pinned }, { kind: "walled", why: "challenge on the sign-in page" });
+      try { markRefusing(row.site || host, "wall", now(), hosted); } catch { /* best effort */ }
+      recordFinding({ site: host, label: host, signin_url: pinned, ...hostedTag(c, host) }, { kind: "walled", why: "challenge on the sign-in page" });
       setState(c, row.id, { state: "refused" });
       unpinSite(c);
       logAttempt({ signin_url: pinned }, { route: again ? "saved_login_again" : "saved_login", outcome: "blocked_by_site", startedAt, detail: door ? "wall_front_door" : "wall_before_form" });
@@ -913,7 +924,7 @@ export async function signIn(conversationId, site, {
     // by `ours` before every keystroke step).
     const { form } = got;
     // The form was reached: a single earlier wall was a bad moment, not the site refusing (src/refusing.js).
-    try { reachedForm(row.site || host); } catch { /* best effort */ }
+    try { reachedForm(row.site || host, hosted); } catch { /* best effort */ }
     const at = urlParts(page.url());
     if (at.origin !== row.signin_origin || at.path !== row.signin_path) { finish(c, row, host, pinned, "origin_mismatch", { why, again, startedAt }); return { out: say("origin_mismatch", host) }; }
 
@@ -945,7 +956,7 @@ export async function signIn(conversationId, site, {
   const conclude = async ({ result, diag, page }) => {
     // An account-level answer (signed in, wrong password, a code asked): the site let the browser in, so
     // any mark on it goes at once (src/refusing.js).
-    if (ACCOUNT_LEVEL.has(result)) { try { clearRefusal(row.site || host, now()); } catch { /* best effort */ } }
+    if (ACCOUNT_LEVEL.has(result)) { try { clearRefusal(row.site || host, now(), hosted); } catch { /* best effort */ } }
     // The second step, after the secret is gone (the code is not a saved secret): what the row says
     // the site does wins over what the page's words suggest.
     // A code the site sent INSTEAD of the password (diag.codeInstead) is relayed through their texted
@@ -996,7 +1007,7 @@ export async function signIn(conversationId, site, {
 
     finish(c, row, host, pinned, result, { why, again, startedAt, typed, at: now() });
     // A human-check after the submit: the site turned the browser away (written down for the site).
-    if (result === "blocked" && diag.challenge === true) { try { markRefusing(row.site || host, "challenge", now()); } catch { /* best effort */ } }
+    if (result === "blocked" && diag.challenge === true) { try { markRefusing(row.site || host, "challenge", now(), hosted); } catch { /* best effort */ } }
     if (result !== "signed_in") logDiag({ signin_url: pinned }, { ...diag, result });
     return say(result, host, "", { msgClass: diag.msgClass, msg: diag.msg });
   };
@@ -1004,6 +1015,14 @@ export async function signIn(conversationId, site, {
   try {
     const first = await attempt();
     if (first.out) return first.out;
+    // The hosted browser: one attempt, then stop. No second go by itself: the site's generic error is
+    // its refusal, written down for the hosted browser at once, and the login rests as after two.
+    if (first.result === "site_trouble" && via === "remote") {
+      finish(c, row, host, pinned, "site_trouble", { why, again, startedAt, typed, at: now() });
+      try { markRefusing(row.site || host, "hosted_refused", now(), hosted); } catch { /* best effort */ }
+      logDiag({ signin_url: pinned }, { ...first.diag, result: "site_trouble" });
+      return say("site_trouble", host, "", { msg: first.diag.msg });
+    }
     if (first.result === "site_trouble") {
       // The site's own error before it accepted or turned down the login: ONE more go, by itself, in a
       // fresh browser after a few minutes. The first go is logged but rests nothing; the person is told
@@ -1173,6 +1192,9 @@ export async function forgetLogin(conversationId, site, { launch = realLaunch, p
   if (!rows.length) return { ok: true, removed: 0, say_exactly: `You don't have a saved login for ${host}.` };
   const base = registrableOf(rows[0].site) || rows[0].site;
   const origin = rows[0].signin_origin;
+  // A sign-in kept in the hosted browser (src/remotebrowser.js) is deleted there first. No row: no request.
+  let hostedGone = null;
+  try { hostedGone = await remote.deleteContextsFor(c, { site: base }); } catch { hostedGone = { deleted: 0, failed: 1 }; }
   let signedOut = false;
   let cleared = false;
   const holder = Symbol("forget");
@@ -1219,6 +1241,8 @@ export async function forgetLogin(conversationId, site, { launch = realLaunch, p
   }
   recordLoginEvent(c, { site: base, event: "signed_out", outcome: signedOut && cleared ? "ok" : "stopped", purpose });
   const parts = [`Done. I deleted your saved login for ${base}.`];
+  if (hostedGone?.deleted) parts.push(`I also deleted your ${base} sign-in from the hosted browser.`);
+  else if (hostedGone?.failed) parts.push(`I couldn't delete your ${base} sign-in from the hosted browser just now, and the team has been told.`);
   if (signedOut && cleared) parts.push(`I signed out on ${base} and cleared its cookies and stored data from my browser.`);
   else if (cleared) parts.push(`I cleared ${base}'s cookies and stored data from my browser, but I couldn't confirm a sign-out on ${base} itself. To be sure, sign out of other sessions in your ${base} account settings.`);
   else parts.push(`I couldn't confirm that ${base}'s session in my browser is gone. To be sure, sign out of other sessions in your ${base} account settings.`);
