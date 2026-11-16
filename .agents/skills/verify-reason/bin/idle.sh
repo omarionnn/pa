@@ -55,12 +55,33 @@
 #     the ending written).
 #   - An emailed-code sign-in (src/signinemail.js startEmailSignin) is busy.json kind signin_email.
 #
+# And a person waiting for a reply (2026-11-16). At 00:43:49 UTC a text arrived, about 4 s later this
+# gate said IDLE, the restart cut the turn writing the answer (turn_interrupted/drain_interrupted) and
+# the reply went out about a minute late. Read from the database only, counts and times, never text:
+#   - a held message (pending_inbound) that arrived in the last 10 minutes and is due within 120 s: the
+#     burst wait before its turn. One held further off (Web switched off, an outage hold) is not waited for.
+#   - a person's history row (messages, role user) whose turn has not ended: turn_done_at is set by
+#     db.finishTurn when the turn answering it ends (src/channels/router.js), so null = the turn is
+#     running (the model, its tools, the send). Rows written before that column existed are null for
+#     ever, and a turn that died leaves one null, so only rows that arrived in the last 10 minutes count
+#     (a CLI turn gets 5, REASON_CLI_TIMEOUT_MS; on live the slowest in a day ended 68 s after arrival).
+#   - a text received (inbound_messages, not unsent) in the last 120 s with no history row and nothing held: taken
+#     by a turn that is still reading it (a voice memo heard, an image read) before its row is written.
+# What does not count: timers (above), and what runs after the reply has gone (memory extraction, the
+# said check, digests, receipts): none of it touches these rows, so it cannot hold a deploy.
+# If this check cannot run it says WARN and the gate decides as it did before it, never blocked by it.
+# REASON_IDLE_TURNS=off skips it; REASON_IDLE_TURN_QUIET_S (default 120) and REASON_IDLE_TURN_STALE_S
+# (default 600) move the two windows.
+#
 # Usage:  idle.sh            once
 #         idle.sh --wait     poll every 15 s until idle (gives up after 20 minutes, exit 1)
 # Host: REASON_LIVE_SSH (default the live OVH box). On the server itself: REASON_LIVE_SSH=local.
 # REASON_IDLE_DATA (local only): another data dir, for proving the gate on a scratch database.
 set -u
 HOST="${REASON_LIVE_SSH:-root@15.204.113.250}"
+TQ="${REASON_IDLE_TURN_QUIET_S:-120}"; [[ "$TQ" =~ ^[0-9]{1,5}$ ]] || TQ=120
+TS="${REASON_IDLE_TURN_STALE_S:-600}"; [[ "$TS" =~ ^[0-9]{1,5}$ ]] || TS=600
+TW=on; [ "${REASON_IDLE_TURNS:-on}" = "off" ] && TW=off
 
 read -r -d '' REMOTE <<'SH'
 set -u
@@ -114,6 +135,27 @@ sqlite3 -readonly reason.db "SELECT 'timer ' || id || ' — ' || CASE
     (attempts > 0 AND $CLAIMED > $NOW - 600000)
     OR (attempts = 0 AND fire_at > $NOW - 600000 AND fire_at <= $NOW + 60000))
   ORDER BY id" || { echo "ERR sqlite"; exit 3; }
+# A reply being written (see the top). Any failure here is WARN, and the rest of the gate decides.
+if [ "$TW" = "off" ]; then echo "WARN reply check off (REASON_IDLE_TURNS=off): a reply being written is not checked"
+else
+  TURNOUT=$(
+    S=$(sqlite3 -readonly reason.db "SELECT (SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'turn_done_at')
+      || '/' || (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('pending_inbound', 'inbound_messages'))
+      || '/' || (SELECT COUNT(*) FROM pragma_table_info('inbound_messages') WHERE name = 'cancelled_at')") || exit 9
+    [ "$S" = "1/2/1" ] || { echo "WARN reply check unavailable (schema $S): a reply being written is not checked"; exit 0; }
+    sqlite3 -readonly reason.db "
+      SELECT 'reply in progress — ' || COUNT(*) || ' held message(s) waiting for their turn, oldest arrived ' || (($NOW - MIN(arrived_at)) / 1000) || 's ago'
+        FROM pending_inbound WHERE arrived_at > $NOW - $TS * 1000 AND ready_at <= $NOW + 120000 HAVING COUNT(*) > 0;
+      SELECT 'reply in progress — turn running for ' || COUNT(*) || ' message(s), oldest arrived ' || (($NOW - MIN(at)) / 1000) || 's ago'
+        FROM messages WHERE role = 'user' AND turn_done_at IS NULL AND deleted_at IS NULL AND at > $NOW - $TS * 1000 HAVING COUNT(*) > 0;
+      SELECT 'reply in progress — ' || COUNT(*) || ' message(s) received ' || (($NOW - MAX(received_at)) / 1000) || 's ago, being read (no history row yet)'
+        FROM inbound_messages i WHERE received_at > $NOW - $TQ * 1000 AND cancelled_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = i.conversation_id AND m.role = 'user' AND m.external_id = i.external_id)
+          AND NOT EXISTS (SELECT 1 FROM pending_inbound p WHERE p.conversation_id = i.conversation_id AND p.external_id = i.external_id)
+        HAVING COUNT(*) > 0" || exit 9
+  ) || TURNOUT="WARN reply check failed (sqlite): a reply being written is not checked"
+  [ -n "$TURNOUT" ] && echo "$TURNOUT"
+fi
 PID=$(systemctl show reason -p MainPID --value 2>/dev/null)
 [ -n "$PID" ] && [ "$PID" != "0" ] || { echo "ERR reason is not running"; exit 3; }
 FILEPID=$(node -e 'try{const b=JSON.parse(require("fs").readFileSync("busy.json","utf8"));process.stdout.write(String(b.pid))}catch{}' 2>/dev/null)
@@ -151,6 +193,8 @@ else
 fi
 SH
 
+REMOTE="TQ=$TQ TS=$TS TW=$TW
+$REMOTE"
 check() {
   if [ "$HOST" = "local" ]; then bash -c "$REMOTE"; else ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "bash -s" <<<"$REMOTE"; fi
 }
@@ -158,8 +202,11 @@ check() {
 deadline=$(( $(date +%s) + 1200 ))
 while :; do
   out="$(check 2>/dev/null)"; rc=$?
+  # A WARN is said (once) and is not a reason to wait.
+  warn=$(grep '^WARN' <<<"$out" || true); out=$(grep -v '^WARN' <<<"$out" || true)
+  [ -n "$warn" ] && [ "${warned:-}" != "$warn" ] && { echo "$warn"; warned="$warn"; }
   if [ $rc -ne 0 ] || grep -q '^ERR' <<<"$out"; then echo "COULD NOT TELL ($(grep '^ERR' <<<"$out" | head -1 || true)) — treat as busy"; exit 2; fi
-  if [ -z "$out" ]; then echo "IDLE — no live call or call still settling, no sign-in in progress, no checkout or account job running, no save page or Face ID approval open, no timer running or due within 60 s"; exit 0; fi
+  if [ -z "$out" ]; then echo "IDLE — no live call or call still settling, no sign-in in progress, no checkout or account job running, no save page or Face ID approval open, no timer running or due within 60 s, no reply being written"; exit 0; fi
   echo "BUSY:"; echo "$out" | sed 's/^/  /'
   [ "${1:-}" = "--wait" ] || exit 1
   [ "$(date +%s)" -lt "$deadline" ] || { echo "still busy after 20 minutes — do not restart; ask"; exit 1; }
