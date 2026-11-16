@@ -467,6 +467,14 @@ test("a delete Browserbase will not do: kept as a bare id with no person, said i
   assert.equal(remote.hasContext(OTHER, "doordash.com"), true);
 });
 
+test("signin_status for a covered person reads the hosted browser's own findings, not the old wall on Reason's own browser", async () => {
+  set(ON());
+  const ctx = { ...turn(OWNER, "am I signed in to doordash"), liveWall: async () => null };
+  const out = await runTool("signin_status", { site: "doordash" }, ctx);
+  const here = /"signin_here":"([a-z]+)"/.exec(JSON.stringify(out))?.[1];
+  assert.ok(here && here !== "blocked", `covered: ${here}`);
+});
+
 test("no sign-in link or window for a hosted site; the email sign-in is tagged, gated and opened in the hosted browser", async () => {
   set(ON());
   const entry = remote.tagEntry(OWNER, { site: "doordash", label: "DoorDash", signin_url: "https://www.doordash.com/consumer/login" });

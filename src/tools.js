@@ -15956,17 +15956,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const never = signin.refuseAPassword();
       if (input.recheck) {
         if (!input.site) return { ok: false, error: "recheck needs a site: it has to know which account page to open." };
-        const entry = signinSite(c, input.site);
+        // A site the hosted browser covers for them (src/remotebrowser.js): asked there, with its own
+        // findings, and no provider button pressed to sign back in (its routes are the code and the saved login).
+        const entry = hostedBrowser.tagEntry(c, signinSite(c, input.site));
         if (!entry) return noSigninSite(c, input.site);
         const offNet = await genericSiteRefused(entry, ctx);
         if (offNet) return offNet;
-        const reach = trust.SITE_REACHABLE[entry.site];
+        const hosted = entry.browser === "remote";
+        const reach = hosted ? null : trust.SITE_REACHABLE[entry.site];
         // Which button the last live sign-in went through, read BEFORE the probe: a signed-out
         // reading revokes the row, and the provider on it is what a sign-in-again presses.
-        const before = social.socialAllowedFor(c) ? social.providerOf(c, entry.site) : "";
-        const page = await (ctx.pageFor ?? browser.pageFor)(c);
+        const before = social.socialAllowedFor(c) && !hosted ? social.providerOf(c, entry.site) : "";
+        const page = hosted ? await (ctx.pageFor ?? browser.pageFor)(c, { url: entry.signin_url }) : await (ctx.pageFor ?? browser.pageFor)(c);
         // The entry in hand: for a site named by its address, the page their sign-in there was on.
         let out = await (ctx.checkAndRecord ?? signin.checkAndRecord)(page, c, entry.site, { provider: before, ...(entry.generic ? { entry } : {}) });
+        if (hosted) { const stop = await hostedBrowser.stopIfChallenged(c, page, { status: out.status ?? null }); if (stop) return stop; }
         // A session that lapsed on a site whose login goes through a provider: sign back in yourself
         // first — open the sign-in page, press that button, ask the site again — and only involve the
         // person when that lands on a page waiting for them (src/socialsignin.js signInAgain).
@@ -16041,7 +16045,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // answered from what is stored, and says so.
       const hereFor = new Map();
       for (const r of rows) {
-        const e = signinSite(c, r.site);
+        // Tagged for the hosted browser where it covers them: its own findings, never Reason's own browser's.
+        const e = hostedBrowser.tagEntry(c, signinSite(c, r.site));
         if (!e) continue;
         hereFor.set(r.site, { entry: e, access: input.site ? await signinAccessFor(e, ctx) : findings.signinAccessStored(e) });
       }
@@ -16185,9 +16190,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "site_playbook": {
       const one = (name) => {
         const p = sites.playbook(name);
-        const reach = trust.SITE_REACHABLE[name];
+        const hostedEntry = hostedBrowser.tagEntry(c, sites.site(name));
+        const reach = hostedEntry?.browser === "remote" ? null : trust.SITE_REACHABLE[name];
         const row = db.lastSigninCheck(c, name);
-        const f = findings.signinAccessStored(sites.site(name));
+        const f = findings.signinAccessStored(hostedEntry);
         return {
           ...p,
           site_loads: reach?.loads ?? null,
