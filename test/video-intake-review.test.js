@@ -258,3 +258,24 @@ test("the long-video heads-up lands in the conversation that asked: the owner's 
   assert.equal(two.length, 2);
   assert.equal(two[1].chatId, "grp-chat-1", "the group's own thread, not the owner's DM");
 });
+
+test("a video that waited for its slot is held to what the ones before it spent", async () => {
+  config.videoConcurrent = 1;
+  try {
+    let spent = false;
+    const brain = fakeVideoModel();
+    const listen = brain.transcribeFile.bind(brain);
+    brain.transcribeFile = async (...a) => { await sleep(80); spent = true; return listen(...a); };
+    const run = recorder((args, o) => {
+      const url = args.at(-1);
+      if (args.includes("-J")) return { ok: true, code: 0, stdout: JSON.stringify({ ...JSON.parse(readFileSync(process.env.META_FILE, "utf8")), webpage_url: url, id: url.split("/").pop() }), stderr: "" };
+      if (!args.includes("--skip-download")) { writeFileSync(join(o.cwd, "audio.m4a"), Buffer.alloc(2000)); return { ok: true, code: 0, stdout: "", stderr: "" }; }
+      return { ok: false, code: 1, stdout: "", stderr: "ERROR: no subtitles" };
+    });
+    const opts = { run, bin: "/fake/yt-dlp", model: brain, modelStatus: WATCHING, transcriber: null, recordSpend: () => {}, spendCap: () => (spent ? { which: "day", spent: 1, cap: 1 } : null) };
+    const [a, b] = await Promise.all([video.videoIntake("https://vimeo.com/9002001", opts), video.videoIntake("https://vimeo.com/9002002", opts)]);
+    assert.equal(brain.calls.length, 1, "the second was checked after the first had spent");
+    assert.equal(a.tier, "listen");
+    assert.equal(b.tier, "metadata");
+  } finally { config.videoConcurrent = 2; }
+});

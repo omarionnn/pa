@@ -1133,20 +1133,25 @@ export async function videoIntake(rawUrl, opts = {}) {
     // ledger every paid model call is (src/spend.js, feature "video") and held to the same daily and
     // monthly caps. A cap already reached means only the free tier (captions) is tried, and said.
     const spend = (spendCap && recordSpend) ? null : await import("./spend.js");
-    const capHit = spendCap ? spendCap() : (spend.capReached() ?? spend.videoBudgetReached());
     const record = recordSpend ?? spend.recordApi;
     const maxBytes = rest.maxBytes ?? Math.round(config.videoAudioMaxMB * 1e6);
     // Paid audio goes to the video model only, whose use is counted below. An OpenAI transcriber set
     // for something else would be paid use nothing here counts, so intake never reaches for it.
     const understand = { ...rest, intake: true, maxBytes, transcriber: rest.transcriber !== undefined ? rest.transcriber : null };
-    const closed = capHit
-      ? `the spending limit on paid AI use is reached for ${capHit.which === "month" ? "this month" : capHit.which === "video" ? "videos today" : "today"}, so nothing that costs money (watching it or listening to it) was tried.`
-      : !rest.modelStatus && !priceKnown(config.videoModel)
-        ? `no price is on file for the video model (${config.videoModel}), so what it would cost could not be counted and nothing that costs money was tried.`
-        : !(await diskHasRoom(maxBytes))
-          ? "the server's disk is nearly full, so no audio was downloaded."
-          : null;
-    if (closed) understand.modelStatus = { connected: false, missing: [], model: null, why: closed };
+    // Read once the video has its slot, not when it was asked for: a video that waited behind two
+    // others is held to what they spent.
+    let capHit = null, closed = null;
+    const gate = async () => {
+      capHit = spendCap ? spendCap() : (spend.capReached() ?? spend.videoBudgetReached());
+      closed = capHit
+        ? `the spending limit on paid AI use is reached for ${capHit.which === "month" ? "this month" : capHit.which === "video" ? "videos today" : "today"}, so nothing that costs money (watching it or listening to it) was tried.`
+        : !rest.modelStatus && !priceKnown(config.videoModel)
+          ? `no price is on file for the video model (${config.videoModel}), so what it would cost could not be counted and nothing that costs money was tried.`
+          : !(await diskHasRoom(maxBytes))
+            ? "the server's disk is nearly full, so no audio was downloaded."
+            : null;
+      if (closed) understand.modelStatus = { connected: false, missing: [], model: null, why: closed };
+    };
     sweepScratch();
     const ac = new AbortController();
     understand.signal = ac.signal;
@@ -1155,7 +1160,7 @@ export async function videoIntake(rawUrl, opts = {}) {
     const work = (async () => {
       const release = await slot(ac.signal);
       if (!release) return null;
-      try { return await videoUnderstand(rawUrl, understand); } finally { release(); }
+      try { await gate(); return await videoUnderstand(rawUrl, understand); } finally { release(); }
     })().then(r => { noteVideoSpend(r, record); return r; });
     let timer;
     const late = new Promise(res => { timer = setTimeout(() => res(null), deadlineMs); });
