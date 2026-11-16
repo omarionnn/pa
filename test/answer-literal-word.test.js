@@ -41,4 +41,9 @@ test("the rule narrows guessing about words only: act-on-context guidance is unt
   assert.match(p, /no asking which of three things they meant when one of them is obviously it/);
   assert.match(p, /name it in passing so they can correct you/);
   assert.equal(p.match(RULE).length, 1);
+  // It narrows words, never acting: the rule itself says acting on a sensible reading stands, and never tells them to ask.
+  assert.match(p, /Their words only: acting on a sensible reading of their situation still stands\./);
+  assert.match(p, /do the work on your best reading, say which reading, and let them correct it/);
+  const line = p.split("\n").find((l) => RULE.test(l));
+  assert.doesNotMatch(line, /\bask\b|\bconfirm\b|\bcheck with\b/i, "the word rule never reads as 'ask before acting'");
 });

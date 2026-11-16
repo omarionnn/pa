@@ -59,3 +59,33 @@ test("directions is where a trip-cost question goes first, with the working show
   const d = DIRECTIONS_TOOL_DEFS.find(t => t.name === "directions").description;
   assert.match(d, /what a trip would cost[^]*call this first for the distance and time[^]*with its working[^]*uber_link/);
 });
+
+// Review 2026-11-16: a leaning sentence that also carries something true of its own is never taken
+// with the dropped figure: a link, a clock time, a street address, a figure that stands.
+for (const keep of [
+  "The fare is live on Uber here: https://m.uber.com/ul/?action=setPickup",
+  "That's about 40 minutes, so leave by 6:15pm.",
+  "That assumes pickup at 430 Example St.",
+]) {
+  test(`a leaning sentence with its own true content stays: "${keep}"`, () => {
+    const g = lastCheck(`A yellow cab would run about $75. ${keep} Want me to call?`);
+    assert.ok(g.flags.some(f => f.rule === "dollar_dropped"), JSON.stringify(g.flags));
+    assert.ok(!g.text.includes("$75"), g.text);
+    assert.ok(g.text.includes(keep), g.text);
+  });
+}
+
+test("a leaning sentence with a figure that stands stays; the dropped fare is said to be out", () => {
+  offers.beginTurn(C, TAXI, "user");
+  offers.guardReply(C, "A cab is about $75.", { turnReply: true });
+  offers.beginTurn(C, "", "user", { carry: true });
+  const g = offers.guardReply(C, "A yellow cab would run about $75. That's on top of the $12 toll. Want me to call?", { turnReply: true, extraSources: ["Port Authority toll: $12.00"] });
+  assert.ok(!g.text.includes("$75"), g.text);
+  assert.match(g.text, /That's on top of the \$12 toll\./);
+});
+
+test("the dropped fare and its qualifier: the reply says a figure was left out (#588)", () => {
+  const g = lastCheck("A yellow cab would run about $75. Figure roughly 16 miles and 40 minutes.");
+  assert.ok(!g.text.includes("$75") && !g.text.includes("Figure roughly"), g.text);
+  assert.match(g.text, /couldn'?t|can'?t|cannot|not (?:give|confirm)/i);
+});
