@@ -1,8 +1,8 @@
 // Daily review 11-15: a taxi price was guessed with no tool; the last reply check took the figure out
 // (right) but left the sentence that only qualified it ("Figure roughly 16 miles…", "The estimate
 // assumes…"), so the person got a dangling line and no price. A sentence that only qualifies a dropped
-// figure goes with it; one that stands on its own stays. And the prompt sends trip-cost questions to
-// `directions` for the distance first, so there is a worked estimate to give.
+// figure goes with it; one that stands on its own stays. And the `directions` tool description sends
+// trip-cost questions to it for the distance first, so there is a worked estimate to give.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,7 +18,7 @@ process.env.REASON_CONVERSATION = "dm:fare-orphan";
 const db = await import("../src/db.js");
 const { clock } = await import("../src/config.js");
 const offers = await import("../src/offers.js");
-const { systemFor } = await import("../src/agent.js");
+const { DIRECTIONS_TOOL_DEFS } = await import("../src/directionstools.js");
 
 const C = "dm:fare-orphan";
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -55,7 +55,7 @@ test("a sentence that stands on its own stays after a dropped fare", () => {
   assert.match(g.text, /The ride is usually quicker after 7pm\./);
 });
 
-test("the prompt sends what-a-trip-costs to directions first, with the working shown", () => {
-  const s = systemFor({ name: "Owner", isOperator: true });
-  assert.match(s, /What a trip would cost[^\n]*directions first[^\n]*with its working[^\n]*uber_link/);
+test("directions is where a trip-cost question goes first, with the working shown", () => {
+  const d = DIRECTIONS_TOOL_DEFS.find(t => t.name === "directions").description;
+  assert.match(d, /what a trip would cost[^]*call this first for the distance and time[^]*with its working[^]*uber_link/);
 });
