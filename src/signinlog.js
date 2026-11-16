@@ -47,6 +47,23 @@ export function logAttempt(entry, { route, outcome, startedAt = null, detail = "
   return line;
 }
 
+/**
+ * One line when a sign-in code was taken from the person's mail (src/signinemail.js codeFromMail): the
+ * site's host, the sender's domain and a hash of the message id. Never the code, subject or body.
+ */
+export function logMailCode(entry, { sender = "", hash = "" } = {}) {
+  const line = {
+    signin_mail_code: hostOf(entry),
+    sender: /^[a-z0-9.-]{1,253}$/.test(String(sender)) ? String(sender) : "unknown",
+    msg: /^[a-f0-9]{8,64}$/.test(String(hash)) ? String(hash) : "",
+    at: new Date(clock.now()).toISOString(),
+  };
+  kept.push(line);
+  if (kept.length > 100) kept.shift();
+  try { sink(JSON.stringify(line)); } catch { /* a log that cannot be written never breaks a sign-in */ }
+  return line;
+}
+
 // ---------------------------------------------------------------- what a failed sign-in looked like
 // One line per failed saved-login attempt (2026-11-13: a Netflix attempt said "wrong password" with
 // nothing to show why). Built here from a fixed list, so no caller can put a value in: the kind of each
