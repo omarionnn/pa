@@ -126,6 +126,10 @@ const TABLES = [
   // drops those rows outright. They are a cache — the cost of deleting one somebody else also
   // sent is a re-fetch, and the cost of keeping it is a transcript of what they watched.
   "video_accounts",
+  // Video intake's transcript cache (REASON_VIDEO_INTAKE): the same kind of thing, the same rule. The
+  // rows hold no conversation, so a scoped export or delete reaches them through the links that
+  // conversation sent or Reason looked up for it; the lines go with their video.
+  "video_cache_lines", "video_cache",
   // Work handed to the builders on this machine. The row holds the master's own words asking for
   // it and the brief written from them, so it is his content like any plan or message: an export
   // that left it out would not be a copy of his data and a delete that left it behind would not be
@@ -436,6 +440,10 @@ const CHILD_SCOPE = {
   research_queries: ["research_id IN (SELECT id FROM research WHERE conversation_id = ?)", 1],
   research_sources: ["research_id IN (SELECT id FROM research WHERE conversation_id = ?)", 1],
   video_accounts: ["url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
+    + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
+  video_cache_lines: ["video_id IN (SELECT video_id FROM video_cache WHERE url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
+    + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?))", 2],
+  video_cache: ["url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
     + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
   remote_events: ["job_id IN (SELECT id FROM remote_jobs WHERE conversation_id = ?)", 1],
   stranger_calls: ["matched_conversation_id = ?", 1],
