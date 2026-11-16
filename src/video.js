@@ -26,7 +26,8 @@
 // Nothing here works around an age gate, a login, a paywall or a region block; those come back as
 // the reason the video could not be read.
 import { publicUrl } from "./netguard.js";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { setPriority } from "node:os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { config } from "./config.js";
@@ -106,8 +107,12 @@ export function videoCapability({ tool = ytDlpStatus(), model = geminiStatus() }
  *
  * @returns {Promise<{ok: boolean, code: number|null, stdout: string, stderr: string}>}
  */
-export function runYtDlp(args, { cwd, timeoutMs = 60_000, bin = findYtDlp() } = {}) {
+export function runYtDlp(args, { cwd, timeoutMs = 60_000, bin = findYtDlp(), signal = null, maxDirBytes = 0, nice = 0 } = {}) {
   if (!bin) return Promise.resolve({ ok: false, code: null, stdout: "", stderr: "yt-dlp is not installed" });
+  // Intake's runs: their own process group (so the deadline, a timeout or the size watchdog stops
+  // yt-dlp AND anything it started, ffmpeg included), lowered priority, a hard cap on what lands in
+  // the scratch directory. Every other caller keeps the old path, byte for byte.
+  if (signal || maxDirBytes || nice) return runGroup(bin, args, { cwd, timeoutMs, signal, maxDirBytes, nice });
   return new Promise((resolve) => {
     execFile(bin, args, { cwd, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       resolve({
@@ -118,6 +123,60 @@ export function runYtDlp(args, { cwd, timeoutMs = 60_000, bin = findYtDlp() } = 
       });
     });
   });
+}
+
+/** Bytes under `dir` (one level of subdirectories is plenty for yt-dlp's scratch). */
+function dirBytes(dir) {
+  let n = 0;
+  try {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      try { n += e.isDirectory() ? dirBytes(p) : statSync(p).size; } catch { /* gone between list and stat */ }
+    }
+  } catch { /* the directory itself is gone */ }
+  return n;
+}
+
+const MAX_OUT = 16 * 1024 * 1024;
+function runGroup(bin, args, { cwd, timeoutMs, signal, maxDirBytes, nice }) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve({ ok: false, code: null, stdout: "", stderr: "stopped before it started (the deadline had passed)." }); return; }
+    const child = spawn(bin, args, { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    if (nice) { try { setPriority(child.pid, nice); } catch { /* best effort */ } }
+    let out = "", err = "", why = "", done = false;
+    const kill = (reason) => {
+      if (!why) why = reason;
+      try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+    };
+    child.stdout.on("data", d => { out += d; if (out.length > MAX_OUT) kill("its output was too large and it was stopped."); });
+    child.stderr.on("data", d => { err += d; if (err.length > MAX_OUT) err = err.slice(-MAX_OUT); });
+    const timer = setTimeout(() => kill(`yt-dlp was still running after ${timeoutMs / 1000}s and was stopped.`), timeoutMs);
+    const watch = maxDirBytes && cwd
+      ? setInterval(() => { if (dirBytes(cwd) > maxDirBytes) kill("ERROR: the file is larger than max-filesize, so the download was stopped."); }, 250)
+      : null;
+    const onAbort = () => kill("stopped: the deadline passed.");
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer); if (watch) clearInterval(watch);
+      signal?.removeEventListener("abort", onAbort);
+      // Whatever yt-dlp started and left behind goes with it.
+      try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group is already empty */ }
+      resolve({ ok: code === 0 && !why, code: why ? 1 : code, stdout: out, stderr: err + (why ? `\n${why}` : ""), ...(why ? { killed: true } : {}) });
+    };
+    child.on("error", (e) => { err += String(e?.message ?? e); finish(1); });
+    child.on("close", (code) => finish(code));
+  });
+}
+
+// Intake only: yt-dlp reads no config file, no cookies and no browser profile, the link can never be
+// read as an option ("--" before it), and the catch-all "generic" extractor is off — that one follows
+// any redirect and fetches whatever a page embeds, which is how a public link could have walked
+// yt-dlp onto this machine's own network (src/netguard.js only ever saw the link as typed).
+export const INTAKE_YTDLP_FLAGS = Object.freeze(["--ignore-config", "--no-cookies", "--no-cookies-from-browser", "--use-extractors", "all,-generic"]);
+export function hardenArgs(args) {
+  return [...INTAKE_YTDLP_FLAGS, ...args.slice(0, -1), "--", args.at(-1)];
 }
 
 // The flags for the two read-only calls. --skip-download: these fetch text about the video and
@@ -178,9 +237,11 @@ async function audioOnly(url, { dir, run, timeoutMs, maxBytes = 0 }) {
     ...(maxBytes ? ["--max-filesize", String(maxBytes)] : []),
     "-f", config.audioFormat,
     "-o", "audio.%(ext)s", url,
-  ], { cwd: dir, timeoutMs });
+  ], { cwd: dir, timeoutMs, ...(maxBytes ? { maxDirBytes: maxBytes } : {}) });
   const file = readdirSync(dir).find(f => f.startsWith("audio.") && !(maxBytes && f.endsWith(".part")));
   const tooBig = { ok: false, cannot: "too_big", error: `The audio of ${url} is over ${Math.round(maxBytes / 1e6)} MB, so it was not downloaded.` };
+  // Stopped part-way (the size watchdog, the deadline, a timeout): whatever is on disk is not the audio.
+  if (r.killed) return /larger than max-filesize/i.test(r.stderr ?? "") ? tooBig : { ok: false, ...reason(r.stderr, url) };
   if (!file) {
     if (maxBytes && /larger than max-filesize/i.test(`${r.stdout ?? ""} ${r.stderr ?? ""}`)) return tooBig;
     return { ok: false, ...reason(r.stderr, url) };
@@ -533,8 +594,14 @@ export async function videoUnderstand(rawUrl, {
   timeoutMs = config.videoProbeTimeoutMs,
   // Video intake (REASON_VIDEO_INTAKE). Only `videoIntake` below passes these; with them unset every
   // result is what it always was.
-  intake = false, onLongFetch = null, maxBytes = 0,
+  intake = false, onLongFetch = null, maxBytes = 0, signal = null,
 } = {}) {
+  if (intake) {
+    // Every yt-dlp run under intake: hardened flags, "--" before the link, its own process group that
+    // the deadline kills, and a lower CPU priority than the live calls on this machine.
+    const inner = run;
+    run = (args, o = {}) => inner(hardenArgs(args), { ...o, ...(signal ? { signal } : {}), nice: 10 });
+  }
   let url;
   try { url = new URL(String(rawUrl)); } catch { return { ok: false, tier: "none", error: `'${rawUrl}' is not a URL.` }; }
   if (!["http:", "https:"].includes(url.protocol)) {
@@ -567,8 +634,16 @@ export async function videoUnderstand(rawUrl, {
     // handed to the video model does not come from here, so that tier is tried next, and said.
     const ytId = youtubeIdOf(url.href);
     if (p.cannot === "login" && ytId && eyes.connected && brain) {
-      const got = await modelAccount(url.href, { meta: { extractor_key: "Youtube", id: ytId }, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra, maxBytes });
-      if (got.ok) return { ...modelResult(got, { url: url.href, images: [] }, { eyes, from, to, meta: {}, maxChars, question }), details_failed: p.error };
+      // The length could not be read from here, so the money limit cannot be checked against it: the
+      // model is given at most `maxMinutes` of it (Gemini's end_offset), and that is said.
+      const upTo = to ?? (from ?? 0) + maxMinutes * 60;
+      const got = await modelAccount(url.href, { meta: { extractor_key: "Youtube", id: ytId }, run, model: brain, status: eyes, from, to: upTo, question, maxMinutes, timeoutMs, transcriber: extra, maxBytes });
+      if (got.ok) {
+        return {
+          ...modelResult(got, { url: url.href, images: [] }, { eyes, from, to: upTo, meta: {}, maxChars, question }), details_failed: p.error,
+          ...(to === null ? { length_unknown: `The video's length could not be read from here, so the model was given at most ${timecode(upTo)} of it. If the account stops around then, say it covers only that much.` } : {}),
+        };
+      }
     }
     const say = INTAKE_CANNOT_SAY[p.cannot];
     if (say) return { ok: false, tier: "none", url: url.href, ...p, say, retry: false, note: INTAKE_NO_RETRY };
@@ -792,8 +867,17 @@ export function normalizeVideoUrl(raw) {
   const host = u.hostname.toLowerCase().replace(/^(www|m|mobile|vm|web)\./, "");
   const path = u.pathname.replace(/\/+$/, "");
   const pick = (site, re, src = path) => { const m = re.exec(src); return m ? { key: `${site}:${m[1]}`, site, id: m[1] } : null; };
+  // An unlisted Vimeo link carries its secret as a second path part or as ?h=: it is part of the key,
+  // so a cached unlisted video is only ever served to someone holding the same full link.
+  const vimeo = () => {
+    const m = /(?:^|\/)(\d{5,})(?:\/([0-9a-f]{6,}))?(?:\/|$)/i.exec(path);
+    if (!m) return null;
+    const secret = m[2] || (/^[0-9a-f]{6,}$/i.test(u.searchParams.get("h") ?? "") ? u.searchParams.get("h") : "");
+    const id = secret ? `${m[1]}:${secret.toLowerCase()}` : m[1];
+    return { key: `vimeo:${id}`, site: "vimeo", id };
+  };
   const found =
-    (host.endsWith("vimeo.com") && pick("vimeo", /(?:^|\/)(\d{5,})(?:\/|$)/))
+    (host.endsWith("vimeo.com") && vimeo())
     || (host.endsWith("tiktok.com") && pick("tiktok", /\/video\/(\d+)/))
     || (host.endsWith("instagram.com") && pick("instagram", /^\/(?:[^/]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/))
     || ((host === "x.com" || host === "twitter.com" || host.endsWith(".twitter.com")) && pick("twitter", /\/status(?:es)?\/(\d+)/))
@@ -802,9 +886,13 @@ export function normalizeVideoUrl(raw) {
       (u.searchParams.get("v") && /^\d+$/.test(u.searchParams.get("v")) ? { key: `facebook:${u.searchParams.get("v")}`, site: "facebook", id: u.searchParams.get("v") } : null)
       || pick("facebook", /\/(?:videos|reel|watch)\/(?:[^/]+\/)?(\d{6,})/)));
   if (found) return found;
-  // Anything else: the address without its query, fragment or trailing slash. Not clever, and not
-  // meant to be: two forms of an unknown site's link simply cache twice.
-  return { key: `url:${host}${path}`, site: host, id: `${host}${path}` };
+  // Anything else: the address without its fragment, trailing slash or tracking parameters. The rest
+  // of the query stays: on an unknown site it may be the very thing that makes a link private, and a
+  // cache keyed without it would hand the transcript to anyone who guessed the path.
+  const TRACKING = /^(utm_.*|si|t|start|feature|ref|ref_src|fbclid|gclid|igsh|igshid|share_id|is_from_webapp|sender_device|_r|s)$/i;
+  const q = [...u.searchParams].filter(([k]) => !TRACKING.test(k)).sort(([a], [b]) => a.localeCompare(b));
+  const qs = q.length ? `?${new URLSearchParams(q)}` : "";
+  return { key: `url:${host}${path}${qs}`, site: host, id: `${host}${path}${qs}` };
 }
 
 /** Why intake will not fetch this video at all, read off its metadata, or null. */
@@ -903,9 +991,11 @@ export function searchCues(cues, query, { max = 12, link = null } = {}) {
   });
 }
 
+// Worded exactly as a fresh read is: the cache is shared by video across everybody, so nothing a
+// person is told may hint that the video was fetched before (by them or by anyone else).
 const HOW_CACHED = {
-  captions: (source) => `read the captions earlier (${SOURCE_WORDS[source] ?? SOURCE_WORDS.auto}) and kept them.${BLIND}`,
-  listen: (by) => `LISTENED to this video's audio earlier and had it transcribed${by ? ` by ${by}` : ""}. Audio only: nothing looked at the picture, so you do not know what was on screen. Say "listened", never "watched". Machine-heard words can get names and numbers wrong, so do not quote them as exact.`,
+  captions: (source) => `read the captions. These are ${SOURCE_WORDS[source] ?? SOURCE_WORDS.auto}.${BLIND}`,
+  listen: (by) => `LISTENED to this video's audio and had it transcribed${by ? ` by ${by}` : ""}. Audio only: nothing looked at the picture, so you do not know what was on screen. Say "listened", never "watched". Machine-heard words can get names and numbers wrong, so do not quote them as exact.`,
 };
 
 /** A cached transcript, laid out the way a fresh one is. Nothing was fetched. */
@@ -913,11 +1003,10 @@ function fromCache(hit, { from, to, maxChars }) {
   const laid = layOutTranscript(hit.lines, { from, to, maxChars });
   return {
     ok: true, tier: hit.tier,
-    how: (HOW_CACHED[hit.tier] ?? HOW_CACHED.captions)(hit.source) + " It came from the transcript already fetched for this video, so it cost nothing and took no time.",
+    how: (HOW_CACHED[hit.tier] ?? HOW_CACHED.captions)(hit.source),
     url: hit.url, title: hit.title || undefined, channel: hit.channel || undefined,
     duration: hit.durationS ? timecode(hit.durationS) : undefined, duration_seconds: hit.durationS ?? undefined,
     images: [],
-    cached: { fetched: new Date(hit.fetchedAt).toISOString().slice(0, 10), lines: hit.lines.length },
     asked_for: laid.window ? `${timecode(laid.window.from)}–${timecode(laid.window.to)}` : undefined,
     covers: laid.covers,
     transcript: laid.transcript,
@@ -977,6 +1066,50 @@ export function transcriptBlocks(lines, { blockChars = 3_900, maxBlocks = 59 } =
   return { blocks, stoppedAt };
 }
 
+/** Is there a price on file for `model` (src/spend.js priceFor's rule)? Unpriced use would count as $0. */
+function priceKnown(model) {
+  const m = String(model ?? "");
+  return !!config.apiPrices[m] || Object.keys(config.apiPrices).some(k => m.startsWith(k));
+}
+
+/** Room for the audio above the free-disk floor (src/webuploads.js, REASON_UPLOAD_DISK_FLOOR_GB). */
+async function diskHasRoom(bytes) {
+  try { return (await import("./webuploads.js")).diskRoom(bytes).ok; } catch { return true; }
+}
+
+/**
+ * Scratch left by a run that never reached its `finally` (the process killed mid-fetch, a crash):
+ * gone on the next intake. Older than the deadline twice over, so a run in progress is never touched.
+ */
+function sweepScratch({ olderThanMs = 2 * config.videoIntakeDeadlineMs + 60_000 } = {}) {
+  try {
+    const root = scratchRoot();
+    for (const name of readdirSync(root)) {
+      if (!/^(audio|caps)-/.test(name)) continue;
+      const p = join(root, name);
+      try { if (Date.now() - statSync(p).mtimeMs > olderThanMs) rmSync(p, { recursive: true, force: true }); } catch { /* raced */ }
+    }
+  } catch { /* nothing to sweep */ }
+}
+
+// At most this many videos fetched at once across everybody (REASON_VIDEO_CONCURRENT, 2): yt-dlp and
+// any ffmpeg it starts share a small server with live calls. A third waits its turn, inside its own
+// deadline; one that is still waiting when the deadline passes never starts.
+let running = 0;
+const queue = [];
+export function videoSlots() { return { running, waiting: queue.length }; }
+function slot(signal) {
+  const max = Math.max(1, Number(config.videoConcurrent) || 2);
+  const release = () => { running--; const next = queue.shift(); if (next) next(); };
+  if (running < max) { running++; return Promise.resolve(release); }
+  return new Promise((res) => {
+    const go = () => { signal?.removeEventListener("abort", drop); running++; res(release); };
+    const drop = () => { const i = queue.indexOf(go); if (i >= 0) queue.splice(i, 1); res(null); };
+    queue.push(go);
+    signal?.addEventListener("abort", drop, { once: true });
+  });
+}
+
 /**
  * The tool's entry point with intake on. A cached transcript answers with no fetch at all; otherwise
  * the ordinary `videoUnderstand` runs (with intake's refusals, heads-up and caching switched on),
@@ -1000,28 +1133,49 @@ export async function videoIntake(rawUrl, opts = {}) {
     // ledger every paid model call is (src/spend.js, feature "video") and held to the same daily and
     // monthly caps. A cap already reached means only the free tier (captions) is tried, and said.
     const spend = (spendCap && recordSpend) ? null : await import("./spend.js");
-    const capHit = (spendCap ?? spend.capReached)();
+    const capHit = spendCap ? spendCap() : (spend.capReached() ?? spend.videoBudgetReached());
     const record = recordSpend ?? spend.recordApi;
-    const understand = { ...rest, intake: true, maxBytes: rest.maxBytes ?? Math.round(config.videoAudioMaxMB * 1e6) };
-    if (capHit) {
-      understand.modelStatus = {
-        connected: false, missing: [], model: null,
-        why: `the spending limit on paid AI use is reached for ${capHit.which === "month" ? "this month" : "today"}, so nothing that costs money (watching it or listening to it) was tried.`,
-      };
-    }
-    // Counted when it finishes, even past the deadline: money spent late is still money spent.
-    const work = videoUnderstand(rawUrl, understand).then(r => { noteVideoSpend(r, record); return r; });
+    const maxBytes = rest.maxBytes ?? Math.round(config.videoAudioMaxMB * 1e6);
+    // Paid audio goes to the video model only, whose use is counted below. An OpenAI transcriber set
+    // for something else would be paid use nothing here counts, so intake never reaches for it.
+    const understand = { ...rest, intake: true, maxBytes, transcriber: rest.transcriber !== undefined ? rest.transcriber : null };
+    const closed = capHit
+      ? `the spending limit on paid AI use is reached for ${capHit.which === "month" ? "this month" : capHit.which === "video" ? "videos today" : "today"}, so nothing that costs money (watching it or listening to it) was tried.`
+      : !rest.modelStatus && !priceKnown(config.videoModel)
+        ? `no price is on file for the video model (${config.videoModel}), so what it would cost could not be counted and nothing that costs money was tried.`
+        : !(await diskHasRoom(maxBytes))
+          ? "the server's disk is nearly full, so no audio was downloaded."
+          : null;
+    if (closed) understand.modelStatus = { connected: false, missing: [], model: null, why: closed };
+    sweepScratch();
+    const ac = new AbortController();
+    understand.signal = ac.signal;
+    // Counted when it finishes, even past the deadline: money spent late is still money spent. The
+    // deadline kills every yt-dlp run (and what it started); a model call already made runs out and is counted.
+    const work = (async () => {
+      const release = await slot(ac.signal);
+      if (!release) return null;
+      try { return await videoUnderstand(rawUrl, understand); } finally { release(); }
+    })().then(r => { noteVideoSpend(r, record); return r; });
     let timer;
     const late = new Promise(res => { timer = setTimeout(() => res(null), deadlineMs); });
     try {
       out = await Promise.race([work, late]);
     } finally { clearTimeout(timer); }
     if (!out) {
+      ac.abort();
       return {
         ok: false, tier: "none", url: String(rawUrl), timed_out: true, retry: false,
         say: `I couldn't get what's in that video within ${Math.round(deadlineMs / 60_000)} minutes, so I stopped.`,
         note: INTAKE_NO_RETRY,
       };
+    }
+    // The paid tiers were shut and there were no captions: one plain line, about the machine, not them.
+    if (closed && out.ok && out.tier === "metadata" && !out.captions) {
+      out.say = capHit
+        ? "That video has no captions, and the paid way of listening to it is switched off for now on my side, so all I can tell you is what the page says about it."
+        : "That video has no captions, and I can't listen to it right now on my side, so all I can tell you is what the page says about it.";
+      out.note = "Tell them that in one plain line, then what the page says (title, who posted it, length). Do not guess at what is in it, do not promise to try later, and do not give them anything to type.";
     }
   }
   if (!out.ok) return out;

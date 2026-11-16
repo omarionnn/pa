@@ -162,8 +162,9 @@ test("captions found: a bare link reads them, says how, offers the rest in plain
   assert.equal(run.calls.length, calls, "nothing fetched the second time");
   assert.equal(again.ok, true);
   assert.equal(again.tier, "captions");
-  assert.ok(again.cached, "and it says it came from the kept transcript");
-  assert.match(again.how, /cost nothing and took no time/);
+  // Worded as a fresh read: the cache is shared, so nothing hints the video was fetched before.
+  assert.equal(again.cached, undefined);
+  assert.doesNotMatch(again.how, /earlier|already|kept|before|cost nothing/i);
   assert.equal(again.if_just_a_link, undefined, "a question is not a bare link");
 });
 
@@ -226,7 +227,8 @@ test("no captions on another site: the audio only is listened to, deleted, cache
   // The second ask: from the kept lines, no download, no model, nothing counted.
   const again = await call({ url: v.url, question: "what box?" }, { run: fakeYtDlp(v.lib), brain });
   assert.equal(brain.calls.length, 1);
-  assert.match(again.how, /LISTENED to this video's audio earlier/);
+  assert.match(again.how, /LISTENED to this video's audio and had it transcribed/);
+  assert.doesNotMatch(again.how, /earlier|already/i);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM model_usage").get().n, 1);
 });
 
@@ -249,7 +251,10 @@ test("a paid-use cap already reached: nothing paid is tried, and the reason is s
   });
   assert.equal(brain.calls.length, 0, "no model call");
   assert.equal(r.tier, "metadata");
-  assert.match(r.note, /spending limit on paid AI use is reached for today/);
+  assert.match(r.error, /spending limit on paid AI use is reached for today/);
+  // One plain line about the machine: no blame, no phrase to type, no promise.
+  assert.match(r.say, /^That video has no captions, and the paid way of listening to it is switched off for now on my side/);
+  assert.doesNotMatch(r.say, /type|reply|text me|you've|your limit/i);
   // Captions are free, so they still work under the cap.
   const caps = await video.videoIntake(AUTO, { run: fakeYtDlp(library()), bin: "/fake/yt-dlp", model: null, transcriber: null, spendCap: () => ({ which: "month" }), recordSpend: () => {} });
   assert.equal(caps.tier, "captions");

@@ -938,6 +938,13 @@ export const config = {
   // Intake: the audio of a video with no captions is not downloaded past this size (an hour of audio
   // is ~30-60 MB, so this only stops something unusual).
   videoAudioMaxMB: Number(process.env.REASON_VIDEO_AUDIO_MAX_MB || 150),
+  // Intake: videos fetched at once across everybody; a third waits its turn inside its own deadline.
+  videoConcurrent: Number(process.env.REASON_VIDEO_CONCURRENT || 2),
+  // Intake: what watching and listening (feature "video" in the usage ledger) may spend in a day,
+  // across everybody — a budget on the system, not a limit on any person, so a busy video day cannot
+  // eat the whole daily API cap the rest of Reason runs on. Captions stay free once it is reached.
+  // Lifts at local midnight; 0 turns it off (the API caps still hold). Said in the API spend row.
+  videoDailyUsd: Number(process.env.REASON_VIDEO_DAILY_USD ?? 1),
   // Web search. One provider interface, three real providers: Parallel (5,000 searches a month
   // free, long excerpts per result), Context.dev (1,000 credits a month free, shared with page
   // scraping) and Tavily (1,000 credits a month free, no credit card). REASON_SEARCH_PROVIDER names

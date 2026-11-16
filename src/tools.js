@@ -648,7 +648,11 @@ function videoWithIntake(t) {
  * up as one. What comes back is the short version: the transcript itself is in the file, not here.
  */
 async function videoTranscriptPdf(out, { url, ctx, c, me }) {
-  const lean = { ok: out.ok, tier: out.tier, url: out.url, title: out.title, channel: out.channel, duration: out.duration, how: out.how, ...(out.say_how ? { say_how: out.say_how } : {}) };
+  const lean = {
+    ok: out.ok, tier: out.tier, url: out.url, title: out.title, channel: out.channel, duration: out.duration, how: out.how, ...(out.say_how ? { say_how: out.say_how } : {}),
+    // The title and channel are the video's own words: the outside-content note travels with them.
+    ...Object.fromEntries(["untrusted_content", "untrusted_source", "flagged", "flagged_note"].filter(k => k in out).map(k => [k, out[k]])),
+  };
   const hit = cachedTranscriptFor(url);
   if (!hit?.lines?.length) {
     return {
@@ -20175,10 +20179,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         : { coverage: "failed", detail: out.error ?? out.why ?? "nothing about it could be got" });
       // Marked the same way a page is. A video's captions are a script somebody else wrote, and a
       // sentence in one is no more a command than a sentence on a web page is.
-      const marked = out.ok
+      // Intake: the link is remembered for this conversation even from a cached answer, so their export
+      // and delete reach the cached transcript of what they sent (src/data.js scopes it by these urls).
+      if (intake && out.url && (out.ok || out.title)) db.rememberSeenUrls(c, [out.url], { kind: "page" });
+      // Intake: everything the video's people wrote is scanned — the model's account of it, the title,
+      // the description, the chapters — and a refusal that still carries them is marked too.
+      const marked = out.ok || (intake && (out.title || out.description))
         ? markOutside(out, {
           source: `a video on ${sourceName(out.url)}${out.title ? ` ("${out.title}")` : ""}`,
-          text: [out.summary, out.transcript, out.captions?.text, out.heard?.text, out.watched?.text, ...(out.found ?? []).map(f => f.text)].filter(t => typeof t === "string").join("\n"),
+          text: [out.summary, out.transcript, out.captions?.text, out.heard?.text, out.watched?.text, ...(out.found ?? []).map(f => f.text),
+            ...(intake ? [out.account, out.title, out.description, ...(out.chapters ?? [])] : [])].filter(t => typeof t === "string").join("\n"),
         })
         : out;
       if (!(intake && input.pdf && out.ok)) return marked;
