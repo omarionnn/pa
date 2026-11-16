@@ -302,3 +302,20 @@ test("review: below the disk floor a person's upload is refused, while Reason's 
 });
 
 // The web upload door (src/webmedia.js, inbound: true) refusing with 507 is test/web-compose.test.js.
+
+// Review 2026-11-15: past 300 MB (allowed now for the invited), Reason's own cards and tables still save:
+// they are made by Reason, so they never count against anybody's total.
+test("review: Reason's own cards and tables pass quota: false at their one call site each", async () => {
+  const { readFileSync } = await import("node:fs");
+  for (const f of ["choicecards.js", "tableimage.js"]) {
+    const src = readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+    assert.match(src, /\(ctx\.store \?\? uploads\.store\)\(\{[^\n]*public: "(?:card|table)"[^\n]*quota: false \}\)/, f);
+  }
+  const was = uploads.diskStats.statfs;
+  uploads.diskStats.statfs = roomyDisk;
+  try {
+    for (let i = 0; i < 16; i++) uploads.store({ conversationId: INVITED, bytes: big(19), name: `p${i}.png`, quota: false });
+    assert.equal(uploads.store({ conversationId: INVITED, bytes: PNG, name: "x.png" }).error, "too_big", "the default still counts");
+    assert.ok(uploads.store({ conversationId: INVITED, bytes: PNG, name: "reason-1.jpg", extra: { public: "card" }, quota: false }).id);
+  } finally { uploads.diskStats.statfs = was; uploads.forget(null); }
+});
