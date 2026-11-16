@@ -550,7 +550,9 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
     return done;
   };
   // The hard cap, here as well as at Browserbase (`timeout`): never a session left running.
-  capTimer = setTimeout(() => { finish("cap").catch(() => {}); }, timeoutSec * 1000);
+  // Tests only: a shorter cap, so the cap's ending can be proved without waiting a minute.
+  const testCap = process.env.NODE_TEST_CONTEXT ? Number(process.env.REASON_REMOTE_BROWSER_TEST_CAP_MS) : NaN;
+  capTimer = setTimeout(() => { finish("cap").catch(() => {}); }, Number.isFinite(testCap) && testCap > 0 ? testCap : timeoutSec * 1000);
   capTimer.unref?.();
   browser.on?.("disconnected", () => { finish("disconnected").catch(() => {}); });
   // Every caller closes a context with context.close(): for a hosted one that also releases the session.

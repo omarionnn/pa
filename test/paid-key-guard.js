@@ -18,4 +18,9 @@ if (!apiAllowed && hadKey) {
 // The same for the flight sources (src/flightproviders.js): SerpApi's free month is 250 searches,
 // and a suite run on a machine whose .env has the key must never spend them.
 delete process.env.SERPAPI_API_KEY;
+// The hosted browser (src/remotebrowser.js): browser minutes are a monthly budget, and no test spends
+// them. Tests that need it run a fake Browserbase on loopback with a made-up key.
+delete process.env.BROWSERBASE_API_KEY;
+delete process.env.BROWSERBASE_PROJECT_ID;
+delete process.env.BROWSERBASE_API_URL;
 delete process.env.DUFFEL_ACCESS_TOKEN;
