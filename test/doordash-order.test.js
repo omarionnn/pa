@@ -276,9 +276,16 @@ test("handoff: no path presses Place order: doordash_place, browser_submit with 
   const d = driver(OWNER, "get me pad thai medium and spring rolls from thai palace to 3247 Bruner Ave");
   await buildCart(d);
   await d.call("doordash_order", { action: "checkout", items: ITEMS });
-  // The tool is not even shown; called anyway, it refuses.
-  const placed = await d.call("doordash_place", {});
-  assert.notEqual(placed.ok, true);
+  // The tool is not even shown; called anyway, even with a real yes on the exact target and a checkout
+  // made to look unplaced, it refuses: the mode alone stops it.
+  db.db.prepare("UPDATE doordash_orders SET state = 'read' WHERE conversation_id = ?").run(OWNER);
+  const target = dd.placeTarget(OWNER);
+  const req0 = await d.call("confirm_request", { action: "doordash_place", summary: "Place it?", stakes: "money", target });
+  d.say("yes place it");
+  assert.equal((await d.call("confirm_record", { confirmation_id: req0.confirmation_id })).state, "granted");
+  const placed = await d.call("doordash_place", { confirmation_id: req0.confirmation_id });
+  assert.notEqual(placed.ok, true, JSON.stringify(placed).slice(0, 200));
+  assert.equal(S.placeAttempts, 0);
   // On the checkout page itself, every generic way in.
   await d.open("/consumer/checkout/");
   const placeRef = d.ref(/Place Order/);
