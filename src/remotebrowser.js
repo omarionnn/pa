@@ -106,7 +106,9 @@ export function tagEntry(conversationId, entry) {
 
 // ---------------------------------------------------------------- settings
 const num = (v, d) => { const n = Number.parseInt(String(v ?? ""), 10); return Number.isFinite(n) && n > 0 ? n : d; };
-export const apiBase = () => String(process.env.BROWSERBASE_API_URL || "https://api.browserbase.com").replace(/\/+$/, "");
+// The key goes to Browserbase's own API host only. BROWSERBASE_API_URL is the tests' fake, read under
+// the test runner only, so no setting can send the key anywhere else.
+export const apiBase = () => String((process.env.NODE_TEST_CONTEXT && process.env.BROWSERBASE_API_URL) || "https://api.browserbase.com").replace(/\/+$/, "");
 /** The free plan's hour a month, unless the owner sets another budget. */
 export const monthBudgetMinutes = () => num(process.env.REASON_REMOTE_BROWSER_MONTH_MINUTES, 60);
 /** The free plan's longest session (15 minutes), unless set lower or higher. */

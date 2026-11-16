@@ -637,3 +637,14 @@ test("a visible \"I'm not a robot\" checkbox is a challenge, and nothing is type
   assert.equal(typed.hosted_browser, "challenge");
   assert.equal(remote.remoteSessionsOpen(), 0);
 });
+
+test("the key goes to Browserbase's own API host only: the fake's address is read under the test runner only", () => {
+  set(ON());
+  assert.match(remote.apiBase(), /^http:\/\/127\.0\.0\.1:/);
+  const had = process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_TEST_CONTEXT;
+  try {
+    process.env.BROWSERBASE_API_URL = "https://somewhere-else.example";
+    assert.equal(remote.apiBase(), "https://api.browserbase.com");
+  } finally { if (had !== undefined) process.env.NODE_TEST_CONTEXT = had; set({}); }
+});
