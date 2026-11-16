@@ -360,8 +360,23 @@ async function checkout(c, input, { browser, shoot }) {
     return { ok: false, error: "DoorDash's checkout is not open in the hosted browser. Open the cart's checkout page first (browser_open / browser_click), then call checkout." };
   }
   { const stop = await remote.stopIfChallenged(c, page); if (stop) return stop; }
-  const text = await browser.pageText(page).catch(() => "");
-  const got = readCheckout(text);
+  let text = await browser.pageText(page).catch(() => "");
+  let got = readCheckout(text);
+  // Still on the cart: its own Checkout button, pressed here by code (the generic click treats
+  // "Checkout" as a commit word; on DoorDash it only opens the checkout page, where nothing is placed
+  // until Place order). Found by its role and words, never a control that places the order.
+  if (got.total == null && !got.stop) {
+    const go = page.getByRole("button", { name: /^\s*(go to |continue to )?checkout\b/i }).or(page.getByRole("link", { name: /^\s*(go to |continue to )?checkout\b/i })).first();
+    const label = (await go.count().catch(() => 0)) ? await go.textContent({ timeout: 2_000 }).catch(() => "") : "";
+    if (label && !PLACE_WORDS.test(label)) {
+      await go.click().catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await page.waitForTimeout(500).catch(() => {});
+      { const stop = await remote.stopIfChallenged(c, page); if (stop) return stop; }
+      text = await browser.pageText(page).catch(() => "");
+      got = readCheckout(text);
+    }
+  }
   const restaurant = String(input.restaurant || r.restaurant || "").trim();
   // A stop the person has to hear: said once, the hosted session closed, nothing pressed.
   if (got.stop && got.stop !== "unavailable") return await stopJob(c, r, got.stop, { browser });
