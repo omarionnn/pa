@@ -109,7 +109,17 @@ export function senderMatches({ from = "", auth = [] } = {}, allowed = []) {
   // (cold review, 2026-11-11).
   const top = String((Array.isArray(auth) ? auth : [auth])[0] ?? "").toLowerCase().trim();
   if (!/^mx\.google\.com\s*;/.test(top)) return false;
-  for (const m of top.matchAll(/dkim=pass[^;]*?header\.(?:i|d)=@?([a-z0-9.-]+)/g)) if (within(m[1], allowed)) return true;
+  // Gmail's own header still carries words the SENDER chose: the envelope address in the spf comment
+  // and in smtp.mailfrom ("dkim=pass.header.d=site.com@evil.com" is a valid address), an ARC comment.
+  // So: quoted strings and comments out, then only the dkim results Gmail lists FIRST (before any
+  // spf/arc/dmarc result), each one whole and in Gmail's own shape (review 2026-11-15).
+  const bare = top.replace(/"(?:[^"\\]|\\.)*"/g, "\"\"").replace(/\([^()]*\)/g, " ").replace(/\([^()]*\)/g, " ");
+  if (/[()"]/.test(bare.replace(/""/g, ""))) return false;
+  for (const seg of bare.split(";").slice(1).map(s => s.trim().replace(/\s+/g, " "))) {
+    if (!/^dkim=/.test(seg)) break;
+    const m = seg.match(/^dkim=pass header\.(?:i=[a-z0-9._+=-]*@|d=)([a-z0-9.-]+)(?: header\.[a-z]+=[a-z0-9._+\/=@-]+)*$/);
+    if (m && within(m[1], allowed)) return true;
+  }
   return false;
 }
 
@@ -265,10 +275,19 @@ export function mailReadRefused(site) {
   if (!host) return true;
   const base = registrableOf(host);
   if (!base.includes(".") || MAILBOX_DOMAINS.has(base) || /(^|\.)google\.[a-z.]+$/.test(host)) return true;
+  // registrableOf is a short rule, not the public suffix list: a country suffix it does not know
+  // (ne.jp, or.jp, me.uk, edu.au) would make every domain under it "the site", and a tenant on a
+  // shared platform (acme.zendesk.com, acme.atlassian.net) shares its mail domain with every other
+  // tenant. Neither is read for a code; they are asked for it (review 2026-11-15).
+  if (/^(ne|or|gr|ed|go|lg|ad|me|ltd|plc|nhs|sch|edu|gob|nom|mil|biz|info|int|res|gen|firm|ind|web|govt|asn|id|nic|nt|nsw|vic|qld)\.[a-z]{2}$/.test(base)) return true;
+  if (host !== base && host !== `www.${base}` && SHARED_TENANT_DOMAINS.has(base)) return true;
   let v = {};
   try { v = classifySite(host) ?? {}; } catch { return true; }
   return v.policy === "never" || ["google", "google_property", "email", "apple_id", "password_manager", "bank", "carrier"].includes(v.category);
 }
+
+// Platforms whose customers each get a subdomain and send mail under the platform's own domain.
+const SHARED_TENANT_DOMAINS = new Set(["github.io", "gitlab.io", "herokuapp.com", "vercel.app", "netlify.app", "pages.dev", "workers.dev", "web.app", "firebaseapp.com", "appspot.com", "blogspot.com", "myshopify.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com", "wixsite.com", "onrender.com", "fly.dev", "zendesk.com", "freshdesk.com", "atlassian.net", "sharepoint.com", "wordpress.com", "substack.com", "force.com"]);
 
 // A mail about something else than signing in: a password reset, or a change to the account, its
 // email, phone or payment. Never a sign-in code, whatever number is in it.
@@ -280,7 +299,12 @@ const CODE_LABEL = /\b(sign[- ]?in|log[- ]?in|login|verification|verify|one[- ]t
 const SIGNIN_WORD = /\b(sign[- ]?in|log[- ]?in|login|verif\w*|one[- ]time|confirm\w*)\b/i;
 const labelled = (l) => CODE_LABEL.test(l) || (/\bcode\b/i.test(l) && SIGNIN_WORD.test(l));
 // A link that is not for signing in, on any domain.
-const LINK_NOT_SIGNIN = /reset|password|recover|change|update|payment|billing|unsubscribe|preferences|settings|privacy|terms|help|support|policy|report|security|download|\.(png|jpe?g|gif)(\?|$)/i;
+const LINK_NOT_SIGNIN = /reset|password|recover|change|update|payment|billing|unsubscribe|preferences|settings|privacy|terms|help|support|policy|report|security|download|approve|authori[sz]e|allow|grant|consent|oauth|device|deny|decline|block|revoke|cancel|delete|remove|invite|accept|join|share|\.(png|jpe?g|gif)(\?|$)/i;
+// A mail whose link would act for SOMEBODY ELSE's sign-in or invite (approve another device, "is this
+// you", an invite or a share with words the inviter chose): its link is never opened, whatever its path.
+// Opening it in their browser could approve an attacker's login or sign them in to an attacker's
+// account (review 2026-11-15). Codes are not affected: a code only ever goes into this job's own box.
+const LINK_MAIL_NOT_SIGNIN = /\b(approve|authori[sz]e|allow|grant|deny|decline)\b|another (device|browser|computer|phone)|new (device|browser)|is (this|it) you|trying to (sign|log) ?in|invited you|shared\b.{0,60}\bwith you|mentioned you|commented/i;
 
 /** Every code-shaped token on a line: 4-8 digits ("123 456" too), or 4-8 letters and digits with a digit. */
 function codesOn(line) {
@@ -319,6 +343,7 @@ export function readSigninMail({ subject = "", text = "", html = "" } = {}, own 
   }
   if (codes.size > 1) return { kind: "two" };
   if (codes.size === 1) return { kind: "code", code: [...codes][0] };
+  if (LINK_MAIL_NOT_SIGNIN.test(lines.join("\n"))) return { kind: "none" };
   const hrefs = [...String(html).matchAll(/href\s*=\s*["']([^"']+)["']/gi)].map(m => m[1].replace(/&amp;/g, "&"));
   const bare = [...body.matchAll(/https:\/\/[^\s<>"')]+/g)].map(m => m[0]);
   const links = new Set();
@@ -326,8 +351,8 @@ export function readSigninMail({ subject = "", text = "", html = "" } = {}, own 
   for (const u of [...hrefs, ...bare]) {
     let url; try { url = new URL(u); } catch { continue; }
     if (url.protocol !== "https:" || url.username || url.password || url.port) continue;
-    const pathq = url.pathname + url.search;
-    if (!LINK_PATH.test(pathq)) continue;
+    // The sign-in word in the PATH: a query's token= alone (an invite, a share) is not a sign-in link.
+    if (!LINK_PATH.test(url.pathname)) continue;
     if (!own || !within(url.hostname, [own])) { offSiteLink = true; continue; }
     if (LINK_NOT_SIGNIN.test(url.pathname)) continue;
     links.add(url.toString());
@@ -671,6 +696,9 @@ export async function openLink(page, url, entry, { settleMs = 3000 } = {}) {
   if (u.protocol !== "https:" || !within(u.hostname, allowed)) return { ok: false, why: "the link is not on the site" };
   await page.goto(u.toString(), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
   await wait(page, settleMs);
+  // A link that redirected off the site (an open redirect, a tracking wrapper): nothing on that page
+  // is read as a sign-in, and nothing more is done there.
+  if (!onSite(page, entry)) return { ok: false, why: "the link left the site" };
   return { ok: true };
 }
 

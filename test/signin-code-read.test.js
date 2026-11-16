@@ -83,7 +83,7 @@ function fakeGmail(mails, { connected = true } = {}) {
     const id = decodeURIComponent(p.split("/").pop());
     const m = box.mails.find((x) => x.id === id);
     if (!m) return { ok: false };
-    const headers = [{ name: "From", value: m.from }, { name: "Authentication-Results", value: m.auth ?? dkimFor(m.from) }, { name: "Subject", value: m.subject ?? "" }];
+    const headers = [{ name: "From", value: m.from }, ...[].concat(m.auth ?? dkimFor(m.from)).map((v) => ({ name: "Authentication-Results", value: v })), { name: "Subject", value: m.subject ?? "" }];
     if (opts.query?.format === "metadata") return { ok: true, body: { id, internalDate: String(atOf(m)), payload: { headers } } };
     return { ok: true, body: { id, internalDate: String(atOf(m)), payload: { headers, mimeType: "multipart/alternative", parts: [
       { mimeType: "text/plain", body: { data: b64(m.text ?? "") } }, ...(m.html ? [{ mimeType: "text/html", body: { data: b64(m.html) } }] : []),
@@ -749,4 +749,78 @@ test("E: the signin_email tool hands over the narrow reader only where the switc
   assert.equal(started.length, 2, JSON.stringify(started.map(s => Object.keys(s))));
   assert.equal("gmail" in started[0], false, "off: startEmailSignin's own default reader, as on main");
   assert.equal(started[1].gmail, mc.strictGmail);
+});
+
+// ================================================================ R: independent review, 2026-11-15
+test("R: Gmail's own header carries words the sender chose (envelope address, ARC comment): never read as a DKIM pass", () => {
+  const allowed = ["acme.test"];
+  const from = "Acme <no-reply@acme.test>";
+  const forged = [
+    // A valid dot-atom envelope address on the attacker's domain, quoted back by Gmail in the spf comment and smtp.mailfrom.
+    "mx.google.com; dkim=pass header.i=@evil.io header.s=s1 header.b=AbCd; spf=pass (google.com: domain of dkim=pass.header.d=acme.test@evil.io designates 192.0.2.1 as permitted sender) smtp.mailfrom=dkim=pass.header.d=acme.test@evil.io; dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=acme.test",
+    "mx.google.com; spf=pass (google.com: domain of dkim=pass.header.i=@acme.test@evil.io designates 192.0.2.1 as permitted sender) smtp.mailfrom=dkim=pass.header.i=@acme.test@evil.io; dmarc=fail header.from=acme.test",
+    // A quoted local part with its own semicolon.
+    'mx.google.com; spf=pass (google.com: domain of "x;dkim=pass header.d=acme.test"@evil.io designates 192.0.2.1 as permitted sender) smtp.mailfrom="x;dkim=pass header.d=acme.test"@evil.io; dmarc=fail header.from=acme.test',
+    'mx.google.com; spf=pass smtp.mailfrom="x;dkim=pass header.i=@acme.test header.s=a header.b=b;y"@evil.io',
+    // An ARC verdict's comment, and a dkim result after spf.
+    "mx.google.com; arc=pass (i=1 dkim=pass header.d=acme.test); spf=pass smtp.mailfrom=a@evil.io",
+    "mx.google.com; spf=pass smtp.mailfrom=a@evil.io; dkim=pass header.i=@acme.test header.s=a header.b=b",
+    // Unbalanced quote or comment: not Gmail's shape, so not read at all.
+    'mx.google.com; dkim=pass header.i=@acme.test header.s=a header.b=b (x',
+  ];
+  for (const auth of forged) assert.equal(se.senderMatches({ from, auth: [auth] }, allowed), false, auth);
+  // Gmail's real shapes still pass.
+  for (const auth of [
+    "mx.google.com; dkim=pass header.i=@acme.test header.s=s1 header.b=AbC+/d=; spf=pass (google.com: domain of bounce@acme.test designates 192.0.2.1 as permitted sender) smtp.mailfrom=bounce@acme.test; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=acme.test",
+    "mx.google.com; dkim=neutral (body hash did not verify) header.i=@other.example header.s=x header.b=y; dkim=pass header.i=@mail.acme.test header.s=s2 header.b=z; spf=pass smtp.mailfrom=x@acme.test",
+    "mx.google.com; dkim=pass header.d=acme.test",
+  ]) assert.equal(se.senderMatches({ from, auth: [auth] }, allowed), true, auth);
+});
+
+test("R: the forged-header mail is never opened past its headers by the reader", async () => {
+  const auth = "mx.google.com; spf=pass (google.com: domain of dkim=pass.header.d=acme.test@evil.io designates 192.0.2.1 as permitted sender) smtp.mailfrom=dkim=pass.header.d=acme.test@evil.io; dmarc=fail header.from=acme.test";
+  const box = fakeGmail([codeMail({ id: "m-spf", auth, at: T0 + 1_000 })]);
+  assert.equal((await read(box)).status, "not_found");
+  assert.deepEqual(box.fullReads(), []);
+});
+
+test("R: a link that would act for somebody else (approve a device, an invite, a share, a query token alone) is never a sign-in link", () => {
+  const html = (href, words = "Click to sign in") => `<p>${words}</p><a href="${href}">Continue</a>`;
+  const never = [
+    [html("https://acme.test/login/approve?token=1")],
+    [html("https://acme.test/device/confirm?token=1")],
+    [html("https://acme.test/auth/authorize?token=1")],
+    [html("https://acme.test/invite/accept?token=1")],
+    [html("https://acme.test/w/team-x?token=1")], // no sign-in word in the path, only token= in the query
+    [html("https://acme.test/Login-Plan-page?id=1", "Sam invited you to a page")],
+    [html("https://acme.test/login/magic?token=1", "Someone is trying to sign in from another device. Approve it?")],
+    [html("https://acme.test/login/magic?token=1", "Is this you? Confirm your login")],
+    [html("https://acme.test/verify?token=1", "Sam shared a doc with you")],
+  ];
+  for (const [h] of never) assert.notEqual(se.readSigninMail({ subject: "Acme", html: h }, "acme.test").kind, "link", h);
+  // A plain magic link still is one.
+  assert.equal(se.readSigninMail({ subject: "Your Acme sign-in link", html: html("https://acme.test/login/magic?token=1") }, "acme.test").kind, "link");
+});
+
+test("R: a mailed link that redirects off the site is not a sign-in (openLink checks where it landed)", async () => {
+  let at = "https://acme.test/login";
+  const page = { url: () => at, goto: async () => { at = "https://evil.io/landing"; }, waitForTimeout: async () => {} };
+  const out = await se.openLink(page, "https://acme.test/login/magic?token=1", { site: "acme.test", signin_url: "https://acme.test/login" }, { settleMs: 0 });
+  assert.equal(out.ok, false);
+  let at2 = "https://acme.test/login";
+  const page2 = { url: () => at2, goto: async () => { at2 = "https://www.acme.test/home"; }, waitForTimeout: async () => {} };
+  assert.equal((await se.openLink(page2, "https://acme.test/login/magic?token=1", { site: "acme.test", signin_url: "https://acme.test/login" }, { settleMs: 0 })).ok, true);
+});
+
+test("R: a suffix registrableOf does not know, or a tenant of a shared platform, is never read for a code", () => {
+  for (const s of ["shop.example.ne.jp", "acme.zendesk.com", "acme.atlassian.net", "acme.myshopify.com", "me.github.io", "x.me.uk"]) assert.equal(se.mailReadRefused(s), true, s);
+  for (const s of ["acme.test", "www.notion.so", "zendesk.com", "shop.example.co.uk"]) assert.equal(se.mailReadRefused(s), false, s);
+});
+
+test("R: only Gmail's topmost Authentication-Results counts: a pass written lower down (inside the message) is the sender's own", async () => {
+  const auth = ["mx.google.com; dkim=none; spf=pass smtp.mailfrom=a@evil.io; dmarc=fail header.from=acme.test", "mx.google.com; dkim=pass header.i=@acme.test header.s=a header.b=b"];
+  assert.equal(se.senderMatches({ from: "Acme <no-reply@acme.test>", auth }, ["acme.test"]), false);
+  const box = fakeGmail([codeMail({ id: "m-lower", auth, at: T0 + 1_000 })]);
+  assert.equal((await read(box)).status, "not_found");
+  assert.deepEqual(box.fullReads(), []);
 });
