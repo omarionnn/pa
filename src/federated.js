@@ -34,6 +34,7 @@ import { awaitCodeReply } from "./signinemail.js";
 import * as restartGate from "./busy.js";
 import { reachPinned, frontDoorOf } from "./filler.js";
 import { recordFinding } from "./sitefindings.js";
+import { markRefusing, clearRefusal, refusingSite } from "./refusing.js";
 
 export const GOOGLE = "https://accounts.google.com";
 /** How long Google's "tap Yes / tap the number" prompt is waited for. */
@@ -87,6 +88,15 @@ const BLOCKS = [
   ["unusual_activity", /unusual activity|suspicious activity|we noticed something unusual/i],
   ["another_way", /^(?:.{0,80})(choose how you want to sign in|try another way to sign in)/i],
 ];
+/**
+ * Google turning the browser itself away at the email step (a control run on 2026-11-15 got exactly this
+ * from two sites' own Continue with Google buttons): recorded against google.com as a strike
+ * (src/refusing.js "browser_refused"), and said as Google's refusal of the browser with what still works
+ * for the site. The other stops (a passkey, a picture check, unusual activity) are about this sign-in.
+ */
+export const TURNED_AWAY = new Set(["browser_not_secure", "couldnt_sign_in"]);
+/** Google answered about the ACCOUNT, so it let the browser in: the google.com refusal record clears. */
+const GOOGLE_LET_IN = new Set(["signed_in", "wrong_password", "needs_google_tap", "needs_google_code", "not_accepted", "consent_more"]);
 export const BLOCK_WORDS = {
   browser_not_secure: 'it said "This browser or app may not be secure"',
   couldnt_sign_in: `it said "Couldn't sign you in"`,
@@ -175,7 +185,10 @@ function say(result, site, extra = {}) {
     site_walled: `${site} turned my browser away before its sign-in page showed, so I typed nothing and stopped. That's their choice, not something you did.`,
     off_site: `I couldn't sign you in to ${site}: its sign-in link didn't keep me on ${site}, so I pressed nothing and typed nothing.`,
     origin_mismatch: `I couldn't sign you in to ${site}: its Google button didn't lead to Google's own sign-in page (accounts.google.com), so I typed nothing.`,
-    blocked: `Google stopped the sign-in to ${site}: ${BLOCK_WORDS[extra.which] ?? "it blocked it"}. That's Google's call, not something you did. I stopped and won't retry.`,
+    blocked: TURNED_AWAY.has(extra.which) ? turnedAway(site, extra.page)
+      : `Google stopped the sign-in to ${site}: ${BLOCK_WORDS[extra.which] ?? "it blocked it"}. That's Google's call, not something you did. I stopped and won't retry.`,
+    // Google is on record as turning the browser away (src/refusing.js): nothing opened, no Face ID asked.
+    google_refused: turnedAway(site, extra.page),
     wrong_password: `I couldn't sign you in to ${site}: Google said the saved Google password is wrong. I've stopped and won't use it again until you save it again.`,
     not_accepted: `I couldn't sign you in to ${site}: Google didn't accept the saved Google login. I've stopped and won't try again until tomorrow.`,
     consent_more: `I stopped signing you in to ${site}: it asked Google for more than your name and email address${extra.more?.length ? ` (${extra.more.join("; ")})` : ""}. I didn't allow it, so you're not signed in. I won't try ${site} with Google again until tomorrow.`,
@@ -190,7 +203,19 @@ function say(result, site, extra = {}) {
     busy: `I'm already using the browser for you right now. I'll sign in to ${site} once that's done.`,
     not_signin_page: `I couldn't sign you in to ${site}: its sign-in page didn't load the way I expected, so I stopped.`,
   };
-  return { ok: result === "signed_in", result, route: "google", say_exactly: lines[result] ?? `I couldn't sign you in to ${site}.` };
+  const away = result === "google_refused" || (result === "blocked" && TURNED_AWAY.has(extra.which));
+  return { ok: result === "signed_in", result, route: "google", say_exactly: lines[result] ?? `I couldn't sign you in to ${site}.`,
+    ...(away ? { google_refused: true, instead: ["emailed_code", "password", "their_own_signin"], ...(extra.page ? { signin_page: extra.page } : {}) } : {}) };
+}
+/**
+ * Said once, plainly: Google refused the browser, nothing is retried, and what still works for the site.
+ * The emailed code is the site's own (read by Reason where it can read their mail); `page` is the site's
+ * own sign-in page when the job found it.
+ */
+export function turnedAway(site, page = "") {
+  return `Google turned my browser away, so I can't use Continue with Google for you right now. I stopped and won't retry. `
+    + `I can still get you into ${site} with the code ${site} emails you, or with a ${site} password if your account there has one`
+    + (page ? `, or you can sign in yourself on ${site}'s own page: ${page}` : `, or you can sign in yourself on ${site}'s own sign-in page`) + ".";
 }
 
 // ---------------------------------------------------------------- Google's session, never kept (review 2026-11-13)
@@ -237,6 +262,9 @@ export async function signInWithGoogle(conversationId, site, {
   if (!rows.length) return { ...say("needs_google_login", host), offer: "google.com" };
   if (rows.length > 1) return say("pick_one", host);
   const g = rows[0];
+  // Google on record as turning the browser away (two refusals 10+ minutes apart, believed 7 days; any
+  // later account-level answer from Google clears it): said up front, nothing opened, no Face ID ask.
+  { let r = null; try { r = refusingSite("google.com", now()); } catch { r = null; } if (r) return say("google_refused", host); }
   if (["refused", "paused", "needs_person"].includes(g.state) || (g.next_try_at && now() < g.next_try_at)) return say("paused", host);
   if (g.state === "wrong_password") return say("wrong_password", host);
 
@@ -271,11 +299,16 @@ export async function signInWithGoogle(conversationId, site, {
   restartGate.hold(gateId, { kind: "saved_login" });
   const startedAt = now();
   const diag = { boxes: [] };
-  let session = null, handedOff = false, typed = false, breached = false;
+  let session = null, handedOff = false, typed = false, breached = false, signinPage = "";
   const onGoogle = (context) => { breached = true; unpinSite(c); void signOutOfGoogle(context ?? session?.context); try { recordLoginEvent(c, { site: host, event: "signin", outcome: "google_property", purpose: why }); } catch { /* best effort */ } };
 
   const walled = () => { try { recordFinding({ site: host, label: host, signin_url: `https://${host}/` }, { kind: "walled", why: "challenge before the sign-in page (Google route)" }); } catch { /* best effort */ } };
   const end = (result, extra = {}) => {
+    if (result === "blocked" && TURNED_AWAY.has(extra.which)) {
+      try { markRefusing("google.com", "browser_refused", now()); } catch { /* a record that cannot be written never breaks the answer */ }
+      if (signinPage && !extra.page) extra = { ...extra, page: signinPage };
+    }
+    if (GOOGLE_LET_IN.has(result)) { try { clearRefusal("google.com", now()); } catch { /* best effort */ } }
     if (result === "signed_in") setState(c, g.id, { state: "working", failCount: 0, clearNextTry: true });
     else if (result === "wrong_password") setState(c, g.id, { state: "wrong_password", bumpFail: true });
     else if (result === "blocked") setState(c, g.id, { state: "refused" });
@@ -300,6 +333,7 @@ export async function signInWithGoogle(conversationId, site, {
     try { at = await locate({ site: base, label: host, signin_url: `https://${host}/`, generic: true }); } catch { at = null; }
     let pin = null;
     if (at?.found && at?.url) {
+      signinPage = /^https:\/\/[^\s?#]+$/.test(String(at.url)) ? String(at.url) : "";
       let u = null;
       try { u = new URL(String(at.url)); } catch { u = null; }
       if (!u || u.protocol !== "https:" || registrableOf(u.hostname.toLowerCase()) !== base) return end("not_signin_page");
@@ -432,6 +466,8 @@ export async function signInWithGoogle(conversationId, site, {
     handedOff = true;
     restartGate.hold(`${gateId}:wait`, { kind: "saved_login_code" });
     restartGate.release(gateId);
+    // Google asked about the account: it let the browser in, so the refusal record clears.
+    try { clearRefusal("google.com", now()); } catch { /* best effort */ }
     const asked = step.kind === "tap" ? say("needs_google_tap", host, step) : say("needs_google_code", host, step);
     recordLoginEvent(c, { site: host, event: "signin", outcome: step.kind === "tap" ? "needs_google_tap" : "needs_google_code", purpose: why });
     const done = (async () => {

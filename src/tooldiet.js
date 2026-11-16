@@ -24,6 +24,7 @@ import { db } from "./db.js";
 import * as dbm from "./db.js";
 import { clock, config } from "./config.js";
 import { socialAllowedFor } from "./socialsignin.js";
+import { savedLoginsAllowedFor } from "./savedlogins.js";
 import { jobsAllowedFor } from "./accountjobs.js";
 
 const OFF = ["0", "off", "false", "no"];
@@ -98,6 +99,10 @@ export const PACKS = {
   // Microsoft rules are in the prompt (src/socialsignin.js): those rules name them, and on 2026-11-10
   // the owner's Notion task never reached signin_link — Reason said it could not get in instead.
   signin: ["signin_email", "signin_link", "signin_status", "signin_provider"],
+  // Saved logins (src/savedlogins.js): loaded whole wherever the vault is on for them, as the prompt's
+  // SAVED LOGINS lines name them (src/loginintake.js SAVED_LOGIN_RULES). "Save my Google login" on
+  // 2026-11-15 cost a search round for a tool the rest of the prompt then talked the model out of.
+  saved_logins: ["saved_login_offer", "account_signin", "saved_login_forget"],
   // Account jobs (src/accountjobs.js): loaded whole wherever the switch reaches them, so "cancel my X"
   // and "pay this bill" land on these and not on a search that may find the browser walk instead.
   account_jobs: ["account_cancel", "account_bill_pay", "account_job_status", "account_cancel_confirm", "account_job_answer", "account_job_stop"],
@@ -158,6 +163,7 @@ export function statePacks(conversationId, { now = clock.now() } = {}) {
   const one = (sql, ...a) => db.prepare(sql).get(...a);
   // First, so a heavy user's other packs never push it past the cap: the rules in their prompt name these.
   if (safe(() => socialAllowedFor(c))) out.push("signin");
+  if (safe(() => savedLoginsAllowedFor(c))) out.push("saved_logins");
   if (safe(() => jobsAllowedFor(c))) out.push("account_jobs");
   if (safe(() => one("SELECT 1 FROM shop_runs WHERE conversation_id = ? AND updated_at >= ? LIMIT 1", c, now - 7 * DAY))
     || safe(() => one("SELECT 1 FROM agentcard_purchases WHERE conversation_id = ? AND created_at >= ? LIMIT 1", c, now - 7 * DAY))) out.push("shopping");
