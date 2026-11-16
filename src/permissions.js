@@ -75,6 +75,8 @@ export const GATED_ACTIONS = new Set([
   "purchase_confirm",
   // A Crossmint checkout's payment (src/shoptools.js); never standing, see WHY_NEVER_STANDING.
   "shop_pay",
+  // Placing a DoorDash order on their own account (src/doordash.js, site_card); never standing either.
+  "doordash_place",
   // A cancellation's last step inside their own account (src/accountjobtools.js); never standing either.
   "account_cancel_confirm",
   // Merging somebody else's (or their own) pull request. Irreversible: the commit is on the default
@@ -162,7 +164,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay", "account_cancel_confirm", "todo_approve", "event_refund", "event_ticket_refund", "event_seats"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay", "doordash_place", "account_cancel_confirm", "todo_approve", "event_refund", "event_ticket_refund", "event_seats"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.
@@ -189,6 +191,7 @@ export const WHY_NEVER_STANDING = {
   todo_approve: "the yes to a to-do list covers the plan they were shown — the businesses it names, what it says costs money — and the next list's plan does not exist yet",
   account_cancel_confirm: "the yes for a cancellation covers what the site's own last step says, which plan it is, what it costs and the date access ends, and none of that exists until the run reaches that step — so it is always asked, with those words in it",
   shop_pay: "the yes for a store checkout covers the exact total Crossmint asks for at that store, and that total does not exist until the checkout reaches payment — so it is always asked, by text, with the number in it",
+  doordash_place: "the yes for a DoorDash order covers the exact total DoorDash shows at checkout for that order, read just before Place order — so it is always asked, for that order and that total.",
   purchase_confirm: "the yes for a purchase covers the cart AgentCard came back with — which shop it picked,"
     + " what it actually put in the basket, the fees and the real total — and none of that exists yet when a"
     + " permission is granted, so there would be nothing for the permission to be a bound on",
