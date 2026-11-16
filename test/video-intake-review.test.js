@@ -112,10 +112,11 @@ test("a link can never be read as a yt-dlp option, and yt-dlp reads no config, c
     assert.deepEqual(a.slice(-2), ["--", "https://vimeo.com/1"]);
   } finally { config.ytDlpJsRuntime = ""; }
   assert.ok(!video.hardenArgs(["-J", "https://vimeo.com/1"]).includes("--js-runtimes"));
-  // Switch off: the old path's arguments are untouched (main's bytes).
+  // Switch off: the old path is hardened the same way (one shared hardenArgs).
   const old = recorder();
   await video.videoUnderstand("https://vimeo.com/76979871", { run: old, bin: "/fake/yt-dlp" });
-  assert.ok(!old.calls[0].includes("--ignore-config") && !old.calls[0].includes("--"));
+  assert.deepEqual(old.calls[0].slice(-2), ["--", "https://vimeo.com/76979871"]);
+  assert.ok(old.calls[0].includes("--ignore-config"));
 });
 
 test("nothing on this machine's network: loopback, private, link-local, metadata, file:, credentials", async () => {
