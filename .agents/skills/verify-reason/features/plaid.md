@@ -17,8 +17,12 @@ not a paused account, not a group, not a stranger, never on a call (`plaidOn` / 
   Plaid's Trial, `src/config.js:698`; live sets it — the owner was told **20**; the switch value is masked,
   so read the /ops Plaid meter for the live number). Full → `say_exactly` "bank connections are full right
   now; I'll let you know when there's room" (`FULL_WORDS`), no link, Plaid not asked.
-- **Two per person** (`REASON_PLAID_PER_PERSON`, default 2, ever, same counting); **the owner is exempt**.
-  Over it → "that's the most banks i can connect for one person right now (2); I'll let you know when there's room".
+- **No per-person bank limit** (owner, 2026-11-15; `REASON_PLAID_PER_PERSON` is gone): anybody connects as many
+  banks as the plan's total has room for. Full → the owner gets one line in the daily digest (`FULL_OWNER_LINE`).
+- **Open links, not banks:** at most `OPEN_LINKS_PER_PERSON` (2) new-bank links open (unfinished, unexpired) per
+  person, and every open link, their own too, counts toward the total. A third ask, or an ask at the last place
+  with one of theirs open → `link_open`, `say_exactly` `LINK_OPEN_WORDS` (their earlier link still works), no link,
+  Plaid not asked, not waitlisted.
 - **The waitlist.** Either refusal puts them in `plaid_waits`; the hourly sweep (`src/serve.js:156`,
   `tellWaiting`) texts "there's room now to connect your bank. want me to send the link?" once, longest
   waiting first, as many as fit. Room appears only when the cap is raised (slots never free up).
@@ -62,7 +66,7 @@ not a paused account, not a group, not a stranger, never on a call (`plaidOn` / 
   and the `/plaid/webhook` handler, with `test/fixture-plaid.js`'s fetch handed to the SDK (`plaid._setFetch`),
   on a throwaway DB under `caged.sh env`. 16/16: cap 20 / per-person 2 read; on for active, off for paused and
   groups; an event turn → `not_asked`; first link carries `tell_first` = the consent words, the second not; a
-  third bank → `per_person_limit`; the owner connects three; slots filled to 20 → `connections_full`, Plaid
+  third bank → `per_person_limit` (removed 2026-11-15: no per-person limit now); the owner connects three; slots filled to 20 → `connections_full`, Plaid
   not asked, waitlisted; sweep tells nobody until the cap rises, then once; a disconnect frees no slot; no
   token or secret in anything returned or logged. Script kept with the evidence (`plaid-drive.mjs`).
 - On the cage itself the switch is off (route `POST /plaid/webhook` → 404) and no Plaid key is set:

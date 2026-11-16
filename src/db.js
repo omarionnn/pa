@@ -2276,6 +2276,24 @@ addColumnIfMissing("calls", "turn_log", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_opener", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_about", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
+// The person asked for this call to be recorded (REASON_CALL_RECORD_ASK, src/calls/manner.js): 1, and
+// their own words that asked, as checked against what they wrote. 0 on every other call.
+addColumnIfMissing("calls", "record_asked", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "record_said", "TEXT NOT NULL DEFAULT ''");
+// How the recording was offered for this call, where the ask is on: 'question' (in the yes asked before it),
+// 'hold' (in the "calling … in 30s" line), 'asked_for' (they asked up front), 'none' (it went with no
+// message before it: the after-call text carries a one-time tip). '' where the ask is off.
+addColumnIfMissing("calls", "record_offer", "TEXT NOT NULL DEFAULT ''");
+// When this person was told, once ever, that they can say "record it" when asking for a call.
+addColumnIfMissing("accounts", "record_tip_told_at", "INTEGER");
+/** Claim the one-time "say record it next time" tip for this person: true once, ever. */
+export function claimRecordTip(conversationId, at = clock.now()) {
+  return db.prepare("UPDATE accounts SET record_tip_told_at = ? WHERE conversation_id = ? AND record_tip_told_at IS NULL").run(at, conversationId).changes === 1;
+}
+/** The tip did not go out after all (no message was sent): it is still owed. */
+export function unclaimRecordTip(conversationId, at) {
+  db.prepare("UPDATE accounts SET record_tip_told_at = NULL WHERE conversation_id = ? AND record_tip_told_at = ?").run(conversationId, at);
+}
 // What the Cartesia voice ran on a call, for the plan meter on /ops (src/planmeter.js): its seconds and
 // cents at the plan's rate, written when the Cartesia relay lets the call go — at its end, or when it
 // hands the call to GPT-Live (`cartesia_fell_back` 1), whose own cost then lands in cost_cents. Numbers
@@ -5891,6 +5909,8 @@ export function updateCall(conversationId, id, fields) {
     "settle_started_at", "settled_at", "settle_resumes",
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
+    // A call they asked to be recorded (src/calls/manner.js `recordAskFor`).
+    "record_asked", "record_said", "record_offer",
     // What the Cartesia voice ran on the call, for the plan meter (src/planmeter.js).
     "cartesia_seconds", "cartesia_cents", "cartesia_fell_back", "cartesia_copy",
     // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
@@ -6923,6 +6943,12 @@ export function researchForFollowUp(taskId) {
 }
 
 /** How many background follow-ups this person has been given on this install day. */
+/** Is `taskId` some research run's follow-up task (src/tools.js researchFollowUp)? */
+export function isResearchFollowUpTask(conversationId, taskId) {
+  if (!taskId) return false;
+  return !!db.prepare("SELECT 1 FROM research WHERE conversation_id = ? AND continue_task_id = ?").get(conversationId, taskId);
+}
+
 export function researchContinuationsOn(conversationId, day) {
   return db.prepare("SELECT COUNT(*) n FROM research WHERE conversation_id = ? AND continue_day = ?").get(conversationId, day)?.n ?? 0;
 }
@@ -9302,6 +9328,41 @@ export function setCallHours(conversationId, { hours = null, said = "", at = Dat
   db.prepare("UPDATE accounts SET call_hours = ?, call_hours_said = ?, call_hours_set_at = ? WHERE conversation_id = ?")
     .run(hours, String(said ?? "").trim().slice(0, 300), at, conversationId);
   return callHours(conversationId);
+}
+
+// A recording asked for a call that is not placed yet (REASON_CALL_RECORD_ASK): held by number on their
+// account, for the call that is dialled later (a timer, a task's wake) — the choice is made when the
+// call is agreed, never asked again at dial time. One call only, and only for a couple of days.
+addColumnIfMissing("accounts", "call_record_asks", "TEXT NOT NULL DEFAULT '{}'");
+export const RECORD_ASK_KEEP_MS = 48 * 60 * 60 * 1000;
+function recordAsks(conversationId) {
+  try {
+    const v = JSON.parse(db.prepare("SELECT call_record_asks FROM accounts WHERE conversation_id = ?").get(conversationId)?.call_record_asks || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
+}
+function setRecordAsks(conversationId, v) {
+  db.prepare("UPDATE accounts SET call_record_asks = ? WHERE conversation_id = ?").run(JSON.stringify(v), conversationId);
+}
+/** Keep their "record it" for the next call to this number. */
+export function noteRecordAsk(conversationId, number, said, at = clock.now()) {
+  if (!number) return;
+  const v = recordAsks(conversationId);
+  for (const [k, x] of Object.entries(v)) if (!(at - (x?.at ?? 0) < RECORD_ASK_KEEP_MS)) delete v[k];
+  v[number] = { said: String(said ?? "").trim().slice(0, 300), at };
+  setRecordAsks(conversationId, v);
+}
+/** Their "record it" for a call to this number, if one is waiting (not used up, not stale). */
+export function recordAskFor(conversationId, number, at = clock.now()) {
+  const x = number ? recordAsks(conversationId)[number] : null;
+  return x && at - (x.at ?? 0) < RECORD_ASK_KEEP_MS ? x : null;
+}
+/** Used by the call it was for. */
+export function useRecordAsk(conversationId, number) {
+  const v = recordAsks(conversationId);
+  if (!(number in v)) return;
+  delete v[number];
+  setRecordAsks(conversationId, v);
 }
 
 export function setPatterns(conversationId, { patterns, said, askedAt, setAt } = {}) {
@@ -12602,6 +12663,12 @@ db.exec(`
 `);
 // Who brought this person in, if anybody: the inviter's conversation id.
 addColumnIfMissing("accounts", "invited_by", "TEXT");
+// The first name the INVITER said a link is for, already through invitecard.cleanInviteeName. It has
+// ONE use: the wording on that link's card picture (and the inviter's own "my invites"). It never
+// reaches the person who joins: not their hello, onboarding, profile or memory; they say their own
+// name. The inviter's data, so it lives on their row (and goes with their delete); blanked when the
+// link is canceled or claimed. NULL: nobody named, which every row from before this column is.
+addColumnIfMissing("invites", "for_name", "TEXT");
 
 /** What everybody who did not join through an invite starts with. Invitees start with none. */
 export const DEFAULT_INVITES = 2;
@@ -12675,7 +12742,7 @@ export function newInviteToken() {
  * Mint one link, if this person has a unit of allowance not already held by an unused link.
  * `{ ok: true, invite }` or `{ ok: false, reason: "none_left", remaining, unused }`.
  */
-export function createInvite(conversationId) {
+export function createInvite(conversationId, { forName = null } = {}) {
   const remaining = inviteAllowance(conversationId);
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -12690,8 +12757,8 @@ export function createInvite(conversationId) {
     // unlikely, and UNIQUE turns it into a retry rather than two links sharing a code.
     for (let i = 0; i < 5 && id === null; i++) {
       try {
-        id = Number(db.prepare("INSERT INTO invites (conversation_id, token, claim_code, state, created_at) VALUES (?, ?, ?, 'unused', ?)")
-          .run(conversationId, newInviteToken(), newClaimCode(), now).lastInsertRowid);
+        id = Number(db.prepare("INSERT INTO invites (conversation_id, token, claim_code, state, created_at, for_name) VALUES (?, ?, ?, 'unused', ?, ?)")
+          .run(conversationId, newInviteToken(), newClaimCode(), now, forName || null).lastInsertRowid);
       } catch (e) {
         if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
       }
@@ -12724,7 +12791,7 @@ export function inviteByClaimCode(code) {
 
 /** Cancel one of this person's own unused links. The allowance is untouched. */
 export function cancelInvite(conversationId, id) {
-  const r = db.prepare("UPDATE invites SET state = 'canceled', canceled_at = ? WHERE conversation_id = ? AND id = ? AND state = 'unused'")
+  const r = db.prepare("UPDATE invites SET state = 'canceled', canceled_at = ?, for_name = NULL WHERE conversation_id = ? AND id = ? AND state = 'unused'")
     .run(clock.now(), conversationId, id);
   return r.changes > 0;
 }
@@ -12755,6 +12822,9 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ? WHERE id = ? AND state = 'unused'")
       .run(conversationId, now, inv.id);
     if (won.changes !== 1) return fail("redeemed");
+    // The name the inviter said it was for was only ever for the card: once somebody joins it is
+    // gone, and nothing below hands it to their side.
+    db.prepare("UPDATE invites SET for_name = NULL WHERE conversation_id = ? AND id = ?").run(inv.conversation_id, inv.id);
     upsertAccount({ conversationId, channel, address, name, isOperator: false });
     db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(inv.conversation_id, conversationId);
     db.prepare("UPDATE invite_allowances SET remaining = MAX(remaining - 1, 0), updated_at = ? WHERE conversation_id = ?")

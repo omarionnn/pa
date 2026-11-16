@@ -25,8 +25,12 @@ export const WALL_MAX_AGE_MS = 7 * DAY;
 /** Two walls closer together than this are one bad moment (or one job), not two. */
 export const STRIKE_GAP_MS = 10 * 60_000;
 /** Why a site is on the list: a fixed word, never page text. */
-export const EVIDENCE = ["seed_generic_error_two_networks", "generic_error_twice", "wall", "challenge"];
-const STRIKES = new Set(["wall", "challenge"]);
+// "browser_refused": Google's own "This browser or app may not be secure" / "Couldn't sign you in" at
+// the email step of a Continue-with-Google job (src/federated.js), kept against google.com. A strike,
+// like a wall: one is a bad moment, two 10+ minutes apart mark Google for 7 days, and any account-level
+// answer from Google (signed in, a tap or a code asked, a wrong password) clears it.
+export const EVIDENCE = ["seed_generic_error_two_networks", "generic_error_twice", "wall", "challenge", "browser_refused"];
+const STRIKES = new Set(["wall", "challenge", "browser_refused"]);
 const maxAgeOf = (evidence) => (STRIKES.has(evidence) ? WALL_MAX_AGE_MS : REFUSAL_MAX_AGE_MS);
 
 /** Written down by hand, with the day it was seen. */
@@ -34,7 +38,7 @@ const SEEDS = [
   { site: "netflix.com", label: "Netflix", seen: "2026-11-13", evidence: "seed_generic_error_two_networks" },
 ];
 /** Display names for sites the service marks itself. */
-const LABELS = { "netflix.com": "Netflix" };
+const LABELS = { "netflix.com": "Netflix", "google.com": "Google" };
 
 /**
  * The site's own pages for common account tasks, reviewed by hand. Each was checked load-only on
@@ -123,6 +127,15 @@ export function markRefusing(site, evidence, now = clock.now()) {
   }
   db.db.prepare("DELETE FROM site_wall_strikes WHERE at < ?").run(now - WALL_MAX_AGE_MS);
   return null;
+}
+
+/** One strike on record for this site, still within its 7 days (not yet a mark) → { evidence, seen } | null. */
+export function strikeOn(site, now = clock.now()) {
+  const key = siteKey(site);
+  if (!key) return null;
+  const had = db.db.prepare("SELECT evidence, at FROM site_wall_strikes WHERE site = ?").get(key);
+  if (!had || now - Number(had.at) >= WALL_MAX_AGE_MS) return null;
+  return { evidence: had.evidence, seen: isoDay(Number(had.at)) };
 }
 
 /**

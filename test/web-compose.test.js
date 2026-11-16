@@ -552,3 +552,29 @@ test("3A + 4A–4E as drawn: the + sheet, the slips' states, FROM YOUR VOICE, PA
   assert.match(compose.COMPOSE_CSS, /\.on-line li\[data-state=up\]\{opacity:\.55\}/, "3B: uploading is faded, no bars");
   assert.ok(!/progress/i.test(compose.COMPOSE_JS + compose.COMPOSE_CSS), "no progress bars");
 });
+
+test("the disk floor (everyone): under it an upload is refused with 507 and Reason's own plain words; the owner's digest gets one line; back above it, it goes up", async () => {
+  const GB = 1024 ** 3;
+  const was = uploads.diskStats.statfs;
+  uploads.diskStats.statfs = () => ({ blocks: 100 * GB / 4096, bsize: 4096, bavail: 4 * GB / 4096 }); // 4 GB free: under the 5 GB floor
+  try {
+    db.db.exec("DELETE FROM ops_digest");
+    const kofi = browser(KOFI_C);
+    const r = await up(kofi, PNG, { name: "a.png" });
+    assert.equal(r.status, 507);
+    const j = JSON.parse(r.body);
+    assert.equal(j.error, "disk_full");
+    assert.equal(j.say, "I can't take more files right now; that's on my side, not a limit on you.");
+    assert.doesNotMatch(j.say, /["“”]/, "no phrase for them to type");
+    await up(kofi, PNG, { name: "b.png" });
+    const held = db.db.prepare("SELECT text FROM ops_digest WHERE key = 'uploads:disk_floor' AND sent_at IS NULL").all();
+    assert.equal(held.length, 1, "one line however many are refused");
+    assert.match(held[0].text, /4\.0 GB free, under the 5\.0 GB floor/);
+    assert.doesNotMatch(held[0].text, /\+1|fake:|dm:/);
+    uploads.diskStats.statfs = () => ({ blocks: 100 * GB / 4096, bsize: 4096, bavail: 50 * GB / 4096 });
+    assert.equal((await up(kofi, PNG, { name: "c.png" })).status, 200);
+  } finally { uploads.diskStats.statfs = was; }
+  // The page shows the server's words on the failed slip.
+  const src = (await import("node:fs")).readFileSync(new URL("../src/pages/webcompose.js", import.meta.url), "utf8");
+  assert.match(src, /f\.why=typeof j\.say==='string'\?j\.say:''/);
+});
