@@ -62,7 +62,7 @@ import { webSearch, searchCapability, searchStatus } from "./search.js";
 import { startRun as researchStart, isBig as researchIsBig, step as researchStep, view as researchView, nicheOf, answerFirst as researchAnswerFirst, startDeep as researchStartDeep, pollDeep as researchPollDeep } from "./research.js";
 import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
-import { videoUnderstand, videoCapability } from "./video.js";
+import { videoUnderstand, videoCapability, videoIntake, cachedTranscriptFor, transcriptBlocks, howWeGotIt, timecode as videoClock } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { NOT_RECORDED_WHY, recordAskFor as recordAskOn, RECORD_ASK_OFFER, HOLD_RECORD_OFFER, RECORD_WORDS, RECORD_ASKED_NONE, RECORD_DECLINED_WHY, notRecordedAnswer } from "./calls/manner.js";
 import * as callTrial from "./calls/calltrial.js";
@@ -643,7 +643,8 @@ export function toolsFor(conversationId) {
     // Account jobs on for them: the cancelling rules on cancel_route name account_cancel, not the browser walk.
     .map(t => (t.name === "cancel_route" && accountJobToolVisible("account_cancel", conversationId) ? { ...t, description: accountJobWords(t.description) } : t))
     // A call they can ask to be recorded (REASON_CALL_RECORD_ASK): only where the switch reaches them.
-    .map(t => (t.name === "call_place" && recordAskOn(conversationId) ? callPlaceWithRecording(t) : t));
+    .map(t => (t.name === "call_place" && recordAskOn(conversationId) ? callPlaceWithRecording(t) : t))
+    .map(t => (t.name === "video_understand" && videoIntakeFor(conversationId) ? videoWithIntake(t) : t));
 }
 
 // REASON_CALL_RECORD_ASK (src/calls/manner.js): call_place's words about recording, and its record_said,
@@ -664,6 +665,67 @@ function callPlaceWithRecording(t) {
   if (!schema?.properties || !t.description.includes(CALL_NOT_RECORDED_WORDS)) return t;
   return { ...t, description: t.description.replace(CALL_NOT_RECORDED_WORDS, CALL_RECORD_ASK_WORDS), input_schema: { ...schema, properties: { ...schema.properties, record_said: RECORD_SAID_PROP } } };
 }
+
+// Video intake (src/video.js `videoIntake`, REASON_VIDEO_INTAKE = off | owner | on): only a person the
+// switch covers is shown `find` and `pdf` and the bare-link rule. Everybody else sees video_understand
+// exactly as it was, and the dispatch runs exactly the old path for them.
+export function videoIntakeFor(conversationId) {
+  if (config.videoIntake === "on") return true;
+  return config.videoIntake === "owner" && accounts.featureOwner(conversationId);
+}
+const VIDEO_INTAKE_WORDS = " When their message is just a video link with nothing asked, call this with no question, then answer in 3 to 5 short lines and offer, in plain words, the full transcript as a PDF, the key quotes, or finding where they talk about something."
+  + " A transcript once fetched is kept for that video, so asking again (another question, find, pdf) is instant and costs nothing."
+  + " Always say in a few words how you know what is in it: from its captions, by listening to the audio, or by watching it.";
+const VIDEO_INTAKE_PROPS = Object.freeze({
+  find: { type: "string", description: "Words or a topic to find inside the video ('where does he talk about pricing'). Comes back with just the matching moments and their times, not the whole transcript: use it for anything long." },
+  pdf: { type: "boolean", description: "True when they want the whole transcript as a file. It is made as a PDF (title, channel, then every line as m:ss text) and sent into this thread; only say it arrived if the result says sent." },
+});
+function videoWithIntake(t) {
+  const schema = t.input_schema;
+  if (!schema?.properties) return t;
+  return { ...t, description: t.description + VIDEO_INTAKE_WORDS, input_schema: { ...schema, properties: { ...schema.properties, ...VIDEO_INTAKE_PROPS } } };
+}
+
+/**
+ * The whole transcript of a video as a PDF, sent into this thread through document_create, so the
+ * file, its row, the send and the SENT-only-when-it-arrived rule (and the link when it cannot go) are
+ * exactly the ones every document gets. Made from the cached transcript only: a video the model
+ * WATCHED has an account of it, not a word-for-word transcript, and that is said rather than dressed
+ * up as one. What comes back is the short version: the transcript itself is in the file, not here.
+ */
+async function videoTranscriptPdf(out, { url, ctx, c, me }) {
+  const lean = {
+    ok: out.ok, tier: out.tier, url: out.url, title: out.title, channel: out.channel, duration: out.duration, how: out.how, ...(out.say_how ? { say_how: out.say_how } : {}),
+    // The title and channel are the video's own words: the outside-content note travels with them.
+    ...Object.fromEntries(["untrusted_content", "untrusted_source", "flagged", "flagged_note"].filter(k => k in out).map(k => [k, out[k]])),
+  };
+  const hit = cachedTranscriptFor(url);
+  if (!hit?.lines?.length) {
+    return {
+      ...lean, ok: false, pdf: { made: false },
+      error: out.tier === "watch"
+        ? "No PDF was made: this video was watched by a video model, which gives an account of it, not a word-for-word transcript. Say that plainly; offer the account or the key points instead."
+        : "No PDF was made: there is no transcript of this video to put in one. Say that plainly; do not say a file is coming.",
+    };
+  }
+  const { blocks, stoppedAt } = transcriptBlocks(hit.lines);
+  const title = (hit.title || out.title || "Video transcript").replace(/\s+/g, " ").trim().slice(0, 100);
+  const subtitle = [hit.channel || out.channel, hit.durationS ? videoClock(hit.durationS) : null, `transcript ${howWeGotIt(hit.tier, hit.source)}`]
+    .filter(Boolean).join(" · ").slice(0, 158);
+  const made = await dispatch("document_create", { kind: "pdf", title, subtitle, blocks, say: "here's the full transcript." }, ctx, c, me);
+  return {
+    ...lean, ok: !!made?.ok,
+    pdf: made,
+    lines: hit.lines.length,
+    ...(stoppedAt !== null ? { pdf_stops_at: `${videoClock(stoppedAt)} (the rest did not fit in one document; say so)` } : {}),
+    note: made?.sent
+      ? "The PDF arrived in their thread. Say it is there in a few words; do not paste the transcript."
+      : "The PDF did NOT arrive. Do not say it was sent. Tell them what the pdf result says, and give the link if it has one.",
+  };
+}
+
+/** The heads-up for a long fetch, in the person's own thread, through the ordinary message_send. */
+const VIDEO_HEADS_UP = "that's a long one, pulling the transcript now. give me a minute.";
 
 // One identity (src/identity.js, REASON_ONE_IDENTITY): only a person the switch covers is told that
 // `remember` can keep a name for Reason. Everybody else is shown the tool exactly as it was before
@@ -8306,6 +8368,8 @@ const S = {
     from: z.string().max(20).optional(),
     to: z.string().max(20).optional(),
     watch: z.boolean().optional(),
+    find: z.string().max(200).optional(),
+    pdf: z.boolean().optional(),
   }),
   browser_open: z.object({ url: z.string().min(1).max(2000) }),
   browser_read: z.object({ max_chars: z.number().int().min(200).max(20_000).optional() }),
@@ -20194,7 +20258,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "video_understand": {
-      const out = await videoUnderstand(input.url, {
+      const videoOpts = {
         question: input.question,
         from: input.from, to: input.to, watch: !!input.watch,
         // The tests drive the real parsing, trimming, caching and audio handling against fixture
@@ -20205,7 +20269,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(ctx.videoModelStatus ? { modelStatus: ctx.videoModelStatus } : {}),
         ...(ctx.videoTranscriber !== undefined ? { transcriber: ctx.videoTranscriber } : {}),
         ...(ctx.videoMaxMinutes ? { maxMinutes: ctx.videoMaxMinutes } : {}),
-      });
+      };
+      const intake = videoIntakeFor(c);
+      const out = intake
+        ? await videoIntake(input.url, {
+          ...videoOpts, find: input.find ?? "",
+          ...(ctx.videoDeadlineMs ? { deadlineMs: ctx.videoDeadlineMs } : {}),
+          // A long fetch: one short text first, through message_send to them, so every rule on a
+          // text (Web-only chat, task wake, delivery) is the ordinary one. True only when it went.
+          onLongFetch: async () => {
+            const r = ctx.videoHeadsUp ? await ctx.videoHeadsUp(VIDEO_HEADS_UP) : await dispatch("message_send", { to: "owner", text: VIDEO_HEADS_UP }, ctx, c, me);
+            return r?.ok ? "You already texted them that you are pulling the transcript. Do not say it again." : undefined;
+          },
+        })
+        : await videoUnderstand(input.url, videoOpts);
+      if (!out.heads_up) delete out.heads_up;
       // Same rule as web_lookup: a picture may only go on a Reason page if its address came back
       // from a tool in this conversation. A video's thumbnail did.
       if (out.ok && out.images?.length) { db.rememberSeenUrls(c, [out.url], { kind: "page" }); db.rememberSeenUrls(c, out.images, { kind: "page", from: out.url }); }
@@ -20217,12 +20295,20 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         : { coverage: "failed", detail: out.error ?? out.why ?? "nothing about it could be got" });
       // Marked the same way a page is. A video's captions are a script somebody else wrote, and a
       // sentence in one is no more a command than a sentence on a web page is.
-      return out.ok
+      // Intake: the link is remembered for this conversation even from a cached answer, so their export
+      // and delete reach the cached transcript of what they sent (src/data.js scopes it by these urls).
+      if (intake && out.url && (out.ok || out.title)) db.rememberSeenUrls(c, [out.url], { kind: "page" });
+      // Intake: everything the video's people wrote is scanned — the model's account of it, the title,
+      // the description, the chapters — and a refusal that still carries them is marked too.
+      const marked = out.ok || (intake && (out.title || out.description))
         ? markOutside(out, {
           source: `a video on ${sourceName(out.url)}${out.title ? ` ("${out.title}")` : ""}`,
-          text: [out.summary, out.transcript, out.captions?.text, out.heard?.text, out.watched?.text].filter(t => typeof t === "string").join("\n"),
+          text: [out.summary, out.transcript, out.captions?.text, out.heard?.text, out.watched?.text, ...(out.found ?? []).map(f => f.text),
+            ...(intake ? [out.account, out.title, out.description, ...(out.chapters ?? [])] : [])].filter(t => typeof t === "string").join("\n"),
         })
         : out;
+      if (!(intake && input.pdf && out.ok)) return marked;
+      return await videoTranscriptPdf(marked, { url: input.url, ctx, c, me });
     }
 
     case "browser_open": {

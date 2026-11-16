@@ -112,6 +112,17 @@ export function capReached({ now = clock.now() } = {}) {
   return null;
 }
 
+/**
+ * Video intake's own day budget (config.videoDailyUsd): `{ which: "video", spent, cap }` or null.
+ * Only intake reads it; nothing else is held back by it.
+ */
+export function videoBudgetReached({ now = clock.now() } = {}) {
+  const cap = Number(config.videoDailyUsd) || 0;
+  if (!(cap > 0)) return null;
+  const spent = db.modelUsageBy({ day: today(now) }).filter(r => r.feature === "video" && r.via === "api").reduce((s, r) => s + (r.usd || 0), 0);
+  return spent >= cap ? { which: "video", spent, cap } : null;
+}
+
 const capWords = (hit) => `the API ${hit.which === "month" ? "monthly" : "daily"} cap (${usd(hit.cap)}) is reached — on the subscription until ${hit.which === "month" ? "the 1st" : "midnight"}`;
 
 let outUntil = 0;
@@ -210,6 +221,9 @@ export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = 
   // The 80% heads-up already sent this day / month (capWarnings), so the page says he was told.
   const warned = warnedWords(now);
   if (warned) parts.push(warned);
+  // Video intake's day budget: said when it has shut the paid video tiers for the rest of the day.
+  const vb = videoBudgetReached({ now });
+  if (vb) parts.push(`video budget reached (${usd(vb.spent)} of ${usd(vb.cap)}, REASON_VIDEO_DAILY_USD): videos are captions-only until midnight`);
   // Out of credit is said by its own row (fallbackCheck), so the owner gets that one text, not two.
   if (credit.n) parts.unshift(`${credit.n} paid call${credit.n === 1 ? "" : "s"} refused for credit in the last hour`);
   const monthHit = monthCap > 0 && spent.month >= monthCap;

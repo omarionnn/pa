@@ -920,6 +920,34 @@ export const config = {
   videoTranscriptChars: Number(process.env.REASON_VIDEO_TRANSCRIPT_CHARS || 20_000),
   videoDescriptionChars: Number(process.env.REASON_VIDEO_DESCRIPTION_CHARS || 1_200),
   videoProbeTimeoutMs: Number(process.env.REASON_VIDEO_PROBE_TIMEOUT_MS || 60_000),
+  // Video intake (src/video.js `intake`): off (unset) | owner (the operator's own account) | on
+  // (everyone). On: a bare link gets a short summary and an offer, a transcript is cached by video
+  // so a second question is free, `find` searches inside it, `pdf` sends the whole thing as a PDF,
+  // a long fetch gets a heads-up text, and live / over-2-hour / private / age-gated videos get one
+  // plain line. Off: the tool, its description and every result are exactly as before.
+  videoIntake: (v => (v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v) ? "on" : "off"))(String(process.env.REASON_VIDEO_INTAKE ?? "").trim().toLowerCase()),
+  // The transcript cache: refetched after this many days, and the oldest videos dropped once the
+  // whole cache holds more than this many characters (~50 MB of text).
+  videoCacheDays: Number(process.env.REASON_VIDEO_CACHE_DAYS || 30),
+  videoCacheMaxChars: Number(process.env.REASON_VIDEO_CACHE_MAX_CHARS || 50_000_000),
+  // Intake: a video longer than this gets one plain line instead of a fetch; a fetch longer than
+  // 10 minutes of video gets a heads-up text first; the whole fetch gives up after the deadline.
+  videoIntakeMaxSeconds: Number(process.env.REASON_VIDEO_INTAKE_MAX_SECONDS || 7_200),
+  videoHeadsUpSeconds: Number(process.env.REASON_VIDEO_HEADS_UP_SECONDS || 600),
+  videoIntakeDeadlineMs: Number(process.env.REASON_VIDEO_INTAKE_DEADLINE_MS || 300_000),
+  // Intake: the audio of a video with no captions is not downloaded past this size (an hour of audio
+  // is ~30-60 MB, so this only stops something unusual).
+  videoAudioMaxMB: Number(process.env.REASON_VIDEO_AUDIO_MAX_MB || 150),
+  // Intake: videos fetched at once across everybody; a third waits its turn inside its own deadline.
+  videoConcurrent: Number(process.env.REASON_VIDEO_CONCURRENT || 2),
+  // Intake: the JavaScript runtime a current yt-dlp uses for YouTube, as yt-dlp's --js-runtimes takes it
+  // ("node:/usr/bin/node"). Unset: none is passed (an older yt-dlp does not know the option).
+  ytDlpJsRuntime: process.env.REASON_YTDLP_JS_RUNTIME || "",
+  // Intake: what watching and listening (feature "video" in the usage ledger) may spend in a day,
+  // across everybody — a budget on the system, not a limit on any person, so a busy video day cannot
+  // eat the whole daily API cap the rest of Reason runs on. Captions stay free once it is reached.
+  // Lifts at local midnight; 0 turns it off (the API caps still hold). Said in the API spend row.
+  videoDailyUsd: Number(process.env.REASON_VIDEO_DAILY_USD ?? 1),
   // Web search. One provider interface, three real providers: Parallel (5,000 searches a month
   // free, long excerpts per result), Context.dev (1,000 credits a month free, shared with page
   // scraping) and Tavily (1,000 credits a month free, no credit card). REASON_SEARCH_PROVIDER names
@@ -1212,6 +1240,10 @@ export const config = {
     "claude-opus-5-5": { in: 4, out: 20, cacheWrite: 5, cacheRead: 0.20 },
     "claude-opus-5": { in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50 },
     "claude-sonnet-4-5": { in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.30 },
+    // The video model (src/gemini.js), counted by video intake only. Google's introductory price,
+    // ai.google.dev/gemini-api/docs/pricing read 2026-11-16: $0.75 in / $3.75 out through 2026-12-31,
+    // then $1.50 / $7.50 — raise these then, or set REASON_API_PRICES.
+    "gemini-3.8-flash": { in: 0.75, out: 3.75 },
     ...(() => { try { return JSON.parse(process.env.REASON_API_PRICES || "{}"); } catch { return {}; } })(),
   },
   // After the API says the account is out of credit, the side checks go straight to their CLI

@@ -774,6 +774,29 @@ db.exec(`
     at INTEGER NOT NULL,
     PRIMARY KEY (video_key, tier)
   );
+  -- Video intake (REASON_VIDEO_INTAKE, src/video.js): the transcript of a public video, so a second
+  -- question about it is instant and free. Keyed by the normalised video id ("youtube:<id>"), never by
+  -- who asked: there is no conversation, number or name anywhere in these two tables. Refetched after
+  -- config.videoCacheDays; the oldest dropped past config.videoCacheMaxChars. Additive: new tables only.
+  CREATE TABLE IF NOT EXISTS video_cache (
+    video_id TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    duration_s REAL,
+    tier TEXT NOT NULL,           -- "captions" | "listen": the two that produce the words themselves
+    source TEXT NOT NULL DEFAULT '', -- captions: creator | auto | auto_translated; listen: the model
+    chars INTEGER NOT NULL DEFAULT 0,
+    fetched_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS video_cache_lines (
+    video_id TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    start_s REAL NOT NULL,
+    end_s REAL,
+    text TEXT NOT NULL,
+    PRIMARY KEY (video_id, n)
+  );
   -- The shape this replaced, from earlier the same day. It never ran anywhere: tier 2 was rebuilt
   -- before any install had it, so there is nothing in it to migrate and dropping it loses nothing.
   DROP TABLE IF EXISTS video_transcripts;
@@ -7091,6 +7114,47 @@ export function saveVideoAccount({ videoKey, tier, url, title = "", model = "", 
       seconds = excluded.seconds, text = excluded.text, at = excluded.at`)
     .run(videoKey, tier, url, title, model, seconds, String(text ?? ""), clock.now());
   return { videoKey, tier };
+}
+
+/**
+ * Video intake's transcript cache (src/video.js). One video's lines, replacing whatever was there,
+ * then the size cap: oldest-fetched videos go first until the whole cache is under `maxChars`.
+ * Nothing about who asked is ever written here.
+ */
+export function saveVideoTranscript({ videoId, url, title = "", channel = "", durationS = null, tier, source = "", lines = [] }, { maxChars = Infinity } = {}) {
+  const rows = (lines ?? []).filter(l => l && String(l.text ?? "").trim());
+  const chars = rows.reduce((n, l) => n + String(l.text).length, 0);
+  atomically(() => {
+    db.prepare("DELETE FROM video_cache_lines WHERE video_id = ?").run(videoId);
+    db.prepare(`INSERT INTO video_cache (video_id, url, title, channel, duration_s, tier, source, chars, fetched_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(video_id) DO UPDATE SET url = excluded.url, title = excluded.title, channel = excluded.channel,
+        duration_s = excluded.duration_s, tier = excluded.tier, source = excluded.source, chars = excluded.chars, fetched_at = excluded.fetched_at`)
+      .run(videoId, String(url ?? ""), String(title ?? ""), String(channel ?? ""), durationS ?? null, tier, String(source ?? ""), chars, clock.now());
+    const ins = db.prepare("INSERT INTO video_cache_lines (video_id, n, start_s, end_s, text) VALUES (?, ?, ?, ?, ?)");
+    rows.forEach((l, i) => ins.run(videoId, i, Number(l.at) || 0, l.end ?? null, String(l.text)));
+    if (Number.isFinite(maxChars)) {
+      let total = db.prepare("SELECT COALESCE(SUM(chars), 0) AS n FROM video_cache").get().n;
+      const oldest = db.prepare("SELECT video_id, chars FROM video_cache WHERE video_id <> ? ORDER BY fetched_at ASC, video_id ASC").all(videoId);
+      for (const o of oldest) {
+        if (total <= maxChars) break;
+        db.prepare("DELETE FROM video_cache_lines WHERE video_id = ?").run(o.video_id);
+        db.prepare("DELETE FROM video_cache WHERE video_id = ?").run(o.video_id);
+        total -= o.chars;
+      }
+    }
+  });
+  return { videoId, lines: rows.length, chars };
+}
+
+/** The cached transcript for a video id, or null when there is none or it is older than `maxAgeMs`. */
+export function getVideoTranscript(videoId, { maxAgeMs = Infinity } = {}) {
+  const r = db.prepare("SELECT * FROM video_cache WHERE video_id = ?").get(videoId);
+  if (!r) return null;
+  if (Number.isFinite(maxAgeMs) && clock.now() - r.fetched_at > maxAgeMs) return null;
+  const lines = db.prepare("SELECT start_s, end_s, text FROM video_cache_lines WHERE video_id = ? ORDER BY n").all(videoId)
+    .map(l => ({ at: l.start_s, end: l.end_s, text: l.text }));
+  return { videoId: r.video_id, url: r.url, title: r.title, channel: r.channel, durationS: r.duration_s, tier: r.tier, source: r.source, chars: r.chars, fetchedAt: r.fetched_at, lines };
 }
 
 export function getVideoAccount(videoKey, tier) {
