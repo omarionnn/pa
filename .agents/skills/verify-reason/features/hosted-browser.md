@@ -30,3 +30,12 @@ Tests: `test/remote-browser.test.js` (fake Browserbase on loopback + local Chrom
   digest line, no local fallback.
 - Forget / revoke / data delete: `DELETE /v1/contexts/{id}` at Browserbase.
 - Live: ONE smoke only, on the owner's say-so (costs browser minutes); never type a real login.
+
+## DoorDash orders on it (`src/doordash.js`, `REASON_DOORDASH_PAY` = handoff | site_card)
+
+- Tools (covered people with food on only): `doordash_order` start / address / checkout / status; `doordash_place` (site_card only).
+- Steps: the playbook in `src/playbooks.js` ("doordash"). Code reads the checkout: breakdown, total, ETA, every item, the address, the tip.
+- handoff: never pressed (doordash_place refuses; browser_submit, browser_click on Place order and Enter on the checkout refuse on hosted DoorDash).
+- site_card: confirm gate pinned to `doordash order #id rN: $total from X to address`; the checkout is loaded fresh and re-read before the press; a moved total is a new ask; caps and the daily cap apply; CVV/3-D Secure after the press stops it.
+- Stops: unavailable (asked), alcohol / ID, verify identity or phone, account or payment problem, card re-verification, challenge.
+- Tests: `node --test test/doordash-order.test.js test/remote-browser-filler.test.js` (fixture DoorDash on loopback, fake Browserbase, local Chromium over CDP).
