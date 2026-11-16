@@ -241,6 +241,7 @@ db.db.exec(`
 export function _resetRemote() {
   db.db.exec("DELETE FROM remote_browser_contexts; DELETE FROM remote_browser_consent; DELETE FROM remote_browser_usage; DELETE FROM remote_browser_month; DELETE FROM remote_browser_orphans");
   lastEnded.clear();
+  starting.clear();
   counters.opens = 0; counters.api = 0;
 }
 
@@ -259,10 +260,16 @@ function noteAsked(conversationId, site, now = clock.now()) {
 /** A yes counts for this long after the question went out. */
 export const CONSENT_ASK_MS = 30 * 60_000;
 const NO = /^\s*(no|nope|nah|don'?t|do not|stop|cancel|never|not now|wait|hold on)\b/i;
+/** Words that say yes. Their words must hold one: a piece of a no or of a question is not a yes. */
+const YES = /(^|[^a-z'])(yes|yeah|yep|yup|yea|ok|okay|sure|go ahead|go for it|do it|fine|sounds good|alright|all right|absolutely|of course|please do|works for me)([^a-z']|$)/i;
+/** Anything in the message that takes the yes back or makes it a question. */
+const HEDGE = /(^|[^a-z'])(no|not|nope|nah|don'?t|do not|never|wait|hold on|stop|cancel|rather not|but)([^a-z']|$)|\?/i;
+const wholeWords = (hay, needle) => new RegExp(`(^|[^a-z0-9'])${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9']|$)`, "i").test(hay);
 /**
  * Record their yes. Only on a turn they started, only for a question Reason asked in the last 30
- * minutes, and only on words that are in what they just wrote (their own words, never the model's).
- * `theirWords`: their last messages as they wrote them. → { ok, why? }
+ * minutes, and only on words that are in the latest message they wrote, as whole words, saying yes,
+ * in a message that does not also say no, but or ask a question (their own yes, never the model's
+ * reading of it). `theirWords`: their last messages as they wrote them. → { ok, why? }
  */
 export function recordConsent(conversationId, site, said, { ownTurn = false, theirWords = [], now = clock.now() } = {}) {
   const s = remoteFor(conversationId, site);
@@ -272,9 +279,10 @@ export function recordConsent(conversationId, site, said, { ownTurn = false, the
   if (!asked || now - asked > CONSENT_ASK_MS) return { ok: false, why: "the question was not asked (or was asked too long ago): ask it first" };
   const q = String(said ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   if (!q) return { ok: false, why: "their words are missing" };
-  const mine = theirWords.map(w => String(w ?? "").toLowerCase().replace(/\s+/g, " "));
-  if (!mine.some(w => w.includes(q))) return { ok: false, why: "those words are not in what they wrote" };
-  if (NO.test(q)) return { ok: false, why: "that reads as a no" };
+  // Their latest message only: a yes written before the question was asked is not a yes to it.
+  const latest = String(theirWords.at(-1) ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!latest || !wholeWords(latest, q)) return { ok: false, why: "those words are not in what they wrote" };
+  if (NO.test(q) || NO.test(latest) || HEDGE.test(latest) || !YES.test(q)) return { ok: false, why: "that does not read as a plain yes: ask them again in your own words, or leave it" };
   db.db.prepare("INSERT INTO remote_browser_consent (conversation_id, site, asked_at, consented_at) VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id, site) DO UPDATE SET consented_at = excluded.consented_at")
     .run(String(conversationId), s, asked, now);
   return { ok: true, site: s };
@@ -338,18 +346,24 @@ async function ensureContext(conversationId, site, projectId) {
 }
 /**
  * Delete this person's kept sign-ins at Browserbase and here: one site, or every site (`site` null).
- * The row goes only when Browserbase says the context is gone (or was already); a failed delete is
- * kept to try again and said in the ops digest. Any open hosted session of theirs is closed first.
+ * Their yes to the hosted browser for those sites goes too, so a later use asks again. A delete
+ * Browserbase does not confirm is never left attached to them: their row goes either way (so no later
+ * job of theirs signs in with the session they asked to forget), only the bare id is kept, with no
+ * person, to be tried again (retryOrphans), and it is said in the ops digest. Any open hosted session
+ * of theirs is closed first.
  *   → { deleted, failed }
  */
-export async function deleteContextsFor(conversationId, { site = null, orphan = false } = {}) {
+export async function deleteContextsFor(conversationId, { site = null } = {}) {
   const c = String(conversationId);
   const key = site ? keyOf(site) : null;
+  if (key) db.db.prepare("DELETE FROM remote_browser_consent WHERE conversation_id = ? AND site = ?").run(c, key);
+  else db.db.prepare("DELETE FROM remote_browser_consent WHERE conversation_id = ?").run(c);
   const rows = key
     ? db.db.prepare("SELECT site, context_id FROM remote_browser_contexts WHERE conversation_id = ? AND site = ?").all(c, key)
     : db.db.prepare("SELECT site, context_id FROM remote_browser_contexts WHERE conversation_id = ?").all(c);
   if (!rows.length) return { deleted: 0, failed: 0 };
   await closeRemoteFor(c);
+  if (db.db.prepare("SELECT 1 FROM remote_browser_orphans LIMIT 1").get()) await retryOrphans().catch(() => 0);
   let deleted = 0; let failed = 0;
   for (const r of rows) {
     let id = "";
@@ -361,12 +375,10 @@ export async function deleteContextsFor(conversationId, { site = null, orphan = 
     } catch {
       failed += 1;
       opsLine("delete_failed", r.site);
-      // Their data is being deleted: the row goes with it, and only the bare id is kept, with no
-      // person, until Browserbase confirms the delete (retryOrphans).
-      if (orphan && id) {
-        db.db.prepare("INSERT OR IGNORE INTO remote_browser_orphans (context_id, at) VALUES (?, ?)").run(id, clock.now());
-        db.db.prepare("DELETE FROM remote_browser_contexts WHERE conversation_id = ? AND site = ?").run(c, r.site);
-      }
+      // The row goes, and only the bare id is kept, with no person, until Browserbase confirms the
+      // delete (retryOrphans): a sign-in they asked to forget is never used for them again.
+      if (id) db.db.prepare("INSERT OR IGNORE INTO remote_browser_orphans (context_id, at) VALUES (?, ?)").run(id, clock.now());
+      db.db.prepare("DELETE FROM remote_browser_contexts WHERE conversation_id = ? AND site = ?").run(c, r.site);
     }
   }
   return { deleted, failed };
@@ -381,10 +393,10 @@ export async function retryOrphans() {
   return deleted;
 }
 /** Every person's kept sign-ins (a delete of the whole install). */
-export async function deleteEveryContext({ orphan = false } = {}) {
+export async function deleteEveryContext() {
   const people = db.db.prepare("SELECT DISTINCT conversation_id FROM remote_browser_contexts").all().map(r => r.conversation_id);
   let deleted = 0; let failed = 0;
-  for (const c of people) { const r = await deleteContextsFor(c, { orphan }); deleted += r.deleted; failed += r.failed; }
+  for (const c of people) { const r = await deleteContextsFor(c); deleted += r.deleted; failed += r.failed; }
   return { deleted, failed };
 }
 /** Their consent and metering rows, for a scoped delete (data.js takes the tables by conversation id). */
@@ -405,10 +417,25 @@ export function jobsFor(conversationId) {
 let sink = (line) => { if (!process.env.NODE_TEST_CONTEXT) console.log("   ·", line); };
 /** For tests: where the one log line per session goes. Returns the old one. */
 export function setRemoteSink(fn) { const old = sink; sink = fn; return old; }
-function meter(conversationId, site, startedAt, endedAt, ended) {
+/**
+ * A session's whole cap is charged to the month BEFORE it is asked for (in the same tick as the budget
+ * check, so two jobs at once cannot both spend the last minutes), and settled to what it really used
+ * when it ends. A process killed mid-session never settles: its whole cap stays charged.
+ */
+function charge(month, seconds) {
+  db.db.prepare("INSERT INTO remote_browser_month (month, seconds) VALUES (?, MAX(0, ?)) ON CONFLICT(month) DO UPDATE SET seconds = MAX(0, seconds + excluded.seconds)")
+    .run(month, seconds);
+}
+function chargeDelta(month, delta) {
+  if (!delta) return;
+  db.db.prepare("INSERT INTO remote_browser_month (month, seconds) VALUES (?, 0) ON CONFLICT(month) DO NOTHING").run(month);
+  db.db.prepare("UPDATE remote_browser_month SET seconds = MAX(0, seconds + ?) WHERE month = ?").run(delta, month);
+}
+function meter(conversationId, site, startedAt, endedAt, ended, held = null) {
   const seconds = Math.max(0, Math.ceil((endedAt - startedAt) / 1000));
   db.db.prepare("INSERT INTO remote_browser_usage (conversation_id, site, started_at, seconds, ended) VALUES (?, ?, ?, ?, ?)").run(String(conversationId), site, startedAt, seconds, ended);
-  db.db.prepare("INSERT INTO remote_browser_month (month, seconds) VALUES (?, ?) ON CONFLICT(month) DO UPDATE SET seconds = seconds + excluded.seconds").run(monthOf(startedAt), seconds);
+  if (held) { chargeDelta(held.month, -held.seconds); held.seconds = 0; }
+  chargeDelta(monthOf(startedAt), seconds);
   // One line, numbers and the site only: never a person, a page or an address.
   try { sink(`hosted-browser session site=${site} seconds=${seconds} ended=${ended} month_minutes=${(monthSeconds(endedAt) / 60).toFixed(1)}/${monthBudgetMinutes()}`); } catch { /* a log line never breaks a job */ }
   try {
@@ -428,7 +455,7 @@ const OPS_WORDS = {
   start_timeout: "a session did not start in time",
   busy: "too many sessions at once (the plan's concurrency)",
   challenge: "the site showed a challenge; the job stopped and the site is paused for the hosted browser",
-  delete_failed: "a kept sign-in (Context) could not be deleted at Browserbase; it will be tried again on the next delete",
+  delete_failed: "a kept sign-in (Context) could not be deleted at Browserbase; it is no longer used for anyone and is tried again on the next hosted session or delete",
 };
 function opsLine(code, site) {
   if (!OPS_WORDS[code]) return;
@@ -439,6 +466,7 @@ function opsLine(code, site) {
 const open = new Map(); // conversationId -> { context, browser, sessionId, site, startedAt, finish }
 const remoteContexts = new WeakMap(); // context -> { site, conversationId }
 const lastEnded = new Map(); // conversationId -> { site, why, at }
+const starting = new Map(); // sessionId -> release: asked for at Browserbase, not yet connected and in `open`
 export function isRemoteContext(context) { return !!context && remoteContexts.has(context); }
 export function remoteSiteOfContext(context) { return remoteContexts.get(context)?.site ?? ""; }
 export function remoteSessionsOpen() { return open.size; }
@@ -447,7 +475,12 @@ export async function closeRemoteFor(conversationId) {
   const s = open.get(String(conversationId));
   if (s) await s.finish("closed");
 }
-export async function closeAllRemote() { await Promise.all([...open.keys()].map(closeRemoteFor)); }
+export async function closeAllRemote() {
+  // A session still connecting (between Browserbase's answer and the CDP connect) is released too.
+  const connecting = [...starting.values()];
+  starting.clear();
+  await Promise.all([...connecting.map((release) => release()), ...[...open.keys()].map(closeRemoteFor)]);
+}
 /** A hosted session that ended by itself (its cap) while a job was on it: said once, then forgotten. */
 export function takeEnded(conversationId, now = clock.now()) {
   const e = lastEnded.get(String(conversationId));
@@ -495,16 +528,27 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
   { const code = gateCode(c, s); if (code) throw fail(code); }
   const left = monthBudgetMinutes() * 60 - monthSeconds();
   const timeoutSec = Math.max(60, Math.min(sessionCapMinutes() * 60, left));
+  // The cap is held against the month now, before any await: see charge().
+  const held = { month: monthOf(clock.now()), seconds: timeoutSec };
+  charge(held.month, timeoutSec);
+  const refund = () => { if (held.seconds) { chargeDelta(held.month, -held.seconds); held.seconds = 0; } };
   // One hosted session per person at a time: a Context is used by one session at once.
   await closeRemoteFor(c);
   if (db.db.prepare("SELECT 1 FROM remote_browser_orphans LIMIT 1").get()) await retryOrphans().catch(() => 0);
   counters.opens += 1;
   let contextId;
-  try { contextId = await ensureContext(c, s, projectId); } catch (e) { const err = withSite(e, s, alt); if (OPS_WORDS[err.code]) opsLine(err.code, s); throw err; }
+  try { contextId = await ensureContext(c, s, projectId); } catch (e) { refund(); const err = withSite(e, s, alt); if (OPS_WORDS[err.code]) opsLine(err.code, s); throw err; }
   let made;
   try {
     made = await api("POST", "/v1/sessions", sessionRequest({ projectId, contextId, site: s, timeoutSec }), { timeoutMs: startTimeoutMs(), startCall: true });
-  } catch (e) { const err = withSite(e, s, alt); if (OPS_WORDS[err.code]) opsLine(err.code, s); throw err; }
+  } catch (e) {
+    const err = withSite(e, s, alt);
+    // A create that timed out on our side may still have made a session there, running to its cap
+    // unseen: its cap stays charged. Any other refusal made nothing.
+    if (err.code !== "start_timeout") refund();
+    if (OPS_WORDS[err.code]) opsLine(err.code, s);
+    throw err;
+  }
   const sessionId = String(made?.id ?? "");
   const connectUrl = String(made?.connectUrl ?? "");
   const startedAt = clock.now();
@@ -512,7 +556,8 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
     if (!sessionId) return;
     try { await api("POST", `/v1/sessions/${encodeURIComponent(sessionId)}`, { projectId, status: "REQUEST_RELEASE" }); } catch { /* the session's own timeout ends it */ }
   };
-  if (!sessionId || !connectUrl) { await release(); throw fail("unreachable"); }
+  if (!sessionId || !connectUrl) { await release(); refund(); throw fail("unreachable"); }
+  starting.set(sessionId, release);
   let browser;
   let timer;
   try {
@@ -520,18 +565,22 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
     browser = await Promise.race([launcher.connectOverCDP(connectUrl, { timeout: startTimeoutMs() }), cap]);
   } catch (e) {
     clearTimeout(timer);
+    starting.delete(sessionId);
     await release();
-    meter(c, s, startedAt, clock.now(), "start_failed");
+    meter(c, s, startedAt, clock.now(), "start_failed", held);
     throw fail(/timeout/i.test(String(e?.name ?? "") + String(e?.message ?? "")) ? "start_timeout" : "unreachable");
   }
   clearTimeout(timer);
   const context = browser.contexts?.()[0];
-  if (!context) {
+  if (!context || !starting.has(sessionId)) {
+    // No page to drive, or released while it connected (the process is shutting down).
+    starting.delete(sessionId);
     await browser.close().catch(() => {});
     await release();
-    meter(c, s, startedAt, clock.now(), "start_failed");
+    meter(c, s, startedAt, clock.now(), "start_failed", held);
     throw fail("unreachable");
   }
+  starting.delete(sessionId);
   let done = null;
   let capTimer = null;
   const nativeClose = context.close.bind(context);
@@ -545,7 +594,7 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
       await browser.close().catch(() => {});
       await release();
       db.db.prepare("UPDATE remote_browser_contexts SET used_at = ? WHERE conversation_id = ? AND site = ?").run(clock.now(), c, s);
-      meter(c, s, startedAt, clock.now(), why);
+      meter(c, s, startedAt, clock.now(), why, held);
     })();
     return done;
   };

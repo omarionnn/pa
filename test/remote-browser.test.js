@@ -69,6 +69,8 @@ const siteServer = createServer((req, res) => {
   if (req.url === "/clicked") { clicked.push(Date.now()); res.writeHead(204); return res.end(); }
   if (req.url === "/challenge") return page("<h1>Verify you are human</h1><p>Press and hold the button to continue.</p><button>Press and hold</button>");
   if (req.url === "/blocked") return page("<h1>Access denied</h1>", 403);
+  // The "I'm not a robot" checkbox (304x78) on a page with little else: a check for a person.
+  if (req.url === "/checkbox") return page(`<h1>One more step</h1><iframe src="http://www.google.com:${SITE_PORT}/recaptcha/api2/anchor?k=x&size=normal" width="304" height="78"></iframe>`);
   if (req.url.startsWith("/recaptcha") || req.url.startsWith("/fc/")) return page("<div>frame</div>");
   // DoorDash's real sign-in page (live smoke 2026-11-15) carries an invisible anti-bot frame: still a form.
   if (req.url === "/login-sensor") return page(`<h1>Login with email</h1><form><label for=e>Email</label><input id=e type=email name=email><label for=p>Password</label><input id=p type=password name=password><button type=submit>Continue to Sign In</button></form><iframe src="http://www.google.com:${SITE_PORT}/recaptcha/api2/anchor" width="0" height="0" style="border:0"></iframe><p>This site is protected by reCAPTCHA.</p>`);
@@ -429,13 +431,16 @@ test("forgetting the login and deleting their data delete the Context at Browser
   assert.equal(calls("DELETE /v1/contexts/:id")[0].path, "/v1/contexts/ctx_1");
   assert.equal(remote.hasContext(OWNER, "doordash.com"), false);
   assert.equal(remote.remoteSessionsOpen(), 0, "an open session is closed before its Context goes");
-  // The fallback forget (no filler) takes it too.
+  // The fallback forget (no filler) takes it too. (A forget takes their yes with it: asked again.)
+  assert.equal(remote.consented(OWNER, "doordash.com"), false);
+  consent();
   assert.equal((await runTool("browser_open", { url: DD("/") }, turn(OWNER, "open doordash"))).ok, true);
   await browser.closeBrowser(OWNER);
   const forgot = await runTool("saved_login_forget", { site: "doordash.com" }, turn(OWNER, "forget my doordash login"));
   assert.match(forgot.say_exactly, /deleted your sign-in for it from the hosted browser/);
   assert.equal(remote.hasContext(OWNER, "doordash.com"), false);
   // Their data deleted: the Context goes at Browserbase before the rows.
+  consent();
   assert.equal((await runTool("browser_open", { url: DD("/") }, turn(OWNER, "open doordash"))).ok, true);
   await browser.closeBrowser(OWNER);
   const { deleteData } = await import("../src/data.js");
@@ -460,11 +465,13 @@ test("a delete Browserbase will not do: kept as a bare id with no person, said i
   bb.status = {};
   assert.equal(await remote.retryOrphans(), 1);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM remote_browser_orphans").get().n, 0);
-  // Not part of a data delete: a failed delete keeps the row, to be tried again.
+  // A forget (not a data delete) that fails at Browserbase: the row still goes, so no later job of
+  // theirs signs in with the session they asked to forget; the bare id waits to be tried again.
   db.db.prepare("INSERT INTO remote_browser_contexts (conversation_id, site, context_id, created_at) VALUES (?, 'doordash.com', 'ctx_78', ?)").run(OTHER, Date.now());
   bb.status = { "DELETE /v1/contexts/:id": 500 };
   await remote.deleteContextsFor(OTHER, { site: "doordash.com" });
-  assert.equal(remote.hasContext(OTHER, "doordash.com"), true);
+  assert.equal(remote.hasContext(OTHER, "doordash.com"), false);
+  assert.deepEqual(db.db.prepare("SELECT context_id FROM remote_browser_orphans").all().map(r => r.context_id), ["ctx_78"]);
 });
 
 test("signin_status for a covered person reads the hosted browser's own findings, not the old wall on Reason's own browser", async () => {
@@ -498,4 +505,135 @@ test("no sign-in link or window for a hosted site; the email sign-in is tagged, 
   await out.run;
   assert.deepEqual(launched, { conversationId: OWNER, url: entry.signin_url, site: "doordash.com" });
   sie._resetJobs();
+});
+
+// ---------------------------------------------------------------- review 2026-11-15 (#596)
+/** A stand-in for connectOverCDP that needs no Chromium: a browser with one context. */
+function fakeCdp({ hold = null } = {}) {
+  const l = {
+    connects: 0, closed: 0,
+    async connectOverCDP() {
+      l.connects += 1;
+      if (hold) await hold;
+      const ctx = { close: async () => {}, pages: () => [] };
+      return { contexts: () => [ctx], close: async () => { l.closed += 1; }, on: () => {} };
+    },
+  };
+  return l;
+}
+
+test("consent: a piece of a no, of a question or of an older message is never their yes", async () => {
+  set(ON());
+  await runTool("browser_open", { url: DD("/") }, turn(OWNER, "order from doordash")); // the question is noted as asked
+  const tryYes = (words, latest, earlier = null) => runTool("hosted_browser_ok", { site: "doordash.com", their_words: words },
+    { conversationId: OWNER, kind: "user", messages: [...(earlier ? [{ role: "user", content: earlier }, { role: "assistant", content: "Okay to go ahead?" }] : []), { role: "user", content: latest }] });
+  for (const [words, latest, earlier] of [
+    ["thanks", "no thanks"],
+    ["browserbase", "what is browserbase?"],
+    ["ok", "look up a book first"],
+    ["ok", "is that ok?"],
+    ["yes", "yes but don't keep my login there"],
+    ["sure", "not sure"],
+    ["yes", "hmm let me think", "yes order the pad thai"],
+    ["pad thai", "pad thai from the usual place"],
+  ]) {
+    const out = await tryYes(words, latest, earlier);
+    assert.equal(out.ok, false, `"${words}" from "${latest}" is not a yes: ${JSON.stringify(out)}`);
+  }
+  assert.equal(remote.consented(OWNER, "doordash.com"), false);
+  assert.equal(bb.calls.length, 0);
+  assert.equal((await tryYes("Sure, go ahead", "Sure, go ahead")).ok, true);
+  assert.equal(remote.consented(OWNER, "doordash.com"), true);
+});
+
+test("a forget that fails at Browserbase never leaves the session attached: the next job asks again and gets a new Context", async () => {
+  set(ON());
+  consent();
+  bb.connectUrl = "ws://fake";
+  const l = fakeCdp();
+  const ctx1 = await remote.openRemote(l, OWNER, "doordash.com");
+  await ctx1.close();
+  assert.equal(sessionsMade()[0].body.browserSettings.context.id, "ctx_1");
+  bb.status = { "DELETE /v1/contexts/:id": 503 };
+  const out = await runTool("account_revoke", { name: "doordash.com" }, turn(OWNER, "forget my doordash login"));
+  assert.equal(out.ok, false);
+  assert.match(out.error, /could not be deleted just now; the team has been told/);
+  assert.equal(remote.hasContext(OWNER, "doordash.com"), false, "never used for them again");
+  assert.equal(remote.consented(OWNER, "doordash.com"), false, "their yes went with it: asked again");
+  assert.ok(opsdigest.pending().some(x => /could not be deleted at Browserbase/.test(x.text)));
+  assert.equal(remote.gate(OWNER, "doordash.com").hosted_browser, "consent_needed");
+  bb.status = {};
+  consent();
+  const ctx2 = await remote.openRemote(l, OWNER, "doordash.com");
+  await ctx2.close();
+  assert.notEqual(sessionsMade()[1].body.browserSettings.context.id, "ctx_1", "a new Context, not the forgotten one");
+  assert.ok(calls("DELETE /v1/contexts/:id").some(x => x.path === "/v1/contexts/ctx_1"), "the forgotten one tried again");
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM remote_browser_orphans").get().n, 0);
+});
+
+test("the monthly budget holds each session's cap before it is asked for: two at once cannot both spend the last minutes, and a killed one stays charged", async () => {
+  set({ ...ON(), REASON_REMOTE_BROWSER: "on", REASON_REMOTE_BROWSER_MONTH_MINUTES: "15" });
+  consent(OWNER); consent(OTHER);
+  bb.connectUrl = "ws://fake";
+  const l = fakeCdp();
+  const [a, b] = await Promise.allSettled([remote.openRemote(l, OWNER, "doordash.com"), remote.openRemote(l, OTHER, "doordash.com")]);
+  assert.deepEqual([a.status, b.status].sort(), ["fulfilled", "rejected"]);
+  assert.equal((a.status === "rejected" ? a : b).reason.code, "out_of_minutes");
+  assert.equal(sessionsMade().length, 1, "one session asked for, not two");
+  assert.equal(remote.monthSeconds(), 900, "the open session's whole cap is held while it runs (a process killed now leaves it charged)");
+  await (a.status === "fulfilled" ? a : b).value.close();
+  assert.ok(remote.monthSeconds() < 60, `settled to what it used: ${remote.monthSeconds()}`);
+  assert.equal(remote.monthSeconds(), remote.jobsFor(OWNER).concat(remote.jobsFor(OTHER)).reduce((n, j) => n + j.seconds, 0));
+  // A refused create made nothing: nothing stays held.
+  bb.status = { "POST /v1/sessions": 429 };
+  await assert.rejects(remote.openRemote(l, OWNER, "doordash.com"), (e) => e.code === "busy");
+  assert.ok(remote.monthSeconds() < 60);
+});
+
+test("a shutdown while a session is still connecting releases it, and the late connect is closed, not kept", async () => {
+  set(ON());
+  consent();
+  bb.connectUrl = "ws://fake";
+  let let_go;
+  const l = fakeCdp({ hold: new Promise(r => { let_go = r; }) });
+  const opening = remote.openRemote(l, OWNER, "doordash.com");
+  while (l.connects === 0) await new Promise(r => setTimeout(r, 10));
+  await remote.closeAllRemote();
+  assert.equal(releases().length, 1, "released at Browserbase during the connect");
+  let_go();
+  await assert.rejects(opening, (e) => e instanceof remote.RemoteBrowserError);
+  assert.equal(l.closed, 1, "the connection that came back late is closed");
+  assert.equal(remote.remoteSessionsOpen(), 0);
+});
+
+test("two people and two sites never share a Context", async () => {
+  set({ ...ON(), REASON_REMOTE_BROWSER: "on", REASON_REMOTE_BROWSER_SITES: "doordash.com,example.org" });
+  consent(OWNER); consent(OTHER);
+  db.db.prepare("INSERT INTO remote_browser_consent (conversation_id, site, asked_at, consented_at) VALUES (?, 'example.org', ?, ?)").run(OWNER, Date.now(), Date.now());
+  bb.connectUrl = "ws://fake";
+  const l = fakeCdp();
+  for (const [who, site] of [[OWNER, "doordash.com"], [OTHER, "doordash.com"], [OWNER, "example.org"], [OWNER, "doordash.com"]]) {
+    const ctx = await remote.openRemote(l, who, site);
+    await ctx.close();
+  }
+  const ids = sessionsMade().map(x => x.body.browserSettings.context.id);
+  assert.equal(new Set(ids.slice(0, 3)).size, 3, `one each: ${ids}`);
+  assert.equal(ids[3], ids[0], "the owner's DoorDash one again");
+  assert.deepEqual(sessionsMade().map(x => x.body.browserSettings.allowedDomains[0]), ["doordash.com", "doordash.com", "example.org", "doordash.com"]);
+  // A row of one person's is never opened for another (sealed for its owner, read by their id only).
+  assert.equal(remote.hasContext(OTHER, "example.org"), false);
+});
+
+test("a visible \"I'm not a robot\" checkbox is a challenge, and nothing is typed into a challenge", skip, async () => {
+  set(ON());
+  consent();
+  const box = await runTool("browser_open", { url: DD("/checkbox") }, turn(OWNER, "open doordash"));
+  assert.equal(box.hosted_browser, "challenge", JSON.stringify(box).slice(0, 200));
+  refusing._resetRefusals();
+  const open = await runTool("browser_open", { url: DD("/") }, turn(OWNER, "open doordash"));
+  const ref = open.elements.find(e => /Find food/.test(e.name)).ref;
+  await browser.openPage(OWNER).evaluate(() => { document.body.insertAdjacentHTML("afterbegin", "<h1>Verify you are human</h1>"); document.body.querySelector("p")?.remove(); });
+  const typed = await runTool("browser_type", { ref, text: "abc" }, turn(OWNER, "go on"));
+  assert.equal(typed.hosted_browser, "challenge");
+  assert.equal(remote.remoteSessionsOpen(), 0);
 });

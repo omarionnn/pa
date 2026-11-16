@@ -15649,7 +15649,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "account_revoke": {
       // A sign-in kept in the hosted browser (src/remotebrowser.js) is deleted at Browserbase. No row: nothing happens here.
       { const site = hostedBrowser.remoteSiteOf(input.name);
-        if (site && hostedBrowser.hasContext(c, site)) {
+        if (site && (hostedBrowser.hasContext(c, site) || hostedBrowser.consented(c, site))) {
           const gone = await hostedBrowser.deleteContextsFor(c, { site }).catch(() => ({ deleted: 0, failed: 1 }));
           return gone.failed
             ? { ok: false, error: `Their ${hostedBrowser.labelOf(site)} sign-in in the hosted browser could not be deleted just now; the team has been told. Say so in one plain line.` }
@@ -20224,6 +20224,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "browser_type": {
       const page = await browser.pageFor(c);
+      // Never typed into a challenge in the hosted browser (a "type the characters" box): the job stops.
+      { const stop = await hostedBrowser.stopIfChallenged(c, page); if (stop) return stop; }
       const label = await browser.refName(page, input.ref);
       if (label === null) return { ok: false, error: `No element ${input.ref} on this page. Call browser_read for fresh refs.` };
       const el = browser.locate(page, input.ref);
@@ -20251,6 +20253,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "browser_submit": {
       const page = await browser.pageFor(c);
+      { const stop = await hostedBrowser.stopIfChallenged(c, page); if (stop) return stop; }
       const label = await browser.refName(page, input.ref);
       if (label === null) {
         // Nothing was pressed, so the yes is still good: read the page again and come back with a
