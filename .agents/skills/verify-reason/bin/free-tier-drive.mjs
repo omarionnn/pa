@@ -79,7 +79,7 @@ const said = third.body.match(/<Say[^>]*>([^<]*)<\/Say>/)?.[1] ?? "";
 console.log(`     (3rd call) reason says: ${said} [hangs up]\n${via.sent.map(m => `     reason texts: ${m.text}`).join("\n")}`);
 step("2 calls through; the 3rd: one line, hang up, link texted", okCalls && !/<Stream/.test(third.body) && /<Hangup\/>/.test(third.body) && via.sent.length === 2 && /^https:/.test(via.sent[1].text));
 db.upsertAccount({ conversationId: "dm:fake:+13475550103", channel: "fake", address: "+13475550103", name: "Esi", isOperator: false });
-step("4:30 wrap-up, 5:00 close", plan.callLimitSeconds("dm:fake:+13475550103") === 300 && plan.FREE_CALL_GRACE_SECONDS === 30);
+step("no cut on a free-tier call unless REASON_FREE_CALL_MINUTES sets one", plan.FREE_CALL_SECONDS ? plan.callLimitSeconds("dm:fake:+13475550103") === plan.FREE_CALL_SECONDS : plan.callLimitSeconds("dm:fake:+13475550103") === null);
 
 // ---- invites
 step("a trial user is offered no invites", invitesOpenFor(c) === false && invitesOpenFor("dm:owner") === true);

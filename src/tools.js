@@ -2696,7 +2696,7 @@ export const CAPABILITIES = [
   // Rewritten by capabilitiesNow() from REASON_PAYWALL and this person's own plan row (src/plan.js):
   // absent while the switch is off or for somebody Reason is free for.
   { name: "your_plan", status: "live", what: plan.monthly()
-    ? `Reason's own plan: free each month for ${plan.FREE_CONVERSATIONS} conversations and ${plan.FREE_CALLS} calls (up to ${Math.round(plan.FREE_CALL_SECONDS / 60)} minutes each), unlimited for ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)`
+    ? `Reason's own plan: free each month for ${plan.FREE_CONVERSATIONS} conversations and ${plan.freeCallsWords()}, unlimited for ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)`
     : `Reason's own plan: ${plan.TRIAL_SESSIONS} free sessions, then ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)` },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "github", status: "not connected", what: "GitHub" },
@@ -8892,16 +8892,24 @@ function researchTaskLive(run) {
  * a WHERE so it can never be set twice — which is also why a follow-up's own carry-on cannot start
  * another); a deep run never gets one (its task already wakes for it); and a person gets
  * researchContinuePerDay of them a day on the install's day (owner: researchContinuePerDayOwner),
- * because each one is another turn or two on the subscription. Past the cap: today's behaviour.
+ * because each one is another turn or two on the subscription. Past the cap: today's behaviour. The
+ * owner and anybody free for good (src/plan.js freeForGood) have no daily count, so for them only the
+ * one-per-run rule bounds it.
  */
 function researchFollowUp(c, out, ctx) {
   if (!out?.ok || !out.more || !out.queries_left?.length) return {};
   const run = db.getResearch(c, out.research_id);
   if (!run || run.state !== "open" || run.task_id || run.continue_task_id) return {};
+  // A follow-up's own wake never schedules another, even for a NEW run it starts there: with no daily
+  // count for some people, this is what keeps one follow-up from chaining into the next (review 2026-11-15).
+  if (ctx?.taskId && db.isResearchFollowUpTask(c, ctx.taskId)) return {};
   const day = trust.spendDay();
+  // No daily count for the owner or anybody free for good (came in by invite), owner 2026-11-15: "lift
+  // the research limits". Each run still gets at most one follow-up (continue_task_id, below).
+  const uncapped = plan.freeForGood(c);
   const cap = accounts.ownerOf(c).isOperator ? config.researchContinuePerDayOwner : config.researchContinuePerDay;
   const used = db.researchContinuationsOn(c, day);
-  if (used >= cap) {
+  if (!uncapped && used >= cap) {
     return {
       follow_up: { scheduled: false, why: "daily_limit", used_today: used, limit: cap },
       follow_up_note: "Nothing more will run on this by itself today: the background follow-ups for today are used up."
@@ -12158,7 +12166,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const chatId = thread?.chat_id ?? null;
       // Fetched here and kept on Reason's own host first, then sent through the outbox and watched until
       // it arrives (src/pictureout.js). A shop's CDN link is never handed to the provider as it is.
-      const kept = await pictureout.rehost({ url, conversationId: c, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}), ...(ctx.store ? { store: ctx.store } : {}) });
+      // No daily count for the owner or anybody free for good (came in by invite): src/plan.js freeForGood.
+      const kept = await pictureout.rehost({ url, conversationId: c, capped: !plan.freeForGood(c), ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}), ...(ctx.store ? { store: ctx.store } : {}) });
       if (!kept.ok && kept.refused) return { ok: false, refused: true, error: `Not sent: ${kept.why}. Nothing went to them. Don't send this address in any form.` };
       if (!kept.ok) {
         // No picture, and no pretending: the link as text, with a line that says so. Code's words.
@@ -12269,7 +12278,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      // On the free tier a call to them runs up to its 5 minutes (FREE_CALL_SECONDS), goodbye included.
+      // On the free tier, when a cut is set (FREE_CALL_SECONDS), a call to them runs up to it, goodbye included.
       // Only a call to them: an errand call to a business is not cut at 5 (review 2026-11-10).
       const freeCallS = toOwner ? plan.callLimitSeconds(c) : null;
       const maxSeconds = Math.min((input.max_minutes ?? config.callMaxMinutes) * 60, freeCallS || Infinity);

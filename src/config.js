@@ -695,10 +695,8 @@ export const config = {
   // Production Items and removing one does not give it back (plaid.com/docs/account/billing, read
   // 2026-11-13). The cap a new connection is checked against (src/plaid.js connectRoom) and the plan
   // meter on /ops. Lower it if Plaid's dashboard shows Items made before Reason counted them.
+  // There is no per-person bank limit (owner, 2026-11-15): this total is the only one.
   plaidPlanItems: Math.round(positive(process.env.REASON_PLAID_PLAN_ITEMS, 10)),
-  // How many banks one person may connect (ever, same counting), so one person cannot use up the
-  // plan. The owner is exempt.
-  plaidPerPerson: Math.round(positive(process.env.REASON_PLAID_PER_PERSON, 2)),
   // The agent made once by scripts/cartesia-agent-setup.mjs; the voice is set on it (Gemma, en-GB).
   cartesiaAgentId: String(process.env.REASON_CARTESIA_AGENT_ID ?? "").trim(),
   cartesiaVoice: String(process.env.REASON_CARTESIA_VOICE ?? "").trim() || "62ae83ad-4f6a-430b-af41-a9bede9286ca",
@@ -1002,8 +1000,11 @@ export const config = {
   // it: one reply ≈120k input tokens, a p50 active person ≈6 turns a day (≈0.8M), p90 ≈1.6M, and a
   // Pro plan carries ~6–11 people with the WEEKLY cap the one that binds. A follow-up is ~1–2 extra
   // turns, so 2 a day is at most a ~4-turn (~0.5M) bump on a heavy research day, and only on days
-  // someone asks big questions. The owner gets 5 because the owner tests it and pays for it. Past the
-  // cap the answer is what it always was: based on what it got, with an offer to look further.
+  // someone asks big questions. Past the cap the answer is what it always was: based on what it got,
+  // with an offer to look further. Since 2026-11-15 the owner and anybody free for good (invited) have
+  // no daily count at all (src/tools.js researchFollowUp): these two numbers bind the monthly free tier
+  // and paying accounts only. The owner one is kept for REASON_PAYWALL=owner, where the owner tries the
+  // paywall on himself and is not free for good.
   researchContinuePerDay: Number(process.env.REASON_RESEARCH_CONTINUE_PER_DAY || 2),
   researchContinuePerDayOwner: Number(process.env.REASON_RESEARCH_CONTINUE_PER_DAY_OWNER || 5),
   researchMaxRetries: Number(process.env.REASON_RESEARCH_MAX_RETRIES || 2),

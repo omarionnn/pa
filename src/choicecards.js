@@ -848,7 +848,7 @@ function stackableHere(c, ctx) {
 async function makeCard(card, { c, ctx, stackable }) {
   const drawn = await drawCard(card, { shoot: ctx.shoot ?? shootWithChromium });
   if (!stackable) return drawn;
-  const m = (ctx.store ?? uploads.store)({ conversationId: c, bytes: readFileSync(drawn.file), name: `reason-${card.n}.jpg`, extra: { public: "card" } });
+  const m = (ctx.store ?? uploads.store)({ conversationId: c, bytes: readFileSync(drawn.file), name: `reason-${card.n}.jpg`, extra: { public: "card" }, quota: false }); // Reason's own: never counted against their total
   if (!m || m.error) throw new Error(`keeping card ${card.n} failed (${m?.error ?? "no record"})`);
   return { ...drawn, url: uploads.uploadUrl(m.id, m.name) };
 }

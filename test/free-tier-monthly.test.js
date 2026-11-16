@@ -29,6 +29,8 @@ process.env.REASON_TOKEN_KEY = "55".repeat(32);
 process.env.REASON_UNDO_SECONDS = "0";
 process.env.REASON_PAYWALL = "on";
 process.env.REASON_FREE_TIER = "monthly";
+// The opt-in 5-minute cut (unset since 2026-11-15 means no cut: test/limits-off.test.js); this file pins the cut itself.
+process.env.REASON_FREE_CALL_MINUTES = "5";
 process.env.REASON_PAYWALL_SHIP_TS = "2026-10-31T00:00:00Z";
 process.env.STRIPE_SECRET_KEY = "sk_test_fake";
 process.env.STRIPE_PRICE_ID = "price_test_2499";
@@ -449,4 +451,18 @@ test("the approved over-ceiling words: wins counted first, the reset date before
   for (const line of [...b, ...none, plan.overCallLine("calls"), plan.overCallLine("conversations"), ...plan.callLinkBubbles({ url: "u", resets: "Dec 9", why: "calls" })]) {
     assert.ok(!/unlock|upgrade|trial/i.test(line), line);
   }
+});
+
+test("with a cut set (REASON_FREE_CALL_MINUTES, this file: 5), a free-tier own call stays on GPT-Live, the only voice with the wrap-up cue; a payer is on Cartesia", async () => {
+  const trial = await import("../src/calls/calltrial.js");
+  const was = { callCartesia: config.callCartesia, cartesiaKey: config.cartesiaKey, cartesiaAgentId: config.cartesiaAgentId };
+  Object.assign(config, { callCartesia: "on", cartesiaKey: "ck-test", cartesiaAgentId: "agent_test" });
+  try {
+    const { c, num } = newcomer();
+    assert.equal(plan.callLimitSeconds(c), 300);
+    const own = db.createCall(c, { provider: "cartesia", toNumber: num, isOwner: true, goal: "They called Reason", facts: [], announcement: "", direction: "in", state: "in_progress" });
+    assert.equal(trial.cartesiaTrialFor(own), false);
+    await plan.markPaid(c, { customerId: "cus_cut", subscriptionId: "sub_cut" });
+    assert.equal(trial.cartesiaTrialFor(own), true);
+  } finally { Object.assign(config, was); }
 });
