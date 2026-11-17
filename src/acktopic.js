@@ -115,6 +115,8 @@ export const TOPICS = Object.freeze([
   {
     topic: "fitness", emoji: "💪",
     places: ["gym", "fitness_centre", "sports_centre"],
+    // Leaving a gym is a membership being cancelled, not a workout.
+    not: [/\b(cancel\w*|quit|quitting|freeze|pause) (my |the |our )?(gym|membership|classpass|equinox|peloton)\b/],
     words: [/\b(gym|workout|workouts|work out|lifting|yoga|pilates|crossfit|spin class|marathon|half marathon|5k|10k|personal trainer|training plan|run club|climbing gym)\b/],
   },
   {
@@ -144,8 +146,10 @@ export const TOPICS = Object.freeze([
  */
 export const SENSITIVE = [
   // health and the body
+  /\b(moles?|itch(y|ing)?|swollen|swelling|bleeding|bruis\w*|injur\w*|sprain\w*|concussion|allerg\w*|nause\w*|vomit\w*|throw(ing)? up|migraine|headache|stomach ache|blood pressure)\b/,
   /\b(doctor|dr\.|dentist|therapist|therapy|psychiatrist|symptoms?|sick|fever|pain|hurts|rash|lump|infection|std|sti|hiv|pregnan\w*|my period|birth control|plan b|condoms?|viagra|prescriptions?|meds|medication|pharmacy|diagnos\w*|cancer|diabetes|hospital|urgent care|er visit|rehab|sober|depress\w*|anxiety|panic attack|adhd|weight loss|lose weight|diet|calories|ozempic|surgery|biopsy|test results)\b/,
   // money trouble
+  /\b(card|payment|transaction)s? (got |was |were |keeps getting |is being )?(declined|denied|rejected|frozen)\b/,
   /\b(debt|overdraft|overdrawn|i'?m broke|we'?re broke|so broke|flat broke|can'?t afford|collections|bankrupt\w*|evict\w*|payday loan|behind on|late on (rent|my)|loan shark|repo(ssess\w*)?)\b/,
   // anything intimate
   /\b(sex|sexy|lingerie|hook ?up|nudes|onlyfans|tinder|hinge|bumble|grindr|dating app|breakup|break up|broke up|divorce|cheating|affair)\b/,
@@ -219,7 +223,9 @@ export function topicFor({ tool = "", input = null, text = "", harm = null } = {
   // What their words say (with the search the tool was given, which is their words restated).
   const said = wordTopics(`${text}\n${words}`);
   if (byTool) {
-    if (said.length === 0 || said.includes(byTool)) return { topic: byTool.topic, emoji: byTool.emoji, why: said.length ? "tool+words" : "tool" };
+    // Their words must point nowhere or at this topic alone: a second topic beside it is a tie ("book a
+    // table and get me an uber there" is 👀, not 🍽️).
+    if (said.length === 0 || (said.length === 1 && said[0] === byTool)) return { topic: byTool.topic, emoji: byTool.emoji, why: said.length ? "tool+words" : "tool" };
     return { topic: null, why: "tie" };
   }
   if (said.length === 1) return { topic: said[0].topic, emoji: said[0].emoji, why: "words" };

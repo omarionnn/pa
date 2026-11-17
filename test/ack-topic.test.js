@@ -98,7 +98,7 @@ const ROWS = [
          { tool: "memory_search", text: "move my dinner with sam to 8" }],
   ["✈️", { tool: "flight_search", input: {}, text: "flights to miami next fri, after 5pm" },
          { tool: "memory_search", text: "i tripped on the stairs lol" }],
-  ["🚕", { tool: "uber_request", input: {}, text: "get me an uber to the airport" },
+  ["🚕", { tool: "uber_request", input: {}, text: "get me an uber home" },
          { tool: "memory_search", text: "my car broke down" }],
   ["🗺️", { tool: "directions", input: {}, text: "how long to get to jfk from midtown at 5" },
          { tool: "memory_search", text: "how far along is the project" }],
@@ -106,7 +106,7 @@ const ROWS = [
          { tool: "memory_search", text: "what's the balance of power in the senate now" }],
   ["📅", { tool: "calendar_events", input: {}, text: "am i free thursday at 3" },
          { tool: "memory_search", text: "what's the schedule for the knicks game" }],
-  ["✉️", { tool: "gmail_search", input: { query: "from:delta" }, text: "find the email from delta about my flight" },
+  ["✉️", { tool: "gmail_search", input: { query: "from:delta" }, text: "find the email from delta about my refund" },
          { tool: "memory_search", text: "email the hotel and ask about late checkout" }],
   ["📞", { tool: "call_place", input: {}, text: "can you call joe's and ask if they're open late" },
          { tool: "web_search", text: "what do you call a group of crows" }],
@@ -151,8 +151,12 @@ test("two topics at once is 👀: in their words, or the tool saying one thing a
 });
 
 test("the tool's topic stands when the words agree or say nothing", () => {
-  assert.equal(pick({ tool: "uber_request", text: "uber to the airport pls" }), "🚕", "ride + travel words, ride tool");
-  assert.equal(pick({ tool: "calendar_create", text: "put the dinner from sam's email on my calendar" }), "📅");
+  assert.equal(pick({ tool: "uber_request", text: "uber home pls" }), "🚕", "ride words, ride tool");
+  // a second topic in their words beside the tool's is a tie (review 11-17): 👀, never a guess
+  assert.equal(pick({ tool: "uber_request", text: "uber to the airport pls" }), "👀", "ride + travel words: a tie");
+  assert.equal(pick({ tool: "nearby_places", input: { type: "restaurant" }, text: "book a table and get me an uber there" }), "👀", "food + ride words: a tie");
+  assert.equal(pick({ tool: "calendar_create", text: "put the dinner on my calendar for friday" }), "📅");
+  assert.equal(pick({ tool: "calendar_create", text: "put the dinner from sam's email on my calendar" }), "👀", "calendar + email words: a tie");
   assert.equal(pick({ tool: "shop_card", text: "yes that one" }), "🛍️");
 });
 
@@ -213,8 +217,15 @@ test("a first lookup with nothing else to go on is 🔍 straight away, not 👀 
   assert.deepEqual(await turn("what's the population of lagos", [["web_search"], ["web_lookup"]]), ["🔍"]);
 });
 
-test("👀 from a tie or a sensitive text stays 👀 through a lookup: no flicker", async () => {
-  assert.deepEqual(await turn("book a doctor's appointment for tuesday", [["calendar_events"], ["web_search"]]), ["👀"]);
+test("a tie or a sensitive text gets no topic emoji: exactly today's 👀, and 🔍 for a lookup", async () => {
+  assert.deepEqual(await turn("book a doctor's appointment for tuesday", [["calendar_events"]]), ["👀"]);
+  ack.reset();
+  assert.deepEqual(await turn("book a doctor's appointment for tuesday", [["calendar_events"], ["web_search"]]), ["👀", "-👀", "🔍"]);
+  ack.reset();
+  // a health question that runs a search: 🔍 (looking it up, today's), never a topic emoji
+  assert.deepEqual(await turn("is this mole normal? it's itchy and the rash is spreading", [["web_search", { query: "itchy mole rash spreading" }]]), ["🔍"]);
+  ack.reset();
+  assert.deepEqual(await turn("my mom is in the hospital, find flights to atlanta tonight", [["flight_search", { query: "flights to atlanta" }]]), ["🔍"]);
 });
 
 test("one text never carries more than one swap before ✅ or ⏰", async () => {
