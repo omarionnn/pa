@@ -698,6 +698,9 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
   if (!s) throw new Error("openRemote called for a site the switch does not cover"); // never: the caller checked
   const fail = (code) => { const e = new RemoteBrowserError(code, s, { alt }); if (OPS_WORDS[code]) opsLine(code, s); return e; };
   const { projectId } = credentials();
+  // Consent, the key and a refusal first (no request to Browserbase for any of those), then its own
+  // usage figure (at most hourly) and the minutes again on that.
+  { const code = gateCode(c, s); if (code) throw fail(code); }
   await refreshUsage().catch(() => null);
   { const code = gateCode(c, s); if (code) throw fail(code); }
   const left = monthBudgetMinutes() * 60 - usedSeconds();

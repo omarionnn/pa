@@ -243,7 +243,8 @@ test("an order that would not fit the month's remaining minutes is not started, 
   db.db.prepare("INSERT INTO remote_browser_month (month, seconds) VALUES (?, ?)").run(month, 5 * 60);
   const out = await runTool("doordash_order", { action: "start", restaurant: "Thai Palace" }, { conversationId: OWNER, kind: "user", messages: [msg("get me pad thai")] });
   assert.equal(out.budget, true);
-  assert.match(out.say_exactly, /about 7 minutes of hosted-browser time left this month and a DoorDash order takes about 10/);
+  assert.match(out.say_exactly, /That's on my side, not a limit on you or your account\. I can order it from the restaurant's own site, or set it up for pickup, instead\./);
+  assert.doesNotMatch(out.say_exactly, /\bplan\b|minutes|DoorDash app/);
   assert.equal(sessionsMade(), 0);
 });
 

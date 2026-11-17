@@ -19,7 +19,7 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:hosted-owner";
 process.env.REASON_TEST_ALLOW_PRIVATE_FETCH = "1"; // the browser guard lets 127.0.0.1 through, tests only
 const ENV = ["REASON_REMOTE_BROWSER", "REASON_REMOTE_BROWSER_SITES", "REASON_REMOTE_BROWSER_MONTH_MINUTES", "REASON_REMOTE_BROWSER_SESSION_MINUTES",
-  "REASON_REMOTE_BROWSER_START_MS", "REASON_REMOTE_BROWSER_TEST_CAP_MS", "REASON_REMOTE_BROWSER_IDLE_MS", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_API_URL"];
+  "REASON_REMOTE_BROWSER_START_MS", "REASON_REMOTE_BROWSER_TEST_CAP_MS", "REASON_REMOTE_BROWSER_IDLE_MS", "REASON_REMOTE_BROWSER_BUSY_WAIT_MS", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_API_URL"];
 for (const k of ENV) delete process.env[k];
 
 let chromium = null;
@@ -271,7 +271,7 @@ test("a covered job: the pinned body is sent, the Context is made once and reuse
   assert.ok(jobs.every(j => j.site === "doordash.com" && j.ended === "closed" && j.seconds >= 0));
   assert.equal(remote.personSeconds(OWNER), jobs.reduce((n, j) => n + j.seconds, 0));
   assert.equal(remote.monthSeconds(), remote.personSeconds(OWNER));
-  assert.ok(opsdigest.pending().some(r => /Hosted browser \(Browserbase\): [\d.]+ of 60 browser-minutes used this month/.test(r.text)));
+  assert.ok(opsdigest.pending().some(r => /Hosted browser \(Browserbase\): [\d.]+ of 60 minutes used this month, \d+ left/.test(r.text)));
   // The context id is stored, and only that; the row holds no page, no address, no cookie.
   const row = db.db.prepare("SELECT * FROM remote_browser_contexts WHERE conversation_id = ?").get(OWNER);
   assert.deepEqual(Object.keys(row).sort(), ["context_id", "conversation_id", "created_at", "site", "used_at"]);
@@ -353,8 +353,8 @@ test("failure modes: key missing or refused, unreachable, out of minutes, start 
   const cases = [
     { name: "key missing", env: { BROWSERBASE_API_KEY: "" }, code: "key_missing", say: /isn't set up right now/, ops: /missing from the environment/ },
     { name: "key refused", status: { "*": 401 }, code: "key_invalid", say: /isn't set up right now/, ops: /refused the API key/ },
-    { name: "out of minutes at Browserbase", status: { "POST /v1/sessions": 402 }, code: "out_of_minutes", say: /used up this month's time/, ops: /out of browser minutes/ },
-    { name: "busy", status: { "POST /v1/sessions": 429 }, code: "busy", say: /in use for too many jobs/, ops: /concurrency/ },
+    { name: "out of minutes at Browserbase", status: { "POST /v1/sessions": 402 }, code: "out_of_minutes", say: /on my side, not a limit on you/, ops: /out of browser minutes/, side: true },
+    { name: "busy", env: { REASON_REMOTE_BROWSER_BUSY_WAIT_MS: "50" }, status: { "POST /v1/sessions": 429 }, code: "busy", say: /busy on my side right now/, ops: /concurrency/, side: true },
     { name: "unreachable", env: { BROWSERBASE_API_URL: "http://127.0.0.1:9" }, code: "unreachable", say: /couldn't reach the hosted browser/, ops: /could not be reached/ },
     { name: "start timeout", env: { REASON_REMOTE_BROWSER_START_MS: "200" }, delay: { "POST /v1/sessions": 1500 }, code: "start_timeout", say: /didn't start in time/, ops: /did not start in time/ },
     { name: "connect fails", connect: "ws://127.0.0.1:9/devtools/browser/none", code: "unreachable", say: /couldn't reach/, ops: /could not be reached/ },
@@ -366,7 +366,9 @@ test("failure modes: key missing or refused, unreachable, out of minutes, start 
     const out = await words();
     assert.equal(out.hosted_browser, k.code, `${k.name}: ${JSON.stringify(out).slice(0, 200)}`);
     assert.match(out.say_exactly, k.say, k.name);
-    assert.match(out.say_exactly, /DoorDash app/, `${k.name}: the fallback that exists`);
+    // Reason's side (minutes, too busy): what it can do now, never a plan, never "the DoorDash app" as the only way.
+    if (k.side) { assert.match(out.say_exactly, /restaurant's own site, or set it up for pickup/, k.name); assert.doesNotMatch(out.say_exactly, /\bplan\b|DoorDash app/, k.name); }
+    else assert.match(out.say_exactly, /DoorDash app/, `${k.name}: the fallback that exists`);
     assert.match(out.note, /do not try the local browser/, k.name);
     assert.ok(opsdigest.pending().some(r => k.ops.test(r.text)), `${k.name}: a digest line for the owner`);
     assert.equal(remote.remoteSessionsOpen(), 0, `${k.name}: nothing left open`);

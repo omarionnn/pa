@@ -10038,7 +10038,7 @@ function hostedNoLink(c, entry) {
   if (!site) return null;
   return {
     ok: false, no_link: true, site,
-    error: `${hostedBrowser.labelOf(site)} runs in the hosted browser for them, and there is no sign-in link or window for it. Sign in with the site's own code (signin_email) or their saved login (account_signin). Say nothing about a link.`,
+    error: `${hostedBrowser.labelOf(site)} runs in the hosted browser for them, and there is no sign-in link or window for it. Sign in with the site's own one-time code: doordash_order signin (signin_email or account_signin only where those tools are shown to them). Say nothing about a link.`,
   };
 }
 /**
