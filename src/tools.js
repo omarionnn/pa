@@ -492,10 +492,23 @@ const HOSTED_BROWSER_TOOL_DEFS = [{
     their_words: { type: "string", description: "Their yes, word for word as they wrote it." },
   }, required: ["site", "their_words"] },
 }];
+/** doordash_order / doordash_place with what they need from here: the browser, trust, the turn, and the code sign-in. */
+async function runDoordashTool(name, input, ctx, c, me) {
+  return await doordash.runDoordash(name, input, {
+    conversationId: c, browser, trust, ownTurn: ownTurn(ctx), theirWords: askedCall.theirWords(ctx.messages ?? [], { last: 3 }), ownerName: me.name,
+    ctx: { spend: ctx.spend, permission: ctx.permission, confirmationId: ctx.confirmationId, isGroup: !!ctx.isGroup }, ...(ctx.shoot ? { shoot: ctx.shoot } : {}),
+    signinDeps: {
+      start: (args) => (ctx.startEmailSignin ?? signinEmail.startEmailSignin)({
+        ...args, log: ctx.log ?? (() => {}), launch: ctx.launchSigninBrowser ?? signinRemote.launchProfileBrowser, closeBrowser: browser.closeBrowser,
+      }),
+    },
+  });
+}
 // A DoorDash order on their own DoorDash account in the hosted browser (src/doordash.js): shown only to a
 // person the hosted browser covers for DoorDash and food is on for; doordash_place only when
 // REASON_DOORDASH_PAY is site_card. Everybody else is shown the tool list exactly as before.
 export const DOORDASH_FOOD_WORDS = "For this person a delivery order goes on their own DoorDash account through doordash_order (start, address, checkout), not store_checkout; food_order start, history and note work as usual, and doordash_order records the cart itself."
+  + " Only when they say otherwise themselves (\"from the restaurant's own site\", \"not DoorDash\", or pickup) does it go the restaurant's own way, as for anyone."
   + " If DoorDash can't be used for it (the hosted browser is not set up, out of time or busy, DoorDash stopped the job, or they said no to the hosted browser), the order goes the usual way when they want it: the restaurant's own ordering through store_checkout, with their yes on the exact total as always; never another way into DoorDash.";
 const DOORDASH_TOOL_DEFS = [{
   name: "doordash_order",
@@ -503,10 +516,12 @@ const DOORDASH_TOOL_DEFS = [{
     + " start (first: checks the month's browser minutes and their yes to the hosted browser; pass restaurant, usual: true for \"my usual\", and tip only as THEY said it);"
     + " address (the delivery address they said, or the saved one you mean; code checks it is theirs and whether DoorDash shows it);"
     + " checkout (on DoorDash's checkout page: code reads the exact breakdown and total, checks every item, the address and the tip, and says every stop; pass the items as in the cart);"
-    + " status (only when they ask how a placed order is doing: one look at their DoorDash orders page). Send say_exactly as it is whenever there is one.",
+    + " status (only when they ask how a placed order is doing: one look at their DoorDash orders page);"
+    + " signin (DoorDash shows they are signed out: pass the email their DoorDash account uses; DoorDash sends them a one-time code by email or text and you are told when to ask them for it. Their code only: never a password, never their mailbox). Send say_exactly as it is whenever there is one.",
   input_schema: { type: "object", properties: {
-    action: { type: "string", enum: ["start", "address", "checkout", "status"] },
+    action: { type: "string", enum: ["start", "address", "checkout", "status", "signin"] },
     order_id: { type: "integer", description: "From start; defaults to the latest." },
+    email: { type: "string", description: "signin: the email their DoorDash account uses (ask them once if you don't know it)." },
     restaurant: { type: "string" },
     usual: { type: "boolean", description: "start: they asked for their usual from that place." },
     tip: { type: "string", description: "start: their tip ONLY if they said one (\"$5\", \"18%\"). Leave out otherwise: DoorDash's default is used and said as such." },
@@ -516,6 +531,7 @@ const DOORDASH_TOOL_DEFS = [{
 }, {
   name: "doordash_place",
   description: "Press DoorDash's Place order for a checkout doordash_order read, with the card already on their DoorDash account. Only with the confirmation_id of their yes to that checkout's exact total (confirm_request with its use_target)."
+    + " When they approve purchases with Face ID, a yes in the chat never places it: this hands back their Face ID link (or says the one out still works), and Reason places it when they approve."
     + " Code reads the page again first: a total that changed is a new ask, a card or identity check stops it. Never press Place order any other way.",
   input_schema: { type: "object", properties: { order_id: { type: "integer" }, confirmation_id: { type: "integer" } } },
 }];
@@ -4851,7 +4867,7 @@ export const tools = [
   {
     name: "invite_link_create",
     description: "Make one invite link for them to send a friend. Each link is single-use and gives whoever claims it their own Reason — not a waitlist spot. Links never expire; opening one does not use it up; it is spent only when someone joins with it."
-      + " Use when they want to invite someone or ask for a link."
+      + " Use when they want to invite someone or ask for an invite or invitation to Reason (no event named)."
       + " THEIR FRIEND'S NAME ON THE CARD is a nice extra, never a step: a link made for somebody shows that first name on its card picture, and nowhere else. If they already said who (an invite for <a name>, one for my sister <a name>), pass that first name as for_name and the link goes out now, no question. If they did not say, call this with neither field: it says needs_for, and you OFFER once, lightly and in your own words, to put their friend's name on it so it feels personal, making clear it's totally fine if not (the spirit of: want me to put their name on it so it feels personal? totally fine if not). When they answer, read what they meant, however they put it, and call this again in that same reply: a name → for_name; no, 'just the link', 'doesn't matter', 'a few people', a shrug → for_nobody: true, a plain link, with no fuss and no second offer. Several people (two names at once, 'three links') → ONE offer covering them all, then one call per link, each with its own for_name when names were given."
       + " If it says needs_name, ask them once, warmly and in your own words, what name their friends should see on it. When they answer — read what they meant, however they put it — save it with my_name and call this again in that same reply, so the link goes out right then: never a second ask, never a dead end. The name on the card is the saved one; if they say they want a different name, save it with my_name and new links and cards use it."
       + " Write one short line first saying it's an invite for a friend to pass on, in your own words (never quote a command), then the link exactly as returned, alone on its own line with nothing after it — it goes out as its own message, so forwarding it shows the card.",
@@ -7575,8 +7591,9 @@ const S = {
   account_signin: z.object({ site: z.string().min(3).max(253) }),
   hosted_browser_ok: z.object({ site: z.string().min(3).max(253), their_words: z.string().min(1).max(300) }),
   doordash_order: z.object({
-    action: z.enum(["start", "address", "checkout", "status"]),
+    action: z.enum(["start", "address", "checkout", "status", "signin"]),
     order_id: z.number().int().positive().optional(),
+    email: z.string().max(200).optional(),
     restaurant: z.string().max(120).optional(), usual: z.boolean().optional(), tip: z.string().max(30).optional(), address: z.string().max(200).optional(),
     items: z.array(z.object({ name: z.string().min(1).max(120), qty: z.number().int().positive().max(50).optional(), modifiers: z.array(z.string().max(80)).max(12).optional(), price: z.string().max(20).optional() })).max(30).optional(),
   }),
@@ -10282,6 +10299,9 @@ async function runToolInner(name, rawInput, ctx) {
   // A payment for someone who approves with Face ID (src/passkey.js): no yes in the chat is asked for
   // or counted. shop_pay only hands back the approval link, so it skips the yes gate entirely.
   if (name === "shop_pay" && requiresPasskey(c)) return await runShopTool(name, input, { ...ctx, conversationId: c });
+  // The same for a DoorDash order (src/doordash.js): with Face ID on file the tool only hands back the
+  // link bound to that order and total; no yes in the chat is asked for or counted.
+  if (name === "doordash_place" && requiresPasskey(c)) return await runDoordashTool(name, input, ctx, c, me);
   // Their zone, before the first thing with a clock time in it (src/zone.js): held, asked once, and
   // finished by their answer. A time "in 10 minutes" from now is never held.
   const zoneHeld = zone.gate(c, name, input, { kind: ctx.kind });
@@ -13317,10 +13337,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           : "Send say_exactly as it is and stop this job. Do not try another way in." };
     }
     case "doordash_order": case "doordash_place":
-      return await doordash.runDoordash(name, input, {
-        conversationId: c, browser, trust, ownTurn: ownTurn(ctx), theirWords: askedCall.theirWords(ctx.messages ?? [], { last: 3 }), ownerName: me.name,
-        ctx: { spend: ctx.spend, permission: ctx.permission, confirmationId: ctx.confirmationId }, ...(ctx.shoot ? { shoot: ctx.shoot } : {}),
-      });
+      return await runDoordashTool(name, input, ctx, c, me);
     case "hosted_browser_ok": {
       if (!hostedBrowser.remoteAllowedFor(c)) return { ok: false, error: "Not available." };
       const got = hostedBrowser.recordConsent(c, input.site, input.their_words, { ownTurn: ownTurn(ctx), theirWords: askedCall.theirWords(ctx.messages ?? [], { last: 2 }) });
