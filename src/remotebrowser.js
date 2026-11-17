@@ -220,12 +220,14 @@ export class RemoteBrowserError extends Error {
     super(`hosted browser: ${code}`);
     this.code = code;
     this.site = site;
-    const say = code === "consent_needed" ? consentWords(site) : failureWords(code, site, { alt });
+    const say = code === "consent_needed" ? consentWords(site) : code === "no_reason" ? "" : failureWords(code, site, { alt });
     this.answer = {
       ok: false,
       hosted_browser: code,
       say_exactly: say,
-      note: code === "consent_needed"
+      note: code === "no_reason"
+        ? `Nothing was opened and nothing is said about it. ${labelOf(site)} opens in the hosted browser only for an order that goes there (doordash_order start, with why), its sign-in, or a status check they asked for; never to browse or compare prices. Go the restaurant's own way first.`
+        : code === "consent_needed"
         ? `Send say_exactly as it is and wait for their answer. Nothing was opened. On a yes, call hosted_browser_ok with site "${site}" and their own words, then do what they asked. On a no, or anything else, do not open ${site}.`
         : `Send say_exactly as it is, once. Nothing was retried and nothing will be: do not open ${site} again in this job, do not try the local browser for it (it walls that too), and do not try another way in.`,
     };
@@ -678,10 +680,16 @@ export function gate(conversationId, site, { alt = "" } = {}) {
  * releasing the session at Browserbase. `launcher` is Playwright's chromium (connectOverCDP).
  * Throws RemoteBrowserError, with the session already released, on every failure.
  */
+/** Per site: whether a session may open for this person now (src/doordash.js: only for an order, a sign-in or a status look). */
+const siteGates = new Map();
+export function setSiteGate(site, fn) { siteGates.set(site, fn); }
 export async function openRemote(launcher, conversationId, site, { alt = "" } = {}) {
   const c = String(conversationId);
   const s = remoteFor(c, site);
   if (!s) throw new Error("openRemote called for a site the switch does not cover"); // never: the caller checked
+  // A site's own gate first, before consent or any request: minutes are shared, so no session opens to
+  // browse or compare. Nothing is said to them; the model is told why.
+  { const g = siteGates.get(s); if (g && !g(c)) throw new RemoteBrowserError("no_reason", s, { alt }); }
   const fail = (code) => { const e = new RemoteBrowserError(code, s, { alt }); if (OPS_WORDS[code]) opsLine(code, s); return e; };
   const { projectId } = credentials();
   // Consent, the key and a refusal first (no request to Browserbase for any of those), then its own

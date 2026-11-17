@@ -508,13 +508,13 @@ async function runDoordashTool(name, input, ctx, c, me) {
 // A DoorDash order on their own DoorDash account in the hosted browser (src/doordash.js): shown only to a
 // person the hosted browser covers for DoorDash and food is on for; doordash_place only when
 // REASON_DOORDASH_PAY is site_card. Everybody else is shown the tool list exactly as before.
-export const DOORDASH_FOOD_WORDS = "For this person a delivery order goes on their own DoorDash account through doordash_order (start, address, checkout), not store_checkout; food_order start, history and note work as usual, and doordash_order records the cart itself."
-  + " Only when they say otherwise themselves (\"from the restaurant's own site\", \"not DoorDash\", or pickup) does it go the restaurant's own way, as for anyone."
-  + " If DoorDash can't be used for it (the hosted browser is not set up, out of time or busy, DoorDash stopped the job, or they said no to the hosted browser), the order goes the usual way when they want it: the restaurant's own ordering through store_checkout, with their yes on the exact total as always; never another way into DoorDash.";
+export const DOORDASH_FOOD_WORDS = "For this person DoorDash is also open, on their own DoorDash account (doordash_order). The order of routes stays: the restaurant's own online ordering first (delivery or pickup, as for anyone), then DoorDash, then a phone order for pickup."
+  + " DoorDash only when they asked for it by name, their usual came from DoorDash, the place has no online ordering of its own (food_order place with no_direct), its own site hands delivery to DoorDash and they said yes, or its own checkout failed and they said yes to trying DoorDash. Never open DoorDash to browse or compare prices; its minutes are shared and scarce."
+  + " If DoorDash can't be used for it (out of time, busy, stopped, or they said no to the hosted browser), the restaurant's own ordering as always; never another way into DoorDash.";
 const DOORDASH_TOOL_DEFS = [{
   name: "doordash_order",
-  description: "A food delivery order on their own DoorDash account, run in the hosted browser. For this person every food delivery order goes here (in place of store_checkout). Actions:"
-    + " start (first: checks the month's browser minutes and their yes to the hosted browser; pass restaurant, usual: true for \"my usual\", and tip only as THEY said it);"
+  description: "A food delivery order on their own DoorDash account, run in the hosted browser. Not the first route: the restaurant's own online ordering comes first. Use it only with a why that holds (code checks it): asked_by_name (they said DoorDash), usual_from_doordash (their usual came from DoorDash), no_own_ordering (you looked and the place has none), own_site_hands_off (its own site hands delivery to DoorDash and they said yes), own_site_failed (its own checkout failed and they said yes to DoorDash). Never to browse or compare prices. Actions:"
+    + " start (first: pass why; then it checks the month's browser minutes and their yes to the hosted browser; pass restaurant, usual: true for \"my usual\", and tip only as THEY said it);"
     + " address (the delivery address they said, or the saved one you mean; code checks it is theirs and whether DoorDash shows it);"
     + " checkout (on DoorDash's checkout page: code reads the exact breakdown and total, checks every item, the address and the tip, and says every stop; pass the items as in the cart);"
     + " status (only when they ask how a placed order is doing: one look at their DoorDash orders page);"
@@ -523,6 +523,7 @@ const DOORDASH_TOOL_DEFS = [{
     action: { type: "string", enum: ["start", "address", "checkout", "status", "signin"] },
     order_id: { type: "integer", description: "From start; defaults to the latest." },
     email: { type: "string", description: "signin: the email their DoorDash account uses (ask them once if you don't know it)." },
+    why: { type: "string", enum: ["asked_by_name", "usual_from_doordash", "no_own_ordering", "own_site_hands_off", "own_site_failed"], description: "start: why this order goes to DoorDash (checked by code)." },
     restaurant: { type: "string" },
     usual: { type: "boolean", description: "start: they asked for their usual from that place." },
     tip: { type: "string", description: "start: their tip ONLY if they said one (\"$5\", \"18%\"). Leave out otherwise: DoorDash's default is used and said as such." },
@@ -7595,6 +7596,7 @@ const S = {
     action: z.enum(["start", "address", "checkout", "status", "signin"]),
     order_id: z.number().int().positive().optional(),
     email: z.string().max(200).optional(),
+    why: z.enum(["asked_by_name", "usual_from_doordash", "no_own_ordering", "own_site_hands_off", "own_site_failed"]).optional(),
     restaurant: z.string().max(120).optional(), usual: z.boolean().optional(), tip: z.string().max(30).optional(), address: z.string().max(200).optional(),
     items: z.array(z.object({ name: z.string().min(1).max(120), qty: z.number().int().positive().max(50).optional(), modifiers: z.array(z.string().max(80)).max(12).optional(), price: z.string().max(20).optional() })).max(30).optional(),
   }),
@@ -13293,6 +13295,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // The switch, again, on the conversation (whatever the model was shown), and the runtime's
       // filler. The turn's kind is the live-ask gate's input: code's, never the model's.
       if (!saveLinkAllowedFor(c) || typeof ctx.signIn !== "function") return { ok: false, error: "Not available." };
+      // A saved-login sign-in to DoorDash is a reason for its hosted session (src/doordash.js site gate).
+      if (hostedBrowser.remoteFor(c, input.site)) doordash.allowSignin(c);
       const asked = askedCall.theirWords(ctx.messages ?? [], { last: 1 })[0] ?? "";
       // A site that turns away software-driven browsers (src/refusing.js): said up front, before the
       // filler runs, so no page opens and no Face ID ask is made. Their saved login is left as it is.
@@ -15956,7 +15960,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!entry) return noSigninSite(c, input.site);
       const offNet = await genericSiteRefused(entry, ctx);
       if (offNet) return offNet;
-      if (entry.browser === "remote") { const held = hostedBrowser.gate(c, entry.remote_site); if (held) return held; }
+      if (entry.browser === "remote") { const held = hostedBrowser.gate(c, entry.remote_site); if (held) return held; doordash.allowSignin(c); }
       // A site that refuses Reason's browser — at the page, or after the email goes in — is never
       // sent an email address: each try there is one more failed sign-in against their account.
       const access = await signinAccessFor(entry, ctx);
@@ -16140,6 +16144,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const offNet = await genericSiteRefused(entry, ctx);
         if (offNet) return offNet;
         const hosted = entry.browser === "remote";
+        if (hosted) doordash.allowSignin(c);
         const reach = hosted ? null : trust.SITE_REACHABLE[entry.site];
         // Which button the last live sign-in went through, read BEFORE the probe: a signed-out
         // reading revokes the row, and the provider on it is what a sign-in-again presses.

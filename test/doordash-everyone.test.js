@@ -181,7 +181,10 @@ function driver(c, words) {
 }
 /** Start → address → search → store → Pad Thai (Medium) + Spring Rolls → cart. */
 async function buildCart(d, { tip = undefined, extraItem = null } = {}) {
-  const st = await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", ...(tip ? { tip } : {}) });
+  // They asked for DoorDash by name (the route's reason); the line is taken off again so the address step reads their request.
+  d.say("on doordash please");
+  const st = await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name", ...(tip ? { tip } : {}) });
+  d.messages.pop();
   assert.equal(st.ok, true, JSON.stringify(st).slice(0, 300));
   assert.equal((await d.open("/")).ok, true);
   const addr = await d.call("doordash_order", { action: "address", address: "3247 Bruner Ave" });
@@ -264,7 +267,7 @@ async function tap(token, a) {
   return JSON.parse(out.body);
 }
 const order = (c) => dd.orderRow(c);
-const ask = async (c, words) => runTool("doordash_order", { action: "start", restaurant: "Thai Palace" }, { conversationId: c, kind: "user", messages: [msg(words)] });
+const ask = async (c, words) => runTool("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" }, { conversationId: c, kind: "user", messages: [msg(`${words} on doordash`)] });
 
 /** The covered person's whole walk up to the ask: start, address, store, Pad Thai (Medium) + Spring Rolls, checkout. */
 async function readyAsk(c, words = "pad thai and spring rolls from thai palace to 3247 Bruner Ave") {
@@ -517,6 +520,7 @@ test("3. two people at once: each their own consent, their own kept sign-in (Con
   consent(OTHER);
   // One after the other, both left open together (the fixture's one local Chromium has one tab for
   // every "session"; real Browserbase sessions are separate browsers).
+  for (const who of [OWNER, OTHER]) assert.equal((await ask(who, "get me pad thai")).ok, true);
   const x = await runTool("browser_open", { url: DD("/") }, { conversationId: OWNER, kind: "user", messages: [msg("open doordash")] });
   const y = await runTool("browser_open", { url: DD("/") }, { conversationId: OTHER, kind: "user", messages: [msg("open doordash")] });
   assert.equal(x.ok, true); assert.equal(y.ok, true);
@@ -535,7 +539,7 @@ test("3. a group thread: nobody can consent, sign in or order there", async () =
   for (const t of ["doordash_order", "doordash_place", "hosted_browser_ok"]) assert.ok(!names.includes(t), t);
   const ctx = { conversationId: GROUP, kind: "user", isGroup: true, messages: [msg("yes go ahead")] };
   assert.notEqual((await runTool("hosted_browser_ok", { site: "doordash.com", their_words: "yes go ahead" }, ctx)).ok, true);
-  assert.notEqual((await runTool("doordash_order", { action: "start", restaurant: "Thai Palace" }, ctx)).ok, true);
+  assert.notEqual((await runTool("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" }, ctx)).ok, true);
   assert.notEqual((await runTool("doordash_order", { action: "signin", email: "me@example.com" }, ctx)).ok, true);
   assert.equal(bb.calls.length, 0);
 });
@@ -605,6 +609,7 @@ test("4. the owner's alert: one text a month below the threshold, a second at ze
 test("5. too many sessions at once: one quiet retry; busy twice is said once, on Reason's side, with a wake to try again", skip, async () => {
   set(EVERYONE({ REASON_REMOTE_BROWSER_BUSY_WAIT_MS: "50" }));
   consent(OTHER);
+  assert.equal((await ask(OTHER, "get me pad thai")).ok, true);
   bb.busy = 1;
   const once = await runTool("browser_open", { url: DD("/") }, { conversationId: OTHER, kind: "user", messages: [msg("open doordash")] });
   assert.equal(once.ok, true, "the retry got a session");
@@ -619,11 +624,12 @@ test("5. too many sessions at once: one quiet retry; busy twice is said once, on
 });
 
 // ---------------------------------------------------------------- 6. routing
-test("6. routing: a covered person's delivery goes to DoorDash first; their own words for the restaurant's site are kept; the hand-off line offers DoorDash done for them", async () => {
+test("6. routing words: own ordering first, then DoorDash, then phone pickup; the hand-off line offers DoorDash done for them", async () => {
   set(EVERYONE());
   const foodTool = toolsFor(OTHER).find((t) => t.name === "food_order");
-  assert.match(foodTool.description, /through doordash_order/);
-  assert.match(foodTool.description, /from the restaurant's own site.*not DoorDash/);
+  assert.match(foodTool.description, /the restaurant's own online ordering first \(delivery or pickup, as for anyone\), then DoorDash, then a phone order for pickup/);
+  assert.match(foodTool.description, /Never open DoorDash to browse or compare prices/);
+  assert.match(toolsFor(OTHER).find((t) => t.name === "doordash_order").description, /Not the first route/);
   // #604's hand-off: a covered person is offered DoorDash done for them, never the sign-in link.
   const told = [];
   food._attach({ say: (c, t) => told.push({ c, t }) });
@@ -638,6 +644,71 @@ test("6. routing: a covered person's delivery goes to DoorDash first; their own 
   db.db.prepare("UPDATE food_orders SET status = 'asked', run_id = 'run_ho2', conversation_id = ? WHERE id = ?").run(THIRD, id);
   await food.handOff({ run_id: "run_ho2", conversation_id: THIRD }, "doordash");
   assert.match(told.find((x) => x.c === THIRD)?.t ?? "", /DoorDash sign-in link/);
+  food._attach({});
+});
+
+// ---------------------------------------------------------------- 6b. routing, corrected: the restaurant's own ordering first
+const startFor = (c, input, words) => runTool("doordash_order", { action: "start", restaurant: "Thai Palace", ...input }, { conversationId: c, kind: "user", messages: words.map((w) => msg(w)) });
+const sessions = () => bb.calls.filter((x) => x.method === "POST" && x.path === "/v1/sessions").length;
+
+test("6b. a plain request for a place with its own ordering never opens DoorDash: no start, no hosted session, nothing asked of Browserbase", skip, async () => {
+  set(EVERYONE());
+  consent(OTHER);
+  food.notePlace(OTHER, { restaurant: "Thai Palace", url: "https://order.thaipalace.example/menu" });
+  const plain = ["get me pad thai from thai palace to my place"];
+  for (const why of [undefined, "asked_by_name", "no_own_ordering", "own_site_hands_off", "own_site_failed", "usual_from_doordash"]) {
+    const out = await startFor(OTHER, why ? { why } : {}, plain);
+    assert.equal(out.not_doordash, true, `${why}: ${JSON.stringify(out).slice(0, 160)}`);
+    assert.match(out.error, /restaurant's own online ordering comes first/);
+  }
+  // Browsing DoorDash anyway (to compare prices): the hosted browser refuses before anything is asked.
+  const browse = await runTool("browser_open", { url: DD("/") }, { conversationId: OTHER, kind: "user", messages: [msg("what does it cost on doordash")] });
+  assert.equal(browse.hosted_browser, "no_reason", JSON.stringify(browse).slice(0, 200));
+  assert.equal(browse.say_exactly, "");
+  assert.equal(sessions(), 0, "zero sessions created");
+  assert.equal(bb.calls.filter((x) => x.path === "/v1/contexts").length, 0);
+});
+
+test("6b. (a) asked for DoorDash by name, or a usual that came from DoorDash: it goes to DoorDash", async () => {
+  set(EVERYONE());
+  consent(OTHER);
+  assert.equal((await startFor(OTHER, { why: "asked_by_name" }, ["reorder my last doordash from thai palace"])).ok, true);
+  // "my usual" with no site named: their history decides.
+  dd._resetDoordash(); db.db.exec("DELETE FROM food_orders");
+  assert.equal((await startFor(OTHER, { why: "usual_from_doordash", usual: true }, ["my usual from thai palace"])).not_doordash, true, "no history: own site");
+  const placed = (platform) => db.db.prepare("INSERT INTO food_orders (conversation_id, status, route, platform, restaurant, store_url, created_at, updated_at, placed_at) VALUES (?, 'placed', ?, ?, 'Thai Palace', ?, ?, ?, ?)")
+    .run(OTHER, platform ? "platform" : "direct", platform, platform ? "https://www.doordash.com/store/x" : "https://order.thaipalace.example/menu", Date.now(), Date.now(), Date.now());
+  placed("");
+  assert.equal(dd.usualFromDoordash(OTHER, "Thai Palace"), false);
+  assert.equal((await startFor(OTHER, { why: "usual_from_doordash", usual: true }, ["my usual from thai palace"])).not_doordash, true, "usual was the own site");
+  placed("doordash");
+  assert.equal(dd.usualFromDoordash(OTHER, "Thai Palace"), true);
+  assert.equal((await startFor(OTHER, { why: "usual_from_doordash", usual: true }, ["my usual from thai palace"])).ok, true);
+});
+
+test("6b. (b) no online ordering of its own, or an own site that hands delivery to DoorDash and their yes: DoorDash", async () => {
+  set(EVERYONE());
+  consent(OTHER);
+  food.notePlace(OTHER, { restaurant: "Thai Palace", noDirect: true });
+  assert.equal((await startFor(OTHER, { why: "no_own_ordering" }, ["get me pad thai from thai palace"])).ok, true);
+  dd._resetDoordash(); db.db.exec("DELETE FROM food_orders; DELETE FROM food_places");
+  food.notePlace(OTHER, { restaurant: "Thai Palace", url: "https://order.thaipalace.example/menu" });
+  db.db.prepare("INSERT OR REPLACE INTO food_told (conversation_id, what, at) VALUES (?, ?, ?)").run(OTHER, `handoff:${food.orderingPlaceKey("https://order.thaipalace.example/menu")}=doordash`, Date.now());
+  assert.equal((await startFor(OTHER, { why: "own_site_hands_off" }, ["get me pad thai from thai palace", "hmm let me think"])).not_doordash, true, "no yes yet");
+  assert.equal((await startFor(OTHER, { why: "own_site_hands_off" }, ["get me pad thai from thai palace", "yes do it"])).ok, true);
+});
+
+test("6b. (c) its own checkout failed and they said yes to DoorDash: DoorDash; the failure wake offers it", async () => {
+  set(EVERYONE());
+  consent(OTHER);
+  const id = Number(db.db.prepare("INSERT INTO food_orders (conversation_id, status, route, via, restaurant, store_url, run_id, failures, created_at, updated_at) VALUES (?, 'asked', 'direct', 'own_site', 'Thai Palace', 'https://order.thaipalace.example/menu', 'run_fail', 0, ?, ?)").run(OTHER, Date.now(), Date.now()).lastInsertRowid);
+  const woke = [];
+  food._attach({ wake: (c, t) => woke.push(t) });
+  await food.ended({ run_id: "run_fail", result: "store refused" }, "failed");
+  assert.ok(woke.some((t) => /Or the same order on DoorDash, if they say yes to that \(doordash_order start with why own_site_failed\)/.test(t)), woke.join(" | ").slice(0, 300));
+  assert.equal((await startFor(OTHER, { why: "own_site_failed" }, ["the checkout broke", "no"])).not_doordash, true, "a no is not a yes");
+  assert.equal((await startFor(OTHER, { why: "own_site_failed" }, ["yes try doordash"])).ok, true);
+  void id;
   food._attach({});
 });
 

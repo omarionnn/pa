@@ -866,9 +866,12 @@ export async function ended(run, status) {
   }
   setStatusRow(o, "needs");
   await setStatus(o, "needs");
+  // A person the hosted browser covers for DoorDash: the same order on DoorDash is one fix to offer.
+  const dd = await import("./doordash.js").catch(() => null);
+  const ddFix = o.route === "direct" && dd?.doordashFor(o.conversation_id) ? " Or the same order on DoorDash, if they say yes to that (doordash_order start with why own_site_failed)." : "";
   if (wakeFn) {
     try {
-      await wakeFn(o.conversation_id, `[food] The ${o.restaurant || "food"} checkout (order ${o.id}) ended without placing (${String(run.result || status).slice(0, 160)}). Nothing was charged. Their text about why already went. Bring ONE fix in one line with the likely answer offered: the same cart at another nearby open place, a swap for what was unavailable, or ordering without it. Never start it without their yes. If nothing fits, say so plainly.`, { key: `food:${o.id}:fail:${failures}` });
+      await wakeFn(o.conversation_id, `[food] The ${o.restaurant || "food"} checkout (order ${o.id}) ended without placing (${String(run.result || status).slice(0, 160)}). Nothing was charged. Their text about why already went. Bring ONE fix in one line with the likely answer offered: the same cart at another nearby open place, a swap for what was unavailable, or ordering without it.${ddFix} Never start it without their yes. If nothing fits, say so plainly.`, { key: `food:${o.id}:fail:${failures}` });
     } catch { /* the end text already went */ }
   }
   return { needs: true };
