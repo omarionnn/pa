@@ -342,6 +342,26 @@ test("1. the approval is bound: a link for cart A cannot place cart B; an expire
   assert.equal(S.placeAttempts, 0);
 });
 
+test("1. the binding itself: an open link signed for cart A is refused once the order stands for cart B (revision, total)", skip, async () => {
+  set(EVERYONE({ REASON_DOORDASH_PAY: "site_card" }));
+  consent(OWNER);
+  const a = await faceIdFor(OWNER);
+  const { read } = await readyAsk(OWNER);
+  const token = tokenOf(read.url);
+  // DoorDash's cart becomes cart B and the order's record follows it (both revisions together), but
+  // the link signed for cart A is still open: only the binding stands between it and a press.
+  S.cart.push({ key: "thai-iced-tea", name: "Thai Iced Tea", price: 495, spice: "" });
+  const t = totals();
+  const r = dd.orderRow(OWNER);
+  db.db.prepare("UPDATE food_orders SET revision = revision + 1 WHERE id = ?").run(r.order_id);
+  db.db.prepare("UPDATE doordash_orders SET revision = revision + 1, total_cents = ? WHERE order_id = ?").run(t.total, r.order_id);
+  assert.equal(shop.approvalView(token).state, "open");
+  const out = await tap(token, a).catch((e) => ({ ok: false, error: String(e) }));
+  assert.notEqual(out.ok, true, JSON.stringify(out));
+  assert.equal(out.error, "details_changed");
+  assert.equal(S.placeAttempts, 0);
+});
+
 test("1. a total that moves between the approval and the press: nothing placed, the approval void, a fresh link asked", skip, async () => {
   set(EVERYONE({ REASON_DOORDASH_PAY: "site_card" }));
   consent(OWNER);
