@@ -248,6 +248,9 @@ export async function checkFit({ texts = [], need = "", item = "", what = "" }, 
 export async function runShopTool(name, input, { conversationId: c, confirmationId = null, messages = [], judge = null, log = () => {} } = {}) {
   if (!shop.connectAllowedFor(c)) return { ok: false, error: "Not available." };
   if (name === "store_checkout") {
+    // DoorDash for a person the hosted browser covers for it: their own DoorDash account, through
+    // doordash_order (src/doordash.js), never a checkout agent on DoorDash.
+    { const dd = await import("./doordash.js"); if (dd.doordashFor(c) && dd.onDoordashUrl(input.start_url)) return { ok: false, use_instead: "doordash_order", error: "DoorDash orders for them run on their own DoorDash account: doordash_order start. Nothing was started." }; }
     // A food order on a host many restaurants share (Toast, Square…) is keyed per restaurant (src/food.js).
     let foodKey = null, foodName = "";
     if (input.food_order_id) {

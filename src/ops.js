@@ -1092,6 +1092,9 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
     // The plan meters' 50/80/100% texts (src/planmeter.js), off the readings this pass saved. Live like
     // the cap heads-up above: once per threshold per cycle, kept in ops_state across restarts.
     .finally(() => { try { planmeter.warnings({ readings: snapshot()?.meters ?? [], send: sendNow, log }); } catch (e) { log({ plan_warn_failed: short(e) }); } })
+    // Hosted-browser sign-ins whose delete Browserbase did not confirm: tried again once a day, just
+    // before the digest goes (src/remotebrowser.js dailyRetry; nothing to retry, no request).
+    .finally(() => import("./remotebrowser.js").then((rb) => rb.dailyRetry()).catch(e => log({ hosted_retry_failed: short(e) })))
     .finally(() => digest.flush({ send: sendDigest, link: opsUrl(), log }).catch(e => log({ ops_digest_failed: short(e) })));
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);

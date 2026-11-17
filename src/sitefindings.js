@@ -94,7 +94,16 @@ const within = (h, base) => !!h && (h === base || h.endsWith(`.${base}`));
 const dayMs = (iso) => Date.parse(`${iso}T12:00:00Z`);
 const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
 
+/**
+ * An entry tagged for the hosted browser (src/remotebrowser.js tagEntry: `browser: "remote"`) has its
+ * own findings: the probe runs and the registry's dated walls were Reason's own browser, so they say
+ * nothing about it, and what it sees is kept under the site's name with a suffix. Untagged entries
+ * (every caller before 2026-11-15, and everyone with the switch off) are unchanged.
+ */
+const hosted = (entry) => entry?.browser === "remote";
+const rowSite = (entry) => (hosted(entry) ? `${String(entry.site)}~hosted` : String(entry.site));
 function probeFor(entry) {
+  if (hosted(entry)) return null;
   const site = String(entry?.site ?? "").toLowerCase();
   const host = hostOf(entry?.signin_url);
   let best = null;
@@ -115,7 +124,7 @@ function probeFor(entry) {
 export function signinFinding(entry, now = clock.now()) {
   if (!entry?.site) return null;
   const p = probeFor(entry);
-  const row = db.db.prepare("SELECT kind, status, why, seen_at FROM site_findings WHERE site = ? AND page = ?").get(entry.site, pageMark(entry));
+  const row = db.db.prepare("SELECT kind, status, why, seen_at FROM site_findings WHERE site = ? AND page = ?").get(rowSite(entry), pageMark(entry));
   const live = row ? { ...row, source: "live" } : null;
   const f = p && live ? (live.seen_at >= p.seen_at ? live : p) : (live ?? p);
   if (!f) return null;
@@ -128,7 +137,7 @@ export function signinFinding(entry, now = clock.now()) {
 export function recordFinding(entry, { kind, status = null, why = "" } = {}, now = clock.now()) {
   if (!entry?.site || !["walled", "refuses_after_email", "open"].includes(kind)) return null;
   db.db.prepare("INSERT INTO site_findings (site, kind, status, why, seen_at, page) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(site) DO UPDATE SET kind = excluded.kind, status = excluded.status, why = excluded.why, seen_at = excluded.seen_at, page = excluded.page")
-    .run(String(entry.site).slice(0, 255), kind, Number.isFinite(Number(status)) && status != null ? Number(status) : null, String(why ?? "").slice(0, 300), now, pageMark(entry));
+    .run(rowSite(entry).slice(0, 255), kind, Number.isFinite(Number(status)) && status != null ? Number(status) : null, String(why ?? "").slice(0, 300), now, pageMark(entry));
   // Bounded: nothing older than any finding is believed, and never more than MAX_ROWS sites.
   db.db.prepare("DELETE FROM site_findings WHERE seen_at < ?").run(now - KEEP_MS);
   if (db.db.prepare("SELECT COUNT(*) AS n FROM site_findings").get().n > MAX_ROWS) {
@@ -177,6 +186,8 @@ export async function signinAccess(entry, { live = null, now = clock.now() } = {
   });
   const had = signinFinding(entry, now);
   if (had?.fresh) return shape(had);
+  // A live ask is a fetch from this machine: it says nothing about the hosted browser.
+  if (hosted(entry)) live = null;
   if (live) {
     let wall = null;
     try { wall = await live(entry); } catch { wall = null; }
