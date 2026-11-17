@@ -511,10 +511,11 @@ test("review: a yes processed while a decline is on its way to Crossmint pays no
     const declining = shop.declinePayment({ conversationId: OMARI, paymentId: pay.id, by: "reason" });
     await new Promise((r) => setImmediate(r));
     const n = intents();
+    // The decline's message is held for a moment; the yes is processed meanwhile.
+    setTimeout(() => open(), 50);
     const r = await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 1 });
     assert.notEqual(r.ok, true, JSON.stringify(r));
     assert.equal(intents(), n, "no order intent while the decline is going out");
-    open();
     assert.equal((await declining).ok, true);
     assert.equal(q("SELECT status FROM shop_payments WHERE id = ?").get(pay.id).status, "declined");
   } finally { holdMessages = null; open?.(); }
