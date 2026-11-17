@@ -389,7 +389,7 @@ async function closeQuietly(o, why, { states = STALE_STATES } = {}) {
       try { await shop.declinePayment({ conversationId: o.conversation_id, paymentId: p.id, by: "reason" }); } catch { /* it lapses on its own */ }
     }
     // A yes already approved, paying or paid: that order is theirs and goes on; it is never closed here.
-    if (shop.paymentLive(o.run_id)) return false;
+    if (shop.paymentLive(o.run_id, o.conversation_id)) return false;
   }
   const r = q(`UPDATE food_orders SET status = 'cancelled', run_id = NULL, closed_why = ?, updated_at = ? WHERE id = ? AND conversation_id = ? AND status IN (${states.map(() => "?").join(", ")})`)
     .run(String(why).slice(0, 80), clock.now(), o.id, o.conversation_id, ...states);
@@ -490,7 +490,7 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   if (o.run_id) {
     const shop = await import("./shopconnect.js");
     // A yes already being paid: the cart that was approved goes through as it is; nothing here changes it.
-    if (shop.paymentLive(o.run_id)) return { ok: false, error: "payment_in_flight", say: "Their yes to this order is already going through, so the cart can't change now. Say that in one line; once it is placed, a change is a new order." };
+    if (shop.paymentLive(o.run_id, c)) return { ok: false, error: "payment_in_flight", say: "Their yes to this order is already going through, so the cart can't change now. Say that in one line; once it is placed, a change is a new order." };
     letGo = await shop.letGo(o.run_id, "the food cart changed").catch(() => false);
     q("UPDATE food_orders SET run_id = NULL WHERE id = ? AND conversation_id = ?").run(o.id, c);
   }
@@ -900,9 +900,9 @@ export async function handOff(run, app) {
   if (!o || !app) return null;
   const shop = await import("./shopconnect.js");
   // "Nothing was charged" has to be true: a run with a yes already paying or paid is never a hand-off.
-  if (shop.paymentLive(run.run_id)) return null;
+  if (shop.paymentLive(run.run_id, o.conversation_id)) return null;
   await shop.letGo(run.run_id, `${appName(app)} hand-off: the restaurant's own delivery runs on ${appName(app)}, which wants a sign-in`).catch(() => false);
-  if (shop.paymentLive(run.run_id)) return null;
+  if (shop.paymentLive(run.run_id, o.conversation_id)) return null;
   q("UPDATE food_orders SET run_id = NULL, status = 'needs', updated_at = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), o.id, o.conversation_id);
   try { q("INSERT OR REPLACE INTO food_told (conversation_id, what, at) VALUES (?, ?, ?)").run(o.conversation_id, `${handoffKey(o.store_url)}=${app}`, clock.now()); } catch { /* the line still goes */ }
   await setStatus(o, "needs");
@@ -980,7 +980,7 @@ export async function phoneOrder(c, input, { check = checkAllergies, now = clock
   // payable beside a phone order; one whose yes is already being paid stays, and nothing is phoned in.
   if (o.run_id) {
     const shop = await import("./shopconnect.js");
-    if (shop.paymentLive(o.run_id)) return { ok: false, error: "payment_in_flight", say: "Their yes to the online checkout for this order is already going through, so don't phone it in. Say that in one line." };
+    if (shop.paymentLive(o.run_id, c)) return { ok: false, error: "payment_in_flight", say: "Their yes to the online checkout for this order is already going through, so don't phone it in. Say that in one line." };
     await shop.letGo(o.run_id, "phoned in for pickup instead").catch(() => false);
   }
   const rev = Number(o.revision ?? 0) + 1;
@@ -1170,7 +1170,7 @@ async function sweepOnce(now) {
 /** The hold is over: the checkout let go without its own end text, the order waits on them, one line. */
 async function lapse(o, shop) {
   // Their yes landed just as the hold ran out and is being paid: that is not a lapse.
-  if (shop.paymentLive(o.run_id)) return;
+  if (shop.paymentLive(o.run_id, o.conversation_id)) return;
   if (!tellOnce(o, `hold:${o.run_id}`)) return;
   await shop.letGo(o.run_id, "the 15-minute food hold ran out").catch(() => null);
   q("UPDATE food_orders SET run_id = NULL, status = 'needs', updated_at = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), o.id, o.conversation_id);

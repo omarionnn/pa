@@ -1443,12 +1443,12 @@ export async function letGo(runId, why) {
   for (const p of q("SELECT id FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status = 'asked'").all(runId, run.conversation_id)) {
     try { await declinePayment({ conversationId: run.conversation_id, paymentId: p.id, by: "reason" }); } catch { /* claimed already: it can never be paid */ }
   }
-  if (paymentLive(runId)) { logFn({ shop_letgo_kept: runId, why: "payment in flight" }); return false; }
+  if (paymentLive(runId, run.conversation_id)) { logFn({ shop_letgo_kept: runId, why: "payment in flight" }); return false; }
   await endQuietly(run, why);
   return true;
 }
 /** A payment on this run that a yes already started or finished (paying, paid, or unknown at Crossmint). */
-export const paymentLive = (runId) => !!(runId && q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND status IN ('paying', 'paid', 'unknown') LIMIT 1").get(runId));
+export const paymentLive = (runId, conversationId) => !!(runId && q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status IN ('paying', 'paid', 'unknown') LIMIT 1").get(runId, conversationId));
 /** The Face ID link for an asked payment (thirty minutes from the first ask, one use; src/passkey.js). */
 export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row, { until: askDeadline(row) })}`;
 /** The ask once they have a passkey: the same words, and the link instead of "reply yes". */
@@ -2275,7 +2275,7 @@ export async function step(runId) {
   let woke = null;
   // A food order on the restaurant's own site whose checkout handed off to a delivery app (src/food.js):
   // caught when it lands on the app's site or asks for the app's sign-in, never waited on.
-  if (foodMod?.foodOn(run.conversation_id) && foodMod.isFoodRun(runId) && !openSigninLink(runId) && !paymentLive(runId)) {
+  if (foodMod?.foodOn(run.conversation_id) && foodMod.isFoodRun(runId) && !openSigninLink(runId) && !paymentLive(runId, run.conversation_id)) {
     const rq0 = ra ? { requestId, request: ra.request } : null;
     const it0 = ra?.request?.interaction ?? {};
     const signin = it0.kind === "form" && (it0.fields ?? []).some(isProtected);

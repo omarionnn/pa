@@ -46,7 +46,7 @@ const LUCAS = "https://order.lucaspizza.com/menu";
 const CFA = "https://order.chick-fil-a.com/menu";
 
 // ---------------------------------------------------------------- a fake Crossmint, a fake line
-let calls, runs, nextRun;
+let calls, runs, nextRun, holdMessages = null;
 const reply = (status, body) => ({ status, ok: status < 300, text: async () => (body === undefined ? "" : JSON.stringify(body)) });
 async function fakeFetch(url, init = {}) {
   const u = new URL(url);
@@ -59,6 +59,7 @@ async function fakeFetch(url, init = {}) {
     return reply(201, { runId });
   }
   const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages|\/cancel)?$/.exec(p);
+  if (m && m[2] === "/messages" && holdMessages) await holdMessages;
   if (m && m[2]) return reply(202, { ok: true });
   if (m) return runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { message: "not found" });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
@@ -501,6 +502,22 @@ test("review: a yes being paid is never declined or let go: not by a new request
   assert.equal(posted(/\/messages$/).length, m0, "no decline sent to Crossmint");
   assert.equal(posted(/\/cancel$/).length, c0, "the run is never cancelled");
   assert.equal(said.length, n, "nothing said: no 'let go', no 'nothing was charged', no 'dropped'");
+});
+
+test("review: a yes processed while a decline is on its way to Crossmint pays nothing (the decline claimed it first)", async () => {
+  const { pay } = await cardOut();
+  let open; holdMessages = new Promise((r) => { open = r; });
+  try {
+    const declining = shop.declinePayment({ conversationId: OMARI, paymentId: pay.id, by: "reason" });
+    await new Promise((r) => setImmediate(r));
+    const n = intents();
+    const r = await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 1 });
+    assert.notEqual(r.ok, true, JSON.stringify(r));
+    assert.equal(intents(), n, "no order intent while the decline is going out");
+    open();
+    assert.equal((await declining).ok, true);
+    assert.equal(q("SELECT status FROM shop_payments WHERE id = ?").get(pay.id).status, "declined");
+  } finally { holdMessages = null; open?.(); }
 });
 
 test("review: a decline claims the payment first, so a yes that comes after it pays nothing", async () => {
