@@ -370,6 +370,9 @@ test("no online ordering: the phone order for pickup is offered once, placed by 
   const offer = await runTool("food_order", { action: "phone", order_id: st.order_id, ...SANDWICH }, ctx);
   assert.equal(offer.offer, true, JSON.stringify(offer));
   assert.match(offer.say, /phone the order in for pickup and they pay at the counter/);
+  // The call's fields come with the offer, so the offer can be the call's own confirm ask: one yes.
+  assert.equal(offer.call_place.to, DELI);
+  assert.match(offer.say, /their one yes covers the call/);
   assert.equal((await runTool("food_order", { action: "phone", order_id: st.order_id, ...SANDWICH }, ctx)).offered_already, true, "offered once");
   const yes = await runTool("food_order", { action: "phone", order_id: st.order_id, ...SANDWICH, they_said_yes: true }, ctx);
   assert.equal(yes.ok, true, JSON.stringify(yes));

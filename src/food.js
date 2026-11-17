@@ -914,16 +914,16 @@ export async function phoneOrder(c, input, { check = checkAllergies, now = clock
   const w = await callHoursNow(c, number, now);
   if (!input.they_said_yes) {
     if (!tellOnce(o, "phone_offer")) return { ok: true, offered_already: true, say: "You offered the phone order once already: don't offer it again. If they said yes, call food_order phone again with they_said_yes true." };
-    return { ok: true, offer: true, ...(w.ok ? {} : { calls_held_until: w.opens_local, blocked_line: quietLine(name, w) }),
+    // With the order known, the call's own fields come now: the offer can be the call's confirm ask, so one yes covers it.
+    const draftItems = phoneItems(input), draftName = clean(input.order_name, 40);
+    const draft = w.ok && draftItems.length && draftName ? phoneCallFields(number, draftItems, draftName, clean(input.pickup_time, 40)) : null;
+    return { ok: true, offer: true, ...(draft ? { call_place: draft } : {}), ...(w.ok ? {} : { calls_held_until: w.opens_local, blocked_line: quietLine(name, w) }),
       say: w.ok
-        ? `${name || "This place"} has no online ordering. Offer ONCE, in one line: you can phone the order in for pickup and they pay at the counter. Only on their yes, call food_order phone again with they_said_yes true, the items, the name for the order and their pickup time.`
+        ? `${name || "This place"} has no online ordering. Offer ONCE, in one line: you can phone the order in for pickup and they pay at the counter.${draft ? " Make that offer the confirm ask for call_place with these call_place fields (the exact number), so their one yes covers the call." : ""} Only on their yes, call food_order phone again with they_said_yes true, the items, the name for the order and their pickup time, then place the call.`
         : `${name || "This place"} has no online ordering, and it is too late to ring them now: ${quietLine(name, w)} Say that plainly in one line, and offer what can be done instead: ordering online from another nearby place now, or phoning this one at ${w.opens_local || "opening"} their time for pickup, paid at the counter.` };
   }
   if (!w.ok) return { ok: false, error: "call_hours", calls_held_until: w.opens_local, blocked_line: quietLine(name, w), say: `Not placed: ${quietLine(name, w)} Say that plainly, and offer ordering online from another nearby place now or phoning at ${w.opens_local || "opening"} their time. Nothing was ordered.` };
-  const items = (input.items ?? []).slice(0, 20).map((it) => ({
-    name: clean(it.name, 80), qty: Math.max(1, Math.min(20, Math.round(Number(it.qty ?? 1)) || 1)),
-    modifiers: (it.modifiers ?? []).slice(0, 8).map((m) => clean(m, 60)).filter(Boolean), price: cents(it.price) != null ? dollars(cents(it.price)) : "",
-  })).filter((it) => it.name);
+  const items = phoneItems(input);
   if (!items.length) return { ok: false, error: "no_items", say: "A phone order needs its items." };
   const who = clean(input.order_name, 40);
   if (!who) return { ok: false, error: "no_name", say: "A pickup order needs a name to hold it under: their first name, unless they said otherwise." };
@@ -937,19 +937,28 @@ export async function phoneOrder(c, input, { check = checkAllergies, now = clock
   const checked = await check(c, items).catch(() => ({ ok: false }));
   const flag = allergyFlag(checked);
   q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, o.id, c);
+  const call = phoneCallFields(number, items, who, when);
+  return {
+    ok: true, order_id: o.id, revision: rev, call_place: call, ...(flag ? { allergy_flag: flag } : {}),
+    say: `${flag ? `${flag} Say this to them before calling, and fix the order if they did not knowingly choose it. ` : ""}Now place the call with call_place using these fields (through its confirm gate with the exact number; the yes to your offer is that confirm when you made the offer its ask). They pay at the counter: never any card detail on the call, and if the place wants a card over the phone the call stops there. What the call comes back with is recorded on the order by code; nothing is charged by you.`,
+  };
+}
+const phoneItems = (input) => (input.items ?? []).slice(0, 20).map((it) => ({
+  name: clean(it.name, 80), qty: Math.max(1, Math.min(20, Math.round(Number(it.qty ?? 1)) || 1)),
+  modifiers: (it.modifiers ?? []).slice(0, 8).map((m) => clean(m, 60)).filter(Boolean), price: cents(it.price) != null ? dollars(cents(it.price)) : "",
+})).filter((it) => it.name);
+/** The call_place fields for a pickup order by phone: what it may say, and that payment is at the counter. Never a card detail. */
+function phoneCallFields(number, items, who, when) {
   const list = items.map((it) => `${it.qty > 1 ? `${it.qty} ` : ""}${it.name}${it.modifiers.length ? ` (${it.modifiers.join(", ")})` : ""}`).join("; ");
-  const call = {
+  const at = when || "as soon as it can be ready";
+  return {
     to: number,
     about: "to place an order for pickup",
-    goal: `Place a pickup order under the name ${who}: ${list}. Pickup ${when || "as soon as it can be ready"}. Payment is at the counter when it is picked up. Come back with the ready time and the total they say.`,
-    facts: [`The order is under the name ${who}.`, `The order: ${list}.`, `Pickup ${when || "as soon as it can be ready"}.`, "Paying at the counter on pickup."],
+    goal: `Place a pickup order under the name ${who}: ${list}. Pickup ${at}. Payment is at the counter when it is picked up. Come back with the ready time and the total they say.`,
+    facts: [`The order is under the name ${who}.`, `The order: ${list}.`, `Pickup ${at}.`, "Paying at the counter on pickup."],
     may_book: true,
     read_back: ["time", "price"],
     approved_terms: ["paying at the counter on pickup"],
-  };
-  return {
-    ok: true, order_id: o.id, revision: rev, call_place: call, ...(flag ? { allergy_flag: flag } : {}),
-    say: `${flag ? `${flag} Say this to them before calling, and fix the order if they did not knowingly choose it. ` : ""}Now place the call with call_place using these fields (the confirm gate first, with the exact number). They pay at the counter: never any card detail on the call, and if the place wants a card over the phone the call stops there. What the call comes back with is recorded on the order by code; nothing is charged by you.`,
   };
 }
 /** The commitments a call wrote, newest last. */
