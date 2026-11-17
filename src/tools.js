@@ -13378,7 +13378,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             : "Nothing made yet. OFFER once, lightly and in your own words (never quote a command), to put their friend's first name on the card so it feels personal, and make clear it's totally fine if not (the spirit of: want me to put their name on it so it feels personal? totally fine if not). A nice extra, never a step they must do; for several links, one offer for all of them. When they answer, read what they meant and call invite_link_create again in that same reply: a name → for_name; no, no name, 'just the link', 'doesn't matter' → for_nobody: true, with no fuss. Either way the link goes out in that reply. Never offer again.",
         };
       }
-      const out = ask?.none_left ? ask : invites.makeLink(c, { forName: named ? input.for_name : undefined });
+      let out = ask?.none_left ? ask : invites.makeLink(c, { forName: named ? input.for_name : undefined });
+      // Nothing new to make but links of theirs still unused: the answer is served from one of those.
+      if (out.none_left && out.unused_links) out = invites.reuseLink(c, { forName: named ? input.for_name : undefined });
       if (out.needs_name) {
         return {
           ok: false, needs_name: true,
@@ -13389,12 +13391,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return {
           ok: false, none_left: true, invites_left: out.invites_left, unused_links: out.unused_links,
           error: out.unused_links
-            ? `Every invite they have left is already on an unused link (${out.unused_links}). They can send one of those (invites_list has them), or cancel one to get a fresh link in its place.`
+            ? `Every invite they have left is already on an unused link made for somebody (${out.unused_links}). They can send one of those (invites_list has them), or cancel one to get a fresh link in its place.`
             : "They have no invites left. They can ask for more — invite_request_more, once they have said how many and why.",
         };
       }
       if (out.plain_card) delete out.plain_card; // a name not fit to draw: plain link, nothing said about it
-      return { ...out, say: (out.for ? `It's made for ${out.for}: their card greets them by name. ` : "") + "One short line first, in your own words, saying it's an invite for a friend to pass on (never quote a command). Then the link exactly as it is, alone on its own line with nothing after it: it goes out as its own message, so forwarding it shows the card. It works once, never expires, and opening it does not use it up — only someone joining does." };
+      delete out.reused;
+      let swapped = "";
+      if (out.replaced) {
+        const old = db.getInvite(c, out.replaced);
+        swapped = `To keep their count the same it took the place of their oldest unused link (made ${stamp(old?.created_at)}), which no longer works: say so in a few words, in case they had sent that one. `;
+        delete out.replaced;
+      }
+      return { ...out, say: (out.for ? `It's made for ${out.for}: their card greets them by name. ` : "") + swapped + "One short line first, in your own words, saying it's an invite for a friend to pass on (never quote a command). Then the link exactly as it is, alone on its own line with nothing after it: it goes out as its own message, so forwarding it shows the card. It works once, never expires, and opening it does not use it up — only someone joining does." };
     }
 
     case "invite_link_cancel": {
