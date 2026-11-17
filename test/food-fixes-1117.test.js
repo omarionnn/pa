@@ -465,3 +465,156 @@ test("a phone order whose call goes unanswered waits on them, and the call's own
   assert.equal(food.orderRow(st.order_id, OMARI).status, "needs");
   assert.equal(said.length, n);
 });
+
+// ---------------------------------------------------------------- independent review (2026-11-17)
+const commit = await import("../src/calls/commit.js");
+const spendcap = await import("../src/spendcap.js");
+const posted = (re) => calls.filter((c) => re.test(c.path));
+async function cardOut(extra = {}) {
+  const st = await runTool("food_order", { action: "start" }, ctx);
+  await runTool("food_order", { action: "cart", order_id: st.order_id, ...BURRITO, ...extra }, ctx);
+  const a = await checkout({ food_order_id: st.order_id });
+  runs[a.run_id].requiredAction = PAY("req_1", "18.32"); runs[a.run_id].revision = 2;
+  await shop.step(a.run_id);
+  return { st, a, pay: payRow(a.run_id) };
+}
+
+test("review: a yes being paid is never declined or let go: not by a new request, a cart change, the hold running out, or a hand-off page", async () => {
+  const { st, a, pay } = await cardOut();
+  assert.equal(food.orderRow(st.order_id, OMARI).status, "asked");
+  // The yes is being processed right now (payRow claimed it).
+  q("UPDATE shop_payments SET status = 'paying' WHERE id = ?").run(pay.id);
+  const m0 = posted(/\/messages$/).length, c0 = posted(/\/cancel$/).length, n = said.length;
+  assert.equal((await shop.declinePayment({ conversationId: OMARI, paymentId: pay.id, by: "reason" })).ok, false);
+  assert.equal(await shop.letGo(a.run_id, "test"), false);
+  await runTool("food_order", { action: "start" }, ctx);
+  const ch = await runTool("food_order", { action: "cart", order_id: st.order_id, ...BURRITO, notes: "extra salsa" }, ctx);
+  assert.equal(ch.error, "payment_in_flight");
+  clock.skip(20 * 60_000);
+  await food.sweep();
+  runs[a.run_id].currentUrl = "https://www.doordash.com/orders/abc"; runs[a.run_id].requiredAction = null; runs[a.run_id].revision = 5;
+  await shop.step(a.run_id);
+  assert.equal(q("SELECT status FROM shop_payments WHERE id = ?").get(pay.id).status, "paying");
+  assert.equal(q("SELECT status FROM shop_runs WHERE run_id = ?").get(a.run_id).status, "running");
+  const o = food.orderRow(st.order_id, OMARI);
+  assert.equal(o.status, "asked"); assert.equal(o.run_id, a.run_id);
+  assert.equal(posted(/\/messages$/).length, m0, "no decline sent to Crossmint");
+  assert.equal(posted(/\/cancel$/).length, c0, "the run is never cancelled");
+  assert.equal(said.length, n, "nothing said: no 'let go', no 'nothing was charged', no 'dropped'");
+});
+
+test("review: a decline claims the payment first, so a yes that comes after it pays nothing", async () => {
+  const { pay } = await cardOut();
+  assert.equal((await shop.declinePayment({ conversationId: OMARI, paymentId: pay.id, by: "them" })).ok, true);
+  const n = intents();
+  const r = await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 1 });
+  assert.notEqual(r.ok, true);
+  assert.equal(intents(), n);
+  assert.equal((await shop.declinePayment({ conversationId: OMARI, paymentId: pay.id })).ok, false, "declined once");
+});
+
+test("review: a new food request while a card waits drops that card (its yes pays nothing) and says so in a few words", async () => {
+  const { st, pay } = await cardOut();
+  const n = said.length;
+  const st2 = await runTool("food_order", { action: "start" }, ctx);
+  assert.notEqual(st2.order_id, st.order_id);
+  assert.equal(food.orderRow(st.order_id, OMARI).status, "cancelled");
+  assert.equal(q("SELECT status FROM shop_payments WHERE id = ?").get(pay.id).status, "declined");
+  assert.deepEqual(said.slice(n).map((s) => s.t), ["I dropped the waiting Chipotle order; nothing was charged."]);
+  const i = intents();
+  assert.notEqual((await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 1 })).ok, true);
+  assert.equal(intents(), i);
+  // Nothing waiting: a new request says nothing.
+  const m = said.length;
+  await runTool("food_order", { action: "start" }, ctx);
+  assert.equal(said.length, m);
+});
+
+test("review: a pickup checkout never gets their address filled in, so a site that switched to delivery cannot quietly ship it", async () => {
+  shipping.learn(OMARI, { first_name: "Omari", last_name: "I", address1: "3247 Bruner Ave", address2: "Apt 1", city: "Bronx", state: "NY", zip: "10469", phone: "+15551110000", email: "o@example.test" }, { source: "test" });
+  const st = await runTool("food_order", { action: "start", fulfillment: "pickup" }, ctx);
+  await runTool("food_order", { action: "cart", order_id: st.order_id, ...PIZZA }, ctx);
+  const a = await runTool("store_checkout", { store: "Lucas Pizza", start_url: LUCAS, what: "2 cheese slices for pickup. No tip. Stop at payment.", item: "Lucas Pizza pickup", max_usd: 30, variant_confirmed: true, food_order_id: st.order_id }, ctx);
+  const FORM = (requestId) => ({ requestId, request: { question: "Contact and delivery details", interaction: { kind: "form", fields: [
+    { key: "first_name", label: "First name", required: true }, { key: "phone", label: "Phone", required: true },
+    { key: "street", label: "Street address", required: true }, { key: "zip", label: "ZIP", required: true }] } } });
+  runs[a.run_id].requiredAction = FORM("req_f"); runs[a.run_id].revision = 2;
+  await shop.step(a.run_id);
+  assert.ok(!JSON.stringify(posted(/\/messages$/).map((c) => c.body)).includes("Bruner"), "their address never sent on a pickup");
+  assert.ok(!said.some((s) => /Bruner|Shipping to/.test(s.t)));
+  // The same form on a delivery order is still answered from the record (unchanged).
+  const d = await cardOut();
+  const b = await runTool("food_order", { action: "start" }, ctx);
+  await runTool("food_order", { action: "cart", order_id: b.order_id, ...BURRITO }, ctx);
+  const r = await checkout({ food_order_id: b.order_id });
+  runs[r.run_id].requiredAction = FORM("req_g"); runs[r.run_id].revision = 2;
+  await shop.step(r.run_id);
+  assert.ok(JSON.stringify(posted(/\/messages$/).map((c) => c.body)).includes("Bruner"), "delivery still uses the record");
+  assert.ok(d);
+});
+
+test("review: a pickup card with no ready time from the site says so; a tip left off comes off the total so a site-added tip shows", async () => {
+  const st = await runTool("food_order", { action: "start", fulfillment: "pickup" }, ctx);
+  const { eta, eta_latest, ...noTime } = PIZZA;
+  assert.ok(eta && eta_latest);
+  await runTool("food_order", { action: "cart", order_id: st.order_id, ...noTime, total: "9.62" }, ctx);
+  assert.equal(food.orderRow(st.order_id, OMARI).cart_total, "$7.62", "the dropped tip is not in the cart total");
+  const a = await runTool("store_checkout", { store: "Lucas Pizza", start_url: LUCAS, what: "2 cheese slices for pickup. No tip. Stop at payment.", item: "Lucas Pizza pickup", max_usd: 30, variant_confirmed: true, food_order_id: st.order_id }, ctx);
+  runs[a.run_id].requiredAction = PAY("req_1", "9.62", "Lucas Pizza", LUCAS); runs[a.run_id].revision = 2;
+  await shop.step(a.run_id);
+  assert.equal(said.at(-1).t, "The total came to $9.62, not the $7.62 the cart showed. $9.62 to your Visa 4821, for pickup at 12 Main St, no ready time given. Place it?");
+  assert.ok(lastHtml.includes("no time given"));
+});
+
+test("review: the ready line never goes in their night unless the ready time is in it", async () => {
+  const ins = (eta) => Number(q("INSERT INTO food_orders (conversation_id, request_handle, status, fulfillment, eta_latest_at, told, created_at, updated_at) VALUES (?, 'H-req', 'placed', 'pickup', ?, '', ?, ?)").run(OMARI, eta, eta, eta).lastInsertRowid);
+  const late = ins(Date.parse("2026-11-18T03:30:00Z")); // ready 10:30pm New York
+  const n = said.length;
+  await food.sweep({ now: Date.parse("2026-11-18T04:10:00Z") }); // 11:10pm
+  assert.equal(said.length, n, "not at 11:10pm for a 10:30pm ready time");
+  q("UPDATE food_orders SET status = 'cancelled' WHERE id = ?").run(late);
+  ins(Date.parse("2026-11-18T04:20:00Z")); // ready 11:20pm: they chose a time in their night
+  await food.sweep({ now: Date.parse("2026-11-18T04:21:00Z") });
+  assert.equal(said.length, n + 1);
+  assert.match(said.at(-1).t, /should be ready now/);
+});
+
+test("review: a phone order is bounded: the call may agree to at most the items plus a fifth (or their daily limit); a higher quote is not agreed", async () => {
+  const st = await runTool("food_order", { action: "start" }, ctx);
+  const priced = { ...SANDWICH, items: [{ name: "Turkey club", qty: 1, price: "12.00" }] };
+  const offer = await runTool("food_order", { action: "phone", order_id: st.order_id, ...priced }, ctx);
+  assert.equal(offer.call_place.max_price_cents, 1500);
+  assert.equal(offer.most_it_may_cost, "$15.00");
+  assert.match(offer.say, /name the place, the items, the pickup time and that the call agrees to at most \$15\.00/);
+  const yes = await runTool("food_order", { action: "phone", order_id: st.order_id, ...priced, they_said_yes: true }, ctx);
+  assert.deepEqual(yes.call_place, offer.call_place, "the yes to the offer is the yes to this exact call");
+  // The restaurant says $18: outside what they agreed to, by the calls module's own rule.
+  const out = commit.outsideApproval({ approved: { book: true, maxCents: yes.call_place.max_price_cents, terms: yes.call_place.approved_terms } }, { totalCents: 1800 });
+  assert.equal(out[0]?.kind, "price");
+  assert.equal(commit.outsideApproval({ approved: { book: true, maxCents: 1500, terms: [] } }, { totalCents: 1450 }).length, 0);
+  // The call paused for them and ended without a yes: not placed.
+  clock.skip(60_000);
+  finishedCall({ kind: "needs_owner", commitment: { what: "Turkey club", totalCents: 1800, state: "paused_for_owner", why: "over the approved price" } });
+  await food.sweep();
+  assert.equal(food.orderRow(st.order_id, OMARI).status, "needs");
+  // No prices known: their daily spending limit bounds it.
+  const st2 = await runTool("food_order", { action: "start" }, ctx);
+  const o2 = await runTool("food_order", { action: "phone", order_id: st2.order_id, ...SANDWICH }, ctx);
+  assert.equal(o2.call_place.max_price_cents, spendcap.capFor(OMARI).cents);
+  assert.ok(o2.call_place.max_price_cents > 0);
+});
+
+test("review: a phone order lets go of an online checkout still running for it; a voicemail is never placed", async () => {
+  const st = await runTool("food_order", { action: "start" }, ctx);
+  await runTool("food_order", { action: "cart", order_id: st.order_id, ...BURRITO }, ctx);
+  const a = await checkout({ food_order_id: st.order_id });
+  const yes = await runTool("food_order", { action: "phone", order_id: st.order_id, ...SANDWICH, they_said_yes: true }, ctx);
+  assert.equal(yes.ok, true, JSON.stringify(yes));
+  assert.equal(q("SELECT status FROM shop_runs WHERE run_id = ?").get(a.run_id).status, "cancelled");
+  clock.skip(60_000);
+  finishedCall({ kind: "voicemail_left" });
+  await food.sweep();
+  const o = food.orderRow(st.order_id, OMARI);
+  assert.equal(o.status, "needs");
+  assert.notEqual(o.phone.outcome, "placed_by_phone");
+});

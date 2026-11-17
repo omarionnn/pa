@@ -506,7 +506,15 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   const pickup = how === "pickup";
   const tipDropped = pickup && cents(input.tip) != null && cents(input.tip) > 0 && !input.their_tip;
   const tip = cents(input.tip) != null && !tipDropped ? dollars(cents(input.tip)) : "";
-  const total = cents(input.total) != null ? dollars(cents(input.total)) : "";
+  // A pickup tip left off comes off the cart's total too when that total was the cart plus it, so a tip
+  // the site still puts in shows on the card as a different total, never passed silently.
+  let totalCents = cents(input.total);
+  if (tipDropped && totalCents != null) {
+    const parts = [...items.map((it) => cents(it.price) ?? NaN), ...lines.filter((l) => !/subtotal/i.test(l.label)).map((l) => cents(l.amount))];
+    const sum = parts.reduce((n, x) => n + x, 0);
+    if (Number.isFinite(sum) && Math.abs(sum + cents(input.tip) - totalCents) <= 1) totalCents -= cents(input.tip);
+  }
+  const total = totalCents != null ? dollars(totalCents) : "";
   const eta = Date.parse(String(input.eta_latest ?? ""));
   const closes = Date.parse(String(input.closes_at ?? ""));
   const platform = route.route === "platform" ? route.platform : "";
@@ -738,9 +746,7 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
   const amount = shop.amountText(row);
   const label = cardLabel(card);
   const changedFrom = o.cart_total && cents(o.cart_total) !== cents(row.amount) ? o.cart_total : "";
-  // Pickup gets no tip unless they named one: a tip the site put in anyway is said, never passed silently.
-  const siteTip = o.fulfillment === "pickup" && !o.tip ? shop.breakdownOf(row).find(([l, a]) => /\b(tip|gratuity)\b/i.test(l) && cents(a) > 0) : null;
-  const changed = [changedFrom ? `The total came to ${amount}, not the ${changedFrom} the cart showed.` : "", siteTip ? `It includes a ${siteTip[1]} tip the site added.` : ""].filter(Boolean).join(" ");
+  const changed = changedFrom ? `The total came to ${amount}, not the ${changedFrom} the cart showed.` : "";
   const eta = etaWords(o);
   // A cart that never went through the check (it should not get here) is said to be unchecked, never silent.
   const flag = o.allergy_flag || (o.allergy_checked ? "" : allergyFlag({ ok: false }));
@@ -751,7 +757,7 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
   let file = null;
   try {
     const items = o.items.length ? o.items : [{ name: row.item || "Your order", qty: 1, modifiers: [], price: "" }];
-    ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip || (siteTip?.[1] ?? ""), total: amount, eta, address: pickup ? "" : o.address, card: label, changed: !!changedFrom, ...(pickup ? { pickup: true, placeAddress: o.place_address } : {}) }, shoot ? { shoot } : {}));
+    ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip, total: amount, eta, address: pickup ? "" : o.address, card: label, changed: !!changedFrom, ...(pickup ? { pickup: true, placeAddress: o.place_address } : {}) }, shoot ? { shoot } : {}));
   } catch (e) { logFn({ food_card_failed: o.id, why: String(e?.message ?? e).split("\n")[0] }); }
   return { text, file, orderId: o.id, order: o, why: !!why };
 }
@@ -996,7 +1002,8 @@ function phoneCeiling(c, items) {
   try { capCents = Number(spendcap.capFor(c).cents) || 0; } catch { capCents = 0; }
   if (!(capCents > 0)) capCents = Math.round(Number(config.maxSpendPerDay ?? 0) * 100) || 10_000;
   const priced = items.every((it) => cents(it.price) != null);
-  const sub = priced ? items.reduce((n, it) => n + cents(it.price) * (it.qty || 1), 0) : 0;
+  // An item's price is its line's ("2× Cheese slice $7.00"), as the cart and its card read it.
+  const sub = priced ? items.reduce((n, it) => n + cents(it.price), 0) : 0;
   const est = priced && sub > 0 ? Math.ceil((sub * PHONE_HEADROOM) / 100) * 100 : 0;
   return est ? Math.min(est, capCents) : capCents;
 }
