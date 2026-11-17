@@ -124,11 +124,11 @@ const siteServer = createServer(async (req, res) => {
   }
   if (u.pathname === "/consumer/login") return send(page("Sign in", `<h1>Sign in or sign up</h1><form method=post action="/consumer/login/code"><label for=e>Email</label><input id=e type=email name=email><button type=submit>Continue</button></form>`));
   if (u.pathname === "/consumer/login/code") return send(page("Code", `<h1>Enter the code we sent to your email</h1><form><label for=c>6-digit code</label><input id=c name=code inputmode=numeric autocomplete=one-time-code></form>`));
-  if (u.pathname === "/consumer/login") return send(page("Sign in", `<h1>Sign in or sign up</h1><form method=post action="/consumer/login/next"><label for=e>Email</label><input id=e type=email name=email><button type=submit>Continue</button></form>`));
-  if (u.pathname === "/consumer/login/next") return send(S.login === "password"
+  if (u.pathname === "/dd-login") return send(page("Sign in", `<h1>Sign in or sign up</h1><form method=post action="/dd-login/next"><label for=e>Email</label><input id=e type=email name=email><button type=submit>Continue</button></form>`));
+  if (u.pathname === "/dd-login/next") return send(S.login === "password"
     ? page("Password", `<h1>Enter your password</h1><form><label for=p>Password</label><input id=p type=password name=password><button type=submit>Sign In</button></form>`)
-    : page("Code", `<h1>Enter the code we sent to your email</h1><form action="/consumer/login/done"><label for=c>6-digit code</label><input id=c name=code inputmode=numeric autocomplete=one-time-code><button type=submit>Continue</button></form>`));
-  if (u.pathname === "/consumer/login/done") { S.codesTried.push(u.searchParams.get("code")); if (u.searchParams.get("code") === "481516") { S.signedIn = true; return send(page("Home", "<h1>Welcome back</h1><p>Restaurants near you</p>")); } return send(page("Code", "<h1>That code didn't work</h1>")); }
+    : page("Code", `<h1>Enter the code we sent to your email</h1><form action="/dd-login/done"><label for=c>6-digit code</label><input id=c name=code inputmode=numeric autocomplete=one-time-code><button type=submit>Continue</button></form>`));
+  if (u.pathname === "/dd-login/done") { S.codesTried.push(u.searchParams.get("code")); if (u.searchParams.get("code") === "481516") { S.signedIn = true; return send(page("Home", "<h1>Welcome back</h1><p>Restaurants near you</p>")); } return send(page("Code", "<h1>That code didn't work</h1>")); }
   if (u.pathname === "/orders") return send(page("Orders", S.placed ? `<h1>Orders</h1><p>Thai Palace</p><p>Your order is on the way. Arriving by 8:15 PM</p>` : `<h1>Orders</h1>${S.pastOrder ? `<p>Thai Palace · Pad Thai, Spring Rolls · ${money(3500)}</p><form method=post action="/reorder"><button>Reorder</button></form>` : "<p>No orders yet</p>"}`));
   if (req.method === "POST" && u.pathname === "/reorder") { S.cart = [{ key: "pad-thai", name: "Pad Thai", price: 1495, spice: "Medium" }, { key: "spring-rolls", name: "Spring Rolls", price: 695, spice: "" }]; return go("/cart"); }
   res.writeHead(404); res.end();
@@ -279,7 +279,7 @@ beforeEach(() => {
   clock.reset();
   db.db.exec("DELETE FROM pay_approvals; DELETE FROM timers");
   for (const k of ["remote_browser:usage"]) db.opsDelete(k);
-  db.db.prepare("DELETE FROM ops_state WHERE key LIKE 'remote_browser:alert:%'").run();
+  db.db.prepare("DELETE FROM ops_state WHERE k LIKE 'remote_browser:alert:%'").run();
   signinEmail._resetJobs();
 });
 
@@ -393,7 +393,7 @@ test("2. a new food request drops the waiting DoorDash order with the #604 line;
   assert.notEqual(late.ok, true, JSON.stringify(late).slice(0, 200));
   assert.equal(S.placeAttempts, 0);
   // With Face ID: the new request closes the link.
-  dd._resetDoordash(); db.db.exec("DELETE FROM food_orders");
+  dd._resetDoordash(); db.db.exec("DELETE FROM food_orders"); resetSite();
   consent(OWNER);
   const a = await faceIdFor(OWNER);
   const fid = await readyAsk(OWNER);
@@ -419,27 +419,31 @@ test("2. a cart changed under the yes (its food revision moved) is not placed on
 });
 
 // ---------------------------------------------------------------- 3. signing in, for everyone
+/** Wait until their sign-in job has ended (emailSigninFor is null once it is done). */
+async function doneSigningIn(c) { for (let i = 0; i < 400 && signinEmail.emailSigninFor(c); i++) await new Promise((r) => setTimeout(r, 50)); }
 async function signInByCode(c, { code = "481516" } = {}) {
-  const ctx = { conversationId: c, kind: "user", messages: [msg("sign me into doordash, it's me@example.com")], signinCheck: async () => ({ ok: true, state: "signed_in", why: "account page" }) };
+  const ctx = { conversationId: c, kind: "user", messages: [msg("sign me into doordash, it's me@example.com")], signinCheck: async () => ({ ok: true, state: "signed_in", why: "account page" }),
+    log: (o) => (globalThis.__ddlog ??= []).push(JSON.stringify(o).slice(0, 200)) };
   const out = await runTool("doordash_order", { action: "signin", email: "me@example.com" }, ctx);
   assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
-  const job = signinEmail.emailSigninFor(c);
-  for (let i = 0; i < 200 && job.state !== "waiting_reply" && !job.done; i++) await new Promise((r) => setTimeout(r, 50));
-  return { job, code };
+  // The live job's state is read again each time (emailSigninFor hands back a copy).
+  let st = null;
+  for (let i = 0; i < 300; i++) { st = signinEmail.emailSigninFor(c); if (!st || st.state === "waiting_reply") break; await new Promise((r) => setTimeout(r, 50)); }
+  return { st, code };
 }
 
 test("3. a NON-owner, end to end in site_card: consent, DoorDash's own texted/emailed code relayed once, cart, Face ID, one press, confirmation", skip, async () => {
-  set(EVERYONE({ REASON_DOORDASH_PAY: "site_card", REASON_DOORDASH_TEST_SIGNIN_URL: DD("/consumer/login") }));
+  set(EVERYONE({ REASON_DOORDASH_PAY: "site_card", REASON_DOORDASH_TEST_SIGNIN_URL: DD("/dd-login") }));
   // Consent first: one sentence, nothing opened.
   const first = await ask(OTHER, "get me pad thai from thai palace");
   assert.equal(first.hosted_browser, "consent_needed");
   const ok = await runTool("hosted_browser_ok", { site: "doordash.com", their_words: "yes go ahead" }, { conversationId: OTHER, kind: "user", messages: [msg("yes go ahead")] });
-  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.equal(ok.ok, true, JSON.stringify(ok).slice(0, 300));
   // Sign in with DoorDash's own code: asked once, typed only into DoorDash's code box.
-  const { job, code } = await signInByCode(OTHER);
-  assert.equal(job.state, "waiting_reply", JSON.stringify({ state: job.state }));
+  const { st, code } = await signInByCode(OTHER);
+  assert.equal(st?.state, "waiting_reply", JSON.stringify({ st, log: globalThis.__ddlog }));
   assert.ok(signinEmail.takeCodeReply(OTHER, code), "their reply is taken as the code");
-  await job.run;
+  await doneSigningIn(OTHER);
   assert.equal(S.signedIn, true);
   assert.deepEqual(S.codesTried, ["481516"], "typed once");
   assert.equal(remote.remoteSessionsOpen(), 0);
@@ -463,14 +467,15 @@ test("3. a non-owner in handoff: the cart is built on their account and handed t
 });
 
 test("3. an account that wants a password: one plain line with what can be done instead; nobody is asked for a password", skip, async () => {
-  set(EVERYONE({ REASON_DOORDASH_TEST_SIGNIN_URL: DD("/consumer/login") }));
+  set(EVERYONE({ REASON_DOORDASH_TEST_SIGNIN_URL: DD("/dd-login") }));
   consent(OTHER);
   S.login = "password";
   const told = [];
-  const ctx = { conversationId: OTHER, kind: "user", messages: [msg("sign me in, me@example.com")], startEmailSignin: (args) => signinEmail.startEmailSignin({ ...args, note: (c, t) => told.push(t) }) };
+  const ctx = { conversationId: OTHER, kind: "user", messages: [msg("sign me in, me@example.com")], startEmailSignin: (args) => signinEmail.startEmailSignin({ ...args, note: (c, t) => told.push(t) }),
+ };
   const out = await runTool("doordash_order", { action: "signin", email: "me@example.com" }, ctx);
   assert.equal(out.ok, true, JSON.stringify(out).slice(0, 200));
-  await signinEmail.emailSigninFor(OTHER).run;
+  await doneSigningIn(OTHER);
   const line = told.join(" | ");
   assert.match(line, /DoorDash wants your password for this account, and I only sign in to DoorDash with the code it sends you, so I stopped\. I can order it from the restaurant's own site, or set it up for pickup, instead\./);
   assert.match(line, /Never ask them for a password/);
@@ -490,10 +495,10 @@ test("3. two people at once: each their own consent, their own kept sign-in (Con
   consent(OWNER);
   assert.equal((await ask(OTHER, "get me pad thai")).hosted_browser, "consent_needed", "the owner's yes is not theirs");
   consent(OTHER);
-  const [x, y] = await Promise.all([
-    runTool("browser_open", { url: DD("/") }, { conversationId: OWNER, kind: "user", messages: [msg("open doordash")] }),
-    runTool("browser_open", { url: DD("/") }, { conversationId: OTHER, kind: "user", messages: [msg("open doordash")] }),
-  ]);
+  // One after the other, both left open together (the fixture's one local Chromium has one tab for
+  // every "session"; real Browserbase sessions are separate browsers).
+  const x = await runTool("browser_open", { url: DD("/") }, { conversationId: OWNER, kind: "user", messages: [msg("open doordash")] });
+  const y = await runTool("browser_open", { url: DD("/") }, { conversationId: OTHER, kind: "user", messages: [msg("open doordash")] });
   assert.equal(x.ok, true); assert.equal(y.ok, true);
   const made = bb.calls.filter((c) => c.method === "POST" && c.path === "/v1/sessions").map((c) => c.body.browserSettings.context.id);
   assert.equal(new Set(made).size, 2, "two Contexts, one each");
@@ -569,7 +574,7 @@ test("4. the owner's alert: one text a month below the threshold, a second at ze
   assert.equal(await remote.minutesAlert({ send }), null);
   assert.equal(sent.length, 2);
   // Nobody to tell yet (startup): not marked, so the next pass sends it.
-  db.db.prepare("DELETE FROM ops_state WHERE key LIKE 'remote_browser:alert:%'").run();
+  db.db.prepare("DELETE FROM ops_state WHERE k LIKE 'remote_browser:alert:%'").run();
   assert.equal(await remote.minutesAlert({ send: () => false }), null);
   assert.ok(await remote.minutesAlert({ send }));
   assert.match(remote.opsRow().detail, /zero text sent/);
