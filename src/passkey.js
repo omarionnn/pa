@@ -120,7 +120,8 @@ db.db.exec(`
 `);
 const q = (sql) => db.db.prepare(sql);
 // What a link approves (2026-10-31): 'pay' is a payment row (shop_payments); 'cap' is a raise of the
-// person's daily spending limit (src/spendcap.js cap_changes). payment_id holds that kind's row id, so
+// person's daily spending limit (src/spendcap.js cap_changes); 'doordash' (2026-11-17) is one DoorDash
+// order on their own account at its exact total (src/doordash.js approvalRow; payment_id is the order). payment_id holds that kind's row id, so
 // every match on it carries the kind too. The column is added to a live table, so ALTER, not CREATE.
 if (!q("PRAGMA table_info(pay_approvals)").all().some((c) => c.name === "kind")) db.db.exec("ALTER TABLE pay_approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'pay'");
 const kindOf = (x) => x?.kind ?? "pay";
@@ -221,6 +222,11 @@ export async function register(conversationId, response, { allowed = null, for: 
  */
 export function bindingChallenge(row, nonce) {
   // A raise of the daily limit signs the change itself: which one, whose, from what to what.
+  // A DoorDash order placed on their own account (src/doordash.js, kind 'doordash'): the order, its cart
+  // revision, the exact total and the delivery address, so an approval for one cart can never place another.
+  if (kindOf(row) === "doordash") {
+    return sha(JSON.stringify(["reason-doordash-v1", row.id, row.conversation_id, row.revision, row.total_cents, row.address, row.restaurant, nonce])).toString("base64url");
+  }
   const fields = kindOf(row) === "cap"
     ? ["reason-cap-v1", row.id, row.conversation_id, row.from_cents, row.to_cents, row.amount, nonce]
     : ["reason-pay-v1", row.id, row.conversation_id, row.run_id, row.request_id, row.amount_kind, row.amount, row.currency,
