@@ -10180,7 +10180,7 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   // What this call came to, for the check in front of the reply (src/said.js): no "done" without it.
   if (ctx?.turnActs) said.noteAct(ctx.turnActs, name, out, { acting: lapsedBlocked(name) && !CLAIM_CHECK_READS.has(String(name)) });
   // REASON_TAPBACK_ACK (src/tapbackack.js): a lookup is 🔍, a timer set is ⏰, a job finished is ✅. Never throws, never waited on.
-  if (ctx?.conversationId) { try { tapbackack.noteTool(ctx, name, out); } catch {} }
+  if (ctx?.conversationId) { try { tapbackack.noteTool(ctx, name, out, rawInput); } catch {} }
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
   // Anything they texted since the last tool call rides on this result, first, so the turn has it
   // while it can still change the work.
