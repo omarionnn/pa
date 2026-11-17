@@ -710,12 +710,13 @@ export function taskFor(plan, store, what) {
 
 /** Starts a checkout. `maxUsd` is a cap Crossmint enforces, never a price anyone agreed to. */
 /** `item` is what the ask names ("a 4-ft USB-C cable"); `what` is the full instruction for the agent. */
-export async function startCheckout({ conversationId, store, startUrl, what, item = "", maxUsd, signIn = false }) {
+export async function startCheckout({ conversationId, store, startUrl, what, item = "", maxUsd, signIn = false, noAddress = false }) {
   const plan = checkoutPlan(conversationId, store, { signIn });
   // The address on record goes into the instruction where it says to ship (2026-10-31): a checkout that
   // already has it rarely asks the form at all, and one that does is answered from the same record.
   let instruction = String(what ?? "").trim();
-  try { instruction = shipping.withAddress(instruction, shipping.profileFor(conversationId)); } catch { /* as written */ }
+  // Never for a pickup order (src/food.js): nothing ships, and an address in it is the restaurant's, not theirs.
+  if (!noAddress) { try { instruction = shipping.withAddress(instruction, shipping.profileFor(conversationId)); } catch { /* as written */ } }
   const body = {
     request: { startUrl, task: taskFor(plan, store, instruction) },
     constraints: { maxCost: { amount: Number(maxUsd).toFixed(2), currency: "USD" } },
@@ -742,6 +743,12 @@ export async function startCheckout({ conversationId, store, startUrl, what, ite
     superseded.push(old.run_id);
   }
   return { ok: true, runId, plan, ...(superseded.length ? { superseded } : {}) };
+}
+/** The pages a run reports it is on (Crossmint's run status, where it says), for the food hand-off check. */
+export function pageUrlsOf(cur) {
+  const out = [];
+  for (const v of [cur?.currentUrl, cur?.url, cur?.pageUrl, cur?.browser?.currentUrl, cur?.browser?.url, cur?.page?.url]) if (typeof v === "string" && v) out.push(v);
+  return out;
 }
 export const runRow = (runId) => q("SELECT * FROM shop_runs WHERE run_id = ?").get(runId) ?? null;
 const ITEM_STOP = new Set(["the", "and", "for", "with", "from", "new", "one", "pack", "oz", "fl", "ml", "ct", "count"]);
@@ -1431,9 +1438,17 @@ const holdMsFor = (runId, conversationId) => (isFoodHold(runId, conversationId) 
 export async function letGo(runId, why) {
   const run = runRow(runId);
   if (!run || TERMINAL.has(run.status)) return false;
+  // Its open payment declined first (claimed, so a yes being processed right now cannot also start
+  // paying it); then a payment already approved, paying or paid keeps its run: never cancelled here.
+  for (const p of q("SELECT id FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status = 'asked'").all(runId, run.conversation_id)) {
+    try { await declinePayment({ conversationId: run.conversation_id, paymentId: p.id, by: "reason" }); } catch { /* claimed already: it can never be paid */ }
+  }
+  if (paymentLive(runId, run.conversation_id)) { logFn({ shop_letgo_kept: runId, why: "payment in flight" }); return false; }
   await endQuietly(run, why);
   return true;
 }
+/** A payment on this run that a yes already started or finished (paying, paid, or unknown at Crossmint). */
+export const paymentLive = (runId, conversationId) => !!(runId && q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status IN ('paying', 'paid', 'unknown') LIMIT 1").get(runId, conversationId));
 /** The Face ID link for an asked payment (thirty minutes from the first ask, one use; src/passkey.js). */
 export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row, { until: askDeadline(row) })}`;
 /** The ask once they have a passkey: the same words, and the link instead of "reply yes". */
@@ -1577,9 +1592,11 @@ export async function declineByLink(token) {
 export async function declinePayment({ conversationId, paymentId, by = "them" }) {
   const row = paymentRow(paymentId);
   if (!row || row.conversation_id !== conversationId || row.status !== "asked") return { ok: false, error: "not_open" };
+  // Claimed before Crossmint is told, the way payRow claims 'paying': a decline and a yes racing each
+  // other can never both go through (one of the two UPDATEs finds it no longer asked).
+  if (q("UPDATE shop_payments SET status = 'declined', answered_at = ?, stopped_by = ? WHERE id = ? AND conversation_id = ? AND status = 'asked'").run(clock.now(), by === "reason" ? "reason" : "them", row.id, conversationId).changes !== 1) return { ok: false, error: "not_open" };
   const part = { type: "input_response", requestId: row.request_id, action: "decline" };
   await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
-  q("UPDATE shop_payments SET status = 'declined', answered_at = ?, stopped_by = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), by === "reason" ? "reason" : "them", row.id, conversationId);
   return { ok: true };
 }
 
@@ -2256,6 +2273,19 @@ export async function step(runId) {
   const ra = cur.requiredAction;
   const requestId = ra?.requestId ?? "";
   let woke = null;
+  // A food order on the restaurant's own site whose checkout handed off to a delivery app (src/food.js):
+  // caught when it lands on the app's site or asks for the app's sign-in, never waited on.
+  if (foodMod?.foodOn(run.conversation_id) && foodMod.isFoodRun(runId) && !openSigninLink(runId) && !paymentLive(runId, run.conversation_id)) {
+    const rq0 = ra ? { requestId, request: ra.request } : null;
+    const it0 = ra?.request?.interaction ?? {};
+    const signin = it0.kind === "form" && (it0.fields ?? []).some(isProtected);
+    const app = foodMod.handoffApp(run, { rq: signin ? rq0 : null, account: signin ? signinAccount(run.store, rq0) : "", urls: pageUrlsOf(cur) });
+    if (app) {
+      if (requestId) q("UPDATE shop_runs SET last_request_id = ?, question = ?, request_json = ?, progress_at = ?, updated_at = ? WHERE run_id = ? AND conversation_id = ?").run(requestId, short(ra.request?.question ?? "", 600), JSON.stringify(publicRequest(rq0)), now, now, runId, run.conversation_id);
+      await foodMod.handOff(runRow(runId), app);
+      return { done: true, status: "cancelled", said, handoff: app };
+    }
+  }
   if (requestId && requestId !== run.last_request_id) {
     const rq = { requestId, request: ra.request };
     const it = ra.request?.interaction ?? {};
@@ -2557,11 +2587,24 @@ export async function answerRun(runId, { conversationId, answers }) {
  * The record against a run's open form: the person's own, unless the run's instruction ships somewhere else
  * (a gift), which wins. Keys only leave here; the values go to Crossmint and nowhere else.
  */
+const PICKUP_NEVER = new Set(["address1", "address2", "city", "state", "zip"]);
 function autoFill(run, rq) {
   try {
     const ask = q("SELECT what FROM shop_run_asks WHERE run_id = ?").get(run.run_id);
     const { row, own } = shipping.recordForRun(shipping.profileFor(run.conversation_id), ask?.what ?? "");
-    return { ...shipping.fill(rq, row), row, own };
+    const got = shipping.fill(rq, row);
+    // A pickup food order (src/food.js): their address is never filled in, so a site that switched to
+    // delivery asks a person instead of quietly becoming a delivery to their door.
+    if (foodMod?.isPickupRun?.(run.run_id, run.conversation_id)) {
+      const where = (rq?.fields ?? []).filter((f) => PICKUP_NEVER.has(shipping.roleOf(f)));
+      for (const f of where) {
+        if (!(f.key in got.answers)) continue;
+        delete got.answers[f.key]; got.filled = got.filled.filter((k) => k !== f.key);
+        if (f.required) got.missing.push({ key: f.key, label: f.label || f.key, ours: false });
+      }
+      got.covered = got.missing.length === 0 && got.filled.length > 0;
+    }
+    return { ...got, row, own };
   } catch { return { answers: {}, filled: [], missing: (rq?.fields ?? []).filter((f) => f.required).map((f) => ({ key: f.key, label: f.label || f.key, ours: false })), covered: false, row: null, own: true }; }
 }
 /** Their correction to a form the record answered: the record learns it, the run is superseded, the same checkout starts again. */
@@ -2835,12 +2878,14 @@ export function ordersPlaced(conversationId) {
  */
 export function recordSource(conversationId, { sinceMs = 48 * 3600_000 } = {}) {
   try {
+    // Food orders' own figures too (src/food.js): a phone order's total is the restaurant's quote.
+    const food = foodMod?.foodOn(conversationId) ? foodMod.recordSource(conversationId, { since: clock.now() - sinceMs }) : "";
     const since = clock.now() - sinceMs;
     const pays = q("SELECT amount, currency, question FROM shop_payments WHERE conversation_id = ? AND created_at > ?").all(conversationId, since)
       .map((p) => `${amountText(p)} ${p.question}`);
     const runs = q("SELECT question, request_json, result FROM shop_runs WHERE conversation_id = ? AND created_at > ?").all(conversationId, since)
       .map((r) => `${r.question} ${r.request_json} ${r.result}`);
-    return [...pays, ...runs].join("\n");
+    return [...pays, ...runs, ...(food ? [food] : [])].join("\n");
   } catch { return ""; }
 }
 /** After a restart: every open run is followed again, and every open mail watch resumed. */

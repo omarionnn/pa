@@ -52,6 +52,7 @@ import { RENDER_TIMEOUT_MS, shootWithChromium } from "./pages/card.js";
 import { z } from "zod";
 import { sealCell, openAny } from "./restcrypt.js";
 import { fromOutside } from "./outside.js";
+import * as spendcap from "./spendcap.js";
 
 // ---------------------------------------------------------------- the flag
 /** off | owner | on. Read on every call, so a restart is the only switch. */
@@ -241,6 +242,11 @@ db.db.exec(`
   const have = db.db.prepare("PRAGMA table_info(food_orders)").all().map((c) => c.name);
   if (!have.includes("route")) db.db.exec("ALTER TABLE food_orders ADD COLUMN route TEXT NOT NULL DEFAULT ''");
   if (!have.includes("via")) db.db.exec("ALTER TABLE food_orders ADD COLUMN via TEXT NOT NULL DEFAULT ''");
+  // 2026-11-17: pickup (and a phone order for pickup), why an order was closed without them, the phone order's record.
+  if (!have.includes("fulfillment")) db.db.exec("ALTER TABLE food_orders ADD COLUMN fulfillment TEXT NOT NULL DEFAULT 'delivery'");
+  if (!have.includes("place_address")) db.db.exec("ALTER TABLE food_orders ADD COLUMN place_address TEXT NOT NULL DEFAULT ''");
+  if (!have.includes("closed_why")) db.db.exec("ALTER TABLE food_orders ADD COLUMN closed_why TEXT NOT NULL DEFAULT ''");
+  if (!have.includes("phone_json")) db.db.exec("ALTER TABLE food_orders ADD COLUMN phone_json TEXT NOT NULL DEFAULT ''");
 }
 const q = (sql) => db.db.prepare(sql);
 const seal = (col, c, v) => sealCell("food_orders", col, c, v);
@@ -250,7 +256,7 @@ const parse = (s, d) => { try { const v = JSON.parse(open(s) || ""); return v ??
 /** A row with its sealed columns opened. */
 function view(r) {
   if (!r) return null;
-  return { ...r, route: r.route ?? "", via: r.via ?? "", restaurant: open(r.restaurant), store_url: open(r.store_url), card_label: open(r.card_label), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
+  return { ...r, route: r.route ?? "", via: r.via ?? "", fulfillment: r.fulfillment || "delivery", place_address: open(r.place_address ?? ""), phone: parse(r.phone_json, null), restaurant: open(r.restaurant), store_url: open(r.store_url), card_label: open(r.card_label), items: parse(r.items_json, []), lines: parse(r.lines_json, []), notes: open(r.notes), address: open(r.address), address_label: open(r.address_label) };
 }
 export const orderRow = (id, c) => view(q("SELECT * FROM food_orders WHERE id = ? AND conversation_id = ?").get(id, c));
 /** Their order with this id, or null: another person's id reads as missing. */
@@ -353,16 +359,92 @@ export async function setStatus(order, status) {
 }
 
 // ---------------------------------------------------------------- start, cart
+/** The states an order waits in without anyone being asked anything: closed when it goes stale. */
+export const STALE_STATES = ["draft", "building", "needs"];
+/** An order idle this long in one of those is closed by the daily sweep. */
+export const STALE_MS = 24 * 3600_000;
+const DAY_MS = 24 * 3600_000;
+const CALL_LIVE = new Set(["placing", "ringing", "in_progress"]);
+/** A call this phone order is waiting on that is still going: it is never let go from here (calls are not touched). */
+function liveCallFor(o) {
+  const ph = o.phone;
+  if (!ph?.since) return null;
+  const call = phoneCallFor(o);
+  return call && CALL_LIVE.has(call.state) ? call : null;
+}
+/**
+ * Close one order that nobody is waiting on, quietly: no text, no tapback. Anything attached is let
+ * go first, properly: its running checkout ended at Crossmint (its open payment declined, so no yes
+ * can pay it, and the hold goes with it). An order with a phone call still going is left alone.
+ * Returns true when it was closed.
+ */
+async function closeQuietly(o, why, { states = STALE_STATES } = {}) {
+  if (!o || !states.includes(o.status)) return false;
+  if (liveCallFor(o)) return false;
+  if (o.run_id) {
+    const shop = await import("./shopconnect.js");
+    await shop.letGo(o.run_id, `food order closed: ${why}`).catch(() => false);
+    // A payment still out for a yes on a run that already ended: declined too, so it can never be paid.
+    for (const p of q("SELECT id FROM shop_payments WHERE run_id = ? AND conversation_id = ? AND status = 'asked'").all(o.run_id, o.conversation_id)) {
+      try { await shop.declinePayment({ conversationId: o.conversation_id, paymentId: p.id, by: "reason" }); } catch { /* it lapses on its own */ }
+    }
+    // A yes already approved, paying or paid: that order is theirs and goes on; it is never closed here.
+    if (shop.paymentLive(o.run_id, o.conversation_id)) return false;
+  }
+  const r = q(`UPDATE food_orders SET status = 'cancelled', run_id = NULL, closed_why = ?, updated_at = ? WHERE id = ? AND conversation_id = ? AND status IN (${states.map(() => "?").join(", ")})`)
+    .run(String(why).slice(0, 80), clock.now(), o.id, o.conversation_id, ...states);
+  if (r.changes) logFn({ food_closed: o.id, why: String(why).slice(0, 80) });
+  return r.changes > 0;
+}
+/** Every order of theirs left waiting on nothing, closed before a new request opens one. */
+export async function closeStale(c, why = "a new food request replaced it") {
+  let n = 0;
+  for (const r of q(`SELECT id FROM food_orders WHERE conversation_id = ? AND status IN (${STALE_STATES.map(() => "?").join(", ")}) ORDER BY id`).all(c, ...STALE_STATES)) {
+    if (await closeQuietly(orderRow(r.id, c), why)) n++;
+  }
+  return n;
+}
+/**
+ * A new food request while an older order's card is still waiting for their yes: that card is dropped
+ * (its payment declined first, so the old yes pays nothing) and the names of the places dropped come
+ * back for one short line. A card whose yes is already being paid is left alone.
+ */
+async function dropWaiting(c) {
+  const dropped = [];
+  for (const r of q("SELECT id FROM food_orders WHERE conversation_id = ? AND status = 'asked' ORDER BY id").all(c)) {
+    const o = orderRow(r.id, c);
+    if (await closeQuietly(o, "a new food request replaced it", { states: ["asked"] })) dropped.push(o.restaurant || "food");
+  }
+  return dropped;
+}
+/** The daily sweep: any order idle more than a day in draft, building or needs is closed, quietly. */
+export async function closeIdle({ now = clock.now() } = {}) {
+  let n = 0;
+  for (const r of q(`SELECT id, conversation_id FROM food_orders WHERE status IN (${STALE_STATES.map(() => "?").join(", ")}) AND updated_at < ? ORDER BY id`).all(...STALE_STATES, now - STALE_MS)) {
+    if (await closeQuietly(orderRow(r.id, r.conversation_id), "idle over 24 hours")) n++;
+  }
+  return n;
+}
+
+/** "pickup" when they said they'll pick it up; anything else is delivery. */
+const fulfillmentOf = (v) => (v === "pickup" || v === "phone" ? v : "delivery");
+const PICKUP_SAY = "For pickup: no delivery address question and no tip unless they name one. The pickup time is the earliest the restaurant's own site offers unless they gave one; ask only if the site makes them pick a time and they gave none.";
+
 /** A new food request: the record, and ⏳ on the message that asked for it. */
-export async function startOrder(c, { requestHandle = null } = {}) {
+export async function startOrder(c, { requestHandle = null, fulfillment = "delivery" } = {}) {
   const thread = db.getThread(c);
   const handle = requestHandle && db.messageByHandle(c, requestHandle)?.from === "them" ? requestHandle : thread?.last_inbound_id ?? null;
+  // One open order at a time: a new request closes every older one left waiting on nothing (draft,
+  // building, needs), letting go of anything still attached. Nothing is said about them.
+  await closeStale(c);
+  // An order still waiting on its card is dropped too, and they are told in a few words (never silently).
+  const dropped = await dropWaiting(c);
+  if (dropped.length) await sayTo(c, `I dropped the waiting ${[...new Set(dropped)].join(" and ")} order${dropped.length > 1 ? "s" : ""}; nothing was charged.`);
   const now = clock.now();
-  // One open order at a time: a new request supersedes the draft that was never sent to a checkout.
-  q("UPDATE food_orders SET status = 'cancelled', updated_at = ? WHERE conversation_id = ? AND status IN ('draft', 'building') AND run_id IS NULL").run(now, c);
-  const id = Number(q("INSERT INTO food_orders (conversation_id, request_handle, status, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?)").run(c, handle, now, now).lastInsertRowid);
+  const how = fulfillmentOf(fulfillment) === "pickup" ? "pickup" : "delivery";
+  const id = Number(q("INSERT INTO food_orders (conversation_id, request_handle, status, fulfillment, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?, ?)").run(c, handle, how, now, now).lastInsertRowid);
   await setStatus({ id, conversation_id: c }, "working");
-  return { ok: true, order_id: id };
+  return { ok: true, order_id: id, fulfillment: how, ...(how === "pickup" ? { say: PICKUP_SAY } : {}) };
 }
 
 /** Anything that reads like a card number (12+ digits, spaces or dashes between) becomes its last four. */
@@ -407,6 +489,8 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   let letGo = false;
   if (o.run_id) {
     const shop = await import("./shopconnect.js");
+    // A yes already being paid: the cart that was approved goes through as it is; nothing here changes it.
+    if (shop.paymentLive(o.run_id, c)) return { ok: false, error: "payment_in_flight", say: "Their yes to this order is already going through, so the cart can't change now. Say that in one line; once it is placed, a change is a new order." };
     letGo = await shop.letGo(o.run_id, "the food cart changed").catch(() => false);
     q("UPDATE food_orders SET run_id = NULL WHERE id = ? AND conversation_id = ?").run(o.id, c);
   }
@@ -417,8 +501,20 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   })).filter((it) => it.name);
   if (!items.length) return { ok: false, error: "no_items", say: "A cart needs its items." };
   const lines = (input.fees ?? []).slice(0, 8).map((f) => ({ label: clean(f.label, 40), amount: cents(f.amount) != null ? dollars(cents(f.amount)) : "" })).filter((l) => l.label && l.amount);
-  const tip = cents(input.tip) != null ? dollars(cents(input.tip)) : "";
-  const total = cents(input.total) != null ? dollars(cents(input.total)) : "";
+  // Pickup: no delivery address, and no tip unless they named one themselves (their_tip).
+  const how = input.fulfillment ? (fulfillmentOf(input.fulfillment) === "pickup" ? "pickup" : "delivery") : (o.fulfillment === "pickup" ? "pickup" : "delivery");
+  const pickup = how === "pickup";
+  const tipDropped = pickup && cents(input.tip) != null && cents(input.tip) > 0 && !input.their_tip;
+  const tip = cents(input.tip) != null && !tipDropped ? dollars(cents(input.tip)) : "";
+  // A pickup tip left off comes off the cart's total too when that total was the cart plus it, so a tip
+  // the site still puts in shows on the card as a different total, never passed silently.
+  let totalCents = cents(input.total);
+  if (tipDropped && totalCents != null) {
+    const parts = [...items.map((it) => cents(it.price) ?? NaN), ...lines.filter((l) => !/subtotal/i.test(l.label)).map((l) => cents(l.amount))];
+    const sum = parts.reduce((n, x) => n + x, 0);
+    if (Number.isFinite(sum) && Math.abs(sum + cents(input.tip) - totalCents) <= 1) totalCents -= cents(input.tip);
+  }
+  const total = totalCents != null ? dollars(totalCents) : "";
   const eta = Date.parse(String(input.eta_latest ?? ""));
   const closes = Date.parse(String(input.closes_at ?? ""));
   const platform = route.route === "platform" ? route.platform : "";
@@ -427,13 +523,17 @@ export async function recordCart(c, input, { check = checkAllergies } = {}) {
   q(`UPDATE food_orders SET status = 'building', platform = ?, restaurant = ?, store_url = ?, items_json = ?, lines_json = ?, notes = ?, address = ?, address_label = ?, tip = ?, cart_total = ?,
        eta_text = ?, eta_latest_at = ?, closes_at = ?, revision = ?, allergy_flag = '', allergy_checked = 0, updated_at = ? WHERE id = ? AND conversation_id = ?`).run(
     platform, seal("restaurant", c, name), seal("store_url", c, clean(input.store_url, 500)),
-    seal("items_json", c, JSON.stringify(items)), JSON.stringify(lines), seal("notes", c, clean(input.notes, 300)), seal("address", c, clean(input.address, 200)),
-    seal("address_label", c, clean(input.address_label, 40)), tip, total, clean(input.eta, 20), Number.isFinite(eta) ? eta : null, Number.isFinite(closes) ? closes : null, rev, now, o.id, c);
+    seal("items_json", c, JSON.stringify(items)), JSON.stringify(lines), seal("notes", c, clean(input.notes, 300)), seal("address", c, pickup ? "" : clean(input.address, 200)),
+    seal("address_label", c, pickup ? "" : clean(input.address_label, 40)), tip, total, clean(input.eta, 20), Number.isFinite(eta) ? eta : null, Number.isFinite(closes) ? closes : null, rev, now, o.id, c);
   const checked = await check(c, items).catch(() => ({ ok: false }));
   const flag = allergyFlag(checked);
-  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ?, route = ?, via = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, route.route, route.route === "direct" ? route.via : route.platform, o.id, c);
+  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ?, route = ?, via = ?, fulfillment = ?, place_address = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, route.route, route.route === "direct" ? route.via : route.platform, how, seal("place_address", c, clean(input.place_address, 200)), o.id, c);
+  // Their delivery here was found to run through a delivery app that wants a sign-in (handOff, below).
+  const handedTo = !pickup && route.route === "direct" ? handoffAt(c, input.store_url) : "";
   return {
-    ok: true, order_id: o.id, revision: rev, route: route.route === "direct" ? `direct (${route.via_name})` : appName(route.platform),
+    ok: true, order_id: o.id, revision: rev, route: route.route === "direct" ? `direct (${route.via_name})` : appName(route.platform), fulfillment: how,
+    ...(pickup ? { pickup: `Pickup at ${clean(input.place_address, 200) || "the restaurant"}. In store_checkout's what: pickup, not delivery; no delivery address; ${tip ? `the tip they named (${tip})` : "no tip"}; the earliest pickup time the site offers unless they gave one (if the site makes them choose and they gave none, ask them in one line); stop at payment. eta and eta_latest are the ready time.${tipDropped ? " The tip was left off: pickup gets one only when they name it (their_tip true)." : ""}` } : {}),
+    ...(handedTo ? { handoff: `Last time ${name || "this place"}'s own delivery handed off to ${appName(handedTo)}, which wanted a sign-in. Offer pickup from its own site instead, or ${appName(handedTo)} with their sign-in.` } : {}),
     ...(letGo || o.run_id ? { previous_checkout: "let go, nothing charged; start store_checkout again with food_order_id" } : {}),
     ...(flag ? { allergy_flag: flag } : {}),
     say: flag
@@ -531,7 +631,23 @@ export function relinkRun(fromRunId, toRunId, { address = "" } = {}) {
       .run(toRunId, address, address ? seal("address", o.conversation_id, clean(address, 200)) : "", clock.now(), o.id, o.conversation_id);
   } catch { /* no food */ }
 }
+/**
+ * store_checkout started without food_order_id (the model starting the same checkout over: a form
+ * answer it could not fill, a retry): the open food order whose cart was built at that same ordering
+ * place, or null. The order then follows the new run (relinkRun / linkRun), so the ask is still the
+ * food card, on the 15-minute hold, pinned to a new revision.
+ */
+export function orderAtPlace(c, startUrl) {
+  if (!c || !foodOn(c)) return null;
+  const key = orderingPlaceKey(startUrl);
+  if (!key) return null;
+  const o = openOrder(c);
+  if (!o || o.fulfillment === "phone" || !o.items.length || !o.revision || !o.store_url) return null;
+  return orderingPlaceKey(o.store_url) === key ? o : null;
+}
 /** Synchronous: is this checkout a food order's? (shopconnect's hold length reads it). */
+/** Synchronous: is this checkout a pickup food order's? (shopconnect never fills their address into it). */
+export const isPickupRun = (runId, c) => { try { return !!(runId && foodOn(c) && q("SELECT 1 AS x FROM food_orders WHERE run_id = ? AND conversation_id = ? AND fulfillment = 'pickup' LIMIT 1").get(runId, c)); } catch { return false; } };
 export const isFoodRun = (runId) => { try { return !!(runId && q("SELECT 1 AS x FROM food_orders WHERE run_id = ? LIMIT 1").get(runId)); } catch { return false; } };
 
 // ---------------------------------------------------------------- the approval card
@@ -553,13 +669,16 @@ const etaWords = (o) => (o.eta_latest_at ? clockText(o.eta_latest_at, o.conversa
  *   "Heads up: the pad thai has peanuts. $31.42 to your Visa 4821, here by 8:15. Place it?"
  * `amount` is Crossmint's, as the row holds it. `changed` is set when it differs from the cart's.
  */
-export function approvalLine({ amount, card, eta = "", flag = "", changed = "", why = "" }) {
+export function approvalLine({ amount, card, eta = "", flag = "", changed = "", why = "", pickup = false, at = "" }) {
   const head = [why, flag, changed].filter(Boolean).join(" ");
-  return `${head ? `${head} ` : ""}${amount} to your ${card}${eta ? `, here by ${eta}` : ""}. Place it?`;
+  // Pickup: where to pick it up and when it is ready, in place of a delivery time.
+  // A ready time only as the site gave it; none given is said, never made up.
+  const when = pickup ? `, for pickup${at ? ` at ${at}` : ""}${eta ? `, ready by ${eta}` : ", no ready time given"}` : eta ? `, here by ${eta}` : "";
+  return `${head ? `${head} ` : ""}${amount} to your ${card}${when}. Place it?`;
 }
 
 /** The card's HTML: 1080 wide, the height its lines need. Everything on it is escaped; nothing is fetched. */
-export function approvalCardHtml({ restaurant, logo = "", items = [], lines = [], tip = "", total, eta = "", address = "", card = "", changed = false }) {
+export function approvalCardHtml({ restaurant, logo = "", items = [], lines = [], tip = "", total, eta = "", address = "", card = "", changed = false, pickup = false, placeAddress = "" }) {
   const row = (l, r, cls = "") => `<div class="r ${cls}"><span>${l}</span><span>${esc(r)}</span></div>`;
   const itemRows = items.map((it) => `<div class="it"><div class="r"><span>${it.qty > 1 ? `${it.qty}× ` : ""}${esc(it.name)}</span><span>${esc(it.price)}</span></div>${it.modifiers?.length ? `<p class="mod">${it.modifiers.map(esc).join(" · ")}</p>` : ""}</div>`).join("");
   const mono = esc(String(restaurant ?? "?").trim().charAt(0).toUpperCase() || "?");
@@ -583,11 +702,13 @@ h1{font:italic 400 24px/1.1 Georgia,serif;letter-spacing:-.01em}
 .ft{margin-top:12px;display:grid;gap:4px;font:400 12px/1.35 Inter,sans-serif;color:#4a443c}
 .ft b{font-weight:600;color:#1d1a16}
 </style></head><body>
-<div class="hd"><div class="lg">${logo ? `<img src="${logo}" alt="">` : mono}</div><div><p class="eb">Your order</p><h1>${esc(restaurant)}</h1></div></div>
+<div class="hd"><div class="lg">${logo ? `<img src="${logo}" alt="">` : mono}</div><div><p class="eb">${pickup ? "Your pickup order" : "Your order"}</p><h1>${esc(restaurant)}</h1></div></div>
 ${itemRows}
 <div class="fees">${lines.map((l) => row(esc(l.label), l.amount)).join("")}${tip ? row("Tip", tip) : ""}</div>
 ${row("Total", total, "tot")}${changed ? `<p class="chg">Total updated at checkout</p>` : ""}
-<div class="ft">${eta ? `<p><b>Here by</b> ${esc(eta)}</p>` : ""}${address ? `<p><b>To</b> ${esc(address)}</p>` : ""}${card ? `<p><b>Card</b> ${esc(card)}</p>` : ""}</div>
+<div class="ft">${pickup
+    ? `<p><b>Pickup</b>${placeAddress ? ` at ${esc(placeAddress)}` : ""}</p>${eta ? `<p><b>Ready by</b> ${esc(eta)}</p>` : `<p><b>Ready</b> no time given</p>`}`
+    : `${eta ? `<p><b>Here by</b> ${esc(eta)}</p>` : ""}${address ? `<p><b>To</b> ${esc(address)}</p>` : ""}`}${card ? `<p><b>Card</b> ${esc(card)}</p>` : ""}</div>
 </body></html>`;
 }
 
@@ -630,12 +751,13 @@ export async function approval({ run, row, card, passkeyTail = "", shoot = shoot
   // A cart that never went through the check (it should not get here) is said to be unchecked, never silent.
   const flag = o.allergy_flag || (o.allergy_checked ? "" : allergyFlag({ ok: false }));
   const why = whyNowFor(o, run);
-  const text = approvalLine({ amount, card: label, eta, flag, changed, why }) + passkeyTail;
+  const pickup = o.fulfillment === "pickup";
+  const text = approvalLine({ amount, card: label, eta, flag, changed, why, pickup, at: o.place_address }) + passkeyTail;
   q("UPDATE food_orders SET status = 'asked', card_label = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(seal("card_label", o.conversation_id, label), clock.now(), o.id, o.conversation_id);
   let file = null;
   try {
     const items = o.items.length ? o.items : [{ name: row.item || "Your order", qty: 1, modifiers: [], price: "" }];
-    ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip, total: amount, eta, address: o.address, card: label, changed: !!changedFrom }, shoot ? { shoot } : {}));
+    ({ file } = await drawApprovalCard({ restaurant: o.restaurant || row.merchant_name || "Your order", items, lines: o.lines, tip: o.tip, total: amount, eta, address: pickup ? "" : o.address, card: label, changed: !!changedFrom, ...(pickup ? { pickup: true, placeAddress: o.place_address } : {}) }, shoot ? { shoot } : {}));
   } catch (e) { logFn({ food_card_failed: o.id, why: String(e?.message ?? e).split("\n")[0] }); }
   return { text, file, orderId: o.id, order: o, why: !!why };
 }
@@ -679,6 +801,7 @@ export function payTargetTail(row) {
 export function placedLine(o, { amount = "" } = {}) {
   const items = o.items.map((it) => `${it.qty > 1 ? `${it.qty} ` : ""}${it.name}`).slice(0, 4).join(", ");
   const eta = etaWords(o);
+  if (o.fulfillment === "pickup") return `Placed for pickup: ${o.restaurant || "your order"}${items ? `, ${items}` : ""}. ${amount || o.cart_total} charged${eta ? `, ready by ${eta}` : ""}.${o.place_address ? ` Pick it up at ${o.place_address}.` : ""}`;
   const to = o.address_label && o.address ? `${o.address_label} (${o.address})` : o.address_label || o.address;
   return `Placed: ${o.restaurant || "your order"}${items ? `, ${items}` : ""}. ${amount || o.cart_total} charged${eta ? `, here by ${eta}` : ""}.${to ? ` Going to ${to}.` : ""}`;
 }
@@ -739,9 +862,257 @@ export async function ended(run, status) {
 /** shopconnect: a food checkout never moves on to another store by itself (never a silent substitute). */
 export const holdsMoveOn = (run) => !!orderForRun(run?.run_id);
 
+// ---------------------------------------------------------------- an own site that is really a delivery app
+// Some chains' own delivery hands the checkout to DoorDash or Uber Eats (Chick-fil-A, 2026-11-10: the
+// form asked for dd_email/dd_password; nobody signed in; the input expired ten minutes later). Caught
+// the moment it shows: the checkout asks for that app's sign-in, or lands on that app's site.
+const FIELD_APP = [["doordash", /^(?:dd|doordash)[_-]|door\s?dash/i], ["ubereats", /^(?:ue|ubereats|uber)[_-]|uber\s?eats/i], ["grubhub", /^(?:gh|grubhub)[_-]|grub\s?hub/i]];
+const handoffKey = (url) => `handoff:${orderingPlaceKey(url)}`;
+/** The app this place's own delivery was found to hand off to, or "". */
+export function handoffAt(c, url) {
+  const key = orderingPlaceKey(url);
+  if (!key) return "";
+  const r = q("SELECT what FROM food_told WHERE conversation_id = ? AND what LIKE ? ORDER BY at DESC LIMIT 1").get(c, `${handoffKey(url)}=%`);
+  return r ? r.what.split("=").pop() : "";
+}
+/**
+ * Which delivery app a direct food checkout handed off to, or "": the sign-in it asks for names the app
+ * (field keys or labels; the question as "<app> account/sign-in/password/email"), or a page it reports
+ * is on the app's own site. `account` is shopconnect's own reading of whose login it is.
+ */
+export function handoffApp(run, { rq = null, account = "", urls = [] } = {}) {
+  const o = orderForRun(run?.run_id);
+  if (!o || o.route !== "direct" || !foodOn(o.conversation_id)) return "";
+  if (account && PLATFORMS[account] && account !== run.store) return account;
+  const r = rq?.request ?? rq ?? {};
+  const fields = r.fields ?? r.interaction?.fields ?? [];
+  for (const [app, re] of FIELD_APP) if (fields.some((f) => re.test(String(f?.key ?? "")) || re.test(String(f?.label ?? "")))) return app;
+  // DoorDash's storefront (order.online) is the restaurant's own page run by DoorDash: its pages are not a hand-off.
+  if (o.via !== "storefront") for (const u of urls) { const x = orderingRoute(u); if (x?.route === "platform" && PLATFORMS[x.platform]) return x.platform; }
+  return "";
+}
+/**
+ * The hand-off happened: the checkout is let go (nothing charged, no sign-in waited on), the order
+ * waits on them, and they get ONE line saying what happened and what can be done instead.
+ */
+export async function handOff(run, app) {
+  const o = orderForRun(run?.run_id);
+  if (!o || !app) return null;
+  const shop = await import("./shopconnect.js");
+  // "Nothing was charged" has to be true: a run with a yes already paying or paid is never a hand-off.
+  if (shop.paymentLive(run.run_id, o.conversation_id)) return null;
+  await shop.letGo(run.run_id, `${appName(app)} hand-off: the restaurant's own delivery runs on ${appName(app)}, which wants a sign-in`).catch(() => false);
+  if (shop.paymentLive(run.run_id, o.conversation_id)) return null;
+  q("UPDATE food_orders SET run_id = NULL, status = 'needs', updated_at = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), o.id, o.conversation_id);
+  try { q("INSERT OR REPLACE INTO food_told (conversation_id, what, at) VALUES (?, ?, ?)").run(o.conversation_id, `${handoffKey(o.store_url)}=${app}`, clock.now()); } catch { /* the line still goes */ }
+  await setStatus(o, "needs");
+  const name = o.restaurant || "The restaurant";
+  const instead = o.fulfillment === "pickup"
+    ? `I can send you the ${appName(app)} sign-in link to order it there, or try another place.`
+    : `I can order it for pickup from ${name}'s own site if they offer it, or send you the ${appName(app)} sign-in link to have it delivered through ${appName(app)}.`;
+  const line = `${name}'s own delivery runs through ${appName(app)}, and ${appName(app)} wants you signed in, so I stopped there. Nothing was charged. ${instead}`;
+  await sayTo(o.conversation_id, line);
+  logFn({ food_handoff: o.id, app });
+  return { line };
+}
+
+// ---------------------------------------------------------------- a phone order for pickup
+// A place with no online ordering at all: Reason can phone the order in for pickup, paid at the
+// counter. How calls work is not touched here (call_place, its confirm gate, its never-a-card rule,
+// its no-call hours): this offers the call once, hands the model the call to place, and records on
+// the order what the call came back with.
+const digitsOf = (s) => String(s ?? "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+/** The call this phone order is waiting on: the first outbound call to its number since it was set up. */
+function phoneCallFor(o) {
+  const ph = o.phone;
+  if (!ph?.since || !ph.number) return null;
+  if (ph.call_id) { try { return db.getCall(o.conversation_id, ph.call_id); } catch { return null; } }
+  try {
+    return db.listCalls(o.conversation_id, { limit: 20 }).reverse()
+      .find((r) => r.created_at >= ph.since && !r.is_owner && r.direction !== "in" && digitsOf(open(r.to_number)) === digitsOf(ph.number)) ?? null;
+  } catch { return null; }
+}
+/** Whether the place may be rung now, on its own clock, under this person's no-call hours. */
+async function callHoursNow(c, number, now) {
+  try {
+    const brief = await import("./calls/brief.js");
+    const zone = await import("./zone.js");
+    const z = zone.calleeZone(number, c);
+    const h = brief.callHoursFor(c);
+    let mine = "";
+    try { mine = zoneFor(c) || ""; } catch { mine = ""; }
+    return brief.withinCallingHours({ now, window: h.window, tz: z.zones ?? z.zone ?? config.tz, whose: z.source === "place" ? "place" : "number", userTz: mine, own: h.own });
+  } catch { return { ok: true }; }
+}
+/** The plain line when the no-call hours stop it, from the calls module's own reading of the clock. */
+const quietLine = (name, w) => `${name || "They"} ${name ? "is" : "are"} closed to calls from me until ${w.opens_local || "the morning"} their time (it's ${w.local_time || "late"} there).`;
+/**
+ * food_order "phone". Without they_said_yes: whether to offer, and the one line for it (offered once
+ * per order; the no-call hours said plainly when they block it now). With they_said_yes: the cart is
+ * recorded and checked against their allergies, and the call to place comes back (call_place, through
+ * its own confirm gate). Nothing is paid by Reason: they pay at the counter.
+ */
+export async function phoneOrder(c, input, { check = checkAllergies, now = clock.now() } = {}) {
+  const o = ownOrder(c, input.order_id) ?? openOrder(c);
+  if (!o) return { ok: false, error: "no_order", say: "Start the food order first (food_order start)." };
+  if (["placed", "failed", "cancelled"].includes(o.status)) return { ok: false, error: "order_over", say: `That order is ${o.status}. Start a new one.` };
+  const number = String(input.phone ?? "").trim();
+  if (digitsOf(number).length < 10) return { ok: false, error: "no_phone", say: "Give the restaurant's phone number (E.164, like +12125551234), from the places result or its site." };
+  const name = clean(input.restaurant, 80) || o.restaurant;
+  const w = await callHoursNow(c, number, now);
+  if (!input.they_said_yes) {
+    if (!tellOnce(o, "phone_offer")) return { ok: true, offered_already: true, say: "You offered the phone order once already: don't offer it again. If they said yes, call food_order phone again with they_said_yes true." };
+    // With the order known, the call's own fields come now: the offer can be the call's confirm ask, so one yes covers it.
+    const draftItems = phoneItems(input), draftName = clean(input.order_name, 40);
+    const draft = w.ok && draftItems.length && draftName ? phoneCallFields(number, draftItems, draftName, clean(input.pickup_time, 40), phoneCeiling(c, draftItems)) : null;
+    return { ok: true, offer: true, ...(draft ? { call_place: draft, most_it_may_cost: dollars(draft.max_price_cents) } : {}), ...(w.ok ? {} : { calls_held_until: w.opens_local, blocked_line: quietLine(name, w) }),
+      say: w.ok
+        ? `${name || "This place"} has no online ordering. Offer ONCE, in one line: you can phone the order in for pickup and they pay at the counter.${draft ? ` Make that offer the confirm ask for call_place with these call_place fields (the exact number), so their one yes covers the call: name the place, the items, the pickup time and that the call agrees to at most ${dollars(draft.max_price_cents)} (more than that, it checks with them first).` : ""} Only on their yes, call food_order phone again with they_said_yes true, the items, the name for the order and their pickup time, then place the call.`
+        : `${name || "This place"} has no online ordering, and it is too late to ring them now: ${quietLine(name, w)} Say that plainly in one line, and offer what can be done instead: ordering online from another nearby place now, or phoning this one at ${w.opens_local || "opening"} their time for pickup, paid at the counter.` };
+  }
+  if (!w.ok) return { ok: false, error: "call_hours", calls_held_until: w.opens_local, blocked_line: quietLine(name, w), say: `Not placed: ${quietLine(name, w)} Say that plainly, and offer ordering online from another nearby place now or phoning at ${w.opens_local || "opening"} their time. Nothing was ordered.` };
+  const items = phoneItems(input);
+  if (!items.length) return { ok: false, error: "no_items", say: "A phone order needs its items." };
+  const who = clean(input.order_name, 40);
+  if (!who) return { ok: false, error: "no_name", say: "A pickup order needs a name to hold it under: their first name, unless they said otherwise." };
+  const when = clean(input.pickup_time, 40);
+  // An online checkout still running for this order is let go first (its payment declined), never left
+  // payable beside a phone order; one whose yes is already being paid stays, and nothing is phoned in.
+  if (o.run_id) {
+    const shop = await import("./shopconnect.js");
+    if (shop.paymentLive(o.run_id, c)) return { ok: false, error: "payment_in_flight", say: "Their yes to the online checkout for this order is already going through, so don't phone it in. Say that in one line." };
+    await shop.letGo(o.run_id, "phoned in for pickup instead").catch(() => false);
+  }
+  const rev = Number(o.revision ?? 0) + 1;
+  const ph = { number, name: who, pickup_time: when, since: now };
+  q(`UPDATE food_orders SET status = 'building', fulfillment = 'phone', route = 'phone', via = 'phone', platform = '', run_id = NULL, restaurant = ?, store_url = '', items_json = ?, lines_json = '[]', notes = ?,
+       address = '', address_label = '', tip = '', cart_total = '', eta_text = '', eta_latest_at = NULL, revision = ?, allergy_flag = '', allergy_checked = 0, place_address = ?, phone_json = ?, updated_at = ? WHERE id = ? AND conversation_id = ?`).run(
+    seal("restaurant", c, name), seal("items_json", c, JSON.stringify(items)), seal("notes", c, clean(input.notes, 300)), rev,
+    seal("place_address", c, clean(input.place_address, 200)), seal("phone_json", c, JSON.stringify(ph)), now, o.id, c);
+  const checked = await check(c, items).catch(() => ({ ok: false }));
+  const flag = allergyFlag(checked);
+  q("UPDATE food_orders SET allergy_flag = ?, allergy_checked = ? WHERE id = ? AND conversation_id = ?").run(flag, checked?.ok ? 1 : 0, o.id, c);
+  const call = phoneCallFields(number, items, who, when, phoneCeiling(c, items));
+  return {
+    ok: true, order_id: o.id, revision: rev, call_place: call, ...(call.max_price_cents ? { most_it_may_cost: dollars(call.max_price_cents) } : {}), ...(flag ? { allergy_flag: flag } : {}),
+    say: `${flag ? `${flag} Say this to them before calling, and fix the order if they did not knowingly choose it. ` : ""}Now place the call with call_place using these fields (through its confirm gate with the exact number; the yes to your offer is that confirm when you made the offer its ask). They pay at the counter: never any card detail on the call, and if the place wants a card over the phone the call stops there. What the call comes back with is recorded on the order by code; nothing is charged by you.`,
+  };
+}
+const phoneItems = (input) => (input.items ?? []).slice(0, 20).map((it) => ({
+  name: clean(it.name, 80), qty: Math.max(1, Math.min(20, Math.round(Number(it.qty ?? 1)) || 1)),
+  modifiers: (it.modifiers ?? []).slice(0, 8).map((m) => clean(m, 60)).filter(Boolean), price: cents(it.price) != null ? dollars(cents(it.price)) : "",
+})).filter((it) => it.name);
+/** The call_place fields for a pickup order by phone: what it may say, and that payment is at the counter. Never a card detail. */
+/**
+ * The most a phone order may agree to (call_place max_price_cents, checked by src/calls/commit.js at the
+ * moment the restaurant names its total): the items' own prices plus a fifth for tax and fees when
+ * every item has one, never above their daily spending limit (src/spendcap.js); the limit alone when a
+ * price is missing. A quote over it is not agreed: the call says it will confirm, and they are asked.
+ */
+export const PHONE_HEADROOM = 1.2;
+function phoneCeiling(c, items) {
+  let capCents = 0;
+  try { capCents = Number(spendcap.capFor(c).cents) || 0; } catch { capCents = 0; }
+  if (!(capCents > 0)) capCents = Math.round(Number(config.maxSpendPerDay ?? 0) * 100) || 10_000;
+  const priced = items.every((it) => cents(it.price) != null);
+  // An item's price is its line's ("2× Cheese slice $7.00"), as the cart and its card read it.
+  const sub = priced ? items.reduce((n, it) => n + cents(it.price), 0) : 0;
+  const est = priced && sub > 0 ? Math.ceil((sub * PHONE_HEADROOM) / 100) * 100 : 0;
+  return est ? Math.min(est, capCents) : capCents;
+}
+function phoneCallFields(number, items, who, when, maxCents = null) {
+  const list = items.map((it) => `${it.qty > 1 ? `${it.qty} ` : ""}${it.name}${it.modifiers.length ? ` (${it.modifiers.join(", ")})` : ""}`).join("; ");
+  const at = when || "as soon as it can be ready";
+  return {
+    to: number,
+    about: "to place an order for pickup",
+    goal: `Place a pickup order under the name ${who}: ${list}. Pickup ${at}. Payment is at the counter when it is picked up. Come back with the ready time and the total they say.`,
+    facts: [`The order is under the name ${who}.`, `The order: ${list}.`, `Pickup ${at}.`, "Paying at the counter on pickup."],
+    may_book: true,
+    ...(Number(maxCents) > 0 ? { max_price_cents: Math.round(Number(maxCents)) } : {}),
+    read_back: ["time", "price"],
+    approved_terms: ["paying at the counter on pickup"],
+  };
+}
+/** The commitments a call wrote, newest last. */
+const commitmentsOf = (c, callId) => { try { return q("SELECT * FROM call_commitments WHERE conversation_id = ? AND call_id = ? ORDER BY id").all(c, callId); } catch { return []; } };
+const spokenOf = (rb, key) => { const v = rb?.[key]; return v && !v.unclear ? String(v.spoken || v.exact || "").trim() : ""; };
+/**
+ * After the call: recorded on the order. A card wanted over the phone → nothing ordered, ❓, and one
+ * line saying so. Agreed (a committed commitment, or a call that met its goal) → placed by phone: the
+ * ready time and the total the restaurant quoted, kept as theirs, ✅. Anything else (no answer, they
+ * could not) → ❓, and the call's own report says what happened. Returns true when it recorded something.
+ */
+export async function phoneOutcome(o, { now = clock.now() } = {}) {
+  const ph = o.phone;
+  if (!ph?.since) return false;
+  const call = phoneCallFor(o);
+  if (!call) {
+    // Never rung (they changed their mind, the gate said no): the order goes stale and closes on its own.
+    return false;
+  }
+  if (!ph.call_id) q("UPDATE food_orders SET phone_json = ? WHERE id = ? AND conversation_id = ?").run(seal("phone_json", o.conversation_id, JSON.stringify({ ...ph, call_id: call.id })), o.id, o.conversation_id);
+  if (CALL_LIVE.has(call.state)) return false;
+  const cm = commitmentsOf(o.conversation_id, call.id);
+  const card = cm.find((x) => x.state === "declined" && /payment details/i.test(String(x.why ?? "")));
+  const agreed = [...cm].reverse().find((x) => x.state === "committed");
+  const put = (status, extra) => q("UPDATE food_orders SET status = ?, phone_json = ?, eta_text = ?, eta_latest_at = ?, placed_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+    .run(status, seal("phone_json", o.conversation_id, JSON.stringify({ ...ph, call_id: call.id, ...extra })), extra.ready ?? "", extra.ready_at ?? null, status === "placed" ? now : null, now, o.id, o.conversation_id);
+  if (card && !agreed) {
+    put("needs", { outcome: "card_on_phone" });
+    await setStatus(o, "needs");
+    if (tellOnce(o, "card_on_phone")) await sayTo(o.conversation_id, `${o.restaurant || "The restaurant"} wanted a card over the phone, and I never give card details on a call, so the order wasn't placed. Nothing was charged. I can order online from another place instead.`);
+    return true;
+  }
+  let rb = {};
+  try { rb = JSON.parse(agreed?.readback || call.readback || "{}") ?? {}; } catch { rb = {}; }
+  const success = !!agreed || ["confirmed", "goal_met"].includes(String(call.outcome_kind ?? ""));
+  if (!success) {
+    put("needs", { outcome: String(call.outcome_kind || call.state || "not placed").slice(0, 40) });
+    await setStatus(o, "needs");
+    return true;
+  }
+  const ready = spokenOf(rb, "time") || ph.pickup_time || "";
+  const readyAt = Date.parse(spokenOf(rb, "time"));
+  const quoted = agreed?.total_cents != null && Number.isFinite(Number(agreed.total_cents)) ? dollars(Number(agreed.total_cents)) : "";
+  put("placed", { outcome: "placed_by_phone", ready, ...(Number.isFinite(readyAt) ? { ready_at: readyAt } : {}), quoted, quoted_by: quoted ? "the restaurant, on the phone" : "" });
+  await setStatus(o, "placed");
+  logFn({ food_phone_placed: o.id, quoted: !!quoted });
+  return true;
+}
+/** The phone order's record, said the way it is kept: the total is the restaurant's quote, paid at the counter. */
+export function phoneRecordLine(o) {
+  const ph = o?.phone;
+  if (!ph?.outcome) return "";
+  if (ph.outcome === "card_on_phone") return `${o.restaurant}: not placed; they wanted a card over the phone.`;
+  if (ph.outcome !== "placed_by_phone") return `${o.restaurant}: the phone order was not placed (${ph.outcome}).`;
+  return `${o.restaurant}: placed by phone for pickup under ${ph.name}${ph.ready ? `, ready ${ph.ready}` : ""}${ph.quoted ? `; total quoted by the restaurant on the phone: ${ph.quoted}, paid at the counter` : "; paid at the counter"}.`;
+}
+/** For the reply check (src/offers.js via shopconnect.recordSource): food figures from the record. */
+export function recordSource(c, { since = clock.now() - 48 * 3600_000 } = {}) {
+  try {
+    return q("SELECT * FROM food_orders WHERE conversation_id = ? AND updated_at > ? ORDER BY id DESC LIMIT 20").all(c, since).map(view)
+      .map((o) => [o.restaurant, o.cart_total && `cart total ${o.cart_total}`, o.paid_amount && `charged ${o.paid_amount}`, o.tip && `tip ${o.tip}`, ...o.items.map((it) => `${it.name} ${it.price}`), phoneRecordLine(o)].filter(Boolean).join(" "))
+      .join("\n");
+  } catch { return ""; }
+}
+
 // ---------------------------------------------------------------- the sweep: hold, closing, late
 /** Every minute: the hold running out, the restaurant closing, an order running late. Never throws. */
 let sweeping = false;
+let lastIdleSweep = 0;
+/** Tests: the daily close runs on the next sweep. */
+export function _resetIdleSweep() { lastIdleSweep = 0; }
+/** The ready line goes only this soon after the ready time (a restart hours later says nothing). */
+export const READY_LINE_MS = 2 * 3600_000;
+/** 23:00-08:00 on their clock. */
+function nightAt(ms, c) {
+  let tz = config.tz;
+  try { tz = zoneFor(c) || config.tz; } catch { /* the install's */ }
+  let h = 12;
+  try { h = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).format(new Date(ms))); } catch { h = new Date(ms).getHours(); }
+  return h >= 23 || h < 8;
+}
 export async function sweep({ now = clock.now() } = {}) {
   if (foodMode() === "off" || sweeping) return { looked: 0 };
   sweeping = true;
@@ -766,7 +1137,23 @@ async function sweepOnce(now) {
     }
     if (now > shop.askDeadline(pay)) await lapse(o, shop);
   }
-  for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'placed' AND eta_latest_at IS NOT NULL AND eta_latest_at <= ? AND told NOT LIKE '%late%' ORDER BY id").all(now - LATE_CHECK_MS)) {
+  // Pickup (online or by phone): one line at the ready time, never the late check (nobody is bringing it).
+  for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'placed' AND fulfillment IN ('pickup', 'phone') AND eta_latest_at IS NOT NULL AND eta_latest_at <= ? AND eta_latest_at > ? AND told NOT LIKE '%ready%' ORDER BY id").all(now, now - READY_LINE_MS)) {
+    const o = orderRow(o0.id, o0.conversation_id);
+    // Never in their night (23:00-08:00) unless the ready time itself is in it: a late restart stays quiet.
+    if (!o || !foodOn(o.conversation_id) || (nightAt(now, o.conversation_id) && !nightAt(o.eta_latest_at, o.conversation_id)) || !tellOnce(o, "ready")) continue;
+    looked++;
+    await sayTo(o.conversation_id, `Your ${o.restaurant || "pickup"} order should be ready now${o.place_address ? ` at ${o.place_address}` : ""}.`);
+  }
+  // A phone order for pickup: what the call came back with, recorded on the order.
+  for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'building' AND fulfillment = 'phone' ORDER BY id").all()) {
+    const o = orderRow(o0.id, o0.conversation_id);
+    if (!o || !foodOn(o.conversation_id)) continue;
+    if (await phoneOutcome(o, { now })) looked++;
+  }
+  // Once a day: orders left idle more than a day in draft, building or needs are closed, quietly.
+  if (now - lastIdleSweep >= DAY_MS) { lastIdleSweep = now; looked += await closeIdle({ now }); }
+  for (const o0 of q("SELECT id, conversation_id FROM food_orders WHERE status = 'placed' AND fulfillment = 'delivery' AND eta_latest_at IS NOT NULL AND eta_latest_at <= ? AND told NOT LIKE '%late%' ORDER BY id").all(now - LATE_CHECK_MS)) {
     const o = orderRow(o0.id, o0.conversation_id);
     if (!o || !foodOn(o.conversation_id) || !tellOnce(o, "late")) continue;
     looked++;
@@ -782,6 +1169,8 @@ async function sweepOnce(now) {
 }
 /** The hold is over: the checkout let go without its own end text, the order waits on them, one line. */
 async function lapse(o, shop) {
+  // Their yes landed just as the hold ran out and is being paid: that is not a lapse.
+  if (shop.paymentLive(o.run_id, o.conversation_id)) return;
   if (!tellOnce(o, `hold:${o.run_id}`)) return;
   await shop.letGo(o.run_id, "the 15-minute food hold ran out").catch(() => null);
   q("UPDATE food_orders SET run_id = NULL, status = 'needs', updated_at = ? WHERE id = ? AND conversation_id = ?").run(clock.now(), o.id, o.conversation_id);
@@ -810,7 +1199,8 @@ export function history(c, { now = clock.now() } = {}) {
   for (const o of rows) { const k = o.restaurant.toLowerCase(); if (!byPlace.has(k)) byPlace.set(k, []); byPlace.get(k).push(o); }
   const usual = [...byPlace.values()].slice(0, 8).map((os) => ({
     restaurant: os[0].restaurant, ordered_on: os[0].route === "direct" ? "direct" : os[0].platform ? appName(os[0].platform) : "", store_url: os[0].store_url, times: os.length,
-    last_two: os.slice(0, 2).map((o) => ({ items: o.items.map((it) => `${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}${it.modifiers?.length ? ` (${it.modifiers.join(", ")})` : ""}`), total: o.paid_amount || o.cart_total, notes: o.notes, when: new Date(o.placed_at).toISOString().slice(0, 10) })),
+    last_two: os.slice(0, 2).map((o) => ({ items: o.items.map((it) => `${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}${it.modifiers?.length ? ` (${it.modifiers.join(", ")})` : ""}`), total: o.paid_amount || o.cart_total, notes: o.notes, when: new Date(o.placed_at).toISOString().slice(0, 10),
+      ...(o.fulfillment !== "delivery" ? { fulfillment: o.fulfillment === "phone" ? "pickup, ordered by phone" : "pickup" } : {}), ...(o.fulfillment === "phone" ? { by_phone: phoneRecordLine(o) } : {}) })),
   }));
   const totals = rows.map((o) => cents(o.paid_amount || o.cart_total)).filter((x) => x != null).sort((a, b) => a - b);
   const addresses = [];
@@ -1176,11 +1566,18 @@ export const FOOD_TOOLS = new Set(["food_order"]);
 export const foodToolVisible = (name, conversationId) => !FOOD_TOOLS.has(name) || foodOn(conversationId);
 export const FOOD_TOOL_DEFS = [{
   name: "food_order",
-  description: "Food delivery orders. Nothing is charged by this tool. Actions: start (a new food request; ⏳ on their message), history (their past orders, usual per restaurant, each place's own ordering link, addresses, tip, normal cost, notes), past_orders (their past food orders read from the receipts in their mail, newest first, any app: for 'what did I last order' or 'get that again'; optional platform or restaurant), place (keep a restaurant's own ordering link, or no_direct true when it has none: direct first, the apps only as fallback), why_direct (they ask why not an app, or suggest one: the one line, from the record), options (2–3 dishes as ONE numbered picture; real photo_url from a tool result each), cart (record the cart as built, before store_checkout: checks every item against their allergies and diet), status (needs | failed | cancelled, as a tapback on their request), note (rejected | liked | disliked | instructions | allergy).",
+  description: "Food orders, delivered or for pickup. Nothing is charged by this tool. Actions: start (a new food request; ⏳ on their message; fulfillment pickup when they say they'll pick it up, e.g. 'I'll grab it', 'for pickup', 'to go': then no address question and no tip unless they name one), phone (a place with no online ordering at all: first call offers phoning the order in for pickup, paid at the counter, once; on their yes call it again with they_said_yes, items, order_name and pickup_time, and it gives the call_place fields; the call's result is recorded on the order by code), history (their past orders, usual per restaurant, each place's own ordering link, addresses, tip, normal cost, notes), past_orders (their past food orders read from the receipts in their mail, newest first, any app: for 'what did I last order' or 'get that again'; optional platform or restaurant), place (keep a restaurant's own ordering link, or no_direct true when it has none: direct first, the apps only as fallback), why_direct (they ask why not an app, or suggest one: the one line, from the record), options (2–3 dishes as ONE numbered picture; real photo_url from a tool result each), cart (record the cart as built, before store_checkout: checks every item against their allergies and diet), status (needs | failed | cancelled, as a tapback on their request), note (rejected | liked | disliked | instructions | allergy).",
   input_schema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["start", "history", "past_orders", "place", "why_direct", "options", "cart", "status", "note"] },
+      action: { type: "string", enum: ["start", "history", "past_orders", "place", "why_direct", "options", "cart", "phone", "status", "note"] },
+      fulfillment: { type: "string", enum: ["delivery", "pickup"], description: "start/cart: pickup when they said they'll pick it up. Default delivery." },
+      place_address: { type: "string", description: "cart/phone for pickup: the restaurant's own address, where they pick it up." },
+      their_tip: { type: "boolean", description: "cart for pickup: they named a tip themselves (otherwise pickup has none)." },
+      phone: { type: "string", description: "phone: the restaurant's number, E.164." },
+      order_name: { type: "string", description: "phone: the name the pickup order is held under." },
+      pickup_time: { type: "string", description: "phone: when they'll pick it up, as they said it; omit for as soon as it's ready." },
+      they_said_yes: { type: "boolean", description: "phone: they said yes to phoning the order in." },
       order_id: { type: "integer", description: "From start. cart/status default to the open order." },
       status: { type: "string", enum: ["needs", "failed", "cancelled"] },
       note_kind: { type: "string", enum: ["rejected", "liked", "disliked", "instructions", "allergy"] },
@@ -1211,7 +1608,9 @@ export const FOOD_TOOL_DEFS = [{
 const str = (n) => z.string().max(n).optional();
 export const FOOD_SCHEMAS = {
   food_order: z.object({
-    action: z.enum(["start", "history", "past_orders", "place", "why_direct", "options", "cart", "status", "note"]),
+    action: z.enum(["start", "history", "past_orders", "place", "why_direct", "options", "cart", "phone", "status", "note"]),
+    fulfillment: z.enum(["delivery", "pickup"]).optional(), place_address: str(300), their_tip: z.boolean().optional(),
+    phone: str(30), order_name: str(60), pickup_time: str(40), they_said_yes: z.boolean().optional(),
     order_id: z.number().int().positive().optional(),
     status: z.enum(["needs", "failed", "cancelled"]).optional(),
     note_kind: z.enum(["rejected", "liked", "disliked", "instructions", "allergy"]).optional(),
@@ -1228,7 +1627,8 @@ export const FOOD_SCHEMAS = {
 export async function runFoodTool(name, input, { conversationId: c, check, fetchPhoto, shoot, mailSearch, mailRead } = {}) {
   if (name !== "food_order" || !foodOn(c)) return { ok: false, error: "Not available." };
   const a = input?.action;
-  if (a === "start") return await startOrder(c);
+  if (a === "start") return await startOrder(c, { fulfillment: input.fulfillment });
+  if (a === "phone") return await phoneOrder(c, input, check ? { check } : {});
   if (a === "history") return history(c);
   if (a === "past_orders") return await pastOrders(c, { search: mailSearch, read: mailRead, platform: input.platform, restaurant: input.restaurant });
   if (a === "place") return notePlace(c, { restaurant: input.restaurant, url: input.store_url, noDirect: !!input.no_direct, menuChecked: !!input.menu_checked });
