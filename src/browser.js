@@ -11,6 +11,7 @@ import * as signinPage from "./signinpage.js";
 import { inPage, rememberPasswordBoxes, withoutQueries } from "./pagesecrets.js";
 import * as accounts from "./accounts.js";
 import { zoneFor } from "./zone.js";
+import * as remote from "./remotebrowser.js";
 
 const sessions = new Map(); // conversationId -> { context, page }
 /** conversationId -> the errand launch in progress, so a sign-in that takes the profile waits for it to finish and close. */
@@ -200,7 +201,11 @@ export function killRealOrphans({ procDir = "/proc", kill = (pid) => process.kil
  * anyone the switch does not allow, it is exactly today's launch of today's profile directory.
  * → the persistent context.
  */
-export async function launchProfile(launcher, conversationId, today, { platform = process.platform } = {}) {
+export async function launchProfile(launcher, conversationId, today, { platform = process.platform, site = "" } = {}) {
+  // The hosted browser (src/remotebrowser.js, REASON_REMOTE_BROWSER): only when the caller names the
+  // job's site, the switch covers this person and the site is on the list. Everything above the
+  // browser (the guard, the pin, the job) is the caller's same code on the context handed back.
+  if (site && remote.remoteFor(conversationId, site)) return remote.openRemote(launcher, conversationId, site);
   if (realBrowserFor(conversationId)) {
     if (!orphansSwept && platform === "linux") {
       orphansSwept = true;
@@ -323,14 +328,28 @@ export function profilePath(conversationId) {
  * The live page for this conversation, launching Chromium the first time. While a sign-in holds
  * their profile it throws `ProfileBusy` and touches no page: nothing is opened, read or pictured.
  */
-export async function pageFor(conversationId) {
+export async function pageFor(conversationId, { url = null } = {}) {
   if (holders.has(String(conversationId))) throw saidBusy();
+  // `url`: the page a tool is about to open. Only then is the browser chosen: the hosted one for a
+  // covered person's listed site (src/remotebrowser.js), else this machine's. "" is this machine's.
+  const want = url == null ? null : remote.remoteFor(conversationId, url);
   const existing = sessions.get(conversationId);
-  if (existing && !existing.page.isClosed()) { existing.used = Date.now(); return existing.page; }
+  if (existing && !existing.page.isClosed()) {
+    const have = existing.remoteSite ?? "";
+    // A signed-in job pinned to the hosted site keeps its browser: the pin refuses the other page.
+    if (want == null || want === have || (have && !want && pinnedSite(conversationId))) { existing.used = Date.now(); return existing.page; }
+    await closeBrowser(conversationId);
+  }
   const inFlight = launching.get(conversationId);
-  if (inFlight) { await inFlight.catch(() => {}); return pageFor(conversationId); }
+  if (inFlight) { await inFlight.catch(() => {}); return pageFor(conversationId, { url }); }
+  // A hosted session that ran out its cap mid-job: said once, rather than a blank local page.
+  if (want == null && existing?.remoteSite) {
+    sessions.delete(conversationId);
+    const ended = remote.takeEnded(conversationId);
+    if (ended) throw new remote.RemoteBrowserError("session_ended", ended.site);
+  }
 
-  const work = launchErrand(conversationId);
+  const work = launchErrand(conversationId, want || "");
   launching.set(conversationId, work);
   try {
     return await work;
@@ -339,7 +358,7 @@ export async function pageFor(conversationId) {
   }
 }
 
-async function launchErrand(conversationId) {
+async function launchErrand(conversationId, site = "") {
   const launcher = await chromium();
   let context;
   try {
@@ -350,7 +369,7 @@ async function launchErrand(conversationId) {
       serviceWorkers: "block",
       // No launch flag that hides automation from the site (removed 2026-10-23). A site that blocks
       // an automated browser gets a hand-back, never a workaround — the no-stealth rule in agent.js.
-    });
+    }, ...(site ? [{ site }] : []));
   } catch (e) {
     if (/Executable doesn't exist|browserType.launch/i.test(e.message)) {
       throw new NoBrowser("Chromium is not downloaded on this machine. Run: npx playwright install chromium");
@@ -360,6 +379,8 @@ async function launchErrand(conversationId) {
   // No request this browser makes reaches this machine's own network: a page (or a redirect, or a
   // script on it) pointing at 127.0.0.1, 169.254.169.254 or a name that resolves there is refused.
   // Every request by name; a page load also by its resolved addresses (security audit 2026-11-06).
+  // A hosted session is closed on any failure from here on: none is ever left running.
+  if (site) return hostedErrand(conversationId, context, site);
   await guardContext(context, { conversationId });
   // A sign-in took the profile while this one was starting: it is theirs, so this one goes.
   if (holders.has(String(conversationId))) {
@@ -371,6 +392,49 @@ async function launchErrand(conversationId) {
   sessions.set(conversationId, { context, page, used: Date.now() });
   if (isRealBrowser(context)) idleSweep();
   return page;
+}
+
+/** The errand on a hosted session: the same guard and page setup, and the session closed on any failure. */
+async function hostedErrand(conversationId, context, site) {
+  try {
+    await guardContext(context, { conversationId });
+    if (holders.has(String(conversationId))) throw saidBusy();
+    const page = context.pages()[0] ?? await context.newPage();
+    page.setDefaultTimeout(config.browserTimeoutMs);
+    sessions.set(conversationId, { context, page, used: Date.now(), remoteSite: site });
+    hostedIdleSweep();
+    return page;
+  } catch (e) {
+    await context.close().catch(() => {});
+    throw e;
+  }
+}
+
+/**
+ * A hosted errand session nobody used for this long is closed (REASON_REMOTE_BROWSER_IDLE_MS, default
+ * 2 minutes): the local browser may wait between turns, but a hosted one is billed by the minute.
+ */
+export function hostedIdleMs() {
+  const n = Number.parseInt(process.env.REASON_REMOTE_BROWSER_IDLE_MS ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 2 * 60_000;
+}
+let hostedTimer = null;
+export async function closeIdleHosted(now = Date.now()) {
+  const idle = [...sessions].filter(([, s]) => s.remoteSite && now - (s.used ?? 0) >= hostedIdleMs()).map(([c]) => c);
+  await Promise.all(idle.map(closeBrowser));
+  return idle.length;
+}
+let hostedEvery = 0;
+function hostedIdleSweep() {
+  const every = Math.max(250, Math.min(15_000, Math.floor(hostedIdleMs() / 4)));
+  if (hostedTimer && hostedEvery === every) return;
+  if (hostedTimer) clearInterval(hostedTimer);
+  hostedEvery = every;
+  hostedTimer = setInterval(() => {
+    closeIdleHosted().catch(() => {});
+    if (![...sessions.values()].some((s) => s.remoteSite)) { clearInterval(hostedTimer); hostedTimer = null; }
+  }, every);
+  hostedTimer.unref?.();
 }
 
 let idleTimer = null;
@@ -415,6 +479,8 @@ export async function closeBrowser(conversationId) {
 }
 export async function closeAllBrowsers() {
   await Promise.all([...sessions.keys()].map(closeBrowser));
+  // Any hosted session a sign-in flow still holds goes too: none is left running past shutdown.
+  await remote.closeAllRemote();
 }
 export function openConversations() {
   return [...sessions.keys()];

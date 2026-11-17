@@ -103,13 +103,13 @@ const same = (a, b) => {
  * meanwhile, and one still starting is waited for and closed first. With REASON_STABLE_BROWSER on for
  * them it opens with the one launch setting, and `view` says what size the picture is.
  */
-async function realLaunch({ conversationId, url }) {
+async function realLaunch({ conversationId, url, site = "" }) {
   const holder = Symbol("signin_browser");
   if (!holdProfile(conversationId, holder)) throw new Error("A sign-in is already open on their saved profile. Let it finish first.");
   let context = null;
   try {
     await closeErrandBrowser(conversationId);
-    return await openHeld({ conversationId, url, holder, opened: (c) => { context = c; } });
+    return await openHeld({ conversationId, url, holder, site, opened: (c) => { context = c; } });
   } catch (e) {
     await context?.close().catch(() => {});
     releaseProfile(conversationId, holder);
@@ -117,7 +117,7 @@ async function realLaunch({ conversationId, url }) {
   }
 }
 
-async function openHeld({ conversationId, url, holder, opened }) {
+async function openHeld({ conversationId, url, holder, opened, site = "" }) {
   const { chromium } = await import("playwright");
   const today = {
     headless: true, viewport: VIEW, deviceScaleFactor: 2,
@@ -128,7 +128,9 @@ async function openHeld({ conversationId, url, holder, opened }) {
   };
   // What a site sees, and the picture's size: the real browser's launch is this same setting with the real build.
   const options = launchOptions(conversationId, today);
-  const context = await launchProfile(chromium, conversationId, today);
+  // `site`: only the emailed-code sign-in passes it (launchProfileBrowser), for a site the hosted
+  // browser covers (src/remotebrowser.js). The phone link never does: no picture of a hosted page.
+  const context = await launchProfile(chromium, conversationId, today, ...(site ? [{ site }] : []));
   opened(context);
   // Never this machine's own network, on every request — a link can name any site by its address.
   await guardContext(context);

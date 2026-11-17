@@ -48,6 +48,9 @@ export function scrub(text) {
 
 const localDay = (ms) => new Date(ms).toLocaleDateString("en-CA", { timeZone: config.installTz });
 const localHour = (ms) => Number(new Date(ms).toLocaleString("en-US", { timeZone: config.installTz, hour: "numeric", hourCycle: "h23" }));
+/** The install's day and hour, for another once-a-day job hung on the digest pass (src/remotebrowser.js dailyRetry). */
+export const localDayOf = localDay;
+export const localHourOf = localHour;
 
 /** Keep a notice for the digest instead of sending it now. Returns the row id. */
 export function hold({ text, key = "", at = clock.now() }) {

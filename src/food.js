@@ -816,6 +816,19 @@ export async function placed(run) {
   return placedLine(o, { amount });
 }
 /**
+ * A food order placed on the person's own app account by Reason itself (src/doordash.js, site_card):
+ * no checkout run, the amount read off the app's own checkout. The same record and words as a placed
+ * checkout. → the placed line.
+ */
+export async function placedDirect(c, orderId, { amount = "", eta = "" } = {}) {
+  const o = ownOrder(c, orderId);
+  if (!o) return "";
+  q("UPDATE food_orders SET status = 'placed', paid_amount = ?, placed_at = ?, eta_text = CASE WHEN ? != '' THEN ? ELSE eta_text END, updated_at = ? WHERE id = ? AND conversation_id = ?")
+    .run(amount, clock.now(), eta, String(eta).slice(0, 20), clock.now(), o.id, c);
+  await setStatus(o, "placed");
+  return placedLine(ownOrder(c, orderId), { amount });
+}
+/**
  * shopconnect: the checkout ended without placing. Cancelled → 👍. A failure the first time → ❓ and
  * the model is woken to bring a fix (the same cart elsewhere, a swap, without the item); the second
  * time (it looped) → ❌; shopconnect's end text says plainly what blocked it.

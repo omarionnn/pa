@@ -29,8 +29,10 @@ export const STRIKE_GAP_MS = 10 * 60_000;
 // the email step of a Continue-with-Google job (src/federated.js), kept against google.com. A strike,
 // like a wall: one is a bad moment, two 10+ minutes apart mark Google for 7 days, and any account-level
 // answer from Google (signed in, a tap or a code asked, a wrong password) clears it.
-export const EVIDENCE = ["seed_generic_error_two_networks", "generic_error_twice", "wall", "challenge", "browser_refused"];
-const STRIKES = new Set(["wall", "challenge", "browser_refused"]);
+// "hosted_refused": the hosted browser (src/remotebrowser.js) got the site's generic refusal once; it
+// does not try twice, so once is the mark (kept under the site's hosted key, believed 7 days).
+export const EVIDENCE = ["seed_generic_error_two_networks", "generic_error_twice", "wall", "challenge", "browser_refused", "hosted_refused"];
+const STRIKES = new Set(["wall", "challenge", "browser_refused", "hosted_refused"]);
 const maxAgeOf = (evidence) => (STRIKES.has(evidence) ? WALL_MAX_AGE_MS : REFUSAL_MAX_AGE_MS);
 
 /** Written down by hand, with the day it was seen. */
@@ -76,6 +78,14 @@ export function siteKey(site) {
   const h = String(site ?? "").toLowerCase().trim().replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
   return /^[a-z0-9.-]{3,253}$/.test(h) ? registrableOf(h) : "";
 }
+/**
+ * The hosted browser (src/remotebrowser.js) keeps its own memory: a wall Reason's own browser met says
+ * nothing about it, and one it met says nothing about Reason's own. Its rows sit under the site's key
+ * with this suffix; `browser: "remote"` on the calls below reads and writes them. Local calls (the
+ * default, every caller before 2026-11-15) are unchanged.
+ */
+export const HOSTED_SUFFIX = "~hosted";
+const stored = (key, browser) => (browser === "remote" ? `${key}${HOSTED_SUFFIX}` : key);
 /** For tests. */
 export function _resetRefusals() { db.db.exec("DELETE FROM site_refusals; DELETE FROM site_wall_strikes"); }
 
@@ -83,11 +93,11 @@ export function _resetRefusals() { db.db.exec("DELETE FROM site_refusals; DELETE
  * Is this site on the list right now? → { site, label, seen ("2026-11-13"), evidence, source } | null.
  * The newer of the seed and the service's own mark wins; either is believed for 30 days.
  */
-export function refusingSite(site, now = clock.now()) {
+export function refusingSite(site, now = clock.now(), { browser = "local" } = {}) {
   const key = siteKey(site);
   if (!key) return null;
-  const seed = SEEDS.find((s) => s.site === key);
-  const row = db.db.prepare("SELECT evidence, seen_at FROM site_refusals WHERE site = ?").get(key);
+  const seed = browser === "remote" ? null : SEEDS.find((s) => s.site === key);
+  const row = db.db.prepare("SELECT evidence, seen_at FROM site_refusals WHERE site = ?").get(stored(key, browser));
   const cands = [
     seed ? { evidence: seed.evidence, seen_at: dayMs(seed.seen), source: "seed" } : null,
     row ? { evidence: row.evidence, seen_at: Number(row.seen_at), source: "live" } : null,
@@ -95,7 +105,7 @@ export function refusingSite(site, now = clock.now()) {
   const f = cands[0];
   // "cleared": an account-level answer after the mark (or the seed) — the site let Reason in.
   if (!f || f.evidence === "cleared" || now - f.seen_at >= maxAgeOf(f.evidence)) return null;
-  return { site: key, label: LABELS[key] ?? seed?.label ?? key, seen: isoDay(f.seen_at), evidence: f.evidence, source: f.source };
+  return { site: key, label: LABELS[key] ?? seed?.label ?? key, seen: isoDay(f.seen_at), evidence: f.evidence, source: f.source, ...(browser === "remote" ? { browser } : {}) };
 }
 
 const putMark = (key, evidence, now) => {
@@ -110,9 +120,11 @@ const putMark = (key, evidence, now) => {
  * STRIKE_GAP_MS after the first (with nothing reached in between: reachedForm clears the strike).
  * → the mark now in force, or null (a strike only).
  */
-export function markRefusing(site, evidence, now = clock.now()) {
+export function markRefusing(site, evidence, now = clock.now(), { browser = "local" } = {}) {
   const key = siteKey(site);
   if (!key || !EVIDENCE.includes(evidence)) return null;
+  // The hosted browser: one attempt, then stop. Its first wall or challenge marks the site at once.
+  if (browser === "remote") { putMark(stored(key, browser), evidence, now); return refusingSite(key, now, { browser }); }
   if (!STRIKES.has(evidence)) { putMark(key, evidence, now); return refusingSite(key, now); }
   const had = db.db.prepare("SELECT evidence, at FROM site_wall_strikes WHERE site = ?").get(key);
   const first = had && now - Number(had.at) < WALL_MAX_AGE_MS ? Number(had.at) : null;
@@ -130,10 +142,10 @@ export function markRefusing(site, evidence, now = clock.now()) {
 }
 
 /** One strike on record for this site, still within its 7 days (not yet a mark) → { evidence, seen } | null. */
-export function strikeOn(site, now = clock.now()) {
+export function strikeOn(site, now = clock.now(), { browser = "local" } = {}) {
   const key = siteKey(site);
   if (!key) return null;
-  const had = db.db.prepare("SELECT evidence, at FROM site_wall_strikes WHERE site = ?").get(key);
+  const had = db.db.prepare("SELECT evidence, at FROM site_wall_strikes WHERE site = ?").get(stored(key, browser));
   if (!had || now - Number(had.at) >= WALL_MAX_AGE_MS) return null;
   return { evidence: had.evidence, seen: isoDay(Number(had.at)) };
 }
@@ -143,15 +155,20 @@ export function strikeOn(site, now = clock.now()) {
  * bad moment). A challenge after a submit always comes after the form, so only an account-level answer
  * (clearRefusal) forgets that one.
  */
-export function reachedForm(site) {
+export function reachedForm(site, { browser = "local" } = {}) {
   const key = siteKey(site);
-  if (key) db.db.prepare("DELETE FROM site_wall_strikes WHERE site = ? AND evidence = 'wall'").run(key);
+  if (key) db.db.prepare("DELETE FROM site_wall_strikes WHERE site = ? AND evidence = 'wall'").run(stored(key, browser));
 }
 
 /** An account-level answer (signed in, wrong password, a code asked): the site is not refusing. */
-export function clearRefusal(site, now = clock.now()) {
+export function clearRefusal(site, now = clock.now(), { browser = "local" } = {}) {
   const key = siteKey(site);
   if (!key) return;
+  if (browser === "remote") {
+    db.db.prepare("DELETE FROM site_wall_strikes WHERE site = ?").run(stored(key, browser));
+    db.db.prepare("DELETE FROM site_refusals WHERE site = ?").run(stored(key, browser));
+    return;
+  }
   db.db.prepare("DELETE FROM site_wall_strikes WHERE site = ?").run(key);
   if (SEEDS.some((x) => x.site === key)) putMark(key, "cleared", now); // newer than the seed, so it wins
   else db.db.prepare("DELETE FROM site_refusals WHERE site = ?").run(key);
