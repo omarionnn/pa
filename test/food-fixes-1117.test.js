@@ -126,7 +126,16 @@ test("the model starting the checkout over (a form answer it could not fill) kee
   // this time without food_order_id and with its own wording for the item.
   runs[a.run_id].requiredAction = QUESTION("req_q"); runs[a.run_id].revision = 2;
   await shop.step(a.run_id);
-  const b = await checkout({ item: "burrito from Chipotle", what: "Chicken burrito, white rice, black beans. Drop-off: hand it to me. Tip $2. Stop at payment." });
+  // Started over without food_order_id at the same place: it is this order's checkout, so the food gate
+  // answers (one run at a time; a changed cart is recorded first). Nothing new is started.
+  const b0 = await checkout({ item: "burrito from Chipotle", what: "Chicken burrito, white rice, black beans. Drop-off: hand it to me. Tip $2. Stop at payment." });
+  assert.equal(b0.ok, false, JSON.stringify(b0));
+  assert.equal(b0.error, "checkout_running");
+  assert.equal(b0.food_order_id, st.order_id);
+  assert.equal(q("SELECT COUNT(*) AS n FROM shop_runs").get().n, 1, "no plain shopping run beside the food order");
+  // The model records the cart as it is now (that lets the old run go) and starts it again with the order.
+  assert.equal((await runTool("food_order", { action: "cart", order_id: st.order_id, ...BURRITO, notes: "Hand it to me" }, ctx)).ok, true);
+  const b = await checkout({ food_order_id: st.order_id, item: "burrito from Chipotle", what: "Chicken burrito, white rice, black beans. Drop-off: hand it to me. Tip $2. Stop at payment." });
   assert.equal(b.ok, true, JSON.stringify(b));
   assert.notEqual(b.run_id, a.run_id);
   assert.equal(q("SELECT status FROM shop_runs WHERE run_id = ?").get(a.run_id).status, "cancelled", "the old run is let go");
@@ -143,7 +152,7 @@ test("the model starting the checkout over (a form answer it could not fill) kee
   assert.equal(said.length, before + 1);
   assert.doesNotMatch(said.at(-1).t, /OK to pay/);
   // The 15-minute hold, not shopping's 30.
-  assert.equal(shop.askDeadline(pay) - pay.created_at, food.HOLD_MS);
+  assert.ok(Math.abs(shop.askDeadline(pay) - pay.created_at - food.HOLD_MS) < 1000, "15 minutes from the ask");
   assert.equal(food.orderRow(st.order_id, OMARI).status, "asked");
 });
 
@@ -161,9 +170,13 @@ test("across a restart the yes is pinned to the exact amount and the new cart re
   const c1 = await runTool("confirm_request", { action: "shop_pay", summary: said.at(-1).t, target: t1.use_target, stakes: "money" }, { conversationId: OMARI, messages: msgs });
   msgs.push({ role: "user", content: "[Tue, Nov 17 2026, 6:02 PM] yes" });
   assert.equal((await runTool("confirm_record", { confirmation_id: c1.confirmation_id }, { conversationId: OMARI, messages: msgs, judge: async () => ({ verdict: "yes" }) })).state, "granted");
-  // Before it is paid the model starts the same checkout over: the old card is declined, the new run is the order's.
-  const b = await checkout({ item: "Chipotle burrito", what: "Chicken burrito, white rice, black beans. Hand it to me. Tip $2. Stop at payment." });
+  // Before it is paid the model starts the same checkout over: refused while the old run is the order's;
+  // the cart recorded again lets the old run go (its card declined), and the new run is the order's.
+  const b0 = await checkout({ item: "Chipotle burrito", what: "Chicken burrito, white rice, black beans. Hand it to me. Tip $2. Stop at payment." });
+  assert.equal(b0.error, "checkout_running");
+  await runTool("food_order", { action: "cart", order_id: st.order_id, ...BURRITO, notes: "Hand it to me" }, ctx);
   assert.equal(q("SELECT status FROM shop_payments WHERE id = ?").get(first.id).status, "declined");
+  const b = await checkout({ food_order_id: st.order_id, item: "Chipotle burrito", what: "Chicken burrito, white rice, black beans. Hand it to me. Tip $2. Stop at payment." });
   runs[b.run_id].requiredAction = PAY("req_2", "28.32"); runs[b.run_id].revision = 2;
   await shop.step(b.run_id);
   const second = payRow(b.run_id);

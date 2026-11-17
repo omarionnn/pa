@@ -250,14 +250,16 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
   if (name === "store_checkout") {
     // A food order on a host many restaurants share (Toast, Square…) is keyed per restaurant (src/food.js).
     let foodKey = null, foodName = "";
-    // Started without food_order_id at the ordering page of their open food order: the model starting
-    // that checkout over (a form answer it could not fill, a retry). The order follows the new run.
-    let restartOf = null;
+    // Started without food_order_id at the ordering page of their open food order with a recorded cart
+    // (the model starting that checkout over: a form answer it could not fill, a retry): it is that
+    // order's checkout, so it goes through the same gate: the recorded, checked cart, one run at a time.
+    // A changed cart is recorded again first (food_order cart lets the old run go), so the card it
+    // brings never shows items or an allergy check from another cart.
+    let foodId = input.food_order_id ?? null;
     {
       const f = await import("./food.js");
-      if (!input.food_order_id) restartOf = f.orderAtPlace(c, input.start_url);
-      const fid = input.food_order_id ?? restartOf?.id;
-      if (fid && f.foodOn(c)) { foodName = f.ownOrder(c, fid)?.restaurant || ""; foodKey = f.directStoreKey(foodName || input.store, input.start_url); }
+      if (!foodId) foodId = f.orderAtPlace(c, input.start_url)?.id ?? null;
+      if (foodId && f.foodOn(c)) { foodName = f.ownOrder(c, foodId)?.restaurant || ""; foodKey = f.directStoreKey(foodName || input.store, input.start_url); }
     }
     const store = foodKey ?? shop.checkoutStoreKey(input.store, input.start_url);
     if (!store) return { ok: false, error: "Which store? Give its site." };
@@ -271,28 +273,19 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     }
     // A food order's checkout starts only on a recorded, checked cart, one at a time (src/food.js).
     let food = null;
-    if (input.food_order_id) {
+    if (foodId) {
       food = await import("./food.js");
       if (!food.foodOn(c)) food = null;
-      else { const no = food.checkoutGate(c, input.food_order_id, input.start_url); if (no) return no; }
+      else { const no = food.checkoutGate(c, foodId, input.start_url); if (no) return { ...no, food_order_id: foodId }; }
     }
     // The longer instruction is for a food cart's every item and modifier; anything else keeps 400.
-    if (!food && !restartOf && input.what.length > 400) return { ok: false, error: "what_too_long", say: "Say what to buy in 400 characters or fewer." };
+    if (!food && input.what.length > 400) return { ok: false, error: "what_too_long", say: "Say what to buy in 400 characters or fewer." };
     shop.noteStore({ store, name: (foodKey && foodName) || input.store, url: input.start_url });
     shop.ensureIcon(store); // for the sign-in page, if it comes to that; never waited on
-    const foodOrder = food ? food.ownOrder(c, input.food_order_id) : restartOf;
-    const oldRun = restartOf?.run_id && shop.runRow(restartOf.run_id)?.status === "running" ? restartOf.run_id : null;
     const out = await shop.startCheckout({ conversationId: c, store, startUrl: input.start_url, what: input.what, item: input.item, maxUsd: input.max_usd, signIn: !!input.sign_in,
-      supersedes: oldRun ? [oldRun] : [], noAddress: foodOrder?.fulfillment === "pickup" });
+      noAddress: food?.ownOrder(c, foodId)?.fulfillment === "pickup" });
     if (!out.ok) return out;
-    if (food) food.linkRun(c, input.food_order_id, out.runId);
-    else if (restartOf) {
-      const f = await import("./food.js");
-      // Its old run was let go (its payment declined): the order moves to the new one at a new revision,
-      // so a yes to the old card can never pay this one. An order whose run had already ended links anew.
-      if (restartOf.run_id) f.relinkRun(restartOf.run_id, out.runId);
-      else f.linkRun(c, restartOf.id, out.runId);
-    }
+    if (food) food.linkRun(c, foodId, out.runId);
     shop.follow(out.runId);
     const how = out.plan === "guest" ? "as a guest" : out.plan === "signed" ? `signed in to their ${shop.storeName(store)} account` : `signing in to their ${shop.storeName(store)} account first (they get a link by text if it asks)`;
     return { ok: true, run_id: out.runId, plan: out.plan, say: `Started ${how}. Nothing is charged: when it reaches payment they get a text with Crossmint's exact total to approve. Tell them in one line you're on it; don't promise a time.` };
