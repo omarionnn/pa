@@ -134,7 +134,21 @@ export function myInvites(conversationId) {
 // link: never a second ask, never a dead end, whatever the model does with the first one.
 export const ASK_FOR_WINDOW_MS = 30 * 60 * 1000;
 const askedFor = new Map();
-export function _resetAskedFor() { askedFor.clear(); }
+// Unused links already handed back in this window (reuseLink), so "three links" is three different
+// ones and a link just given to them is never the one cancelled for a named card a moment later.
+const handedOut = new Map();
+export function _resetAskedFor() { askedFor.clear(); handedOut.clear(); }
+
+function handedRecently(conversationId, now) {
+  const h = handedOut.get(conversationId);
+  return h && now - h.at < ASK_FOR_WINDOW_MS ? h.ids : new Set();
+}
+
+/** Their unused links made for nobody, oldest first, minus the ones handed back in this window. */
+function reusable(conversationId, now = clock.now()) {
+  const recent = handedRecently(conversationId, now);
+  return db.listInvites(conversationId).filter(i => i.state === "unused" && !i.for_name && !recent.has(i.id));
+}
 
 /**
  * Before a link is made with nobody named: should Reason first ask who it is for? `null` means go
@@ -147,7 +161,9 @@ export function askWhoFor(conversationId, { now = clock.now() } = {}) {
   if (at != null && now - at < ASK_FOR_WINDOW_MS) return null;
   const remaining = db.inviteAllowance(conversationId);
   const unused = db.unusedInviteCount(conversationId);
-  if (unused >= remaining) return { ok: false, none_left: true, invites_left: remaining, unused_links: unused };
+  // Nothing new to make, but a link of theirs made for nobody is still unused: the same offer, and
+  // their answer is served from that link (reuseLink). Only when there is no such link: none_left.
+  if (unused >= remaining && !reusable(conversationId, now).length) return { ok: false, none_left: true, invites_left: remaining, unused_links: unused };
   askedFor.set(conversationId, now);
   return { ok: false, needs_for: true, ...(inviterName(conversationId) ? {} : { needs_name: true }) };
 }
@@ -174,6 +190,40 @@ export function makeLink(conversationId, { forName } = {}) {
     ok: true, link: inviteUrl(out.invite.token), number: out.invite.id, shown_as: name,
     ...(forWho ? { for: forWho } : {}),
     ...(given && !forWho ? { plain_card: true } : {}),
+    invites_left: db.inviteAllowance(conversationId),
+  };
+}
+
+/**
+ * Every invite they have left is already on an unused link: serve the ask from one of those, never
+ * changing the count. A name fit for the card → their oldest unused link made for nobody is
+ * cancelled and replaced by a fresh one made for that name (an old link may already be in
+ * somebody's hands, and Reason cannot tell, so it is never renamed in place). No name, or one not
+ * fit to draw → that oldest link as it is, nothing cancelled, nothing said about the name.
+ */
+export function reuseLink(conversationId, { forName } = {}) {
+  const name = inviterName(conversationId);
+  if (!name) { askedFor.set(conversationId, clock.now()); return { ok: false, needs_name: true }; }
+  const now = clock.now();
+  const pick = reusable(conversationId, now)[0];
+  if (!pick) {
+    return { ok: false, none_left: true, invites_left: db.inviteAllowance(conversationId), unused_links: db.unusedInviteCount(conversationId) };
+  }
+  const given = typeof forName === "string" && forName.trim() !== "";
+  const forWho = given ? cleanInviteeName(forName) : "";
+  if (forWho) {
+    const out = cancelLink(conversationId, pick.id, { replace: true, forName: forWho });
+    if (out.ok && out.replacement) {
+      return { ok: true, link: out.replacement.link, number: out.replacement.number, shown_as: name, for: forWho, replaced: pick.id, invites_left: db.inviteAllowance(conversationId) };
+    }
+    if (!out.ok) return reuseLink(conversationId, { forName }); // that link changed under us: the next one
+    return out.why_no_replacement;
+  }
+  const recent = handedRecently(conversationId, now);
+  handedOut.set(conversationId, { at: now, ids: new Set([...recent, pick.id]) });
+  return {
+    ok: true, link: inviteUrl(pick.token), number: pick.id, shown_as: name, reused: true,
+    ...(given ? { plain_card: true } : {}),
     invites_left: db.inviteAllowance(conversationId),
   };
 }
