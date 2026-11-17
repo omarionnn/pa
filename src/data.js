@@ -43,6 +43,8 @@ import * as google from "./google.js";
 // deleted before the person's key goes. Loading it creates no file.
 import { deleteAllFor, deleteEveryLogin, exportFor, exportRoutesFor } from "./savedlogins.js";
 import { exportFor as exportPassphraseFor } from "./callpass.js";
+import { deleteContextsFor as deleteHostedFor, deleteEveryContext as deleteEveryHosted } from "./remotebrowser.js";
+import "./doordash.js"; // its table exists before an export or a delete reads the list
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
@@ -67,6 +69,13 @@ const TABLES = [
   // Their save-login links (src/loginintake.js): site, pinned sign-in page, their quoted request
   // (sealed), when made and used. Never a login. Dropped from an export (a live link), gone on a delete.
   "login_intake",
+  // The hosted browser (src/remotebrowser.js): which site's signed-in state is kept at Browserbase for
+  // them (the Context id, sealed; dropped from an export, deleted there and here on a delete), their
+  // yes to it, and the browser seconds each job used.
+  "remote_browser_contexts", "remote_browser_consent", "remote_browser_usage",
+  // Their DoorDash orders through the hosted browser (src/doordash.js): the address (sealed), the
+  // restaurant (sealed), the checkout's breakdown and total, the confirmation number (sealed).
+  "doordash_orders",
   // Which new features this person has been told about. Theirs like anything else keyed by
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.
@@ -126,6 +135,10 @@ const TABLES = [
   // drops those rows outright. They are a cache — the cost of deleting one somebody else also
   // sent is a re-fetch, and the cost of keeping it is a transcript of what they watched.
   "video_accounts",
+  // Video intake's transcript cache (REASON_VIDEO_INTAKE): the same kind of thing, the same rule. The
+  // rows hold no conversation, so a scoped export or delete reaches them through the links that
+  // conversation sent or Reason looked up for it; the lines go with their video.
+  "video_cache_lines", "video_cache",
   // Work handed to the builders on this machine. The row holds the master's own words asking for
   // it and the brief written from them, so it is his content like any plan or message: an export
   // that left it out would not be a copy of his data and a delete that left it behind would not be
@@ -321,6 +334,8 @@ export const KEPT_ON_DELETE = {
 export const INSTALL_WIDE = {
   site_wall_strikes: "A site's one unconfirmed wall or challenge (src/refusing.js): its registrable domain, a fixed evidence word and when; a second one 10+ minutes later marks the site. About the site, never a person",
   site_refusals: "Sites that turn away browsers run by software (src/refusing.js): the site's registrable domain, a fixed evidence word and the day seen; believed 30 days. About the site, never a person",
+  remote_browser_month: "Hosted browser (src/remotebrowser.js): browser seconds used per calendar month, for the monthly budget. No person.",
+  remote_browser_orphans: "Hosted browser (src/remotebrowser.js): a Browserbase Context id whose delete failed after its owner's data was deleted, kept only until Browserbase confirms it gone. No person.",
   site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain, with a short one-way mark of which sign-in page was asked (never the address itself); nothing in it says who asked.",
   plaid_slots: "How many banks were ever connected through Plaid (src/plaid.js), which Plaid's Trial plan counts even after a disconnect: a one-way mark of each bank connection and a hash of whose, emptied by deleteData (removeAllAtPlaid)",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
@@ -377,7 +392,7 @@ const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger deta
 // Nothing readable to export, but made from their words, so a delete takes them.
 // pay_passkey_regs: a Face ID registration's challenge while it is under way, nothing else.
 // login_intake: a save-login link, live for thirty minutes; its row holds the link's hash and nonce.
-const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings", "pay_passkey_regs", "login_intake"];
+const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings", "pay_passkey_regs", "login_intake", "remote_browser_contexts"];
 const REDACTED = "[not exported: this is a live credential]";
 
 function keepableThreadRow(r) {
@@ -436,6 +451,10 @@ const CHILD_SCOPE = {
   research_queries: ["research_id IN (SELECT id FROM research WHERE conversation_id = ?)", 1],
   research_sources: ["research_id IN (SELECT id FROM research WHERE conversation_id = ?)", 1],
   video_accounts: ["url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
+    + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
+  video_cache_lines: ["video_id IN (SELECT video_id FROM video_cache WHERE url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
+    + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?))", 2],
+  video_cache: ["url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
     + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
   remote_events: ["job_id IN (SELECT id FROM remote_jobs WHERE conversation_id = ?)", 1],
   stranger_calls: ["matched_conversation_id = ?", 1],
@@ -713,6 +732,10 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   // below (the username hint is sealed under it), and before the rows below, so the record
   // deleteAllFor writes goes with the rest of theirs.
   const savedLogins = { deleted: conversation ? deleteAllFor(conversation, { purpose: "their data was deleted" }) : deleteEveryLogin() };
+  // Their signed-in state kept in the hosted browser goes at Browserbase before its rows go below. No
+  // row, no request. A context Browserbase would not delete keeps its row and is said in the ops digest.
+  let hostedBrowser;
+  try { hostedBrowser = conversation ? await deleteHostedFor(conversation, { orphan: true }) : await deleteEveryHosted({ orphan: true }); } catch { hostedBrowser = { deleted: 0, failed: 1 }; }
 
   const rows = {};
   const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];
@@ -809,6 +832,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   return {
     deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, proof_pictures, uploads: uploadsGone, profiles, builds, event_photos: eventPhotos,
     saved_logins: savedLogins,
+    hosted_browser: hostedBrowser,
     key_destroyed: !!sealedKey.shredded,
     // Banks let go of at Plaid (/item/remove). A failure is said: the token is deleted here either
     // way, so Reason cannot read the account, but the connection may still be listed at the bank.
