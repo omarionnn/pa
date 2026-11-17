@@ -156,8 +156,10 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
   }
   const ask = frame({
     step: "ask",
-    main: headline(`Pay ${v.amount} at ${v.store}?`, "Approve it with Face ID.", "pk-h")
-      + lede(v.breakdown?.length ? "The store's own figures, from its checkout. The total is exactly what's paid." : "This is the exact total, with tax and shipping, from the store's checkout.")
+    main: headline(v.kind === "doordash" ? `Place ${v.amount} from ${v.store}?` : `Pay ${v.amount} at ${v.store}?`, "Approve it with Face ID.", "pk-h")
+      + lede(v.kind === "doordash"
+        ? `DoorDash's own figures, from its checkout${v.address ? `, to ${esc(v.address)}` : ""}${v.eta ? `, about ${esc(v.eta)}` : ""}. Paid with the card on your DoorDash account. If the total changes before I place it, I ask again.`
+        : v.breakdown?.length ? "The store's own figures, from its checkout. The total is exactly what's paid." : "This is the exact total, with tax and shipping, from the store's checkout.")
       + theTotal(v)
       + `<div class="pk-note pk-go">${actions(`<button class="act pf-go" type="button" id="pk-go" data-busy="1">${FACE}Approve with Face ID <span aria-hidden="true">→</span></button>`, NO("Decline"))}</div>`
       + label(`RUNS OUT IN ${minutes(left)} MIN · NOTHING CHARGED YET`)
@@ -166,14 +168,14 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
   });
   const paying = frame({
     step: "paying", off: true,
-    main: headline("Approved.", "Paying the store now.") + lede("Keep this open until it's through. However it goes, I'll text you too.")
+    main: headline("Approved.", v.kind === "doordash" ? "Placing it on DoorDash now." : "Paying the store now.") + lede("Keep this open until it's through. However it goes, I'll text you too.")
       + steps([["Face ID checked", "done"], [`Paying ${v.amount}`, "now"], ["Store places the order", "todo"]], { id: "pk-steps", live: true })
       + live({ id: "pk-live", lines: payingLines(v.store, v.amount) }),
     margin: label("SO FAR") + para(`Only ${esc(v.amount)}, only at ${esc(v.store)}.`),
   });
   const paid = frame({
     step: "paid", off: true,
-    main: headline(`Paid ${v.amount}.`, "Back to the chat.") + lede(`${v.store} still has to place the order. I'll text you when it's through.`)
+    main: headline(v.kind === "doordash" ? `Placed, ${v.amount}.` : `Paid ${v.amount}.`, "Back to the chat.") + lede(v.kind === "doordash" ? "It's in on DoorDash. I've texted you the details." : `${v.store} still has to place the order. I'll text you when it's through.`)
       + paper({ stamp: "APPROVED", label: v.store.toUpperCase(), big: v.amount, extra: v.item ? `<p class="pk-item">${esc(v.item)}</p>` : "" })
       + backToMessages(v.a?.conversation_id),
     margin: label("APPROVED WITH") + para("Face ID, on this device.") + label("THIS LINK", { sp: true }) + para("Is used up. It can't pay again."),

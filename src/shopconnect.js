@@ -1463,6 +1463,12 @@ export function breakdownOf(row) {
 }
 export function approvalView(token) {
   const a = passkey.approvalFor(token);
+  // A DoorDash order placed on their own account (src/doordash.js, kind 'doordash'): its own view, and
+  // the switch it rides is DoorDash's (not the store checkout's), so a person without Crossmint still has it.
+  if (a?.kind === "doordash") {
+    if (!ddMod || !ddMod.doordashFor(a.conversation_id) || !passkey.passkeyAllowedFor(a.conversation_id)) return null;
+    return ddMod.approvalView(a);
+  }
   if (!a || !connectAllowedFor(a.conversation_id) || !passkey.passkeyAllowedFor(a.conversation_id)) return null;
   // A raise of the daily spending limit rides the same link (src/spendcap.js, kind 'cap'): the page
   // shows the new number and the old one instead of a store and an item, and a tap changes the limit.
@@ -1485,6 +1491,9 @@ export function approvalView(token) {
 export async function payByPasskey(token, response) {
   const v = approvalView(token);
   if (!v) return { ok: false, error: "not_found" };
+  // A DoorDash order: their limits first (the link stays open over them), then Face ID against the order
+  // as it is now, then the one press with the page re-read; the result is texted to them.
+  if (v.kind === "doordash") return await ddMod.placeApproved(v, response, { notify });
   // A raise of the daily limit: Face ID verified against the change as it is, then the number changes.
   // Nothing is paid, nothing reaches a store. The one line is texted because no model turn runs here.
   if (v.kind === "cap") {
@@ -1576,6 +1585,12 @@ export async function declineByLink(token) {
   const v = approvalView(token);
   if (!v || v.state !== "open") return { ok: false, error: "not_open" };
   passkey.closeApproval(v.a, "declined");
+  if (v.kind === "doordash") {
+    ddMod?.voidFor(v.row.conversation_id, v.row.id);
+    passkey.logEvent(v.row.conversation_id, v.row, "declined");
+    await notify(v.row.conversation_id, `Declined. Nothing was ordered from ${v.row.restaurant || "DoorDash"}.`);
+    return { ok: true };
+  }
   if (v.kind === "cap") {
     const out = spendcap.declineChange(v.row.conversation_id, v.row.id);
     passkey.logEvent(v.row.conversation_id, v.row, "declined");
@@ -1776,6 +1791,9 @@ function foodFor(run) {
   return foodMod;
 }
 let foodMod = null;
+// DoorDash orders approved on the same Face ID page (src/doordash.js): a late import, as food's.
+let ddMod = null;
+export const ddReady = import("./doordash.js").then((m) => { ddMod = m; }).catch(() => { ddMod = null; });
 /** Resolves once the food module is loaded (a cycle-free late import: food.js reads this module at call time). */
 export const foodReady = import("./food.js").then((m) => { foodMod = m; }).catch(() => { foodMod = null; });
 // A flight is a checkout on the airline's own site, with a flight's rules on it (src/flightcheckout.js).
