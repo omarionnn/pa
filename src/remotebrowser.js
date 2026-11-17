@@ -48,6 +48,7 @@ import { registrableOf } from "./sitepolicy.js";
 import { sealFor, openAny } from "./restcrypt.js";
 import * as opsdigest from "./opsdigest.js";
 import * as refusing from "./refusing.js";
+import * as incidents from "./incidents.js";
 
 // ---------------------------------------------------------------- the switch and the list
 /** `off` | `owner` | `on`, read at call time like the other REASON_* switches. */
@@ -56,9 +57,14 @@ export function remoteBrowserMode() {
   if (v === "owner") return "owner";
   return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
 }
+/** A group thread's conversation ("group:…"), never one person's. */
+export const isGroupConversation = (c) => /^group:/i.test(String(c ?? ""));
 /** Does the switch cover this person? */
 export function remoteAllowedFor(conversationId) {
   if (!conversationId) return false;
+  // A group thread: nobody in it can consent, sign in or order on another member's account, so the
+  // hosted browser (and every job on it) is never for a group, whatever the switch says.
+  if (isGroupConversation(conversationId)) return false;
   const mode = remoteBrowserMode();
   if (mode === "off") return false;
   if (mode === "owner") return accounts.featureOwner(conversationId);
@@ -123,6 +129,18 @@ function sayCapClamped() {
 }
 /** How long a session may take to start and connect before it is given up. */
 export const startTimeoutMs = () => num(process.env.REASON_REMOTE_BROWSER_START_MS, 30_000);
+/** How long to wait before the one retry when Browserbase says too many sessions at once (default 5 s). */
+export const busyWaitMs = () => num(process.env.REASON_REMOTE_BROWSER_BUSY_WAIT_MS, 5_000);
+/** When a busy refusal's job is tried again (a wake on their thread; default 5 minutes). */
+export const busyRetryMs = () => num(process.env.REASON_REMOTE_BROWSER_BUSY_RETRY_MS, 5 * 60_000);
+const busyWakes = new Map(); // conversationId -> when the last wake was set
+/** "I'll try again in a few minutes" made true: one wake on their thread, at most one per 10 minutes. */
+function busyRetry(c, site) {
+  const at = clock.now();
+  if (at - (busyWakes.get(c) ?? 0) < 10 * 60_000) return;
+  busyWakes.set(c, at);
+  try { db.createTimer(c, { fireAt: at + busyRetryMs(), note: `[hosted browser] ${labelOf(site)} was too busy on Reason's side a few minutes ago. Try the same ${labelOf(site)} step once more now. If it is busy again, say so in one line and offer the restaurant's own site or pickup; do not set another retry.` }); } catch { /* the words still go */ }
+}
 const credentials = () => ({ key: String(process.env.BROWSERBASE_API_KEY ?? "").trim(), projectId: String(process.env.BROWSERBASE_PROJECT_ID ?? "").trim() });
 
 /**
@@ -173,6 +191,9 @@ export const FAILURES = ["key_missing", "key_invalid", "unreachable", "out_of_mi
 const LABELS = { "doordash.com": "DoorDash" };
 export const labelOf = (site) => LABELS[site] ?? site;
 
+/** What Reason can do right now when the hosted browser is out on its side (minutes, or too busy). */
+export const SIDE_INSTEAD = "I can order it from the restaurant's own site, or set it up for pickup, instead.";
+const SIDE_INSTEAD_LOWER = "I can order it from the restaurant's own site, or set it up for pickup, right now.";
 /** What the person is told, once, for each way it can fail. Fixed words; no page text. */
 export function failureWords(code, site, { alt = "" } = {}) {
   const L = labelOf(site);
@@ -184,11 +205,12 @@ export function failureWords(code, site, { alt = "" } = {}) {
     case "unreachable":
       return `I couldn't reach the hosted browser I use for ${L} just now, so I didn't open ${L}. ${own}`;
     case "out_of_minutes":
-      return `I've used up this month's time on the hosted browser I use for ${L}, so I can't open ${L} until next month. ${own}`;
+      // On Reason's side, never a limit on them; what it can do now; never a plan, never "the app" alone.
+      return `I can't use ${L} for you right now. That's on my side, not a limit on you or your account. ${SIDE_INSTEAD}`;
     case "start_timeout":
       return `The hosted browser I use for ${L} didn't start in time, so I stopped without opening ${L}. ${own}`;
     case "busy":
-      return `The hosted browser I use for ${L} is in use for too many jobs right now, so I didn't open ${L}. ${own}`;
+      return `${L} is busy on my side right now, with too many orders going through me at once. That's not a limit on you. I'll try again in a few minutes, or ${SIDE_INSTEAD_LOWER}`;
     case "challenge":
       return `${L} asked me to prove I'm a person, so I stopped there and didn't try to get past it. Nothing was ordered and your account wasn't touched. ${own}`;
     case "refused":
@@ -262,6 +284,8 @@ db.db.exec(`
 export function _resetRemote() {
   db.db.exec("DELETE FROM remote_browser_contexts; DELETE FROM remote_browser_consent; DELETE FROM remote_browser_usage; DELETE FROM remote_browser_month; DELETE FROM remote_browser_orphans");
   lastEnded.clear();
+  busyWakes.clear();
+  inFlight.clear();
   starting.clear();
   counters.opens = 0; counters.api = 0;
 }
@@ -442,6 +466,119 @@ export const PERSONAL_TABLES = ["remote_browser_contexts", "remote_browser_conse
 
 // ---------------------------------------------------------------- metering
 const monthOf = (ms) => new Date(ms).toISOString().slice(0, 7);
+
+// What Browserbase itself says has been used (GET /v1/projects/{id}/usage → browserMinutes), the truth
+// for the budget: it counts every session on the project, Reason's or not (2026-11-17: Browserbase 13 of
+// 60, Reason's own count 0). Read at most hourly and after each hosted session; the last reading is kept
+// in ops_state. A read that fails keeps the last good figure, falls back to Reason's own count, and
+// says so in the digest.
+const USAGE_KEY = "remote_browser:usage";
+/** How old Browserbase's figure may be before it is read again. */
+export const USAGE_EVERY_MS = 60 * 60_000;
+/** The last reading: { minutes, month, at, tried, error } | null. */
+export function lastUsage() {
+  try { return JSON.parse(db.opsGet(USAGE_KEY) ?? "null"); } catch { return null; }
+}
+/** Read Browserbase's figure now if the last read is older than an hour (or `force`). Never throws. */
+export async function refreshUsage({ force = false, now = clock.now() } = {}) {
+  const { key, projectId } = credentials();
+  if (!key || !projectId) return lastUsage();
+  const old = lastUsage();
+  if (!force && old?.tried && now - old.tried < USAGE_EVERY_MS) return old;
+  let next;
+  try {
+    const got = await api("GET", `/v1/projects/${encodeURIComponent(projectId)}/usage`, undefined, { timeoutMs: 8_000 });
+    const m = Number(got?.browserMinutes);
+    if (!Number.isFinite(m) || m < 0) throw new Error("no browserMinutes in the answer");
+    next = { minutes: m, month: monthOf(now), at: now, tried: now, error: null };
+  } catch (e) {
+    next = { ...(old ?? { minutes: null, month: null, at: null }), tried: now, error: String(e?.code ?? e?.message ?? "unreadable").slice(0, 60) };
+  }
+  try { db.opsSet(USAGE_KEY, JSON.stringify(next)); } catch { /* the next read tries again */ }
+  digestUsage(now);
+  return next;
+}
+/** Sessions under way: each one's whole cap is held against the month until it settles. */
+const inFlight = new Set();
+/**
+ * Seconds used this month for the budget: Browserbase's own figure (when read this month) plus the
+ * sessions Reason ran since that reading and the caps of the ones still running; Reason's own count
+ * when there is no good reading. Never less than Reason's own count.
+ */
+export function usedSeconds(now = clock.now()) {
+  const own = monthSeconds(now);
+  const u = lastUsage();
+  if (!u || u.at == null || u.minutes == null || u.month !== monthOf(now)) return own;
+  const monthStart = Date.parse(`${monthOf(now)}-01T00:00:00Z`);
+  const since = Number(db.db.prepare("SELECT COALESCE(SUM(seconds), 0) AS s FROM remote_browser_usage WHERE started_at >= ? AND started_at + seconds * 1000 > ?").get(monthStart, u.at)?.s ?? 0);
+  const held = [...inFlight].reduce((n, h) => n + (h.seconds || 0), 0);
+  return Math.max(own, Math.round(u.minutes * 60) + since + held);
+}
+/** Whole minutes left this month (never below 0). */
+export const minutesLeft = (now = clock.now()) => Math.max(0, Math.floor((monthBudgetMinutes() * 60 - usedSeconds(now)) / 60));
+/** Whose figure the budget goes by right now: "browserbase", or "own" with why. */
+export function usageSource(now = clock.now()) {
+  const u = lastUsage();
+  if (u?.at != null && u.minutes != null && u.month === monthOf(now)) return { source: "browserbase", at: u.at, error: u.error ?? null };
+  return { source: "own", at: null, error: u?.error ?? (u ? null : "not read yet") };
+}
+/** The digest's line: used, left, and whose figure it is. Kept per month: the latest replaces the earlier. */
+function digestUsage(now = clock.now()) {
+  try {
+    const used = (usedSeconds(now) / 60).toFixed(1);
+    const src = usageSource(now);
+    const whose = src.source === "browserbase"
+      ? (src.error ? `Browserbase's figure from an earlier read; the latest read failed (${src.error})` : "Browserbase's figure")
+      : `Reason's own count: Browserbase's usage could not be read${src.error ? ` (${src.error})` : ""}`;
+    opsdigest.hold({ key: `remote_browser:minutes:${monthOf(now)}`, text: `Hosted browser (Browserbase): ${used} of ${monthBudgetMinutes()} minutes used this month, ${minutesLeft(now)} left (${whose}).`, at: now });
+  } catch { /* the digest is best effort */ }
+}
+
+// ---------------------------------------------------------------- the owner's alert
+/** Minutes left at which the owner is told, once a month (REASON_REMOTE_BROWSER_ALERT_MINUTES, default 10). */
+export const alertMinutes = () => num(process.env.REASON_REMOTE_BROWSER_ALERT_MINUTES, 10);
+const orderMinutesPlanned = () => num(process.env.REASON_DOORDASH_ORDER_MINUTES, 10);
+/** The two texts, by what is left. */
+export function alertText(left, { budget = monthBudgetMinutes() } = {}) {
+  if (left <= 0) return `Browserbase: this month's ${budget} hosted-browser minutes are used up, so DoorDash has stopped for everyone until the plan is upgraded or the month turns over.`;
+  const orders = Math.floor(left / orderMinutesPlanned());
+  return `Browserbase: ${left} of ${budget} hosted-browser minutes left this month, about ${orders} DoorDash order${orders === 1 ? "" : "s"}. At zero DoorDash stops for everyone until the plan is upgraded.`;
+}
+/**
+ * The owner's text through the ops incidents' owner path (src/incidents.js notice): once a month when
+ * the minutes left drop below the threshold, and a second time at zero. Marked only once it went (no
+ * owner line yet at startup: tried again on the next pass). → the text sent, or null.
+ */
+export async function minutesAlert({ now = clock.now(), send = null } = {}) {
+  const { key, projectId } = credentials();
+  if (!key || !projectId || remoteBrowserMode() === "off") return null;
+  const left = minutesLeft(now);
+  const month = monthOf(now);
+  const zeroKey = `remote_browser:alert:${month}:zero`;
+  const lowKey = `remote_browser:alert:${month}:low`;
+  let which = null;
+  if (left <= 0 && !db.opsGet(zeroKey)) which = "zero";
+  else if (left < alertMinutes() && !db.opsGet(lowKey) && !db.opsGet(zeroKey)) which = "low";
+  if (!which) return null;
+  const text = alertText(left);
+  const sent = await Promise.resolve((send ?? incidents.notice)(text, `remote_browser:${month}:${which}`)).catch(() => false);
+  if (!sent) return null;
+  db.opsSet(which === "zero" ? zeroKey : lowKey, String(now));
+  if (which === "zero") db.opsSet(lowKey, db.opsGet(lowKey) || String(now));
+  return text;
+}
+/** The ops page's row: used and left, whose figure, and the alert state. null when not set up. */
+export function opsRow(now = clock.now()) {
+  const { key, projectId } = credentials();
+  if (!key || !projectId) return null;
+  const left = minutesLeft(now);
+  const src = usageSource(now);
+  const month = monthOf(now);
+  const told = db.opsGet(`remote_browser:alert:${month}:zero`) ? "zero text sent" : db.opsGet(`remote_browser:alert:${month}:low`) ? "low-minutes text sent" : "";
+  const detail = [`${(usedSeconds(now) / 60).toFixed(1)} of ${monthBudgetMinutes()} min used`, `${left} min left`,
+    src.source === "browserbase" ? `Browserbase's figure${src.error ? " (latest read failed)" : ""}` : "Reason's own count (Browserbase's usage unreadable)", told].filter(Boolean).join(" · ");
+  return { state: left <= 0 ? "bad" : left < alertMinutes() ? "warn" : "ok", detail };
+}
 export function monthSeconds(now = clock.now()) {
   return Number(db.db.prepare("SELECT seconds FROM remote_browser_month WHERE month = ?").get(monthOf(now))?.seconds ?? 0);
 }
@@ -472,17 +609,15 @@ function chargeDelta(month, delta) {
 function meter(conversationId, site, startedAt, endedAt, ended, held = null) {
   const seconds = Math.max(0, Math.ceil((endedAt - startedAt) / 1000));
   db.db.prepare("INSERT INTO remote_browser_usage (conversation_id, site, started_at, seconds, ended) VALUES (?, ?, ?, ?, ?)").run(String(conversationId), site, startedAt, seconds, ended);
-  if (held) { chargeDelta(held.month, -held.seconds); held.seconds = 0; }
+  if (held) { chargeDelta(held.month, -held.seconds); held.seconds = 0; inFlight.delete(held); }
   chargeDelta(monthOf(startedAt), seconds);
   // One line, numbers and the site only: never a person, a page or an address.
-  try { sink(`hosted-browser session site=${site} seconds=${seconds} ended=${ended} month_minutes=${(monthSeconds(endedAt) / 60).toFixed(1)}/${monthBudgetMinutes()}`); } catch { /* a log line never breaks a job */ }
-  try {
-    opsdigest.hold({
-      key: `remote_browser:minutes:${monthOf(endedAt)}`,
-      text: `Hosted browser (Browserbase): ${(monthSeconds(endedAt) / 60).toFixed(1)} of ${monthBudgetMinutes()} browser-minutes used this month.`,
-      at: endedAt,
-    });
-  } catch { /* the digest is best effort */ }
+  try { sink(`hosted-browser session site=${site} seconds=${seconds} ended=${ended} month_minutes=${(usedSeconds(endedAt) / 60).toFixed(1)}/${monthBudgetMinutes()}`); } catch { /* a log line never breaks a job */ }
+  digestUsage(endedAt);
+  // Browserbase's figure again after each session, then the owner's alert if the month is running low.
+  if (!process.env.NODE_TEST_CONTEXT || process.env.REASON_REMOTE_BROWSER_TEST_USAGE === "1") {
+    refreshUsage({ force: true }).then(() => minutesAlert()).catch(() => {});
+  }
   return seconds;
 }
 const OPS_WORDS = {
@@ -536,7 +671,7 @@ function gateCode(c, s) {
   if (!key || !projectId) return "key_missing";
   if (refusing.refusingSite(s, undefined, { browser: "remote" })) return "refused";
   if (!consented(c, s)) { noteAsked(c, s); return "consent_needed"; }
-  if (monthBudgetMinutes() * 60 - monthSeconds() < 60) return "out_of_minutes";
+  if (monthBudgetMinutes() * 60 - usedSeconds() < 60) return "out_of_minutes";
   return null;
 }
 /**
@@ -563,14 +698,16 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
   if (!s) throw new Error("openRemote called for a site the switch does not cover"); // never: the caller checked
   const fail = (code) => { const e = new RemoteBrowserError(code, s, { alt }); if (OPS_WORDS[code]) opsLine(code, s); return e; };
   const { projectId } = credentials();
+  await refreshUsage().catch(() => null);
   { const code = gateCode(c, s); if (code) throw fail(code); }
-  const left = monthBudgetMinutes() * 60 - monthSeconds();
+  const left = monthBudgetMinutes() * 60 - usedSeconds();
   sayCapClamped();
   const timeoutSec = Math.max(60, Math.min(sessionCapMinutes() * 60, left));
   // The cap is held against the month now, before any await: see charge().
   const held = { month: monthOf(clock.now()), seconds: timeoutSec };
   charge(held.month, timeoutSec);
-  const refund = () => { if (held.seconds) { chargeDelta(held.month, -held.seconds); held.seconds = 0; } };
+  inFlight.add(held);
+  const refund = () => { if (held.seconds) { chargeDelta(held.month, -held.seconds); held.seconds = 0; } inFlight.delete(held); };
   // One hosted session per person at a time: a Context is used by one session at once.
   await closeRemoteFor(c);
   if (db.db.prepare("SELECT 1 FROM remote_browser_orphans LIMIT 1").get()) await retryOrphans().catch(() => 0);
@@ -579,7 +716,14 @@ export async function openRemote(launcher, conversationId, site, { alt = "" } = 
   try { contextId = await ensureContext(c, s, projectId); } catch (e) { refund(); const err = withSite(e, s, alt); if (OPS_WORDS[err.code]) opsLine(err.code, s); throw err; }
   let made;
   try {
-    made = await api("POST", "/v1/sessions", sessionRequest({ projectId, contextId, site: s, timeoutSec }), { timeoutMs: startTimeoutMs(), startCall: true });
+    const ask = () => api("POST", "/v1/sessions", sessionRequest({ projectId, contextId, site: s, timeoutSec }), { timeoutMs: startTimeoutMs(), startCall: true });
+    try { made = await ask(); } catch (e) {
+      // Too many sessions at once: wait a moment and ask once more; a second refusal is said, and a
+      // wake is set to try again in a few minutes (busyRetry).
+      if (!(e instanceof RemoteBrowserError) || e.code !== "busy") throw e;
+      await new Promise((r) => { const t = setTimeout(r, busyWaitMs()); t.unref?.(); });
+      try { made = await ask(); } catch (e2) { if (e2 instanceof RemoteBrowserError && e2.code === "busy") busyRetry(c, s); throw e2; }
+    }
   } catch (e) {
     const err = withSite(e, s, alt);
     // A create that timed out on our side may still have made a session there, running to its cap

@@ -63,6 +63,20 @@ export function start({ send = null, link = null, log = null } = {}) {
 }
 export function stop() { sender = null; }
 
+/**
+ * A one-line notice to the owner on the same path the alerts use (their thread, through the outbox),
+ * for a heads-up that is not a failure with a lifecycle (src/remotebrowser.js minutesAlert: the
+ * month's hosted-browser minutes running low). No row, no "resolved" after it. → true once handed to
+ * the outbox; false when there is nobody to tell yet (startup), so the caller can try again.
+ */
+export function notice(text, idem) {
+  if (!sender || !text) return false;
+  try {
+    Promise.resolve(sender(digest.scrub(text), `${KEY_PREFIX}notice:${idem}`)).catch((e) => logger({ incident_text_failed: one(e?.message ?? e, 120) }));
+    return true;
+  } catch (e) { logger({ incident_text_failed: one(e?.message ?? e, 120) }); return false; }
+}
+
 const one = (s, max = 240) => {
   const t = String(s ?? "").replace(/\s+/g, " ").trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
