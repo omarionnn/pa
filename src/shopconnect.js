@@ -2272,7 +2272,7 @@ export async function step(runId) {
     const signin = it0.kind === "form" && (it0.fields ?? []).some(isProtected);
     const app = foodMod.handoffApp(run, { rq: signin ? rq0 : null, account: signin ? signinAccount(run.store, rq0) : "", urls: pageUrlsOf(cur) });
     if (app) {
-      if (requestId) q("UPDATE shop_runs SET last_request_id = ?, question = ?, request_json = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(requestId, short(ra.request?.question ?? "", 600), JSON.stringify(publicRequest(rq0)), now, now, runId);
+      if (requestId) q("UPDATE shop_runs SET last_request_id = ?, question = ?, request_json = ?, progress_at = ?, updated_at = ? WHERE run_id = ? AND conversation_id = ?").run(requestId, short(ra.request?.question ?? "", 600), JSON.stringify(publicRequest(rq0)), now, now, runId, run.conversation_id);
       await foodMod.handOff(runRow(runId), app);
       return { done: true, status: "cancelled", said, handoff: app };
     }
