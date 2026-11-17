@@ -710,12 +710,13 @@ export function taskFor(plan, store, what) {
 
 /** Starts a checkout. `maxUsd` is a cap Crossmint enforces, never a price anyone agreed to. */
 /** `item` is what the ask names ("a 4-ft USB-C cable"); `what` is the full instruction for the agent. */
-export async function startCheckout({ conversationId, store, startUrl, what, item = "", maxUsd, signIn = false }) {
+export async function startCheckout({ conversationId, store, startUrl, what, item = "", maxUsd, signIn = false, supersedes = [], noAddress = false }) {
   const plan = checkoutPlan(conversationId, store, { signIn });
   // The address on record goes into the instruction where it says to ship (2026-10-31): a checkout that
   // already has it rarely asks the form at all, and one that does is answered from the same record.
   let instruction = String(what ?? "").trim();
-  try { instruction = shipping.withAddress(instruction, shipping.profileFor(conversationId)); } catch { /* as written */ }
+  // Never for a pickup order (src/food.js): nothing ships, and an address in it is the restaurant's, not theirs.
+  if (!noAddress) { try { instruction = shipping.withAddress(instruction, shipping.profileFor(conversationId)); } catch { /* as written */ } }
   const body = {
     request: { startUrl, task: taskFor(plan, store, instruction) },
     constraints: { maxCost: { amount: Number(maxUsd).toFixed(2), currency: "USD" } },
@@ -737,11 +738,18 @@ export async function startCheckout({ conversationId, store, startUrl, what, ite
   for (const old of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND status = 'running' AND run_id <> ?").all(conversationId, runId)) {
     // Ended: a run for the same thing, or one already marked superseded (correctAndRestart marks the
     // old run before starting this one, whatever its item reads). Any other open run is left alone.
-    if (!sameItem(old.item, item) && !toldOf(old).has("superseded")) continue;
+    // A food order started over by the model (src/food.js orderAtPlace) names its old run in `supersedes`.
+    if (!sameItem(old.item, item) && !toldOf(old).has("superseded") && !supersedes.includes(old.run_id)) continue;
     await endQuietly(old, `superseded by ${runId}`);
     superseded.push(old.run_id);
   }
   return { ok: true, runId, plan, ...(superseded.length ? { superseded } : {}) };
+}
+/** The pages a run reports it is on (Crossmint's run status, where it says), for the food hand-off check. */
+export function pageUrlsOf(cur) {
+  const out = [];
+  for (const v of [cur?.currentUrl, cur?.url, cur?.pageUrl, cur?.browser?.currentUrl, cur?.browser?.url, cur?.page?.url]) if (typeof v === "string" && v) out.push(v);
+  return out;
 }
 export const runRow = (runId) => q("SELECT * FROM shop_runs WHERE run_id = ?").get(runId) ?? null;
 const ITEM_STOP = new Set(["the", "and", "for", "with", "from", "new", "one", "pack", "oz", "fl", "ml", "ct", "count"]);
@@ -2256,6 +2264,19 @@ export async function step(runId) {
   const ra = cur.requiredAction;
   const requestId = ra?.requestId ?? "";
   let woke = null;
+  // A food order on the restaurant's own site whose checkout handed off to a delivery app (src/food.js):
+  // caught when it lands on the app's site or asks for the app's sign-in, never waited on.
+  if (foodMod?.foodOn(run.conversation_id) && foodMod.isFoodRun(runId) && !openSigninLink(runId)) {
+    const rq0 = ra ? { requestId, request: ra.request } : null;
+    const it0 = ra?.request?.interaction ?? {};
+    const signin = it0.kind === "form" && (it0.fields ?? []).some(isProtected);
+    const app = foodMod.handoffApp(run, { rq: signin ? rq0 : null, account: signin ? signinAccount(run.store, rq0) : "", urls: pageUrlsOf(cur) });
+    if (app) {
+      if (requestId) q("UPDATE shop_runs SET last_request_id = ?, question = ?, request_json = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(requestId, short(ra.request?.question ?? "", 600), JSON.stringify(publicRequest(rq0)), now, now, runId);
+      await foodMod.handOff(runRow(runId), app);
+      return { done: true, status: "cancelled", said, handoff: app };
+    }
+  }
   if (requestId && requestId !== run.last_request_id) {
     const rq = { requestId, request: ra.request };
     const it = ra.request?.interaction ?? {};
@@ -2835,12 +2856,14 @@ export function ordersPlaced(conversationId) {
  */
 export function recordSource(conversationId, { sinceMs = 48 * 3600_000 } = {}) {
   try {
+    // Food orders' own figures too (src/food.js): a phone order's total is the restaurant's quote.
+    const food = foodMod?.foodOn(conversationId) ? foodMod.recordSource(conversationId, { since: clock.now() - sinceMs }) : "";
     const since = clock.now() - sinceMs;
     const pays = q("SELECT amount, currency, question FROM shop_payments WHERE conversation_id = ? AND created_at > ?").all(conversationId, since)
       .map((p) => `${amountText(p)} ${p.question}`);
     const runs = q("SELECT question, request_json, result FROM shop_runs WHERE conversation_id = ? AND created_at > ?").all(conversationId, since)
       .map((r) => `${r.question} ${r.request_json} ${r.result}`);
-    return [...pays, ...runs].join("\n");
+    return [...pays, ...runs, ...(food ? [food] : [])].join("\n");
   } catch { return ""; }
 }
 /** After a restart: every open run is followed again, and every open mail watch resumed. */

@@ -71,7 +71,7 @@ export const SENSITIVE2 = [
   { table: "shop_shipping", cols: ["first_name", "last_name", "address1", "address2", "city", "state", "zip", "phone", "email"], owner: "conversation_id" },
   { table: "saved_places", cols: ["address", "route_description"], owner: "conversation_id" },
   // Food orders (src/food.js): the restaurant, what was ordered, the notes and where it went.
-  { table: "food_orders", cols: ["restaurant", "store_url", "items_json", "notes", "address", "address_label", "card_label"], owner: "conversation_id" },
+  { table: "food_orders", cols: ["restaurant", "store_url", "items_json", "notes", "address", "address_label", "card_label", "place_address", "phone_json"], owner: "conversation_id" },
   { table: "food_notes", cols: ["text"], owner: "conversation_id" },
   // The restaurants they order from and each one's own ordering link (src/food.js, ordering direct).
   { table: "food_places", cols: ["restaurant", "direct_url"], owner: "conversation_id" },
