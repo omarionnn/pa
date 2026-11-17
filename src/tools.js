@@ -500,6 +500,7 @@ async function runDoordashTool(name, input, ctx, c, me) {
     signinDeps: {
       start: (args) => (ctx.startEmailSignin ?? signinEmail.startEmailSignin)({
         ...args, log: ctx.log ?? (() => {}), launch: ctx.launchSigninBrowser ?? signinRemote.launchProfileBrowser, closeBrowser: browser.closeBrowser,
+        ...(ctx.signinCheck ? { check: ctx.signinCheck } : {}),
       }),
     },
   });

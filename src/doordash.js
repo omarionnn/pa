@@ -672,7 +672,9 @@ async function signinByCode(c, input, { ownTurn, signinDeps }) {
   const held = remote.gate(c, SITE, { alt: FALLBACK_SAY });
   if (held) return held.hosted_browser === "consent_needed" ? held : { ...held, fallback: FALLBACK_NOTE };
   const reg = sites.site("doordash");
-  const entry = remote.tagEntry(c, { site: "doordash", label: LABEL, signin_url: reg?.signin_url ?? "https://identity.doordash.com", hosts: reg?.hosts ?? ["doordash.com"], entry: reg?.entry ?? HOME });
+  // Tests only: the fixture DoorDash's sign-in page (as the hosted browser's API address is read).
+  const signinUrl = (process.env.NODE_TEST_CONTEXT && process.env.REASON_DOORDASH_TEST_SIGNIN_URL) || reg?.signin_url || "https://identity.doordash.com";
+  const entry = remote.tagEntry(c, { site: "doordash", label: LABEL, signin_url: signinUrl, hosts: reg?.hosts ?? ["doordash.com"], entry: reg?.entry ?? HOME });
   const out = signinDeps.start({ conversationId: c, entry, email, relayOnly: true, gmail: async () => ({ connected: false }) });
   if (!out?.ok) return out;
   return { ok: true, started: true, say: `Say ONE short line like "Signing you in to DoorDash, one sec." DoorDash will send them a code; you are told when to ask for it. Never ask for a password.` };
