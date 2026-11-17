@@ -23,6 +23,22 @@
 import { renderNotice } from "./render.js";
 import { config } from "../config.js";
 import { linkCardTags } from "./sitecard.js";
+import { remoteSites, labelOf } from "../hostedsites.js";
+
+/** "DoorDash", "DoorDash and Uber Eats", "A, B and C": the hosted browser's sites by name, from its own list. */
+const hostedNames = () => {
+  const n = remoteSites().map(labelOf);
+  return n.length <= 1 ? (n[0] ?? "") : `${n.slice(0, -1).join(", ")} and ${n.at(-1)}`;
+};
+/**
+ * The hosted browser (src/remotebrowser.js, src/doordash.js), written against what it does: asked
+ * first (hosted_browser_ok), the session request with recording and logging off (sessionRequest), the
+ * sign-in kept in a Browserbase Context (encrypted at rest, Browserbase's docs) with only its id here
+ * (remote_browser_contexts, sealed), deleted on a forget or a data delete (deleteContextsFor), and a
+ * delete Browserbase does not confirm detached at once and tried again daily (dailyRetry). Its site
+ * list is the hosted browser's own list, so the page names a new site the day it is added.
+ */
+export const hostedBrowserLine = () => `Sites that do not work in Reason's own browser, today ${hostedNames()}. If you ask Reason to use one of them, it first asks whether it may open that site in a hosted browser run by Browserbase, Inc., another company, and goes ahead only if you say yes. The pages Reason sees there pass through that browser: for DoorDash, the menus, your cart, and the checkout with your delivery address and the last digits of your card as DoorDash shows them. Reason never sees, types or stores your card number, and it asks Browserbase not to record or log these sessions. Your sign-in for that site (its cookies and stored data) is kept at Browserbase, encrypted, so you only sign in once; Reason itself keeps only an id for it, and, as for any food order, a record of what was ordered. When Reason places a DoorDash order for you, it is only after you approve its exact total, and it is paid with the card already saved on your own DoorDash account. The sign-in stays at Browserbase until you ask Reason to forget that login or to delete your data. Then Reason stops using it at once and asks Browserbase to delete it; if Browserbase does not confirm, Reason tries again every day until it does. Browserbase's own privacy policy governs what it does with what passes through it.`;
 
 /** Where this install is reachable, for the page to name its own address honestly. */
 const where = () => config.siteUrl || config.publicUrl || `http://127.0.0.1:${config.port}`;
@@ -80,7 +96,7 @@ export function privacyPage() {
   return renderNotice({
     title: "Privacy",
     kicker: "What Reason keeps, and what it does not",
-    meta: `Reason at ${where()} · last changed 2026-11-13`,
+    meta: `Reason at ${where()} · last changed 2026-11-17`,
     indexable: true,
     head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
@@ -91,7 +107,7 @@ export function privacyPage() {
       {
         title: "What Reason stores",
         lines: [
-          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service, and the only storage off that machine is the encrypted backup, apart from the recording Cartesia holds while a call with your Reason is happening (see below). Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
+          "One database file on the machine Reason runs on, plus encrypted backups of it (see below). There is no analytics service, and the only storage off that machine is the encrypted backup, apart from the recording Cartesia holds while a call with your Reason is happening, and your sign-in for a site you use through the hosted browser, which Browserbase keeps (see below). Everything in it is keyed to your conversation, and no query in the code can read one person's rows from another person's conversation.",
           "Your messages to Reason and its replies to you, as a running transcript. The transcript keeps the most recent 60 messages of your thread and older ones fall off it.",
           "What the transcript holds is worth being plain about: it includes the results of things Reason looked up for you. So if Reason read an email or an event for you, the text of that email or event is in the transcript on the disk until it falls out of those 60 messages. It is not stored anywhere else, it is not indexed, and nothing goes looking through it.",
           "Plans, reminders, timers and the jobs Reason is working on between messages. Facts you have asked it to remember about people. Pages it made for you, and any answers you tapped on one.",
@@ -134,6 +150,7 @@ export function privacyPage() {
           "Calls with your Reason. When you talk with your own Reason on the phone, the call may be handled by Cartesia, a voice company: your voice goes to Cartesia so it can hear you, and Reason's voice comes back from it. Cartesia keeps a recording of the call while it is happening, and when the call ends Reason has Cartesia delete it. Calls Reason makes to other people or businesses for you never use Cartesia.",
           "Your bank. If you connect a bank, the connection goes through Plaid and is read-only: Reason can see your balances, your transactions and your accounts' names (with only the last four digits of each account number), and cannot move money. Reason reads your bank only when you ask it about your money, or when a check-in you set up runs after you said yes to that check-in reading your bank; tell Reason to stop and it stops. Reason keeps the last 60 days of transactions and deletes anything older. You can disconnect your bank at any time by asking Reason, and what it had from that bank is deleted; Reason keeps only a count of how many banks were ever connected, because Plaid's plan limits that number. Plaid's own end-user privacy policy (plaid.com/legal) governs what Plaid does with your bank data.",
           "Paid events. Stripe processes ticket payments: the card and payment details a guest enters at checkout, and the identity and bank details an organizer gives it to be paid out, go to Stripe and never to Reason. Reason keeps only a record of each payment — the amounts, whether it went through or was refunded, and Stripe's reference for it. Stripe's own privacy policy governs what it does with those details.",
+          hostedBrowserLine(),
           "Encrypted backups. Once a day an encrypted copy of the database and your files goes to an off-site storage server, so nothing is lost if the machine fails. It is locked with a key the storage provider does not have, so they cannot read it, and the backups can only be added to from the machine, never changed or deleted from it.",
           "That is the whole list. Nothing is sent anywhere for analytics, advertising, or model training.",
         ],
@@ -144,6 +161,7 @@ export function privacyPage() {
           "Text Reason and ask it to disconnect your Google, or to stop reading your email. It revokes the connection at Google and deletes the stored tokens from the machine — one grant covers everything you gave, so disconnecting takes all of it. If Google will not confirm the revoke, Reason tells you so rather than claiming it is done.",
           "You can also take it away from your own side at any time, whatever Reason does: myaccount.google.com/permissions lists every app with access to your Google account, Reason included, and removing it there cuts it off immediately.",
           "Text Reason \"disconnect my bank\" and it removes the connection at Plaid and deletes what it had from that bank.",
+          `Ask Reason to forget your login for a site it opens in the hosted browser (today ${hostedNames()}) and it stops using the sign-in kept at Browserbase and asks Browserbase to delete it (see above).`,
           "Disconnecting stops Reason reaching your account and clears what it had read out of your account from your transcript. Everything else Reason holds about you goes when you ask for a delete.",
         ],
       },
@@ -151,7 +169,7 @@ export function privacyPage() {
         title: "Getting it all, or getting rid of it",
         lines: [
           "Ask Reason and it will tell you. If you run this install yourself, two commands do it: `npm run data:export` writes out everything held about you, including the call recordings, with the tokens replaced by a marker because those are live credentials rather than your records. `npm run data:delete` removes it.",
-          "A delete is real and immediate. It removes the rows, the call recordings as files from the disk, and the saved browser logins, and it asks Google to let go of your connection on the way through — and reports honestly if Google would not.",
+          "A delete is real and immediate. It removes the rows, the call recordings as files from the disk, and the saved browser logins, asks Browserbase to delete any site sign-in it keeps for you, and asks Google to let go of your connection on the way through — and reports honestly if Google would not.",
           "Reason keeps encrypted backups: a rolling copy on the same machine, replaced twice a day, and a daily encrypted copy off-site. A delete clears the live database at once; the rolling copy drops it within a day, and the off-site backups keep what they already hold, still encrypted and unread, with no fixed end date: they exist so Reason can be restored if the machine fails.",
         ],
       },

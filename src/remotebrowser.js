@@ -49,6 +49,7 @@ import { sealFor, openAny } from "./restcrypt.js";
 import * as opsdigest from "./opsdigest.js";
 import * as refusing from "./refusing.js";
 import * as incidents from "./incidents.js";
+import { remoteSites, labelOf, keyOf } from "./hostedsites.js";
 
 // ---------------------------------------------------------------- the switch and the list
 /** `off` | `owner` | `on`, read at call time like the other REASON_* switches. */
@@ -70,21 +71,8 @@ export function remoteAllowedFor(conversationId) {
   if (mode === "owner") return accounts.featureOwner(conversationId);
   return true;
 }
-export const DEFAULT_SITES = Object.freeze(["doordash.com"]);
-/** The sites a covered person's jobs run in the hosted browser, by registrable domain. */
-export function remoteSites() {
-  const raw = String(process.env.REASON_REMOTE_BROWSER_SITES ?? "").trim();
-  if (!raw) return [...DEFAULT_SITES];
-  return [...new Set(raw.split(",").map(s => keyOf(s)).filter(Boolean))];
-}
-const keyOf = (s) => {
-  const t = String(s ?? "").trim().toLowerCase();
-  if (!t) return "";
-  let host = t;
-  try { host = /^[a-z][a-z0-9+.-]*:\/\//.test(t) ? new URL(t).hostname : t.split("/")[0].split(":")[0]; } catch { return ""; }
-  host = host.replace(/^www\./, "");
-  return /^[a-z0-9.-]{3,253}$/.test(host) ? registrableOf(host) : "";
-};
+// The list and its names live in src/hostedsites.js (no database), so the privacy page can name it.
+export { DEFAULT_SITES, remoteSites, labelOf } from "./hostedsites.js";
 /** The registrable domain of a URL, host or site name, when it is on the list. "" otherwise. */
 export function remoteSiteOf(urlOrSite) {
   const k = keyOf(urlOrSite);
@@ -188,8 +176,6 @@ export const CODE_WAIT_WORDS = "I can wait 5 minutes for it.";
 
 // ---------------------------------------------------------------- failures, in plain words
 export const FAILURES = ["key_missing", "key_invalid", "unreachable", "out_of_minutes", "start_timeout", "busy", "consent_needed", "refused", "challenge", "session_ended"];
-const LABELS = { "doordash.com": "DoorDash" };
-export const labelOf = (site) => LABELS[site] ?? site;
 
 /** What Reason can do right now when the hosted browser is out on its side (minutes, or too busy). */
 export const SIDE_INSTEAD = "I can order it from the restaurant's own site, or set it up for pickup, instead.";
