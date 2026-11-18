@@ -277,7 +277,9 @@ async function readyAsk(c, words = "pad thai and spring rolls from thai palace t
   assert.equal(read.ok, true, JSON.stringify(read).slice(0, 300));
   return { d, read };
 }
-beforeEach(() => {
+beforeEach(async () => {
+  // A sign-in browser from the test before, still letting go of a profile under load, is waited out.
+  for (const who of [OWNER, OTHER]) for (let i = 0; i < 200 && browser.profileBusy(who); i++) await new Promise((r) => setTimeout(r, 50));
   said.length = 0; bb.usage = 0; bb.usageStatus = 0; bb.busy = 0;
   clock.reset();
   db.db.exec("DELETE FROM pay_approvals; DELETE FROM timers");
@@ -443,7 +445,9 @@ test("2. a cart changed under the yes (its food revision moved) is not placed on
 
 // ---------------------------------------------------------------- 3. signing in, for everyone
 /** Wait until their sign-in job has ended (emailSigninFor is null once it is done). */
-async function doneSigningIn(c) { for (let i = 0; i < 400 && signinEmail.emailSigninFor(c); i++) await new Promise((r) => setTimeout(r, 50)); }
+// Done means the job is over AND its hosted browser has let go of their profile: the job's record goes
+// before its browser finishes closing, and under load the next browser_open would meet the hold.
+async function doneSigningIn(c) { for (let i = 0; i < 600 && (signinEmail.emailSigninFor(c) || browser.profileBusy(c)); i++) await new Promise((r) => setTimeout(r, 50)); }
 async function signInByCode(c, { code = "481516" } = {}) {
   const ctx = { conversationId: c, kind: "user", messages: [msg("sign me into doordash, it's me@example.com")], signinCheck: async () => ({ ok: true, state: "signed_in", why: "account page" }),
     log: (o) => (globalThis.__ddlog ??= []).push(JSON.stringify(o).slice(0, 200)) };
