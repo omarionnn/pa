@@ -18,7 +18,9 @@
 // the next process's sweep answers them.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -253,4 +255,61 @@ test("an ordinary non-zero exit is still a failure, not something to retry", asy
     assert.notEqual(r.interrupted, true, "nothing is put back for this one");
     assert.match(r.error, /returned no JSON \(exit 1\)/);
   } finally { cliConfig.bin = saved; }
+});
+
+// ---------- the restart gate sees a reply being written ----------
+//
+// 2026-11-16 00:43:49 UTC: a text arrived, about 4 s later verify-reason/bin/idle.sh said IDLE, and the
+// restart cut the turn writing the answer (turn_interrupted). It came back after the restart, a minute
+// late. The gate now reads three things in the database, never the text: a held message due, a person's
+// history row whose turn has not ended (turn_done_at), and a text received with no row yet. This runs
+// the real gate script against this test's database while a real turn is in the middle of running.
+const GATE = fileURLToPath(new URL("../.agents/skills/verify-reason/bin/idle.sh", import.meta.url));
+const HAS_SQLITE = spawnSync("sqlite3", ["-version"]).status === 0;
+function gate(env = {}) {
+  // The server's systemctl (the running pid: this one, so busy.json, if any, is believed), its journal
+  // (empty) and GNU date (milliseconds), so the script runs anywhere.
+  const shim = join(dir, "gate-shim");
+  mkdirSync(shim, { recursive: true });
+  const put = (name, body) => { writeFileSync(join(shim, name), `#!/bin/bash\n${body}\n`); chmodSync(join(shim, name), 0o755); };
+  put("systemctl", `echo ${process.pid}`);
+  put("journalctl", "exit 0");
+  put("date", `if [ "$1" = "+%s%3N" ]; then echo $(( $(${process.execPath} -e 'process.stdout.write(String(Date.now() + ${skippedMs}))') )); else exec /bin/date "$@"; fi`);
+  const r = spawnSync("bash", [GATE], {
+    env: { ...process.env, PATH: `${shim}:${process.env.PATH}`, REASON_LIVE_SSH: "local", REASON_IDLE_DATA: dir, ...env },
+    encoding: "utf8",
+  });
+  return r.stdout;
+}
+
+test("the restart gate waits while a reply is being written to a person, and not once it has gone", { skip: !HAS_SQLITE && "no sqlite3 CLI" }, async () => {
+  const savedWeb = config.web;
+  config.web = "owner"; // history rows on, as on live
+  try {
+    db.db.exec("DELETE FROM messages; DELETE FROM inbound_messages");
+    assert.match(gate(), /^IDLE/m, "nothing going on");
+
+    db.claimInbound({ channel: "fake", externalId: "g-1", conversationId: "dm:owner" });
+    assert.match(gate(), /^BUSY:[\s\S]*received \d+s ago, being read/, "a text just received and not yet held or written down is waited for");
+
+    hold("are you free at 6", "g-1");
+    assert.match(gate(), /^BUSY:[\s\S]*1 held message\(s\) waiting for their turn/, "held for its turn: waited for");
+
+    let during = "";
+    const h = harness({ turn: async () => { during = gate(); return "yes, free at 6"; } });
+    await h.router.drain("dm:owner");
+    await h.router.idle();
+    assert.match(during, /^BUSY:[\s\S]*turn running for 1 message\(s\)/, "the turn itself (the model, its tools) is waited for");
+    assert.doesNotMatch(during, /are you free/, "and the gate never says what they wrote");
+
+    assert.match(gate(), /^IDLE/m, "the reply has gone: nothing holds the restart");
+    assert.match(gate({ REASON_IDLE_TURNS: "off" }), /^WARN reply check off/m, "the switch says it is off");
+
+    // A row whose turn never ended (a process that died) stops counting after 10 minutes.
+    db.claimInbound({ channel: "fake", externalId: "g-2", conversationId: "dm:owner" });
+    db.writeMessage({ conversationId: "dm:owner", role: "user", channel: "fake", externalId: "g-2", text: "x", at: clock.now() });
+    assert.match(gate(), /^BUSY:[\s\S]*turn running/);
+    clock.skip(11 * 60_000);
+    assert.match(gate(), /^IDLE/m, "stale after 10 minutes: it cannot hold a deploy for ever");
+  } finally { config.web = savedWeb; }
 });
