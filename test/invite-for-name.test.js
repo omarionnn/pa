@@ -63,6 +63,18 @@ test("the name said up front: no question, the link goes out at once, made for t
   assert.equal(db.getInvite(KOFI_C, out.number).for_name, "Dalen");
 });
 
+test("a link made for somebody never has Reason guess their pronoun from their name", async () => {
+  const out = await tool("invite_link_create", { for_name: "Dalen" }, KOFI_C);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  // The fixed wording itself is neutral: no he/she/him/her/his/hers anywhere in what comes back.
+  assert.doesNotMatch(out.say, /\b(he|she|him|her|his|hers)\b/i);
+  // And the model is told not to supply one: the name, or they/them.
+  assert.match(out.say, /never guess (a )?pronoun/i);
+  assert.match(out.say, /they\/them/);
+  const desc = TOOLS.find((t) => t.name === "invite_link_create").description;
+  assert.match(desc, /never guess (a )?pronoun/i);
+});
+
 test("nobody named: offered once, lightly, nothing made; the answer makes the link in that same reply", async () => {
   const ask = await tool("invite_link_create", {}, KOFI_C);
   assert.equal(ask.ok, false);
