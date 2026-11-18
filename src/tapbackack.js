@@ -19,6 +19,13 @@
 // the thread the way src/tapbacks.js reads it, so a text that arrived as three parts gets one tapback
 // on the message and not a 422 on its last part (test/parts.test.js).
 //
+// With REASON_TAPBACK_TOPIC on as well, the FIRST tapback says what the text is about instead of
+// 👀: 💻 a tech problem, 🛍️ shopping, ✈️ a trip (the table and the rules are src/acktopic.js; no
+// model call, no prompt words). Then it is changed only to ⏰ (a reminder set) or ✅ (done): never
+// to 🔍, because the topic already says "working on it", and one text never gets a run of swaps. A
+// first tool that is a lookup with no topic sure (no match, a tie, sensitive) is 🔍 straight away. A
+// channel whose adapter says `customReactions === false` keeps the switch-off behaviour.
+//
 // Two rules keep it from being noise:
 //   - a tapback and a text never say the same thing: a reply that is only "on it" / "got it" after 👀
 //     went is dropped (isBareAck), because the tapback was that reply;
@@ -26,7 +33,8 @@
 //     a reply — a failed tapback is a log line.
 import * as db from "./db.js";
 import { sendTapback } from "./tapbacks.js";
-import { tapbackAckOn } from "./trustflags.js";
+import { tapbackAckOn, tapbackTopicOn } from "./trustflags.js";
+import { topicFor } from "./acktopic.js";
 
 /** The whole vocabulary. One meaning per emoji; change it here or nowhere. */
 export const ACK = Object.freeze({
@@ -65,7 +73,7 @@ const byTask = new Map();
 
 const entry = (c) => {
   let e = live.get(c);
-  if (!e) { e = { handle: null, state: null, wantedHandle: null, wanted: null, ackedHandle: null, chain: Promise.resolve() }; live.set(c, e); }
+  if (!e) { e = { handle: null, state: null, emoji: null, wantedHandle: null, wanted: null, ackedHandle: null, pinnedHandle: null, chain: Promise.resolve() }; live.set(c, e); }
   return e;
 };
 
@@ -87,31 +95,40 @@ export function current(conversationId) {
  * `handle` names the message when the caller knows it (a job's origin text); otherwise the thread's
  * last inbound message — its base handle, which is what the router stores (src/channels/router.js).
  */
-export function mark(conversationId, state, { channels, handle = null, log = () => {} } = {}) {
-  const emoji = ACK[state];
+export function mark(conversationId, state, { channels, handle = null, log = () => {}, emoji: topicEmoji = null, first = false } = {}) {
+  // "topic" is the one state whose emoji is not fixed: src/acktopic.js chose it for this text.
+  const emoji = state === "topic" ? topicEmoji : ACK[state];
   if (!emoji) return Promise.resolve({ ok: false, skipped: `no such state '${state}'` });
   if (!tapbackAckOn(conversationId)) return Promise.resolve({ ok: false, skipped: "off" });
   const e = entry(conversationId);
   // Decided now, not when the queue gets to it: a caller that asks twice in one tick must see the first.
   const target = handle ?? targetFor(conversationId);
-  if (target) { e.wantedHandle = target; e.wanted = state; if (state === "seen") e.ackedHandle = target; }
+  if (target) { e.wantedHandle = target; e.wanted = state; if (state === "seen" || first) e.ackedHandle = target; }
   const run = async () => {
     if (!target) return { ok: false, skipped: "no message of theirs" };
+    // One message, one reaction: a text a food order belongs to carries the order's status (⏳ ❓ ✅ ❌ 👍,
+    // src/food.js) and nothing from here, from the moment the order exists. Read when the send runs,
+    // so an order opened while this was queued still wins.
+    if (statusOwned(conversationId, target)) {
+      if (e.handle === target) { e.state = null; e.emoji = null; }
+      log({ tapback_ack_skipped: emoji, why: "status", conversation: conversationId });
+      return { ok: false, skipped: "status" };
+    }
     // The same thing again, on the same message: nothing to do.
-    if (e.handle === target && e.state === state) return { ok: true, state, handle: target, unchanged: true };
+    if (e.handle === target && e.state === state && e.emoji === emoji) return { ok: true, state, handle: target, unchanged: true };
     // Off with the old one first, only when it is on THIS message: a new text of theirs starts clean.
-    if (e.handle === target && e.state && ACK[e.state] !== emoji) {
-      const off = await sendTapback({ conversationId, channels, reaction: `-${ACK[e.state]}`, messageHandle: target });
-      if (!off.ok) log({ tapback_ack_remove_failed: ACK[e.state], conversation: conversationId, why: off.error });
+    if (e.handle === target && e.state && e.emoji !== emoji) {
+      const off = await sendTapback({ conversationId, channels, reaction: `-${e.emoji}`, messageHandle: target });
+      if (!off.ok) log({ tapback_ack_remove_failed: e.emoji, conversation: conversationId, why: off.error });
     }
     const on = await sendTapback({ conversationId, channels, reaction: emoji, messageHandle: target });
     if (!on.ok) {
       log({ tapback_ack_failed: emoji, conversation: conversationId, why: on.error });
       // A line or thread that cannot carry one is not asked again this turn.
-      e.handle = target; e.state = null;
+      e.handle = target; e.state = null; e.emoji = null;
       return { ok: false, state, handle: target, error: on.error };
     }
-    e.handle = target; e.state = state;
+    e.handle = target; e.state = state; e.emoji = emoji;
     log({ tapback_ack: emoji, state, conversation: conversationId });
     return { ok: true, state, handle: target };
   };
@@ -121,6 +138,41 @@ export function mark(conversationId, state, { channels, handle = null, log = () 
   });
   e.chain = p;
   return p;
+}
+
+const baseHandle = (h) => String(h ?? "").replace(/_\d+$/, "");
+
+/** Is this message of theirs the request of a food order? Its status tapback owns it then. Never throws. */
+export function statusOwned(conversationId, handle) {
+  const h = baseHandle(handle);
+  if (!h) return false;
+  try {
+    return db.db.prepare("SELECT request_handle FROM food_orders WHERE conversation_id = ? AND request_handle IS NOT NULL ORDER BY id DESC LIMIT 50")
+      .all(conversationId).some(r => baseHandle(r.request_handle) === h);
+  } catch { return false; }
+}
+
+/**
+ * A food order is about to put its status on this message (src/food.js setStatus): whatever this module
+ * put there comes off first, after anything still queued has landed, so the message never shows two.
+ * Bounded (a slow line never holds up the status) and never rejects.
+ */
+export function yieldTo(conversationId, handle, { channels, log = () => {}, waitMs = 3000 } = {}) {
+  const e = live.get(conversationId);
+  const h = baseHandle(handle);
+  if (!e || !h) return Promise.resolve({ ok: true, nothing: true });
+  if (e.wantedHandle === h) { e.wanted = null; }
+  const run = async () => {
+    if (e.handle !== h || !e.emoji) return { ok: true, nothing: true };
+    const was = e.emoji;
+    e.state = null; e.emoji = null;
+    const off = await sendTapback({ conversationId, channels, reaction: `-${was}`, messageHandle: h });
+    if (!off.ok) log({ tapback_ack_remove_failed: was, conversation: conversationId, why: off.error });
+    return { ok: !!off.ok, removed: was };
+  };
+  const p = e.chain.then(run, run).catch(() => ({ ok: false }));
+  e.chain = p;
+  return Promise.race([p, new Promise(r => { const t = setTimeout(() => r({ ok: false, timeout: true }), waitMs); t.unref?.(); })]);
 }
 
 /** Wait for whatever this conversation has queued (tests, and the runtime before it reads `current`). */
@@ -151,7 +203,7 @@ export function taskDone(conversationId, taskId, { channels, log = () => {} } = 
  * Called from runTool (src/tools.js); never awaited there. Their own texts only: never a Web
  * message (its tab shows "on it." already), never an event turn.
  */
-export function noteTool(ctx, name, out) {
+export function noteTool(ctx, name, out, input = null) {
   const c = ctx?.conversationId;
   if (!c || !tapbackAckOn(c)) return;
   if ((ctx.kind && ctx.kind !== "user") || ctx.channel === "web") return;
@@ -161,13 +213,62 @@ export function noteTool(ctx, name, out) {
   const target = targetFor(c, ctx);
   if (!target) return;
   const e = entry(c);
+  const topical = topicMode(c, ctx);
   // The first tool of this text's turn: 👀 goes on now. A second tool on the same text adds nothing.
-  if (e.ackedHandle !== target) void mark(c, "seen", { ...opts, handle: target });
+  if (e.ackedHandle !== target) {
+    if (!topical) void mark(c, "seen", { ...opts, handle: target });
+    else {
+      const first = firstFor(ctx, c, target, n, input, ok);
+      e.pinnedHandle = first.pin ? target : null;
+      void mark(c, first.state, { ...opts, handle: target, emoji: first.emoji ?? null, first: true });
+      if (first.state === "timer") return;
+    }
+  }
   const onThis = e.wantedHandle === target ? e.wanted : null;
-  if (LOOKUP_TOOLS.has(n) && onThis === "seen") { void mark(c, "looking", { ...opts, handle: target }); return; }
+  // 👀 still on it (the switch off, or with it on a text that earned no topic emoji): a lookup is 🔍,
+  // as it always was. A topic emoji is never swapped to 🔍.
+  if (LOOKUP_TOOLS.has(n) && onThis === "seen" && e.pinnedHandle !== target) { void mark(c, "looking", { ...opts, handle: target }); return; }
   if (n === "timer_set" && ok) { void mark(c, "timer", { ...opts, handle: target }); return; }
   if (n === "task_start" && ok && out.task?.id != null) { noteTask(c, out.task.id, { handle: ctx.answering?.handle ?? null }); return; }
   if (n === "task_finish" && ok && out.task?.state === "done" && out.task?.id != null) { void taskDone(c, out.task.id, opts); }
+}
+
+/**
+ * Does this text get a topic tapback? The switch, and a channel that can show any emoji: an adapter
+ * that says `customReactions === false` (a line that only carries the classic six) keeps today's.
+ */
+function topicMode(c, ctx) {
+  if (!tapbackTopicOn(c)) return false;
+  try {
+    const ch = ctx?.channels?.get?.(db.getThread(c)?.channel ?? "");
+    return !(ch && ch.customReactions === false);
+  } catch { return false; }
+}
+
+/** Their words for this text: the message itself, or every text of a fold (several sent together). */
+function theirWords(c, ctx, target) {
+  const n = Number(ctx?.answering?.texts) || 1;
+  if (n > 1) return db.recentInboundTexts(c, n).join("\n");
+  return db.messageByHandle(c, target)?.text || db.recentInboundTexts(c, 1).join("\n");
+}
+
+/**
+ * The first tapback on a text with the topic switch on. ⏰ when the first tool set a reminder (its
+ * meaning, as ever); the topic's emoji when src/acktopic.js is sure; 🔍 when the first tool is a
+ * lookup and no topic is sure (nothing matched, a tie, sensitive); 👀 for everything else.
+ */
+function firstFor(ctx, c, target, name, input, ok) {
+  if (name === "timer_set" && ok) return { state: "timer" };
+  let got;
+  try { got = topicFor({ tool: name, input, text: theirWords(c, ctx, target), harm: ctx?.harm ?? null }); } catch { got = { topic: null, why: "threw" }; }
+  ctx?.log?.({ tapback_topic: got.topic ?? null, why: got.why, conversation: c });
+  if (got.topic && got.topic !== "reminder" && got.emoji) return { state: "topic", emoji: got.emoji };
+  // A text the safety screen did not clear: 👀 and nothing more from here.
+  if (got.why === "screen") return { state: "seen", pin: true };
+  // No topic emoji (nothing matched, a tie, sensitive): what the switch-off gives, 👀, or 🔍
+  // for a lookup, which says only "looking it up" and nothing about what.
+  if (!got.topic && LOOKUP_TOOLS.has(name)) return { state: "looking" };
+  return { state: "seen" };
 }
 
 /**

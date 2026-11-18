@@ -8,7 +8,7 @@
 // answering-machine verdict is posted to the call the way Twilio's async AMD webhook is. A throwaway
 // database; nobody's phone rings, no business is called and nothing is texted.
 //
-// On the Hetzner box, as the reason user, from a copy of the code (the clips are made on a Mac, below):
+// On the live server (OVH, root@15.204.113.250), as the reason user, from a copy of the code (the clips are made on a Mac, below):
 //
 //   E=$(.agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY)   # keys never on argv
 //   REASON_DB_PATH=$(mktemp -d)/gl.db node --env-file="$E" .agents/skills/verify-reason/bin/gptlive-line-drive.mjs <clips dir> --scene ivr|hold|voicemail|human

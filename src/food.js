@@ -347,6 +347,8 @@ export async function setStatus(order, status) {
   if (!o.request_handle || !channelsFn) return { ok: false, error: "no_message" };
   try {
     const { sendTapback } = await import("./tapbacks.js");
+    // One message, one reaction: the 👀/topic tapback (src/tapbackack.js) comes off before the status goes on.
+    try { const ack = await import("./tapbackack.js"); await ack.yieldTo(o.conversation_id, o.request_handle, { channels: channelsFn(), log: logFn }); } catch { /* the status still goes */ }
     const r = await sendTapback({ conversationId: o.conversation_id, channels: channelsFn(), reaction: emoji, messageHandle: o.request_handle });
     // Kept only once it went, so a refused one is tried again next time the status is set.
     if (r?.ok) q("UPDATE food_orders SET tapback = ?, updated_at = ? WHERE id = ? AND conversation_id = ?").run(emoji, clock.now(), o.id, o.conversation_id);

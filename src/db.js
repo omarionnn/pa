@@ -4623,6 +4623,13 @@ export function listThreads() {
  * reply can only ever be pinned under, or read against, a message in the thread it belongs to.
  * Case is ignored because Sendblue's own examples show the same kind of handle in both cases.
  */
+/** The words of their last `limit` texts in this conversation, oldest first (src/tapbackack.js reads a fold's texts). */
+export function recentInboundTexts(conversationId, limit = 1) {
+  const n = Math.max(1, Math.min(10, Number(limit) || 1));
+  return db.prepare("SELECT text FROM inbound_messages WHERE conversation_id = ? AND text IS NOT NULL AND text != '' ORDER BY id DESC LIMIT ?")
+    .all(conversationId, n).map(r => r.text).reverse();
+}
+
 export function messageByHandle(conversationId, handle) {
   const h = String(handle ?? "");
   if (!h) return null;

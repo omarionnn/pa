@@ -9,12 +9,15 @@
 //   REASON_DELIVERY_GATED     "sent" only once the provider confirms delivery (src/outbox.js noteDelivery)
 //   REASON_QUICK_CORRECTION   a check after an outward action, and a "quick correction:" text when it
 //                             did not hold (src/verifications.js)
+//   REASON_TAPBACK_TOPIC      with REASON_TAPBACK_ACK, the first tapback says what the text is about
+//                             (💻 a tech problem, 🛍️ shopping...) instead of 👀 (src/acktopic.js)
 import * as accounts from "./accounts.js";
 
 export const FLAGS = {
   tapbackAck: "REASON_TAPBACK_ACK",
   deliveryGated: "REASON_DELIVERY_GATED",
   quickCorrection: "REASON_QUICK_CORRECTION",
+  tapbackTopic: "REASON_TAPBACK_TOPIC",
 };
 
 /** off | owner | on, for one switch. Anything else reads as off. */
@@ -37,3 +40,4 @@ export function onFor(envName, conversationId) {
 export const tapbackAckOn = (conversationId) => onFor(FLAGS.tapbackAck, conversationId);
 export const deliveryGatedOn = (conversationId) => onFor(FLAGS.deliveryGated, conversationId);
 export const quickCorrectionOn = (conversationId) => onFor(FLAGS.quickCorrection, conversationId);
+export const tapbackTopicOn = (conversationId) => onFor(FLAGS.tapbackTopic, conversationId);
