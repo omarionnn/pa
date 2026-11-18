@@ -434,3 +434,67 @@ test("the words: no phrase handed to anybody to type, no link or number in Reaso
   const nudge = ws.nudgeLine({ who: "Kofi", textMe: true });
   assert.ok(!/\btype\b|"|“/i.test(nudge), "the inviter is not handed a phrase either");
 });
+
+// ---------- review (11-17) ----------
+
+test("review: with REASON_TEXT_ME_FIRST off the public text-me endpoint refuses and nothing is sent, linked or counted", async () => {
+  const h = harness();
+  const inv = ownerLink();
+  const s = await newSetup({ invite: inv.token });
+  delete process.env.REASON_TEXT_ME_FIRST;
+  let sendNowCalls = 0;
+  const realSendNow = h.router.sendNow?.bind(h.router);
+  h.router.sendNow = async (...a) => { sendNowCalls++; return realSendNow?.(...a); };
+  const sentBefore = h.channel.sent.length, saidBefore = h.said.length;
+  const marksBefore = db.db.prepare("SELECT COUNT(*) AS n FROM web_setup_marks WHERE kind = 'textme_send'").get().n;
+  for (let i = 0; i < 5; i++) {
+    const r = await textMe(h, s, newNumber());
+    assert.equal(r.status, 404);
+    assert.deepEqual(r.json, { error: "not found" }, "says nothing about the setup, the invite or the number");
+  }
+  assert.equal(sendNowCalls, 0, "the line is never asked to send");
+  assert.equal(h.channel.sent.length, sentBefore);
+  assert.equal(h.said.length, saidBefore);
+  const row = setupRow(s.id);
+  assert.equal(row.textme_sends, 0);
+  assert.equal(row.textme_hash, null);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM web_setup_marks WHERE kind = 'textme_send'").get().n, marksBefore);
+  assert.deepEqual((await status(s)).json.textMe, { available: false }, "the page is told: no number box");
+});
+
+test("review: no inviter line for an invite setup whose text button was never tapped (setups made before this shipped)", async () => {
+  toDay();
+  moreLinks();
+  const h = harness();
+  const say = (c, t) => h.said.push({ c, t });
+  const s = await newSetup({ invite: ownerLink().token });
+  db.db.prepare("UPDATE web_setups SET tapped_at = NULL, nudged_at = NULL WHERE id = ?").run(s.id);
+  for (let i = 0; i < 6; i++) { clock.skip(11 * MIN); toDay(); assert.equal(ws.nudgeInviters({ say }), 0); }
+  assert.equal(h.said.filter(x => /last step/.test(x.t)).length, 0);
+});
+
+test("review: inviter line goes once, only to that invite's inviter, even across many sweeps", async () => {
+  toDay();
+  moreLinks();
+  const h = harness();
+  const told = [];
+  const s = await newSetup({ invite: ownerLink().token });
+  await api("POST", `/api/${s.id}/tapped`, { cookie: s.cookie });
+  clock.skip(11 * MIN); toDay();
+  let total = 0;
+  for (let i = 0; i < 10; i++) { total += ws.nudgeInviters({ say: (c, t) => told.push({ c, t }) }); clock.skip(MIN); }
+  assert.equal(total, 1);
+  assert.deepEqual(told.map(x => x.c), [config.ownerConversation]);
+});
+
+test("review: the status endpoint is capped per visitor and answers a stranger nothing", async () => {
+  const s = await newSetup();
+  const stranger = await api("GET", `/api/${s.id}/status`, { cookie: "not-the-secret", ip: "9.9.9.9" });
+  assert.equal(stranger.status, 404);
+  assert.deepEqual(stranger.json, { error: "not found" });
+  let last = null;
+  for (let i = 0; i < 601; i++) last = await api("GET", `/api/${s.id}/status`, { cookie: s.cookie, ip: "8.8.4.4" });
+  assert.equal(last.status, 429);
+  assert.equal((await api("GET", `/api/${s.id}/status`, { cookie: s.cookie, ip: "8.8.4.5" })).status, 200, "per visitor");
+  ws.resetLimits();
+});

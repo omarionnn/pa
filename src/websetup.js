@@ -354,6 +354,9 @@ export function nudgeInviters({ say, now = clock.now(), log = () => {} } = {}) {
 /** /api/<id>/status, /tapped, /text-me. */
 async function wayIn({ method, which, id, secret, ip, body, router, log }) {
   if (which === "status" && method === "GET") {
+    // Public: the setup's own cookie or nothing, and capped per visitor so it cannot be used to probe
+    // setup ids (a ready screen asks at most ~45 times a tap; a refusal shows nothing alarming there).
+    if (!limits.status(ip)) return json(429, { error: "slow down" });
     const row = store.ownedAny(id, secret);
     if (!row) return json(404, { error: "not found" });
     return json(200, { claimed: !!row.claimed_by, tapped: !!row.tapped_at, textMe: textMeView(row) });
@@ -488,6 +491,7 @@ export const limits = {
   nameLine: limiter(30, 600_000),
   connect: limiter(20, 3_600_000),
   write: limiter(120, 3_600_000),
+  status: limiter(600, 3_600_000),
   ...textMeLimits(),
 };
 export function resetLimits() {
@@ -495,6 +499,7 @@ export function resetLimits() {
   limits.nameLine = limiter(30, 600_000);
   limits.connect = limiter(20, 3_600_000);
   limits.write = limiter(120, 3_600_000);
+  limits.status = limiter(600, 3_600_000);
   Object.assign(limits, textMeLimits());
 }
 
