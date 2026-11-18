@@ -470,6 +470,11 @@ test("3. a NON-owner, end to end in site_card: consent, DoorDash's own texted/em
   assert.equal(S.signedIn, true);
   assert.deepEqual(S.codesTried, ["481516"], "typed once");
   assert.equal(remote.remoteSessionsOpen(), 0);
+  // The planted code is nowhere Reason keeps or says words: no table, no log line, no text sent.
+  const dump = db.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((t) => JSON.stringify(db.db.prepare(`SELECT * FROM "${t.name}"`).all())).join("\n");
+  assert.ok(!dump.includes(code), "the code is in no table");
+  assert.ok(!JSON.stringify(globalThis.__ddlog ?? []).includes(code), "the code is in no log line");
+  assert.ok(!JSON.stringify(said).includes(code), "the code is in no text");
   // The order, approved with Face ID.
   const a = await faceIdFor(OTHER);
   const { read } = await readyAsk(OTHER);
