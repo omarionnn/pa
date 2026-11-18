@@ -339,6 +339,7 @@ export const INSTALL_WIDE = {
   site_findings: "Which sites let Reason's browser onto their sign-in page, with the day it was seen (src/sitefindings.js). About the site, keyed by its name or domain, with a short one-way mark of which sign-in page was asked (never the address itself); nothing in it says who asked.",
   plaid_slots: "How many banks were ever connected through Plaid (src/plaid.js), which Plaid's Trial plan counts even after a disconnect: a one-way mark of each bank connection and a hash of whose, emptied by deleteData (removeAllAtPlaid)",
   agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
+  web_setup_marks: "Web setup counts (src/websetupstore.js): when a ready screen's text button was tapped, when a first text arrived, when Reason tried to text first (with the invite id, for its cap). A time and a kind; no name, number or setup id. Kept 30 days",
   cartesia_daily: "Cartesia call voice counts per day (calls, ready, fall-backs by reason), no person",
   channel_limits: "what each channel refused, learned once for everyone",
   flight_provider_usage: "monthly search counts per flight provider",
