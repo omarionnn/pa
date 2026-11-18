@@ -12,8 +12,8 @@ and PR #335's forget commit (`01a4e27`).
 
 Source: `src/recallindex.js` (`saidNothing` `:306`, `rankAndCut` `:334`, `searchHistory` `:354`,
 `keywordHistory` `:374`, `notForgotten` `:99`, `snippetFor` `:222`, the `recall_reindex` pass `:137`), `src/db.js` (`forgetPerson`
-`:2910`, `forgetFromRecall` `:3059`, tables `recall_forgotten` `:11169` and `recall_reindex` `:11179`, `BUSY_TIMEOUT_MS` `:88`),
-`src/tools.js` (`case "forget"` `:11146`, `case "memory_search"` `:11236`), `src/data.js:262,265`
+`:2961`, `forgetFromRecall` `:3110`, tables `recall_forgotten` `:11311` and `recall_reindex` `:11321`, `BUSY_TIMEOUT_MS` `:88`),
+`src/tools.js` (`case "forget"` `:11540`, `case "memory_search"` `:11630`), `src/data.js:275,278`
 (`recall_forgotten` and `recall_reindex` deleted with the person).
 Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all pass at `36db733` (release head, branch `rel/unverified-fix`).
 

@@ -21,7 +21,7 @@ Source: `src/calls/gptlive.js` (`dialGptLive`: `openingWaits`, AMD; `GptLiveCall
 writes `opening_waits`; `settleCall` keeps a machine row's own outcome — `recording`),
 `src/calls/hold.js` (`MACHINE_TOOL`, `noteMachineLine`, `openingOwed`, `notePerson`, `WAITING_RULES`),
 `src/calls/voice.js` (`holdBack` / `QUIET_ON_A_MACHINE` / `openingIfOwed` in `voiceTurn`, `LINE_OPENED`,
-`case "machine_on_the_line"` in `runCallTool`, src/calls/voice.js:966, acting on `noteMachineLine`'s `endNow`, src/calls/hold.js:182,200), `src/calls/voice-prompt.js`
+`case "machine_on_the_line"` in `runCallTool`, src/calls/voice.js:1042, acting on `noteMachineLine`'s `endNow`, src/calls/hold.js:183,201), `src/calls/voice-prompt.js`
 (`thirdPartyFrame` `openingOwed`), `src/calls/outcome.js` (`machine_menu`, `machine_recording`,
 `machine_dead_end`, `voicemail_full`, `onAMachine`, `answeredByMachine`, `callSummary`),
 `src/calls/postcall.js` (`thirdPartyEvent` machine line; no memory extraction from a machine),
@@ -31,9 +31,9 @@ writes `opening_waits`; `settleCall` keeps a machine row's own outcome — `reco
 
 Calls 62/63 (2026-11-01): "…has not been set up yet. Goodbye", 6 s, and the owner heard nothing useful.
 Now the after-call read's `how: voicemail_not_set_up` moves the row to `voicemail_full`
-([call-goal-met.md](call-goal-met.md)), and `tellTheOwner` (src/calls/postcall.js:222) hands an errand
-row with that kind to `tellUnreached` (src/calls/postcall.js:269): code's words, not the model recap, so
-the daily proactive cap cannot swallow it; claimed on `calls.unreached_told_at` (src/db.js:2105) before
+([call-goal-met.md](call-goal-met.md)), and `tellTheOwner` (src/calls/postcall.js:225) hands an errand
+row with that kind to `tellUnreached` (src/calls/postcall.js:283): code's words, not the model recap, so
+the daily proactive cap cannot swallow it; claimed on `calls.unreached_told_at` (src/db.js:2278) before
 anything is queued, outbox key `call:<id>:unreached`, `toOwner`. Body: "i rang (646) 858-0667 to ask
 about … but it went to a voicemail box that isn't set up or is full — so it didn't reach anyone and no
 message was left. want me to try again later, or text them instead?" (`about` = `calls.pickup_about`,

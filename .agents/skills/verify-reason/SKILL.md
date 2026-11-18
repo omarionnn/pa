@@ -245,6 +245,17 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    10 min (busy.json `saved_login` / `saved_login_code`), or, on code from before those, its wait for
    a code, 7 min (`login_log` `needs_code_*`); an emailed-code sign-in (busy.json `signin_email`). A
    table, column or kind that is not there yet is nothing to wait for, never an error.
+   **And nobody waiting for a reply** (#598): a held message (`pending_inbound`) that arrived in the last
+   10 min and is due within 120 s; a person's `messages` row (role user) from the last 10 min whose
+   `turn_done_at` is still null (the turn answering it is running); a text received in the last 120 s
+   (`inbound_messages`, not cancelled) with no history row and nothing held (a turn still reading it).
+   Counts and times only, never text. If that check cannot run it prints `WARN` once and the rest of the
+   gate decides; `REASON_IDLE_TURNS=off` skips it, `REASON_IDLE_TURN_QUIET_S` / `REASON_IDLE_TURN_STALE_S`
+   move the two windows. Proven by `test/restart-safe.test.js` (10/10 at 18b47891; it runs the real
+   idle.sh on scratch databases with a GNU-`date` shim, because this Mac's `date` has no `%3N` and
+   `REASON_LIVE_SSH=local` here cannot compute `NOW`). On live, `doctor.sh live` runs it read-only:
+   `IDLE — … no reply being written` (2026-11-18). `/root/reason-idle.sh` is the same file as
+   `bin/idle.sh` at 18b47891; `/opt/reason/.agents/` lags a deploy behind (only `src/` is checksummed).
    **Every deploy kit restarts through `/root/reason-restart.sh`** (scripts/safe-restart.sh; it runs
    `/root/reason-idle.sh` = this idle.sh with `REASON_LIVE_SSH=local`, waits up to 20 min, restarts,
    checks health). Never `systemctl restart reason` by hand in a deploy; `--force` is for a rollback
@@ -465,7 +476,8 @@ drives in `bin/` — never against the cage's API key:
 node bin/call-filler-drive.mjs …            # header comment says which private inputs it reads
 # real model on claude-cli (never the API): who-are-you on an own call, another user's, a business
 D=$(mktemp -d) && REASON_DB_PATH=$D/id.db node bin/call-identity-drive.mjs
-# the cage's GPT-Live routes, no model: inbound TwiML (unsigned → 403) and the dead ElevenLabs paths (404)
+# the cage's GPT-Live routes, no model: inbound TwiML (unsigned → 403 only when the cage was started with
+# REASON_CALL_PROVIDER=gptlive; on a checkout with no .env it is off and the route is 404) and the dead ElevenLabs paths (404)
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:$PORT/calls/elevenlabs/llm
 ```
 
@@ -1119,7 +1131,7 @@ To-do list (`REASON_TODO` off/`owner`/on; the plan, the one yes, the list's call
   says `sendblue: live` it is a *duplicate* on the live number — stop it, do not drive it.
   **8799 is already taken** by the local ticket-delivery sandbox; the caged default is 8796.
 - `bin/call-event-gate-drive.mjs`, `bin/delete-coverage-drive.mjs` and the other database-seeding drives refuse a `REASON_DB_PATH` outside a cage (`refusing: REASON_DB_PATH is not a cage database`): run them under `caged.sh env` of a started cage, or with a `mktemp -d -t rv-gate` path.
-- `caged.sh` blanks `PLAID_*`, `CARTESIA_*` and `REASON_GOOGLE_PLACES_KEY` in the server and in `env`, so a checkout whose `.env` holds those keys never reaches Plaid, Cartesia or Google from a cage.
+- `caged.sh` blanks `PLAID_*`, `CARTESIA_*`, `REASON_GOOGLE_PLACES_KEY` and `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` in the server and in `env`, so a checkout whose `.env` holds those keys never reaches Plaid, Cartesia, Google or Browserbase (the hosted DoorDash browser, live `on` for everyone since #605) from a cage.
 - `caged.sh` blanks `AGENTCARD_*` as well as the texting and calling credentials. On the cage every
   purchase tool answers `not_configured` and `/agentcard/webhook` answers 401 — that is the cage
   holding, and the money paths are proved in `test/agentcard.test.js` against the fixture.

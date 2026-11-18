@@ -51,27 +51,30 @@ Notes: the approve page is a bearer link by design, not signed-in only: it opens
 Live 10-31 CVS: the ask went at 16:22:49, Crossmint's hold ran out at 16:32:47 (10.0 min) and the Face ID
 link lasted 5 min, cut further to Crossmint's `expires_at`; the run ended "didn't get it in time".
 
-- **The link lasts 30 min** (`APPROVAL_TTL_MS` `src/passkey.js:67`); `createApproval(row, { until })`
-  (`:219`) ends it at the first ask's half hour when sooner, never at Crossmint's hold. A tap after the
+- **The link lasts 30 min** (`APPROVAL_TTL_MS` `src/passkey.js:74`); `createApproval(row, { until })`
+  (`:238`) ends it at the first ask's half hour when sooner, never at Crossmint's hold. A tap after the
   hold pays nothing (`payRow` refuses an expired row). Spend-limit (`kind: 'cap'`) links keep their own deadline.
-- **The half hour runs from the first ask** across re-asks: `shop_runs.ask_since` (`src/shopconnect.js:258`,
-  set at the first `needs_approval` `:1701`), `askDeadline` `:1116`.
-- **The store let go → asked again** (`renewHold` `src/shopconnect.js:1837`): hold expired
+- **The half hour runs from the first ask** across re-asks: `shop_runs.ask_since` (`src/shopconnect.js:294`,
+  set at the first `needs_approval` `:2316`), `askDeadline` `:1427`. A food order's card holds for the
+  restaurant's 15 minutes instead (`holdMsFor` `:1433`, `src/food.js` `HOLD_MS`), with one more re-ask than `RENEW_MAX`.
+- **The store let go → asked again** (`renewHold` `src/shopconnect.js:2473`): hold expired
   (`input_expired` / "expired while waiting") during `needs_approval`, before `ask_since + 30 min − 5 min`,
-  nothing `declined` or `paying`, at most `RENEW_MAX` (2, `:1828`) times → the same checkout starts again,
+  nothing `declined` or `paying`, at most `RENEW_MAX` (2, `:2464`) times → the same checkout starts again,
   carrying `ask_since`, `renewals` and whether the reminder went; the old run's link closes `renewed` and its
   page reads "Stores hold a payment for ten minutes. I asked again for the same thing, and a fresh link comes…"
-  (`src/pages/webapprove.js:199`); one text: "<Store> let go of the cart before you approved, so I'm asking
+  (`src/pages/webapprove.js:226`); one text: "<Store> let go of the cart before you approved, so I'm asking
   again for <item>. Nothing was charged. A fresh link comes with the total."
-- **One reminder** (`remindApproval` `:1863`, `REMIND_BEFORE_MS` 5 min `:1830`): "Still waiting on your
+- **One reminder** (`remindApproval` `:2503`, `REMIND_BEFORE_MS` 5 min `:2466`): "Still waiting on your
   approval: $26.65 at CVS for …, until 4:52 PM. The Face ID link I sent still works until then." — 5 min
   before the half hour ends, or before the last hold ends when no re-ask is left. `told` carries
   `reminded` across a re-ask, so never twice. The 12-min stall text no longer fires in `needs_approval`.
-- **The page shows what the total is made of** (`breakdownRows` `src/pages/webapprove.js:60`): Item ·
-  Shipping · Tax · Total from `shop_payments.breakdown` (new column, `src/shopconnect.js:259-260`; written
-  from `itemizedParts` `:1326` — Crossmint's structured breakdown, or the question's words when the parts
+- **The page shows what the total is made of** (`breakdownRows` `src/pages/webapprove.js:75`): Item ·
+  Shipping · Tax · Total from `shop_payments.breakdown` (new column, `src/shopconnect.js:295-296`; written
+  from `itemizedParts` `:1707` — Crossmint's structured breakdown, or the question's words when the parts
   add up). A missing shipping/tax row reads "none listed"; one number → "Item, shipping and tax: all in the
   total" + "<Store> gave one number, with shipping and tax in it." The bound challenge is unchanged.
+- Driven 2026-11-18 on `18b47891` (`caged.sh env`, throwaway DB): `bin/passkey-drive.mjs` 27/27 ok and `--non-owner`
+  27/27 ok; `passkey-pay` + `cvc-recollect-1108` + `shop-small-1107` + `card-registration` + `card-email-rule` 63/63.
 - Driven 2026-11-14 (g2 pass, `caged.sh env`, throwaway DB): `bin/passkey-drive.mjs` 27/27 ok, and `--non-owner`
   27/27 ok; `test/passkey-pay.test.js` + `test/cvc-recollect-1108.test.js` green in a 122/122 batch. On the cage
   (shop path on): `/web/connect/passkey` signed out → 404, a made-up `/web/approve/<32 x>` → 404.

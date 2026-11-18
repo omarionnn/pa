@@ -17,15 +17,15 @@ in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.
   error repeated 3x (`noteError`, `src/ops.js`, `threshold: 3`). A send the outbox will still retry
   is not raised.
 - **Only a service down or money texts live (7a1476d, 2026-11-06).** `deliver` in
-  src/incidents.js:80-91 texts an incident only when its `area` is in `URGENT_AREAS` —
-  `messaging`, `calls`, `purchases` (src/opsdigest.js:136); `actions`, `reminders`, `tasks` and
+  src/incidents.js:81-92 texts an incident only when its `area` is in `URGENT_AREAS` —
+  `messaging`, `calls`, `purchases` (src/opsdigest.js:139); `actions`, `reminders`, `tasks` and
   `runtime` are held as one line per episode for the once-a-day digest (`opsDigest.hold`, key
   `incident:<key>@<first_at>`; `flush` after `REASON_OPS_DIGEST_HOUR`, default 9). The 5-minute
-  pass does the same for checks (`checkIsUrgent`, src/ops.js:821, in `settle`). Tests: `test/incidents.test.js`
+  pass does the same for checks (`digest.checkIsUrgent`, src/opsdigest.js:125, called in `settle` at src/ops.js:962). Tests: `test/incidents.test.js`
   ("a runtime error goes to the daily digest…", "a non-urgent alert's whole episode is ONE digest
   line…"), `test/fewer-gates.test.js` section 4.
 - **Spend warnings go live, beside the incidents** (#374, 2026-11-07). Not incidents: `startOps`
-  (src/ops.js:947-950) wires `src/spend.js` `startAlerts` + `capWarnings` to `runtime.say(owner,
+  (src/ops.js:1089-1091) wires `src/spend.js` `startAlerts` + `capWarnings` to `runtime.say(owner,
   digest.scrub(text), { toMaster, idempotencyKey: "ops:…" })` — the 80% daily/monthly heads-up after
   every pass, and the provider usage-limit refusal the moment `recordApi` sees it, once per episode.
   The `api_limit` row ("API usage limit (provider)") is `quiet` like the incident rows. Details,
@@ -67,7 +67,7 @@ in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.
 
 Nothing to do: when a text Reason owed somebody can't go, the owner's phone gets "Reason alert:
 texts over sendblue are failing." with the error, what was tried, what to check next and the
-`/ops` link — never for whom (`openText`, src/incidents.js:207-215; scrubbed by `digest.scrub`). When Reason hangs or dies, the watchdog texts "running but not answering" / "not
+`/ops` link — never for whom (`openText`, src/incidents.js:209-218; scrubbed by `digest.scrub`). When Reason hangs or dies, the watchdog texts "running but not answering" / "not
 running", then "resolved".
 
 ## Driving it with the harness
@@ -173,8 +173,8 @@ What a person sees: when something is left wrong that Reason cannot fix itself (
 took, a payment with no confirmation), Reason may ask "Can I flag this to Reason's team? I'd send: "…""
 with the exact words. Only their typed yes sends it; the operator's thread gets five lines: "Flag from a
 Reason user", the masked sender (`+…9876~<hash>`), the time, the quoted report, `Ref: TF-xxxxxx`.
-Live state: no switch, on for everyone (`team_flag` in the tool list, `src/tools.js:4480`), never on a
-call or an event turn; the operator's lookup `admin_flag_lookup` (`src/tools.js:4603`) is operator-only.
+Live state: no switch, on for everyone (`team_flag` in the tool list, `src/tools.js:4677`), never on a
+call or an event turn; the operator's lookup `admin_flag_lookup` (`src/tools.js:4800`) is operator-only.
 
 - Code owns the words (`cleanReport`, `src/teamflag.js:121`): one paragraph, ≤400 chars, no links, no
   card/password/code-like strings, no full number, email or street address, no names on record. At most 3

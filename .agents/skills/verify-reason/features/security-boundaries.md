@@ -9,8 +9,8 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
 ## Sub-features
 
 - **Own files only (#345).** `src/ownfiles.js` `ownFile(conversationId, path)` (`:110`) is the only door
-  for a path the model hands a tool: `voice_note_send` (`src/tools.js:11862`) and `drive_upload`
-  (`:18112`). A path is theirs only when Reason can show it made or kept it for THIS conversation —
+  for a path the model hands a tool: `voice_note_send` (`src/tools.js:12271`) and `drive_upload`
+  (`:18706`). A path is theirs only when Reason can show it made or kept it for THIS conversation —
   a file a tool call of theirs wrote during that call (`noteMade` `:39`, an echoed path is never
   adopted), their `documents` row, their own call's recording (by the `calls` table), or an attachment
   already sent to them — and it sits inside Reason's file roots. The database, browser profiles and
@@ -22,7 +22,7 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   over Twilio (`test/no-elevenlabs.test.js`). Twilio's own signature check guards the inbound route
   ([gptlive-calls.md](gptlive-calls.md)).
 - **`/health` names nobody (#352).** `src/http.js:192` → `health({ full: operatorSignedIn(req.headers) })`
-  (`:2311`): without the operator's signed-in `reason_page` session `owner` is null, `holding` rows
+  (`:2313`): without the operator's signed-in `reason_page` session `owner` is null, `holding` rows
   carry no `conversation_id`, contact limits read `scope: "contact"`, `why` loses addresses; every
   key and count stays. Doctor reads it that way (SKILL.md Doctor).
 - **Delete takes everything (#353).** [data-delete.md](data-delete.md).

@@ -38,7 +38,10 @@ Offline, through the slot gate: `test/call-trust.test.js test/flow-trust.test.js
 No-model probe (levels, owner gating, set-by-text link, hashing, export):
 `node .agents/skills/verify-reason/bin/call-probe.mjs trust` → `all ok`. With a cage, under
 `bin/caged.sh env` and `REASON_VERIFY_RUN` set, add the cage port (`… trust 8843`) to also GET the link page
-and POST the save (cross-site 403, same-origin 200, one-use 404) on the cage's own logins.db.
+and POST the save (cross-site 403, same-origin 200, one-use 404) on the cage's own logins.db. The cage
+has to be started with `REASON_CALL_TRUST=owner` (or `on`): the page route answers a flat 404 while the
+switch is off (`src/http.js:453`), and with no `.env` it is off, so the four page steps FAIL with 404.
+2026-11-18 at `18b47891`: off → 5 FAIL; `REASON_CALL_TRUST=owner bin/caged.sh start` → `all ok`.
 
 Live: **paid**. The spoken check needs a real own call (operator's phone, ~2 min ≈ $0.30–0.50 Cartesia +
 Twilio). Read-only after: `journalctl -u reason | grep -E 'call_trust_'` on the live server

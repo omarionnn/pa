@@ -21,7 +21,8 @@ notice kinds `deal_drop` / `deal_watch_stopped`), `src/runtime.js` (`checkWatche
 Tests: `test/shopping-offers.test.js` (26), `test/shopping-loop.test.js` (2),
 `test/deal-watch.test.js` (10), `test/shopping-sandbox-fixes.test.js` (5) — 43/43 at `587f67a`;
 the figures gate since #335: `test/unverified-1105.test.js` (33 incl. subtests) — 26 + all pass at
-`36db733`. No-model drive of the gate on the reply and on `message_send`:
+`36db733`; labelled estimates and the price-left-out line: `test/fare-estimate-1115.test.js`,
+`test/fare-estimate-review-1115.test.js`. No-model drive of the gate on the reply and on `message_send`:
 `bin/recall-figures-drive.mjs` (steps "unchecked price …" to "message_send …", see
 [recall.md](recall.md) for the command).
 
@@ -35,25 +36,38 @@ the figures gate since #335: `test/unverified-1105.test.js` (33 incl. subtests) 
 - **Offers → carts.** `purchase` with an `offer_id` checks the AgentCard cart against that exact
   product (`matchCartToOffer`); a cart for something else is a mismatch, not a purchase.
 - **The figures check on everything Reason sends — no "(unverified)" tag, ever (PR #335, 11-05/11-07).**
-  `guardReply` (`src/offers.js:634`) never writes a hedge into the text. A money figure (`$`/`£`/`€`,
+  `guardReply` (`src/offers.js:686`) never writes a hedge into the text. A money figure (`$`/`£`/`€`,
   `USD`, "95 dollars/bucks", `REPLY_MONEY` `:479`) is known when a tool read it this turn, when it is
   **theirs** (their message, minus the line code puts over an inline reply — a quote of Reason's own
-  words is not theirs, `QUOTED_LINE` `:484`; what they sent: a photo note only when the photo read wrote it (`media_items.description_from = 'photo'`, never Reason's fallback reply) and transcripts, `db.theirOwnWords` (`src/db.js:11071`); this turn's photo words ride on the turn (`offers.notePhotos`/`photoWords`), so the rewrite and `message_send` read them too;
+  words is not theirs, `QUOTED_LINE` `:484`; what they sent: a photo note only when the photo read wrote it (`media_items.description_from = 'photo'`, never Reason's fallback reply) and transcripts, `db.theirOwnWords` (`src/db.js:11775`); this turn's photo words ride on the turn (`offers.notePhotos`/`photoWords`), so the rewrite and `message_send` read them too;
   their thread history), when Reason remembers it about them (older than 14 days → "as of <date>",
-  `STALE_MEMORY_MS` `:567`), or when it is arithmetic on known figures (sums, ×/÷ 2–10, a percent
-  of theirs — "18% tip on $84 is $15.12"). A bare number of theirs counts only when they used it as
-  money (`MONEY_BEFORE`/`MONEY_AFTER`, `NOT_MONEY_UNIT` `:491-494`, a money word within `NEAR_WORDS` (4) words of it, never after a label like zip/room/flight — `NOT_MONEY_LABEL`; "I'm 30, 2 kids" and "my zip is 10001, rent's high" back nothing; "ran a 5k" is no $5,000). Their purchase record backs its own amounts but is never a base for sums (`records`).
+  `STALE_MEMORY_MS` `:576`), or when it is arithmetic on known figures (sums, ×/÷ 2–10, a percent
+  of theirs — "18% tip on $84 is $15.12"). Receipts they sent in the last day count too, each once, by its
+  labelled total ("Total $40.10", never "Subtotal" or a "Cash $50.00" tendered line; else its largest
+  amount): the grand total of up to 12 of them, and any grouping of up to 8 (a per-store subtotal) or runs
+  and pairs of up to 12, stand, but a grouping only to the exact cent (the grand total keeps the rounding,
+  "about $262"). A bare number of theirs counts only when they used it as
+  money (`MONEY_BEFORE`/`MONEY_AFTER`, `NOT_MONEY_UNIT` `:519-524`, a money word within `NEAR_WORDS` (4) words of it, never after a label like zip/room/flight — `NOT_MONEY_LABEL`; "I'm 30, 2 kids" and "my zip is 10001, rent's high" back nothing; "ran a 5k" is no $5,000). Their purchase record backs its own amounts but is never a base for sums (`records`).
   Anything else is `dollar_unsourced`: the turn's reply goes back to the model **once**
-  (`recompose`, taken by `Runtime._turn` via `takeRecompose`, `src/runtime.js:643`) to check it or
+  (`recompose`, taken by `Runtime._turn` via `takeRecompose`, `src/runtime.js:645`) to check it or
   leave it out; on the rewrite (`beginTurn(..., { carry: true })`) a price still unchecked is
-  **dropped** sentence by sentence — the sentence holding that whole figure (`dollar_dropped`), and a reply left empty becomes `PRICE_LEFT_OUT`
+  **dropped** sentence by sentence — the sentence holding that whole figure (`dollar_dropped`), plus a following sentence that only qualifies it
+  ("That assumes 16 miles", "It includes tolls", `LEANS_BACK`) unless that one carries a figure that stands or
+  something of its own (a link, a clock time, a street address); a reply left empty becomes `PRICE_LEFT_OUT`
   "I couldn't confirm the price, so I've left it out rather than guess. Want me to look it up?"
-  (`:618`). Coupons/deals the same (`discount_unsourced` → `discount_dropped`; a concrete code/
+  (`:627`). **A price they asked for is never silently deleted:** when they asked what a thing or a trip
+  costs (not "how much time", never their own money: balances, what they paid or owe) and the turn's reply
+  gives Reason's own estimate labelled as one ("my estimate", "I'd guess") with what it assumes ("assuming
+  16 miles", "per night"), that sentence stands (`dollar_estimate_kept`); a figure credited to an app, a
+  site or a business ("Uber's estimated fare", "lists", "quotes", "according to") or off their records never
+  stands that way. When a price they asked for had to come out and no figure is left, the reply opens with
+  "I couldn't confirm a price for that, so I've left the number out rather than guess." (`PRICE_NOT_GIVEN`).
+  `message_send` never takes an estimate. Coupons/deals the same (`discount_unsourced` → `discount_dropped`; a concrete code/
   amount must match a source; BOGO/free shipping/"$N off" are deals). "best"/"cheapest" needs two
   priced offers (or a flight search's fares). A purchase ask must carry AgentCard's total (AgentCard route; dormant where Shop Connect is on). The
   history read happens only when the reply has a figure or a deal. `message_send`
   (`src/tools.js`, grep `unchecked_figures`): an unchecked price or deal is refused **every** try
-  (`blocked: "unchecked_figures"`, `offers.sendBack` `:804`, "never a bracketed tag like
+  (`blocked: "unchecked_figures"`, `offers.sendBack` `:912`, "never a bracketed tag like
   "(unverified)""), to their own person too; other fixes are sent back once. `offer_check`'s note
   says a field the page lacks is "doesn't say" in plain words, never a tag (`src/tools.js`, grep `the page doesn't say`).
 - **The handoff.** `shop_handoff` (and every failed purchase) gives one link with plain words for

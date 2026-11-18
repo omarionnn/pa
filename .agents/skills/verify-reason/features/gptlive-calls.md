@@ -16,6 +16,10 @@ TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, REASON_PUBLIC_URL (no ElevenLabs key of a
 cannot take (keys missing, routing threw) gets Twilio `<Reject/>`. `REASON_CALL_VOICE` /
 `REASON_THIRD_PARTY_VOICE` (below) only matter in front of another provider (`withGptLive`); a GPT-Live
 dial it cannot make returns `{ok:false}` rather than falling back. Proof: `test/no-elevenlabs.test.js`.
+On a cage with no `.env` the GPT-Live routes are not mounted at all (`gptliveOn()` is false), so
+`POST /calls/gptlive/inbound` is a plain 404; start it with `REASON_CALL_PROVIDER=gptlive` (keys still
+blank, startup `calls: gptlive — not_connected`) and an unsigned or wrongly signed inbound is 403
+(2026-11-18 at `18b47891`).
 The sections below are the build history (2026-10-31); where they say "ElevenLabs" for the
 non-GPT-Live branch, that branch no longer exists.
 
@@ -175,7 +179,8 @@ URL** was ElevenLabs' own inbound URL until 2026-11-07; with ElevenLabs removed 
 (or set to a Twilio-only TwiML), and `REASON_GPTLIVE_INBOUND_FALLBACK_URL` is no longer read.
 `inboundTwiml` (REASON_CALL_VOICE=gptlive):
 - account whose own calls are GPT-Live → their own Reason (row on THEIR conversation, identity, greeting
-  `openingLineFor` spoken when the stream starts — nothing made before connect); over the day's cap
+  `openingLineFor` spoken when the stream starts — the line written ahead for that person, see
+  [cartesia-calls.md](cartesia-calls.md) "The opening line is written ahead"; nothing made before connect); over the day's cap
   (`inbound.overCallCap`, 10 calls / 30 min) → Twilio `<Say>` the cap line, hang up;
 - blocked / paused / removed → Twilio `<Say voice=Polly.Amy-Neural>` `stranger.neutralLine()` + `<Hangup/>`;
 - unknown / withheld → the #303 pitch on GPT-Live: `strangerInstructions()` (voice only, names nobody,
@@ -325,7 +330,7 @@ own `gptlive-drive bye.ulaw 30 --expect goodbye --cold` mutual goodbye, first vo
 
 - **One phone, one call:** `call_place` checks `db.liveCallTo(number)` (any conversation, placing/ringing/in_progress, <75 min) right before `createCall` with no await between — same conversation → `already_on_the_call`, the new goal/facts appended to the row and handed into the voice (`gptlive.tellLive`, queued until the session starts); another conversation → `line_busy` only when it is a person's own phone (a business has many lines), nothing of either side in the refusal; a GPT-Live row still `in_progress` with no running voice (`gptlive.isRunning`) is ignored. Only a person's own GPT-Live call is "handed" the note. A goal over 600 chars is fitted (`fitCallBrief`: overflow → facts), never "Bad input".
 - **Mid-turn photos fold** (router `#readMidTurn`): kind `image` with a `media_id` joins the running turn as "[they sent a photo, #id: photo_look id …]"; the picture rides as `_image` on the turn's next tool result (`withFoldedPhoto`). Voice notes/files still keep their own turn.
-- **Purpose everywhere:** `call_place.opening` → greeting "hey <name> — <opening>."; without it a GPT-Live own call is told the goal for its first breath (`openingPurpose` + `greetingInstruction(greeting, purpose)`); the call turn gets `placedCallNote` (goal, facts, recent photos with ids).
+- **Purpose everywhere:** `call_place.opening` → greeting "<salute> — <opening>." (the salute written ahead for them, `src/calls/greetings.js` `pickGreeting`, else "hey <name>"; #586); without it the opening is "<salute>, what's up?" (`carryover.greetingFor` direction out) and a GPT-Live own call is told the goal for its first breath (`openingPurpose` + `greetingInstruction(greeting, purpose)`); the call turn gets `placedCallNote` (goal, facts, recent photos with ids).
 - **Pre-call brief** (`preCallBrief`, own calls only, that conversation only): why it rang + facts, ≤6 recent chat lines (no stamps, nothing bracketed), and — only while they share location (live share, or a pin <3 h) — a neighbourhood/city via `notePlace` (looked up while it dials, never waited on). `OWN_CALL_LINES` (warm/chatty) sit after call 56's lines; prompt tests pin the order.
 - **Honesty:** "Just texted." (no subject) is a claim; a result claiming sent/texted/emailed/messaged with no send tool that turn has the sentence replaced with "I'll text that to you." (a send said as earlier stays) (`withoutUnbackedSends`, log `gptlive_unbacked_send`). A `message_send` to their own number/`owner` skips the caller check (`verify.isConsequential(name, input, { toSelf })`).
 - **Ambience** (`src/calls/ambience.js`, `REASON_CALL_AMBIENCE` owner|on, unset/off = none): café on own calls, office on errands; synthesized beds `assets/calls/ambience-{cafe,office}.ulaw` (20 s, `scripts/make-ambience.mjs`, deterministic, soft-limited so the room alone never passes the 1500 speech peak), mixed at gain 0.01875 (≈ −56 dBFS, about 26 dB under the voice at ≈ −30; 0.12 ≈ −40 until #330 on 2026-11-02, 0.075 ≈ −44 until 11-08, then 0.0375 ≈ −50 by .env until call 77 "still loud, reduce it by 50%") into every outgoing media frame — `REASON_CALL_AMBIENCE_GAIN` tunes it with no code change (`ambienceGain`: a number clamped 0–0.2, unset or not a number = 0.01875; live leaves it unset) and topped up 80 ms ahead between words on its own clock (never the call's playhead). Off on voicemail (AMD machine_end*), never on stranger calls, not in the recording. Drive: `AMB=on` + `gptlive-drive.mjs … --heard out.ulaw` saves what the caller heard.

@@ -1,13 +1,13 @@
 # The free trial and the subscription (src/plan.js, src/stripe.js — REASON_PAYWALL)
 
 **What live runs now (switches 2026-11-14):** `REASON_PAYWALL=on` and `REASON_FREE_TIER` set (the
-monthly tier, `src/plan.js:31`). So a walk-in gets **20 conversations + 2 calls of up to 5 minutes a
-month**, not the 25/30 trial described next (that trial only runs with `REASON_FREE_TIER` unset; see
+monthly tier, `src/plan.js:31`). So a walk-in gets **20 conversations + 2 calls a month** (no
+time cut on those calls since 2026-11-15), not the 25/30 trial described next (that trial only runs with `REASON_FREE_TIER` unset; see
 "The monthly free tier" below). Free for good: accounts from before the flip, the operator, test numbers,
 and somebody whose number first came in through an invite (or a pre-`REASON_EVENT_PAYWALL_TS` event) from
-a member who is free for good themselves (`grandfathered` → `viaFree`, `src/plan.js:205-232`). An invite
+a member who is free for good themselves (`grandfathered` → `viaFree`, `src/plan.js:202-252`). An invite
 from somebody on the free tier or paying makes nobody free, and people on the free tier get no invite
-tools at all (`invitesOpenFor`, `src/tools.js:697`). `REASON_INVITES_OPEN` is unset on live, so invites
+tools at all (`invitesOpenFor`, `src/plan.js:887`). `REASON_INVITES_OPEN` is unset on live, so invites
 are otherwise the operator's plus whoever was turned on one by one (`scripts/grant-invites.js`).
 
 Shipped 2026-10-31 (PR #323). **ON on live since 2026-11-07 23:37 UTC (`REASON_PAYWALL=on`, owner's
@@ -155,7 +155,7 @@ the 25th; the output's `win` says whether the bubbles go then or the trial runs 
 ## The monthly free tier (REASON_FREE_TIER=monthly; #423 merged 2026-11-10, live with the flag from 2026-11-10)
 
 Replaces the 25 / 30-without-a-win trial when `REASON_FREE_TIER=monthly` (unset = the old trial, untouched).
-Walk-ins get 20 conversations (the 30-minute session) + 2 calls of up to 5 minutes a month, from the day
+Walk-ins get 20 conversations (the 30-minute session) + 2 calls a month, from the day
 they first texted (`plan.period_start/period_sessions/period_calls`, added in place). The 21st conversation's
 first text: no model turn, the owner-approved 3 bubbles (11-09, `plan.overTextBubbles`): (1) "that's 20
 conversations between us this month, <Name>. so far i've <recapLine wins>." — or, no wins, "that's 20
@@ -165,18 +165,23 @@ alone (router `#drainHeld` → `plan.answerOverCeiling`); the rest of that conve
 "unlock"/"upgrade"/"trial". A call in over the 20 or past 2 calls: one `<Say>` ("hey <Name>, it's Reason.
 that's both free calls this month, so i can't stay on. i'm texting you the link right now. talk soon.") +
 `<Hangup/>`, then one text ("here's that link. so far i've <wins>. $24.99 a month … otherwise your 2 calls come
-back <Dec 9>.") + the link, once a day (`plan.call_link_day`). A call to them on the free tier: wrap-up cue at 4:30, closed at 5:00 (`free_call_limit`); errand calls to businesses are not cut.
+back <Dec 9>.") + the link, once a day (`plan.call_link_day`). A free-tier call is not cut short (owner, 2026-11-15): `plan.callLimitSeconds` is null, so their calls go on
+the Cartesia (Gemma) voice like everyone's and are only counted. `REASON_FREE_CALL_MINUTES` brings a cut back
+(wrap-up cue 30 s before it, then the line closes, `free_call_limit`, on GPT-Live, the only voice with the cue),
+and then the free tier is said as "2 calls (up to N minutes each)" (`plan.freeCallsWords`); errand calls to
+businesses are never cut.
 `call_place` past 2 calls is refused before the confirm gate. Trial users get no invites (`invitesOpenFor`),
 and an invite / event from anybody not free for good makes nobody free. Auto-admit: `REASON_SIGNUPS_PER_HOUR`
 (default 25) walk-in accounts a rolling hour; the next gets the access-list text (`REASON_ACCESS_LIST_URL`,
 default https://heyreason.com/access) and the approval queue — see [access-list.md](access-list.md). A tool
 refused over the 20 tells the model the reset date before the price, and the second ask in a conversation
 is only "can't do that part right now".
-Prove: `node --test test/free-tier-monthly.test.js` (16) + `bin/free-tier-drive.mjs` (muted, real router +
+Prove: `node --test test/free-tier-monthly.test.js` (17) + `bin/free-tier-drive.mjs` (muted, real router +
 inbound TwiML, prints the texts; 7 ok + all ok on 11-09 and again 2026-11-14 on `7d5b5f54`: 20
 conversations answered, the 21st gets the 3 bubbles with no model turn, a 2nd text there gets nothing,
-the 3rd call gets one line + hang-up + the link texted, 4:30 wrap-up / 5:00 close, a free-tier user is
-offered no invites, 25 admitted and the 26th queued with the access-list text).
+the 3rd call gets one line + hang-up + the link texted, a free-tier call has no cut (with no
+`REASON_FREE_CALL_MINUTES`), a free-tier user is offered no invites, 25 admitted and the 26th queued with the
+access-list text; 7 ok + all ok again 2026-11-18 on `18b47891`).
 Invites: `node --test test/invites.test.js` (19, in the 2026-11-14 paywall run, all pass);
 `test/paywall.test.js` "flip on: invited after the flip → free; joined via a member's event after the flip →
 free; uninvited after the flip → trial".
@@ -213,6 +218,6 @@ AND created_at >= <ts>` = the people now on the free tier through an event.
    (`plan.giftCall`, 2 days like the offer). `call_place` goes ahead with the 2 calls used and with the
    conversations over, and spends it (`plan.useGiftCall`) instead of `plan.noteCall`, so the month's 2 are
    untouched. A guest over the ceiling gets up to 3 uncounted texts to say who and what for
-   (`eventonb.claimCallSetup`). The 5-minute cap on a free-tier call still applies.
+   (`eventonb.claimCallSetup`). A free-tier call has no time cut unless `REASON_FREE_CALL_MINUTES` sets one.
 
 Prove: `node --test test/event-paywall-tweaks.test.js` (14).

@@ -21,8 +21,8 @@ person can change their own. Before this the cap was one number for the whole in
     (`pay_approvals.kind = 'cap'`, the challenge bound to the change's id/owner/from/to; the page
     `/web/approve/<token>` shows "Raise your daily limit to $250?" and the tap applies it, one text
     says so; since #376 the link lasts `APPROVAL_TTL_MS` 30 min, capped at the change's own deadline
-    `changeTtlMs` — src/passkey.js:67, :217-219, src/spendcap.js:29 — and the page says "Works once,
-    and runs out in thirty minutes.", with no reminder text, src/pages/webapprove.js:80); without one it is a plain yes — `spend_limit_confirm` in the chat, or the yes/keep pair on
+    `changeTtlMs` — src/passkey.js:74, :244, src/spendcap.js:29 — and the page says "Works once,
+    and runs out in thirty minutes.", with no reminder text, src/pages/webapprove.js:95); without one it is a plain yes — `spend_limit_confirm` in the chat, or the yes/keep pair on
     Settings — that runs out after `config.askTtlMoneyH` (24h) like every ask about money. With a passkey
     on file the code itself refuses a texted yes or the Settings button (`confirmChange` →
     `needs_face_id`) and hands back a fresh link; the prompt is not the only guard (review fix, 12th test).
@@ -100,7 +100,8 @@ $0 note line), the next $90 paid, spent stays $90; a second `settleUnknownPaymen
 Re-run 2026-11-07 on rel-1107 `8bbcb96` (#374/#376/#379 merged), `caged.sh env` + throwaway DB, no
 cage started: 14/14 ok, rc 0. Again 2026-11-14 (g2 pass, `caged.sh env`, throwaway DB): 14/14 ok; the offline
 files above green (spend-cap-1031, shop-unknown-spend in a 601-pass batch; shopping-everyone-1031,
-passkey-pay in a 122/122 batch).
+passkey-pay in a 122/122 batch). Again 2026-11-18 on `18b47891` (`caged.sh env`, throwaway DB): 14/14 ok; the
+six offline files in one 121/121 batch.
 
 Not this file's: the install-wide **paid-API** caps and their 80% heads-up (#374) are
 [api-caps.md](api-caps.md) — a different "spend cap".

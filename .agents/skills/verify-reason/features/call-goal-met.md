@@ -25,8 +25,8 @@ only by the read-back gate; only a machine answer can relabel it. Its redial doe
 cleared to book on which the other side spoke, or with any commitment row, ask-only with booking off,
 whatever its kind — and it looks past later calls nobody answered and past the ask-only checks
 (`lastHeard`, `isWentThroughCheck` in src/calls/brief.js) to the last call the other side spoke on. New kinds in `src/calls/outcome.js`
-(`picked_up` :61, `talked` :66, `hung_up_early` :71). `settleGptLive` (src/calls/gptlive.js:2417) waits up
-to `GOAL_WAIT_MS` 30 s (src/calls/gptlive.js:2414) for the read before telling the owner; a
+(`picked_up` :61, `talked` :66, `hung_up_early` :71). `settleGptLive` (src/calls/gptlive.js:4637) waits up
+to `GOAL_WAIT_MS` 30 s (src/calls/gptlive.js:4634) for the read before telling the owner; a
 `voicemail_full` errand then gets one code-worded text instead of the recap — see
 [call-machines.md](call-machines.md) "Mailbox not set up".
 

@@ -27,13 +27,17 @@ pages off query 1, the loop broke on `pages`, and Stripe / Skyfire / Payman were
   then closes quietly. A carry-on whose step fails or throws still closes the task (`failed`) and
   gets a note to send one honest line (could not get to the rest).
 - Daily cap: `research.continue_day` on the install day (`trust.spendDay`); 2 per person, owner 5
-  (`REASON_RESEARCH_CONTINUE_PER_DAY[_OWNER]`). Past it `follow_up: { scheduled: false, why:
-  "daily_limit" }` and the note says answer from what it got and offer to look further.
+  (`REASON_RESEARCH_CONTINUE_PER_DAY[_OWNER]`), for the monthly free tier and paying accounts only —
+  the owner and anybody invited (`plan.freeForGood`) have no daily count (the owner number still binds
+  under `REASON_PAYWALL=owner`, where the owner is not free for good). Past it `follow_up: { scheduled:
+  false, why: "daily_limit" }` and the note says answer from what it got and offer to look further.
+- No chain: a follow-up task's own turn never schedules another follow-up, even for a new run it starts
+  (`db.isResearchFollowUpTask`), so each question gets at most one, whoever asks.
 
 Source: `src/research.js`, `src/tools.js` (`case "research"`, `researchFollowUp*`,
 `researchTaskLive`), `src/db.js` (`big`, `continue_task_id`, `continue_day`,
 `claimResearchContinuation`, `researchContinuationsOn`), `src/config.js`.
-Tests: `test/research-room.test.js` (11), `test/research.test.js`.
+Tests: `test/research-room.test.js` (12), `test/research.test.js` (40).
 
 ## Drive (in process, subscription — 3 model turns, fake search, nothing texted)
 
@@ -48,3 +52,7 @@ planned and 6 searched, 14 pages; turn 2 (e-bike, search cap forced to 1) → on
 task, 3 left; the wake → same run carried on (4 searches), one text, task done, nothing after. The
 pages are fixtures, so the model rightly says the sources are placeholders — the drive proves the
 machinery, not answer quality. The model may start a deep task of its own; the drive ignores it.
+
+2026-11-17 at `18b47891`, on the TEST account token (scratch `HOME`/`REASON_CLI_HOME`/`CLAUDE_CONFIG_DIR`, token from a 0600
+env file via `node --env-file`, never this Mac's login): all ok — 6 planned, 6 searched, 14 pages; the e-bike run cut with
+3 left → one follow-up task; the wake carried the same run on (4 searches), one text, task closed, no second follow-up.

@@ -137,7 +137,9 @@ const pageOf = (l) => (l?.page_id ? db.getPageIn(CONV, l.page_id) : null);
 const save = (name, page) => { if (out && page) writeFileSync(`${out}/${name}`, renderPage(page, { interactive: false, forName: "" })); };
 
 // 1. The list, typed.
-const LIST = "here's my to-do list for tomorrow:\n- call Joe's Plumbing (212) 555-0100 and ask if they can come look at the kitchen leak this week\n- gym\n- remind me to pay rent friday nov 6 at 9am";
+// The rent reminder is always the coming Friday, so the date the drive types never falls in the past.
+const FRI = (() => { const d = new Date(); d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7 || 7)); return "friday " + d.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase(); })();
+const LIST = `here's my to-do list for tomorrow:\n- call Joe's Plumbing (212) 555-0100 and ask if they can come look at the kitchen leak this week\n- gym\n- remind me to pay rent ${FRI} at 9am`;
 const t1 = await inbound(LIST);
 step("webhook accepted the list", t1.status === 200, JSON.stringify(t1.body));
 let list = listNow();
@@ -157,7 +159,7 @@ save("checklist-1-planning.html", page0);
 if (out) writeFileSync(`${out}/plan.txt`, planText);
 
 // 2. Yes — and answer the one question if the plan asked one.
-const t2 = await inbound("yes go ahead. friday nov 6 at 9am is right for rent");
+const t2 = await inbound(`yes go ahead. ${FRI} at 9am is right for rent`);
 list = listNow();
 step("the yes was recorded and the plan approved", list?.state === "approved" && t2.tools.includes("todo_approve"), `${list?.state} · ${t2.tools.join(",")}`);
 step("the yes is their own words on the list", !!list?.approved_quote, list?.approved_quote);

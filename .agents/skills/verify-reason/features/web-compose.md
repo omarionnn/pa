@@ -12,8 +12,9 @@ upload link `https://<pages host>/web/media/u/<id>/<name>` and `localUpload(url)
 (`POST /web/upload` same-origin + `X-Reason-Csrf`; `GET /web/media/u/<id>` and `/web/media/m/<row>/<n>`
 to the owning session only, same 404 otherwise, Range for audio — one exception: an upload Reason itself marked
 `public: "table"` (a `render_table` picture, src/tableimage.js:352) or `public: "card"` (a choice card in a picture
-stack, src/choicecards.js:851, #553) is served with no session, because the texting provider fetches it; the 22-char
-random id is the secret (src/webmedia.js:300-307). A person's own uploads are never marked); `prepareSend` — a voice note's
+stack, src/choicecards.js:851, #553) or `public: "picture"` (a picture `send_picture` fetched and kept, src/pictureout.js:120) is served
+with no session, because the texting provider fetches it; the 22-char random id is the secret, and past 30 days it is 404
+(src/webmedia.js:305-311). A person's own uploads are never marked); `prepareSend` — a voice note's
 words from the browser, else heard by `voice.hear` (Gemini), marked so `hearInto` never hears it
 twice), `src/pages/webcompose.js` (composer markup, Listening overlay, 4B media markup, CSS, the
 page script: +, drop anywhere, slips, image shrink over 7 MB, the mic — tap = dictate on the line,
@@ -51,7 +52,11 @@ can listen — `window.REASON_WEB.hear`). Firefox on live: no live words, record
   20 MB EACH` (`webuploads.LIMITS_LINE`, built from the same numbers the server holds). Send leaves
   failed files out.
 - Server limits = the typed line: photos, PDFs, docs (Word .docx or plain text, `src/docread.js`) up to
-  20 MB each. A photo over 7 MB is fitted on the way in (`src/webshrink.js`: ffmpeg on Linux, sips on
+  20 MB each. A 300 MB total per person over 30 days (`QUOTA_BYTES`) holds for the monthly free tier and paying
+  accounts only; the owner and anybody invited (`plan.freeForGood`) have none. For everyone, a file a person sends is
+  refused while the data disk is under its floor (`REASON_UPLOAD_DISK_FLOOR_GB`, 5 GB): 507, and the failed slip reads
+  "<name> didn’t upload. I can't take more files right now; that's on my side, not a limit on you." (`DISK_FULL_WORDS`;
+  one line in the owner's digest). Reason's own cards, tables and pictures never count and are never refused by the floor. A photo over 7 MB is fitted on the way in (`src/webshrink.js`: ffmpeg on Linux, sips on
   macOS; HEIC via heif-convert first). Video is refused (415) — see SCOPE-v2 Q-v2 on video.
 - A doc's text reaches the model like a PDF's (`docsFor` in claude-cli.js and agent.js).
 - 3D: the sent file slip is a link, `TAP TO OPEN`. "on it." says what Reason is doing from the turn's

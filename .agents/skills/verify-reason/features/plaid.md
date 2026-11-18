@@ -1,22 +1,23 @@
 # Their bank, read-only, through Plaid (plaid-readonly, 2026-11-12; on for everyone #568, 2026-11-13)
 
 **Live: `REASON_PLAID=on`** — every active account (`src/accounts.js` admit) plus the owner's own thread;
-not a paused account, not a group, not a stranger, never on a call (`plaidOn` / `plaidOnFor`, `src/plaid.js:69-86`).
+not a paused account, not a group, not a stranger, never on a call (`plaidOn` / `plaidOnFor`, `src/plaid.js:71-86`).
 
 ## Sub-features (user POV)
 - **Connect by text.** "connect my bank" → a Hosted Link, alone on the last line, good for 30 min. The
-  **first** link a person is ever sent comes after fixed consent words (`CONSENT_WORDS`, `src/plaid.js:295`,
+  **first** link a person is ever sent comes after fixed consent words (`CONSENT_WORDS`, `src/plaid.js:314`,
   tool field `tell_first`): "before you tap: this connects your bank through Plaid, read-only. i can see your
   balances, transactions and account names (last 4 digits only), and i can't move money. i keep the last 60
   days of transactions. you can tell me to disconnect your bank anytime, and i remove it at Plaid and delete
   what i had." Later links get a one-line heads-up in Reason's own voice. A bank that needs signing in again
   gets an update-mode link (no new Item, never counted).
-- **The plan cap** (`connectRoom`, `src/plaid.js:259-276`), checked BEFORE a link is made: banks ever
+- **The plan cap** (`connectRoom`, `src/plaid.js:289-296`), checked BEFORE a link is made: banks ever
   connected (`plaid_slots`, one-way: a disconnect or a delete gives none back, as Plaid's Trial counts every
   Item ever) + other people's open new-bank links + 1 must fit `REASON_PLAID_PLAN_ITEMS` (code default **10**,
-  Plaid's Trial, `src/config.js:698`; live sets it — the owner was told **20**; the switch value is masked,
-  so read the /ops Plaid meter for the live number). Full → `say_exactly` "bank connections are full right
-  now; I'll let you know when there's room" (`FULL_WORDS`), no link, Plaid not asked.
+  Plaid's Trial, `src/config.js:699`; live sets it — the owner was told **20**; the switch value is masked,
+  so read the /ops Plaid meter for the live number). Full → `say_exactly` "i can't connect a new bank right
+  now: reason has used every bank connection its current plan allows. that's a limit for everyone, not just
+  you. i'll text you as soon as there's room" (`FULL_WORDS`), no link, Plaid not asked.
 - **No per-person bank limit** (owner, 2026-11-15; `REASON_PLAID_PER_PERSON` is gone): anybody connects as many
   banks as the plan's total has room for. Full → the owner gets one line in the daily digest (`FULL_OWNER_LINE`).
 - **Open links, not banks:** at most `OPEN_LINKS_PER_PERSON` (2) new-bank links open (unfinished, unexpired) per
@@ -28,7 +29,22 @@ not a paused account, not a group, not a stranger, never on a call (`plaidOn` / 
   waiting first, as many as fit. Room appears only when the cap is raised (slots never free up).
 - **Only on their own turn.** `case "bank"` in `src/tools.js` (grep `their bank, read-only`): any turn whose
   `ctx.kind` is not `user` (an email, a timer, the nightly review, an event) → `not_asked`, nothing read,
-  no link sent.
+  no link sent. The one exception is below.
+- **A check-in they set up may read it, with their yes** (`src/bankgrant.js`, table `bank_checkin_grants`).
+  A check-in (a series or a timer) whose words are about their money, set up by them in their own message,
+  with a bank connected: the reply that sets it up ends with "This check-in ("…") will read your bank each
+  time it runs. OK to do that every time?"; if it was never answered, its first firing reads nothing and
+  sends "Your check-in "…" needs your OK to read your bank, so I didn't read it this time. …" (one reminder
+  a day later, then nothing). Only their own typed yes, answering that ask as the last thing Reason said,
+  grants it (`bank checkin_answer`); a no is kept and the check-in runs without bank data. The grant covers
+  only `balance`, `spending`, `transactions`, for the periods the check-in's words name, and only that
+  check-in's own firing (`ctx.fromTimer`, code's). A check-in somebody else's turn made gets "can't read
+  your bank, because you didn't set it up yourself" once, never an ask. Changed check-in words or a bank
+  connected since the yes ask again. After a granted read, every tool that could carry the figures
+  anywhere (memory, notes, pages, any sender, a tapback) is refused for the rest of that turn
+  (`AFTER_READ_ALLOWED`). A failed read sends one fixed line ("I couldn't read your bank for this
+  check-in just now…", or the sign-in-again line). "stop reading my bank" (`checkin_stop`), ending the
+  check-in, disconnecting the last bank or deleting their data takes it away.
 - **Reads**: `spending` (leads with the total), `transactions`, `subscriptions` (Plaid's recurring list),
   `balance`, `status`, `disconnect`; only the last 60 days are kept (`beyond_60_days` for older); a bank
   that needs a new sign-in is named with a reconnect offer. The pay-step balance check is `shop_pay`.
@@ -42,8 +58,9 @@ not a paused account, not a group, not a stranger, never on a call (`plaidOn` / 
   Routes in `src/http.js`: `POST /plaid/webhook` (`plaidWebhookRequest`), `GET /bank/done` (`bankDonePage`).
   The pay-step check is in `src/shoptools.js` (`shop_pay`). Memory exclusion: `src/runtime.js`
   (`financeReply`), `src/dream.js` (`withoutFinanceReplies`). Delete/export: `src/data.js`.
-- Offline proof: `node --test test/plaid.test.js test/planmeter.test.js` (43 + 16; the cap,
-  per-person, own-turn and forget-me-keeps-the-count tests start at `test/plaid.test.js:1040`), against `test/fixture-plaid.js` through the
+- Offline proof: `node --test test/plaid.test.js test/bankgrant.test.js test/planmeter.test.js` (44 + 23 + 16;
+  the cap, no-per-person-limit, own-turn and forget-me-keeps-the-count tests are near the end of
+  `test/plaid.test.js`; the check-in grant in `test/bankgrant.test.js`), against `test/fixture-plaid.js` through the
   real `plaid` SDK. The fixture answers the way the real Sandbox did (`SHAPES_FROM`), first sync
   empty included, and one test holds it to the recordings in `test/fixtures/plaid/`.
 - Live proof, Sandbox only (needs `PLAID_CLIENT_ID` / `PLAID_SECRET_SANDBOX` in an env file; run
@@ -70,7 +87,8 @@ not a paused account, not a group, not a stranger, never on a call (`plaidOn` / 
   not asked, waitlisted; sweep tells nobody until the cap rises, then once; a disconnect frees no slot; no
   token or secret in anything returned or logged. Script kept with the evidence (`plaid-drive.mjs`).
 - On the cage itself the switch is off (route `POST /plaid/webhook` → 404) and no Plaid key is set:
-  `caged.sh` does not blank `PLAID_*`, so a checkout with a `.env` holding them would reach real Plaid.
+  `caged.sh start` and `caged.sh env` blank `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_SECRET_PRODUCTION` and
+  `PLAID_SECRET_SANDBOX`, so even a checkout with a `.env` holding them cannot reach real Plaid from the cage.
 - What to check on a person's screen: the heads-up line and the link on its own line; `/bank/done`
   shows no bank, balance or number; the confirmation text; "how much did i spend this week" leads
   with a number; "disconnect my bank" answers and `plaid_*` rows for them are gone.

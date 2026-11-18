@@ -8,7 +8,7 @@ the reply says what happened and that Reason will check again and text them, and
 Live state: no switch (no `REASON_*` flag in `src/retry.js`): on for everyone since it merged.
 
 Source: `src/retry.js` (`RETRY_TOOLS`, `isTransient`, `retryTransient`, `scheduleRecheck`,
-`exhaustedNote`, `offerNote`), `src/tools.js:9782` (the wrap around `runToolInner`), `src/runtime.js:650`
+`exhaustedNote`, `offerNote`), `src/tools.js:10149` (the wrap around `runToolInner`), `src/runtime.js:654`
 (the reply check rides the existing one rewrite, no extra model call), `src/calls/cartesia.js:925` (spoken).
 Test: `test/retry-dont-offer.test.js` (15).
 

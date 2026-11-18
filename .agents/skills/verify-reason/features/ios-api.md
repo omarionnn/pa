@@ -3,7 +3,7 @@
 Switch `REASON_IOS_API` = off (default) | owner | on (`src/config.js:441`). **Live: `owner`**: only the
 signed-in owner gets answers; everyone else, on every route, gets exactly what a path nobody issued
 answers (`src/http.js:332`). Contract: `docs/ios-api.md`. Code: `src/ios/` (`api.js`, `session.js`,
-`messages.js`, `feed.js`, `live.js`, `memory.js`), routed in `src/http.js:325`.
+`messages.js`, `feed.js`, `live.js`, `memory.js`), routed in `src/http.js:323`.
 
 ## Sub-features
 

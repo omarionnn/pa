@@ -9,8 +9,8 @@ Source: `src/planmeter.js` (`METERS`, `readAll`, `warnings`, `textFor`, `detailO
 pass with `sendNow`), `src/pages/ops.js` (`metersSection`, the bars), `src/config.js` (plan settings),
 `src/calls/cartesia.js:986` (writes `calls.cartesia_seconds` / `cartesia_fell_back` when a call ends),
 `src/googleplaces.js` (`TIERS`, `capOf`, `monthOf`: the Places caps and billing month).
-Live state (2026-11-14 switches): no switch; owner-only by nature (only `/ops`). Cartesia and Plaid rows show
-(keys set); the Places rows don't (no `REASON_GOOGLE_PLACES_KEY`).
+Live state (2026-11-18 switches): no switch; owner-only by nature (only `/ops`). Cartesia and Plaid rows show
+(keys set), and so do the two Places rows (`REASON_GOOGLE_PLACES_KEY` is set on live now).
 Tests: `test/planmeter.test.js` (16), `test/places-google.test.js` (the Places meter).
 
 ## Sub-features
@@ -31,7 +31,7 @@ Tests: `test/planmeter.test.js` (16), `test/places-google.test.js` (the Places m
 - **Google Places (standing per month), only with a key.** Two rows, Pro and Enterprise searches, against
   Reason's own hard caps (`REASON_GOOGLE_PLACES_PRO_MAX` 4500, `REASON_GOOGLE_PLACES_ENT_MAX` 900 by default,
   inside Google's free 5,000 / 1,000, `src/googleplaces.js:49`). Texts at 80% and 100% only. The count resets on the 1st (Google's billing
-  month, Pacific time). **Live has no `REASON_GOOGLE_PLACES_KEY`, so neither row shows there.**
+  month, Pacific time). Live has `REASON_GOOGLE_PLACES_KEY` set (2026-11-18), so both rows show there.
 - **The texts.** Each threshold texts once: per cycle for Cartesia, and on the way up for a standing
   count, re-armed when the count drops back below it. The mark goes in `ops_state` before the send, so a
   restart never repeats one. A jump straight past two thresholds texts only the higher one. Idempotency key
@@ -44,8 +44,8 @@ Tests: `test/planmeter.test.js` (16), `test/places-google.test.js` (the Places m
 
 ## How to get to it (user POV)
 
-Open `heyreason.com/ops`, sign in, and look under Money for "Cartesia calls" and "Plaid banks" (plus the
-two Google Places rows once a key is set). A row turns amber at 80%. The owner's phone gets the texts above (the operator's thread, keyed as an operator notice).
+Open `heyreason.com/ops`, sign in, and look under Money for "Cartesia calls", "Plaid banks" and the two
+Google Places rows (shown because a Places key is set). A row turns amber at 80%. The owner's phone gets the texts above (the operator's thread, keyed as an operator notice).
 
 ## Driving it with the harness
 

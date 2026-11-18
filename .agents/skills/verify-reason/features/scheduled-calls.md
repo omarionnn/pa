@@ -35,7 +35,10 @@ Tests: `test/timer-call.test.js` (21 pass at `sec/lead31-leftovers`).
   conversation's own number, nobody else's — a third party is impossible from a timer) and the
   goal. No model turn, no text. The call row is made with `timer_id` before the dial; a retry
   after a crash finds it and does not ring twice.
-- **First words say why.** `announcementFor({ toOwner, because })` → `hey <name> — <goal>.` The
+- **First words say why.** `<salute> — <goal>.`: the salute is one written ahead for them by the
+  side model (`pickGreeting({ kind: "salute" })`, `src/calls/greetings.js`, #586, 2026-11-15; "Morning,
+  Sam"), checked at pickup by `greetingOk`, else plain `hey <first name>` — so with nothing written yet
+  it reads exactly as `announcementFor` did: `hey <name> — <goal>.` (the drive's fresh db). The
   owner guard still holds (nothing "recorded", no "AI assistant"); a goal that trips the guard
   ("a call for the airport") falls back to the plain greeting and the voice turn is still told
   why (`scheduledCallNote`).
@@ -67,7 +70,7 @@ the call" → nothing rings. Set a wake-up for 6:30 → it rings at 6:30, not 8.
 
 ```bash
 cd ~/Desktop/pa
-node --test test/timer-call.test.js                       # 20 pass
+node --test test/timer-call.test.js                       # 21 pass
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
   && REASON_DB_PATH=$(mktemp -d)/timer-call.db node .agents/skills/verify-reason/bin/timer-call-drive.mjs
 ```
@@ -80,9 +83,9 @@ failure text, the series, and the set-time refusal.
 
 **The drive was stale from #326 (`7ea4735`, "one phone, one call") to 2026-11-07: 13 ok, 7 FAIL.**
 `call_place` joins a live call to the same number instead of dialling (`db.liveCallTo`,
-`src/tools.js:11246`; live = `placing|ringing|in_progress` within 75 min, `src/db.js:5231`), and the
+`src/tools.js:12587`; live = `placing|ringing|in_progress` within 75 min, `src/db.js:5712`), and the
 drive's answered call 1 stayed `placing`, so call 4 logged `{"call_place_joined_live":1}`. And since
-10-31 the operator has no daily call cap (`REASON_CALL_CAPS_EXEMPT=operator`, `src/accounts.js:177-180`),
+10-31 the operator has no daily call cap (`REASON_CALL_CAPS_EXEMPT=operator`, `src/accounts.js:216-219`),
 so the cap step rang instead of texting. Fixed in the drive 2026-11-07: call 1 is ended the way the
 status callback would before step 4, and the drive sets `REASON_CALL_CAPS_EXEMPT=none`. 20 ok,
 `all ok` at `36db733`.

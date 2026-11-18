@@ -29,7 +29,7 @@ Source: `src/pages/made.js` (frame + P1–P6 + E2–E4 + the two og cards, view 
 - **LP2**: every private page's og = "A page Reason made for you" + `/og/private.png`.
   **LP3**: an event's drawn card carries only public facts. **E2**: cancelled event / closed album.
 
-Drive: `node --test test/pages-v2.test.js` (13 pinned). Cage started with `REASON_PAGES_V2=1`
+Drive: `node --test test/pages-v2.test.js` (14 pinned). Cage started with `REASON_PAGES_V2=1`
 (2026-11-14): the key on a new browser carries "A page Reason made for you" and none of the page's
 words; `/og/private.png` 200; `/p/ab` the raw JSON 404. Pictures: `node scripts/pages-v2-preview.mjs
 <dir>` (sample data, throwaway DB, real routes) then `node scripts/pages-v2-compare.mjs

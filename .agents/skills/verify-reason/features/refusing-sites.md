@@ -15,7 +15,8 @@ a twice-seen generic error; clears on any account-level answer), `src/loginintak
 (`savedLoginRoute` → `{ refusing }`, `saveOfferFor` skips them), `src/tools.js`
 (`saved_login_offer`, `account_signin`, `signin_status` via `vaultSigninFor`; `mailFor`), tables
 `site_refusals` / `site_wall_strikes` (per site, never per person; `src/data.js`).
-Tests: `test/signin-refusing.test.js` (12), plus refusing cases in `test/signin-ux.test.js`,
+Tests: `test/signin-refusing.test.js` (12), `test/save-google-login-1115.test.js` (the Google strike),
+`test/remote-browser.test.js` (the hosted keys), plus refusing cases in `test/signin-ux.test.js`,
 `test/vault-pin.test.js`, `test/filler.test.js`, `test/signin-route.test.js`.
 
 ## Sub-features
@@ -39,6 +40,17 @@ Tests: `test/signin-refusing.test.js` (12), plus refusing cases in `test/signin-
   Any account-level answer (signed in, wrong password, a code asked) clears the site at once. A
   wall-marked site's words say what was seen: "<Site> has turned my browser away the last two times I
   tried, so I can't sign in there right now."
+- **Google turning the browser away (#592).** Google's own "This browser or app may not be secure" /
+  "Couldn't sign you in" in a Continue-with-Google job is a `browser_refused` strike against google.com, the
+  same strike rule (two, 10+ min apart → marked 7 days; any account-level answer from Google clears it).
+  `strikeOn(site)` reads a single strike still inside its 7 days; saving the Google login says a mark or a
+  strike first, as a question ([saved-logins.md](saved-logins.md)); no site is said to refuse Reason without
+  one of these records.
+- **The hosted browser keeps its own memory (#596).** For a site the hosted browser carries
+  ([hosted-browser.md](hosted-browser.md)), every call takes `{ browser: "remote" }` and its rows sit under
+  `<site>~hosted` (`HOSTED_SUFFIX`): a wall Reason's own browser met says nothing about the hosted one, and
+  back. The hosted browser tries once, so its first wall, challenge or generic refusal (`hosted_refused`)
+  marks the site at once, believed 7 days; no seed applies there.
 
 ## How to get to it (user POV)
 

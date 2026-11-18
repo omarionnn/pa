@@ -38,6 +38,13 @@ during the old 3–5 question interview). One question per message; nothing ever
    random per account (`accounts.contact_card_token`), the name is `accounts.contact_card_name`, and
    `src/http.js assetRequest` draws `FN`/`N` from it (`ORG` stays Reason). An unknown token draws the
    plain Reason card. Reason's own name never changes; the history carries a note (saving is theirs).
+   The name they picked is Reason's, never theirs, on every path (#580, 2026-11-14): `src/identity.js`
+   (`assistantNicknames`, `assistantNameLine`) says whose name it is wherever the profile or a saved
+   fact shows it (texts Reason starts itself, calls, carry-over, tool results), and the outbox's last
+   step (`notByTheNickname` in `src/outbox.js` → `withoutNicknameVocative`) takes the nickname out
+   when a text to them uses it to address THEM ("Back on the setup, Jarvis:" → "Back on the setup:";
+   "Jarvis here" stays), logged `nickname_vocative_dropped`. Pinned in
+   `test/assistant-name-everywhere.test.js`.
 4. `TRY_LINE` — ONE nudge, two things to try: a call Reason makes for them (a restaurant, a store, an
    appointment, sorting something out while they get on with their day), or setting up and running an
    event. Never a call to chat with them.
@@ -100,8 +107,16 @@ card route), `src/db.js` (`contact_card_name`, `contact_card_token`, `setContact
 
   Two people: hey → who made you → kofi → jarvis, and a request first → bubba (a nickname: warm line,
   no meaning) → whatever. 14 checks, including the served card's `FN:Jarvis`, the exact nickname ask, the try line after each card, and no
-  phone-control wording. Needs `claude` logged in on this Mac (on 2026-11-06 it said "OAuth session
-  expired", so the name-card PR was proved in-process: stated reads, real router/outbox/card route).
+  phone-control wording. Needs a model login for the cage's `claude -p`: this Mac's own login (the
+  live subscription), or — to keep off it — the test account's token exported for the drive with a
+  scratch sealed root: `export REASON_CLI_HOME=$(mktemp -d)/rc` and `CLAUDE_CODE_OAUTH_TOKEN` read from
+  the Keychain (`security find-generic-password -s reason-test-claude-token -w`) into the environment
+  inside a script, never on a command line; a sealed child with no token has no login at all on the
+  Mac (`bin/cli-seal-probe.mjs` with no token: "no request reached the stand-in"). Set
+  `REASON_VERIFY_SB_PORT` when another drive may hold 18941. 2026-11-18 at `18b47891` that way: 14/14
+  `all ok`, served card `FN:Jarvis`, no `claude -p` left (evidence `*-A-onboarding`). On 2026-11-06
+  the Mac's login said "OAuth session expired", so the name-card PR was proved in-process: stated
+  reads, real router/outbox/card route.
 - On live since 2026-11-06; `REASON_ONBOARDING=off` in `.env` turns it off. The cage drive is a `model`
   drive (subscription haiku reads + one turn); with the cards on, export `REASON_WELCOME_CARDS=on` and expect
   one `/api/send-carousel` between the intro and the name ask.

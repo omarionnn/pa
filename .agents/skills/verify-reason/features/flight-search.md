@@ -28,7 +28,7 @@ notes: `docs/flight-search.md`.
   1000). A search that errors still counts. Each outcome is a `provider_calls` row under
   `flights_serpapi` / `flights_duffel` (`LEDGER`).
 - **No source answered** (no key, cap used, or both failed) → `FliError("unavailable")` →
-  `unavailable(link)` (`src/flightsearch.js:432`): `kind: "unavailable"`, the Google Flights `link`
+  `unavailable(link)` (`src/flightsearch.js:430`): `kind: "unavailable"`, the Google Flights `link`
   on their route and dates (`askedLink`), and a `say` telling the model to say it ONCE, promise no
   retry, start no task/watch, give no prices from memory. On a wake that isn't their message within
   24 h of being told (`ALREADY_TOLD_MS`, `db.lastFlightsUnavailableAt`) → `alreadyTold`: NO_REPLY and
@@ -38,14 +38,14 @@ notes: `docs/flight-search.md`.
 - **A date sweep** — `flight_dates` (`runDateSweep`): **no source has a fare calendar**, so
   `searchDates()` always throws `unavailable` (`src/flightproviders.js:376`) and a sweep answers with
   the link, even with keys set. One sweep per message is still enforced (`offers.turnState(c).flightSweep`,
-  "One date sweep per request", `src/flightsearch.js:542`).
+  "One date sweep per request", `src/flightsearch.js:540`).
 - **A re-check before recommending** — `flight_verify {search_id, option}` (`runVerify`): same
   search again (SerpApi with `no_cache`), same itinerary key → `still_there`, `price_then`/`price_now`;
   gone → `still_there:false` + `fresh_options`; a passed date is refused; a round trip listed by
   Duffel that can't be re-checked is `couldnt_check`, never "sold out".
 - **The record** — every search/sweep/verify is a `flight_searches` row (conversation-scoped,
   outcome `ok`/`empty`/the error kind, e.g. `unavailable`).
-- **/ops "Flight search"** — `src/ops.js:533` `flightSearchCheck`: `off` with neither key ("no
+- **/ops "Flight search"** — `src/ops.js:671` `flightSearchCheck`: `off` with neither key ("no
   SERPAPI_API_KEY or DUFFEL_ACCESS_TOKEN — searches answer with a Google Flights link"); else per source
   `<name> <used>/<limit> this month, N searches today`, `warn` at the cap or after a failed last call.
   `quiet: true` (shown, never texted) unless the last failure is `auth` or `provider` (a bad key).
@@ -60,16 +60,17 @@ prices, times, stops and links — or, with no source, one message with the Goog
 
 **Offline first** — `node --test test/flight-search.test.js test/flights.test.js test/flight-providers.test.js`
 (31 + 58 + 19 = 108 pass on 2026-11-07, rel/verify-maint). The suite hands a fake source in through
-`ctx.fli` (`src/tools.js:17189`); `test/flight-providers.test.js` uses recorded SerpApi/Duffel bodies
+`ctx.fli` (`src/tools.js:19324`); `test/flight-providers.test.js` uses recorded SerpApi/Duffel bodies
 in `test/fixtures/flights/` and an injected `fetchImpl`, so nothing leaves the process.
 
-**The no-source path on the cage (default; no network).** The cage does NOT blank `SERPAPI_API_KEY` /
-`DUFFEL_ACCESS_TOKEN` (`bin/caged.sh` blanks texting, calling, AgentCard and Uber only), so blank them
-yourself in the drive process. With `caged.sh env` exported plus `SERPAPI_API_KEY= DUFFEL_ACCESS_TOKEN=`:
+**The no-source path on the cage (default; no network).** `bin/caged.sh` blanks `SERPAPI_API_KEY` and
+`DUFFEL_ACCESS_TOKEN` in `start` and in `env` (since 2026-11-07), so with `caged.sh env` exported:
 `runTool("flight_search", {origin:"JFK,EWR,LGA", destination:"MIA", depart_date:"<future>",
 max_stops:"NON_STOP", show:3}, ctx)` → `ok:false, couldnt_check:true, kind:"unavailable"`, a `link`,
 the "say it ONCE … Nothing is retrying" `say`; `flight_dates` → the same `unavailable`;
-`ops.flightSearchCheck()` → `state:"off"`. Driven so 2026-11-07 (evidence `20261107T1400Z-g2/tool-drive.out`).
+`ops.flightSearchCheck()` → `state:"off"`. Driven so 2026-11-07 (evidence `20261107T1400Z-g2/tool-drive.out`), and
+again 2026-11-18 on `18b47891` (in process, every fetch throwing, 0 fetch attempts; `flight_dates` needs
+`from_date`/`to_date`). Offline the six flight files (with booking) were 155 pass, 1 skipped.
 
 **With a real key** — every search spends the owner's monthly allowance (SerpApi free plan 250/month)
 and reaches the network: not a verification drive. Prove the source mapping offline.

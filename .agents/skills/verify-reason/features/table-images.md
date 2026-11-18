@@ -41,12 +41,14 @@ They pick by position or name, counting from the top of the first picture.
 - **Live: `REASON_TABLE_IMAGES=on`** for everyone (live switch list, 2026-11-14).
 - Table pictures are NOT a swipeable stack: only choice cards use `src/stack.js` (#553); a split table
   goes one picture per message, "1 of 2" in the footer (`grep -rln sendPictureSet src` → choicecards + stack only).
-- Each picture → `webuploads.store(..., extra: { public: "table" })` (random 22-char id, pruned after
-  `KEEP_MS` = 30 days) → `uploads.uploadUrl` → `router.sendMedia({ mediaUrl })` (new: durable through the
+- Each picture → `webuploads.store(..., extra: { public: "table" }, quota: false)` (random 22-char id, pruned after
+  `KEEP_MS` = 30 days; Reason's own output, so it never counts against a person's 300 MB upload total, and
+  the system-wide disk floor only refuses files a person sends) → `uploads.uploadUrl` → `router.sendMedia({ mediaUrl })` (new: durable through the
   outbox, `sendNow` → the channel's `sendMediaUrl`; Sendblue posts it as `media_url`). A channel with no
   `sendMediaUrl` (Web) gets the file. Idempotency `table:<set>:<n>`; GAP_MS 900 between pictures.
-- `GET /web/media/u/<id>/<name>` with NO session serves only a record whose `public === "table"`
-  (src/webmedia.js); every other upload still needs the owner's session.
+- `GET /web/media/u/<id>/<name>` with NO session serves only a record made public on purpose: `public` is
+  `"table"`, `"card"` (choice cards) or `"picture"` (a picture Reason rehosted to send) (src/webmedia.js);
+  every other upload still needs the owner's session.
 - Web history: `historyFromOutbound` records a `mediaUrl` row as `{ kind: "image", url, table: true }`, which
   `serveRowMedia` already serves through `uploadIdOf` → `meta` → the conversation check.
 - Runtime: `_sendTableImages` right after `_sendChoiceCards`; a turn that said nothing drops the set

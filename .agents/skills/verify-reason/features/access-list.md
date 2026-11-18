@@ -14,7 +14,7 @@ Source:
   auto-admit off (`REASON_AUTO_ADMIT=1` on live).
 - Invites skip the list: somebody who comes in on a member's invite is never counted or queued, and is free
   for good when the inviter is (see [paywall.md](paywall.md), "What live runs now").
-- The website form — `POST /access/web` (`WEB_ACCESS_PATH`, `src/http.js:1236`, routed at `src/http.js:948`), signed by the Netlify
+- The website form — `POST /access/web` (`WEB_ACCESS_PATH`, `src/http.js:1238`, routed at `src/http.js:950`), signed by the Netlify
   function `reason-site-new/netlify/functions/access.mjs` with `REASON_WEB_ACCESS_SECRET` (set on BOTH
   Netlify and live `.env`; Netlify was missing it until 2026-11-10). `REASON_ACCESS_URL` on Netlify =
   https://app.heyreason.com/access/web. Daily cap `REASON_WEB_ACCESS_PER_DAY` (code default 30, live 200
@@ -24,9 +24,9 @@ Source:
 
 Prove:
 - `node --test test/free-tier-monthly.test.js test/web-access.test.js test/access.test.js` (all pass
-  2026-11-14, `7d5b5f54`: access group 52/52).
+  2026-11-14, `7d5b5f54`: access group 52/52; 69/69 on `18b47891`, 2026-11-18).
 - Sign-up text without a model: `bin/free-tier-drive.mjs` (muted) prints it once the hour's ceiling is
-  hit (2026-11-14: "25 admitted, the 26th queued with the access-list text"); on a sandbox DB set `REASON_SIGNUPS_PER_HOUR=1` and send two new numbers through `bin/inbound.sh`.
+  hit (2026-11-14, again 2026-11-18 on `18b47891`: "25 admitted, the 26th queued with the access-list text"); on a sandbox DB set `REASON_SIGNUPS_PER_HOUR=1` and send two new numbers through `bin/inbound.sh`.
 - Live, read-only: `curl -s -o /dev/null -w %{http_code} https://heyreason.com/access/` → 200; an unsigned
   `POST https://app.heyreason.com/access/web` → 401. A signed POST queues a real request on the owner's
   phone — don't.
