@@ -99,6 +99,14 @@ runtime.on("error", (e) => console.error("runtime error:", e?.message ?? e));
 runtime.start(config.sweepEveryMs);
 // The status page's checks, every five minutes, texting the owner when something changes state.
 startOps({ runtime, router, log });
+// The web setup's inviter line (src/websetup.js nudgeInviters, REASON_WEB_SETUP): a friend who tapped
+// the ready screen's text button ten minutes ago and has not arrived. Looked at every minute; a no-op
+// with the switch off.
+{
+  const { nudgeInviters, on: webSetupOn } = await import("./websetup.js");
+  const t = setInterval(() => { if (!webSetupOn()) return; try { nudgeInviters({ say: (c, text) => runtime.say(c, text), log }); } catch (e) { log({ websetup_nudge_failed: String(e?.message ?? e).split("\n")[0].slice(0, 120) }); } }, 60_000);
+  t.unref?.();
+}
 // Crossmint checkouts (src/shopconnect.js, REASON_SHOP_CONNECT): how to text a sign-in link or a payment
 // ask, and the runs a restart interrupted, followed again.
 {

@@ -44,6 +44,8 @@ import { profilePath, realProfilePath } from "./browser.js";
 import { cookieDomain } from "./pages/siteproxy.js";
 import { clientIp } from "./opspassword.js";
 import * as invites from "./invites.js";
+import { liveLine } from "./contact.js";
+import { inTheirNight } from "./notice.js";
 
 export const on = () => ["1", "true", "on", "yes"].includes(String(process.env.REASON_WEB_SETUP ?? "").trim().toLowerCase());
 export const PATH = "/setup";
@@ -104,10 +106,10 @@ export function setupJwtSec(conversationId, now = clock.now()) {
  * claimed (`{ setupId, user, reasonName, amazon, email, uber, card }`) or null — no code, no open setup with it,
  * or a text that does not carry the setup's names (then nothing is touched and the intro runs).
  */
-export function claimFromText({ conversationId, text, log = () => {} }) {
+export function claimFromText({ conversationId, text, address = null, log = () => {} }) {
   if (!on() || !conversationId || store.isSetupConversation(conversationId)) return null;
   const code = codeInText(text);
-  if (!code) return null;
+  if (!code) return claimTextMeReply({ conversationId, text, address, log });
   const row = store.byCode(code);
   if (!row || !row.user_name || !has(text, row.user_name) || !has(text, row.reason_name)) {
     if (row) store.miss(row.id);
@@ -141,7 +143,16 @@ export function claimFromText({ conversationId, text, log = () => {} }) {
 export function claimInviteFromText({ channel, address, text, log = () => {} }) {
   if (!on() || !invites.startOn()) return null;
   const code = codeInText(text);
-  if (!code) return null;
+  if (!code) {
+    // A reply, with any words, from the number Reason texted first for an invite setup: the phone is
+    // the proof (only it can reply from that number), and the invite is spent the same way, in the
+    // same transaction, with the same race rules as a coded first text.
+    const pending = store.byTextMe(normalizeE164(address));
+    if (!pending?.invite_id || !pending.user_name) return null;
+    const out = invites.claimForSetup({ inviteId: pending.invite_id, channel, address, name: nameCase(pending.user_name) });
+    log({ websetup_invite: out ? (out.joined ? "joined" : out.reason) : "member", setup: pending.id, invite: pending.invite_id, via: "text_me" });
+    return out;
+  }
   const row = store.byCode(code);
   if (!row?.invite_id) return null;
   // Without its names the text proves nothing; claimFromText counts the miss if they get in another way.
@@ -149,6 +160,25 @@ export function claimInviteFromText({ channel, address, text, log = () => {} }) 
   const out = invites.claimForSetup({ inviteId: row.invite_id, channel, address, name: nameCase(row.user_name) });
   log({ websetup_invite: out ? (out.joined ? "joined" : out.reason) : "member", setup: row.id, invite: row.invite_id });
   return out;
+}
+
+/**
+ * The reply to Reason's first text (text-me-first), from an account it just made: the setup that asked
+ * Reason to text this number is claimed and its names applied. Nothing the stand-in connected moves:
+ * the reply proves the phone, not who built the page, so a setup pointed at somebody else's number
+ * hands them no Gmail, Amazon or card. Null when this number has no open setup waiting on it.
+ */
+function claimTextMeReply({ conversationId, text, address, log }) {
+  const row = store.byTextMe(normalizeE164(address));
+  if (!row || !row.user_name) return null;
+  if (!store.markClaimed(row.id, conversationId)) return null;
+  const from = store.conversationOf(row.id);
+  db.setAccountName(conversationId, nameCase(row.user_name));
+  db.setContactCardName(conversationId, cardName(row.reason_name || DEFAULT_CARD_NAME));
+  dropConnections(from);
+  log({ websetup_claim: "claimed", setup: row.id, via: "text_me" });
+  return { setupId: row.id, user: row.user_name, reasonName: row.reason_name || DEFAULT_CARD_NAME, text: String(text ?? "").trim(),
+    email: false, amazon: false, uber: false, card: false, amazonStore: false, viaTextMe: true };
 }
 
 /**
@@ -227,6 +257,148 @@ export function sweep(now = clock.now()) {
     dropConnections(store.conversationOf(id));
     store.remove(id);
   }
+  store.pruneMarks(now);
+}
+
+// ---------- the ready screen's way in (first-text, 11-17) ----------
+//
+// A first text typed by the page can leave the phone as a plain SMS (a green bubble) when the iPhone
+// has not yet learned the number does iMessage, and that never reaches Reason. So the ready screen
+// tells the server when its text button was tapped (/tapped), asks whether the text arrived
+// (/status, every few seconds for two minutes), and when it has not, offers "send it again" and,
+// behind REASON_TEXT_ME_FIRST, "i can text you first" (/text-me). An invite setup still unclaimed
+// NUDGE_AFTER_MS after the tap gets one line to the inviter (nudgeInviters).
+
+const truthy = (v) => ["1", "true", "on", "yes"].includes(String(v ?? "").trim().toLowerCase());
+/**
+ * Reason texting first, from its own number (REASON_TEXT_ME_FIRST, default off). Off by default
+ * because the Sendblue line on the live install is on the AI Agent plan, which declines a first
+ * message to somebody who has not texted it (INBOUND_ONLY_PLAN, seen live 4 times 10-27..11-11).
+ * Only for invite setups (REASON_INVITE_START): the invite is the admission rule.
+ */
+export const textMeOn = () => on() && invites.startOn() && truthy(process.env.REASON_TEXT_ME_FIRST);
+/** An invite setup still unclaimed this long after its text button was tapped: the inviter hears. */
+export const NUDGE_AFTER_MS = 10 * 60_000;
+/** Reason's first texts: tries per setup, per invite (ever), and how many numbers a setup may name (one, changed once). */
+export const TEXT_ME = Object.freeze({ perSetup: 2, perInvite: 3, numbers: 2 });
+const envCount = (k, d) => { const v = Number.parseInt(String(process.env[k] ?? ""), 10); return Number.isFinite(v) && v >= 0 ? v : d; };
+/** Hourly caps on /text-me: per address (REASON_TEXT_ME_IP_HOURLY, 3) and for everybody (REASON_TEXT_ME_HOURLY, 10). */
+export const textMeCaps = () => ({ ip: envCount("REASON_TEXT_ME_IP_HOURLY", 3), all: envCount("REASON_TEXT_ME_HOURLY", 10) });
+
+/**
+ * A US or Canadian mobile number (the North American plan) as E.164, or null. That is all the line
+ * is used for today; anything else is refused rather than guessed at.
+ */
+export function usCanada(raw) {
+  const s = String(raw ?? "").trim().replace(/[\s().\-]/g, "");
+  if (!/^\+?\d{10,11}$/.test(s)) return null;
+  let d = s.replace(/^\+/, "");
+  if (s.startsWith("+") && d.length !== 11) return null;
+  if (d.length === 11) { if (d[0] !== "1") return null; d = d.slice(1); }
+  return /^[2-9]\d{2}[2-9]\d{6}$/.test(d) ? `+1${d}` : null;
+}
+const normalizeE164 = (address) => usCanada(address) ?? String(address ?? "").trim();
+
+/** A name fit to go in a text to a number nobody has heard from yet: letters only, or nothing. */
+const plainName = (v) => { const s = String(v ?? "").trim(); return s && /^[\p{L}' ]{1,40}$/u.test(s) ? s : ""; };
+
+/**
+ * Reason's first text to them, in the web welcome's voice ("hey kofi, Jarvis here. you're in, invited
+ * by Omari."), but nothing is spent until they answer, so it does not say they are in yet. No link,
+ * no number, short: Sendblue declines those before a contact's first reply (limits, pre-reply rules).
+ */
+export function textMeLine({ user, reasonName, inviter }) {
+  const who = plainName(user).toLowerCase();
+  const me = cardName(plainName(reasonName) || DEFAULT_CARD_NAME);
+  const by = plainName(inviter) || "a friend";
+  return `hey${who ? ` ${who}` : ""}, ${me} here. ${by} got you in. say anything back and we're off`;
+}
+
+/** The line the inviter gets when their friend's first text has not come (once per setup). */
+export function nudgeLine({ who, textMe }) {
+  return `${who} got to the last step, but their first text hasn't reached me yet. if it went as a green bubble it won't get to me, so tell them to tap the text button on that page again${textMe ? ", or to ask me to text them first from the same page" : ""}.`;
+}
+
+const inviteOf = (row) => row?.invite_id ? db.db.prepare("SELECT id, conversation_id, state FROM invites WHERE id = ?").get(row.invite_id) ?? null : null;
+
+/** What the ready screen is told about text-me-first for this setup. */
+function textMeView(row) {
+  const inv = inviteOf(row);
+  if (!textMeOn() || row.claimed_by || inv?.state !== "unused" || !row.user_name) return { available: false };
+  const left = Math.max(0, Math.min(TEXT_ME.perSetup - row.textme_sends, TEXT_ME.perInvite - store.inviteSends(row.invite_id)));
+  return { available: left > 0, sent: row.textme_sends > 0, left, canChange: !row.textme_hash || row.textme_sets < TEXT_ME.numbers };
+}
+
+/**
+ * Tell inviters whose friend tapped the text button NUDGE_AFTER_MS ago and has not arrived. One line
+ * per setup, through `say` (runtime.say, the path the join notice takes), never in the inviter's
+ * night: a setup due then waits for their morning, and goes only if it is still unclaimed. Returns
+ * how many were told.
+ */
+export function nudgeInviters({ say, now = clock.now(), log = () => {} } = {}) {
+  if (!on() || typeof say !== "function") return 0;
+  let told = 0;
+  for (const row of store.dueNudges(NUDGE_AFTER_MS, now)) {
+    const inv = inviteOf(row);
+    if (!inv || inv.state !== "unused") { store.markNudged(row.id, now); continue; }
+    if (inTheirNight(inv.conversation_id, now)) continue;
+    if (!store.markNudged(row.id, now)) continue;
+    const who = plainName(row.user_name) ? nameCase(row.user_name) : "your friend";
+    try { say(inv.conversation_id, nudgeLine({ who, textMe: textMeOn() })); told++; }
+    catch (e) { log({ websetup_nudge_failed: (e?.message ?? String(e)).split("\n")[0] }); continue; }
+    log({ websetup_nudge: "told_inviter", setup: row.id, invite: row.invite_id });
+  }
+  return told;
+}
+
+/** /api/<id>/status, /tapped, /text-me. */
+async function wayIn({ method, which, id, secret, ip, body, router, log }) {
+  if (which === "status" && method === "GET") {
+    const row = store.ownedAny(id, secret);
+    if (!row) return json(404, { error: "not found" });
+    return json(200, { claimed: !!row.claimed_by, tapped: !!row.tapped_at, textMe: textMeView(row) });
+  }
+  if (method !== "POST") return json(405, { error: "method" });
+  const row = store.owned(id, secret);
+  if (!row) return json(404, { error: "not found" });
+  if (which === "tapped") {
+    if (!limits.write(ip)) return json(429, { error: "slow down" });
+    if (store.markTapped(row.id)) log({ websetup: "tapped", setup: row.id });
+    return json(200, { ok: true });
+  }
+  // text-me
+  if (!textMeOn()) return json(404, { error: "not found" });
+  const say = (why, extra = {}) => { log({ websetup_textme: why, setup: row.id }); return json(200, { ok: false, why, ...extra }); };
+  const inv = inviteOf(row);
+  if (inv?.state !== "unused") return say("no_invite");
+  if (!row.user_name) return say("no_name");
+  const b = (await body()) ?? {};
+  const e164 = usCanada(b.number);
+  if (!e164) return say("bad_number");
+  if (row.textme_hash && !store.textMeIs(row, e164) && row.textme_sets >= TEXT_ME.numbers) return say("no_more_changes");
+  if (row.textme_sends >= TEXT_ME.perSetup || store.inviteSends(row.invite_id) >= TEXT_ME.perInvite) return say("no_more_sends");
+  // The caps come before anything that reads who is on Reason, so the page cannot be used to ask
+  // about many numbers.
+  if (!limits.textMeIp(ip)) { log({ websetup_textme: "slow_down", setup: row.id }); return json(429, { ok: false, why: "slow_down" }); }
+  if (!limits.textMeAll("all")) { log({ websetup_textme: "busy", setup: row.id }); return json(429, { ok: false, why: "busy" }); }
+  if (db.accountByNumber(e164)) return say("has_account");
+  if (db.isBlocked(e164)) return say("cant_reach");
+  const live = liveLine(router);
+  if (!live || typeof router?.sendNow !== "function") return say("unavailable");
+  const line = textMeLine({ user: row.user_name, reasonName: row.reason_name, inviter: invites.inviterName(inv.conversation_id) });
+  let out = null;
+  try { out = await router.sendNow({ channel: live.name, to: e164, text: line }); } catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+  // Every try counts against the caps, sent or refused: a refusal is still a request to the provider.
+  store.noteTextMeSend(row.id, row.invite_id);
+  if (!out?.ok) {
+    const said = `${out?.error_key ?? ""} ${out?.error ?? ""}`;
+    return say(/INBOUND_ONLY_PLAN/i.test(said) ? "cant_text_first" : /OPTED_OUT/i.test(said) ? "cant_reach" : "not_sent");
+  }
+  // Linked only once the text went: a reply from that number now claims this setup (until it expires).
+  store.setTextMe(row.id, e164);
+  log({ websetup_textme: "sent", setup: row.id, invite: row.invite_id });
+  const fresh = store.get(row.id);
+  return json(200, { ok: true, textMe: textMeView(fresh) });
 }
 
 // ---------- what the page sees ----------
@@ -309,17 +481,21 @@ function limiter(max, windowMs) {
     return true;
   };
 }
+// The text-me caps read their env values when made (boot, or resetLimits in a test).
+const textMeLimits = () => { const c = textMeCaps(); return { textMeIp: limiter(c.ip, 3_600_000), textMeAll: limiter(c.all, 3_600_000) }; };
 export const limits = {
   create: limiter(12, 3_600_000),
   nameLine: limiter(30, 600_000),
   connect: limiter(20, 3_600_000),
   write: limiter(120, 3_600_000),
+  ...textMeLimits(),
 };
 export function resetLimits() {
   limits.create = limiter(12, 3_600_000);
   limits.nameLine = limiter(30, 600_000);
   limits.connect = limiter(20, 3_600_000);
   limits.write = limiter(120, 3_600_000);
+  Object.assign(limits, textMeLimits());
 }
 
 // The model's name lines, kept by name: the same name typed by a hundred people is asked about once.
@@ -446,6 +622,9 @@ export async function request({ method = "GET", path = "", query = {}, headers =
     log({ websetup: "created", setup: s.id, ...(inv ? { invite: inv.id, invite_state: inv.state } : {}) });
     return json(201, { id: s.id, code: s.code, expiresAt: s.expiresAt, ...(inv ? { invite: { from: inv.from, state: inv.state } } : {}) }, { "Set-Cookie": setupCookie(s.secret, headers) });
   }
+
+  const w = /^\/api\/([A-Za-z0-9_-]{16})\/(status|tapped|text-me)$/.exec(path);
+  if (w) return wayIn({ method, which: w[2], id: w[1], secret, ip, body, router, log });
 
   const m = /^\/api\/([A-Za-z0-9_-]{16})(?:\/connect\/(amazon|email|uber|card))?$/.exec(path);
   if (!m) return json(404, { error: "not found" });
