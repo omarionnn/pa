@@ -2,8 +2,8 @@
 // The monthly free tier (src/plan.js, REASON_FREE_TIER=monthly, owner 2026-11-09), driven down the REAL
 // router and the REAL inbound-call TwiML on a fresh database: a walk-in's 20 conversations answered,
 // the 21st's first text answered by code with one line + the pay link (no model turn), a 2nd text in it
-// left; two calls through, the 3rd hears one line + hangs up and the link is texted; a 6-minute end on a
-// free call; a trial user offered no invites; the 26th sign-up in an hour sent to the access list.
+// left; two calls through, the 3rd hears one line + hangs up and the link is texted; no time cut on a
+// free call unless REASON_FREE_CALL_MINUTES sets one; a trial user offered no invites; the 26th sign-up in an hour sent to the access list.
 // No model (a stub turn), no phone, nothing leaves the machine. Prints the texts and "all ok" / "FAILED".
 //
 //   REASON_DB_PATH=$(mktemp -d)/ft.db node .agents/skills/verify-reason/bin/free-tier-drive.mjs

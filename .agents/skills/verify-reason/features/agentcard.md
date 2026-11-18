@@ -4,7 +4,10 @@
 way to buy, so `vault_enroll`, `purchase`, `purchase_confirm`, `purchase_track` and `purchases_recent`
 (`AGENTCARD_BUY_TOOLS`, `src/shoptools.js`) are hidden from every account and refused in `runTool` with
 `blocked: "not_available"` and a pointer to `store_checkout` / `shop_card` (driven on the cage
-2026-11-14 with the shop path on: both `vault_enroll` and `purchases_recent` → `not_available`). The
+2026-11-14 with the shop path on: both `vault_enroll` and `purchases_recent` → `not_available`; again
+2026-11-18 on `18b47891`, in process with every fetch throwing: 0 of the 5 tools shown to the owner or another
+account, `vault_enroll` / `purchases_recent` / `purchase_track {order_id}` → `not_available`. A `purchase_track`
+with no `order_id` fails schema validation first; that is not the refusal leaking). The
 AgentCard flight route was removed 2026-11-11 (#504; [flight-booking.md](flight-booking.md)). The rows,
 the webhook route (unsigned → 401) and the code stay; everything below is how it works where Shop
 Connect is off (a bare install, the cage by default).
@@ -98,6 +101,13 @@ curl -s -w ' HTTP %{http_code}\n' -X POST "http://127.0.0.1:$P/agentcard/webhook
 REASON_VERIFY_RUN=/tmp/reason-verify-place .agents/skills/verify-reason/bin/peek.sh schema agentcard_purchases | grep -o 'placement_[a-z_]*' | sort -u
 REASON_VERIFY_RUN=/tmp/reason-verify-place REASON_VERIFY_PORT=$P .agents/skills/verify-reason/bin/caged.sh stop
 ```
+
+**Again 2026-11-18 on `18b47891`, shop path off, no cage** (in process, `caged.sh env`, `src/http.js` on a loopback
+port): `vault_enroll` → `not_configured` with both `missing`, `buy_things` "not connected", the plain and the
+10-26 `order.failed` POSTs → 401 "no AGENTCARD_WEBHOOK_SECRET on this machine" with `agentcard_webhook_rejected`
+logged, the four `placement_*` columns present; no AgentCard host fetched. The seven offline files
+(`agentcard`, `agentcard-connection`, `purchasesnote`, the two token seals, `shopping-sandbox-fixes`,
+`shopping-loop`) 111/111.
 
 **End state (driven 2026-10-26 on the cage, port 8813):** `{"error":"rejected: no
 AGENTCARD_WEBHOOK_SECRET on this machine"} HTTP 401`, `serve.log` has one

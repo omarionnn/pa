@@ -20,10 +20,18 @@ emailed code); `test/continue-with-google.test.js` (22, the saved Google login, 
 
 ## Sub-features
 
-- **The rules** (`social.RULES`, one block, flag-gated per person): earned through a real task,
-  one line, "your Google login" (never "OAuth"/"social provider" to the person), never during
+- **No Google, ever** (since 2026-11-12, the first line of `social.RULES`): Reason never offers, asks for or
+  presses a Google sign-in (`NEVER_PRESSED`, `usableProvider`), never says "Continue with Google" or "your
+  Google login"; a site whose account uses Google is signed in to through the site's own emailed code or link
+  (`signin_email`, read from their Gmail). For someone saved logins also cover, that line and the
+  Google-only tail are swapped (`RULES_WITH_VAULT`, `rulesFor(c, { vault })`): still never offered on its own,
+  but when they say in their own words a site signs in with Google, `account_signin` with `with: "google"` may
+  try their saved Google login (below), never promised to work; a Google-only site with no saved Google login
+  → say so and offer to save it.
+- **The rules** (`social.RULES`, one block, flag-gated per person) for Apple, Facebook and Microsoft: earned
+  through a real task, one line, "your Apple login" (never "OAuth"/"social provider" to the person), never during
   onboarding / mid-vent / late at night / when the task needs no sign-in; infer from the sign-in
-  page + welcome/receipt mail, then confirm; a no holds 30 days; never a password / code / card in
+  page + welcome/receipt mail (Google there → `signin_email`, not an ask), then confirm; a no holds 30 days; never a password / code / card in
   the chat — the secure link; two-step order (phone tap > emailed code Reason reads > forwarded
   text), one-line expectation, one more code may come, fails twice → switch once → stop and say;
   finish first, then mention once what it unlocked; sign back in yourself; trust rules (no curiosity
@@ -33,7 +41,8 @@ emailed code); `test/continue-with-google.test.js` (22, the saved Google login, 
   a probe that found the site signed in. `signin_status` rows carry `provider` on a live sign-in.
 - **The no.** `signin_provider declined` → `social_declines` (per person, per provider);
   `ask_check` says `ask_allowed` / `days_left` and which sites already go through it.
-- **The button.** `signin_link` / `signin_open` with `provider`: the page opens with that button
+- **The button.** `signin_link` / `signin_open` with `provider` (Apple, Facebook, Microsoft; a Google
+  `provider` is dropped): the page opens with that button
   pressed (`PROVIDER_BUTTON_JS`: visible button/link whose own text names the provider with
   continue/sign/log/use/with/account/via, never a form field, never a long paragraph). No such button:
   the site's own form, as before, and the note says so.
@@ -65,7 +74,11 @@ emailed code); `test/continue-with-google.test.js` (22, the saved Google login, 
   No Gmail: asked ONCE in one line; their reply is handed over at intake (before dedupe, history,
   memory and the turn) and the thread keeps a placeholder. Email unknown → asks once "Which email do
   you use for <Site>?". No mail came → nothing saved, plain line, never "check your email". The code is
-  never logged or noted. Source: `src/signinemail.js`, `src/tools.js` `case "signin_email"`.
+  never logged or noted. For someone `REASON_SIGNIN_CODE_READ` covers (#597, live `owner`), this route uses the
+  saved-login sign-in's stricter reader (`mailcode.strictGmail`): a security-alert or password-reset mail stops
+  it, two codes are asked for, the first use says once that Reason read that one email, and their "don't read
+  my mail for codes" is honoured ([saved-logins.md](saved-logins.md)). Source: `src/signinemail.js`,
+  `src/tools.js` `case "signin_email"`.
 - **Continue with Google from the vault (#558, owner decision 2026-11-13).** Separate from the
   provider button above: with saved logins on ([saved-logins.md](saved-logins.md)),
   `account_signin { site, with: "google" }` (only when their own recent words say Google) remembers
@@ -78,7 +91,15 @@ emailed code); `test/continue-with-google.test.js` (22, the saved Google login, 
   relayed once in fixed words, a look-alike Google is never reached, and landing on any other Google
   property ends the job and signs the browser out of Google. After every chain Google's cookies and
   storage are cleared from the kept profile. No saved Google login → `needs_google_login`, the link.
-  Forgetting the Google login removes every site routed through it. Source: `src/federated.js`,
+  Forgetting the Google login removes every site routed through it. **Google turning the browser away
+  (#592):** Google's own "This browser or app may not be secure" / "Couldn't sign you in" at the email step
+  is a `browser_refused` strike against google.com (`src/refusing.js`); two strikes 10+ minutes apart mark
+  Google refusing for 7 days, and any account-level answer from Google (signed in, a tap or code asked, a
+  wrong password) clears it. Either way the job stops once with fixed words (`federated.turnedAway`: "Google
+  turned my browser away, so I can't use Continue with Google for you right now. I stopped and won't retry.
+  I can still get you into <site> with the code <site> emails you, or with a <site> password …, or you can
+  sign in yourself on <site>'s own page"), `google_refused: true` + `instead`; while marked, `account_signin`
+  with Google answers that up front, nothing opened, no Face ID asked. Source: `src/federated.js`,
   `src/filler.js` `googleCredentials`, `src/browser.js` `armIdp`/`watchGoogle`.
 
 ## Prove
@@ -86,7 +107,7 @@ emailed code); `test/continue-with-google.test.js` (22, the saved Google login, 
 - Offline (slot gate): `node --import ./test/paid-key-guard.js --test test/social-signin.test.js
   test/social-signin-rest.test.js test/social-signin-uber.test.js test/social-signin-anysite.test.js
   test/social-signin-buttons.test.js test/social-signin-step.test.js test/signin-email.test.js
-  test/continue-with-google.test.js`. The Uber file drives the REAL finder in real Chromium against `test/fixtures/uber-login.html`
+  test/continue-with-google.test.js test/save-google-login-1115.test.js`. The Uber file drives the REAL finder in real Chromium against `test/fixtures/uber-login.html`
   (hand-made; see Unproven) — that is what caught the draft's string-not-function finder.
   Flag off: `systemFor` has no "your Google login", `toolsFor` has no `signin_provider`, a `provider`
   on a link is dropped, typed text is untouched.

@@ -12,7 +12,7 @@ Design and the recorded real run: `docs/flight-booking.md`. AgentCard's flight r
 **Live: `REASON_FLIGHT_BOOKING=owner`** (off | owner | on; code default off): the owner's own thread only.
 On for a person only with the switch AND the shopping path on for them (`REASON_SHOP_CONNECT` + Crossmint
 keys): `flightbook.bookingEnabled(c)` (`src/flightbook.js:40`); the route is `crossmint`
-(`src/flightcheckout.js`). Everyone else's `flight_search` reads "SEARCH ONLY" (`src/tools.js:678`).
+(`src/flightcheckout.js`). Everyone else's `flight_search` reads "SEARCH ONLY" (`src/tools.js:868`).
 Tests may force a route with `flightbook._setRoute("test")`; `_setRoute(undefined)` is the real rule.
 
 Offline proof: `node --test test/flight-crossmint.test.js test/flight-booking.test.js test/ticket-check.test.js`
@@ -78,7 +78,10 @@ There is no live smoke script any more: `scripts/flight-booking-smoke.mjs` (Agen
 AgentCard route in #504. The switch, no network (2026-11-14, `money-probe.mjs` in the g2 evidence,
 `REASON_FLIGHT_BOOKING=owner REASON_SHOP_CONNECT=on`, fake Crossmint keys, every fetch throws): owner →
 `bookingRoute` `crossmint`, all 5 `FLIGHT_BOOKING_TOOLS`; another account 0; the owner has no
-`purchase`/`purchase_confirm`/`vault_enroll`. A real Crossmint flight checkout is the owner's to start.
+`purchase`/`purchase_confirm`/`vault_enroll`. Again 2026-11-18 on `18b47891` (same setup): owner 5 booking tools,
+another account 0 and "SEARCH ONLY", the owner's `flight_traveler_save` → `confirmed:false` + `read_back`,
+another account's → `not_available`; the three offline files in a 155-pass flight batch (1 skipped).
+A real Crossmint flight checkout is the owner's to start.
 
 **The older cage drives below were run on the AgentCard route (2026-10-25 … 11-07)**; tool counts and
 `not_configured` wording are history, the booking-tool count (0 or 5) is what still holds.

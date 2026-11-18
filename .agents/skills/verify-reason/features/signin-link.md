@@ -71,6 +71,11 @@ phantom steps, no link loops, positive evidence, the step log), `test/signin-lin
   the notification" shows fixed words + an **I approved it** button that watches the page up to 20 s
   and presses nothing. A link that runs out after submits says what the site showed last. One
   `signin_link_diag` log line per submit: kinds, counts, classes, the masked alert, never a value.
+- **No link for a site the hosted browser carries.** When a site runs in the hosted browser for this person
+  (DoorDash under `REASON_REMOTE_BROWSER`, see [hosted-browser.md](hosted-browser.md)), `signin_link` makes no
+  link and no window (`hostedNoLink`, `no_link: true`): the sign-in goes by the site's emailed code
+  (`signin_email`) or their saved login (`account_signin`). The phone link always opens Reason's own browser,
+  never a picture of a hosted page.
 - **When the link is not the way (#570).** For the owner with the vault on, a site with a saved login
   goes to `account_signin`, not a link; the link comes back for a step only the person can do, and a
   link that ends signed in brings one save offer ([saved-logins.md](saved-logins.md)).

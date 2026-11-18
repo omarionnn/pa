@@ -52,6 +52,18 @@ thing that is easiest to break.
 - **What it is used for next.** `nearby_places` (three free OSM sources in one budget, Google first only
   with a key — not set on live) and `weather` (Open-Meteo, then MET Norway) are mapped in
   [nearby-places.md](nearby-places.md).
+- **A saved place is said as a guess (#581, 2026-11-14).** When `weather`, `nearby_places` or
+  `directions` run on a saved place (or coordinates they never shared) and there is no live share and
+  no pin from the last 24 hours (`whereabouts.knownNow`, `RECENT_PIN_MIN`), the result starts with a
+  `where_from` note (`whereNote` in `src/whereabouts.js`, put on by `withWhere` in `src/tools.js`): by
+  text, say in the first sentence which place was assumed and send the Share My Location card in the
+  same reply; when their stated shift says they are probably not there (off shift, so not at "Work"),
+  ask in one short line instead, with the card; on a call, say the assumption in a few words, and the
+  text after the call carries the card. A fresh pin or live share → no note. Offline:
+  `test/location-assumed.test.js` (6). Drive (in process, throwaway db, a thread row first —
+  `recordSharedLocation` only updates an existing `threads` row): save "Work", `weather {place:"Work"}`
+  → `where_from` names "Work" and asks for the card; `get_location` → `saved_places`; after a pin →
+  no `where_from`, `get_location` → `sent_in_a_message`.
 - **The model connects it up.** There is no longer a dedicated prompt paragraph for this: the
   instruction rides in the `describe` lines themselves — "use this as their current position for
   anything location-related", "Use nearby_places with these coordinates", and for the card "If

@@ -13,10 +13,17 @@ theirs is left in any table, on disk under `data/`, or in a browser profile.
   number (`dm:<channel>:<addr>` is deterministic) handed them back.
 - **No table can be forgotten again.** `COVERAGE` lists every table as `deleted`, `global`,
   `kept` (`KEPT_ON_DELETE`, each with its reason: billing/trial `plan`, `harm_events`, shared
-  `events`/`event_albums`/`event_messages`, `event_join_attempts`, `ride_blocks`) or `installWide`
+  `events`/`event_albums`/`event_messages`/`event_questions`, `event_join_attempts`, `ride_blocks`, and the
+  paid-event money rows `event_payments`/`event_payout_accounts`/`event_seats`) or `installWide`
   (`INSTALL_WIDE`). `test/data-coverage.test.js` fails when a table is in none.
 - **Files too.** Event album photos they added are unlinked under `data/event-albums/<event>/`
-  (`event_photos` in the result), alongside recordings, documents, profiles and build dirs.
+  (`event_photos` in the result), alongside recordings, documents, profiles and build dirs. Files Reason
+  kept for them on its own file host (re-hosted pictures it sent, table pictures, choice cards, web uploads:
+  `src/webuploads.js` `forget`) go too (`uploads` in the result).
+- **The hosted browser's sign-ins too.** A site sign-in kept for them at Browserbase
+  (`remote_browser_contexts`, `src/remotebrowser.js`) is deleted there before the rows go (`hosted_browser`
+  in the result; no row, no request). One Browserbase would not delete keeps an orphan row and is retried
+  daily before the ops digest.
 - **Export seals what opens something.** `SECRET_COLUMNS` (checkout links, Face ID approvals, a
   guest's directory key, join codes, stamp share ids, AgentCard session handles) and
   `pay_passkey_regs` dropped.
@@ -57,6 +64,10 @@ Never run it against live: it writes to the database it is pointed at, and it re
 - 2026-11-14 (`7d5b5f54`, evidence `*-g4-data-delete`): on a throwaway DB the drive refuses ("not a cage
   database", as designed); on the cage DB 219 tables seeded, 181 rows deleted, `unexplained: []`,
   `control_rows_lost: []`.
+- 2026-11-18 (`18b47891`, evidence `*-B2-data-delete`, cage started): 229 tables (new since: hosted browser,
+  DoorDash orders, video cache, bank check-in grants, picture watches, invites, food), all seeded, 187 rows
+  deleted, left only in `kept` (11), `global` (3), `install_wide` (25); `unexplained: []`,
+  `control_rows_lost: []`. `data-coverage` + `call-recording-delete` tests 13/13.
 
 ## Gotchas
 

@@ -34,6 +34,12 @@ Shipped in `a3c7492`.
   an unresolvable trip and past leave-by times are skipped.
 - **Route description** is shown back in their own words.
 - **Home is a saved place** (`getHome` reads `saved_places`, not the old columns).
+- **A saved place is said as an assumption (#581).** When weather, `nearby_places` or `directions` work
+  from a saved place with no fresh position (no live share, no pin in the last 24 h), the answer says which
+  place it assumed and sends the Share My Location card, or asks first when what they told Reason about their
+  hours says they are not there (a saved fact like "works 7am to 3pm": off shift → not at work, on shift → not
+  at home) — `src/whereabouts.js` `whereNote`/`shiftOf`, only when the ask depends on where they are now;
+  pinned in `test/location-assumed.test.js`. Leave-by notices are unchanged.
 
 ## How to get to it (user POV)
 

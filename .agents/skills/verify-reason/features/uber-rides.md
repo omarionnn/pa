@@ -2,7 +2,7 @@
 
 Somebody says "get me an Uber to the airport". Since #73–#80 (2026-10-23) a ride is **`uber_link`**:
 one link to Uber's web booking page, `https://m.uber.com/go/looking?pickup=<JSON>&drop[0]=<JSON>`
-(`src/sites.js:407`), which opens in their browser with both ends filled in. Nothing is requested or
+(`uberRideLink`, `src/sites.js:459`), which opens in their browser with both ends filled in. Nothing is requested or
 charged until they tap Request. No Uber connection is needed, and `uber_connect` is **refused** for a
 ride (`blocked: "not_for_rides"`, `grep -n 'not_for_rides' src/tools.js`) unless they asked to connect their Uber
 account itself. The OAuth path (`uber_connect` → `uber_options` → `uber_request`) still exists for
@@ -21,7 +21,7 @@ Find lines: `grep -n 'case "uber_' src/tools.js`.
 Tests: the link in `test/sites.test.js` (46 in the file; the Uber link from ~line 425, "the uber deep link"), `test/rides.test.js`
 (5: the NYC geofence and the two verified numbers), `test/ridelinks.test.js` (5: coordinates, the
 outbox rebuild, and a log with no link text), `test/uber.test.js` (17) against `test/fixture-uber.js`; the sign-in plumbing in
-`test/signin.test.js` (29 on 2026-11-07), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (50; the link itself: [signin-link.md](signin-link.md)).
+`test/signin.test.js` (29 on 2026-11-07), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (66 on 2026-11-18; the link itself: [signin-link.md](signin-link.md)).
 `test/flow-resend-link.test.js` (#79, needs a model) pins that a link they tap to act on is sent
 again, never pointed at. (There is no `uber_status` tool: status is `uber.uberStatus()` and the
 `/health` block; ride state is `uber_ride`.)
@@ -36,6 +36,15 @@ again, never pointed at. (There is no `uber_status` tool: status is `uber.uberSt
   it used); only then does it ask, with the Share My Location card.
 - **Coordinates on both ends (#76).** `withCoords` fills them in: a saved place's own pin first,
   else the address geocoded (network).
+- **What a ride would cost.** "How much is a cab to JFK?" goes to `directions` first for the distance and
+  time (never guessed), then Reason's own meter estimate, said as its estimate with the working (the miles
+  and minutes, the rates used), plus `uber_link` for the live price (`src/directionstools.js:21`). The reply
+  check keeps a labelled estimate; when a fare is dropped, a sentence that only qualified it ("It assumes
+  16 miles", "Figure roughly…") goes with it, unless it also carries a link, a clock time or a street
+  address (`LEANS_BACK` / `KEEPS_OWN`, `src/offers.js`; `test/fare-estimate-1115.test.js`,
+  `test/fare-estimate-review-1115.test.js`, `test/fare-orphan-1115.test.js`). Still open, pinned as a
+  `todo`: an invented fare stands when an unrelated saved fact has the same dollar amount (figures are
+  matched to saved facts by amount only).
 - **NYC car service (#73/#75).** A pickup inside the five-borough boxes adds
   `also_offer.car_services` (Dial 7, Carmel). Reason only calls one (`call_place`) on their yes.
 - **Every ride link is rebuilt on the way out (#80).** `src/outbox.js` hands any m.uber.com link to
@@ -93,6 +102,10 @@ node --test test/sites.test.js test/rides.test.js test/ridelinks.test.js test/ub
 node --test test/signin*.test.js              # 29 + 11 + 44, plus signin-progress (10), which the glob also takes
 ```
 
+Driven 2026-11-18 on `18b47891` (in process, `caged.sh env`, throwaway DB, `src/http.js` on a loopback port,
+no external fetch): the same five answers below, plus the outbox rebuild to `/go/looking` with one
+`ride_link_rebuilt` line of lengths and flags only; the four files above + the three fare files + `subscriptions`
++ `ops-redirect-not-failure` 154 pass, 1 todo; the signin files 106 pass (3 skipped: flow-subscriptions).
 Driven 2026-11-07 (rel/verify-maint, cage :8832, `caged.sh env`): `uber_link` → `/go/looking` url,
 `has_pickup`/`has_coordinates` true; `uber_connect` → `not_for_rides`; `uber_options` → `not_connected`
 with both `missing`; `/uber/callback?state=nope` → 400; `/health` `uber` block `app_configured:false`.

@@ -50,14 +50,36 @@ real browser, `withProfile`).
   wording; no passkey yet → a code texted to their thread first, then Face ID named Reason. POSTs need
   `Origin` = the site. A password texted while a save link is open is replaced before it is stored and
   answered with fixed words (`TEXTED_PASSWORD_WORDS`).
+- **Their Google login (#592).** "save my Google login" reaches the save page like any site: only google.com
+  itself (as saved on accounts.google.com); admin.google.com, Gmail and other Google pages keep the never-list
+  answer. When Google turning Reason's browser away is on record (a refusal mark, or a strike from a real
+  "this browser may not be secure"), the tool first says that as one question ("I can keep your Google login,
+  but Google has been turning my browser away (last on <date>), so Continue with Google may not work for you
+  yet. Still want to save it?", `loginintake.googleSaveWarning`), and the link is made only on their yes
+  (`still_save: true`). Nothing on record: no claim, the link. No site is said to block Reason without a
+  recorded refusal, and Continue with Google is never promised to work. While the vault is on for a person,
+  the prompt tells the model saved logins exist for them (`savedLoginRulesFor`).
 - **Signing in (#541, #560, #561, #562).** `account_signin { site, with? }`, only for a site they named
   in their own words (`src/namedsite.js`), only on their turn or a Face ID/save grant. The filler
   enters through the site's front door (home page, its own Sign In link), types only on the pinned
   exact origin into the top frame, email-first only after its own submit. Endings are honest: wrong
   password locks the row until saved again; the site's generic error is `site_trouble` (one retry
   after 3 min, then a 6 h pause); a code sent instead of a password is asked once by text and typed
-  box-only; the page's own "Use password instead" is pressed when a password is saved; a visible
+  box-only (or read from their mail, next bullet); the page's own "Use password instead" is pressed when a password is saved; a visible
   picture challenge stops as blocked, never retried.
+- **Reason reads the emailed sign-in code itself (#597, `REASON_SIGNIN_CODE_READ` = off | owner | on,
+  default off; live `owner`; `src/mailcode.js`, reader `signinemail.codeFromMail`).** Only for someone saved
+  logins already cover. When the site says it emailed a code, Reason reads only the one mail from that site's
+  own domain (DKIM read from Gmail's own results) that arrived after it asked, types the code into the
+  site's box once, and the code is never returned, logged or seen by the model. The result says so, in full
+  the first time ("I took the code from the email <site> just sent you. I only look at that one email … If
+  you'd rather I didn't, tell me and I'll ask you for codes instead."), then "Got the code from <site>'s
+  email." A mail that is a security alert or a password reset is not used (`mail_alert`, `mail_not_signin`,
+  fixed words); no mail, or two codes, asks them in plain words; a turned-down code gets one more look at a
+  NEW mail only. A mail with only a sign-in link is not used unless `REASON_SIGNIN_CODE_LINKS=on` (default
+  off). Audit: `login_log` `code_from_mail` + a `signinlog` line (site, time, sender domain, message-id hash).
+  "don't read my mail for codes" → `signin_code_mail { read: false }` from any turn; turning it back on only
+  from their own turn. The `signin_email` route uses the same reader for people the switch covers.
 - **Face ID per use.** Each-time logins: the result carries a `/web/login-use/<token>` link; one
   approval = one use, bound to that login and site, runs out; the page names only the site.
 - **Reason carries on (#551).** After the Face ID yes or a save, Reason resumes the exact job the link
@@ -89,7 +111,8 @@ test/savelogin-browser.test.js test/savelogin-texted.test.js test/filler.test.js
 test/account-signin.test.js test/namedsite.test.js test/vault-pin.test.js test/signin-ux.test.js
 test/signin-route.test.js test/continue-with-google.test.js test/pages-back-and-resume.test.js
 test/real-browser.test.js test/browser-launch.test.js test/probe-setups.test.js test/sitepolicy.test.js
-test/gcpkms.test.js test/secret.test.js test/encrypt-rest-gcp.test.js test/gcp-kms-check.test.js`.
+test/gcpkms.test.js test/secret.test.js test/encrypt-rest-gcp.test.js test/gcp-kms-check.test.js
+test/signin-code-read.test.js test/save-google-login-1115.test.js`.
 The KMS is `test/helpers/gcpkms-standin.js`; the browser tests run real Chromium on fixture pages.
 
 Cage (no model, no KMS): `REASON_SAVED_LOGINS=owner REASON_WEB=on caged.sh start` → `serve.log` says

@@ -19,14 +19,26 @@ Cartesia `off`, feel `current`, music off, carryover `off`.
   strangers and errand calls: no limit. Every Cartesia call has the same platform ceiling as GPT-Live
   (`callPlatformCapSeconds`, `cartesia.js:550`).
 - **Classic feel** (`REASON_CALL_FEEL=classic`, `src/calls/callclassic.js`, 07bc056b #574): every
-  account's own Cartesia call gets the rule words, greeting and keyterms exactly as the build of call 112
-  (`REF_COMMIT` 752a9e72) gave them, with only that caller's own slots (name, notes, brief). Kept on top:
+  account's own Cartesia call gets the rule words and keyterms exactly as the build of call 112
+  (`REF_COMMIT` 752a9e72) gave them, with only that caller's own slots (name, notes, brief); the opening
+  line is the one written ahead for them (next bullet), never a pick-up from the last call. Kept on top:
   earlier-call notes, what was texted since, the passphrase line (call trust on), the honest quiet turn and
-  the done-claim check. Read-back is off in the owner frame under classic (`voice.js:575`).
+  the done-claim check. Read-back is off in the owner frame under classic (`voice.js:549`).
+- **The opening line is written ahead for each person** (#586/#587, 2026-11-15, `src/calls/greetings.js`).
+  The agent speaks `{{greeting}}` as its first message: `openingLineFor` (`src/calls/inbound.js`) →
+  `greetingFor` (`src/calls/carryover.js`) → `pickGreeting`, a synchronous read of lines the side model
+  wrote for them by time of day (`BANDS`: morning/afternoon/evening/night, "again" within 30 min; a
+  `salute` for calls Reason places), checked by `greetingOk` (≤12 words; no number, time, price, place,
+  claim, "what did we miss", wind-down or goodnight; a hello in it; never their last three or the
+  assistant's nickname), else plain `Hey <first name>.`. No fixed lists, no code lead-in ("yo,").
+  Written after each own call (`refillSoon` from `settleGptLive`) and when a band runs low; lines that
+  no longer pass are dropped at pickup (`purgeStock`). Current feel with carry-over: a call back within
+  30 min still opens from the last call's notes. Log `{"call_greeting":…,"from":"written"|"plain"}`.
+  Offline: `test/call-greetings.test.js`.
 - **Soft music during lookups** (#543, `src/calls/lookupmusic.js`): a loop fades in only after a lookup has
   run 700 ms (`MUSIC_DELAY_MS`), ducks under speech, own calls only, never when the room is already music.
   `REASON_CARTESIA_LOOKUP_MUSIC` = a variant name or on/1/true/yes (default variant); empty = no music.
-- **Done is Reason's word** (#563, `cartesia.js` `saysDone` `:190`, `confirmsDone` `:200`, check `:723`):
+- **Done is Reason's word** (#563, `cartesia.js` `saysDone` `:190`, `confirmsDone` `:200`, check `:725`):
   when the voice says "it's done / submitted" (or a bare "yes" to "did it go through?") and no answer of
   Reason's in the last minute said so, it is logged (`cartesia_unbacked_claim`), counted, and a note is
   written into the call record so Reason's next turn and the after-call text correct it. Questions,
@@ -40,7 +52,7 @@ Cartesia `off`, feel `current`, music off, carryover `off`.
   `calls.summary`; the next calls for two days start with it (`earlierCallsNote`), plus the day and time
   and what was texted since; a call back within 30 min opens from those notes (`PICKUP_MS`). Instructions
   are fitted by priority (`fitprompt.js`): honesty rules are never cut.
-- **Model API refusing mid-call** (#495, `src/calls/voice.js:326`): credit/billing/key refusals end the
+- **Model API refusing mid-call** (#495, `src/calls/voice.js:329`): credit/billing/key refusals end the
   call with "I'm having trouble on my end, so I'll text you instead. Talk soon." (on someone else's call:
   "I'm sorry, I have to go. Thanks for your time.") and Reason carries on by text. Cartesia's own refusal
   maps to `refused_out_of_credits` (`cartesia.js:311`) and falls back.
@@ -56,7 +68,8 @@ Offline (no model, no network) — through the slot gate:
 bash /tmp/verify-upkeep/slot.sh <log> -- node --import ./test/paid-key-guard.js --test \
   test/call-cartesia.test.js test/call-cartesia-everyone.test.js test/call-classic.test.js \
   test/call-classic-everyone.test.js test/call-cartesia-feel.test.js test/call-cartesia-music.test.js \
-  test/call-carryover.test.js test/call-memory.test.js test/call-credit-refusal.test.js
+  test/call-carryover.test.js test/call-memory.test.js test/call-credit-refusal.test.js \
+  test/call-greetings.test.js
 ```
 No-model probe (routing matrix incl. free tier, done-claim words, music delay; throwaway db, fake keys):
 `node .agents/skills/verify-reason/bin/call-probe.mjs cartesia` → `all ok`.

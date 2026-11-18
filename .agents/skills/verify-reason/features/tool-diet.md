@@ -6,6 +6,11 @@ their cache is cold (no model call for 6 min), and is stored (`tool_sets`), so a
 
 **Live: `on`** (switches 2026-11-14) for everyone.
 
+The likely set has packs (`PACKS` in `src/tooldiet.js`); one is chosen by the person, not the topic:
+`saved_logins` (`saved_login_offer`, `account_signin`, `saved_login_forget`) is loaded whole wherever saved
+logins are on for them (`savedLoginsAllowedFor`, #592, 2026-11-15), so "save my Google login" never costs a
+search round for a tool the prompt already names.
+
 Offline: `node --test test/tool-diet.test.js test/mcp-always-load.test.js` (all pass 2026-11-14, misc
 group 122/122; incl. "every CORE and PACKS name is a real tool", "the tools array is byte-identical call
 after call").

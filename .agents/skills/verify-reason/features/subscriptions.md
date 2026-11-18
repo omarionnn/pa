@@ -100,7 +100,10 @@ confirmation text stored).
 **Driven 2026-11-14 (g2 pass, cage DB, in process, no browser):** `subscription_list` empty → count 0 with the
 "Nothing is on this list yet…" block; `subscription_cancel_start {merchant:"Hulu"}` → "'Hulu' is not on the
 list…"; `subscription_record` → created, `cancel_route: web`, `cancel_url` the registry's account page; the list
-then has it. `test/subscriptions.test.js` 52 green. (`subs-drive.mjs` in the evidence.)
+then has it. `test/subscriptions.test.js` 52 green. (`subs-drive.mjs` in the evidence.) Again 2026-11-18 on
+`18b47891` (same steps, no external fetch): the row reads `Hulu|1799|monthly|active|web`; `subscriptions.test.js`
+(52) green in a 154-pass batch; `flow-subscriptions` 3 skipped (no claude-cli backend). `subscription_cancel_start`
+on a recorded merchant was not driven: its web rail opens a real browser at the merchant's sign-in page.
 
 **Two neighbours since 11-13.** Recurring charges straight from their bank: `bank {action:"subscriptions"}`
 (Plaid's recurring list, everyone, [plaid.md](plaid.md)) — a different list from this receipts-based one.

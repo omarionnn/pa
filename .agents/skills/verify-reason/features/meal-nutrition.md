@@ -45,7 +45,7 @@ validation, `meal_query`, `meal_correct` and the duplicate check are untested.
 - **Deleting meal log — not built.** There is no meal-only delete: no delete function in
   `src/db.js` and no meal-delete tool, so "delete my meal log" has no code path; treat any claim
   that it worked as a false success. The only thing that erases `meal_entries` is the whole-person
-  data delete (`src/data.js:203` lists it in `TABLES`, `deleteData` at `src/data.js:552`), which
+  data delete (`src/data.js:260` lists it in `TABLES`, `deleteData` at `src/data.js:685`), which
   takes everything else of theirs with it.
 - **Allergen safety.** Never states or implies an allergen is absent because it is not visible. For
   allergen questions about a plate photo, points to the package.

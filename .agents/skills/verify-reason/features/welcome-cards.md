@@ -5,7 +5,7 @@ every new person's first chat carries the cards. `owner` puts them in nobody's f
 `scripts/welcome-to-owner.js` send them once to the owner's own thread. Shipped in #462 to #466 (2026-11-10).
 
 Source: `src/welcome.js` (`CARDS`, `bubbles`, `cardUrls`, `fileForPath`, `WEB_INTRO`, `HELP_FIRST`),
-`src/onboarding.js` (`commitStep` queues the set as one ordered outbox chain), `src/http.js:1057`
+`src/onboarding.js` (`commitStep` queues the set as one ordered outbox chain), `src/http.js:1059`
 (`/img/welcome/<version>/NN-key.jpg`, `immutable`, a year), `src/outbox.js` (a card that can't go is sent as its text line),
 `src/channels/sendblue.js` (`sendCarousel` → `POST /api/send-carousel`). Art: `assets/welcome/` (JPEGs) and
 `assets/welcome/art` (SVG), drawn by `scripts/make-welcome-cards.mjs`.

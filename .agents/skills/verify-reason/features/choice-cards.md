@@ -9,6 +9,8 @@ stack (Sendblue V2, Linq) the whole set arrives as ONE swipeable stack, each car
   `POST /api/send-carousel` (2–20 HTTPS addresses, `src/channels/sendblue.js` `sendCarousel`, `stackMax` 20)
   or one Linq multi-media message (2–40, `src/channels/linq.js` `sendCarousel`). Bigger sets split into as few,
   as even stacks as fit (21 on a 20 line → 11 + 10); numbering runs across the whole set.
+- Each card is kept at a public address (`public: "card"`, `quota: false`: Reason's own, never counted against
+  the person's upload total).
 - Each card says "N of X" (`src/choicecards.js` card HTML, `<span class="of">OF X</span>`); a card that cannot
   be drawn, or kept at its public address, is left out and the rest are redrawn as "1 of 2, 2 of 2".
 - Stack refused for good (V1 line, refusal, out of tries) → the same pictures one by one, in order. A single
@@ -51,9 +53,9 @@ price, no size. Places are never checked. Offline: the "listing check" tests in 
 
 ## Two cards that read the same are never drawn (#376, 2026-11-07)
 - Live 10-31 choice sets 2 and 3: three cards each read "CeraVe Foaming Facial Cleanser · Ulta" — the listing
-  check had dropped the sizes and prices that told them apart. `sameOnCard` (`src/choicecards.js:809`)
+  check had dropped the sizes and prices that told them apart. `sameOnCard` (`src/choicecards.js:820`)
   compares what a card shows: the name's first `NAME_SHOWN` (44) characters (the 2-line clamp), brand, price,
-  detail, why. Run on the input (`:830`) and again after the listing and photo checks (`:903`). Any pair →
+  detail, why. Run on the input (`:862`) and again after the listing and photo checks (`:935`). Any pair →
   nothing drawn; the model gets `Cards 1 and 2 ("CeraVe Foaming Facial Cleanser · Ulta") … would look the same
   to them, so nothing was drawn. What told them apart was left off because the listing does not back it: …`
   and redoes the set with each option visibly different.

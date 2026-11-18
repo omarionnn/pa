@@ -59,8 +59,20 @@ via `Runtime.sweep`), nudge, flag off, owner mode.
    is the fake switched OFF (`src/calls/choose.js`), so the call step is drive 2.
 2. **Whole road** — `bin/todo-drive.mjs` (real HTTP webhook, real Router/Runtime/Sendblue adapter with
    fetch injected, fake call provider ON, claude-cli turns; 2–4 turns):
+   Run it on the **test** token, never this Mac's own `claude` login (that is live Reason's subscription):
+   the token goes in a 0600 env file, the CLI gets a scratch config, and `env -i` needs `claude` on PATH
+   (`~/.local/bin`):
    ```bash
-   eval "$(bin/caged.sh env | sed 's/^/export /')" && REASON_BACKEND=claude-cli REASON_TEST_NUMBERS=+12025551234 \
-     REASON_MASTER_NUMBER=+12025551234 REASON_DB_PATH=$(mktemp -d)/todo.db node bin/todo-drive.mjs "$OUT"
+   D=$(mktemp -d) && printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(security find-generic-password -s reason-test-claude-token -w)" > $D/k.env
+   env -i PATH=$HOME/.local/bin:$PATH HOME=$HOME USER=$USER LOGNAME=$USER $(bin/caged.sh env) ANTHROPIC_API_KEY= \
+     REASON_BACKEND=claude-cli REASON_TEST_NUMBERS=+12025551234 REASON_MASTER_NUMBER=+12025551234 \
+     REASON_DB_PATH=$D/todo.db REASON_CLI_HOME=$D/cli CLAUDE_CONFIG_DIR=$D/cfg \
+     node --env-file=$D/k.env bin/todo-drive.mjs "$OUT"; rm -f $D/k.env
    ```
    Ends `all ok`; `$OUT` holds the texts, the checklist HTML at each stage and the rows.
+   2026-11-18 (`18b47891`, evidence `*-B2-todo-list`): the drive as committed fails on its fixed "friday nov 6"
+   (now past: the model rightly asks about the date and the plan is never approved). A copy with the next
+   Friday computed got plan → one ask pinned to the plan → nothing called before the yes → approved →
+   checklist redrawn → Joe's Plumbing called with no second ask, AI disclosure + recording notice; the
+   wrap-up did not come because the fake call's canned "sure, that works" answered none of the questions the
+   model asked, so it honestly left the item at "need you" (an unsettled item holds the wrap-up, as designed).

@@ -15,7 +15,9 @@ Already there before it and reused: Crossmint checkout job, confirm gate, Face I
 sets, inbound 👍 = yes (threading), shipping record.
 Tests: `test/food-order.test.js` (19 offline 2026-11-14; at launch 16, 10 source mutations, every money one caught),
 `test/food-direct.test.js` (direct ordering), `test/food-past-orders.test.js`, `test/food-receipts-real.test.js`,
-`test/food-receipts-square.test.js` (receipts). All green 2026-11-14 (g2 pass, batch of 182 with plaid/account jobs).
+`test/food-receipts-square.test.js` (receipts), `test/food-fixes-1117.test.js` (pickup, stale orders, restart,
+hand-off, phone order; #604). All green 2026-11-14 (g2 pass, batch of 182 with plaid/account jobs).
+DoorDash in the hosted browser: [hosted-browser.md](hosted-browser.md) (`test/doordash-order.test.js`).
 `test/flow-food.test.js` needs a model.
 
 ## What it does
@@ -31,6 +33,30 @@ Tests: `test/food-order.test.js` (19 offline 2026-11-14; at launch 16, 10 source
 - 15-minute hold: shop_pay refuses after it; the sweep (60 s) declines the payment and texts once.
   Closing warning once 15 min ahead. Placed: "Placed: R, items. $X charged, here by 8:15. Going to Home (…)."
   No order number. 15 min after the latest ETA the model is woken once to look (silent if delivered).
+- **One open order at a time (#604).** A new food request closes every older order left waiting on nothing
+  (draft, building, needs), quietly, its running checkout ended and any open payment declined first; an
+  older order whose card is still waiting for their yes is dropped too, and they are told in a few words. A
+  yes already being paid goes through untouched. The daily food sweep closes any order idle more than a day
+  in draft/building/needs (`closeIdle`, `STALE_MS` 24 h), with no text.
+- **A restarted checkout keeps the food card (#604).** `store_checkout` started again without
+  `food_order_id` at the same ordering place (`orderAtPlace`) follows the open order: the ask is still the
+  food card, on the 15-minute hold, pinned to a new revision.
+- **Pickup (#604).** "I'll pick it up" → `start` with fulfillment `pickup`: no delivery address is ever
+  filled in (`isPickupRun`), no tip unless they named one (a tip left off comes off the cart's total), the
+  card says where to pick it up and the ready time only as the site gave it (none given is said, never made
+  up); placed: "Placed for pickup: R, items. $X charged, ready by T. Pick it up at <address>."
+- **An own site that hands off to a delivery app (#604).** When a restaurant's own delivery checkout asks
+  for a DoorDash / Uber Eats sign-in or lands on the app's site (DoorDash's `order.online` storefront is not a
+  hand-off), the checkout is let go, nothing charged, and ONE line: "<R>'s own delivery runs through <App>,
+  and <App> wants you signed in, so I stopped there. Nothing was charged. I can order it for pickup from
+  <R>'s own site if they offer it, or send you the <App> sign-in link …" Remembered per place
+  (`food_told`): next time the cart carries the offer of pickup first.
+- **A phone order for pickup (#604, `food_order phone`).** A place with no online ordering: offered once per
+  order (the person's no-call hours, on the place's clock, said plainly when they block it now); on their yes
+  the cart is recorded and allergy-checked and the call comes back for `call_place` (its own confirm gate,
+  never a card detail, a price ceiling `most_it_may_cost`); they pay at the counter. A running online
+  checkout for the order is let go first; one whose yes is already paying stays and nothing is phoned in.
+  The order records what the call came back with.
 - `history`, `note`, `options` (≤3 dishes, ONE numbered picture, only tool-returned photos, never
   files.heyreason.com).
 - **Direct first** (2026-11-10): the restaurant's own ordering (Toast, Square Online, ChowNow, Olo, Clover,
@@ -61,7 +87,9 @@ receipt query's subjects and a year back; the DoorDash wall line; `pastOrders` w
 
 ## Can't
 DoorDash / Uber Eats answer Reason's browser and plain fetches with 403 (re-checked 11-10): menus, store
-hours and driver tracking are not readable here; only Crossmint's checkout agent reaches them. No "driver
+hours and driver tracking are not readable here; only Crossmint's checkout agent reaches them, except DoorDash
+for the people `REASON_REMOTE_BROWSER` covers (live: `on`, everyone, since #605 on 2026-11-18), whose DoorDash orders go through the hosted
+browser (`doordash_order`, [hosted-browser.md](hosted-browser.md)); live pays by hand-off there (never pressed). No "driver
 5 min away" text (no tracking source). Pays with the card saved for Reason (Crossmint), not a card saved
 on the platform. All-in comparison across platforms needs a checkout run to the payment step on each;
 the rules leave it to the model and it is unproven.

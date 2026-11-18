@@ -36,7 +36,7 @@ const arg = (f) => process.argv.includes(f) ? process.argv[process.argv.indexOf(
 const shot = arg("--shot");
 const site = process.argv.includes("--site");
 
-const e = { id: 1, public_id: "abcdEFGH12345678", name: "Game Night", place: "Somewhere", description: "Board games", guest_list_visible: 1, organizer_token: "x", status: "active", organizer_conversation_id: "console:x" };
+const e = { id: 1, public_id: "abcdEFGH12345678", name: "Game Night", place: "Somewhere", description: "Board games", guest_list_visible: 1, organizer_token: "x", status: "active", tz: "America/New_York", organizer_conversation_id: "console:x" };
 const att = { id: 1, display_name: "Ama", instagram: "", in_directory: 1 };
 const html = (r) => typeof r === "string" ? r : r.body;
 const filesPage = { id: 1, title: "Coffee at home", subtitle: "", created_at: Date.now(), blocks: [{ type: "text", text: "Beans, grind, water." }] };

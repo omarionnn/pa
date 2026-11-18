@@ -152,7 +152,7 @@ fail on afc6ce8: the two cap tests and the pin test).
 
 ## The item is checked against what they said (#376 shop-small, 2026-11-07)
 Live 10-31: three Ulta runs bought the **Foaming** CeraVe (normal to oily skin) for someone who needed it for
-dry skin. Before `store_checkout` starts (`src/shoptools.js:207`), `checkFit` (`:185`) makes one structured
+dry skin. Before `store_checkout` starts (`src/shoptools.js:270`), `checkFit` (`:218`) makes one structured
 side call (`askStructured`, `REASON_FIT_MODEL` default haiku, 20 s, `feature: "shop_fit"`: the subscription on
 claude-cli, the API on api) with their own last 12 texts (`trust.ownerTexts`), the model's new `their_need`
 argument and the item → `fits` / `mismatch` / `unclear`. Only a mismatch refuses: `blocked:
@@ -174,5 +174,11 @@ Journal: `{"shop_fit":"<verdict>"}`.
 - What Reason says about a checkout agrees with the record: charged / failed / called off by Reason (#501):
   [checkout-job.md](checkout-job.md) "Status from the record".
 - An open Face ID link is kept, not replaced, on a second `shop_pay` (#499): [passkey-pay.md](passkey-pay.md).
+- A no and a yes can never both go through (#604): a decline claims the `shop_payments` row (`asked` →
+  `declined`) before Crossmint is told, the way a yes claims it as `paying`; letting a run go (`letGo`)
+  declines its open payment first and keeps any run whose payment is already paying, paid or unknown
+  (`paymentLive`, log `shop_letgo_kept`). A pickup food order's checkout never gets their address
+  (`startCheckout({ noAddress })`, the address fields left for a person), and a food checkout that lands on a
+  delivery app's sign-in is handed off, not waited on: [food-ordering.md](food-ordering.md).
 - Flights through the same path, owner only (#508): [flight-booking.md](flight-booking.md); account jobs
   (cancel / pay a bill inside their account, owner only, #528/#554): [account-jobs.md](account-jobs.md).

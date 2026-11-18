@@ -7,7 +7,7 @@ order: `docs/account-jobs.md`.
 **Live: `REASON_ACCOUNT_JOBS=owner`** (off | owner | on; code default off). On for a person only with the
 switch AND the shopping path on for them (`CROSSMINT_SERVER_KEY` + `REASON_SHOP_CONNECT`):
 `accountjobs.jobsAllowedFor(c)` (`src/accountjobs.js:59`). Never on a call, switch on or off:
-`NEVER_BY_VOICE` (`src/tools.js:9746`: account_cancel, account_cancel_confirm, account_bill_pay,
+`NEVER_BY_VOICE` (`src/tools.js:10109`: account_cancel, account_cancel_confirm, account_bill_pay,
 account_signin, account_job_answer, browser_proof) → `blocked: "never_by_voice"`, "Not done: this is never
 done on a call. Say in one line that you'll do it by text right after the call…".
 
@@ -36,11 +36,11 @@ done on a call. Say in one line that you'll do it by text right after the call�
   page with a secret box (shown or not), a full card or bank number, or a crop naming someone else they have
   on record (`refusedLine`: "I didn't take a picture: the page shows a full card or bank number."). One per
   result (5 min); exported and deleted with their data; pruned with the content retention window. The
-  switch is `proofAllowedFor` (`src/tools.js:9741`): the tool is LISTED for every model, and refused in
+  switch is `proofAllowedFor` (`src/tools.js:10104`): the tool is LISTED for every model, and refused in
   `runTool` for anyone the switch does not reach (`blocked: "not_enabled"`, `text_only: true`).
 
 ## Driving it with the harness
-- Offline: `node --test test/account-jobs.test.js test/proofshot.test.js` (green 2026-11-14 in the g2 pass).
+- Offline: `node --test test/account-jobs.test.js test/proofshot.test.js` (green 2026-11-14 in the g2 pass; 76/76 on `18b47891`, 2026-11-18).
   What they pin: tools shown only with the switch; the cap and task; the pinned yes; each sign-in route;
   "page says cancelled, no mail yet" is NOT done; already-so endings; the bill with the daily cap; every
   not-done line; the crop rules, refusals, export/delete/retention, never by voice, the switch.
@@ -48,7 +48,10 @@ done on a call. Say in one line that you'll do it by text right after the call�
   `money-probe.mjs` in the evidence): owner sees all 6 job tools, another account 0; another account's
   `browser_proof` → `not_enabled`; every voice-barred job tool and `browser_proof` on a call → `never_by_voice`; `CANCEL_CAP`,
   the cancel task's already-cancelled branch, the `already_done` verdict and line, `pictureForJob`, the card
-  number / sign-in page / other-person refusals — 12/12.
+  number / sign-in page / other-person refusals — 12/12. Again 2026-11-18 on `18b47891` (`caged.sh env`, fake
+  Crossmint keys, every fetch throwing): the owner's 6 job tools (`account_cancel`, `account_cancel_confirm`,
+  `account_bill_pay`, `account_job_answer`, `account_job_status`, `account_job_stop`), another account 0;
+  `browser_proof` listed for both, `not_enabled` for the other; all 6 `NEVER_BY_VOICE` names refused on a call.
 - Live, without side effects: on the live server (OVH, root@15.204.113.250) import
   `/opt/reason/src/accountjobs.js` with `REASON_DB_PATH` on a temp file and `fetch` stubbed; print the create
   body for a cancel (cap, `browser.profileId`, task); `jobsAllowedFor(<owner>)` true, anyone else false.

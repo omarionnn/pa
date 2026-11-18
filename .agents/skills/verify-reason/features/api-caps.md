@@ -9,9 +9,16 @@ at New York midnight / on the 1st with nothing to reset.
 - **Daily cap** — `REASON_API_DAILY_CAP_USD` (default $1), every paid feature except calls. Reached:
   `apiOut(feature)` is true and `callApi` throws before any request. Since #227 (2026-10-27) no
   text-side feature calls the API at all (harm screen, one-thought sorter, said check, extraction,
-  profile, judge, watch are CLI-only), so on the live claude-cli install this cap has nothing left
-  to stop; it still governs the API backend (`REASON_BACKEND=api`), which live does not run. The
-  alert text below still says "the pre-reply checks are on the subscription", which is now always true.
+  profile, judge, watch are CLI-only). On the live claude-cli install the one paid use left for it to
+  stop is video intake (`REASON_VIDEO_INTAKE`, owner on live): its Gemini spend (feature `video`) counts
+  toward this cap, and intake checks `capReached` before a paid tier. It also governs the API backend
+  (`REASON_BACKEND=api`), which live does not run. The alert text below still says "the pre-reply
+  checks are on the subscription", which is now always true.
+- **Video intake's own day budget** — `REASON_VIDEO_DAILY_USD` (default $1; `0` off), `videoBudgetReached`
+  in `src/spend.js`. A budget on video watching/listening across everybody, inside the daily cap; only
+  intake reads it (videos go captions-only until midnight), nothing else is held back. The `api_spend` row
+  then adds "video budget reached ($1.50 of $1.00, REASON_VIDEO_DAILY_USD): videos are captions-only until
+  midnight".
 - **Call cap — a heads-up only** (owner, 2026-10-25) — `REASON_API_CALL_DAILY_CAP_USD` (default $2;
   live $6), features `call` and `call_harm` (`CALL_FEATURES`). Calls never count toward the daily cap
   and are NEVER stopped, moved or degraded by any cap: `apiSkipWhy` returns null for a call feature
@@ -25,37 +32,37 @@ at New York midnight / on the 1st with nothing to reset.
   words ("API daily cap reached ($1.00), the pre-reply checks are on the subscription until
   midnight."), sent once through ops' sustained-alert path; `quietRecovery` makes the lift silent.
 - `0` turns a cap off.
-- **80% heads-up, once per day / per month** (#374, 2026-11-07) — `capWarnings` (src/spend.js:393),
-  run after every ops pass (`startOps`, src/ops.js:949-950). At `WARN_AT` of a cap (src/spend.js:280,
+- **80% heads-up, once per day / per month** (#374, 2026-11-07) — `capWarnings` (src/spend.js:407),
+  run after every ops pass (`startOps`, src/ops.js:1091). At `WARN_AT` of a cap (src/spend.js:294,
   `REASON_API_WARN_AT`, a share strictly between 0 and 1, else 0.8) the owner gets one live text:
   "Reason heads-up: API spend is at 81% of the daily cap, $49.00 of $60.00 today (phone calls not
   counted)." / "… 80% of the monthly cap, $969.00 of $1200.00 this month." Keyed `api_warn:daily:<day>`
   / `api_warn:monthly:<YYYY-MM>` in `ops_state`, marked before the send (`capWarningsDue`,
-  src/spend.js:376); idem key `ops:<key>`. Daily counts `todayOther` (calls excluded). At or past a
+  src/spend.js:390); idem key `ops:<key>`. Daily counts `todayOther` (calls excluded). At or past a
   cap there is no 80% line (the cap's own alert speaks); a cap of 0 is off. The `api_spend` row then
-  adds "daily 80% warning sent 2026-11-07 15:00 UTC" (`warnedWords`, src/spend.js:405) and stays green.
+  adds "daily 80% warning sent 2026-11-07 15:00 UTC" (`warnedWords`, src/spend.js:419) and stays green.
 - **Provider usage-limit alert, once per episode** (#374) — `recordApi` (src/spend.js:59), which every
-  paid lane goes through, calls `noteLimitError` / `clearLimitHit` (src/spend.js:332, :347).
-  `isUsageLimit` (src/spend.js:299) matches the 11-05 wording ("reached your specified workspace API
+  paid lane goes through, calls `noteLimitError` / `clearLimitHit` (src/spend.js:346, :361).
+  `isUsageLimit` (src/spend.js:313) matches the 11-05 wording ("reached your specified workspace API
   usage limits … regain access on …") or a 429 naming a usage limit; a per-minute 429
   `rate_limit_error` and the credit refusal (`isLowCredit`, own path) are not. First refusal → one text
   at once: "Reason alert: the Anthropic API workspace usage limit is reached, so every paid API call is
   being refused until 2026-12-01 at 00:00 UTC (the API's words). Raise the limit in the Anthropic
-  Console, or move replies to the subscription." (`limitText`, src/spend.js:319; idem
+  Console, or move replies to the subscription." (`limitText`, src/spend.js:333; idem
   `ops:api-limit:<at>`). Episode in `ops_state` `api_limit:hit` (count, regain, told). A paid call that
   goes through ends it (`api_limit:last`) — but only 60 s or more after the last refusal
   (`LIFT_MARGIN_MS`: a success sooner is a call begun before the limit). A refusal seen at boot before
-  the wiring is told by `startAlerts` (src/spend.js:286), once. No cheaper-model fallback: the limit is
+  the wiring is told by `startAlerts` (src/spend.js:300), once. No cheaper-model fallback: the limit is
   on the key. Both texts go `runtime.say(owner, digest.scrub(text), { toMaster })` — live, never the digest.
-- **/ops "API usage limit (provider)"** (`api_limit`, money group, src/ops.js:619-622, `limitCheck`
-  src/spend.js:359) — `quiet: true`, so the pass never texts it. Red while refused: "the provider is
+- **/ops "API usage limit (provider)"** (`api_limit`, money group, src/ops.js:760-763, `limitCheck`
+  src/spend.js:373) — `quiet: true`, so the pass never texts it. Red while refused: "the provider is
   refusing paid calls: workspace usage limit reached since … UTC · 5 refused · access back 2026-12-01
   at 00:00 UTC per the API · owner texted … UTC"; clear: "never hit" or "not hit now · last hit …,
   over … (N refused)".
 
 ## How to get to it (user POV)
 
-Nobody asks for it. The owner sees the /ops "API spend today / 7d by feature" row (`api_spend`, src/ops.js:611) (`$X of $1.00 today · calls $Z of $2.00 ·
+Nobody asks for it. The owner sees the /ops "API spend today / 7d by feature" row (`api_spend`, src/ops.js:752) (`$X of $1.00 today · calls $Z of $2.00 ·
 $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one text the day a cap hits.
 
 ## Driving it with the harness
@@ -82,6 +89,11 @@ $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one tex
 
 - 2026-11-14 (`7d5b5f54`, evidence `*-g4-api-caps`): `spend-alert-drive.mjs` all ok again (same recipe); the
   api-caps suites 49/49 (no paid call constructed on any backend).
+- 2026-11-18 (`18b47891`, evidence `*-B2-api-caps`): `spend-alert-drive.mjs` all ok; a module on a throwaway DB
+  (`REASON_API_DAILY_CAP_USD=1 REASON_VIDEO_DAILY_USD=1`) recording two `video` / `gemini-3.8-flash` spends
+  ($0.75 each): none reached at $0.75, then `videoBudgetReached` and `capReached` `day` at $1.50, `harm`
+  skipped, `call` not, and the `api_spend` row carries the video-budget line. `api-hard-cap` + `spend-alert`
+  tests 20/20.
 
 ## Gotchas
 

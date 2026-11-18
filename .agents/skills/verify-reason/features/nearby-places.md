@@ -6,7 +6,7 @@
 
 Source: `src/places.js` (`nearbyPlaces`), `src/googleplaces.js` (dormant without a key), `src/weather.js`
 (`weatherAt`); tool cases: `grep -n 'case "nearby_places"\|case "weather"' src/tools.js`.
-Tests: `test/places-sources.test.js` (16), `test/places-breaker.test.js` (4), `test/places-google.test.js` (14).
+Tests: `test/places-sources.test.js` (16), `test/places-breaker.test.js` (4), `test/places-google.test.js` (14), `test/location-assumed.test.js` (the where-from note).
 
 ## Sub-features
 
@@ -28,8 +28,19 @@ Tests: `test/places-sources.test.js` (16), `test/places-breaker.test.js` (4), `t
   4500, `REASON_GOOGLE_PLACES_ENT_MAX` default 900 (inside the free allowances). Over the cap, an error,
   a timeout (then Google skipped 2 min) or nothing in the radius → the free sources, silently. Google's
   places are never cached; a sent place credits Google Maps and carries its link. /ops shows one meter
-  per tier once a key is set. **Live: `REASON_GOOGLE_PLACES_KEY` is not set** (absent from the live
-  switch list, 2026-11-14), so Google is never asked and the tool is exactly the free path.
+  per tier once a key is set. **Live: `REASON_GOOGLE_PLACES_KEY` is set** (live switch list, 2026-11-17),
+  so on live Google goes first and the free sources are the fallback; a cage and the clone have no key.
+- **Where the position came from (#581).** When `nearby_places` or `weather` is given a saved place's
+  coordinates (or nothing they shared) and there is no fresh position (no live share running, no pin in
+  the last 24 h, `RECENT_PIN_MIN`), the result opens with a `where_from` note (`src/whereabouts.js`
+  `whereNote`, `withWhere` in src/tools.js): by text Reason says which place it assumed and sends the
+  Share My Location card in the same reply, or asks in one line when the hours they told Reason (a saved
+  fact, `shiftOf`) say they are not there (off shift, so not at work); on a call it says the assumption in a few words and the text after the
+  call sends the card. A fresh position gets no note. Tests: `test/location-assumed.test.js`.
+- **Weather in their unit (#584).** The `weather` result carries one unit only (`inTheirUnit`,
+  `temperature_unit` F or C, `say.now/high/low` like `43°F`), picked from their confirmed time zone, else their
+  number's, else the install's (`unitForZone`: US zones and the few others → F, everywhere else → C), and
+  the note tells the model to name the unit with every number ("43 degrees Fahrenheit" out loud).
 - **Weather falls back to MET Norway (#576).** Open-Meteo first (3 s); no answer at all (timeout, no
   connection) → MET Norway's compact forecast (3 s, identifying User-Agent), said as "MET Norway, by
   coordinates", with no rain chance (compact has none, none is made up). For 5 minutes after, MET goes

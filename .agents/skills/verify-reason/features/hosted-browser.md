@@ -5,8 +5,13 @@ Browserbase session reached over CDP instead of this machine's Chrome. Everythin
 the same code: the job, the browser tools, the private-network guard, the origin pin, the never-list,
 the commit gate and spend confirmation, the refusal memory.
 
-**Switch:** `REASON_REMOTE_BROWSER` = off | owner | on (default off). `REASON_REMOTE_BROWSER_SITES`.
-Key: `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` (env only).
+**Switch:** `REASON_REMOTE_BROWSER` = off | owner | on (default off; **live: `on`** since #605 was deployed 2026-11-18 ~01:05 UTC, everyone covered except group threads; it was `owner` before).
+`REASON_REMOTE_BROWSER_SITES` (default `doordash.com`). `REASON_DOORDASH_PAY` = handoff (default) | site_card (live: set, value not read here) |
+site_card. Budget: `REASON_REMOTE_BROWSER_MONTH_MINUTES` (default 60) and `REASON_REMOTE_BROWSER_SESSION_MINUTES`
+(default and most 15); an emailed-code wait in the hosted browser is at most 5 minutes and the ask says "I can
+wait 5 minutes for it." Key: `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` (env only). `caged.sh` blanks
+both, in the server and in `env` (since 2026-11-18), so a cage never reaches Browserbase; the test guard
+(`test/paid-key-guard.js`) deletes them for tests.
 
 Source: `src/remotebrowser.js` (switch, list, `sessionRequest` pinned body, API client, Contexts,
 consent, metering, budget, failure words, `challengeOn` / `stopIfChallenged`), `src/browser.js`
@@ -47,4 +52,4 @@ Tests: `test/remote-browser.test.js` (fake Browserbase on loopback + local Chrom
 - Sign-in for a covered person who isn't the owner: `doordash_order signin` (DoorDash's own code, relayed by them once; never a password, never their mailbox). A password-only account stops with one line.
 - Groups (`group:` threads) are never covered.
 - Minutes: Browserbase's `GET /v1/projects/{id}/usage` (hourly, after each session), `remote.minutesLeft()`, the ops row "Browserbase minutes (DoorDash)", the digest line, `remote.minutesAlert` (once below `REASON_REMOTE_BROWSER_ALERT_MINUTES`, once at zero).
-- Tests: `node --test test/doordash-everyone.test.js`.
+- Tests: `node --test test/doordash-everyone.test.js`. At 133bdf84 (2026-11-18): doordash-everyone + doordash-code-reply + food-fixes-1117 47/47, doordash-order 28/28, remote-browser 26/26 (run with the real HOME: under a scratch HOME the tests' own Chromium has no `--use-mock-keychain` and times out). Browserbase itself, DoorDash's site and a real order are never driven here.

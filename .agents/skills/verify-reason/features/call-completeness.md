@@ -134,11 +134,23 @@ files but not mapped here.
 - **Lookups remembered across turns (PR #60).** ElevenLabs sends each turn back as spoken words
   only, so a search and its result were gone by the next turn — on call 41 Reason read out a real
   Kitco gold price and one turn later said it had never looked. Every Reason tool run on a call is
-  recorded in `calls.lookups` (newest 20: time, name, input head, result head), and
-  `withCallRecord` puts that record in front of the newest thing they said on every later turn,
-  marked as code's record and "not something to mention". `writeCallIntoThread` adds one line
-  listing the lookups after the transcript, so the texts after the call see them too. The call
-  prompt says live facts (prices, news, weather, scores) are always looked up before they are said.
+  recorded in `calls.lookups`, and `withCallRecord` puts that record in front of the newest thing
+  they said on every later turn, marked as code's record and "not something to mention".
+  `writeCallIntoThread` adds the lookups after the transcript (`afterCallLines`), so the texts after
+  the call see them too. The call prompt says live facts (prices, news, weather, scores) are always
+  looked up before they are said.
+- **Every result kept, nothing retracted without one (#584, 2026-11-15, call 119).** A lookup used to
+  be kept as the first 600 characters of its JSON, so a second search result Reason had rightly said
+  was missing from the record and the next turn "corrected" it. Now `src/calls/lookuprecord.js`
+  (`summarize`, `lookupEntry`, `withCallRecord`) keeps a compact line per result (places: name,
+  address, distance, open now / today's hours, phone, maps link; weather: place, temperature in their
+  unit, sky) within `STORE_BUDGET` (3,000 per lookup; `SHOW_BUDGET` 1,500 shown, `TOTAL_BUDGET` 8,000),
+  trimming low-value fields and unspoken trailing results first, never a result it spoke; each lookup
+  is shown next to what Reason said after it (`answersIn` over the platform's messages). The brain's
+  call frame carries `CALL_RECORD_FRAME`: never take back something said earlier on the call unless a
+  result in hand says otherwise. Weather on a call comes back in one unit, theirs (Fahrenheit for a US
+  zone, `src/weather.js`), named out loud. Offline: `test/call-lookup-record.test.js` and
+  `test/call-voice.test.js`.
 - **`NO_REPLY` is never spoken (#68).** The text path's silence marker is dropped from speech
   (`withoutSilenceMarker` in `src/calls/voice.js`, logged `voice_no_reply_dropped`), and the call
   prompt (`src/calls/voice-prompt.js`) says `skip_turn` instead.

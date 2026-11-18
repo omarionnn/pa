@@ -26,6 +26,11 @@ Tests: `test/contextfirst.test.js` (6, offline).
   inference without a yes.
 - **Remember.** Confirmed answers saved with context via `remember`; a "no" saved as a signal, not a
   rule, unless they say never.
+- **Answer the word they wrote (#594, 2026-11-15; not behind this switch).** One line of the base
+  `SYSTEM` prompt in `src/agent.js`, for everyone: a word that names a real thing ("US bonds", an app)
+  is answered as that thing, not a similar one; only a word that names nothing real gets a guess, said
+  out loud. It narrows words only: acting on a sensible reading of their situation still stands and is
+  never "ask first". Offline: `test/answer-literal-word.test.js`.
 
 ## Prove
 

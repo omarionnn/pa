@@ -15,7 +15,7 @@ What code does now, with no model in front of it:
 - **plain question** → `wake` (an event turn, key `shop:<run>:<request>`, once): `[checkout] Ulta's
   checkout for … (run …) is waiting on an answer. Ulta asks: "…". Fields (key: label): … Ulta holds
   the cart until <clock time>; say that as the time, never as a countdown …` (`inputEvent`,
-  `src/shopconnect.js:1382-1396`; the "It expires in N minutes" wording went with checkout-anticipate) — the model answers with `shop_answer` (values sealed out of the log by src/privacy.js) or
+  `src/shopconnect.js:1869-1884`; the "It expires in N minutes" wording went with checkout-anticipate) — the model answers with `shop_answer` (values sealed out of the log by src/privacy.js) or
   asks the person for exactly what is missing;
 - **protected form** → the sign-in link, as before; **payment** → the ask, itemized when Crossmint
   itemizes (`item $18.99, shipping $6.95, tax $2.30; $28.24 all in.` above `OK to pay …`), Face ID link
@@ -43,6 +43,11 @@ What code does now, with no model in front of it:
   id wakes once (`mail_seen`, at most `MAIL_WAKES_MAX` 5), so a "rate your visit" does not end the watch;
   no mail connected → watch over quietly; 24h with nothing → one text unless the order is `placed`;
 - **restart** → `resumeFollowing()` follows every `status = 'running'` row and every open mail watch.
+- **a checkout started over at an open food order's own ordering page** (the model retrying without
+  `food_order_id`: a form answer it could not fill) is that order's checkout: `store_checkout` finds it
+  (`food.orderAtPlace`) and it goes through the same food gate, card and hold (`src/shoptools.js`;
+  `test/food-fixes-1117.test.js`). A DoorDash link, for a person the hosted browser covers for DoorDash,
+  starts nothing: `use_instead: "doordash_order"` (their own DoorDash account, see [food-ordering.md](food-ordering.md)).
 
 The record in front of the model: `checkoutNote` on their turns (every run of the last 24h, one line
 each, "overrides anything the chat says"); `shop_status` on demand. The reply guard: a "started the
@@ -50,7 +55,7 @@ checkout" line with no run of theirs (started ≤15 min ago or still open) is dr
 and replaced by `I haven't actually started a checkout: nothing is running and nothing has been charged.
 Want me to start it now?`; a "never actually started" line with a run of the last 30 min on record gets
 `Actually, checking my record: the <store> checkout for <item> did start N min ago; now: <stageLine>.`
-in front (`src/offers.js:95`), and only on a turn where they asked about the checkout (`aboutCheckout`).
+in front (`src/offers.js:122`), and only on a turn where they asked about the checkout (`aboutCheckout`).
 
 **Status from the record (#501, 2026-11-12).** `shop_status` and every reply about a checkout agree with the
 newest run of the last two hours (`againstRecord` in `src/offers.js`; `chargedOf` / `stoppedByReason` in
@@ -75,6 +80,7 @@ charged", never "declined". Their own no is `stopped_by = 'them'`. Pinned in `te
   `shopconnect` + `passkey-pay` in one 122/122 batch; `checkout-mail-read`, `crossmint-only-buys`,
   `no-check-your-email` in the 601-pass batch. In process: `chargedOf` of a run with no payment → `no`.
   A live stall/wake needs a real Crossmint run: offline only.
+- 2026-11-18 on `18b47891`: the eight files above in one 84/84 batch; `food-fixes-1117` 22/22.
 
 ## Live (read-only, on the live server: OVH, root@15.204.113.250)
 `sqlite3 -readonly /opt/reason/data/reason.db "SELECT run_id, store, stage, told, substr(question,1,60) FROM shop_runs ORDER BY created_at DESC LIMIT 5"`;

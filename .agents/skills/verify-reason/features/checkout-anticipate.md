@@ -17,7 +17,9 @@ What code does now:
   and never overwritten by a gathered value.
 - **the instruction** — `startCheckout` writes the record's address into `what` where it says to ship
   ("…shipped to the address on file. Ship to <first last>, <street>, Apt 1, <city>, <ST> <zip>."), so the
-  form often never comes.
+  form often never comes. Never on a pickup food order (`noAddress`, `src/shopconnect.js:719`): a site
+  that switches it to delivery cannot quietly ship it to them; on a pickup run a form's address fields are
+  never filled from the record either (`PICKUP_NEVER`): a required one is asked of them (`test/food-fixes-1117.test.js`).
 - **a plain form the record covers** → answered by code in `step()` (no model turn), one text:
   `Shipping to <street> Apt 1, <city>, the usual. Say if that's wrong.` ("as you gave it to me before" the
   first time). A choice field gets the option's VALUE (`shipping.matchOption`: by value, label, state code or
@@ -63,6 +65,7 @@ What code does now:
   400 `detail`; correction → new run with the corrected street number, old run's payment declined silently; hedge +
   link dropped only with a run; card on file in the note; parser cases (the Walmart instruction, the typed
   "<last>, <street>, <city> <zip> apt1", "apartment one", no-ZIP refused) and gather() from rows.
+- 2026-11-18 on `18b47891`: green in the 84/84 checkout batch (see [checkout-job.md](checkout-job.md)).
 - `test/checkout-job.test.js` wording pin updated (clock time, not "expires in"); both fixtures clear
   `shop_shipping`.
 

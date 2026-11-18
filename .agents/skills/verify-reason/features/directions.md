@@ -17,7 +17,10 @@ routing key ever reaches the page.
 wants to get somewhere on foot and calls the tool with the start (a place they named, or get_location's live
 share / recent pin — never guessed: no start, no trip) and the end (an address or place, looked up on
 Nominatim near the start first; a saved place by name; or a Reason event, whose released address, start and
-link come from the event). The walk comes from the foot router; crossings and kerbs under 35 m fold away.
+link come from the event). The tool is also the first call for what a trip would cost (a taxi, a cab, a car
+there): its description tells the model to take the distance and time from it, never guess them, and give the
+meter estimate as its own with the working (the miles and minutes, the rates used, "my estimate") plus
+`uber_link` for the live price (`src/directionstools.js:21`; `test/fare-orphan-1115.test.js`). The walk comes from the foot router; crossings and kerbs under 35 m fold away.
 The row (`trips`: trip JSON + server-only `streets` + OSRM's raw steps) holds where the walk started, so it
 is deleted the moment the walk ends on the page (arrival or END ESCORT → `POST /d/<id>/end`, owner's browser
 only, every other caller the same empty 204), and otherwise an hour after the arrive-by / event start (no

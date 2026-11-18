@@ -41,7 +41,9 @@ Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.j
   reply turn is in flight, parked while a CLI run reports a limit. A CLI limit, timeout or SIGTERM
   is an outage to `db.EXTRACTION_OUTAGE` (try given back, retry in 5 min); rows an old outage
   exhausted are revived each pass. Log lines: `{"extracted":n,"skipped":k,…,"via":"cli"}` and
-  `extraction_skipped`. Pinned in `test/api-spend.test.js`.
+  `extraction_skipped`. Pinned in `test/api-spend.test.js`. On the API backend (since 2026-11-02,
+  `extractMessages` → `runStructured` in `src/extract.js`) the same read and the profile choice run on
+  the API key (`REASON_EXTRACTION_MODEL`), `"via":"api"`.
 - **Temporal facts.** A changed fact retires the old one only when the extractor names it: every
   Already-known line it is shown carries an id, and it sets `replaces` to that id when the new message
   makes that line untrue (`db.retireForNewer`, status `superseded`). A `replaces` pointing at an id
@@ -117,12 +119,16 @@ bin/peek.sh sql "SELECT id, canonical_name, type, aliases FROM graph_entities"
 bin/caged.sh stop
 ```
 
-**The cage's extraction is not model-free.** The reader is always `claude -p` (`extractMessages`
-in `src/extract.js` calls `runClaudeCli`, whatever `REASON_BACKEND` is); only the lane differs. So
-on the API-backend, no-key cage a memorable text still spends one haiku run of this Mac's
-subscription and lands real facts: driven 2026-10-30, the text above → `{"extracted":1,…,"facts":2,
-"via":"cli"}`, queue `done`, `model_usage` `extraction|cli`, two `person_facts` rows. Queue rows
-stay `pending` (with `last_error`) only when `claude` itself cannot run.
+**On the default cage extraction has no model.** The reader follows the backend: `claude -p` on
+`claude-cli`, the API key on `api` (`extractMessages` in `src/extract.js`). The default cage is `api`
+with the key blanked, so a memorable text lands in `event_log` and its queue row stays `pending` with
+`last_error` "api: Could not resolve authentication method…" (3 tries, then left), `serve.log` says
+`extraction failed for queue N: api: …`, and no `person_facts` row is written; nothing reaches the
+subscription. Rows with nothing worth reading go `done` with no call (`worthReading`). Driven
+2026-11-18 at `18b47891` (8831 cage): queue `done` 4, `pending` with that error 3, no `cli` row in
+`model_usage`. Real facts from a caged text need the `claude-cli` cage (Launch B's subscription
+exception; on 2026-10-30 that gave `{"extracted":1,…,"facts":2,"via":"cli"}` and two `person_facts`
+rows) — the offline tests' scripted extractor is the usual proof.
 
 **Live, read-only:** `sqlite3 /opt/reason/data/reason.db "select state,count(*) from extraction_queue group by 1"`
 (a growing `pending` count or rows with `attempts` ≥ 3 and a `last_error` is the failure to look for),
@@ -138,8 +144,9 @@ every pass — and `select feature,via,count(*) from model_usage where feature i
   `conversation_id` filter is a cross-user leak. `graph-isolation` and `isolation-memory` pin it.
 - A correction must scrub the thread, not just the row, or Reason repeats the old wording.
 - Filler turns are not queued for extraction on calls (see `call-completeness.md`).
-- Extraction needs a working `claude` login, not a key (see the cage note above); embeddings need
-  `OPENAI_API_KEY`, and absent one `backfillEmbeddings` returns 0 (`src/extract.js:185`).
+- Extraction needs a model on the backend it runs on: a working `claude` login on `claude-cli`, the
+  API key on `api` (see the cage note above); embeddings need
+  `OPENAI_API_KEY`, and absent one `backfillEmbeddings` returns 0 (`src/extract.js:186`).
 - Don't read `person_facts` content from the live database into a report; it is the user's data.
 
 ## The nightly review and how-to-treat-me rules (src/dream.js)
