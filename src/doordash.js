@@ -37,6 +37,7 @@ import * as remote from "./remotebrowser.js";
 import * as sites from "./sites.js";
 import { clock } from "./config.js";
 import { sealFor, openAny } from "./restcrypt.js";
+import * as passkey from "./passkey.js";
 
 export const SITE = "doordash.com";
 export const HOME = "https://www.doordash.com/";
@@ -95,7 +96,7 @@ db.db.exec(`
   );
 `);
 /** For tests. */
-export function _resetDoordash() { db.db.exec("DELETE FROM doordash_orders"); }
+export function _resetDoordash() { db.db.exec("DELETE FROM doordash_orders"); allowUntil.clear(); }
 const open = (v) => { try { return String(openAny(v) ?? ""); } catch { return ""; } };
 function rowFor(c, orderId) {
   const r = orderId
@@ -338,25 +339,93 @@ export function refuseGenericCommit(page, { tool, name = "" } = {}) {
  * doordash_order and doordash_place. `deps`: browser (src/browser.js), trust (src/trust.js), the
  * turn's facts (ownTurn, theirWords, ownerName), and the gate's ctx (spend, permission, confirmationId).
  */
-export async function runDoordash(name, input, { conversationId: c, browser, trust, ownTurn = false, theirWords = [], ownerName = "them", ctx = {}, shoot = null } = {}) {
+export async function runDoordash(name, input, { conversationId: c, browser, trust, ownTurn = false, theirWords = [], ownerName = "them", ctx = {}, shoot = null, signinDeps = null } = {}) {
   if (!doordashFor(c)) return { ok: false, error: "Not available." };
-  if (name === "doordash_place") return await place(c, input, { browser, trust, ctx, ownerName });
+  // A group thread: nobody can consent, sign in or order on another member's DoorDash (also refused by
+  // the hosted browser's own switch; said here in words for a turn that names one).
+  if (ctx.isGroup || remote.isGroupConversation(c)) return { ok: false, error: "Not in a group thread: a DoorDash order is only ever on one person's own account, from their own thread." };
+  if (name === "doordash_place") return await place(c, input, { browser, trust, ctx, ownerName, shoot });
   const a = input?.action;
-  if (a === "start") return await start(c, input);
+  if (a === "signin") return await signinByCode(c, input, { ownTurn, signinDeps });
+  if (a === "start") return await start(c, input, { theirWords, ownTurn });
   if (a === "address") return await address(c, input, { browser, theirWords });
   if (a === "checkout") return await checkout(c, input, { browser, shoot });
   if (a === "status") return await status(c, input, { browser, ownTurn });
   return { ok: false, error: "Unknown action." };
 }
 
-async function start(c, input) {
-  // The minutes first: an order that cannot finish is not begun (a half-built cart helps nobody).
-  const leftSec = remote.monthBudgetMinutes() * 60 - remote.monthSeconds();
-  if (leftSec < orderMinutes() * 60) {
-    const left = Math.max(0, Math.floor(leftSec / 60));
-    return { ok: false, budget: true, minutes_left: left,
-      say_exactly: `I have about ${left} minute${left === 1 ? "" : "s"} of hosted-browser time left this month and a DoorDash order takes about ${orderMinutes()}, so I won't start one I might not finish. You can order it in the DoorDash app.`,
-      note: "Send say_exactly as it is. Nothing was opened." };
+// ---------------------------------------------------------------- when DoorDash, and when not
+// The restaurant's own ordering comes first (proven to the exact total, no sign-in, no hosted-browser
+// minutes). DoorDash in the hosted browser only when one of these is true, checked here in code, never
+// on the model's say-so; and a hosted DoorDash session never opens for anything else (browsing,
+// comparing prices): see the site gate below. Offered in this order: own site, DoorDash, phone pickup.
+export const WHY = Object.freeze(["asked_by_name", "usual_from_doordash", "no_own_ordering", "own_site_hands_off", "own_site_failed"]);
+const NAMED = /\bdoor\s?dash\b/i;
+const YESISH = /(^|[^a-z'])(yes|yeah|yep|yup|ok|okay|sure|go ahead|do it|please do|sounds good|alright|all right|let'?s do (it|that))([^a-z']|$)/i;
+const NOISH = /(^|[^a-z'])(no|nope|nah|don'?t|not)([^a-z']|$)/i;
+const sameName = (a, b) => String(a ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === String(b ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+/** Their usual (from that place, or their last order anywhere) came from DoorDash: the last food order they placed, or one Reason built on DoorDash for them since. */
+export function usualFromDoordash(c, restaurant = "") {
+  const placed = db.db.prepare("SELECT id, platform, placed_at FROM food_orders WHERE conversation_id = ? AND status = 'placed' ORDER BY placed_at DESC, id DESC LIMIT 30").all(String(c))
+    .map((r) => ({ ...r, restaurant: food.ownOrder(c, r.id)?.restaurant ?? "" }))
+    .filter((r) => !restaurant || sameName(r.restaurant, restaurant));
+  const dd = db.db.prepare("SELECT order_id, restaurant, updated_at FROM doordash_orders WHERE conversation_id = ? AND state IN ('placed', 'handed_off') ORDER BY updated_at DESC LIMIT 30").all(String(c))
+    .map((r) => ({ at: r.updated_at, restaurant: open(r.restaurant) }))
+    .filter((r) => !restaurant || sameName(r.restaurant, restaurant));
+  const lastPlaced = placed[0];
+  const lastDd = dd[0];
+  if (lastDd && (!lastPlaced || lastDd.at >= Number(lastPlaced.placed_at ?? 0))) return true;
+  return lastPlaced?.platform === "doordash";
+}
+/** Why this order may go to DoorDash, checked: { ok } or { ok: false, error }. */
+function routeAllowed(c, input, theirWords) {
+  const why = String(input.why ?? "");
+  const name = String(input.restaurant ?? "").trim();
+  const latest = String(theirWords.at(-1) ?? "");
+  const saidYes = (YESISH.test(latest) && !NOISH.test(latest)) || NAMED.test(latest);
+  const place = name ? food.placeFor(c, name) : null;
+  if (why === "asked_by_name" && theirWords.some((w) => NAMED.test(w))) return { ok: true };
+  if (why === "usual_from_doordash" && usualFromDoordash(c, name)) return { ok: true };
+  if (why === "no_own_ordering" && place?.no_direct) return { ok: true };
+  if (why === "own_site_hands_off" && place?.direct_url && food.handoffAt(c, place.direct_url) === "doordash" && saidYes) return { ok: true };
+  if (why === "own_site_failed" && saidYes) {
+    const failed = db.db.prepare("SELECT id FROM food_orders WHERE conversation_id = ? AND route = 'direct' AND failures > 0 AND updated_at > ? ORDER BY id DESC LIMIT 5").all(String(c), clock.now() - 24 * 3600_000)
+      .some((r) => !name || sameName(food.ownOrder(c, r.id)?.restaurant, name));
+    if (failed) return { ok: true };
+  }
+  return {
+    ok: false, not_doordash: true,
+    error: `Not DoorDash for this${name ? ` (${name})` : ""}: the restaurant's own online ordering comes first (food_order and its own site, delivery or pickup), then DoorDash, then a phone order for pickup.`
+      + " DoorDash opens only when: they asked for DoorDash by name (why asked_by_name); their usual came from DoorDash (usual_from_doordash);"
+      + " Reason looked and the place has no online ordering of its own (no_own_ordering, after food_order place with no_direct); its own site hands delivery to DoorDash and they said yes to DoorDash (own_site_hands_off);"
+      + " or its own checkout failed and they said yes to trying DoorDash (own_site_failed). Never to browse or compare prices. Nothing was opened.",
+  };
+}
+/** How long a reason to be on DoorDash holds a hosted session open-able (an order, a sign-in, a status look). */
+const allowUntil = new Map(); // conversationId -> ms
+const allow = (c, ms) => allowUntil.set(String(c), Math.max(allowUntil.get(String(c)) ?? 0, clock.now() + ms));
+export const endAllowance = (c) => allowUntil.delete(String(c));
+/** A sign-in to DoorDash or a check of it, started by the other sign-in tools (signin_email, account_signin, signin_status): a reason too. */
+export const allowSignin = (c) => { if (doordashFor(c)) allow(c, 20 * 60_000); };
+/** The hosted browser's gate for DoorDash (src/remotebrowser.js setSiteGate): no session for a covered person without a reason. */
+export function sessionAllowed(c) {
+  if (!doordashFor(c)) return true;
+  return (allowUntil.get(String(c)) ?? 0) > clock.now();
+}
+remote.setSiteGate(SITE, sessionAllowed);
+
+async function start(c, input, { theirWords = [] } = {}) {
+  // DoorDash only for a reason that holds (asked by name, their usual, no own ordering, a hand-off or a
+  // failed own checkout with their yes); otherwise the restaurant's own way, and nothing is opened.
+  { const route = routeAllowed(c, input, theirWords); if (!route.ok) return route; }
+  // The minutes first, by Browserbase's own figure: an order that cannot finish is not begun (a
+  // half-built cart helps nobody). Said as Reason's side, never a limit on them, never a plan.
+  await remote.refreshUsage().catch(() => null);
+  if (remote.minutesLeft() < orderMinutes()) {
+    remote.minutesAlert().catch(() => null);
+    return { ok: false, budget: true, fallback: FALLBACK_NOTE,
+      say_exactly: `I can't take a DoorDash order through me right now. That's on my side, not a limit on you or your account. ${remote.SIDE_INSTEAD}`,
+      note: "Send say_exactly as it is. Nothing was opened. Never mention minutes, a plan or a limit; if they want the restaurant's own site or pickup, go that way." };
   }
   // Consent, the key, a site that turned the hosted browser away: asked before anything opens.
   // Anything but their yes being asked for: DoorDash can't be had now, so the order goes the way it
@@ -369,6 +438,7 @@ async function start(c, input) {
   db.db.prepare(`INSERT INTO doordash_orders (conversation_id, order_id, state, usual, tip_said, restaurant, created_at, updated_at) VALUES (?, ?, 'started', ?, ?, ?, ?, ?)
     ON CONFLICT(conversation_id, order_id) DO UPDATE SET state = 'started', usual = excluded.usual, tip_said = excluded.tip_said, restaurant = excluded.restaurant, updated_at = excluded.updated_at`)
     .run(String(c), o.id, input.usual ? 1 : 0, String(input.tip ?? "").slice(0, 20), sealFor(String(c), String(input.restaurant ?? "").slice(0, 80)), now, now);
+  allow(c, 60 * 60_000);
   return {
     ok: true, order_id: o.id, pay_mode: payMode(),
     next: `browser_open ${HOME}. Follow the DoorDash steps in this tool's description: their address first (doordash_order address), then the restaurant, then ${input.usual ? "their past order of it (Reorder) " : "the items one by one with their options"}, the tip, and the checkout (doordash_order checkout).`,
@@ -512,6 +582,7 @@ async function checkout(c, input, { browser, shoot }) {
     // Never pressed. The hosted session closes now (it is billed by the minute); the cart stays on their account.
     await browser.closeBrowser(c).catch(() => {});
     update(c, r.order_id, { state: "handed_off" });
+    endAllowance(c);
     try { await food.setStatus(food.ownOrder(c, r.order_id), "needs"); } catch { /* the words still go */ }
     // The web page that shows this cart: the store page when that is where it was read, else the checkout page itself.
     const store = (() => { try { const u = new URL(page.url()); return u.pathname.startsWith("/store/") ? `${u.origin}${u.pathname}` : checkoutUrl; } catch { return checkoutUrl; } })();
@@ -522,8 +593,10 @@ async function checkout(c, input, { browser, shoot }) {
       note: "Send say_exactly as it is. Reason never places a DoorDash order in this mode, so never say it is ordered or on its way.",
     };
   }
-  // site_card: the yes, on exactly this.
+  // site_card: the yes, on exactly this. The food order waits on that yes ('asked'): a new food request
+  // drops it with one line, and this order can no longer be placed (stale-yes check in placeOnce).
   update(c, r.order_id, { state: "asked" });
+  food.markAsked(c, r.order_id);
   try { await food.setStatus(food.ownOrder(c, r.order_id), "needs"); } catch { /* the words still go */ }
   const ask = `${flag}${dollars(got.total)} from ${restaurant || "DoorDash"} to ${r.address}${eta}, on the card already on your DoorDash account (${breakdown}; ${tipWords}). Place it?`;
   let picture = null;
@@ -531,6 +604,17 @@ async function checkout(c, input, { browser, shoot }) {
     const o = food.ownOrder(c, r.order_id);
     ({ file: picture } = await food.drawApprovalCard({ restaurant: restaurant || "DoorDash", items: o?.items ?? [], lines: fees, tip: got.tip != null ? dollars(got.tip) : "", total: dollars(got.total), eta: got.eta, address: r.address, card: "Card on your DoorDash account" }, shoot ? { shoot } : {}));
   } catch { picture = null; }
+  // Face ID on file (src/passkey.js): the same standard as every other purchase. No chat yes places it:
+  // the link, bound to this order, its revision, the exact total and the address, is the ask.
+  if (passkey.requiredFor(c)) {
+    const url = approvalLink(c, r.order_id);
+    return {
+      ok: true, order_id: r.order_id, total: dollars(got.total), tip_source: tipSource, approve_with_face_id: true, url,
+      say_exactly: `${ask.replace(/ Place it\?$/, "")} Approve it with Face ID here:\n${url}`,
+      ...(picture ? { picture } : {}),
+      note: `Send the picture${picture ? "" : " (if any)"} and say_exactly as it is, the url ON ITS OWN LINE as the last thing, untouched; it works once, for 30 minutes. A yes in the chat never places it. When they approve, Reason places it and tells them by itself.`,
+    };
+  }
   return {
     ok: true, order_id: r.order_id, total: dollars(got.total), tip_source: tipSource, use_target: placeTarget(c, r.order_id), say_exactly: ask,
     ...(picture ? { picture } : {}),
@@ -540,9 +624,128 @@ async function checkout(c, input, { browser, shoot }) {
 
 async function stopJob(c, r, kind, { browser }) {
   await browser.closeBrowser(c).catch(() => {});
+  endAllowance(c);
   update(c, r.order_id, { state: "stopped" });
   try { await food.setStatus(food.ownOrder(c, r.order_id), "failed"); } catch { /* the words still go */ }
   return { ok: false, stopped: kind, say_exactly: stopWords(kind), note: "Send say_exactly as it is, once. Nothing was placed. Do not try again or try another way." };
+}
+
+// ---------------------------------------------------------------- the yes stays this order's
+/** Why this DoorDash order can no longer be placed on the yes it was asked for, or "". */
+function staleWhy(c, r) {
+  const fo = food.ownOrder(c, r.order_id);
+  if (!fo) return "no_food_order";
+  if (["cancelled", "failed", "placed"].includes(fo.status)) return `food_order_${fo.status}`;
+  if (Number(fo.revision ?? 0) !== Number(r.revision ?? 0)) return "cart_changed";
+  return "";
+}
+/** Close any Face ID link still open for this order. */
+function closeLinks(orderId) {
+  const a = passkey.openApprovalFor(Number(orderId), "doordash");
+  if (a) passkey.closeApproval(a, "closed");
+}
+/** A yes for an order they moved on from: nothing pressed, the link closed, said in a few words. */
+async function dropped(c, r, why) {
+  update(c, r.order_id, { state: "dropped" });
+  closeLinks(r.order_id);
+  return { ok: false, dropped: true, why,
+    say_exactly: `That ${r.restaurant || "DoorDash"} order isn't waiting anymore${why === "cart_changed" ? ": its cart changed since you were asked" : ""}, so I didn't place it. Nothing was charged.`,
+    note: "Send say_exactly as it is. Nothing was pressed." };
+}
+/** food.js, when a food order is closed or dropped: its DoorDash ask goes with it (no link left open). */
+export function voidFor(c, orderId) {
+  const r = rowFor(c, orderId);
+  if (!r || !["asked", "read", "started", "address"].includes(r.state)) return false;
+  update(c, orderId, { state: "dropped" });
+  closeLinks(orderId);
+  return true;
+}
+/** Is a Place order press under way for this order right now? food.js never closes one mid-press. */
+export const placingFor = (c) => placing.has(String(c));
+
+// ---------------------------------------------------------------- Face ID for a DoorDash order
+/** The row a Face ID approval for this order is bound to (src/passkey.js kind 'doordash'). */
+export function approvalRow(c, orderId) {
+  const r = rowFor(c, orderId);
+  if (!r || r.total_cents == null) return null;
+  return {
+    id: r.order_id, conversation_id: String(c), kind: "doordash", revision: r.revision, total_cents: r.total_cents, address: r.address, restaurant: r.restaurant,
+    status: r.state === "asked" && !staleWhy(c, r) ? "asked" : r.state, amount_kind: "exact", amount: (r.total_cents / 100).toFixed(2), currency: "USD",
+    merchant_name: r.restaurant || "DoorDash", eta: r.eta, lines: r.lines,
+  };
+}
+/** A fresh one-use, 30-minute Face ID link for this order (older open ones close). */
+export function approvalLink(c, orderId) {
+  const base = String(process.env.REASON_SITE_URL || process.env.REASON_PUBLIC_URL || "https://heyreason.com").replace(/\/+$/, "");
+  return `${base}/web/approve/${passkey.createApproval(approvalRow(c, orderId))}`;
+}
+/** What the approval page shows for a DoorDash order: its own reading, never page text. */
+export function approvalView(a) {
+  const row = approvalRow(a.conversation_id, a.payment_id);
+  if (!row) return null;
+  const state = a.state === "open" && row.status !== "asked" ? "closed" : a.state;
+  const o = food.ownOrder(a.conversation_id, a.payment_id);
+  const items = (o?.items ?? []).map((it) => `${it.qty > 1 ? `${it.qty}× ` : ""}${it.name}`).join(", ");
+  return { a, row, kind: "doordash", state, amount: dollars(row.total_cents), store: `${row.restaurant || "DoorDash"} on DoorDash`, item: items || "Your order",
+    breakdown: (row.lines ?? []).map((l) => [l.label, dollars(l.cents)]), address: row.address, eta: row.eta, card: "The card on your DoorDash account", expiresAt: a.expires_at };
+}
+/**
+ * The approval page's tap, verified (src/shopconnect.js payByPasskey calls this for kind 'doordash').
+ * Their own limits and the day's cap first, before the link is used; then the assertion against the
+ * order as it is now (revision, total, address); then the one press, with the page re-read first.
+ * The result is texted to them (no model turn runs here) and returned for the page.
+ */
+export async function placeApproved(v, response, { browser = null, trust = null, notify = async () => {}, verify = passkey.verifyApproval, shoot = null } = {}) {
+  const c = v.row.conversation_id;
+  const orderId = v.row.id;
+  if (payMode() !== "site_card" || !doordashFor(c)) return { ok: false, error: "not_available" };
+  trust = trust ?? await import("./trust.js");
+  browser = browser ?? await import("./browser.js");
+  if (v.row.status === "asked") {
+    const caps = trust.checkCaps(c, v.row.total_cents, { hasYes: true });
+    if (!caps.ok) return { ok: false, error: caps.blocked ?? "over_limit", say: caps.error };
+    const cap = trust.checkSpendCap(c, v.row.total_cents);
+    if (!cap.ok) return { ok: false, error: "over_daily_cap", say: cap.error };
+  }
+  const ok = await verify(v.a, v.row, response);
+  if (!ok.ok) return ok;
+  const key = String(c);
+  if (placing.has(key)) return { ok: false, error: "already_placing" };
+  placing.add(key);
+  allow(c, 10 * 60_000);
+  let out;
+  try { out = await placeOnce(c, { order_id: orderId }, { browser, trust, ctx: { faceIdApproved: true, confirmationId: null }, ownerName: "them", shoot }); }
+  finally { placing.delete(key); }
+  const line = out.say_exactly || out.error || "";
+  if (line) await Promise.resolve(notify(c, out.ok ? `Approved with Face ID. ${line}` : line)).catch(() => {});
+  return out.ok ? { ok: true, placed: true } : { ok: false, error: out.total_changed ? "total_changed" : out.stopped ? `stopped_${out.stopped}` : out.dropped ? "order_dropped" : out.blocked ?? "not_placed" };
+}
+
+// ---------------------------------------------------------------- signing in, for everyone the hosted browser covers
+/**
+ * The narrowest way in: DoorDash's own one-time code (emailed or texted to them), which they relay in
+ * the chat once; Reason types it only into DoorDash's own code box, in their own hosted context. No
+ * password, no saved login, no Continue with Google, no reading their mailbox: those keep their own
+ * switches. A DoorDash account that wants a password stops with one plain line.
+ */
+async function signinByCode(c, input, { ownTurn, signinDeps }) {
+  if (!ownTurn) return { ok: false, error: "Only when they ask in their own message." };
+  if (!signinDeps?.start) return { ok: false, error: "Not available." };
+  const email = String(input.email ?? "").trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: false, needs_email: true, ask: "Ask them once, in one plain line, which email their DoorDash account uses; then call doordash_order signin with it." };
+  }
+  await remote.refreshUsage().catch(() => null);
+  const held = remote.gate(c, SITE, { alt: FALLBACK_SAY });
+  if (held) return held.hosted_browser === "consent_needed" ? held : { ...held, fallback: FALLBACK_NOTE };
+  const reg = sites.site("doordash");
+  // Tests only: the fixture DoorDash's sign-in page (as the hosted browser's API address is read).
+  const signinUrl = (process.env.NODE_TEST_CONTEXT && process.env.REASON_DOORDASH_TEST_SIGNIN_URL) || reg?.signin_url || "https://identity.doordash.com";
+  const entry = remote.tagEntry(c, { site: "doordash", label: LABEL, signin_url: signinUrl, hosts: reg?.hosts ?? ["doordash.com"], entry: reg?.entry ?? HOME });
+  allow(c, 20 * 60_000);
+  const out = signinDeps.start({ conversationId: c, entry, email, relayOnly: true, gmail: async () => ({ connected: false }) });
+  if (!out?.ok) return out;
+  return { ok: true, started: true, say: `Say ONE short line like "Signing you in to DoorDash, one sec." DoorDash will send them a code; you are told when to ask for it. Never ask for a password.` };
 }
 
 const CONFIRMED = /\border (?:#|number|no\.?)\s*:?\s*([A-Z0-9][A-Z0-9-]{3,})|\b(order (?:placed|confirmed|received)|thanks for your order|your order is (?:on the way|being prepared|confirmed|in))\b/i;
@@ -553,16 +756,31 @@ const placing = new Set();
 async function place(c, input, deps) {
   // handoff (the default): never pressed, whatever asked for it.
   if (payMode() !== "site_card") return { ok: false, refused: true, error: "DoorDash orders are handed to them to place in this setup. Nothing was pressed." };
+  // Face ID on file: a chat yes never places it (as shop_pay). The tool hands back the link, or says the
+  // one already out still works; the press happens only when the page verifies (placeApproved).
+  if (passkey.requiredFor(c)) {
+    const r = rowFor(c, input.order_id);
+    const stale = r ? staleWhy(c, r) : "no_order";
+    if (!r || r.total_cents == null || r.state !== "asked" || stale) return { ok: false, error: "There is no DoorDash checkout waiting for their approval. Read it first (doordash_order checkout)." };
+    if (passkey.openApprovalFor(r.order_id, "doordash")) return { ok: false, approve_with_face_id: true, link_still_open: true, say: "Their purchases are approved with Face ID, and the link already sent for this order still works. Point them to it in one line; a yes in the chat doesn't place it." };
+    return { ok: false, approve_with_face_id: true, url: approvalLink(c, r.order_id), say: "Their purchases are approved with Face ID, so a yes in the chat doesn't place it. Send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 30 minutes." };
+  }
   const key = String(c);
   if (placing.has(key)) return { ok: false, refused: true, error: "A DoorDash order is being placed for them right now. Nothing more was pressed; wait for that one's answer." };
   placing.add(key);
+  allow(c, 10 * 60_000);
   try { return await placeOnce(c, input, deps); } finally { placing.delete(key); }
 }
-async function placeOnce(c, input, { browser, trust, ctx, ownerName }) {
+async function placeOnce(c, input, { browser, trust, ctx, ownerName, shoot = null }) {
   const r = rowFor(c, input.order_id);
   if (!r || r.total_cents == null || !["asked", "read"].includes(r.state)) return { ok: false, error: "There is no read checkout waiting for a yes. Read it first (doordash_order checkout)." };
-  // Only a yes on this exact order: a standing permission is never enough for a DoorDash charge.
-  if (ctx.permission || !ctx.confirmationId) return { ok: false, needs_yes: true, error: `Placing a DoorDash order needs ${ownerName}'s yes on the exact total. Ask with confirm_request (target "${placeTarget(c, r.order_id)}").` };
+  // The yes is for THIS food order as it stands: one they moved on from (a new request dropped it), or
+  // whose cart changed since, is never placed on an old yes or approval.
+  { const why = staleWhy(c, r); if (why) return dropped(c, r, why); }
+  // Only a yes on this exact order (or, with Face ID on file, the page's verified approval): a standing
+  // permission is never enough for a DoorDash charge.
+  if (!ctx.faceIdApproved && passkey.requiredFor(c)) return { ok: false, approve_with_face_id: true, error: "Their purchases are approved with Face ID: a yes in the chat doesn't place it." };
+  if (!ctx.faceIdApproved && (ctx.permission || !ctx.confirmationId)) return { ok: false, needs_yes: true, error: `Placing a DoorDash order needs ${ownerName}'s yes on the exact total. Ask with confirm_request (target "${placeTarget(c, r.order_id)}").` };
   // The checkout loaded fresh, never the page as it was when they were asked: DoorDash recomputes the
   // total on load, and a page left open shows the old one.
   if (!r.checkout_url) return { ok: false, error: "The checkout's address was not kept. Read it again with doordash_order checkout." };
@@ -581,11 +799,20 @@ async function placeOnce(c, input, { browser, trust, ctx, ownerName }) {
     return { ok: false, error: "The checkout no longer reads as it did (an item changed or the page moved). Nothing was placed. Read it again with doordash_order checkout and ask again." };
   }
   if (got.total !== r.total_cents) {
-    // A new total is a new ask: the stored total and revision move, so the old yes cannot pay it.
-    update(c, r.order_id, { state: "read", total_cents: got.total, revision: r.revision + 1, lines_json: JSON.stringify(got.lines), tip_cents: got.tip });
+    // A new total is a new ask: the stored total and revision move (the food order's with them), so the
+    // old yes or approval cannot pay it; any link still open for the old one is closed.
+    const rev = food.newTotal(c, r.order_id, dollars(got.total)) ?? r.revision + 1;
+    update(c, r.order_id, { state: "asked", total_cents: got.total, revision: rev, lines_json: JSON.stringify(got.lines), tip_cents: got.tip });
+    closeLinks(r.order_id);
     await browser.closeBrowser(c).catch(() => {});
+    const head = `The total on DoorDash changed from ${dollars(r.total_cents)} to ${dollars(got.total)} since you said yes, so I didn't place it. ${dollars(got.total)} all in (${breakdownText(got.lines, got.total)}).`;
+    if (passkey.requiredFor(c)) {
+      const url = approvalLink(c, r.order_id);
+      return { ok: false, total_changed: true, was: dollars(r.total_cents), now: dollars(got.total), approve_with_face_id: true, url,
+        say_exactly: `${head} Approve the new total with Face ID here:\n${url}`, note: "Nothing was placed. Send say_exactly as it is, the url on its own line last." };
+    }
     return { ok: false, total_changed: true, was: dollars(r.total_cents), now: dollars(got.total), use_target: placeTarget(c, r.order_id),
-      say_exactly: `The total on DoorDash changed from ${dollars(r.total_cents)} to ${dollars(got.total)} since you said yes, so I didn't place it. ${dollars(got.total)} all in (${breakdownText(got.lines, got.total)}). Place it?`,
+      say_exactly: `${head} Place it?`,
       note: "Nothing was placed. Ask again with confirm_request on the new use_target; the earlier yes does not cover this." };
   }
   if (!pageShowsAddress(text, r.address)) {
@@ -605,6 +832,8 @@ async function placeOnce(c, input, { browser, trust, ctx, ownerName }) {
   }
   if (!button) return { ok: false, error: "No Place order button on the checkout. Nothing was pressed. Read the page (browser_read) and say what it shows." };
   const what = placeTarget(c, r.order_id);
+  // The last look before the press: still this food order, still waiting on this yes.
+  { const why = staleWhy(c, r); if (why) return dropped(c, r, why); }
   ctx.spend?.(); // past this line DoorDash may have the order
   update(c, r.order_id, { state: "pressing" });
   let after = "";
@@ -635,6 +864,7 @@ async function placeOnce(c, input, { browser, trust, ctx, ownerName }) {
   trust.settleUnknownOutcome({ conversationId: c, action: "doordash_place", target: what, confirmationId: ctx.confirmationId ?? null });
   trust.noteSpend({ conversationId: c, cents: got.total, what, site: "doordash", confirmationId: ctx.confirmationId ?? null });
   update(c, r.order_id, { state: "placed", confirmation: orderNumber, eta });
+  endAllowance(c);
   const line = await food.placedDirect(c, r.order_id, { amount: dollars(got.total), eta }).catch(() => "");
   await browser.closeBrowser(c).catch(() => {});
   return {
@@ -651,8 +881,8 @@ async function status(c, input, { browser, ownTurn }) {
   if (!r || r.state !== "placed") return { ok: false, error: "There is no DoorDash order Reason placed to check on." };
   // Only when they ask: never a check Reason starts, so no browser minutes go on polling.
   if (!ownTurn) return { ok: false, error: "A status check runs only when they ask for it." };
-  const leftSec = remote.monthBudgetMinutes() * 60 - remote.monthSeconds();
-  if (leftSec < 120) return { ok: false, say_exactly: "I'm out of hosted-browser time this month, so I can't check it. The DoorDash app shows where it is." };
+  if (remote.minutesLeft() < 2) return { ok: false, say_exactly: "I can't look at DoorDash for you right now; that's on my side. DoorDash's own order page shows where it is." };
+  allow(c, 5 * 60_000);
   // Their orders page, on the same DoorDash origin the order was placed on.
   const ordersUrl = (() => { try { return `${new URL(r.checkout_url).origin}/orders`; } catch { return ORDERS_URL; } })();
   const page = await browser.pageFor(c, { url: ordersUrl });
@@ -670,6 +900,6 @@ async function status(c, input, { browser, ownTurn }) {
 export function capabilityWords(conversationId) {
   if (!doordashFor(conversationId)) return "";
   return payMode() === "site_card"
-    ? ` DoorDash orders run on their own DoorDash account: Reason builds the cart, reads the exact total and places it only on their yes to that total, with the card already on their DoorDash account.`
-    : ` DoorDash orders run on their own DoorDash account: Reason builds the cart and reads the exact total, and they place it themselves in DoorDash; Reason never places a DoorDash order.`;
+    ? ` DoorDash is one route, after the restaurant's own online ordering: on their own DoorDash account, Reason builds the cart, reads the exact total and places it only on their approval of that total (Face ID when they have it set up), with the card already on their DoorDash account.`
+    : ` DoorDash is one route, after the restaurant's own online ordering: on their own DoorDash account, Reason builds the cart and reads the exact total, and they place it themselves in DoorDash; Reason never places a DoorDash order.`;
 }

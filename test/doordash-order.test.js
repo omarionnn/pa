@@ -172,7 +172,10 @@ function driver(c, words) {
 }
 /** Start → address → search → store → Pad Thai (Medium) + Spring Rolls → cart. */
 async function buildCart(d, { tip = undefined, extraItem = null } = {}) {
-  const st = await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", ...(tip ? { tip } : {}) });
+  // They asked for DoorDash by name (the route's reason); the line is taken off again so the address step reads their request.
+  d.say("on doordash please");
+  const st = await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name", ...(tip ? { tip } : {}) });
+  d.messages.pop();
   assert.equal(st.ok, true, JSON.stringify(st).slice(0, 300));
   assert.equal((await d.open("/")).ok, true);
   const addr = await d.call("doordash_order", { action: "address", address: "3247 Bruner Ave" });
@@ -219,7 +222,7 @@ test("switch off, food off, or a person it does not cover: no DoorDash tool, and
   assert.equal(hash(OTHER), offOther, "owner mode: somebody else is unchanged");
   const tools = toolsFor(OWNER).map(t => t.name);
   assert.ok(tools.includes("doordash_order")); assert.ok(!tools.includes("doordash_place"), "handoff: no tool that places");
-  assert.match(toolsFor(OWNER).find(t => t.name === "food_order").description, /through doordash_order/);
+  assert.match(toolsFor(OWNER).find(t => t.name === "food_order").description, /DoorDash is also open, on their own DoorDash account \(doordash_order\)/);
   set(ON({ REASON_DOORDASH_PAY: "site_card" }));
   assert.ok(toolsFor(OWNER).some(t => t.name === "doordash_place"));
   set(ON({ REASON_FOOD: "off" }));
@@ -241,9 +244,10 @@ test("an order that would not fit the month's remaining minutes is not started, 
   consent();
   const month = new Date().toISOString().slice(0, 7);
   db.db.prepare("INSERT INTO remote_browser_month (month, seconds) VALUES (?, ?)").run(month, 5 * 60);
-  const out = await runTool("doordash_order", { action: "start", restaurant: "Thai Palace" }, { conversationId: OWNER, kind: "user", messages: [msg("get me pad thai")] });
+  const out = await runTool("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" }, { conversationId: OWNER, kind: "user", messages: [msg("get me pad thai on doordash")] });
   assert.equal(out.budget, true);
-  assert.match(out.say_exactly, /about 7 minutes of hosted-browser time left this month and a DoorDash order takes about 10/);
+  assert.match(out.say_exactly, /That's on my side, not a limit on you or your account\. I can order it from the restaurant's own site, or set it up for pickup, instead\./);
+  assert.doesNotMatch(out.say_exactly, /\bplan\b|minutes|DoorDash app/);
   assert.equal(sessionsMade(), 0);
 });
 
@@ -286,7 +290,10 @@ test("handoff: no path presses Place order: doordash_place, browser_submit with 
   const placed = await d.call("doordash_place", { confirmation_id: req0.confirmation_id });
   assert.notEqual(placed.ok, true, JSON.stringify(placed).slice(0, 200));
   assert.equal(S.placeAttempts, 0);
-  // On the checkout page itself, every generic way in.
+  // On the checkout page itself, every generic way in (a fresh DoorDash reason opens it again: the
+  // hand-off ended the last one).
+  d.say("on doordash please");
+  await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" });
   await d.open("/consumer/checkout/");
   const placeRef = d.ref(/Place Order/);
   assert.equal((await d.call("browser_click", { ref: placeRef })).ok, false);
@@ -320,7 +327,8 @@ test("\"my usual\": the past order's Reorder builds the cart", skip, async () =>
   set(ON());
   consent();
   const d = driver(OWNER, "order my usual from thai palace to 3247 Bruner Ave");
-  assert.equal((await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", usual: true })).ok, true);
+  d.say("on doordash please");
+  assert.equal((await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", usual: true, why: "asked_by_name" })).ok, true);
   await d.open("/");
   assert.equal((await d.call("doordash_order", { action: "address", address: "3247 Bruner Ave" })).ok, true);
   await d.click(/^Orders$/);
@@ -335,7 +343,8 @@ test("the address: never one they didn't give; a saved one DoorDash doesn't show
   set(ON());
   consent();
   const d = driver(OWNER, "get me pad thai from thai palace to my place");
-  await d.call("doordash_order", { action: "start", restaurant: "Thai Palace" });
+  d.say("on doordash please");
+  await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" });
   await d.open("/");
   const guess = await d.call("doordash_order", { action: "address", address: "88 Grand St" });
   assert.equal(guess.ask, true, "not in their words, not saved: asked");
@@ -480,6 +489,7 @@ test("A3: the session length never exceeds 900 s, and a higher setting is said i
   set(ON({ REASON_REMOTE_BROWSER_SESSION_MINUTES: "30" }));
   consent();
   assert.equal(remote.sessionCapMinutes(), 15);
+  await runTool("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" }, { conversationId: OWNER, kind: "user", messages: [msg("on doordash please")] });
   await runTool("browser_open", { url: DD("/") }, { conversationId: OWNER, kind: "user", messages: [msg("open doordash")] });
   const sent = bb.calls.find(c => c.method === "POST" && c.path === "/v1/sessions");
   assert.equal(sent.body.timeout, 900);
@@ -503,6 +513,7 @@ test("A4: an unconfirmed delete is retried once a day on the digest pass, with n
 test("A5: a hosted email sign-in waiting for their texted-back code waits 5 minutes at most, and its ask says so", skip, async () => {
   set(ON());
   consent();
+  dd.allowSignin(OWNER); // signin_email does this for a hosted entry (src/tools.js)
   const sie = await import("../src/signinemail.js");
   const told = [];
   const entry = remote.tagEntry(OWNER, { site: "doordash", label: "DoorDash", signin_url: DD("/consumer/login") });
@@ -591,11 +602,11 @@ test("site_card: two doordash_place calls at once press once", skip, async () =>
 test("DoorDash can't be had (not set up): the order is offered the usual way, never another way into DoorDash", async () => {
   set(ON({ BROWSERBASE_API_KEY: "" }));
   consent();
-  const out = await runTool("doordash_order", { action: "start", restaurant: "Thai Palace" }, { conversationId: OWNER, kind: "user", messages: [msg("pad thai from thai palace")] });
+  const out = await runTool("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" }, { conversationId: OWNER, kind: "user", messages: [msg("pad thai from thai palace on doordash")] });
   assert.equal(out.hosted_browser, "key_missing");
   assert.match(out.say_exactly, /restaurant's own online ordering instead/);
   assert.match(out.fallback, /store_checkout on the restaurant's own site, never DoorDash/);
-  assert.match(toolsFor(OWNER).find(t => t.name === "food_order").description, /the order goes the usual way when they want it/);
+  assert.match(toolsFor(OWNER).find(t => t.name === "food_order").description, /the restaurant's own ordering as always; never another way into DoorDash/);
 });
 
 test("the handoff's figures stand in the reply as read off the page; a figure not on it is caught", skip, async () => {
@@ -621,7 +632,7 @@ test("a person the switch does not cover: their delivery request takes main's pa
   assert.equal(toolsFor(OTHER).find(t => t.name === "food_order")?.description ?? "", before);
   set(ON());
   assert.doesNotMatch(before, /doordash_order/);
-  const out = await runTool("doordash_order", { action: "start", restaurant: "Thai Palace" }, { conversationId: OTHER, kind: "user", messages: [msg("pad thai from thai palace")] });
+  const out = await runTool("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" }, { conversationId: OTHER, kind: "user", messages: [msg("pad thai from thai palace on doordash")] });
   assert.equal(out.ok, false);
   assert.equal(sessionsMade(), 0);
   assert.equal(remote.browserKind(OTHER, "https://www.doordash.com/store/x"), "local");
@@ -646,7 +657,8 @@ test("the handoff says where the cart is on the web, and never that it is ordere
 test("end to end, handoff: consent asked first, then the address, the cart, the exact total and breakdown; Place order never pressed", skip, async () => {
   set(ON());
   const d = driver(OWNER, "get me pad thai medium and spring rolls from thai palace to 3247 Bruner Ave");
-  const first = await d.call("doordash_order", { action: "start", restaurant: "Thai Palace" });
+  d.say("on doordash please");
+  const first = await d.call("doordash_order", { action: "start", restaurant: "Thai Palace", why: "asked_by_name" });
   assert.equal(first.hosted_browser, "consent_needed", JSON.stringify(first).slice(0, 200));
   assert.match(first.say_exactly, /hosted browser from another company \(Browserbase\)/);
   assert.equal(sessionsMade(), 0, "nothing opened before their yes");

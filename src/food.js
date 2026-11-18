@@ -383,6 +383,9 @@ function liveCallFor(o) {
 async function closeQuietly(o, why, { states = STALE_STATES } = {}) {
   if (!o || !states.includes(o.status)) return false;
   if (liveCallFor(o)) return false;
+  // A DoorDash order being placed right now (src/doordash.js) is never closed under the press.
+  const dd = await import("./doordash.js").catch(() => null);
+  if (dd?.placingFor(o.conversation_id)) return false;
   if (o.run_id) {
     const shop = await import("./shopconnect.js");
     await shop.letGo(o.run_id, `food order closed: ${why}`).catch(() => false);
@@ -396,6 +399,8 @@ async function closeQuietly(o, why, { states = STALE_STATES } = {}) {
   const r = q(`UPDATE food_orders SET status = 'cancelled', run_id = NULL, closed_why = ?, updated_at = ? WHERE id = ? AND conversation_id = ? AND status IN (${states.map(() => "?").join(", ")})`)
     .run(String(why).slice(0, 80), clock.now(), o.id, o.conversation_id, ...states);
   if (r.changes) logFn({ food_closed: o.id, why: String(why).slice(0, 80) });
+  // Its DoorDash ask goes with it: the approval link closes and that order can no longer be placed.
+  if (r.changes) { try { dd?.voidFor(o.conversation_id, o.id); } catch { /* placeOnce refuses a closed order anyway */ } }
   return r.changes > 0;
 }
 /** Every order of theirs left waiting on nothing, closed before a new request opens one. */
@@ -817,6 +822,15 @@ export async function placed(run) {
   await setStatus(o, "placed");
   return placedLine(o, { amount });
 }
+/** A DoorDash order's card is out for their yes (src/doordash.js): it waits like any card, so a new request drops it with the line. */
+export function markAsked(c, orderId) {
+  q("UPDATE food_orders SET status = 'asked', updated_at = ? WHERE id = ? AND conversation_id = ? AND status IN ('draft', 'building', 'needs', 'asked')").run(clock.now(), orderId, c);
+}
+/** DoorDash's total moved before the press: the cart's total and revision move with it, so an old yes cannot pay it. → the new revision, or null. */
+export function newTotal(c, orderId, total) {
+  const r = q("UPDATE food_orders SET cart_total = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND conversation_id = ? AND status IN ('building', 'asked', 'needs')").run(String(total).slice(0, 20), clock.now(), orderId, c);
+  return r.changes ? Number(q("SELECT revision FROM food_orders WHERE id = ? AND conversation_id = ?").get(orderId, c)?.revision ?? 0) : null;
+}
 /**
  * A food order placed on the person's own app account by Reason itself (src/doordash.js, site_card):
  * no checkout run, the amount read off the app's own checkout. The same record and words as a placed
@@ -854,9 +868,12 @@ export async function ended(run, status) {
   }
   setStatusRow(o, "needs");
   await setStatus(o, "needs");
+  // A person the hosted browser covers for DoorDash: the same order on DoorDash is one fix to offer.
+  const dd = await import("./doordash.js").catch(() => null);
+  const ddFix = o.route === "direct" && dd?.doordashFor(o.conversation_id) ? " Or the same order on DoorDash, if they say yes to that (doordash_order start with why own_site_failed)." : "";
   if (wakeFn) {
     try {
-      await wakeFn(o.conversation_id, `[food] The ${o.restaurant || "food"} checkout (order ${o.id}) ended without placing (${String(run.result || status).slice(0, 160)}). Nothing was charged. Their text about why already went. Bring ONE fix in one line with the likely answer offered: the same cart at another nearby open place, a swap for what was unavailable, or ordering without it. Never start it without their yes. If nothing fits, say so plainly.`, { key: `food:${o.id}:fail:${failures}` });
+      await wakeFn(o.conversation_id, `[food] The ${o.restaurant || "food"} checkout (order ${o.id}) ended without placing (${String(run.result || status).slice(0, 160)}). Nothing was charged. Their text about why already went. Bring ONE fix in one line with the likely answer offered: the same cart at another nearby open place, a swap for what was unavailable, or ordering without it.${ddFix} Never start it without their yes. If nothing fits, say so plainly.`, { key: `food:${o.id}:fail:${failures}` });
     } catch { /* the end text already went */ }
   }
   return { needs: true };
@@ -909,7 +926,12 @@ export async function handOff(run, app) {
   try { q("INSERT OR REPLACE INTO food_told (conversation_id, what, at) VALUES (?, ?, ?)").run(o.conversation_id, `${handoffKey(o.store_url)}=${app}`, clock.now()); } catch { /* the line still goes */ }
   await setStatus(o, "needs");
   const name = o.restaurant || "The restaurant";
-  const instead = o.fulfillment === "pickup"
+  // DoorDash for a person the hosted browser covers (src/doordash.js): Reason does it there for them.
+  const dd = app === "doordash" ? await import("./doordash.js").catch(() => null) : null;
+  const ddForThem = !!dd?.doordashFor(o.conversation_id);
+  const instead = ddForThem
+    ? (o.fulfillment === "pickup" ? `I can order it on DoorDash for you instead, or try another place.` : `I can order it for pickup from ${name}'s own site if they offer it, or order it on DoorDash for you instead.`)
+    : o.fulfillment === "pickup"
     ? `I can send you the ${appName(app)} sign-in link to order it there, or try another place.`
     : `I can order it for pickup from ${name}'s own site if they offer it, or send you the ${appName(app)} sign-in link to have it delivered through ${appName(app)}.`;
   const line = `${name}'s own delivery runs through ${appName(app)}, and ${appName(app)} wants you signed in, so I stopped there. Nothing was charged. ${instead}`;

@@ -39,3 +39,12 @@ Tests: `test/remote-browser.test.js` (fake Browserbase on loopback + local Chrom
 - site_card: confirm gate pinned to `doordash order #id rN: $total from X to address`; the checkout is loaded fresh and re-read before the press; a moved total is a new ask; caps and the daily cap apply; CVV/3-D Secure after the press stops it.
 - Stops: unavailable (asked), alcohol / ID, verify identity or phone, account or payment problem, card re-verification, challenge.
 - Tests: `node --test test/doordash-order.test.js test/remote-browser-filler.test.js` (fixture DoorDash on loopback, fake Browserbase, local Chromium over CDP).
+
+## For everyone (2026-11-17)
+
+- Paying (site_card): with a passkey on file, `doordash_place` and the checkout hand back a Face ID link (kind `doordash` in `pay_approvals`), bound to the order, its cart revision, the exact total and the address; the approve page (`/web/approve/<token>`) places it (`doordash.placeApproved`), page re-read first. No passkey: the confirm gate, as `shop_pay`.
+- A stale yes: the ask puts the food order at `asked`; a new food request drops it with #604's line and closes the link; `placeOnce` refuses a closed order or a changed revision.
+- Sign-in for a covered person who isn't the owner: `doordash_order signin` (DoorDash's own code, relayed by them once; never a password, never their mailbox). A password-only account stops with one line.
+- Groups (`group:` threads) are never covered.
+- Minutes: Browserbase's `GET /v1/projects/{id}/usage` (hourly, after each session), `remote.minutesLeft()`, the ops row "Browserbase minutes (DoorDash)", the digest line, `remote.minutesAlert` (once below `REASON_REMOTE_BROWSER_ALERT_MINUTES`, once at zero).
+- Tests: `node --test test/doordash-everyone.test.js`.

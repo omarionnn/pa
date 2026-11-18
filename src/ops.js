@@ -328,6 +328,14 @@ async function planChecks({ now, usageFetch, emit = (r) => r }) {
     const told = meter ? planmeter.warnedWords(meter, r) : "";
     return { ...check(`plan:${r.id}`, "money", r.name, r.pct >= 80 ? "warn" : "ok", planmeter.detailOf(r) + (told ? ` · ${told}` : ""), meter?.dashboard ?? null), quiet: true };
   });
+  // The hosted browser's month (src/remotebrowser.js): Browserbase's own figure, read at most hourly,
+  // used and left. Quiet: its texts are minutesAlert's, once a month low and once at zero.
+  try {
+    const rb = await import("./remotebrowser.js");
+    await rb.refreshUsage({ now }).catch(() => null);
+    const row = rb.opsRow(now);
+    if (row) rows.push({ ...check("plan:browserbase", "money", "Browserbase minutes (DoorDash)", row.state, row.detail, "https://www.browserbase.com/overview"), quiet: true });
+  } catch { /* the row is left out this pass */ }
   return { rows: emit(rows), readings };
 }
 
@@ -1095,6 +1103,8 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
     // Hosted-browser sign-ins whose delete Browserbase did not confirm: tried again once a day, just
     // before the digest goes (src/remotebrowser.js dailyRetry; nothing to retry, no request).
     .finally(() => import("./remotebrowser.js").then((rb) => rb.dailyRetry()).catch(e => log({ hosted_retry_failed: short(e) })))
+    // The owner's heads-up on the month's hosted-browser minutes: once below the threshold, once at zero.
+    .finally(() => import("./remotebrowser.js").then((rb) => rb.minutesAlert()).catch(e => log({ hosted_alert_failed: short(e) })))
     .finally(() => digest.flush({ send: sendDigest, link: opsUrl(), log }).catch(e => log({ ops_digest_failed: short(e) })));
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);

@@ -443,3 +443,47 @@ test("/terms has the Paid events section and /privacy the Stripe line: who proce
   assert.match(p, /Stripe processes ticket payments/);
   assert.match(p, /go to Stripe and never to Reason/);
 });
+
+// ---------- the hosted browser (DoorDash through Browserbase, 2026-11-17) ----------
+
+test("the policy names Browserbase and DoorDash, says consent is asked first, what passes through, what is kept and how to remove it", async () => {
+  const { body } = await get("/privacy");
+  const text = body.replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  assert.match(text, /Sites that do not work in Reason's own browser, today DoorDash\./);
+  assert.match(text, /hosted browser run by Browserbase, Inc\., another company, and goes ahead only if you say yes/);
+  assert.match(text, /the checkout with your delivery address and the last digits of your card as DoorDash shows them/);
+  assert.match(text, /Reason never sees, types or stores your card number/);
+  assert.match(text, /asks Browserbase not to record or log these sessions/);
+  assert.match(text, /kept at Browserbase, encrypted, so you only sign in once; Reason itself keeps only an id for it/);
+  assert.match(text, /only after you approve its exact total, and it is paid with the card already saved on your own DoorDash account/);
+  assert.match(text, /until you ask Reason to forget that login or to delete your data\. Then Reason stops using it at once and asks Browserbase to delete it; if Browserbase does not confirm, Reason tries again every day until it does/);
+  // How to remove it, in the sections on disconnecting and deleting; and the storage line stays true.
+  assert.match(text, /Ask Reason to forget your login for a site it opens in the hosted browser \(today DoorDash\)/);
+  assert.match(text, /asks Browserbase to delete any site sign-in it keeps for you/);
+  assert.match(text, /your sign-in for a site you use through the hosted browser, which Browserbase keeps/);
+  // In the list of what leaves the machine, before "That is the whole list."
+  assert.ok(text.indexOf("Browserbase, Inc.") < text.indexOf("That is the whole list."));
+  assert.match(text, /last changed 2026-11-17/);
+});
+
+test("guard: every site the hosted browser can open is named on the privacy page (the list grows, the page follows)", async () => {
+  const { remoteSites, labelOf, DEFAULT_SITES } = await import("../src/hostedsites.js");
+  const { privacyPage } = await import("../src/pages/site.js");
+  const named = (html) => remoteSites().every((s) => html.includes(labelOf(s)));
+  // Today's list.
+  assert.deepEqual([...DEFAULT_SITES], ["doordash.com"], "a new default site: give it a label in src/hostedsites.js; the page then names it");
+  assert.ok(named(privacyPage().body ?? String(privacyPage())));
+  // A longer list, as an install could set it: every site is named, by its label or its domain.
+  const was = process.env.REASON_REMOTE_BROWSER_SITES;
+  process.env.REASON_REMOTE_BROWSER_SITES = "doordash.com, example-eats.com";
+  try {
+    const html = privacyPage().body ?? String(privacyPage());
+    assert.ok(named(html), "every listed site is on the page");
+    assert.match(html, /today DoorDash and example-eats\.com\./);
+  } finally { if (was == null) delete process.env.REASON_REMOTE_BROWSER_SITES; else process.env.REASON_REMOTE_BROWSER_SITES = was; }
+});
+
+test("the consent question and the capability line agree with the policy: another company, Browserbase, the sign-in kept there", async () => {
+  const remote = await import("../src/remotebrowser.js");
+  assert.match(remote.consentWords("doordash.com"), /hosted browser from another company \(Browserbase\), and your DoorDash sign-in would be kept there/);
+});

@@ -745,6 +745,19 @@ export function takeCodeReply(conversationId, text) {
   const t = typedOnly(text ?? "");
   if (!t || t.length > 40) return null;
   const tidy = t.replace(/^(it'?s|the code is|code:?|here:?)\s*/i, "").replace(/[.!]+$/, "").trim();
+  // The hosted browser's sign-in (src/doordash.js signinByCode) takes DoorDash's own numeric code only.
+  // Anything else shaped like a secret (one word mixing letters with digits or symbols: a password
+  // texted by mistake) is never typed anywhere and never kept: the thread gets a placeholder, the wait
+  // goes on, and the model asks once more for the code.
+  if (j.entry?.browser === "remote") {
+    const digits = tidy.replace(/[\s-]/g, "");
+    if (!/^\d{4,8}$/.test(digits)) {
+      if (!/\s/.test(tidy) && tidy.length >= 6 && /[a-z]/i.test(tidy) && /[\d\W_]/.test(tidy)) {
+        return `[They sent something that is not ${j.entry.label}'s code (it may have been a password). It was not used, not typed anywhere and not kept. Ask once, in one plain line, for the number ${j.entry.label} just sent them, and say Reason never needs their password.]`;
+      }
+      return null;
+    }
+  }
   // Digits, letters with a digit, or three-plus word groups ("brave-otter-lamp"): never "thank-you"
   // or "follow-up", which are words (cold review, 2026-11-11).
   const looks = social.looksLikeCode(tidy) || /^[A-Za-z0-9]{4,12}$/.test(tidy) && /\d/.test(tidy)
@@ -762,7 +775,9 @@ export function takeCodeReply(conversationId, text) {
  * deps: launch({conversationId, url}) → { page, close }, closeBrowser(conv), check(page, conv, site),
  *       gmail(conv, entry, {since}) → codeFromGmail's answer, log, note(conv, text), timers.
  */
-export function startEmailSignin({ conversationId, entry, email, launch, closeBrowser = async () => {}, check = signin.checkAndRecord, gmail = codeFromGmail, log = () => {}, note = null, replyWaitMs = REPLY_WAIT_MS, settleMs = SETTLE_MS, formWaitMs = null }) {
+export function startEmailSignin({ conversationId, entry, email, launch, closeBrowser = async () => {}, check = signin.checkAndRecord, gmail = codeFromGmail, log = () => {}, note = null, replyWaitMs = REPLY_WAIT_MS, settleMs = SETTLE_MS, formWaitMs = null, relayOnly = false }) {
+  // relayOnly (src/doordash.js signinByCode): their own relayed code only, never their mailbox.
+  if (relayOnly) gmail = async () => ({ connected: false });
   const old = jobs.get(conversationId);
   if (old && !old.done) return { ok: false, busy: true, error: `An email sign-in to ${old.entry.label} is already running for them.` };
   const tell = note ?? ((c, text) => db.createTimer(c, { fireAt: clock.now(), note: text }));
@@ -812,6 +827,11 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
       log({ signin_email: "requested", site: entry.site, ok: asked.ok, state: asked.state });
       if (!asked.ok) {
         const pw = asked.state === "password";
+        // The hosted browser signs in with the site's own code only: an account that wants its password
+        // stops here, in one plain line with what can be done instead, and nobody is asked for a password.
+        if (pw && entry.browser === "remote") {
+          return finish(`the ${entry.label} sign-in stopped: ${entry.label} asked for this account's password instead of sending a code. Reason never signs in to ${entry.label} with a password, and never asks for one. Nothing was saved. Send this as it is, once: "${entry.label} wants your password for this account, and I only sign in to ${entry.label} with the code it sends you, so I stopped. ${remote.SIDE_INSTEAD}" Never ask them for a password or to text one.`, "password");
+        }
         if (asked.state === "blocked") {
           // The site refused Reason's browser. Written down with today's date so nothing tries again
           // until it is old, and said as what it is: never a wrong email, never another address.
@@ -856,7 +876,9 @@ export function startEmailSignin({ conversationId, entry, email, launch, closeBr
           job.reply = resolve;
           job.asked += 1;
           const whyThem = mail?.ask === "opted_out" ? "they asked Reason not to read their mail for codes" : mail?.ask === "two" ? `${entry.label} sent more than one code and Reason does not guess between them` : "their Gmail is not connected";
-          tell(conversationId, `${entry.label} just emailed a sign-in code to ${email}, and ${whyThem}, so the code has to come from them. Ask for it in ONE plain line, like: "What's the code ${entry.label} just sent to ${email}?${hostedWait ? ` ${remote.CODE_WAIT_WORDS}` : ""}" Nothing else, and do not ask again: their reply goes to ${entry.label} without you.`);
+          tell(conversationId, hostedWait && relayOnly
+            ? `${entry.label} just sent a sign-in code (by email to ${email}, or by text to their phone), and it has to come from them. Ask for it in ONE plain line, like: "What's the code ${entry.label} just sent you? ${remote.CODE_WAIT_WORDS}" Nothing else, and do not ask again: their reply goes to ${entry.label} without you. Never ask for a password.`
+            : `${entry.label} just emailed a sign-in code to ${email}, and ${whyThem}, so the code has to come from them. Ask for it in ONE plain line, like: "What's the code ${entry.label} just sent to ${email}?${hostedWait ? ` ${remote.CODE_WAIT_WORDS}` : ""}" Nothing else, and do not ask again: their reply goes to ${entry.label} without you.`);
           const t = setTimeout(() => resolve(null), replyWaitMs);
           t.unref?.();
         });
