@@ -745,6 +745,19 @@ export function takeCodeReply(conversationId, text) {
   const t = typedOnly(text ?? "");
   if (!t || t.length > 40) return null;
   const tidy = t.replace(/^(it'?s|the code is|code:?|here:?)\s*/i, "").replace(/[.!]+$/, "").trim();
+  // The hosted browser's sign-in (src/doordash.js signinByCode) takes DoorDash's own numeric code only.
+  // Anything else shaped like a secret (one word mixing letters with digits or symbols: a password
+  // texted by mistake) is never typed anywhere and never kept: the thread gets a placeholder, the wait
+  // goes on, and the model asks once more for the code.
+  if (j.entry?.browser === "remote") {
+    const digits = tidy.replace(/[\s-]/g, "");
+    if (!/^\d{4,8}$/.test(digits)) {
+      if (!/\s/.test(tidy) && tidy.length >= 6 && /[a-z]/i.test(tidy) && /[\d\W_]/.test(tidy)) {
+        return `[They sent something that is not ${j.entry.label}'s code (it may have been a password). It was not used, not typed anywhere and not kept. Ask once, in one plain line, for the number ${j.entry.label} just sent them, and say Reason never needs their password.]`;
+      }
+      return null;
+    }
+  }
   // Digits, letters with a digit, or three-plus word groups ("brave-otter-lamp"): never "thank-you"
   // or "follow-up", which are words (cold review, 2026-11-11).
   const looks = social.looksLikeCode(tidy) || /^[A-Za-z0-9]{4,12}$/.test(tidy) && /\d/.test(tidy)
