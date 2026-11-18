@@ -5,7 +5,7 @@
 // 2¢ a run), and Reason's REAL call turn on claude-cli (the subscription, never the API) behind it
 // through client delegation. A throwaway database; nobody's phone rings and nothing is texted.
 //
-// Run on the Hetzner box, where OPENAI_API_KEY and the claude-cli login live, from a copy of the code:
+// Run on the live server (OVH, root@15.204.113.250), where OPENAI_API_KEY and the claude-cli login live, from a copy of the code:
 //
 //   E=$(.agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN)   # keys never on argv
 //   REASON_DB_PATH=$(mktemp -d)/gl.db node --env-file="$E" .agents/skills/verify-reason/bin/gptlive-drive.mjs caller.ulaw [seconds] [--expect identity] [--cold] [--ring ms]

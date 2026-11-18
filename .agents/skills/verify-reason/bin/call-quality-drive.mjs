@@ -5,7 +5,7 @@
 // one question. A throwaway database seeded with a "today" thread (a bar picked by text at 12:08, "7 pm
 // or later", a 6 pm reminder); nobody's phone rings and nothing is texted. ~3 min, ~15¢ of OpenAI voice.
 //
-// Run on the Hetzner box from a copy of the code (main for "before", the branch for "after"):
+// Run on the live server (OVH, root@15.204.113.250) from a copy of the code (main for "before", the branch for "after"):
 //
 //   E=$(sudo -u reason .agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN)   # keys never on argv
 //   sudo -u reason env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/reason REASON_DB_PATH=$(sudo -u reason mktemp -d)/q.db \
