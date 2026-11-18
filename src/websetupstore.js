@@ -38,9 +38,25 @@ db.db.exec(`
   CREATE INDEX IF NOT EXISTS web_setups_claimed ON web_setups (claimed_by);
 `);
 // Columns added after the table first shipped to a test DB (harmless when already there).
-for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0", "uber_state TEXT NOT NULL DEFAULT ''", "card_state TEXT NOT NULL DEFAULT ''", "invite_id INTEGER"]) {
+// The ready screen's way in (first-text, 11-17): tapped_at is when the page reported its text button
+// was tapped; nudged_at when the inviter was told the first text had not come; textme_* is "i can
+// text you first": the number they gave, as a hash salted with this setup's own secret hash (never
+// the number), how many times it was set, how many first texts were tried, and when.
+for (const col of ["origin TEXT NOT NULL DEFAULT ''", "misses INTEGER NOT NULL DEFAULT 0", "uber_state TEXT NOT NULL DEFAULT ''", "card_state TEXT NOT NULL DEFAULT ''", "invite_id INTEGER",
+  "tapped_at INTEGER", "nudged_at INTEGER", "textme_hash TEXT", "textme_sets INTEGER NOT NULL DEFAULT 0", "textme_sends INTEGER NOT NULL DEFAULT 0", "textme_at INTEGER"]) {
   try { db.db.exec(`ALTER TABLE web_setups ADD COLUMN ${col}`); } catch { /* exists */ }
 }
+// Counts that outlive the setups (a setup row is deleted a day after it was made, unclaimed): when a
+// ready screen's text button was tapped, when a first text arrived, when Reason tried to text first.
+// No names, no numbers, no setup ids: a time, a kind and (for the per-invite cap) the invite.
+db.db.exec(`
+  CREATE TABLE IF NOT EXISTS web_setup_marks (
+    at INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    invite_id INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS web_setup_marks_kind ON web_setup_marks (kind, at);
+`);
 // Once claimed, a setup keeps no name and no phone (encryption at rest, #425/#438): both names are
 // blanked (the account holds its own copies) and `claimed_by` is the conversation's keyed blind index
 // (restcrypt.blindIndex, phase 2; the plain id when phase 2 is off), matched, never read back.
@@ -147,7 +163,74 @@ export function miss(id) {
 }
 
 export function markClaimed(id, conversationId, now = clock.now()) {
-  return db.db.prepare("UPDATE web_setups SET claimed_by = ?, claimed_at = ?, user_name = '', reason_name = '' WHERE id = ? AND claimed_by IS NULL").run(owner(conversationId), now, id).changes === 1;
+  const won = db.db.prepare("UPDATE web_setups SET claimed_by = ?, claimed_at = ?, user_name = '', reason_name = '', textme_hash = NULL WHERE id = ? AND claimed_by IS NULL").run(owner(conversationId), now, id).changes === 1;
+  if (won) mark("claimed", null, now);
+  return won;
+}
+
+// ---------- the ready screen's way in ----------
+
+/** The setup this browser holds, claimed or not (the ready screen asks whether its text arrived). */
+export function ownedAny(id, secret, now = clock.now()) {
+  const row = get(id, now);
+  if (!row || !secret) return null;
+  const a = Buffer.from(row.secret_hash, "hex"), b = Buffer.from(hash(secret), "hex");
+  return a.length === b.length && timingSafeEqual(a, b) ? row : null;
+}
+
+export function mark(kind, inviteId = null, now = clock.now()) {
+  db.db.prepare("INSERT INTO web_setup_marks (at, kind, invite_id) VALUES (?, ?, ?)").run(now, String(kind), inviteId == null ? null : Number(inviteId));
+}
+export function marksSince(kind, since) {
+  return db.db.prepare("SELECT COUNT(*) AS n FROM web_setup_marks WHERE kind = ? AND at > ?").get(String(kind), since).n;
+}
+/** First texts Reason tried for this invite, ever (the per-invite cap outlives its setups). */
+export function inviteSends(inviteId) {
+  return db.db.prepare("SELECT COUNT(*) AS n FROM web_setup_marks WHERE kind = 'textme_send' AND invite_id = ?").get(Number(inviteId)).n;
+}
+/** Older than this, a mark is let go (the ops page reads a week). */
+export const MARKS_KEEP_MS = 30 * 24 * 3_600_000;
+export function pruneMarks(now = clock.now()) {
+  db.db.prepare("DELETE FROM web_setup_marks WHERE at <= ?").run(now - MARKS_KEEP_MS);
+}
+
+/** The page's text button was tapped. The first tap is the one that counts (and starts the inviter's clock). */
+export function markTapped(id, now = clock.now()) {
+  const first = db.db.prepare("UPDATE web_setups SET tapped_at = ? WHERE id = ? AND tapped_at IS NULL AND claimed_by IS NULL").run(now, id).changes === 1;
+  if (first) mark("tapped", null, now);
+  return first;
+}
+
+const numberHash = (row, e164) => hash(`${row.secret_hash}:${e164}`);
+/** Is this the number already set on the setup? */
+export const textMeIs = (row, e164) => !!row.textme_hash && row.textme_hash === numberHash(row, e164);
+export function setTextMe(id, e164, now = clock.now()) {
+  const row = get(id, now);
+  if (!row) return false;
+  if (textMeIs(row, e164)) return true;
+  return db.db.prepare("UPDATE web_setups SET textme_hash = ?, textme_sets = textme_sets + 1 WHERE id = ? AND claimed_by IS NULL").run(numberHash(row, e164), id).changes === 1;
+}
+export function noteTextMeSend(id, inviteId, now = clock.now()) {
+  db.db.prepare("UPDATE web_setups SET textme_sends = textme_sends + 1, textme_at = ? WHERE id = ?").run(now, id);
+  mark("textme_send", inviteId, now);
+}
+/**
+ * The open setup that asked Reason to text this number first, or null. Only open ones (unclaimed, not
+ * past their day): a reply after that is a stranger's text like any other. The number is matched
+ * against each open setup's salted hash; there are only ever a handful.
+ */
+export function byTextMe(e164, now = clock.now()) {
+  if (!e164) return null;
+  const rows = db.db.prepare("SELECT * FROM web_setups WHERE textme_hash IS NOT NULL AND textme_sends > 0 AND claimed_by IS NULL AND expires_at > ? ORDER BY textme_at DESC").all(now);
+  return rows.find(r => r.textme_hash === numberHash(r, e164)) ?? null;
+}
+
+/** Invite setups whose text button was tapped `afterMs` ago with no first text since, and the inviter not yet told. */
+export function dueNudges(afterMs, now = clock.now()) {
+  return db.db.prepare("SELECT * FROM web_setups WHERE invite_id IS NOT NULL AND tapped_at IS NOT NULL AND tapped_at <= ? AND nudged_at IS NULL AND claimed_by IS NULL AND expires_at > ?").all(now - afterMs, now);
+}
+export function markNudged(id, now = clock.now()) {
+  return db.db.prepare("UPDATE web_setups SET nudged_at = ? WHERE id = ? AND nudged_at IS NULL").run(now, id).changes === 1;
 }
 
 /** The setup this conversation claimed, if any. */

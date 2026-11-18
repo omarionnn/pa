@@ -609,7 +609,39 @@ function peopleChecks({ now, day }) {
       : "nobody waiting"),
     // What reaches his phone says how many, never who: the names are on the page (owner, 2026-11-06).
     ...(pending.length ? { alert: `Waiting for a yes: ${n(pending.length, "person", "people")} asked for access and ${pending.length === 1 ? "has" : "have"} no answer — see the status page.` } : {}) });
+  const ft = firstTextRow(now);
+  if (ft) out.push(ft);
   return out;
+}
+
+/**
+ * The web setup's ready screen against what reached Reason (first-text, 11-17): setups whose text
+ * button was tapped, and first texts that arrived, in the last day and week. Amber when people
+ * finished setup in the last day and none of their texts arrived, so a way in that stopped working
+ * shows up the same day rather than days later. Only with the web setup on (REASON_WEB_SETUP).
+ */
+export function firstTextCounts(now = clock.now()) {
+  if (!["1", "true", "on", "yes"].includes(String(process.env.REASON_WEB_SETUP ?? "").trim().toLowerCase())) return null;
+  let rows;
+  try {
+    const since = (ms) => db.db.prepare("SELECT kind, COUNT(*) AS n FROM web_setup_marks WHERE at > ? AND kind IN ('tapped', 'claimed') GROUP BY kind").all(now - ms);
+    rows = { day: since(DAY), week: since(7 * DAY) };
+  } catch { return null; } // no marks table yet: no row
+  const of = (list, k) => list.find(r => r.kind === k)?.n ?? 0;
+  return { day: { tapped: of(rows.day, "tapped"), arrived: of(rows.day, "claimed") }, week: { tapped: of(rows.week, "tapped"), arrived: of(rows.week, "claimed") } };
+}
+export const firstTextWords = (c) => `setups finished vs first texts received: ${c.day.tapped} / ${c.day.arrived} in the last day · ${c.week.tapped} / ${c.week.arrived} this week`;
+function firstTextRow(now) {
+  const c = firstTextCounts(now);
+  if (!c) return null;
+  const stuck = c.day.tapped > 0 && c.day.arrived === 0;
+  return check("first_texts", "people", "First texts", stuck ? "warn" : "ok", firstTextWords(c));
+}
+/** The digest's line for the day, held (and kept current) whenever somebody finished a setup that day. */
+export function holdFirstTexts(now = clock.now()) {
+  const c = firstTextCounts(now);
+  if (!c || !c.day.tapped) return null;
+  return digest.hold({ text: `Web setup: ${firstTextWords(c)}`, key: `first_texts:${digest.localDayOf(now)}`, at: now });
 }
 
 async function serviceChecks({ now, day, probe, emit = (r) => r }) {
@@ -1105,6 +1137,8 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
     .finally(() => import("./remotebrowser.js").then((rb) => rb.dailyRetry()).catch(e => log({ hosted_retry_failed: short(e) })))
     // The owner's heads-up on the month's hosted-browser minutes: once below the threshold, once at zero.
     .finally(() => import("./remotebrowser.js").then((rb) => rb.minutesAlert()).catch(e => log({ hosted_alert_failed: short(e) })))
+    // The web setup's day, in the digest when anybody finished one (first-text, 11-17).
+    .finally(() => { try { holdFirstTexts(); } catch (e) { log({ first_texts_hold_failed: short(e) }); } })
     .finally(() => digest.flush({ send: sendDigest, link: opsUrl(), log }).catch(e => log({ ops_digest_failed: short(e) })));
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);

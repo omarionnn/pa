@@ -321,7 +321,8 @@ export class Router {
     if (arrivedNow && !isOperator) {
       let setupClaimed = false;
       try {
-        const claim = websetup.claimFromText({ conversationId, text: inbound.text ?? "", log: this.log });
+        // `address`: a reply to Reason's own first text (text-me-first) claims by the number instead of a code.
+        const claim = websetup.claimFromText({ conversationId, text: inbound.text ?? "", address, log: this.log });
         // The code has done its job: it is not stored with their words, and the model never reads it.
         if (claim) {
           setupClaimed = true;
