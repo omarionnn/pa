@@ -102,6 +102,34 @@ test("waiting_on_other needs who is owed what and when you will look again", asy
   assert.equal(good.task.needs_from_you, null, "nothing is on them");
 });
 
+test("a step only they can take is waiting_on_you, never waiting_on_other — so it is asked once and rests", async () => {
+  const { id } = (await start()).task;
+
+  for (const on of ["Omari", "you", "the account holder", "Omari (has to sign in)", "them"]) {
+    const r = await call("task_update", {
+      task_id: id, state: "waiting_on_other",
+      sheet: { waiting: [{ on, for: "a sign-in to the portal", next_check: "2026-10-07T10:00:00-04:00" }] },
+    });
+    assert.equal(r.ok, false, `'${on}' is them, not somebody else`);
+    assert.match(r.error, /waiting_on_you/);
+    assert.match(r.error, /sheet\.needs/);
+    assert.match(r.error, /once/);
+  }
+  assert.equal(db.getTask(C, id).state, "running", "the state did not move");
+
+  // Third parties whose names merely start like a self-word are still somebody else.
+  for (const on of ["your landlord", "the owner of the building", "the bank"]) {
+    const r = await call("task_update", {
+      task_id: id, state: "waiting_on_other",
+      sheet: { waiting: [{ on, for: "a reply", next_check: "2026-10-07T10:00:00-04:00" }] },
+    });
+    assert.equal(r.ok, true, `'${on}' is a third party`);
+  }
+
+  assert.match(SYSTEM, /step only the account holder can take/);
+  assert.match(SYSTEM, /its status changed/);
+});
+
 test("blocked says what stopped it and what would unblock it", async () => {
   const { id } = (await start()).task;
 
