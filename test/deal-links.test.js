@@ -18,7 +18,8 @@ const offers = await import("../src/offers.js");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 test("the prompt asks for a link per option in a deal answer, and forbids inventing one", () => {
-  assert.match(SYSTEM, /deal, price or where-to-buy answer[^\n]*a link for each option it names[^\n]*tool result[^\n]*never invent or guess a URL/);
+  assert.match(SYSTEM, /a deal or buy answer links each option it names when a tool result has one, never an invented URL/);
+  assert.match(SYSTEM, /Never invent venues, showtimes, prices or links/);
 });
 
 test("the sensible-guess rule is still there", () => {
