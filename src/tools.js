@@ -16933,11 +16933,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       else q.all = "true";
       const res = await github.api(tok.token, "GET", "/notifications", { query: q });
       if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not list notifications: ${res.error}` };
-      const items = (res.body ?? []).map(github.notificationView);
+      // Notifications say nothing about whether a pull request is open or merged, so look each one
+      // up (at most PR_STATE_LOOKUPS, in parallel); the rest say "unknown" instead of being guessed.
+      const PR_STATE_LOOKUPS = 10;
+      const raw = res.body ?? [];
+      let looked = 0;
+      const items = await Promise.all(raw.map(async (n) => {
+        if (n?.subject?.type !== "PullRequest" || !n.subject?.url || looked >= PR_STATE_LOOKUPS) {
+          return github.notificationView(n);
+        }
+        looked++;
+        let path = "";
+        try { path = new URL(n.subject.url).pathname; } catch { return github.notificationView(n); }
+        const pr = await github.api(tok.token, "GET", path);
+        return github.notificationView(n, pr.ok ? pr.body : null);
+      }));
       return {
         ok: true, count: items.length, notifications: items,
         note: items.length
           ? `${items.length} notification(s). Summarise what needs attention rather than listing every one.`
+            + " A notification is not a finished change: call a pull request done, shipped or merged only if its"
+            + " state is \"merged\"; \"open\" is still waiting, \"closed\" was closed without merging,"
+            + " \"unknown\" means check with github_pulls before saying either."
           : "No new notifications.",
       };
     }

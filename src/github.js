@@ -325,8 +325,20 @@ export function prView(p) {
   };
 }
 
-export function notificationView(n) {
+/** "open", "merged" or "closed" for a pull request; GitHub's own state says "closed" for merged ones too. */
+export function prState(p) {
+  if (!p) return undefined;
+  if (p.merged_at || p.merged === true) return "merged";
+  return p.state === "closed" ? "closed" : "open";
+}
+
+/**
+ * One notification. Notifications carry no open/merged state, so `pr` is the pull request itself
+ * when it was looked up; without it the state stays "unknown" rather than a guess.
+ */
+export function notificationView(n, pr) {
   if (!n) return null;
+  const isPr = n.subject?.type === "PullRequest";
   return {
     id: n.id,
     reason: n.reason,
@@ -336,6 +348,7 @@ export function notificationView(n) {
     repo: n.repository?.full_name ?? "",
     updated: n.updated_at ?? "",
     url: n.subject?.url ?? "",
+    ...(isPr ? { state: prState(pr) ?? "unknown" } : {}),
   };
 }
 
