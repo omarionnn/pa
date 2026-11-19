@@ -637,11 +637,18 @@ function firstTextRow(now) {
   const stuck = c.day.tapped > 0 && c.day.arrived === 0;
   return check("first_texts", "people", "First texts", stuck ? "warn" : "ok", firstTextWords(c));
 }
-/** The digest's line for the day, held (and kept current) whenever somebody finished a setup that day. */
+/**
+ * The digest's line for the day, held (and kept current) whenever somebody finished a setup that day.
+ * The counts are a rolling last day and week, so a line held yesterday evening and one held this
+ * morning say the same thing: one digest carries one such line, the latest, and an older day's
+ * unsent one is dropped rather than listed (and counted) next to it.
+ */
 export function holdFirstTexts(now = clock.now()) {
   const c = firstTextCounts(now);
   if (!c || !c.day.tapped) return null;
-  return digest.hold({ text: `Web setup: ${firstTextWords(c)}`, key: `first_texts:${digest.localDayOf(now)}`, at: now });
+  const key = `first_texts:${digest.localDayOf(now)}`;
+  db.db.prepare("DELETE FROM ops_digest WHERE sent_at IS NULL AND key LIKE 'first_texts:%' AND key <> ?").run(key);
+  return digest.hold({ text: `Web setup: ${firstTextWords(c)}`, key, at: now });
 }
 
 async function serviceChecks({ now, day, probe, emit = (r) => r }) {
