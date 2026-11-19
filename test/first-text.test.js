@@ -409,6 +409,28 @@ test("ops: setups finished vs first texts received, on the page and held for the
   assert.equal(report.checks.find(c => c.id === "first_texts"), undefined);
 });
 
+test("ops digest: a held first-texts line on two local days is listed once, and the count matches", async () => {
+  harness();
+  // Just before local midnight, so the next hold lands on the next local day with the tap still in the last day.
+  const local = () => new Date(clock.now()).toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour12: false });
+  for (let i = 0; i < 200 && !local().startsWith("23:"); i++) clock.skip(15 * MIN);
+  const a = await newSetup();
+  await api("POST", `/api/${a.id}/tapped`, { cookie: a.cookie });
+  const day1 = digest.localDayOf(clock.now());
+  ops.holdFirstTexts();
+  clock.skip(90 * MIN);
+  assert.notEqual(digest.localDayOf(clock.now()), day1, "the second hold is on the next local day");
+  ops.holdFirstTexts();
+  digest.hold({ text: "something else", key: "other" });
+  const rows = digest.pending();
+  const held = rows.filter(r => r.key.startsWith("first_texts:"));
+  assert.equal(held.length, 1, "one first-texts line, not one per local day");
+  const text = digest.digestText(rows);
+  assert.match(text, /— 2 things since the last one/);
+  assert.equal(text.split("\n").filter(l => l.startsWith("• Web setup:")).length, 1);
+  assert.equal(text.split("\n").filter(l => l.startsWith("• ")).length, 2, "count matches lines shown");
+});
+
 // ---------- switch off ----------
 
 test("web setup switch off: the new endpoints are not there, a code-less first text claims nothing, no inviter line", async () => {
