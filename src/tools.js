@@ -4065,8 +4065,8 @@ export const tools = [
         state: {
           type: "string",
           description: "Where this job stands, and it says WHO the wait is on. 'running' — you are working it."
-            + " 'waiting_on_you' — you need one answer only they can give; needs its sheet.needs, and you ask it once."
-            + " 'waiting_on_other' — somebody or something else owes you something; needs a sheet.waiting entry with the next check, and you keep checking without being asked."
+            + " 'waiting_on_you' — you need one answer only they can give, or a step only the account holder can take (a sign-in, a call from their number); needs its sheet.needs, you ask it once, clearly, and it rests until they reply."
+            + " 'waiting_on_other' — somebody or something else owes you something (never them: a step of theirs is waiting_on_you); needs a sheet.waiting entry with the next check, and you keep checking without being asked."
             + " A wait cannot sleep past a couple of hours: ask for any time you like, and code comes back at the floor, looks at what the sweep found since, and wakes you early when something landed."
             + " 'blocked' — something stopped it; needs sheet.blocked saying what, and what would unblock it, and — if the job got anywhere at all — sheet.furthest, the furthest point you reached, handed back. Only after you have tried the other safe routes."
             + " done and cancelled are not states here: they go through task_finish.",

@@ -4380,6 +4380,17 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
         + ` who (or what), for what exactly, and when you will check again. Send the state and the waiting entry together.`,
     };
   }
+  // A wait that is only on the person themselves (a sign-in, a call from their number, a form only
+  // the account holder can send) is not somebody else's to answer. Filed as waiting_on_other it
+  // wakes every couple of hours for days, finds nothing, and never asks them; filed as
+  // waiting_on_you it is asked once and rests until they reply.
+  if (state === "waiting_on_other" && after.waiting.every(w => isSelf(conversationId, w.on))) {
+    return {
+      ok: false, error: `everything this is waiting on is the person themselves (${after.waiting.map(w => `'${w.on}'`).join(", ")}).`
+        + ` A step only they can do is waiting_on_you, not waiting_on_other: set sheet.needs with what they have to do and the tradeoff,`
+        + ` ask it once in plain words, and it rests until they reply.`,
+    };
+  }
   if (state === "blocked" && !after.blocked) {
     return {
       ok: false, error: `blocked needs sheet.blocked: what actually stopped it, and what would get it going again.`
@@ -4435,6 +4446,25 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
   db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
   taskChanged(conversationId, id);
   return { ok: true, task: getTask(conversationId, id), ...(pulledIn ? { pulled_in: pulledIn } : {}) };
+}
+
+/** Does a sheet.waiting `on` name the account holder rather than a third party? */
+function isSelf(conversationId, on) {
+  // Whole words only for the generic ones ("the owner of the building" is a landlord); a prefix is
+  // allowed for "you" and their own name, which is how a step of theirs gets written ("you to sign in").
+  const exact = ["you", "yourself", "them", "user", "account holder", "owner"];
+  const prefix = ["you"];
+  // Their own name only: the operator's name is somebody else to every other account, so it counts
+  // as self on the operator's thread alone. A full name also answers to its first word.
+  const acct = getAccount(conversationId);
+  const mine = [acct?.name, (acct ? acct.is_operator : conversationId === config.ownerConversation) ? config.ownerName : null];
+  for (const n of mine) {
+    if (typeof n !== "string" || !n.trim()) continue;
+    const full = n.trim().toLowerCase();
+    for (const v of new Set([full, full.split(/\s+/)[0]])) prefix.push(v);
+  }
+  const s = String(on ?? "").trim().toLowerCase().replace(/^the\s+/, "").replace(/[.\s]+$/, "");
+  return exact.includes(s) || prefix.some(n => s === n || new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|\\(|,|:|$)`).test(s));
 }
 
 export function finishTask(conversationId, id, { state, outcome, result = null }) {
