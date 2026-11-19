@@ -4386,7 +4386,7 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
   // waiting_on_you it is asked once and rests until they reply.
   if (state === "waiting_on_other" && after.waiting.every(w => isSelf(conversationId, w.on))) {
     return {
-      ok: false, error: `everything this is waiting on is ${config.ownerName} themselves (${after.waiting.map(w => `'${w.on}'`).join(", ")}).`
+      ok: false, error: `everything this is waiting on is the person themselves (${after.waiting.map(w => `'${w.on}'`).join(", ")}).`
         + ` A step only they can do is waiting_on_you, not waiting_on_other: set sheet.needs with what they have to do and the tradeoff,`
         + ` ask it once in plain words, and it rests until they reply.`,
     };
@@ -4454,8 +4454,14 @@ function isSelf(conversationId, on) {
   // allowed for "you" and their own name, which is how a step of theirs gets written ("you to sign in").
   const exact = ["you", "yourself", "them", "user", "account holder", "owner"];
   const prefix = ["you"];
-  for (const n of [config.ownerName, getAccount(conversationId)?.name]) {
-    if (typeof n === "string" && n.trim()) prefix.push(n.trim().toLowerCase());
+  // Their own name only: the operator's name is somebody else to every other account, so it counts
+  // as self on the operator's thread alone. A full name also answers to its first word.
+  const acct = getAccount(conversationId);
+  const mine = [acct?.name, (acct ? acct.is_operator : conversationId === config.ownerConversation) ? config.ownerName : null];
+  for (const n of mine) {
+    if (typeof n !== "string" || !n.trim()) continue;
+    const full = n.trim().toLowerCase();
+    for (const v of new Set([full, full.split(/\s+/)[0]])) prefix.push(v);
   }
   const s = String(on ?? "").trim().toLowerCase().replace(/^the\s+/, "").replace(/[.\s]+$/, "");
   return exact.includes(s) || prefix.some(n => s === n || new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|\\(|,|:|$)`).test(s));

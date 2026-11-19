@@ -130,6 +130,25 @@ test("a step only they can take is waiting_on_you, never waiting_on_other — so
   assert.match(SYSTEM, /its status changed/);
 });
 
+test("for somebody else's account, the operator's name is a third party and their own name is them", async () => {
+  const K = "dm:loose-kwesi";
+  db.upsertAccount({ conversationId: K, channel: "test", address: "+12025550177", name: "Kwesi Mensah", isOperator: false });
+  const as = (name, input) => runTool(name, input, { conversationId: K });
+  const { id } = (await as("task_start", { title: "Get the deposit back", goal: "The deposit is returned" })).task;
+  const wait = on => as("task_update", {
+    task_id: id, state: "waiting_on_other",
+    sheet: { waiting: [{ on, for: "a reply", next_check: "2026-10-07T10:00:00-04:00" }] },
+  });
+
+  for (const on of ["Kwesi Mensah", "Kwesi", "Kwesi (has to sign in)", "you"]) {
+    const r = await wait(on);
+    assert.equal(r.ok, false, `'${on}' is them`);
+    assert.match(r.error, /waiting_on_you/);
+    assert.doesNotMatch(r.error, /Omari/, "the operator is not named to another account");
+  }
+  assert.equal((await wait("Omari")).ok, true, "the operator is somebody else to this account");
+});
+
 test("blocked says what stopped it and what would unblock it", async () => {
   const { id } = (await start()).task;
 
