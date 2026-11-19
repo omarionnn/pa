@@ -26,6 +26,8 @@ const ISSUES = [
 const PULLS = [
   { number: 10, title: "Add GitHub integration", state: "open", draft: false, user: { login: "omari" }, head: { ref: "feat/github" }, base: { ref: "main" }, mergeable: true, labels: [{ name: "feature" }], requested_reviewers: [{ login: "kofi" }], comments: 2, review_comments: 1, additions: 150, deletions: 10, changed_files: 5, created_at: "2026-10-09T12:00:00Z", updated_at: "2026-10-10T12:00:00Z", merged_at: null, html_url: "https://github.com/omari/reason/pull/10" },
   { number: 11, title: "Fix typo in readme", state: "open", draft: true, user: { login: "kofi" }, head: { ref: "fix/typo" }, base: { ref: "main" }, mergeable: true, labels: [], requested_reviewers: [], comments: 0, review_comments: 0, additions: 1, deletions: 1, changed_files: 1, created_at: "2026-10-10T12:00:00Z", updated_at: "2026-10-10T12:00:00Z", merged_at: null, html_url: "https://github.com/omari/reason/pull/11" },
+  { number: 9, title: "Ship onboarding copy", state: "closed", draft: false, user: { login: "omari" }, head: { ref: "feat/onboarding" }, base: { ref: "main" }, mergeable: null, labels: [], requested_reviewers: [], comments: 0, review_comments: 0, additions: 20, deletions: 4, changed_files: 2, created_at: "2026-10-02T12:00:00Z", updated_at: "2026-10-04T12:00:00Z", merged_at: "2026-10-04T12:00:00Z", html_url: "https://github.com/omari/reason/pull/9" },
+  { number: 8, title: "Drop old importer", state: "closed", draft: false, user: { login: "omari" }, head: { ref: "chore/importer" }, base: { ref: "main" }, mergeable: null, labels: [], requested_reviewers: [], comments: 0, review_comments: 0, additions: 0, deletions: 90, changed_files: 3, created_at: "2026-10-01T12:00:00Z", updated_at: "2026-10-03T12:00:00Z", merged_at: null, html_url: "https://github.com/omari/reason/pull/8" },
 ];
 
 const FILES = {
@@ -39,6 +41,8 @@ const NOTIFICATIONS = [
   { id: "1", reason: "review_requested", unread: true, subject: { title: "Add GitHub integration", type: "PullRequest", url: "https://api.github.com/repos/omari/reason/pulls/10" }, repository: { full_name: "omari/reason" }, updated_at: "2026-10-10T12:00:00Z" },
   { id: "2", reason: "assign", unread: true, subject: { title: "Fix login bug", type: "Issue", url: "https://api.github.com/repos/omari/reason/issues/1" }, repository: { full_name: "omari/reason" }, updated_at: "2026-10-09T12:00:00Z" },
   { id: "3", reason: "mention", unread: false, subject: { title: "Old discussion", type: "Issue", url: "https://api.github.com/repos/omari/reason/issues/3" }, repository: { full_name: "omari/reason" }, updated_at: "2026-10-01T12:00:00Z" },
+  { id: "4", reason: "author", unread: false, subject: { title: "Ship onboarding copy", type: "PullRequest", url: "https://api.github.com/repos/omari/reason/pulls/9" }, repository: { full_name: "omari/reason" }, updated_at: "2026-10-04T12:00:00Z" },
+  { id: "5", reason: "author", unread: false, subject: { title: "Drop old importer", type: "PullRequest", url: "https://api.github.com/repos/omari/reason/pulls/8" }, repository: { full_name: "omari/reason" }, updated_at: "2026-10-03T12:00:00Z" },
 ];
 
 export async function startGitHub({
@@ -169,6 +173,15 @@ export async function startGitHub({
       let filtered = [...PULLS];
       if (st !== "all") filtered = filtered.filter(p => p.state === st);
       return json(200, filtered.slice(0, limit));
+    }
+
+    // GET /repos/:owner/:repo/pulls/:number
+    const pullMatch = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(url.pathname);
+    if (pullMatch && req.method === "GET") {
+      state.pullReads = (state.pullReads ?? 0) + 1;
+      const pr = PULLS.find(p => p.number === Number(pullMatch[2]));
+      if (!pr) return err(404, "Not Found");
+      return json(200, pr);
     }
 
     // PUT /repos/:owner/:repo/pulls/:number/merge

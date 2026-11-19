@@ -251,7 +251,18 @@ test("github_activity with include_read lists all notifications", async () => {
   await connect();
   const out = await call("github_activity", { include_read: true });
   assert.equal(out.ok, true);
-  assert.equal(out.count, 3, "should include read notifications");
+  assert.equal(out.count, 5, "should include read notifications");
+});
+
+test("github_activity gives each pull request its real state so open work is not called done", async () => {
+  await connect();
+  const out = await call("github_activity", { include_read: true });
+  const byTitle = Object.fromEntries(out.notifications.map(n => [n.title, n]));
+  assert.equal(byTitle["Add GitHub integration"].state, "open");
+  assert.equal(byTitle["Ship onboarding copy"].state, "merged");
+  assert.equal(byTitle["Drop old importer"].state, "closed");
+  assert.equal(byTitle["Fix login bug"].state, undefined, "issues are not looked up");
+  assert.match(out.note, /merged/);
 });
 
 // ---------- isolation ----------
