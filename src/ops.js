@@ -174,7 +174,11 @@ export function watchFetch({ record = db.recordProviderCall, day = accounts.toda
       // redirect itself (`redirect: "manual"`). Uber's connect check reads where the authorize page
       // sends it (src/uber.js `connectReady`); counted as failed, that 302 kept Uber's row amber
       // ("last call failed: HTTP 302") from 2026-11-10 with nothing wrong.
-      const ok = res.ok || isRedirect(res.status);
+      // A 404 on a read of one Drive file or Doc is an answer too: "that file is not there for this
+      // account" (private, deleted, or a bad link someone pasted). Google is up; there is nothing
+      // for the owner to fix. Counted as failed, one such read texted "Google needs you" and then
+      // "back to normal". Any other 404, any 5xx, 401/403 and timeouts still count.
+      const ok = res.ok || isRedirect(res.status) || isExpectedMiss(provider, input, init, res.status);
       try { record({ provider, day: day(), ok, status: res.status, ms: Date.now() - t0, error: ok ? "" : `HTTP ${res.status}` }); } catch { /* the ledger is not worth the call */ }
       return res;
     } catch (e) {
@@ -188,6 +192,20 @@ export function watchFetch({ record = db.recordProviderCall, day = accounts.toda
 
 /** A redirect the caller asked to see for itself. Never a failed call. */
 const isRedirect = (status) => Number(status) >= 300 && Number(status) < 400;
+
+/** GET of one Drive file (metadata, media or export) or one Docs document. */
+const ITEM_READ = /^(?:\/drive\/v[23]\/files\/[^/]+(?:\/export)?|\/v1\/documents\/[^/]+)$/;
+
+/** A 404 from Google for one file or document the account cannot see: a per-item answer, not an outage. */
+export function isExpectedMiss(provider, input, init, status) {
+  if (provider !== "google" || Number(status) !== 404) return false;
+  const method = String(init?.method || (typeof input === "object" ? input?.method : "") || "GET").toUpperCase();
+  if (method !== "GET") return false;
+  try {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input?.url;
+    return ITEM_READ.test(new URL(url).pathname);
+  } catch { return false; }
+}
 
 /** For a test that replaced `globalThis.fetch` after the watcher took it. */
 export function unwatchFetch() {
